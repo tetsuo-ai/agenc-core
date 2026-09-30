@@ -1241,20 +1241,17 @@ describe("runAgent", () => {
       expect(terminateOwnedProcesses).toHaveBeenCalledWith({ ownerId: live.agentId });
     }
   });
-  it("forks and disposes a factory Grok provider for the child session", async () => {
+  it("forks a factory Grok provider for the child session", async () => {
     const provider = createProvider("grok", {
       apiKey: "xai-test",
       model: "grok-4-fast",
       extra: { incrementalContinuation: true },
     });
     const parentChat = vi.spyOn(provider, "chatStream");
-    const parentDispose = vi.spyOn(provider, "dispose");
     const fork = provider.forkForSession!.bind(provider);
     let child: LLMProvider | undefined;
-    let childDispose: ReturnType<typeof vi.fn> | undefined;
     const forkSpy = vi.spyOn(provider, "forkForSession").mockImplementation((options) => {
       child = fork(options);
-      childDispose = vi.spyOn(child, "dispose");
       vi.spyOn(child, "chatStream").mockResolvedValue({
         content: "child completed",
         toolCalls: [],
@@ -1288,8 +1285,6 @@ describe("runAgent", () => {
       expect(child).not.toBe(provider);
       expect(child!.chatStream).toHaveBeenCalledOnce();
       expect(parentChat).not.toHaveBeenCalled();
-      expect(childDispose).toHaveBeenCalledOnce();
-      expect(parentDispose).not.toHaveBeenCalled();
     } finally {
       await session.shutdown();
       await provider.dispose?.();

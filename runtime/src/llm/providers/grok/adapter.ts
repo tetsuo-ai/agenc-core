@@ -60,7 +60,6 @@ import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-tur
 import type { GrokProviderConfig } from "./types.js";
 import {
   IncrementalTracker,
-  registerIncrementalTracker,
   type IncrementalRequestShape,
   type LastResponseSnapshot,
 } from "./incremental.js";
@@ -113,6 +112,7 @@ import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../../registry/provider-info.js";
+import { resolveRegisteredModelCatalogEntry } from "../../registry/model-catalog.js";
 import {
   XAI_PRIORITY_SERVICE_TIER,
   xaiSendsPriorityProcessing,
@@ -171,6 +171,15 @@ type ProviderFallbackWaitDecision = Extract<
   ProviderFallbackDecision,
   { readonly kind: "wait" }
 >;
+
+/**
+ * Whether the model catalog lists image input for a Grok model. An
+ * unregistered model counts as text-only.
+ */
+function catalogListsImageInput(model: string): boolean {
+  return resolveRegisteredModelCatalogEntry({ provider: "grok", model })
+    ?.inputModalities.includes("image") === true;
+}
 
 /**
  * Vision models known to support client-side function-calling alongside image
@@ -938,12 +947,17 @@ export class GrokProvider implements LLMProvider {
    * continued), so the refusal cannot repeat on the next admitted attempt.
    */
   private storeRefused = false;
-  /** I-2 / I-14 tracker — zeroed by AgenC post-compact cleanup via
-   *  clearAllResponseIds(); used to send delta input with
-   *  previous_response_id when the request shape is unchanged. */
+  /**
+   * Continuation state of the conversation: its last request and stored
+   * response, used to send only the delta input with previous_response_id
+   * when the request shape is unchanged. Only the conversation's streaming
+   * requests read or write it (see continuesConversation). Compaction needs
+   * no reset: the replaced history no longer extends the recorded baseline,
+   * so decide() sends a full request.
+   */
   private readonly incrementalTracker = new IncrementalTracker();
-  /** Registry unsubscribe; called on dispose to drop the tracker. */
-  private readonly unregisterIncrementalTracker: () => void;
+  /** prompt_cache_key of the conversation the tracker follows. */
+  private conversationCacheKey: string | undefined;
   /** I-14 auth refresh callback. Bearer-key auth has no refresh;
    *  callers can override via `withAuthRefreshCallbacks()` for OAuth
    *  flows. */
@@ -1012,10 +1026,6 @@ export class GrokProvider implements LLMProvider {
         (sum, definition) => sum + definition.schemaChars,
         0,
       );
-    // I-2: register the tracker so AgenC post-compact cleanup can zero it.
-    this.unregisterIncrementalTracker = registerIncrementalTracker(
-      this.incrementalTracker,
-    );
   }
 
   /**
@@ -1073,17 +1083,24 @@ export class GrokProvider implements LLMProvider {
     }
   }
 
-  /** Drop the tracker registration (used on provider swap / session shutdown). */
-  dispose(): void {
-    this.unregisterIncrementalTracker();
+  /**
+   * Whether a streaming request belongs to the conversation whose
+   * continuation state the tracker holds: it carries the conversation's
+   * prompt_cache_key, which the first keyed streaming request binds. Side
+   * calls on this instance (every chat() request, and streams without that
+   * key) neither read nor write the tracker, so they cannot break the
+   * conversation's previous_response_id chain.
+   */
+  private continuesConversation(options: LLMChatOptions | undefined): boolean {
+    const key = options?.promptCacheKey?.trim();
+    if (!key) return false;
+    this.conversationCacheKey ??= key;
+    return this.conversationCacheKey === key;
   }
 
   /**
-   * I-2 / I-14 incremental-tracker integration for chat path.
-   * Records the pre-flight request shape + post-response snapshot so
-   * `clearAllResponseIds()` (called from AgenC post-compact cleanup) can
-   * zero the cached previous_response_id. Matching follow-up turns reuse
-   * the cached response ID and send only the delta input.
+   * Record a conversation request's shape and baseline input, so the next
+   * matching request can send only the delta with previous_response_id.
    */
   private noteIncrementalRequest(
     messages: readonly LLMMessage[],
@@ -1095,12 +1112,14 @@ export class GrokProvider implements LLMProvider {
 
   private noteIncrementalResponse(
     previousResponseId: string | undefined,
+    trailingInstructions: string | undefined,
     itemsAdded: LLMMessage[],
   ): void {
     if (!previousResponseId) return;
     const snapshot: LastResponseSnapshot = {
       previousResponseId,
       itemsAdded,
+      trailingInstructions,
       recordedAtMs: monotonicMs(),
     };
     this.incrementalTracker.recordResponse(snapshot);
@@ -1252,7 +1271,12 @@ export class GrokProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    let plan = this.buildRequestPlan(messages, options);
+    // The conversation streams. A chat() request is a side call (memory
+    // selection, compaction, MCP sampling, summaries, web_fetch extraction),
+    // so it stays out of the conversation's continuation state.
+    const plan = this.buildRequestPlan(messages, options, {
+      disableIncremental: true,
+    });
     let lastAttemptTimeoutMs: number | undefined;
     const requestTimeout = resolveRequestTimeoutMs(
       this.configuredTimeoutMs,
@@ -1353,15 +1377,6 @@ export class GrokProvider implements LLMProvider {
     let consecutiveFallbackFailures = 0;
     while (true) {
       try {
-      // I-2 / I-14: record the outbound request shape for the
-      // incremental tracker before the HTTP call. clearAllResponseIds
-      // (called from AgenC post-compact cleanup) zeros this on every
-      // compaction.
-      this.noteIncrementalRequest(
-        plan.incrementalBaseline ?? plan.requestMessages ?? messages,
-        plan.params as Record<string, unknown>,
-      );
-
       // OAuth pre-flight: admitted calls run singleWireAttempt (no in-band
       // retry by design — a retry needs a new durable reservation), so an
       // expiring OAuth bearer must be refreshed HERE, before the wire
@@ -1374,30 +1389,13 @@ export class GrokProvider implements LLMProvider {
       // returns `skipped`, so the original 401 bubbles up unchanged.
       // OAuth-capable providers install real refresh callbacks via
       // withAuthRefreshCallbacks(); bearer-key mode skips refresh.
-      const parsed = options?.singleWireAttempt === true
+      return options?.singleWireAttempt === true
         ? await run(plan)
         : await retryWithAuthRefresh(
           String(this.config.apiKey),
           async () => run(plan),
           this.authRefreshCallbacks,
         );
-
-      // Record the response metadata so the tracker can supply
-      // previous_response_id and delta input on the next compatible call.
-      const respId = (parsed as { requestMetrics?: { responseId?: string } })
-        ?.requestMetrics?.responseId;
-      if (respId) {
-        this.noteIncrementalResponse(respId, [
-          {
-            role: "assistant",
-            content: parsed.content,
-            ...(parsed.toolCalls.length > 0
-              ? { toolCalls: parsed.toolCalls }
-              : {}),
-          },
-        ]);
-      }
-      return parsed;
       } catch (err: unknown) {
       if (
         isResponseTooLargeToStore(err) &&
@@ -1412,47 +1410,6 @@ export class GrokProvider implements LLMProvider {
           async () => run(retryPlan),
           this.authRefreshCallbacks,
         );
-      }
-      if (
-        options?.singleWireAttempt !== true &&
-        isContinuationRetrievalFailure(err) &&
-        "previous_response_id" in plan.params
-      ) {
-        this.incrementalTracker.clearResponseId();
-        this.emitRuntimeWarning(
-          "previous_response_id_expired",
-          `${this.name} rejected previous_response_id; clearing continuation state and retrying once with full history`,
-        );
-        try {
-          const retryPlan = this.buildRequestPlan(messages, options, {
-            disableIncremental: true,
-          });
-          this.noteIncrementalRequest(
-            retryPlan.incrementalBaseline ?? retryPlan.requestMessages ?? messages,
-            retryPlan.params as Record<string, unknown>,
-          );
-          const parsed = await retryWithAuthRefresh(
-            String(this.config.apiKey),
-            async () => run(retryPlan),
-            this.authRefreshCallbacks,
-          );
-          const respId = (parsed as { requestMetrics?: { responseId?: string } })
-            ?.requestMetrics?.responseId;
-          if (respId) {
-            this.noteIncrementalResponse(respId, [
-              {
-                role: "assistant",
-                content: parsed.content,
-                ...(parsed.toolCalls.length > 0
-                  ? { toolCalls: parsed.toolCalls }
-                  : {}),
-              },
-            ]);
-          }
-          return parsed;
-        } catch (retryErr) {
-          err = retryErr;
-        }
       }
       // 401s that propagated past the refresh wrapper classify through
       // the normal mapper so callers see `LLMProviderError` rather
@@ -1503,11 +1460,16 @@ export class GrokProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    let plan = this.buildRequestPlan(messages, options);
-    this.noteIncrementalRequest(
-      plan.incrementalBaseline ?? plan.requestMessages ?? messages,
-      plan.params as Record<string, unknown>,
-    );
+    const continuation = this.continuesConversation(options);
+    let plan = this.buildRequestPlan(messages, options, {
+      disableIncremental: !continuation,
+    });
+    if (continuation) {
+      this.noteIncrementalRequest(
+        plan.incrementalBaseline ?? plan.requestMessages ?? messages,
+        plan.params as Record<string, unknown>,
+      );
+    }
     let params: Record<string, unknown> = { ...plan.params, stream: true };
     const requestMetrics = {
       ...plan.requestMetrics,
@@ -2039,17 +2001,20 @@ export class GrokProvider implements LLMProvider {
       const toolCalls = Array.from(toolCallAccum.values());
       if (toolCalls.length > 0 && finishReason === "stop") finishReason = "tool_calls";
 
-      // Opt-in continuation (AGENC_XAI_INCREMENTAL): remember the completed
-      // response so the next compatible request sends previous_response_id
-      // plus the delta instead of the full history. Only stored responses can
-      // be continued, and a failed response has nothing to continue from.
+      // Continuation (AGENC_XAI_INCREMENTAL): remember the conversation's
+      // completed response so the next compatible request sends
+      // previous_response_id plus the delta instead of the full history. Only
+      // stored responses can be continued, and a failed response has nothing
+      // to continue from. The trailing instructions come from the plan that
+      // produced the response, which a retry above may have replaced.
       if (
+        continuation &&
         this.config.incrementalContinuation === true &&
         completedResponseId !== undefined &&
         params.store !== false &&
         finishReason !== "error"
       ) {
-        this.noteIncrementalResponse(completedResponseId, [
+        this.noteIncrementalResponse(completedResponseId, plan.trailingInstructions, [
           {
             role: "assistant",
             content,
@@ -2300,6 +2265,7 @@ export class GrokProvider implements LLMProvider {
     compactionDiagnostics?: LLMCompactionDiagnostics;
     requestMessages?: readonly LLMMessage[];
     incrementalBaseline?: readonly LLMMessage[];
+    trailingInstructions?: string;
   } {
     const compactionDiagnostics = undefined;
     const toolSelection = this.resolveResponseTools(
@@ -2333,6 +2299,7 @@ export class GrokProvider implements LLMProvider {
       compactionDiagnostics,
       requestMessages: built.requestMessages,
       incrementalBaseline: built.incrementalBaseline,
+      trailingInstructions: built.trailingInstructions,
     };
   }
 
@@ -2377,9 +2344,8 @@ export class GrokProvider implements LLMProvider {
     toolSelection: ToolSelectionDiagnostics;
     requestMessages: readonly LLMMessage[];
     incrementalBaseline: readonly LLMMessage[];
+    trailingInstructions?: string;
   } {
-    const visionModel = this.config.visionModel ??
-      (this.config.model === "grok-4.7" ? this.config.model : DEFAULT_VISION_MODEL);
     // Prefix-cache split: xAI caching is prefix-based ("never modify
     // earlier messages — only append"), so the volatile tail of the
     // system prompt (timestamp, git state, …) must not sit at the front
@@ -2412,8 +2378,14 @@ export class GrokProvider implements LLMProvider {
     const hasImages = repairedMessages.some((message) =>
       Array.isArray(message.content) &&
       message.content.some((part) => part.type === "image_url"));
-    const model =
-      options?.model ?? (hasImages ? visionModel : this.config.model);
+    // Images stay on a model whose catalog row lists image input: switching
+    // models would restart the conversation's continuation chain and cache.
+    // Only a text-only model hands image requests to the vision model.
+    const visionModel =
+      hasImages && !catalogListsImageInput(this.config.model)
+        ? this.config.visionModel ?? DEFAULT_VISION_MODEL
+        : undefined;
+    const model = options?.model ?? visionModel ?? this.config.model;
     const xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
 
     const params: Record<string, unknown> = {
@@ -2481,7 +2453,8 @@ export class GrokProvider implements LLMProvider {
     const structuredOutputEnabled =
       options?.structuredOutput?.enabled !== false &&
       structuredOutputSchema !== undefined;
-    // Enable tools unless the vision model is known to not support them.
+    // Enable tools unless the request went to a vision model not known to
+    // support them.
     //
     // Removed 2026-04-09: the previous logic also dropped the entire tools
     // array on any follow-up turn whose tool-schema serialized to more than
@@ -2498,7 +2471,7 @@ export class GrokProvider implements LLMProvider {
     // array is cheap; the previous guard was a token-saving theory that
     // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      if (!xaiInput.hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      if (visionModel === undefined || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
@@ -2539,41 +2512,39 @@ export class GrokProvider implements LLMProvider {
         format: structuredFormat,
       };
     }
+    // The dynamic tail the request ends with (such as the permission section)
+    // is its trailing instructions: a continuing request sends them only when
+    // they differ from the ones its stored chain holds (IncrementalTracker.decide).
+    const trailing = repairedMessages.at(-1);
+    const trailingInstructions =
+      dynamicSystemPrompt !== undefined &&
+      trailing?.role === "system" &&
+      trailing.content === dynamicSystemPrompt
+        ? dynamicSystemPrompt
+        : undefined;
     if (!options?.disableIncremental) {
       const previousResponseId = this.incrementalTracker.previousResponseId();
       const decision = this.incrementalTracker.decide({
         currentShape: this.buildIncrementalRequestShape(params),
         currentInput: repairedMessages,
+        trailingInstructions,
       });
       if (decision.kind === "reuse" && previousResponseId) {
-        if (this.config.incrementalContinuation === true) {
-          // The delta is a validated suffix of the full sequence: send its
-          // items as they are. Rebuilding it through buildParams would
-          // prepend the static system prompt (already part of the stored
-          // response) and re-validate a suffix that can legitimately open
-          // with tool output.
-          params.input = buildXaiResponsesInputItems(decision.delta, model).input;
-        } else {
-          const deltaBuilt = this.buildParams(decision.delta, {
-            ...options,
-            disableIncremental: true,
-          });
-          params.input = deltaBuilt.params.input;
-        }
+        // The delta is a validated suffix of the full sequence: send its
+        // items as they are. Rebuilding it through buildParams would prepend
+        // the static system prompt (already part of the stored response) and
+        // re-validate a suffix that can legitimately open with tool output.
+        params.input = buildXaiResponsesInputItems(decision.delta, model).input;
         params.previous_response_id = previousResponseId;
       }
     }
 
-    // Baseline for the incremental tracker. The trailing dynamic system
-    // message (timestamp, git state) changes every call, so recording it
-    // would fail the next request's prefix check at that position and force
-    // a full resend; the fresh dynamic tail travels in the delta instead.
-    const trailing = repairedMessages.at(-1);
+    // Baseline for the incremental tracker: the request without its trailing
+    // instructions. The next request's new items go where they sit now, so
+    // recording them would fail its prefix check and force a full resend.
     const incrementalBaseline =
       this.config.incrementalContinuation === true &&
-      dynamicSystemPrompt !== undefined &&
-      trailing?.role === "system" &&
-      trailing.content === dynamicSystemPrompt
+      trailingInstructions !== undefined
         ? repairedMessages.slice(0, -1)
         : repairedMessages;
 
@@ -2582,6 +2553,7 @@ export class GrokProvider implements LLMProvider {
       toolSelection: selectedTools,
       requestMessages: repairedMessages,
       incrementalBaseline,
+      trailingInstructions,
     };
   }
 

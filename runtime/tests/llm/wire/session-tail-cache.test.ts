@@ -188,12 +188,18 @@ describe("grok keeps the session tail inside the reusable prefix", () => {
       },
     };
     const acceptEdits = "# Permission Mode: acceptEdits";
-    await provider.chatStream(TURN_1, () => {}, { systemPrompt: CACHED_TAIL_PROMPT });
+    // Main-loop requests carry the conversation's prompt_cache_key.
+    const promptCacheKey = "conv-main";
+    await provider.chatStream(TURN_1, () => {}, {
+      systemPrompt: CACHED_TAIL_PROMPT,
+      promptCacheKey,
+    });
     await provider.chatStream(TURN_2, () => {}, {
       systemPrompt: appendVolatileInstructions(
         `${STATIC_HEAD}\n\n${SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER}\n\n${SESSION_TAIL}`,
         [acceptEdits],
       ),
+      promptCacheKey,
     });
 
     expect(bodies).toHaveLength(2);
