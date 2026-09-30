@@ -2,24 +2,47 @@
 """Zero-delay OpenAI SSE replay. No network upstream and no credentials.
 Runs only in a Linux container with a task-owned /work and read-only /evidence.
 """
-import argparse, collections, hashlib, http.server, json, os, pathlib, re, shutil, subprocess, threading, time
+import argparse, collections, hashlib, http.server, json, os, pathlib, re, shutil, stat, subprocess, threading, time
 
 def confined_path(root, relative):
-    """Reject absolute paths, traversal and symlink escapes before using inputs."""
+    """Select a symlink-free child of a trusted benchmark root.
+
+    Resolve only the trusted root. Walk child components relative to directory
+    descriptors without following links, so even a rejected selector cannot
+    probe an outside symlink target. Internal aliases are intentionally refused
+    too. Missing descendants remain supported, as with non-strict resolve.
+
+    This checks a selector, not subsequent execution: the returned pathname can
+    still be replaced by a same-UID writer before copy/interpreter use. Fixtures
+    and roots must remain trusted; this is not a hostile-filesystem sandbox.
+    """
     relative = pathlib.Path(relative)
-    if relative.is_absolute() or '..' in relative.parts:
+    if relative.is_absolute() or '..' in relative.parts or not relative.parts:
         raise ValueError('Expected a confined relative path')
     root = pathlib.Path(root).resolve()
-    resolved = (root / relative).resolve()
-    if resolved == root or not resolved.is_relative_to(root):
-        raise ValueError('Path escapes its benchmark root')
-    return resolved
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent = os.open(root, flags)
+    try:
+        for index, component in enumerate(relative.parts):
+            try:
+                info = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError('Symlinks are not allowed in benchmark selectors')
+            if index < len(relative.parts) - 1:
+                child = os.open(component, flags, dir_fd=parent)
+                os.close(parent)
+                parent = child
+    finally:
+        os.close(parent)
+    return root / relative
 
 def repository_cache_path(root, revision):
     """A cache selector is a pinned Git object ID, never a general path.
 
-    Fixtures are trusted local workloads. Resolved containment is still needed
-    for stable symlinks; neither validation nor resolve prevents rename races.
+    Fixtures are trusted local workloads. The no-follow child walk rejects
+    stable symlinks; neither this validation nor the walk prevents later renames.
     """
     if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('Expected a pinned 40-character lowercase Git object ID')
