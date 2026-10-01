@@ -21,7 +21,7 @@ import {
   readAgenCDaemonSpawnStderrTail,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonSocketPath,
-} from "./daemon-cli.js";
+} from "./daemon-control.js";
 import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
