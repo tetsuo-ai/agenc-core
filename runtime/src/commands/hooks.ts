@@ -19,8 +19,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { HooksRuntimeUnavailableModal, openHooksMenu } from "./hooks-menu.js";
-import { openLocalJsxCommand } from "./local-jsx-command.js";
+import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 import React from "react";
 
@@ -106,10 +105,11 @@ function daemonHooksFns(ctx: SlashCommandContext): DaemonHooksFns | null {
   };
 }
 
-function openHooksUnavailableMenu(ctx: SlashCommandContext): boolean {
-  return openLocalJsxCommand(ctx, close =>
-    React.createElement(HooksRuntimeUnavailableModal, { onDone: close }),
-  );
+function openHooksUnavailableMenu(ctx: SlashCommandContext): Promise<boolean> {
+  return openAsyncLocalJsxCommand(ctx, async (close) => {
+    const { HooksRuntimeUnavailableModal } = await import("./hooks-menu.js");
+    return React.createElement(HooksRuntimeUnavailableModal, { onDone: close });
+  });
 }
 
 function metadataFor(event: HookEventName): {
@@ -427,7 +427,7 @@ async function handleHooksCommand(
   }
   const runtime = findHooksRuntime(ctx);
   if (!runtime) {
-    if (ctx.argsRaw.trim().length === 0 && openHooksUnavailableMenu(ctx)) {
+    if (ctx.argsRaw.trim().length === 0 && await openHooksUnavailableMenu(ctx)) {
       return { kind: "skip" };
     }
     return {
@@ -441,7 +441,9 @@ async function handleHooksCommand(
     case "list":
     case "show-all":
     case "overview":
-      if (args.length === 0 && openHooksMenu(ctx, runtime)) {
+      if (args.length === 0 &&
+        typeof ctx.appState?.setToolJSX === "function" &&
+        (await import("./hooks-menu.js")).openHooksMenu(ctx, runtime)) {
         return { kind: "skip" };
       }
       return { kind: "text", text: formatOverview(snapshot) };

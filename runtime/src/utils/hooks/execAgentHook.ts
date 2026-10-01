@@ -22,7 +22,7 @@ import {
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { type Tool, toolMatchesName } from '../../tools/Tool.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { ALL_AGENT_DISALLOWED_TOOLS } from '../../tools.js'
+import { ALL_AGENT_DISALLOWED_TOOLS } from '../../constants/tools.js'
 import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import { createAbortController } from '../abortController.js'

@@ -68,7 +68,6 @@ import {
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
-import { openCompactStatusModal } from "./compact-menu.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { providerEnvironmentFromCommandContext } from "./config-context.js";
 
@@ -184,7 +183,8 @@ export const compactCommand: SlashCommand = {
           allocated.message,
         );
         if (
-          openCompactStatusModal(ctx, {
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./compact-menu.js")).openCompactStatusModal(ctx, {
             message: allocated.message,
             contextText,
           })

@@ -37,7 +37,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openConfigMenu } from "./config-menu.js";
 import {
   agencHomeFromCommandContext,
   configStoreFromCommandContext,
@@ -305,7 +304,10 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
         }
         const raw = ctx.argsRaw.trim();
         if (raw === "") {
-          if (openConfigMenu(ctx)) return { kind: "skip" };
+          if (
+            typeof ctx.appState?.setToolJSX === "function" &&
+            (await import("./config-menu.js")).openConfigMenu(ctx)
+          ) return { kind: "skip" };
           return {
             kind: "text",
             text: formatConfigSnapshot(configStore.current()),
