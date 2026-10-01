@@ -137,6 +137,8 @@ export interface SandboxExecutionStatus {
     readonly reason: string;
     readonly remediation: string;
   };
+  /** The workspace policy cannot be enforced by the active fallback. */
+  readonly landlockPolicyRefusal?: string;
 }
 
 export interface SandboxSpawnCommand {
@@ -255,9 +257,11 @@ export function requiredSandboxExecutionError(
   status: SandboxExecutionStatus,
 ): SandboxExecutionError {
   return new SandboxExecutionError({
-    code: status.reason?.startsWith("probe:")
-      ? "sandbox_probe_failed"
-      : "sandbox_required_unavailable",
+    code: status.landlockPolicyRefusal !== undefined
+      ? "sandbox_policy_unexpressible"
+      : status.reason?.startsWith("probe:")
+        ? "sandbox_probe_failed"
+        : "sandbox_required_unavailable",
     surface,
     status,
   });
@@ -1077,7 +1081,30 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
         : {}),
     });
-    return this.#status;
+    const host = this.#status;
+    if (
+      this.#platform !== "linux" || this.mode !== "workspace_write" ||
+      host.kind !== "ready" || host.landlockFallback === undefined
+    ) return host;
+    const profile = this.#protectedProfile();
+    const plan = this.#planLandlockPolicy({
+      fileSystem: this.#confineToWorktree("tool", profile, this.#sessionTempRoot).fileSystem,
+      sandboxPolicyCwd: this.#cwd,
+      sessionTempRoot: this.#sessionTempRoot,
+      allowNetworkForProxy: false,
+      inheritedCwd: false,
+    });
+    if (plan.kind === "ok") return host;
+    return {
+      ...host,
+      kind: "unavailable",
+      landlockPolicyRefusal: plan.reason,
+      reason: `the Landlock fallback cannot express the workspace-write policy: ${plan.reason}`,
+      remediation:
+        "Install bubblewrap and allow unprivileged user namespaces. " +
+        "In Docker, use seccomp/AppArmor settings that permit bubblewrap, or run outside the container. " +
+        host.landlockFallback.remediation,
+    };
   }
 
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus {
@@ -1087,9 +1114,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   #assertReadyAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
+    allowPolicyRefusal = false,
   ): SandboxExecutionStatus {
     const status = this.status();
-    if (!this.required || status.kind === "ready") return status;
+    if (
+      !this.required || status.kind === "ready" ||
+      (allowPolicyRefusal && status.landlockPolicyRefusal !== undefined)
+    ) return status;
     throw requiredSandboxExecutionError(surface, status);
   }
 
@@ -1103,6 +1134,15 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   #routineConfines(surface: SandboxExecutionSurface): boolean {
     return this.#routineChildTempRoot !== undefined &&
       !ROUTINE_SERVICE_SURFACES.has(surface);
+  }
+
+  #protectedProfile(): PermissionProfile {
+    return protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+      this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
+        cwd: this.#cwd,
+      }),
+      this.#desktopAuthorityRoot,
+    ), this.#cronAuthorityRoots));
   }
 
   /** A worktree child's command surface: its profile writes inside the worktree only. */
@@ -1121,14 +1161,10 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
-    const status = this.#assertReadyAfterLifecycleAdmission(surface);
-    const profile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
-      this.#permissionProfile ??
-      permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
-      this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots));
+    // A spawn may tighten the session profile; its exact policy is checked
+    // immediately before launch by #preflightLandlockPlan.
+    const status = this.#assertReadyAfterLifecycleAdmission(surface, true);
+    const profile = this.#protectedProfile();
     const confined = this.#routineConfines(surface);
     const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {

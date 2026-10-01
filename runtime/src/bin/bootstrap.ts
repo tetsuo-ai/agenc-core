@@ -1198,7 +1198,12 @@ async function bootstrapLocalRuntimeSessionScoped(
       initialSandboxExecutionAuthority.windowsSandboxLevel,
     allowGpu: initialSandboxExecutionAuthority.allowGpu,
   });
-  if (options.requireSandboxReadyAtStartup === true) {
+  const sandboxStartupStatus = sandboxExecutionBroker.status();
+  if (
+    options.requireSandboxReadyAtStartup === true &&
+    (runtimeOptions.nonInteractive === true ||
+      sandboxStartupStatus.landlockPolicyRefusal === undefined)
+  ) {
     sandboxExecutionBroker.assertReady("startup");
   }
   const permissionModeRegistry = new PermissionModeRegistry(
@@ -2188,6 +2193,26 @@ async function bootstrapLocalRuntimeSessionScoped(
             },
           },
         ]);
+
+        if (
+          runtimeOptions.nonInteractive !== true &&
+          sandboxStartupStatus.landlockPolicyRefusal !== undefined
+        ) {
+          const { buildLandlockFallbackWarning } = await import("../utils/doctorDiagnostic.js");
+          const warning = buildLandlockFallbackWarning(sandboxStartupStatus);
+          if (warning !== null) {
+            s.emit({
+              id: s.nextInternalSubId(),
+              msg: {
+                type: "warning",
+                payload: {
+                  cause: "sandbox_policy_unexpressible",
+                  message: `${warning.issue}. ${warning.fix}`,
+                },
+              },
+            });
+          }
+        }
 
         // Start sidecars AFTER session_configured so they cannot emit
         // earlier events.
