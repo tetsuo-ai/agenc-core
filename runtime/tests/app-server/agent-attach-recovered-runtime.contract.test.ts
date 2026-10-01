@@ -109,14 +109,21 @@ describe("agent.attach after a daemon restart", () => {
         .resolves.toMatchObject({ error: { data: { code: "BACKGROUND_RUNNER_UNAVAILABLE" } } });
       // An explicit resume (agent.create with resumeSessionId) puts a live
       // generation in the runner; the lifecycle adopts it on the next read.
-      daemon.getAgentSnapshot.mockResolvedValue(liveSnapshot);
+      daemon.getAgentSnapshot.mockResolvedValue({
+        ...liveSnapshot,
+        runtimeSettings: { ...liveSnapshot.runtimeSettings, modelVerbosity: "low" },
+      });
       await expect(daemon.call("agent.attach", { agentId, clientId: "desktop-turn" })).resolves.toMatchObject({
         result: {
           agentId,
           sessionIds: [sessionId],
           runtimeSettingsEventId: liveSnapshot.runtimeSettingsEventId,
-          runtimeSettings: { provider: "deepseek", reasoningEffort: "high" },
+          runtimeSettings: { provider: "deepseek", reasoningEffort: "high", modelVerbosity: "low" },
         },
+      });
+      daemon.getAgentSnapshot.mockResolvedValue(liveSnapshot);
+      await expect(daemon.call("agent.attach", { agentId, clientId: "desktop-turn" })).resolves.toMatchObject({
+        result: { runtimeSettings: { modelVerbosity: null } },
       });
     } finally {
       await daemon.dispatcher.close();

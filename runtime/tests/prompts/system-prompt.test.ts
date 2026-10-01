@@ -644,6 +644,37 @@ describe("env info section", () => {
 });
 
 describe("assembleSystemPrompt", () => {
+  test("places response detail after the cache boundary beside output style without changing the static head", async () => {
+    const build = (modelVerbosity: "low" | "medium" | "high" | undefined) => assembleSystemPrompt({
+      session: fakeSession, ctx: fakeCtx({ responseDetailOverride: modelVerbosity }), provider: "anthropic",
+      outputStyle: { name: "custom", prompt: "STYLE_SENTINEL" },
+    });
+    const inherited = await build(undefined);
+    const concise = await build("low");
+    const balanced = await build("medium");
+    const detailed = await build("high");
+    expect(inherited.dynamicSuffix).not.toContain("# Response Detail");
+    for (const prompt of [concise, balanced, detailed]) {
+      expect(prompt.staticPrefix).toBe(inherited.staticPrefix);
+      expect(prompt.dynamicSuffix).toMatch(/STYLE_SENTINEL\n\n# Response Detail\n/);
+      expect(prompt.dynamicSuffix).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
+      expect(prompt.text.indexOf("# Response Detail")).toBeGreaterThan(prompt.text.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
+    }
+    expect(new Set([concise.dynamicSuffix, balanced.dynamicSuffix, detailed.dynamicSuffix]).size).toBe(3);
+    const inheritedConfig = await assembleSystemPrompt({
+      session: fakeSession, ctx: fakeCtx({ modelVerbosity: "high", responseDetailOverride: null }), provider: "anthropic",
+    });
+    expect(inheritedConfig.dynamicSuffix).not.toContain("# Response Detail");
+    const lightLow = await assembleSystemPromptSnapshot({ session: fakeSession,
+      ctx: fakeCtx({ responseDetailOverride: "low" }), provider: "anthropic", profile: "light" });
+    const lightHigh = await assembleSystemPromptSnapshot({ session: fakeSession,
+      ctx: fakeCtx({ responseDetailOverride: "high" }), provider: "anthropic", profile: "light" });
+    expect(lightLow.staticPrefix).toBe(lightHigh.staticPrefix);
+    expect(lightLow.dynamicSuffix).toContain("# Response Detail");
+    expect(lightHigh.dynamicSuffix).toContain("# Response Detail");
+    const direct = await assembleSystemPrompt({ session: fakeSession, ctx: fakeCtx({ responseDetailOverride: "high" }), provider: "openai" });
+    expect(direct.dynamicSuffix).not.toContain("# Response Detail");
+  });
   test("names the cross-provider child's actual provider and model in Environment", async () => {
     const session = { ...fakeSession, modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek" },
       providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) } } as unknown as Session;

@@ -2278,6 +2278,13 @@ describe("AgenC background agent lifecycle", () => {
     });
     await agents.applyConfigToSession({ sessionId: "session-applyconfig", reasoningEffort: "max" });
     expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", reasoningEffort: "max" });
+    applyAgentConfig.mockResolvedValueOnce({
+      applied: true, modelVerbosity: null, runtimeSettingsEventId: "settings:2",
+      summary: "Response detail set to inherited",
+    });
+    await expect(agents.applyConfigToSession({ sessionId: "session-applyconfig", modelVerbosity: null }))
+      .resolves.toMatchObject({ sessionId: "session-applyconfig", modelVerbosity: null, runtimeSettingsEventId: "settings:2" });
+    expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", modelVerbosity: null });
   });
 
   it("rejects session.applyConfig when no runner is available", async () => {

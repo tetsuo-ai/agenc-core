@@ -294,6 +294,7 @@ export function buildProviderOptions(
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
+    responseDetailOverride: ctx.responseDetailOverride ?? undefined,
     serviceTier:
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"

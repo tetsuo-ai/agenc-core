@@ -52,6 +52,7 @@ import { feature } from "bun:bundle";
 import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
+import { getResponseDetailSection } from "./response-detail.js";
 import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
@@ -1144,6 +1145,10 @@ export async function assembleSystemPrompt(
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
       : {}),
   };
+  // Managed routing is resolved later by the delegated concrete adapter.
+  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
+    ? null
+    : getResponseDetailSection(ctx.responseDetailOverride);
 
   // Session-scoped reduced-prompt path. Never re-read process.env here: a
   // daemon can host concurrent sessions with different startup options.
@@ -1154,6 +1159,7 @@ export async function assembleSystemPrompt(
     const env = buildEnvInfoSection(envInfoInputs);
     const dynamicParts = [
       env,
+      ...(responseDetail === null ? [] : [responseDetail]),
       ...(clientRendering === null ? [] : [clientRendering]),
     ];
     const sections = [intro, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ...dynamicParts];
@@ -1276,6 +1282,11 @@ export async function assembleSystemPrompt(
       "output_style",
       () => getOutputStyleSection(opts.outputStyle ?? null),
       "output style is a per-turn preference",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "response_detail",
+      () => responseDetail,
+      "response detail can change between turns without changing the cached head",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "mcp_instructions",

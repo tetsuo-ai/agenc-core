@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
@@ -48,6 +49,38 @@ describe("Sonnet 5.5 Messages API contract", () => {
   const tools = [{ type: "function" as const, function: {
     name: "echo", description: "Echo a value", parameters: { type: "object" },
   } }];
+
+  test("keeps tools, effort, output cap and cached head identical across response detail levels", () => {
+    const build = (modelVerbosity?: "low" | "medium" | "high") => buildAnthropicMessagesRequest({
+      model, messages, tools, maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required" },
+    });
+    const inherited = build();
+    for (const level of ["low", "medium", "high"] as const) {
+      const candidate = build(level);
+      expect(candidate.tools).toEqual(inherited.tools);
+      expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+      expect(candidate.output_config).toEqual(inherited.output_config);
+      expect(candidate.max_tokens).toEqual(inherited.max_tokens);
+      expect(candidate.system).toEqual(inherited.system);
+      expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
+      expect(JSON.stringify(candidate.messages)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
+    }
+    expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
+    const inheritedConfig = buildAnthropicMessagesRequest({ model, messages, tools,
+      options: { systemPrompt: "STATIC_HEAD", modelVerbosity: "high" } });
+    expect(JSON.stringify(inheritedConfig)).not.toContain("# Response Detail");
+  });
+  test("keeps unset request bytes and output cap from the pre-detail builder", () => {
+    const request = buildAnthropicMessagesRequest({
+      model, messages: [{ role: "user", content: "hello" }], tools: [], maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL" },
+    });
+    expect(createHash("sha256").update(JSON.stringify(request)).digest("hex"))
+      .toBe("c66fb5c6b7879af6bf3a19d1a4f42fef4874824a4a2731d138d72d1d62a84ec6");
+    expect(request.max_tokens).toBe(4096);
+  });
 
   test("uses adaptive thinking with readable progress updates at every effort", () => {
     for (const reasoningEffort of [undefined, "low", "medium", "high", "xhigh", "max"] as const) {

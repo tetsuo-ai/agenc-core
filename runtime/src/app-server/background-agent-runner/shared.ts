@@ -448,6 +448,7 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 export interface AgenCBackgroundAgentApplyConfigParams {
   readonly sessionId: string;
   readonly reasoningEffort?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly profile?: string;
   readonly reload?: boolean;
 }
@@ -457,6 +458,7 @@ export interface AgenCBackgroundAgentApplyConfigResult {
   readonly provider?: string;
   readonly model?: string;
   readonly runtimeSettingsEventId?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly summary: string;
 }
 

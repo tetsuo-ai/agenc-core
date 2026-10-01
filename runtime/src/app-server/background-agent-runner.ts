@@ -4194,32 +4194,54 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const session = active.bootstrap.session;
-    if (params.reasoningEffort !== undefined) {
+    if (params.reasoningEffort !== undefined || params.modelVerbosity !== undefined) {
       if (params.reload !== undefined || params.profile !== undefined) {
-        throw new Error("An effort-only update cannot reload other configuration");
+        throw new Error("An effort or response detail update cannot reload other configuration");
       }
       return withRuntimeSettingsMutation(active, async () => {
         if (!isRunnableActiveAgent(active) || session.activeTurn?.unsafePeek() != null) {
-          throw new Error("Reasoning effort can only change between turns");
+          throw new Error("Reasoning effort and response detail can only change between turns");
         }
         const previousSettings = ensureInitialRuntimeSettings(active, agentId);
-        const level = normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
-        const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
-        if (level === null || !effort.levels.includes(level)) {
-          throw new Error("The selected model does not support this reasoning effort");
+        const level = params.reasoningEffort === undefined
+          ? previousSettings.reasoningEffort
+          : normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
+        if (params.reasoningEffort !== undefined) {
+          const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
+          if (level === null || !effort.levels.includes(level)) {
+            throw new Error("The selected model does not support this reasoning effort");
+          }
         }
+        const modelVerbosity = params.modelVerbosity === undefined
+          ? previousSettings.modelVerbosity
+          : normalizeRuntimeSetting(params.modelVerbosity, RUN_RUNTIME_MODEL_VERBOSITIES, "model verbosity");
         const identity = { provider: previousSettings.provider, model: previousSettings.model };
-        if (previousSettings.reasoningEffort === level) {
-          return { applied: true, ...identity, summary: `Reasoning effort is ${level}` };
+        const acceptedVerbosity = params.modelVerbosity === undefined ? {} : { modelVerbosity };
+        if (previousSettings.reasoningEffort === level && previousSettings.modelVerbosity === modelVerbosity) {
+          return { applied: true, ...identity, ...acceptedVerbosity,
+            ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
+            summary: params.modelVerbosity === undefined ? `Reasoning effort is ${level}` : `Response detail is ${modelVerbosity ?? "inherited"}` };
         }
         const previousConfiguration = session.sessionConfiguration;
+        const inheritedModelVerbosity = previousConfiguration.modelVerbosityOverride === undefined
+          ? previousConfiguration.modelVerbosity
+          : previousConfiguration.inheritedModelVerbosity;
         const prepared = prepareDurableRuntimeSettingsChange(active, agentId,
-          { ...previousSettings, reasoningEffort: level }, "config_applied");
+          { ...previousSettings, reasoningEffort: level, modelVerbosity }, "config_applied");
         try {
           await session.state.with(state => {
             state.sessionConfiguration = {
               ...state.sessionConfiguration,
-              collaborationMode: { ...state.sessionConfiguration.collaborationMode, reasoningEffort: level },
+              ...(params.reasoningEffort !== undefined
+                ? { collaborationMode: { ...state.sessionConfiguration.collaborationMode, reasoningEffort: level! } }
+                : {}),
+              ...(params.modelVerbosity !== undefined
+                ? {
+                    modelVerbosityOverride: modelVerbosity,
+                    inheritedModelVerbosity,
+                    modelVerbosity: modelVerbosity ?? inheritedModelVerbosity,
+                  }
+                : {}),
             };
           });
         } catch (error) {
@@ -4228,9 +4250,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           throw error;
         }
         prepared.finalize();
-        return { applied: true, ...identity,
+        return { applied: true, ...identity, ...acceptedVerbosity,
           ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
-          summary: `Reasoning effort set to ${level}` };
+          summary: [
+            ...(params.reasoningEffort !== undefined ? [`Reasoning effort set to ${level}`] : []),
+            ...(params.modelVerbosity !== undefined ? [`Response detail set to ${modelVerbosity ?? "inherited"}`] : []),
+          ].join("; ") };
       });
     }
     const configStore = session.services.configStore;
@@ -4449,6 +4474,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         RUN_RUNTIME_MODEL_VERBOSITIES,
         "model verbosity",
       );
+      const currentInheritedVerbosity = session.sessionConfiguration.modelVerbosityOverride === undefined
+        ? session.sessionConfiguration.modelVerbosity
+        : session.sessionConfiguration.inheritedModelVerbosity;
+      const inheritedVerbosityChanged = currentInheritedVerbosity !== (nextVerbosity ?? undefined);
       const nextServiceTier = normalizeRuntimeSetting(
         resolved.service_tier,
         RUN_RUNTIME_SERVICE_TIERS,
@@ -4461,7 +4490,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : {}),
         ...(params.profile !== undefined ? { profile: params.profile } : {}),
         ...(nextReasoning !== null ? { reasoningEffort: nextReasoning } : {}),
-        ...(nextVerbosity !== null ? { modelVerbosity: nextVerbosity } : {}),
+        // A config reload updates the inherited default, not a live session override.
+        modelVerbosity: previousSettings.modelVerbosity,
         ...(nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
       };
       const settingsChanged =
@@ -4479,7 +4509,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       try {
         if (
           nextReasoning !== null ||
-          nextVerbosity !== null ||
+          inheritedVerbosityChanged ||
           nextServiceTier !== null
         ) {
           await session.state.with((state) => {
@@ -4492,9 +4522,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                   ? { reasoningEffort: nextReasoning }
                   : {}),
               } as typeof configuration.collaborationMode,
-              ...(nextVerbosity !== null
-                ? { modelVerbosity: nextVerbosity }
-                : {}),
+              inheritedModelVerbosity: nextVerbosity ?? undefined,
+              modelVerbosity: previousSettings.modelVerbosity ?? nextVerbosity ?? undefined,
               ...(nextServiceTier !== null
                 ? { serviceTier: nextServiceTier }
                 : {}),
@@ -4503,8 +4532,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           if (nextReasoning !== null) {
             changes.push(`reasoning effort ->${nextReasoning}`);
           }
-          if (nextVerbosity !== null)
-            changes.push(`verbosity ->${nextVerbosity}`);
+          if (inheritedVerbosityChanged)
+            changes.push(`inherited verbosity ->${nextVerbosity ?? "default"}`);
           if (nextServiceTier !== null) {
             changes.push(`service tier ->${nextServiceTier}`);
           }

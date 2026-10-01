@@ -50,6 +50,27 @@ function makeDelegateProvider(model: string): LLMProvider {
 }
 
 describe("AgenCProvider", () => {
+  it.each(["gemini", "openai", "grok"] as const)("uses the concrete %s route for response detail", async (concrete) => {
+    const delegate = makeDelegateProvider("managed-model");
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId, apiKey: "managed-key" }),
+      inferAgencModel: () => ({ provider: concrete, model: "managed-model" }),
+      getSubscriptionTier: () => "team",
+    };
+    const provider = new AgenCProvider({ authBackend, sessionId: "detail-route", model: "agenc:managed",
+      providerFactory: () => delegate });
+    await provider.chat([{ role: "user", content: "hello" }], {
+      systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+      responseDetailOverride: "low", modelVerbosity: "low",
+    });
+    const options = vi.mocked(delegate.chat).mock.calls[0]?.[1];
+    expect(options?.systemPrompt?.startsWith("STATIC_HEAD")).toBe(true);
+    expect(options?.systemPrompt?.includes("# Response Detail")).toBe(concrete !== "openai");
+    expect(options?.modelVerbosity).toBe("low");
+  });
   it("uses the registry model when direct construction receives an empty model", async () => {
     const inferAgencModel = vi.fn(() => ({
       provider: "grok" as const,
