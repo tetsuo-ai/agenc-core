@@ -359,6 +359,15 @@ reviews are still pending. See
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
 
+#### Goal Light mode
+
+`run.start` accepts optional `lightMode: boolean`. When `true`, the Goal and
+its child sessions use Light mode; when omitted, they use standard mode. The
+frozen value appears at `run.status.workflow.lightMode` and survives recovery.
+Continuations inherit their source Goal's mode unless the new `run.start`
+request explicitly sets it. `initialize.result.capabilities["run.start.lightMode"]`
+advertises support when `run.start` is available.
+
 #### Workflow pause and resume (protocol 1.25)
 
 `run.pause` takes `runId` and a client-generated `requestId`. Retry the same

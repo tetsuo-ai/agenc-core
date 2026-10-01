@@ -331,6 +331,18 @@ export function resolveDaemonDefaultReviewerModel(
   return fallback !== undefined && fallback.length > 0 ? fallback : undefined;
 }
 
+/** Rebuild a recovered session from only its durable intake authority. */
+export function workflowSessionPolicyFromSpec(spec: WorkflowSpec): WorkflowRunSessionPolicy {
+  return {
+    permissionMode: spec.permissionMode,
+    ...(spec.lightMode !== undefined ? { lightMode: spec.lightMode } : {}),
+    ...(spec.unattendedAllow !== undefined ? { unattendedAllow: spec.unattendedAllow } : {}),
+    ...(spec.unattendedDeny !== undefined ? { unattendedDeny: spec.unattendedDeny } : {}),
+    ...(spec.model !== undefined ? { model: spec.model } : {}),
+    ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
+  };
+}
+
 export function createDaemonWorkflowController(options: {
   readonly approvalBroker?: LiveApprovalBroker;
   readonly agencHome: string;
@@ -433,17 +445,7 @@ export function createDaemonWorkflowController(options: {
   ): WorkflowRunSessionPolicy | undefined => {
     const spec = resolveRunSpec(runId);
     if (spec === undefined) return undefined;
-    return {
-      permissionMode: spec.permissionMode,
-      ...(spec.unattendedAllow !== undefined
-        ? { unattendedAllow: spec.unattendedAllow }
-        : {}),
-      ...(spec.unattendedDeny !== undefined
-        ? { unattendedDeny: spec.unattendedDeny }
-        : {}),
-      ...(spec.model !== undefined ? { model: spec.model } : {}),
-      ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
-    };
+    return workflowSessionPolicyFromSpec(spec);
   };
   const seams =
     options.sessionSeams ??

@@ -422,6 +422,11 @@ model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
 
+The `run.start` RPC and SDK `startRun` accept `lightMode: true` to run the
+Goal and its child sessions in Light mode. Omit it for standard mode. The
+frozen setting appears in `run.status.workflow.lightMode` and is inherited
+by a continuation unless that request supplies its own boolean value.
+
 Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
 Use `--permission-mode default` for normal per-tool approval checks. `run start`
 and workflow `run status` show the effective mode from the frozen spec; their

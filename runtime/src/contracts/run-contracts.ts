@@ -568,6 +568,8 @@ export interface WorkflowSpec {
   readonly runId: RunId;
   /** The engineering goal / issue text driving the change. */
   readonly goal: string;
+  /** Frozen Light mode authority for the run session and its descendants. */
+  readonly lightMode?: boolean;
   /** Absolute git root of the target repository. */
   readonly repoPath: string;
   /** Exact base commit recorded before any work begins. */

@@ -28,11 +28,14 @@ import {
   type WorkflowSessionSeams,
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
+import { workflowSessionPolicyFromSpec } from "../../src/app-server/workflow/daemon-wiring.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+  type WorkflowSpec,
 } from "../../src/contracts/run-contracts.js";
+import { sha256Digest } from "../../src/eval-contract/canonical-json.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
@@ -141,7 +144,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
       permissionModeRegistry: registry,
       get isShuttingDown() { return bootstrapShuttingDown; },
       emit: (event: Event) => eventLog.emit(event),
-      services: {},
+      services: { runtimeOptions: options.runtimeOptions },
     },
     rolloutStore: { runEpoch: 1, assertRunSuspendable: () => {
       if (suspensionPreflightError !== undefined) throw suspensionPreflightError;
@@ -174,6 +177,48 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
+  it("passes the Goal's Light option to the parent session on start and recovery", async () => {
+    const seams = makeSeams();
+    const started = await seams.journal.open(RUN_ID, { repoPath: cwd,
+      policy: { permissionMode: "default", lightMode: true } });
+    expect(bootstrapCalls[0]?.runtimeOptions?.lightMode).toBe(true);
+    await started.close();
+    await seams.close();
+
+    // The restarted daemon reads the frozen intake spec, then rebuilds the
+    // parent session from that policy before any child can be spawned.
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: new Date().toISOString() });
+    const intentDigest = sha256Digest("light-mode-intake");
+    repo.beginEffect({ runId: RUN_ID, epoch: 1, stepId: "workflow.intake",
+      sessionId: RUN_ID, callId: "workflow.intake", toolName: "workflow.intake",
+      recoveryCategory: "idempotent", idempotencyKey: intentDigest,
+      intentDigest, eventId: "intake-intent",
+      eventSequence: 1, intentAt: new Date().toISOString() });
+    repo.completeEffect({ runId: RUN_ID, stepId: "workflow.intake", outcome: "committed",
+      effectBoundary: "crossed", eventId: "intake-result", eventSequence: 2,
+      evidence: { spec: { permissionMode: "default", lightMode: true } },
+      completedAt: new Date().toISOString() });
+    driver.close();
+    driver = openStateDatabases({ cwd, agencHome: home });
+    repo = new StateRunDurabilityRepository(driver);
+    const recoveredSeams = makeSeams(() => {
+      const intake = repo.getEffect(RUN_ID, "workflow.intake");
+      const spec = (intake?.evidence as { spec: WorkflowSpec }).spec;
+      return workflowSessionPolicyFromSpec(spec);
+    });
+    const recovered = await recoveredSeams.journal.open(RUN_ID);
+    expect(recovered).toBeDefined();
+    expect(bootstrapCalls[1]?.resumeConversation).toBe(true);
+    expect(bootstrapCalls[1]?.runtimeOptions?.lightMode).toBe(true);
+    await recoveredSeams.close();
+  });
+
+  it("leaves an omitted Goal Light option in standard mode", async () => {
+    const seams = makeSeams();
+    await seams.journal.open(RUN_ID, { repoPath: cwd, policy: { permissionMode: "default" } });
+    expect(bootstrapCalls[0]?.runtimeOptions?.lightMode).toBeUndefined();
+    await seams.close();
+  });
   it("reports actual default after bootstrap demotes requested bypass without overriding trust", async () => {
     actualBootstrapMode = "default";
     const seams = makeSeams();
