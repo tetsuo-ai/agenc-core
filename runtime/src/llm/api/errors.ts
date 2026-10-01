@@ -20,7 +20,7 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../errors.js";
-import { isProviderFundsFailure } from "../funds.js";
+import { isProviderFundsFailure, providerFundsMessage } from "../funds.js";
 
 export {
   AgenCApiError,
@@ -59,7 +59,7 @@ export function mapAgenCApiErrorToLLMError(
 ): Error {
   if (isProviderFundsFailure(providerName, error)) {
     return new LLMFundsError(providerName,
-      error instanceof AgenCApiError ? error.status : undefined);
+      error instanceof AgenCApiError ? error.status : undefined, providerFundsMessage(providerName, error));
   }
   const unwrapped = unwrapCannotRetryError(error);
   if (unwrapped !== error) {

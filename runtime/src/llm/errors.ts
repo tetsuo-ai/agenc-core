@@ -6,7 +6,7 @@
 
 import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
-import { isProviderFundsFailure } from "./funds.js";
+import { isProviderFundsFailure, providerFundsMessage } from "./funds.js";
 
 const preGenerationRejections = new WeakMap<Error, string>();
 
@@ -522,7 +522,8 @@ export function mapLLMError(
   if (isProviderFundsFailure(providerName, err)) {
     const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
       (err as { statusCode?: unknown } | null)?.statusCode;
-    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined);
+    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined,
+      providerFundsMessage(providerName, err));
   }
   if (
     err instanceof LLMMessageValidationError ||
