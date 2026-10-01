@@ -466,6 +466,8 @@ export function buildLiveToolDispatchOptions(
         session,
         denialTracking: resolvedDenialTracking,
         executionSurface: resolvedExecutionSurface,
+        // The same mode the dispatch options below hand the orchestrator.
+        sandboxMode: orchestratorPolicy.sandboxMode,
         getAppState: (): AppStateSnapshot => {
           const current = permissionModeRegistry.current();
           return {
