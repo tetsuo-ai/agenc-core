@@ -21,7 +21,7 @@
  * other repositories.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
@@ -512,6 +512,17 @@ export function createDaemonWorkflowController(options: {
       // database currently being resumed so the controller's enumeration
       // sees each project exactly once.
       for (const paths of candidatePaths()) {
+        if (paths.stateDbPath === primaryPaths.stateDbPath) {
+          // An absent primary project has never held a workflow. Existing
+          // directories, including partial state, keep the original recovery
+          // path; only absence can skip it, never an access or storage error.
+          try {
+            lstatSync(paths.projectDir);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw error;
+          }
+        }
         activeResumePaths = paths;
         try {
           // Same scope as run.start: resumed runs spawn sessions from daemon

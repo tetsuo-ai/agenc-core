@@ -18,10 +18,9 @@ import { DaemonWorkflowStartService } from "./workflow/run-start-service.js";
 
 import { DaemonWorkflowControlService } from "./workflow/run-control-service.js";
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, statSync } from "node:fs";
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
-
 
 import { dirname, isAbsolute, join } from "node:path";
 
@@ -160,7 +159,6 @@ import type { AuthBackend } from "../auth/backend.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 
 
-
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 
 import { readRecoverableCommandEnvironment } from "./client-env-snapshot.js";
@@ -255,7 +253,6 @@ import { resolveDaemonDefaultCwd } from "./daemon-workspace.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 
 import { classifyUntrustedToolResult, frameUntrustedToolHistoryMessages, frameUntrustedToolResultContent } from "../tools/untrusted-tool-result-framing.js";
-
 
 import { logForDebugging } from "../utils/debug.js";
 
@@ -1140,7 +1137,7 @@ async function runAgenCDaemonForegroundLocked(
       argv: [host.execPath, host.entrypointPath],
       authBackend: reloadableAuthBackend,
       stateDatabasePaths: () =>
-        discoverAgenCDaemonStateDatabasePaths(
+        discoverExistingAgenCDaemonStateDatabasePaths(
           authStartup.daemonHome,
           primaryCwd,
         ),
@@ -2226,14 +2223,15 @@ function describeRolloutRetentionPrune(
   );
 }
 
-function recoverAgenCDaemonStartupState(
+/** @internal Exported for startup recovery boundary tests. */
+export function recoverAgenCDaemonStartupState(
   daemonHome: string,
   cwd: string,
   config: AgenCConfig,
   log: (message: string) => void = () => {},
 ): DaemonStartupRecoveryReport {
   const recoveredAt = new Date().toISOString();
-  const paths = discoverAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  const paths = discoverExistingAgenCDaemonStateDatabasePaths(daemonHome, cwd);
   const recoveredRuns: RecoveredAgentRun[] = [];
   const recoveredToolCalls: RecoveredInFlightToolCall[] = [];
   const startupResumeSourceBudget = new StartupResumeSourceBudget();
@@ -2428,6 +2426,34 @@ function discoverAgenCDaemonStateDatabasePaths(
   ]);
 }
 
+/**
+ * Startup must recover every existing project, but an absent default project
+ * has no state to recover. Do not create its databases just to scan them.
+ * Retain the original path for any existing entry, including an empty or
+ * malformed directory, and propagate access errors rather than hiding state.
+ */
+function discoverExistingAgenCDaemonStateDatabasePaths(
+  daemonHome: string,
+  cwd: string,
+): StateDatabasePaths[] {
+  const discovered = discoverStateDatabasePaths(daemonHome);
+  const defaultPaths = resolveStateDatabasePaths({ cwd, agencHome: daemonHome });
+  return uniqueStateDatabasePaths([
+    ...discovered,
+    ...(daemonProjectDirectoryExists(defaultPaths.projectDir) ? [defaultPaths] : []),
+  ]);
+}
+
+function daemonProjectDirectoryExists(projectDir: string): boolean {
+  try {
+    lstatSync(projectDir);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function uniqueStateDatabasePaths(
   paths: readonly StateDatabasePaths[],
 ): StateDatabasePaths[] {
@@ -2486,6 +2512,7 @@ export class AgenCDaemonSnapshotPolicyRegistry {
   readonly #endedSessions = new Set<string>();
   readonly #threadStores = new Map<string, FileThreadStore>();
   #periodicTimer: ReturnType<typeof setInterval> | undefined;
+  #pendingInitialDefaultPaths: StateDatabasePaths | undefined;
 
   constructor(options: AgenCDaemonSnapshotPolicyRegistryOptions) {
     this.#agencHome = options.agencHome;
@@ -2494,7 +2521,18 @@ export class AgenCDaemonSnapshotPolicyRegistry {
     this.#periodicIntervalMs = options.periodicIntervalMs ?? 30_000;
     this.#onError = options.onError;
     this.#log = options.log ?? (() => {});
-    this.#policyForCwd(this.#defaultCwd);
+    const defaultPaths = resolveStateDatabasePaths({
+      cwd: this.#defaultCwd,
+      agencHome: this.#agencHome,
+    });
+    // Existing projects keep their eager recovery/retention policy. A new
+    // project acquires the same policy on its first routed durable write, or
+    // on a periodic tick if another process created it in the meantime.
+    if (daemonProjectDirectoryExists(defaultPaths.projectDir)) {
+      this.#policyForPaths(defaultPaths);
+    } else {
+      this.#pendingInitialDefaultPaths = defaultPaths;
+    }
   }
 
   hydrateStartupRecovery(report: DaemonStartupRecoveryReport): void {
@@ -2541,6 +2579,18 @@ export class AgenCDaemonSnapshotPolicyRegistry {
 
   flushPeriodic(): void {
     const errors: unknown[] = [];
+    const pendingDefault = this.#pendingInitialDefaultPaths;
+    if (pendingDefault !== undefined) {
+      try {
+        if (daemonProjectDirectoryExists(pendingDefault.projectDir)) {
+          this.#policyForPaths(pendingDefault);
+        }
+      } catch (error) {
+        // An inaccessible default project must not prevent the existing
+        // policies from flushing their snapshots and retention work.
+        errors.push(error);
+      }
+    }
     for (const entry of this.#policies.values()) {
       try {
         entry.policy.flushPeriodic();
@@ -2566,6 +2616,7 @@ export class AgenCDaemonSnapshotPolicyRegistry {
   }
 
   close(): void {
+    this.#pendingInitialDefaultPaths = undefined;
     if (this.#periodicTimer !== undefined) {
       clearInterval(this.#periodicTimer);
       this.#periodicTimer = undefined;
@@ -2909,6 +2960,11 @@ export class AgenCDaemonSnapshotPolicyRegistry {
     });
     const entry = { driver, policy };
     this.#policies.set(paths.stateDbPath, entry);
+    if (this.#pendingInitialDefaultPaths?.stateDbPath === paths.stateDbPath) {
+      // Initial absence is the only deferred maintenance obligation. Once
+      // opened, releaseSession remains free to close an idle project.
+      this.#pendingInitialDefaultPaths = undefined;
+    }
     return entry;
   }
 
