@@ -2836,6 +2836,7 @@ export class Session {
       await deriveNextModelInfo(
         this.services.modelsManager,
         provider.binding.model,
+        provider.binding.provider,
       ),
       provider.binding,
     );
@@ -6465,11 +6466,18 @@ function deriveMinimalModelInfo(slug: string): ModelInfo {
 async function deriveNextModelInfo(
   modelsManager: ModelsManager | undefined,
   model: string,
+  provider: string,
 ): Promise<ModelInfo> {
   if (!modelsManager || typeof modelsManager.getModelInfo !== "function") {
     return deriveMinimalModelInfo(model);
   }
   try {
+    // Two providers can list the same model id (the managed AgenC route and
+    // public OpenRouter share DeepSeek ids), so the bound provider decides
+    // whose limits apply.
+    if (typeof modelsManager.getModelInfoForProvider === "function") {
+      return await modelsManager.getModelInfoForProvider(provider, model);
+    }
     return await modelsManager.getModelInfo(model);
   } catch {
     return deriveMinimalModelInfo(model);
