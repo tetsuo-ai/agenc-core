@@ -30,6 +30,10 @@ import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
 import { OPENROUTER_MODELS } from "../llm/registry/openrouter-models.js";
+import {
+  AGENC_DEEPSEEK_V41_GENERATION,
+  AGENC_DEEPSEEK_V41_MODEL,
+} from "../llm/registry/agenc-deepseek.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -463,6 +467,20 @@ const COST_TIER_DEEPSEEK_V4_PRO_NATIVE: Readonly<ModelCostEntry> = Object.freeze
   inputUsdPer1K: 0.00132,
   outputUsdPer1K: 0.00396,
   cachedInputUsdPer1K: 0.000044,
+  cachedInputIncludedInInputTokens: true,
+});
+
+// Managed AgenC route, at the rates the AgenC gateway reviewed for it on
+// 2026-09-11 (agenc-backend operations record). The gateway pins one
+// OpenRouter endpoint for this exact model, with fallback disabled, and
+// charges AgenC credits (1,000,000 microunits per USD) at that endpoint's
+// actual cost for each request. That charge can be lower than these rates, so
+// the figure is an upper estimate of a call's credits. The account's credit
+// usage is authoritative. Raise these rates if the gateway's review does.
+const COST_TIER_AGENC_DEEPSEEK_V41_FLASH: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00003,
   cachedInputIncludedInInputTokens: true,
 });
 
@@ -1067,6 +1085,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
     "agenc:agenc": DEFAULT_UNKNOWN_MODEL_COST,
     agenc: DEFAULT_UNKNOWN_MODEL_COST,
+    // Managed routes price under their own identity, never the public
+    // `openrouter:` row for the same id. The gateway passes the upstream
+    // response model through, which can be OpenRouter's dated generation id.
+    [`agenc:${AGENC_DEEPSEEK_V41_MODEL}`]: COST_TIER_AGENC_DEEPSEEK_V41_FLASH,
+    [`agenc:${AGENC_DEEPSEEK_V41_GENERATION}`]: COST_TIER_AGENC_DEEPSEEK_V41_FLASH,
     ollama: {
       inputUsdPer1K: 0,
       outputUsdPer1K: 0,
@@ -1386,6 +1409,20 @@ export function resolveModelCostEntry(
     if (entry) return { key, entry };
   }
   return null;
+}
+
+/**
+ * True when a managed AgenC route has a price of its own. Only an
+ * `agenc:<model>` entry counts: the bare `agenc` entry is the unknown-price
+ * fallback that every other managed route resolves to.
+ */
+export function hasManagedRoutePrice(
+  model: string,
+  registry: Readonly<Record<string, ModelCostEntry>> = DEFAULT_MODEL_COSTS,
+): boolean {
+  const match = resolveModelCostEntry({ model, provider: "agenc" }, registry);
+  return match !== null && match.key.startsWith("agenc:") &&
+    match.entry.costEstimated !== true;
 }
 
 /**

@@ -941,6 +941,96 @@ describe("runAdmittedModelCall", () => {
     });
   });
 
+  const managedDeepSeekUsage = {
+    promptTokens: 22_116,
+    completionTokens: 5,
+    totalTokens: 22_121,
+    availability: "reported",
+    provenance: "provider",
+  } as const;
+
+  function routedProvider(model: string): LLMProvider {
+    return {
+      name: "agenc",
+      getExecutionProfile: async () => ({
+        provider: "openrouter",
+        model,
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+  }
+
+  test("prices the managed AgenC DeepSeek route at its own rates, not the public OpenRouter row", async () => {
+    // Live run on 2026-10-01: this call settled at $3.3204, the registry
+    // ceiling, instead of the route's $0.30/M input and $1.20/M output.
+    const state = harness({ maxCostUsd: 1 });
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: routedProvider("deepseek/deepseek-v4.1-flash"),
+      messages: [{ role: "user", content: "hello" }],
+      options: { model: "deepseek/deepseek-v4.1-flash", maxOutputTokens: 64_000 },
+      stepId: "model:managed-deepseek",
+      model: "deepseek/deepseek-v4.1-flash",
+      providerName: "agenc",
+      // The gateway passes through OpenRouter's dated generation id.
+      invoke: async () => response({
+        model: "deepseek/deepseek-v4.1-flash-20260910",
+        usage: managedDeepSeekUsage,
+      }),
+    });
+
+    const request = state.acquire.mock.calls[0]?.[0] as AdmissionAcquireInput;
+    // Routing attribution is unchanged; only the price follows the route.
+    expect(request).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+    expect(request.costEstimated).toBeUndefined();
+    expect(request.maxCostUsd).toBeCloseTo(
+      (request.maxInputTokens * 0.3 + request.maxOutputTokens * 1.2) / 1_000_000,
+      12,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 22_116,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.0066408, 12),
+    });
+  });
+
+  test.each([
+    { name: "a user's own OpenRouter key", providerName: "openrouter", model: "deepseek/deepseek-v4.1-flash" },
+    { name: "a managed route without its own price", providerName: "agenc", model: "deepseek/deepseek-v4-flash-0731" },
+  ])("keeps $name on the conservative price", async ({ providerName, model }) => {
+    const state = harness({ maxCostUsd: 1 });
+    const provider = providerName === "agenc"
+      ? routedProvider(model)
+      : {
+          name: "openrouter",
+          getExecutionProfile: async () => ({
+            usageReporting: "authoritative" as const,
+            supportsMaxOutputTokens: true,
+          }),
+        } as unknown as LLMProvider;
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { model, maxOutputTokens: 200 },
+      stepId: "model:conservative",
+      model,
+      providerName,
+      invoke: async () => response({ model, usage: managedDeepSeekUsage }),
+    });
+
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openrouter", model, costEstimated: true }),
+      undefined,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      costEstimated: true,
+    }));
+  });
+
   test("voids and releases an acquired lease when routing evidence cannot be journaled", async () => {
     const state = harness({ maxCostUsd: 1 });
     const invoke = vi.fn(async () => response());
