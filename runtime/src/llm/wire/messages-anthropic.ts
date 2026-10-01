@@ -5,6 +5,7 @@
  */
 
 import { resolveReasoningEffort } from "../reasoning-effort.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
@@ -341,7 +342,9 @@ export function buildAnthropicMessagesRequest(
   const systemMessages = messages.filter((message) =>
     message.role === "system" || message.role === "developer"
   );
-  const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const optionSystemPrompt = withResponseDetailSystemPrompt(
+    input.options?.systemPrompt?.trim(), input.options?.responseDetailOverride,
+  );
   const optionSplit = optionSystemPrompt
     ? splitOptionSystemPrompt(optionSystemPrompt)
     : undefined;

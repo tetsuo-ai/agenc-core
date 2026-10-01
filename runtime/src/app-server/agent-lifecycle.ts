@@ -4159,6 +4159,7 @@ export class AgenCDaemonAgentManager {
     const result = await this.#runner.applyAgentConfig(agentId, {
       sessionId: params.sessionId,
       ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
+      ...(params.modelVerbosity !== undefined ? { modelVerbosity: params.modelVerbosity } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
       ...(params.reload !== undefined ? { reload: params.reload } : {}),
     });
@@ -4170,6 +4171,7 @@ export class AgenCDaemonAgentManager {
       ...(result.runtimeSettingsEventId === undefined
         ? {}
         : { runtimeSettingsEventId: result.runtimeSettingsEventId }),
+      ...(result.modelVerbosity !== undefined ? { modelVerbosity: result.modelVerbosity } : {}),
       summary: result.summary,
     };
   }

@@ -108,6 +108,7 @@ import {
   coerceUsage,
   splitSystemPromptOnDynamicBoundary,
 } from "../../wire/shared.js";
+import { withResponseDetailSystemPrompt } from "../../../prompts/response-detail.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -2287,6 +2288,7 @@ export class GrokProvider implements LLMProvider {
       toolSelection,
       promptCacheKey: options?.promptCacheKey?.trim() || undefined,
       systemPrompt: options?.systemPrompt?.trim() || undefined,
+      modelVerbosity: options?.responseDetailOverride,
       disableIncremental: overrides?.disableIncremental || this.storeRefused,
     });
     return {
@@ -2337,6 +2339,7 @@ export class GrokProvider implements LLMProvider {
       model?: string;
       promptCacheKey?: string;
       systemPrompt?: string;
+      modelVerbosity?: LLMChatOptions["modelVerbosity"];
       disableIncremental?: boolean;
     },
   ): {
@@ -2356,7 +2359,9 @@ export class GrokProvider implements LLMProvider {
       staticPrefix: staticSystemPrompt,
       sessionSuffix: sessionSystemPrompt,
       dynamicSuffix: dynamicSystemPrompt,
-    } = splitSystemPromptOnDynamicBoundary(options?.systemPrompt);
+    } = splitSystemPromptOnDynamicBoundary(
+      withResponseDetailSystemPrompt(options?.systemPrompt, options?.modelVerbosity),
+    );
     const requestMessages = [
       ...(staticSystemPrompt !== undefined
         ? [{ role: "system" as const, content: staticSystemPrompt }]

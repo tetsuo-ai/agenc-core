@@ -582,7 +582,7 @@ function captureRuntimeSettings(
     "reasoning effort",
   );
   const modelVerbosity = normalizeRuntimeSetting(
-    configuration?.modelVerbosity,
+    configuration?.modelVerbosityOverride,
     RUN_RUNTIME_MODEL_VERBOSITIES,
     "model verbosity",
   );
@@ -957,6 +957,9 @@ async function applyRestoredRuntimeSettings(
   }
   await session.state.with((state) => {
     const configuration = state.sessionConfiguration;
+    const inheritedModelVerbosity = configuration.modelVerbosityOverride === undefined
+      ? configuration.modelVerbosity
+      : configuration.inheritedModelVerbosity;
     state.sessionConfiguration = {
       ...configuration,
       collaborationMode: {
@@ -965,9 +968,9 @@ async function applyRestoredRuntimeSettings(
           ? { reasoningEffort: settings.reasoningEffort }
           : { reasoningEffort: undefined }),
       } as typeof configuration.collaborationMode,
-      ...(settings.modelVerbosity !== null
-        ? { modelVerbosity: settings.modelVerbosity }
-        : { modelVerbosity: undefined }),
+      modelVerbosityOverride: settings.modelVerbosity,
+      inheritedModelVerbosity,
+      modelVerbosity: settings.modelVerbosity ?? inheritedModelVerbosity,
       ...(settings.serviceTier !== null
         ? { serviceTier: settings.serviceTier }
         : { serviceTier: undefined }),

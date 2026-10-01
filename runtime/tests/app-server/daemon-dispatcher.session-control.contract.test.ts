@@ -706,6 +706,39 @@ describe("daemon session-control internal method dispatch", () => {
     expect(applyConfigToSession).toHaveBeenCalledTimes(1);
   });
 
+  it("validates and forwards response detail independently, including an atomic effort update", async () => {
+    const applyConfigToSession = vi.fn(async (params: SessionApplyConfigParams) => ({
+      sessionId: params.sessionId, applied: true, modelVerbosity: params.modelVerbosity,
+      runtimeSettingsEventId: "settings:2", summary: "updated",
+    }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession } as never });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+    for (const modelVerbosity of ["low", "medium", "high", null] as const) {
+      const params = { sessionId: "session_1", modelVerbosity };
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "detail", method: "session.applyConfig", params }))
+        .resolves.toMatchObject({ result: { modelVerbosity, runtimeSettingsEventId: "settings:2" } });
+      expect(applyConfigToSession).toHaveBeenLastCalledWith(params);
+    }
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "both", method: "session.applyConfig", params: { sessionId: "session_1", reasoningEffort: "high", modelVerbosity: "low" } }))
+      .resolves.toMatchObject({ result: { modelVerbosity: "low" } });
+    for (const extra of [
+      { modelVerbosity: "verbose" }, { modelVerbosity: 1 },
+      { modelVerbosity: "low", profile: "fast" }, { modelVerbosity: null, reload: true },
+    ]) {
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "invalid", method: "session.applyConfig", params: { sessionId: "session_1", ...extra } }))
+        .resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(applyConfigToSession).toHaveBeenCalledTimes(5);
+  });
+
+  it("advertises response detail support to initialized clients", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession: vi.fn() } as never });
+    const connection = dispatcher.createConnection();
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "init-detail", method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } }))
+      .resolves.toMatchObject({ result: { capabilities: { "session.applyConfig.modelVerbosity": true } } });
+  });
+
   it("routes session.applyConfig with reload flag", async () => {
     const applyConfigToSession = vi.fn(
       async (params: SessionApplyConfigParams) => ({

@@ -77,6 +77,9 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
 export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as const;
+/** Optional per-session response-detail mutation on session.applyConfig. */
+export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY =
+  "session.applyConfig.modelVerbosity" as const;
 /** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
   "routine.sessionAuthority.v1" as const;
@@ -254,6 +257,7 @@ export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
   readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
   readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
+  readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
 };
 
 /**
@@ -1205,7 +1209,7 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "TUI-internal request to re-apply config (profile overlay and/or disk reload) to the daemon-owned session.",
+      "Re-apply config or atomically update an idle session's reasoning effort and response detail. The latter is advertised by session.applyConfig.modelVerbosity.",
   },
   "session.mcp.reconnectServer": {
     method: "session.mcp.reconnectServer",
@@ -2115,6 +2119,8 @@ export interface SessionApplyConfigParams extends JsonObject {
   readonly sessionId: string;
   /** Apply only this effort to the idle session, without reloading other settings. */
   readonly reasoningEffort?: string;
+  /** Per-session response detail; null clears the override. */
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   /** Profile to overlay onto the live session; omit for a plain reload. */
   readonly profile?: string;
   /** When `true`, re-read config from disk + env before applying. */
@@ -3980,6 +3986,8 @@ export interface SessionApplyConfigResult extends JsonObject {
   readonly provider?: string;
   readonly model?: string;
   readonly runtimeSettingsEventId?: string;
+  /** Accepted per-session response detail, including null when cleared. */
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   /** Human-readable summary of what was re-applied, surfaced to the user. */
   readonly summary: string;
 }
