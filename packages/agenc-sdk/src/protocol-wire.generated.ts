@@ -1265,11 +1265,15 @@ export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1"
 
 export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as const;
 
+/** Optional per-session response-detail mutation on session.applyConfig. */
+export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY = "session.applyConfig.modelVerbosity" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
     readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
     readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
+    readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {
