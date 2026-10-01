@@ -247,6 +247,7 @@ import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import { installAgenCDaemonErrorLogSink } from "./daemon-error-log.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
+import { scheduleDaemonCompileCacheFlush } from "../bin/compile-cache.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
@@ -4543,6 +4544,7 @@ async function runAgenCDaemonForegroundLocked(
       }
       if (!shuttingDown) {
         io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
+        scheduleDaemonCompileCacheFlush();
         // The daemon serves from here on. The sessions open at its last
         // shutdown are rebuilt in the background, four at a time; a request
         // naming one waits for it (see StartupSessionRestores).
