@@ -6430,6 +6430,21 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reasoningEffort });
   });
 
+  it("persists an exact hidden managed model in initial runtime settings", async () => {
+    const agentId = "managed-deepseek-initial-settings";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "agenc";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "deepseek/deepseek-v4.1-flash";
+    h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "high";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({
+      provider: "agenc",
+      model: "deepseek/deepseek-v4.1-flash",
+      reasoningEffort: "high",
+    });
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toHaveLength(1);
+  });
+
   it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {
     const agentId = `normalized-runtime-settings-${String(absent)}`;
     const { runner, sessionState, rolloutItems } = makeTopLevelRunner({

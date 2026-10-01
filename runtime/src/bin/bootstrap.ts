@@ -1531,8 +1531,11 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   // A Grok session on the xAI sign-in route never sends priority processing,
   // so its model info does not offer the Fast tier.
+  // Two providers can list the same model id (the managed AgenC route and
+  // public OpenRouter share DeepSeek ids), so the bound provider decides
+  // whose limits the session plans with.
   const rawModelInfo = withoutXaiSignInFastTier(
-    await modelsManager.getModelInfo(model),
+    await modelsManager.getModelInfoForProvider(resolvedProvider, model),
     {
       provider: resolvedProvider,
       factoryOptions: readProviderFactoryOptions(provider),

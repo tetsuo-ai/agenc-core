@@ -6,6 +6,7 @@ import {
   resolveBuiltInProviderSlug,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import { listRegisteredModelCatalogEntries } from "../llm/registry/model-catalog.js";
 import type { AgenCConfig, ProviderModelPair } from "./schema.js";
 import {
   AmbiguousModelError,
@@ -179,6 +180,15 @@ function resolveExplicitPair(
   }
   const providerCatalog = providerCatalogPair(provider, model, catalog);
   if (providerCatalog !== undefined) return providerCatalog;
+  // Some exact runtime routes are intentionally absent from the public model
+  // catalog. An explicit provider may still select its own registered route,
+  // even when another provider advertises the same model ID. This does not
+  // grant access to the route; managed account policy checks that separately.
+  if (listRegisteredModelCatalogEntries(provider).some(
+    (entry) => entry.visibility === "none" && entry.model === model,
+  )) {
+    return Object.freeze({ provider, model });
+  }
   const providerLocalModel = providerLocalModelIdFromCatalog(provider, model);
   if (providerLocalModel !== model) {
     return Object.freeze({ provider, model: providerLocalModel });
