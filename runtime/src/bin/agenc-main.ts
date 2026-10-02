@@ -1,4 +1,14 @@
 import "../bootstrap/node-env.js";
+import { prepareCliRuntime } from "./cli-runtime.js";
+export { initializeCliRuntime } from "./cli-runtime.js";
+import {
+  cliStartupErrorMessage,
+  formatUnavailableCliCwdMessage,
+  runCliProcessMain,
+} from "./cli-process-main.js";
+export { formatUnavailableCliCwdMessage, isUnavailableCliCwdError } from "./cli-process-main.js";
+import { isDirectInvocation, shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
+export { shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
  *
@@ -43,7 +53,6 @@ import {
   classifyTurnTerminal,
   type TurnTerminal,
 } from "../contracts/turn-terminal.js";
-import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
   classifyCLI,
   extractFlagValues,
@@ -80,7 +89,6 @@ import {
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
@@ -119,12 +127,7 @@ import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
-  type AgenCDaemonCliAction,
 } from "../app-server/daemon-control.js";
-import {
-  AGENC_DAEMON_STARTUP_GUARD_ENV,
-  isAgenCDaemonStartupGuardToken,
-} from "../app-server/daemon-startup-guard.js";
 import {
   captureRemoteCliRuntimeContext,
   formatAgenCRemoteCliHelpText,
@@ -305,7 +308,6 @@ import {
   setSessionTrustAccepted,
 } from "../bootstrap/state.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
-import { installGlobalErrorNet } from "../utils/global-error-net.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
@@ -991,9 +993,6 @@ function resolveUserHome(
   return env.HOME ?? env.USERPROFILE ?? fallback;
 }
 
-export function formatUnavailableCliCwdMessage(): string {
-  return "current working directory is unavailable. Open a valid directory or set AGENC_WORKSPACE.";
-}
 
 function readProcessCwdSafely(cwdFn: () => string = processCwd): string | null {
   try {
@@ -1036,20 +1035,6 @@ export function resolveCliCwdForStartup(
   return { ok: true, cwd: resolve(cwd) };
 }
 
-export function isUnavailableCliCwdError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const nodeError = error as NodeJS.ErrnoException & {
-    readonly syscall?: string;
-  };
-  return nodeError.syscall === "uv_cwd" || error.message.includes("uv_cwd");
-}
-
-function cliStartupErrorMessage(error: unknown): string {
-  if (isUnavailableCliCwdError(error)) {
-    return formatUnavailableCliCwdMessage();
-  }
-  return error instanceof Error ? error.message : String(error);
-}
 
 function writeUnavailableCliCwd(): number {
   process.stderr.write(`agenc: ${formatUnavailableCliCwdMessage()}\n`);
@@ -6093,19 +6078,6 @@ export async function continueTUIEntry(
   });
 }
 
-/**
- * Apply process hardening before CLI routing. Configuration and runtime-state
- * access is owned by each explicit ConfigStore/RuntimeStateRepository; there
- * is deliberately no process-global "enabled" latch.
- */
-export function initializeCliRuntime(): void {
-  // Apply pre-main process hardening before any I/O or subprocess spawn:
-  // scrub LD_*/DYLD_* dynamic-loader env vars, drop RLIMIT_CORE to 0, and
-  // disable core/ptrace dumping via PR_SET_DUMPABLE on Linux or
-  // PT_DENY_ATTACH on macOS. Best-effort — failures are non-fatal so the
-  // CLI still starts on platforms where the native binding is unavailable.
-  applyBestEffortPreMainProcessHardening();
-}
 
 async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
   try {
@@ -6159,22 +6131,6 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  * audit there would duplicate config and native secure-storage reads before the child
  * can publish readiness. Direct foreground launches still run the audit.
  */
-export function shouldRunDaemonStartupSecurityAudit(
-  action: AgenCDaemonCliAction,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  hasParentIpc = typeof process.send === "function",
-): boolean {
-  if (action !== "start" && action !== "run" && action !== "restart") {
-    return false;
-  }
-  const startupGuardToken = env[AGENC_DAEMON_STARTUP_GUARD_ENV];
-  const isDetachedChild =
-    action === "run" &&
-    env.AGENC_DAEMON_RUN === "1" &&
-    hasParentIpc &&
-    isAgenCDaemonStartupGuardToken(startupGuardToken);
-  return !isDetachedChild;
-}
 
 /**
  * Top-level dispatcher. Branches between the full Ink TUI and the
@@ -6182,15 +6138,8 @@ export function shouldRunDaemonStartupSecurityAudit(
  * for the routing table.
  */
 export async function main(): Promise<number> {
-  try {
-    assertCanonicalEnvironmentIngress(process.env);
-  } catch (error) {
-    process.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 2;
-  }
-  initializeCliRuntime();
+  const ingressExitCode = prepareCliRuntime();
+  if (ingressExitCode !== null) return ingressExitCode;
   const argv = process.argv.slice(2);
   const initCommand = parseAgenCInitCliArgs(argv);
   if (initCommand !== null) {
@@ -6555,40 +6504,7 @@ async function runDefaultAgenCCliRoute(
  * Works under both CJS and ESM emit from tsup without touching
  * `import.meta`, which is forbidden in the CJS output target.
  */
-function isDirectInvocation(): boolean {
-  // Env opt-out: tests can force the IIFE off even on odd harnesses.
-  if (process.env.AGENC_CLI_ENTRY_DISABLE === "1") return false;
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  // The CLI binary resolves to `<prefix>/bin/agenc.js` (or `.mjs`) and
-  // the `agenc` shim in `package.json.bin` symlinks to this script.
-  // Match the tail of the entry path so both `node .../agenc.js` and
-  // the installed `agenc` CLI pass the check.
-  return /[\\/]bin[\\/]agenc(?:\.[mc]?js)?$/.test(argv1);
-}
 
 if (isDirectInvocation()) {
-  void (async () => {
-    // Install the process-global error net before anything runs so a stray
-    // uncaught exception / unhandled rejection on the daemon or TUI main path
-    // is logged instead of vanishing silently or crashing with a raw stack.
-    // Only on direct invocation — tests import main() and must keep vitest's
-    // own rejection detection intact.
-    installGlobalErrorNet();
-    let code: number;
-    try {
-      code = await main();
-    } catch (error) {
-      process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
-      code = 1;
-    }
-    // Pipe writes can still be buffered when main returns. Wait for both
-    // streams before forcing exit so large JSON and errors arrive intact.
-    await Promise.all(
-      [process.stdout, process.stderr].map(
-        (stream) => new Promise<void>((resolve) => stream.write("", () => resolve())),
-      ),
-    );
-    process.exit(code);
-  })();
+  void runCliProcessMain(main);
 }
