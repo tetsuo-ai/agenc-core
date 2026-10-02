@@ -1495,3 +1495,12 @@ test("Light says loaded AGENC.md instructions are already included, so the model
   );
   expect(snapshot.staticPrefix).toContain("Read/change other assistants' files only when the user names them");
 });
+
+test.each([["openai", true], ["deepseek", false]])("Light names apply_patch as the editing tool only for GPT-family sessions (%s)", async (provider, applyPatch) => {
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: "light", ctx: fakeCtx(), provider,
+    session: { services: { runtimeOptions: { lightMode: true, nonInteractive: true } } } as unknown as Session,
+  });
+  expect(snapshot.staticPrefix.includes("Edit and create files with apply_patch; put all hunks of one change in one patch.")).toBe(applyPatch);
+  expect(snapshot.staticPrefix.includes("Edit the shortest unique text; Write complete files.")).toBe(!applyPatch);
+});

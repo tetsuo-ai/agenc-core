@@ -107,3 +107,29 @@ test("the Light yield hint names the 30 s Light default, so models that write ev
   const yieldField = (shell.function.parameters.properties as Record<string, { description?: string }>).yield_time_ms;
   expect(yieldField?.description).toContain("Default 30000 (tty 10000).");
 });
+
+function providerRegistry(provider: string | undefined) {
+  return buildToolRegistry({
+    workspaceRoot: "/tmp", lightMode: true,
+    ...(provider === undefined ? {} : { getSession: () => ({ services: { provider: { name: provider } } }) as never }),
+  });
+}
+
+test("GPT-family Light sessions start with apply_patch instead of Edit and Write", () => {
+  const names = providerRegistry("openai").toLLMTools().map(t => t.function.name).sort();
+  expect(names).toEqual(["FileRead", "apply_patch", "exec_command", "system.searchTools"]);
+  const shell = providerRegistry("openai").toLLMTools().find(t => t.function.name === "exec_command")!;
+  // No field is hidden: the exec_command presentation is the same as for other providers.
+  expect(shell).toEqual(providerRegistry("deepseek").toLLMTools().find(t => t.function.name === "exec_command"));
+});
+
+test("other providers keep Edit and Write, and Edit stays discoverable for GPT sessions", () => {
+  for (const provider of ["deepseek", "zai", "grok", undefined]) {
+    const names = providerRegistry(provider).toLLMTools().map(t => t.function.name);
+    expect(names, String(provider)).toEqual(expect.arrayContaining(["Edit", "Write"]));
+    expect(names, String(provider)).not.toContain("apply_patch");
+  }
+  const gpt = providerRegistry("openai");
+  gpt.discoverToolNames?.(["Edit"]);
+  expect(gpt.toLLMTools().map(t => t.function.name)).toContain("Edit");
+});
