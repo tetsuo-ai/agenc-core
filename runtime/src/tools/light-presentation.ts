@@ -21,7 +21,7 @@ const fieldHints: Readonly<Record<string, Readonly<Record<string, string | null>
   Write: { file_path: path, content: null },
   exec_command: {
     cmd: null, workdir: "Default: workspace root.", timeoutMs: "Hard timeout, ms.",
-    yield_time_ms: "Wait ms; live processes return session_id.",
+    yield_time_ms: "Wait ms; live processes return session_id. Default 30000 (tty 10000).",
     max_output_tokens: "Token cap; head/tail truncation.",
     login: "Login shell if supported.", shell: "Default: user's shell.",
     tty: "Interactive PTY, required for persistent shells/write_stdin input. Unavailable in contained operations: use tty=false and non-interactive flags, or ask the user to use the app's Run button.",

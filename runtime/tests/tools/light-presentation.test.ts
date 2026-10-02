@@ -100,3 +100,10 @@ test("compact shell fields keep permission and process-lifecycle conditions", ()
   expect(fields.prefix_rule!.description).toContain("approval caching");
   expect(registry.tools.find(t => t.name === "exec_command")?.requiresApproval).toBe(true);
 });
+
+test("the Light yield hint names the 30 s Light default, so models that write every field copy it", () => {
+  const shell = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true }).toLLMTools()
+    .find(t => t.function.name === "exec_command")!;
+  const yieldField = (shell.function.parameters.properties as Record<string, { description?: string }>).yield_time_ms;
+  expect(yieldField?.description).toContain("Default 30000 (tty 10000).");
+});
