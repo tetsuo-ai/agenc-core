@@ -176,11 +176,11 @@ export const autoModeProducer: AttachmentProducer = async (
   // Full / sparse cycle — count includes the attachment we are about to emit.
   const attachmentCount =
     countAutoModeAttachmentsSinceLastExit(opts.messages) + 1;
-  const variant: "full" | "sparse" =
+  const variant: "full" | "sparse" | "light" =
     attachmentCount %
       AUTO_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
     1
-      ? "full"
+      ? opts.lightMode === true ? "light" : "full"
       : "sparse";
 
   attachments.push({ kind: "auto_mode", variant });
