@@ -115,7 +115,11 @@ test("initial apply_patch preserves mutation authority metadata and every exec f
   expect(patchTool.metadata?.mutating).toBe(true);
   expect(patchTool.checkPermissions).toBeTypeOf("function");
   const canonical = registry.tools.find(t => t.name === "exec_command")!;
-  const presented = tools.find(t => t.function.name === "exec_command")!;
+  // Lead adaptation (lean exec_command): every field stays reachable; the advanced ones load through
+  // system.searchTools (select:exec_command), after which the presented schema has every canonical field.
+  expect(tools.find(t => t.function.name === "exec_command")!.function.description).toContain("select:exec_command");
+  registry.discoverToolNames?.(["exec_command"]);
+  const presented = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
   expect(Object.keys(presented.function.parameters.properties!)).toEqual(Object.keys(canonical.inputSchema.properties!));
 });
 

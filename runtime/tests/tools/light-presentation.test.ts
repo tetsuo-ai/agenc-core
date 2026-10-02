@@ -12,7 +12,8 @@ function withoutDescriptions(value: unknown): unknown {
 
 test("all eight Light schemas retain the canonical contract and source schema", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
-  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin"]);
+  // Selecting exec_command loads its full schema; the lean default is covered separately below.
+  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin", "exec_command"]);
   const wire = registry.toLLMTools();
   expect(wire.map(t => t.function.name).sort()).toEqual([
     "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
@@ -88,6 +89,8 @@ test("compact descriptions retain retrieval, mutation and process lifecycle cons
 
 test("compact shell fields keep permission and process-lifecycle conditions", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  // The advanced fields load through system.searchTools (select:exec_command).
+  registry.discoverToolNames?.(["exec_command"]);
   const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
   const fields = shell.function.parameters.properties as Record<string, { description: string }>;
   for (const text of ["required for persistent shells/write_stdin input", "Unavailable in contained operations",
@@ -132,4 +135,23 @@ test("other providers keep Edit and Write, and Edit stays discoverable for GPT s
   const gpt = providerRegistry("openai");
   gpt.discoverToolNames?.(["Edit"]);
   expect(gpt.toLLMTools().map(t => t.function.name)).toContain("Edit");
+});
+
+test("Light presents a lean exec_command until system.searchTools selects it", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const lean = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
+  expect(Object.keys(lean.function.parameters.properties as object).sort()).toEqual(["cmd", "timeoutMs", "workdir", "yield_time_ms"]);
+  expect(lean.function.parameters.required).toEqual(["cmd"]);
+  expect(lean.function.description).toContain("select:exec_command loads their schema");
+  registry.discoverToolNames?.(["exec_command"]);
+  const full = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
+  const canonical = registry.tools.find(t => t.name === "exec_command")!;
+  expect(withoutDescriptions(full.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
+  expect(full.function.description).not.toContain("select:exec_command");
+});
+
+test("Standard sessions keep the canonical exec_command", () => {
+  const standard = buildToolRegistry({ workspaceRoot: "/tmp" });
+  const shell = standard.toLLMTools().find(t => t.function.name === "exec_command")!;
+  expect(shell.function.parameters).toEqual(standard.tools.find(t => t.name === "exec_command")!.inputSchema);
 });
