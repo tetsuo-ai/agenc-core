@@ -19,8 +19,13 @@ import {
   startDefaultRealtimeAudioCapture,
   type RealtimeAudioCaptureSession,
   type RealtimeAudioPlayer,
+  type RealtimeAudioPlayerSpawn,
   type StartRealtimeAudioCapture,
 } from "./audio.js";
+import {
+  resolveRealtimePlaybackBackend,
+  type RealtimePlaybackBackend,
+} from "../../services/voice.js";
 import { logError } from "../../utils/log.js";
 import { isRecord } from "../../utils/record.js";
 import {
@@ -67,6 +72,11 @@ export interface CreateRealtimeTuiControlsOptions {
   readonly startWebrtcSession?: () => Promise<StartedRealtimeWebrtcSession>;
   readonly startAudioCapture?: StartRealtimeAudioCapture;
   readonly audioPlayer?: RealtimeAudioPlayer;
+  readonly spawnPlaybackProcess?: RealtimeAudioPlayerSpawn;
+  /** Backend already resolved at readiness. Omit to resolve on session start. */
+  readonly playbackBackend?: RealtimePlaybackBackend | null;
+  /** Host probe used when playbackBackend is omitted. A null result is not cached. */
+  readonly resolvePlaybackBackend?: () => RealtimePlaybackBackend | null;
 }
 
 export function createRealtimeTuiControls(
@@ -88,6 +98,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #audioCapture: RealtimeAudioCaptureSession | null = null;
   #eventSequence = 0;
   #lifecycleOperation: Promise<void> = Promise.resolve();
+  #playbackBackend: RealtimePlaybackBackend | null;
+  readonly #playbackBackendProvided: boolean;
+  readonly #resolvePlaybackBackend: () => RealtimePlaybackBackend | null;
 
   constructor(options: CreateRealtimeTuiControlsOptions) {
     this.#threadId = options.threadId;
@@ -97,7 +110,18 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       options.startWebrtcSession ?? (() => RealtimeWebrtcSession.start());
     this.#startAudioCapture =
       options.startAudioCapture ?? startDefaultRealtimeAudioCapture;
-    this.#audioPlayer = options.audioPlayer ?? createProcessRealtimeAudioPlayer();
+    this.#playbackBackendProvided = options.playbackBackend !== undefined;
+    this.#playbackBackend = options.playbackBackend ?? null;
+    this.#resolvePlaybackBackend =
+      options.resolvePlaybackBackend ?? resolveRealtimePlaybackBackend;
+    this.#audioPlayer =
+      options.audioPlayer ??
+      createProcessRealtimeAudioPlayer(options.spawnPlaybackProcess, {
+        onError: (message) => {
+          void this.#handlePlaybackFailure(message);
+        },
+        backend: options.playbackBackend ?? "play",
+      });
   }
 
   async start(options: RealtimeStartOptions = {}): Promise<void> {
@@ -117,6 +141,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   async #start(options: RealtimeStartOptions = {}): Promise<void> {
     if (this.#state.phase === "starting" || this.#state.phase === "active") {
       return;
+    }
+    if (this.#audioPlayer.beginSession) {
+      this.#audioPlayer.beginSession(this.#backendForSession());
     }
     const transport = options.transport ?? "websocket";
     this.#dispatch({ type: "start_requested", transport });
@@ -152,6 +179,15 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
       throw error;
     }
+  }
+
+  #backendForSession(): RealtimePlaybackBackend | null {
+    if (this.#playbackBackendProvided || this.#playbackBackend !== null) {
+      return this.#playbackBackend;
+    }
+    const resolved = this.#resolvePlaybackBackend();
+    if (resolved !== null) this.#playbackBackend = resolved;
+    return resolved;
   }
 
   async #stop(): Promise<void> {
@@ -282,7 +318,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         if (!this.#canApplyRealtimeSessionEvent()) return;
         if (isJsonObject(payload.audio)) {
           const audio = toRealtimeAudioChunk(payload.audio);
-          if (audio !== null) this.#audioPlayer.enqueue(audio);
+          if (audio !== null) this.#enqueueOutputAudio(audio);
         }
         break;
       case "realtime_transcript_delta":
@@ -436,6 +472,25 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     this.#closeActiveWebrtc();
     this.#closeAudioPlayerBestEffort();
     this.#surfaceRealtimeError(error, fallback);
+    await this.#requestDaemonStop();
+  }
+
+  #enqueueOutputAudio(audio: ThreadRealtimeAudioChunk): void {
+    try {
+      this.#audioPlayer.enqueue(audio);
+    } catch (error) {
+      void this.#handlePlaybackFailure(
+        error instanceof Error ? error.message : "Realtime audio playback failed",
+      );
+    }
+  }
+
+  async #handlePlaybackFailure(message: string): Promise<void> {
+    if (this.#state.requestedClose || this.#state.phase === "inactive") return;
+    await this.#stopAudioCapture().catch(logError);
+    this.#closeActiveWebrtc();
+    this.#closeAudioPlayerBestEffort();
+    this.#surfaceRealtimeError(message, "Realtime audio playback failed");
     await this.#requestDaemonStop();
   }
 
