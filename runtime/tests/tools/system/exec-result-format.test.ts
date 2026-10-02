@@ -84,3 +84,20 @@ describe("unifiedExecCodeModeResult", () => {
     expect(unifiedExecCodeModeResult(output({}))).not.toHaveProperty("detached");
   });
 });
+
+test("Light trims only routine successful exec footers", () => {
+  expect(formatUnifiedExecToolContent(output({}), true)).toBe("hello\n\n[exec exit_code=0]");
+  expect(formatUnifiedExecToolContent(output({}))).toBe("hello\n\n[exec exit_code=0 wall_time=0.0120s tokens=1]");
+  for (const details of [
+    { exitCode: 1 }, { truncated: true }, { timedOut: true },
+    { process_id: 7 }, { session_id: 8 }, { detached: true },
+    { residual_processes_terminated: true }, { exitCode: null },
+  ]) {
+    const value = output(details);
+    const compact = formatUnifiedExecToolContent(value, true);
+    expect(compact).toBe(formatUnifiedExecToolContent(value).replace(
+      "tokens=1", `tokens=1${value.truncated ? " truncated=true" : ""}`,
+    ));
+    expect(unifiedExecCodeModeResult(value)).toHaveProperty("wall_time_seconds", 0.012);
+  }
+});

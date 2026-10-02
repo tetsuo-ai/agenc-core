@@ -1371,7 +1371,7 @@ describe("assembleSystemPrompt", () => {
 
 
 test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: explain tradeoffs." }])(
-  "Light uses unchanged standard instructions and preserves optional inputs (style=%s)",
+  "Light uses its concise workflow and canonical safety instructions and preserves optional inputs (style=%s)",
   async (outputStyle) => {
     const session = { services: { runtimeOptions: { lightMode: true, simpleMode: false, nonInteractive: true, deadlineAt: 123 }, providerEnvironment: {} } } as unknown as Session;
     const options = {
@@ -1387,31 +1387,43 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       scratchpadDir: "/workspace/scratchpad",
     };
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
-    const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
-    // Only the environment's wall-clock timestamp may differ between calls.
-    const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
-    expect(light.staticPrefix).toBe(standard.staticPrefix);
-    expect(withoutClock(light.text)).toBe(withoutClock(standard.text));
-    expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
-    for (const heading of ["# System", "# Executing actions with care", "# Using your tools", "# Tone and style", "# Output efficiency", "# Completing work without a human", "# Environment"]) {
+    const standard = await assembleSystemPromptSnapshot({ ...options, session: { services: { runtimeOptions: { nonInteractive: true } } } as unknown as Session, profile: "standard" });
+    expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length);
+    expect(light.staticPrefix).toContain(getActionsSection());
+    expect(light.text).not.toContain("# Completing work without a human");
+    expect(light.text).not.toContain("# Subagents");
+    expect(light.text).not.toContain("# Session guidance");
+    for (const heading of ["# System", "# Executing actions with care"]) {
       expect(light.text).toContain(heading);
     }
     expect(light.text).toContain("system.searchTools");
     expect(light.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
     expect(light.text).toContain("fixed time budget");
+    expect(light.text).toContain("restore your best verified state");
+    expect(light.text).toContain("time_remaining_sec");
     expect(light.text).toContain("USER_PROJECT_SENTINEL");
-    expect(light.staticPrefix).toContain("MEMORY_RULE_SENTINEL");
+    expect(light.staticPrefix).not.toContain("MEMORY_RULE_SENTINEL");
     expect(light.dynamicSuffix).toContain("MEMORY_PATH_SENTINEL");
     expect(light.dynamicSuffix).toContain("MCP_INSTRUCTIONS_SENTINEL");
     expect(light.dynamicSuffix).toContain("French");
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("# Doing tasks");
-      expect(light.text).toContain("never suppress or simplify failing checks");
+      expect(light.text).toContain("Run the relevant tests once after the last edit");
+      expect(light.text).toContain("Do not weaken tests or requirements");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
     }
   },
 );
+
+test.each([false, true])("Light preserves persistent-session memory instructions (nonInteractive=%s)", async nonInteractive => {
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: "light", ctx: fakeCtx(),
+    session: { services: { runtimeOptions: { lightMode: true, nonInteractive } } } as unknown as Session,
+    memoryInstructions: "MEMORY_SAVE_CONTRACT", memoryPrompt: "MEMORY_LOCATION",
+  });
+  expect(snapshot.staticPrefix.includes("MEMORY_SAVE_CONTRACT")).toBe(!nonInteractive);
+  expect(snapshot.dynamicSuffix).toContain("MEMORY_LOCATION");
+});

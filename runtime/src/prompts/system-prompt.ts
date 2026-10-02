@@ -34,6 +34,7 @@
  * @module
  */
 
+import { lightWorkflow } from "./light-workflow.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -221,6 +222,9 @@ export const COMPLETION_CONTRACT_COHERENT_ENV = "AGENC_COMPLETION_CONTRACT_COHER
  * environment switch exists so one run can be measured with and without
  * it.
  */
+export const HEADLESS_DEADLINE_GUIDANCE =
+  `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`;
+
 export function getHeadlessCompletionSection(input: {
   readonly nonInteractive: boolean | undefined;
   readonly env: NodeJS.ProcessEnv;
@@ -244,7 +248,7 @@ export function getHeadlessCompletionSection(input: {
       ? // A deadline-bounded run (#2503) was killed mid-optimization with a
         // broken file on disk hours after it had a passing one. Keep the
         // verified result safe and finish inside the budget.
-        `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`
+        HEADLESS_DEADLINE_GUIDANCE
       : `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
     `The final message lists which requirements you verified and how, in a few lines.`,
   ];
@@ -777,6 +781,7 @@ export interface SystemPromptSessionSnapshot {
 }
 
 export interface AssembleSystemPromptOpts {
+  readonly lightProfile?: boolean;
   /** Captured session services that affect prompt assembly. */
   readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
@@ -933,8 +938,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "light":
-      // Light changes tool exposure only; keep the canonical work instructions.
-      return assembleSystemPrompt(opts);
+      return assembleSystemPrompt({ ...opts, lightProfile: true });
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(
@@ -1126,6 +1130,7 @@ export async function assembleSystemPrompt(
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
   const agentsEnabled = opts.agentsEnabled ?? false;
+  const light = opts.lightProfile === true || session.services?.runtimeOptions?.lightMode === true;
 
   const clientRendering = getClientRenderingSection(
     session.services?.providerEnvironment,
@@ -1197,7 +1202,18 @@ export async function assembleSystemPrompt(
   // descriptions; its default depends on the provider
   // (prompts/lean-system-prompt.ts).
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
-  const staticSections: Array<string | null> = lean
+  const staticSections: Array<string | null> = light
+    ? [
+        lightWorkflow(opts.outputStyle != null),
+        getLeanSystemSection(),
+        lean ? getLeanActionsSection() : getActionsSection(),
+        session.services?.runtimeOptions?.nonInteractive === true
+          ? null : getMemoryInstructionsSection(opts.memoryInstructions),
+        typeof session.services?.runtimeOptions?.deadlineAt === "number"
+          ? HEADLESS_DEADLINE_GUIDANCE
+          : null,
+      ]
+    : lean
     ? [
         getLeanIntroSection(opts.outputStyle != null),
         getLeanSystemSection(),
@@ -1270,7 +1286,7 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1300,7 +1316,7 @@ export async function assembleSystemPrompt(
     ),
     // The lean head leaves the token-target explanation to the continuation
     // message the runtime sends when a target is set.
-    ...(feature("TOKEN_BUDGET") && !lean
+    ...(feature("TOKEN_BUDGET") && !lean && !light
       ? [
           systemPromptSection(
             "token_budget",

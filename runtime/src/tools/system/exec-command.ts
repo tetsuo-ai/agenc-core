@@ -67,6 +67,7 @@ import {
 } from "../../sandbox/worktree-confinement.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
+  readonly lightMode?: boolean;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
@@ -916,7 +917,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // errno text. Say plainly that the sandbox did it and whether
         // escalation can change the answer, so a denial reads as a verdict
         // instead of an invitation to retry with a longer timeout.
-        const execContent = formatUnifiedExecToolContent(output);
+        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
         const runtimeContext = readToolRuntimeContext(args);
         const denial = execSandboxDenialNotice({
           output: execContent,

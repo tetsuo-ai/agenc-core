@@ -319,6 +319,7 @@ Usage:
 
 /** Tool factory configuration. */
 export interface FileReadToolConfig {
+  readonly lightMode?: boolean;
   /**
    * Allowed path prefixes (required — no default). Same shape as the
    * filesystem-tool config so the parent can pass through the workspace
@@ -1505,6 +1506,7 @@ interface FileReadInput extends ToolExecutionInjectedArgs {
   readonly offset?: unknown;
   readonly limit?: unknown;
   readonly pages?: unknown;
+  readonly dense_line_numbers?: unknown;
   readonly cwd?: unknown;
   readonly __agencSessionId?: unknown;
 }
@@ -1516,7 +1518,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
   const maxNotebookBytes =
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
-  const sparseLineNumbers = config.sparseLineNumbers === true;
+  const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
   return {
     name: FILE_READ_TOOL_NAME,
@@ -1556,6 +1558,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           description:
             "Optional. Max number of lines to return. Numeric strings are accepted.",
         },
+        ...(config.lightMode === true ? { dense_line_numbers: {
+          type: "boolean", description: "Number every line in this read instead of sparse numbering.",
+        } } : {}),
         pages: {
           type: "string",
           description: "Optional. Page range for PDF files (e.g. '1-5').",
@@ -1693,7 +1698,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxPdfBytes,
               pages: args.pages,
               maxTokens,
-              sparseLineNumbers,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
             },
@@ -1708,7 +1713,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               {
                 maxTextBytes,
                 maxTokens,
-                sparseLineNumbers,
+                sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
                 offset,
                 limit,
                 displayPath: filePath,
@@ -1727,7 +1732,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             {
               maxTextBytes,
               maxTokens,
-              sparseLineNumbers,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
               displayPath: filePath,

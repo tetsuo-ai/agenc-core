@@ -197,6 +197,7 @@ async function replayRecoveredToolCalls<
         replay.toolName,
         result.content,
         classifyUntrustedToolResult(replay.toolName, registeredTool),
+        opts.parent.services?.runtimeOptions?.lightMode === true,
       ),
       toolCallId: replay.callId,
       toolName: replay.toolName,

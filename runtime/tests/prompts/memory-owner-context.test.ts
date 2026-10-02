@@ -66,6 +66,21 @@ describe("memory prompt owner context", () => {
     expect(existsSync(join(target.home, "memory"))).toBe(false);
   });
 
+  test("one-shot Light omits automatic saving guidance but keeps memory access and host constraints", async () => {
+    const target = await owner("light", "", { lightMode: true, nonInteractive: true,
+      coworkMemoryExtraGuidelines: "HOST_MEMORY_CONSTRAINT" });
+    const prompt = await resolveMemoryPromptInputs(target.session, target.cwd);
+    const project = await resolveAutoMemoryDirectory(target.options);
+    expect(prompt.memoryInstructions).toBe("");
+    expect(prompt.memoryPrompt).toContain(project.path);
+    expect(prompt.memoryPrompt).toContain(await resolveGlobalMemoryDirectory(target.options));
+    expect(prompt.memoryPrompt).toContain("HOST_MEMORY_CONSTRAINT");
+    expect(prompt.memoryPrompt).toContain("Ignore memory if the user asks");
+    expect(prompt.memoryPrompt).not.toContain("Write to them directly");
+    const interactive = await owner("interactive", "", { lightMode: true });
+    expect((await resolveMemoryPromptInputs(interactive.session, interactive.cwd)).memoryInstructions).not.toBe("");
+  });
+
   test("uses the owner's tilde expansion and keeps the global root separate", async () => {
     const target = await owner("override", 'autoMemoryDirectory = "~/saved-project-memory"');
     const prompt = await resolveMemoryPromptInputs(target.session, target.cwd);

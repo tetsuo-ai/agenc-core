@@ -1,3 +1,4 @@
+import { lightMemoryContext } from "../prompts/light-workflow.js";
 /**
  * Ports the upstream `src/memdir/memdir.ts` prompt flow onto AgenC memory layers.
  *
@@ -408,7 +409,10 @@ export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions
   // Harness guarantees the directories exist so the model can write without
   // checking. The prompt text reflects this ("already exist").
   return {
-    instructions: buildMemoryInstructionLines().join('\n'),
-    directories: buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
+    instructions: owner?.runtimeOptions?.lightMode === true && owner.runtimeOptions.nonInteractive === true
+      ? '' : buildMemoryInstructionLines().join('\n'),
+    directories: owner?.runtimeOptions?.lightMode === true && owner.runtimeOptions.nonInteractive === true
+      ? lightMemoryContext(autoDir, globalDir, extraGuidelines)
+      : buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
   }
 }

@@ -1,3 +1,4 @@
+import { lightPresentation } from "../src/tools/light-presentation.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -2132,7 +2133,7 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
   });
 
-  test("keeps the complete executable catalog and unchanged function and parameter documentation", () => {
+  test("keeps the complete executable catalog with Light-only presentation", () => {
     const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
@@ -2141,8 +2142,7 @@ describe("Light presentation and deferred capability preservation", () => {
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented.function).toEqual({ name: canonical.name, description: canonical.description, parameters: canonical.inputSchema });
-      expect(presented).toEqual(normal.toLLMTools().find(tool => tool.function.name === canonical.name));
+      expect(presented).toEqual(lightPresentation({ type: "function", function: { name: canonical.name, description: canonical.description, parameters: canonical.inputSchema } }));
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
@@ -2164,7 +2164,7 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(normal.toLLMTools()).toEqual(normalBefore);
     await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
     const read = light.tools.find(tool => tool.name === "FileRead")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")?.function).toEqual({ name: read.name, description: read.description, parameters: read.inputSchema });
+    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(lightPresentation({ type: "function", function: { name: read.name, description: read.description, parameters: read.inputSchema } }));
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(

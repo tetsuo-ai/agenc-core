@@ -23,6 +23,7 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
+import { lightPresentation } from "./tools/light-presentation.js";
 import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
@@ -721,6 +722,7 @@ export function buildToolRegistry(
   });
   const shellTools = [
     createExecCommandTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -729,6 +731,7 @@ export function buildToolRegistry(
         : {}),
     }),
     createWriteStdinTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -768,18 +771,22 @@ export function buildToolRegistry(
   } as const;
   const firstClassFileTools = [
     createFileReadTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
     }),
     createFileWriteTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
       onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
@@ -1256,7 +1263,11 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const tools = visibleSpecs().map((spec) => {
+        const tool = toolToLLMTool(spec.tool);
+        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
+          ? lightPresentation(tool) : tool;
+      });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(
         allSpecs()
