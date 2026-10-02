@@ -1,9 +1,10 @@
 /**
- * AgenC daemon CLI controls.
+ * AgenC daemon foreground runtime: the daemon process itself (startup state
+ * recovery, request dispatch, health, snapshots, agent runtimes).
  *
- * F-03i owns the local process controls only: start, stop, status, reload,
- * restart, and the pid file. Request dispatch and health probes are wired by
- * later daemon rows.
+ * The process controls (start, stop, status, reload, restart and the pid
+ * file) live in daemon-control.ts, which loads this module only when the
+ * daemon actually runs.
  */
 
 import { crossProviderConsentAvailability, LiveApprovalBroker } from "./live-approval-broker.js";
