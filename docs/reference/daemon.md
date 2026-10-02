@@ -529,6 +529,7 @@ the TUI. Source:
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
 | Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule`, `session.shell.execute` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
+| Whisper | `audio.whisper.status`, `audio.whisper.install`, `audio.whisper.transcribe`. Host/Desktop only; a remote connection gets JSON-RPC `-32601`. Download idle clock: [whisper-local.md](../whisper-local.md#download-idle-clock) |
 
 `session.partialCompactFromMessage` is the daemon path behind TUI `/compact`
 (`messageOrdinal: 0`, `direction: "from"`). A successful transactional

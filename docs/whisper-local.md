@@ -42,9 +42,30 @@ temporary directory removed on success, failure, timeout, and cancellation.
 There is no audio history, logging of transcripts, or voice-note attachment.
 One installation or transcription is admitted at a time; excess work receives
 `WHISPER_BUSY`, not an unbounded queue. A transcription has a 90 second execution
-deadline and a 64 KiB combined output limit. Download deadline is ten minutes.
+deadline and a 64 KiB combined output limit. A model download fails after 60 seconds with no bytes, not a ten-minute wall clock; see [Download idle clock](#download-idle-clock).
 Client cancellation and disconnect terminate the child; SIGKILL follows after
 1.5 seconds if it does not stop. Silence returns an empty string, not filler text.
+
+## Download idle clock
+
+Model installation (`audio.whisper.install`) does **not** use a ten-minute
+wall-clock deadline. A slow connection that still delivers bytes is allowed
+to finish. The host gives up only after **60 seconds** with no bytes
+(`DOWNLOAD_IDLE_MS` in `runtime/src/audio/whisper.ts`). Every received chunk
+restarts that clock.
+
+A stall ends as `WHISPER_DOWNLOAD_FAILED` with
+`The Whisper model download stopped receiving data. Check your connection and try again.`
+It is a download failure, not `REQUEST_CANCELLED`. Client `request.cancel` and
+disconnect still abort the transfer. An incomplete `.download-*.partial` file
+is removed.
+
+There is no environment or `config.toml` override for this idle bound.
+Transcription still has its own 90 second execution deadline; that bound does
+not apply to downloads.
+
+Status checks never start a download. The existing model stays usable if a
+new download fails.
 
 ## Internal local RPCs
 

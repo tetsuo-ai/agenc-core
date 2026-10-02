@@ -269,6 +269,7 @@ These have their own pages. Short map:
 | Family | Vars | Doc |
 | --- | --- | --- |
 | Browser | `AGENC_BROWSER_EXECUTABLE`, `AGENC_BROWSER_HEADLESS`, `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK`, `AGENC_BROWSER_PROFILE_DIR`, `AGENC_BROWSER_NO_SANDBOX`, `AGENC_BROWSER_NAV_TIMEOUT_MS` | [browser.md](../browser.md) |
+| Whisper | `AGENC_WHISPER_CLI` (host daemon startup only; not a client snapshot). Absolute `whisper-cli` path. Download idle clock is 60 s of silence | [whisper-local.md](../whisper-local.md#download-idle-clock) |
 | Budget | `AGENC_BUDGET`, `AGENC_BUDGET_DAILY_USD`, `AGENC_BUDGET_MONTHLY_USD`, `AGENC_BUDGET_DAILY_TOKENS`, `AGENC_BUDGET_MONTHLY_TOKENS`, `AGENC_BUDGET_SOFT_THRESHOLD`, `AGENC_BUDGET_ENFORCE_INTERACTIVE` | [autonomy.md](autonomy.md) |
 | Admission concurrency | `AGENC_ADMISSION_GLOBAL_CONCURRENCY` (64), `AGENC_ADMISSION_WORKSPACE_CONCURRENCY` (32), `AGENC_ADMISSION_SESSION_CONCURRENCY` (8), `AGENC_ADMISSION_PARENT_CONCURRENCY` (4), `AGENC_ADMISSION_PROVIDER_CONCURRENCY` (16) | [autonomy.md](autonomy.md) |
 | Heartbeat | `AGENC_HEARTBEAT`, `AGENC_HEARTBEAT_INTERVAL`, `AGENC_HEARTBEAT_ACTIVE_HOURS`, `AGENC_HEARTBEAT_TARGET`. `skip_when_busy` has no env (TOML only, default true) | [autonomy.md](autonomy.md) |
