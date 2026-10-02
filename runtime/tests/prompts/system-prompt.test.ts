@@ -1408,7 +1408,8 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       "never bypass checks",
       "Investigate unfamiliar files, branches, configuration and locks before deleting/overwriting",
       "preserve others' work and resolve conflicts without discarding changes",
-      "FileRead must precede edits; shell reads do not authorize them",
+      "Read known files directly with FileRead before editing; shell reads do not authorize edits",
+      "Search only for missing context needed for the change",
       "Do not weaken tests or requirements, conceal failures or claim unverified work",
       "Write secure code; protect secrets",
       "Reread exact current text lost to compaction",
@@ -1435,13 +1436,19 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("Run relevant checks after final edits");
-      expect(light.text).toContain("briefly report results and stop");
+      expect(light.text).toContain("Complete requested files, exports and error cases");
+      expect(light.text).toContain("Run required and change-relevant checks once after final edits");
+      expect(light.text).toContain("Repeat for new edits, failures or unresolved concerns");
+      expect(light.text).toContain("diagnose the first failure and fix its cause before retrying");
+      expect(light.text).toContain("Briefly report results and stop");
+      expect(light.text).toContain("Report unavailable checks instead of rebuilding their tools");
       expect(light.text).toContain("Do not weaken tests or requirements");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
-      expect(light.text).not.toContain("briefly report results and stop");
+      expect(light.text).not.toContain("Briefly report results and stop");
+      expect(light.text).not.toContain("Run required and change-relevant checks once");
+      expect(light.text).not.toContain("Repeat for new edits, failures or unresolved concerns");
     }
   },
 );
