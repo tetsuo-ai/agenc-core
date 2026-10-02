@@ -1484,3 +1484,14 @@ test.each(["deepseek", "openai", "grok", "zai"])(
     expect(deadline.staticPrefix).toContain("restore your best verified state");
   },
 );
+
+test("Light says loaded AGENC.md instructions are already included, so the model does not search for them", async () => {
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: "light", ctx: fakeCtx(),
+    session: { services: { runtimeOptions: { lightMode: true, nonInteractive: true } } } as unknown as Session,
+  });
+  expect(snapshot.staticPrefix).toContain(
+    "AGENC.md is the instruction file; the runtime already includes the instructions it loads, so do not search for them",
+  );
+  expect(snapshot.staticPrefix).toContain("read/change other assistants' files only when the user names them");
+});
