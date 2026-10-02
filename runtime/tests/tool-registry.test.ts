@@ -2142,7 +2142,7 @@ describe("Light presentation and deferred capability preservation", () => {
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented).toEqual(lightPresentation({ type: "function", function: { name: canonical.name, description: canonical.description, parameters: canonical.inputSchema } }));
+      expect(presented).toEqual(lightPresentation({ type: "function", function: { name: canonical.name, description: canonical.description, parameters: canonical.inputSchema } }, { leanExec: presented.function.name === "exec_command" }));
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");

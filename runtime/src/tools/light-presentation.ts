@@ -52,7 +52,37 @@ function presentProperty(schema: unknown, hint: string | null | undefined): unkn
 }
 
 /** Adapt the earlier Light summaries without hiding accepted arguments. */
-export function lightPresentation(tool: LLMTool): LLMTool {
+export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: boolean } = {}): LLMTool {
+  const presented = lightPresentationCanonical(tool);
+  if (options.leanExec !== true || tool.function.name !== "exec_command") return presented;
+  const parameters = presented.function.parameters;
+  const properties = parameters.properties as Record<string, unknown> | undefined;
+  if (properties === undefined) return presented;
+  const required = Array.isArray(parameters.required)
+    ? (parameters.required as string[]).filter(name => LEAN_EXEC_FIELDS.has(name))
+    : undefined;
+  return { ...presented, function: {
+    ...presented.function,
+    description: `${presented.function.description ?? ""}${LEAN_EXEC_POINTER}`,
+    parameters: {
+      ...parameters,
+      ...(required !== undefined ? { required } : {}),
+      properties: Object.fromEntries(Object.entries(properties).filter(([name]) => LEAN_EXEC_FIELDS.has(name))),
+    },
+  } };
+}
+
+/**
+ * The exec_command fields a Light session sees until it asks for more. GPT models write every
+ * presented field on every call (on GPT-6 Luna the other fields were about 13 percent of the
+ * input per task), so the rest load through system.searchTools (select:exec_command), after which
+ * the session sees the full schema. Execution accepts every field either way.
+ */
+const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs", "yield_time_ms"]);
+const LEAN_EXEC_POINTER =
+  " Advanced fields (tty, login, shell, detach, max_output_tokens, sandbox escalation) are accepted; system.searchTools select:exec_command loads their schema.";
+
+function lightPresentationCanonical(tool: LLMTool): LLMTool {
   const description = descriptions[tool.function.name];
   if (description === undefined) return tool;
   const hints = fieldHints[tool.function.name] ?? {};

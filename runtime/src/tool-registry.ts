@@ -1267,10 +1267,16 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => {
+      const visible = visibleSpecs();
+      // The lean exec_command points at system.searchTools for its advanced fields, so it is lean
+      // only while that discovery tool is presented; otherwise the full schema is shown, as other
+      // capabilities fall back when discovery is unavailable.
+      const leanExec = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) &&
+        !discoveredToolNames.has("exec_command");
+      const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightPresentation(tool) : tool;
+          ? lightPresentation(tool, { leanExec }) : tool;
       });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(
