@@ -1408,7 +1408,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       "never bypass checks",
       "Investigate unfamiliar files, branches, configuration and locks before deleting/overwriting",
       "preserve others' work and resolve conflicts without discarding changes",
-      "Read known files directly with FileRead before editing; shell reads do not authorize edits",
+      "Read a known file before editing it: FileRead, or cat, sed -n or head of that file.",
       "Search only for missing context needed for the change",
       "Do not weaken tests or requirements, conceal failures or claim unverified work",
       "Write secure code; protect secrets",

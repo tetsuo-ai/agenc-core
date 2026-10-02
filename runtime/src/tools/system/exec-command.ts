@@ -1,4 +1,5 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { constants as fsConstants, existsSync, realpathSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
@@ -11,6 +12,7 @@ import {
   shellWorkspaceMutationPermission,
 } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { recordSessionRead, resolveSessionId, safePathAllowingSessionPlanFile } from "./filesystem.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -83,6 +85,247 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  * with another model call. Explicit yields, tty and detached processes keep their own windows.
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
+
+/** One read step of a `;`/`&&` chain: cat of named files, or an explicit line window of one file. */
+type ShellReadStep =
+  | { readonly kind: "full"; readonly paths: readonly string[] }
+  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
+
+/**
+ * Words of each `;`/`&&` step as the shell would see them: single and double quotes and backslash
+ * escapes are honored, so quoted text never becomes a step. Any other shell syntax (pipes,
+ * redirection other than a literal 2>/dev/null, substitution, expansion, subshells, groups,
+ * background jobs, `||`, newlines) fails closed with no steps.
+ */
+function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: string[][] } | undefined {
+  const steps: string[][] = [];
+  // Index into steps where each `;`-separated and-list starts.
+  const listStarts: number[] = [0];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  const endWord = () => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
+  };
+  const endStep = () => {
+    endWord();
+    steps.push(words);
+    words = [];
+  };
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd[i]!;
+    if (ch === "'") {
+      const close = cmd.indexOf("'", i + 1);
+      if (close < 0) return undefined;
+      word += cmd.slice(i + 1, close);
+      inWord = true;
+      i = close;
+    } else if (ch === "\"") {
+      let j = i + 1;
+      for (; j < cmd.length && cmd[j] !== "\""; j += 1) {
+        if (cmd[j] === "$" || cmd[j] === "`") return undefined;
+        if (cmd[j] === "\\") {
+          // POSIX: inside double quotes a backslash escapes only $ ` " \ and newline; before any
+          // other character it stays part of the word.
+          if (j + 1 >= cmd.length) return undefined;
+          if ("$`\"\\\n".includes(cmd[j + 1]!)) j += 1;
+          else word += "\\";
+        }
+        word += cmd[j]!;
+      }
+      if (j >= cmd.length) return undefined;
+      inWord = true;
+      i = j;
+    } else if (ch === "\\") {
+      if (i + 1 >= cmd.length || cmd[i + 1] === "\n") return undefined;
+      word += cmd[i + 1]!;
+      inWord = true;
+      i += 1;
+    } else if (ch === " " || ch === "\t") {
+      endWord();
+    } else if (ch === ";") {
+      endStep();
+      listStarts.push(steps.length);
+    } else if (ch === "&" && cmd[i + 1] === "&") {
+      endStep();
+      i += 1;
+    } else if (ch === ">" && !inWord) {
+      return undefined;
+    } else if (ch === ">" && word === "2" && cmd.startsWith(">/dev/null", i) && /^(?:[ \t;&]|$)/u.test(cmd.slice(i + 10, i + 11))) {
+      word = "";
+      inWord = false;
+      i += 9;
+    } else if ("|<>`$(){}&\n\r#*?[]~!".includes(ch)) {
+      return undefined;
+    } else {
+      word += ch;
+      inWord = true;
+    }
+  }
+  endStep();
+  // Only steps that certainly ran under exit status 0: the first step of every and-list (it runs
+  // whatever came before the `;`) and every step of the final and-list (exit 0 means none failed).
+  // A later step of an earlier and-list may have been skipped by a failed `&&`.
+  const finalStart = listStarts[listStarts.length - 1]!;
+  return {
+    all: steps.filter(step => step.length > 0),
+    ran: steps.filter((step, index) => step.length > 0 && (index >= finalStart || listStarts.includes(index))),
+  };
+}
+
+/**
+ * Commands that cannot end, replace or redirect the shell's own execution, so under exit status 0
+ * every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
+ * trap, return, functions, variable assignments, unknown commands) fails the whole chain closed.
+ */
+/** Shells whose parsing of quotes, `;` and `&&` matches shellSteps. */
+const POSIX_SH_SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "dash"]);
+
+const CHAIN_SAFE_COMMANDS: ReadonlySet<string> = new Set([
+  "cat", "sed", "head", "tail", "printf", "echo", "ls", "pwd", "git", "rg", "grep", "find", "wc", "nl", "true",
+]);
+
+function shellReadSteps(cmd: string): ShellReadStep[] {
+  const steps: ShellReadStep[] = [];
+  const parsed = shellSteps(cmd);
+  // Every syntactic step must be allowlisted, including steps a short-circuit may have skipped:
+  // "printf x && exit 0; cat a" ends the shell before the cat.
+  if (parsed === undefined || parsed.all.some(words => !CHAIN_SAFE_COMMANDS.has(words[0]!))) return steps;
+  for (const words of parsed.ran) {
+    const [name, ...rest] = words;
+    if (name === "cat" && rest.length > 0 && rest.every(word => PATH_ARG.test(word) && !word.startsWith("-"))) {
+      steps.push({ kind: "full", paths: rest });
+      continue;
+    }
+    const range = name === "sed" && rest.length === 3 && rest[0] === "-n" ? /^(\d+),(\d+)p$/u.exec(rest[1]!) : null;
+    if (range !== null && PATH_ARG.test(rest[2]!) && !rest[2]!.startsWith("-")) {
+      steps.push({ kind: "lines", path: rest[2]!, start: Number(range[1]), end: Number(range[2]) });
+      continue;
+    }
+    if (name !== "head") continue;
+    const count = rest.length === 3 && rest[0] === "-n" ? rest[1]!
+      : rest.length === 2 && /^-n?\d+$/u.test(rest[0]!) ? rest[0]!.replace(/^-n?/u, "") : undefined;
+    const path = rest[rest.length - 1];
+    if (count !== undefined && /^\d+$/u.test(count) && path !== undefined && PATH_ARG.test(path) && !path.startsWith("-")) {
+      steps.push({ kind: "lines", path, start: 1, end: Number(count) });
+    }
+  }
+  return steps;
+}
+
+/** Largest file the optional read proof will snapshot. */
+const READ_PROOF_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * One snapshot bound to the opened object: nonblocking and without following a swapped-in symlink,
+ * so a path replaced by a FIFO or device after the command cannot hold the finished exec waiting;
+ * only a bounded regular file is read.
+ */
+async function regularFileSnapshot(path: string) {
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size === 0 || stats.size > READ_PROOF_MAX_BYTES) return undefined;
+    // Read at most the stat size plus one byte, so a file that grows after the stat is never read
+    // past the bound; any extra byte rejects the snapshot.
+    const buffer = Buffer.alloc(stats.size + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    if (filled !== stats.size) return undefined;
+    return { bytes: buffer.subarray(0, filled), stats };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Current text of a workspace file from two snapshots that must agree on bytes, size, mtime, ctime,
+ * inode and device, so the recorded mtime belongs to bytes that held across the window; a later
+ * change shows as a newer mtime, which the gate refuses as stale.
+ */
+async function stableWorkspaceText(
+  path: string,
+  allowedPaths: readonly string[],
+  args: Record<string, unknown>,
+): Promise<{ readonly canonical: string; readonly text: string; readonly mtimeMs: number } | undefined> {
+  const safe = await safePathAllowingSessionPlanFile(path, allowedPaths, args);
+  if (!safe.safe) return undefined;
+  try {
+    const first = await regularFileSnapshot(safe.resolved);
+    if (first === undefined) return undefined;
+    const second = await regularFileSnapshot(safe.resolved);
+    if (
+      second === undefined || !first.bytes.equals(second.bytes) || first.bytes.length !== first.stats.size ||
+      first.stats.size !== second.stats.size || first.stats.mtimeMs !== second.stats.mtimeMs ||
+      first.stats.ctimeMs !== second.stats.ctimeMs || first.stats.ino !== second.stats.ino ||
+      first.stats.dev !== second.stats.dev || first.bytes.includes(0)
+    ) return undefined;
+    // Strict decoding: distinct invalid byte sequences would otherwise compare equal as U+FFFD.
+    const text = STRICT_UTF8.decode(first.bytes);
+    if (text.includes("�")) return undefined;
+    return { canonical: safe.resolved, text, mtimeMs: first.stats.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Light records the reads a model makes through the shell for the read-before-write gate: a `cat`
+ * step of a `;`/`&&` chain is a full read of each named file whose exact current content appears in
+ * the output, and a `sed -n 'A,Bp' file` or `head -n N file` step is a partial read of those lines
+ * when exactly those lines appear. The command must exit 0 untruncated with no live session. The
+ * model has then seen the current text, which is what the gate asks for (GPT models read this way:
+ * 0.2 to 0.3 gate refusals per benchmark task, each costing a FileRead and a retry).
+ */
+export async function recordShellReads(params: {
+  readonly cmd: string;
+  readonly output: ExecCommandToolOutput;
+  readonly cwd: string;
+  readonly allowedPaths: readonly string[];
+  readonly args: Record<string, unknown>;
+}): Promise<void> {
+  const { output } = params;
+  if (output.exitCode !== 0 || output.truncated || output.timedOut || output.session_id !== undefined) return;
+  if (output.stdout.length === 0) return;
+  const sessionId = resolveSessionId(params.args);
+  if (sessionId === undefined) return;
+  const steps = shellReadSteps(params.cmd);
+  if (steps.length === 0 || steps.length > 16) return;
+  for (const step of steps) {
+    for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
+      const file = await stableWorkspaceText(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
+      if (file === undefined) continue;
+      if (step.kind === "full") {
+        if (!output.stdout.includes(file.text)) continue;
+        recordSessionRead(sessionId, file.canonical, {
+          content: file.text.split(/\r?\n/u).join("\n"),
+          timestamp: file.mtimeMs,
+          viewKind: "full",
+          rawContent: file.text,
+        });
+        continue;
+      }
+      const lines = file.text.split(/\r?\n/u);
+      if (step.start < 1 || step.end < step.start || step.start > lines.length) continue;
+      const window = lines.slice(step.start - 1, Math.min(step.end, lines.length));
+      const shown = window.join("\n");
+      if (shown.length === 0 || !output.stdout.replace(/\r\n/gu, "\n").includes(shown)) continue;
+      const whole = step.start === 1 && step.end >= lines.length;
+      recordSessionRead(sessionId, file.canonical, whole
+        ? { content: lines.join("\n"), timestamp: file.mtimeMs, viewKind: "full", rawContent: file.text }
+        : { content: shown, timestamp: file.mtimeMs, viewKind: "partial", readOffset: step.start, readLimit: step.end - step.start + 1 });
+    }
+  }
+}
 const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
 const DIRECT_MCP_TOOL_COMMAND_RE =
   /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
@@ -902,6 +1145,23 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
             });
+        // Only a non-login POSIX sh-family shell parses the command the way shellSteps does; a login
+        // shell may also load profiles that redefine commands.
+        const effectiveShell = asString(args.shell)?.trim() || manager.shellPath || "/bin/bash";
+        if (
+          config?.lightMode === true && !detach && tty !== true && asBoolean(args.login) !== true &&
+          // Startup hooks can redefine allowlisted commands; a manager that cannot tell counts as hooked.
+          manager.shellStartupHooksPresent?.() === false &&
+          POSIX_SH_SHELLS.has(effectiveShell.replaceAll("\\", "/").split("/").pop()!)
+        ) {
+          await recordShellReads({
+            cmd,
+            output,
+            cwd: effectiveWorkdir ?? config.cwd ?? process.cwd(),
+            allowedPaths: config.allowedPaths ?? (config.cwd !== undefined ? [config.cwd] : []),
+            args: args as Record<string, unknown>,
+          });
+        }
         // exitCode === null has these sub-cases. The reliable discriminator
         // is `process_id !== undefined` (or `detached` with a pid):
         //   - process_id set    → process is still alive (YIELDED to
