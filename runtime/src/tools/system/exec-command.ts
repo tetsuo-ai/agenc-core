@@ -77,6 +77,12 @@ export interface ExecCommandToolConfig extends BashToolConfig {
 
 const PLAIN_INTERACTIVE_SHELL_RE =
   /^\s*(?:(?:\/[\w.-]+)+\/)?(?:bash|dash|ksh|sh|zsh)(?:\s+-[A-Za-z]*[il][A-Za-z]*)*\s*$/u;
+/**
+ * Light waits up to the yield ceiling for a command without an explicit yield, so builds and test
+ * runs that pass the 10 s default return their result instead of a session_id the model must poll
+ * with another model call. Explicit yields, tty and detached processes keep their own windows.
+ */
+export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
 const DIRECT_MCP_TOOL_COMMAND_RE =
   /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
@@ -869,7 +875,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           callId: asString(args.__callId),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
-            : {}),
+            : config?.lightMode === true && !detach && tty !== true
+              ? { yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }
+              : {}),
           ...(asNumber(args.max_output_tokens) !== undefined
             ? { max_output_tokens: asNumber(args.max_output_tokens) }
             : {}),

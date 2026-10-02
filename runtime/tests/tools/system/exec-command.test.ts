@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
+  LIGHT_DEFAULT_EXEC_YIELD_TIME_MS,
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
@@ -1021,6 +1022,45 @@ describe("exec_command tool", () => {
       expect(result.content).toContain(RESIDUAL_PROCESSES_NOTE);
       expect(result.metadata).toMatchObject({ residualProcessesTerminated: true });
       expect(result.codeModeResult).toMatchObject({ residual_processes_terminated: true });
+    });
+  });
+
+  describe("Light default yield", () => {
+    function lightTool(lightMode: boolean) {
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+        async () => completedExecOutput("ran"),
+      );
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand,
+        writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () => completedExecOutput("")),
+        closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+      };
+      return {
+        execCommand,
+        tool: createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager, lightMode }),
+      };
+    }
+
+    test("Light waits up to the yield ceiling when the model gives no yield, so a slow test run returns its result", async () => {
+      const { tool, execCommand } = lightTool(true);
+      await tool.execute(contextArgs({ cmd: "go test ./..." }));
+      expect(execCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ cmd: "go test ./...", yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }),
+      );
+      expect(LIGHT_DEFAULT_EXEC_YIELD_TIME_MS).toBe(30_000);
+    });
+
+    test("an explicit yield, a tty and a Standard session keep their own windows", async () => {
+      const light = lightTool(true);
+      await light.tool.execute(contextArgs({ cmd: "npm run dev", yield_time_ms: 1_000 }));
+      expect(light.execCommand).toHaveBeenLastCalledWith(expect.objectContaining({ yield_time_ms: 1_000 }));
+      await light.tool.execute(contextArgs({ cmd: "python3", tty: true }));
+      expect(light.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
+
+      const standard = lightTool(false);
+      await standard.tool.execute(contextArgs({ cmd: "go test ./..." }));
+      expect(standard.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
     });
   });
 
