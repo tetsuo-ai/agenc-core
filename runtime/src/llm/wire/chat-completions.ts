@@ -201,15 +201,21 @@ function reasoningToolContinuation(
       return undefined;
     }
     index += 1;
-    for (const toolCallId of toolCallIds) {
+    // Parallel tools may finish in a different order from the assistant's
+    // calls. Match this contiguous batch by ID without reordering messages or
+    // reasoning blocks; every call must still have exactly one result.
+    const pendingToolCallIds = new Set(toolCallIds);
+    while (pendingToolCallIds.size > 0) {
       const result = messages[index];
+      const resultId = result?.toolCallId?.trim();
       if (
         result?.role !== "tool" ||
-        result.toolCallId?.trim() !== toolCallId
+        resultId === undefined ||
+        !pendingToolCallIds.delete(resultId)
       ) {
         return undefined;
       }
-      seenToolCallIds.add(toolCallId);
+      seenToolCallIds.add(resultId);
       index += 1;
     }
     groups.push({
