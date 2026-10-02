@@ -27,11 +27,14 @@ const select = (registry: ReturnType<typeof buildFilteredRegistry>, name: string
   registry.dispatch({ id: "discover", name: "system.searchTools", arguments: JSON.stringify({ select: name }) });
 
 describe("Light child capability discovery", () => {
-  it("discovers editing/search only in the requesting nested child and preserves role exclusions", async () => {
+  it("offers editing immediately and discovers search only in the requesting nested child", async () => {
     const parent = fixture();
     const child = buildFilteredRegistry(parent, opts("child"));
     const nested = buildFilteredRegistry(child, opts("nested"));
-    for (const name of ["Edit", "Write", "Grep", "Glob"]) {
+    for (const registry of [parent, child, nested]) {
+      expect(names(registry)).toEqual(expect.arrayContaining(["Edit", "Write"]));
+    }
+    for (const name of ["Grep", "Glob"]) {
       expect(names(nested)).not.toContain(name);
       expect(JSON.parse((await select(nested, name)).content).loaded).toEqual([name]);
       expect(names(nested)).toContain(name);
@@ -45,6 +48,24 @@ describe("Light child capability discovery", () => {
       expect(names(readonly)).not.toContain(name);
     }
     expect(JSON.parse((await select(readonly, "Grep")).content).loaded).toEqual(["Grep"]);
+  });
+
+  it.each([
+    { executionConstraint: { kind: "read-only" as const, ownerThreadId: "parent" } },
+    { disabledTools: new Set(["Edit", "Write"]) },
+    { allowlist: ["FileRead", "system.searchTools"] },
+  ])("initial editing exposure cannot escape nested role restrictions (%j)", async restriction => {
+    const child = buildFilteredRegistry(fixture(), { ...opts("restricted"), ...restriction });
+    const nested = buildFilteredRegistry(child, opts("nested"));
+    for (const registry of [child, nested]) {
+      for (const name of ["Edit", "Write"]) {
+        expect(names(registry)).not.toContain(name);
+        expect(JSON.parse((await select(registry, name)).content).missingSelections).toContain(name);
+        expect((await registry.dispatch({ id: `blocked-${name}`, name,
+          arguments: '{"file_path":"never-written","content":"blocked","old_string":"before","new_string":"after"}' })).isError).toBe(true);
+        expect(names(registry)).not.toContain(name);
+      }
+    }
   });
 
   it("keeps explicitly allowed tools usable when the role excludes discovery", async () => {

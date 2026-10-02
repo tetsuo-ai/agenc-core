@@ -2138,7 +2138,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "FileRead", "exec_command", "system.searchTools",
+      "FileRead", "Edit", "Write", "exec_command", "system.searchTools",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
@@ -2167,12 +2167,12 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(lightPresentation({ type: "function", function: { name: read.name, description: read.description, parameters: read.inputSchema } }));
   });
 
-  test("loads editing and search schemas on demand without changing canonical tools or other sessions", async () => {
+  test("loads search schemas on demand without changing canonical tools or other sessions", async () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     const other = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     const baseline = light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
       approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }));
-    for (const name of ["Edit", "Write", "Grep", "Glob"]) {
+    for (const name of ["Grep", "Glob"]) {
       expect(light.toLLMTools().some(t => t.function.name === name)).toBe(false);
       const result = await light.dispatch({ id: `select-${name}`, name: "system.searchTools",
         arguments: JSON.stringify({ select: name }) });
@@ -2193,12 +2193,14 @@ describe("Light presentation and deferred capability preservation", () => {
       const light = buildToolRegistry({
         workspaceRoot: "/tmp",
         lightMode: true,
-        unavailableCalledTools: ["Grep"],
+        unavailableCalledTools: ["Grep", "Edit", "Write"],
         ...(toolsConfig !== undefined ? { toolsConfig } : {}),
       });
-      light.discoverToolNames?.(["Grep"]);
-      expect(light.tools.map(tool => tool.name)).toContain("Grep");
-      expect(light.toLLMTools().map(tool => tool.function.name)).not.toContain("Grep");
+      light.discoverToolNames?.(["Grep", "Edit", "Write"]);
+      for (const name of ["Grep", "Edit", "Write"]) {
+        expect(light.tools.map(tool => tool.name)).toContain(name);
+        expect(light.toLLMTools().map(tool => tool.function.name)).not.toContain(name);
+      }
     },
   );
 
@@ -2209,7 +2211,15 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
     expect(await disabled.dispatch({ id: "disabled", name: "Write", arguments: '{}' })).toMatchObject({ isError: true, content: expect.stringContaining("unknown tool: Write") });
     const admitted = buildProductionToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
-    expect(await admitted.dispatch({ id: "no-authority", name: "FileRead", arguments: '{"file_path":"/tmp/never-read"}' })).toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
+    for (const name of ["FileRead", "Edit", "Write"]) {
+      expect(admitted.toLLMTools().some(tool => tool.function.name === name)).toBe(true);
+      expect(await admitted.dispatch({ id: `no-authority-${name}`, name,
+        arguments: JSON.stringify({ file_path: "/tmp/never-read",
+          ...(name === "Write" ? { content: "blocked" } : {}),
+          ...(name === "Edit" ? { old_string: "before", new_string: "after" } : {}),
+        }) }))
+        .toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
+    }
   });
 });
 
