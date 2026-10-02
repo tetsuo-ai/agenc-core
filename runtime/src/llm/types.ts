@@ -59,6 +59,19 @@ export interface ProviderReasoningProvenance {
   readonly model: string;
 }
 
+/** An explicit empty GLM replay is different from unavailable reasoning. */
+export function isKnownEmptyProviderReasoning(
+  content: unknown,
+  provenance: unknown,
+): boolean {
+  return content === "" && isRecord(provenance) &&
+    typeof provenance.provider === "string" &&
+    ["zai", "zai-coding-plan"].includes(provenance.provider.trim().toLowerCase()) &&
+    typeof provenance.model === "string" &&
+    /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
+      .test(provenance.model.trim());
+}
+
 /** Legacy unbound durable replay state; readable but never safe to replay. */
 export interface ProviderReasoningReplayV1 {
   readonly version: 1;

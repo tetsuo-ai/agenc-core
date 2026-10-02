@@ -3,6 +3,7 @@ import type {
   LLMMessage,
   ProviderReasoningReplay,
 } from "../llm/types.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 import {
@@ -110,7 +111,11 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.providerReasoningContent !== undefined &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning: {
             ...(message.providerReasoningProvenance !== undefined &&
@@ -219,7 +224,11 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.providerReasoning !== undefined &&
-    item.providerReasoning.content.length > 0
+    (item.providerReasoning.content.length > 0 ||
+      (item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0 &&
+        item.providerReasoning.version === 2 && isKnownEmptyProviderReasoning(
+          item.providerReasoning.content, item.providerReasoning,
+        )))
       ? {
           providerReasoningContent: item.providerReasoning.content,
           ...(item.providerReasoning.version === 2 &&
