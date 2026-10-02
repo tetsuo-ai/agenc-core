@@ -86,6 +86,7 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 /** A plain `cat` of named files: no flags, globs, quoting, pipes, redirection or chaining. */
 const PLAIN_CAT_COMMAND = /^\s*cat((?:[ \t]+[A-Za-z0-9_./@+-]+)+)\s*$/u;
 
@@ -115,9 +116,23 @@ export async function recordPlainCatReads(params: {
     const safe = await safePathAllowingSessionPlanFile(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
     if (!safe.safe) return;
     try {
-      const [bytes, stats] = await Promise.all([readFile(safe.resolved), stat(safe.resolved)]);
-      if (!stats.isFile() || bytes.includes(0)) return;
-      files.push({ canonical: safe.resolved, text: bytes.toString("utf-8"), mtimeMs: stats.mtimeMs });
+      // Bytes read on both sides of the stats, so the recorded mtime belongs to bytes that held
+      // before and after it; a change after the second read shows as a newer mtime, which the gate
+      // already refuses as stale.
+      const first = await readFile(safe.resolved);
+      const stats = await stat(safe.resolved);
+      const second = await readFile(safe.resolved);
+      const confirm = await stat(safe.resolved);
+      if (
+        !stats.isFile() || !first.equals(second) || first.length !== stats.size ||
+        stats.size !== confirm.size || stats.mtimeMs !== confirm.mtimeMs ||
+        stats.ctimeMs !== confirm.ctimeMs || stats.ino !== confirm.ino || stats.dev !== confirm.dev ||
+        first.includes(0)
+      ) return;
+      // Strict decoding: distinct invalid byte sequences would otherwise compare equal as U+FFFD.
+      const text = STRICT_UTF8.decode(first);
+      if (text.includes("\uFFFD")) return;
+      files.push({ canonical: safe.resolved, text, mtimeMs: stats.mtimeMs });
     } catch {
       return;
     }
