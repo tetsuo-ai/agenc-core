@@ -27,7 +27,8 @@ test("all eight Light schemas retain the canonical contract and source schema", 
   const shell = wire.find(t => t.function.name === "exec_command")!;
   const canonicalShell = registry.tools.find(t => t.name === "exec_command")!;
   for (const name of ["tty", "detach", "sandbox_permissions", "additional_permissions", "justification", "prefix_rule"]) {
-    expect((shell.function.parameters.properties as Record<string, unknown>)[name]).toEqual((canonicalShell.inputSchema.properties as Record<string, unknown>)[name]);
+    expect(withoutDescriptions((shell.function.parameters.properties as Record<string, unknown>)[name]))
+      .toEqual(withoutDescriptions((canonicalShell.inputSchema.properties as Record<string, unknown>)[name]));
   }
 });
 
@@ -53,12 +54,17 @@ test("descriptions do not rewrite data values or hide advanced arguments", () =>
     type: "object", required: ["file_path"], additionalProperties: false,
     properties: { file_path: { type: "string", description: "long" },
       advanced: { type: "object", properties: { description: { enum: ["must remain"] } }, default: { description: "literal" } },
-      offset: { anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }] } },
+      offset: { anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }],
+        description: "Redundant field explanation", default: { description: "literal data remains" } } },
   } } };
   const before = JSON.stringify(input);
   const output = lightPresentation(input);
   expect(withoutDescriptions(output.function.parameters)).toEqual(withoutDescriptions(input.function.parameters));
   expect((output.function.parameters.properties as Record<string, unknown>).advanced).toBe((input.function.parameters.properties as Record<string, unknown>).advanced);
+  const offset = (output.function.parameters.properties as Record<string, Record<string, unknown>>).offset!;
+  expect(offset).not.toHaveProperty("description");
+  expect(offset.default).toEqual({ description: "literal data remains" });
+  expect(offset.anyOf).toEqual((input.function.parameters.properties as Record<string, Record<string, unknown>>).offset!.anyOf);
   expect(JSON.stringify(input)).toBe(before);
 });
 
@@ -67,14 +73,30 @@ test("compact descriptions retain retrieval, mutation and process lifecycle cons
   registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin"]);
   const description = (name: string) => registry.toLLMTools().find(t => t.function.name === name)!.function.description;
   expect(description("FileRead")).toMatch(/2000 lines.*25000 tokens/);
-  expect(description("FileRead")).toMatch(/PDFs >10 pages require pages, maximum 20/);
-  expect(description("Edit")).toContain("Requires FileRead first");
+  expect(description("FileRead")).toMatch(/PDFs >10 pages require pages.*max 20/);
+  expect(description("FileRead")).toContain("Display-only numbers are sparse unless dense_line_numbers");
+  expect(description("Edit")).toContain("FileRead first");
+  expect(description("Edit")).toContain("replace_all replaces every match (default false)");
   expect(description("Write")).toContain("existing files require FileRead first");
   expect(description("exec_command")).toContain("leftovers stop on return, yielded processes at session end");
-  expect(description("exec_command")).toContain("danger-full-access, no tty");
   expect(description("write_stdin")).toContain("input requires initial tty=true");
   expect(description("Grep")).toContain("no fallback");
   const grep = registry.toLLMTools().find(t => t.function.name === "Grep")!;
   const limit = (grep.function.parameters.properties as Record<string, { description: string }>).head_limit;
   expect(limit.description).toContain("preserving safety ceilings");
+});
+
+test("compact shell fields keep permission and process-lifecycle conditions", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
+  const fields = shell.function.parameters.properties as Record<string, { description: string }>;
+  for (const text of ["required for persistent shells/write_stdin input", "Unavailable in contained operations",
+    "tty=false and non-interactive flags", "ask the user", "Run button"]) expect(fields.tty!.description).toContain(text);
+  for (const text of ["own session", "stdout/stderr logged", "AgenC never stops it", "survives command/session end",
+    "yield_time_ms (default 2000)", "early exit", "pid/log path", "Only danger-full-access",
+    "--dangerously-bypass-approvals-and-sandbox", "never tty"]) expect(fields.detach!.description).toContain(text);
+  expect(fields.additional_permissions!.description).toContain('sandbox_permissions="with_additional_permissions"');
+  expect(fields.justification!.description).toContain("Why elevated execution");
+  expect(fields.prefix_rule!.description).toContain("approval caching");
+  expect(registry.tools.find(t => t.name === "exec_command")?.requiresApproval).toBe(true);
 });
