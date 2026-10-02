@@ -229,6 +229,8 @@ export interface PersistedAdmissionRecord {
   admittedAt?: string;
   completedAt?: string;
   reason?: string;
+  /** Cause of a parent_cancel_locked denial, recovered from its durable lock. */
+  parentLockCause?: "cancellation" | "unknown_outcome" | "provider_overrun";
   actualTokens?: number;
   actualCostUsd?: number | null;
 }

@@ -859,6 +859,83 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     });
   });
 
+  it.each([false, true])("preserves cancellation when a cancelled step is acquired again (dispatched=%s)", async (dispatched) => {
+    const value = kernel("cancelled-retry");
+    const client = bind(value, "cancelled-run");
+    const lease = await acquire(client);
+    if (dispatched) {
+      client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    }
+    client.cancelRun("operator_cancel");
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+
+    await expect(acquire(client)).rejects.toMatchObject({
+      reason: `cancelled_${dispatched ? "after" : "before"}_dispatch:operator_cancel`,
+      decision: "cancelled",
+    });
+    await expect(acquire(client, "next-stage")).rejects.toMatchObject({
+      reason: "parent_cancel_locked",
+      decision: "cancelled",
+    });
+  });
+
+  it.each([
+    { status: "cancelled", reason: undefined, decision: "cancelled" },
+    { status: "unknown_outcome", reason: undefined, decision: "deny" },
+    { status: "provider_overrun", reason: undefined, decision: "deny" },
+    { status: "running", reason: "operator_cancel", decision: "cancelled" },
+    { status: "running", reason: "unknown_outcome", decision: "deny" },
+    { status: "cancelled", reason: "provider_overrun", decision: "deny" },
+  ])("classifies an ancestor lock by its cause (status=$status, reason=$reason)", async ({ status, reason, decision }) => {
+    const setup = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const at = new Date().toISOString();
+      upsertAgentRun(setup, {
+        id: "locked-parent",
+        objective: "ancestor lock classification",
+        status,
+        startedAt: at,
+        lastActiveAt: at,
+      });
+      if (reason !== undefined) {
+        new ExecutionAdmissionRepository(setup).cancel("locked-parent", { reason });
+      }
+    } finally {
+      setup.close();
+    }
+    const value = kernel("ancestor-lock-cause");
+    const parent = bind(value, "locked-parent");
+    const child = parent.forSession({ runId: "child-run", sessionId: "child-run" });
+
+    // Both the initial denial and a replay of its durable record retain the cause.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(acquire(child)).rejects.toMatchObject({
+        reason: "parent_cancel_locked",
+        decision,
+      });
+    }
+  });
+
+  it("preserves cancellation when it wins between enqueue and claim", async () => {
+    const value = kernel("cancel-before-claim");
+    const client = bind(value, "cancelled-run");
+    const claim = ExecutionAdmissionRepository.prototype.claim;
+    const spy = vi.spyOn(ExecutionAdmissionRepository.prototype, "claim")
+      .mockImplementationOnce(function (options) {
+        this.cancel("cancelled-run", { reason: "operator_cancel" });
+        return claim.call(this, options);
+      });
+    try {
+      await expect(acquire(client)).rejects.toMatchObject({
+        decision: "cancelled",
+      });
+      expect(spy).toHaveBeenCalledOnce();
+      expect(value.activeCount).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("cancels a dispatched child when its parent is cancelled", async () => {
     const value = kernel("parent-cancel");
     const parent = bind(value, "parent-run");
