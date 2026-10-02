@@ -19,6 +19,7 @@
 
 import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -2344,6 +2345,7 @@ export function buildFilteredRegistry(
       const wrapped = wrapToolForChild(tool, {
         ...opts,
         toolCatalogScope,
+        onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
         ...(searchTools !== undefined ? { searchTools } : {}),
       });
       const sessionSurface = (wrapped as Tool & {
@@ -2393,7 +2395,10 @@ export function buildFilteredRegistry(
       });
     }
     const advertised = base.toLLMTools();
-    return (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+    const visible = advertised.length === 0 ? fallbackAdvertisedTools() : advertised;
+    const names = new Set(visible.map(tool => tool.function.name));
+    return [...visible, ...fallbackAdvertisedTools().filter(tool =>
+      discoveredToolNames.has(tool.function.name) && !names.has(tool.function.name))]
       .filter((tool) => isEligible(tool.function.name as string));
   };
   const advertisedLLMTools = () => {
@@ -2492,6 +2497,7 @@ export function buildFilteredRegistry(
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
           toolCatalogScope,
+          onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2940,6 +2946,7 @@ function wrapToolForChild(
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly searchTools?: Tool["execute"];
+    readonly onExecSessionYielded?: () => void;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -3018,9 +3025,8 @@ function wrapToolForChild(
     } : {}),
     async execute(args) {
       const prepared = await prepareChildToolCall(source, args, executionOpts);
-      return "result" in prepared
-        ? prepared.result
-        : source.execute(prepared.args);
+      if ("result" in prepared) return prepared.result;
+      return source.execute(prepared.args);
     },
   });
   childToolBindings.set(wrapped, { source, ...(policy !== undefined ? { policy } : {}) });
@@ -3156,6 +3162,7 @@ async function prepareChildToolCall(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly onExecSessionYielded?: () => void;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -3254,6 +3261,11 @@ async function prepareChildToolCall(
     const runtimeSandbox = broker.runtimeSandbox("child_agent");
     if (runtimeSandbox === undefined) throw new Error("Read-only inspection requires platform isolation");
     attachReadOnlyInspectionInvocation(childArgs, prepareReadOnlyInspectionInvocation(inspected.invocation, runtimeSandbox));
+  }
+  if (tool.name === "exec_command" && opts.onExecSessionYielded !== undefined) {
+    // Both admitted registry dispatch and direct tool execution use this final
+    // argument object. Bind after every policy rewrite and authority injection.
+    bindExecSessionDiscovery(childArgs, opts.onExecSessionYielded);
   }
   return { args: childArgs };
 }

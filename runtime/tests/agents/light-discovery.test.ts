@@ -27,6 +27,26 @@ const select = (registry: ReturnType<typeof buildFilteredRegistry>, name: string
   registry.dispatch({ id: "discover", name: "system.searchTools", arguments: JSON.stringify({ select: name }) });
 
 describe("Light child capability discovery", () => {
+  it("discovers editing/search only in the requesting nested child and preserves role exclusions", async () => {
+    const parent = fixture();
+    const child = buildFilteredRegistry(parent, opts("child"));
+    const nested = buildFilteredRegistry(child, opts("nested"));
+    for (const name of ["Edit", "Write", "Grep", "Glob"]) {
+      expect(names(nested)).not.toContain(name);
+      expect(JSON.parse((await select(nested, name)).content).loaded).toEqual([name]);
+      expect(names(nested)).toContain(name);
+      expect(names(parent)).not.toContain(name);
+      expect(names(child)).not.toContain(name);
+    }
+    const readonly = buildFilteredRegistry(parent, { ...opts("reader"),
+      executionConstraint: { kind: "read-only", ownerThreadId: "parent" } });
+    for (const name of ["Edit", "Write"]) {
+      expect(JSON.parse((await select(readonly, name)).content).missingSelections).toEqual([name]);
+      expect(names(readonly)).not.toContain(name);
+    }
+    expect(JSON.parse((await select(readonly, "Grep")).content).loaded).toEqual(["Grep"]);
+  });
+
   it("keeps explicitly allowed tools usable when the role excludes discovery", async () => {
     const parent = fixture();
     const child = buildFilteredRegistry(parent, { ...opts("restricted"), allowlist: ["Specialist"] });

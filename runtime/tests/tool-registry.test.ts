@@ -2138,7 +2138,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "FileRead", "exec_command", "system.searchTools",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
@@ -2165,6 +2165,26 @@ describe("Light presentation and deferred capability preservation", () => {
     await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
     const read = light.tools.find(tool => tool.name === "FileRead")!;
     expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(lightPresentation({ type: "function", function: { name: read.name, description: read.description, parameters: read.inputSchema } }));
+  });
+
+  test("loads editing and search schemas on demand without changing canonical tools or other sessions", async () => {
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const other = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const baseline = light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }));
+    for (const name of ["Edit", "Write", "Grep", "Glob"]) {
+      expect(light.toLLMTools().some(t => t.function.name === name)).toBe(false);
+      const result = await light.dispatch({ id: `select-${name}`, name: "system.searchTools",
+        arguments: JSON.stringify({ select: name }) });
+      expect(JSON.parse(result.content).loaded).toEqual([name]);
+      const tool = light.tools.find(tool => tool.name === name)!;
+      expect(light.toLLMTools().find(t => t.function.name === name)).toEqual(lightPresentation({
+        type: "function", function: { name, description: tool.description, parameters: tool.inputSchema },
+      }));
+      expect(other.toLLMTools().some(t => t.function.name === name)).toBe(false);
+    }
+    expect(light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }))).toEqual(baseline);
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(

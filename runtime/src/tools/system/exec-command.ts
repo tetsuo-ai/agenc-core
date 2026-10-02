@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import {
   shellAdditionalWriteRoots,
@@ -70,6 +71,8 @@ export interface ExecCommandToolConfig extends BashToolConfig {
   readonly lightMode?: boolean;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
+  /** Advertise the continuation tool before a yielded handle reaches the model. */
+  readonly onSessionYielded?: () => void;
 }
 
 const PLAIN_INTERACTIVE_SHELL_RE =
@@ -917,6 +920,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // errno text. Say plainly that the sandbox did it and whether
         // escalation can change the answer, so a denial reads as a verdict
         // instead of an invitation to retry with a longer timeout.
+        if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
+          notifyExecSessionDiscovery(args, config?.onSessionYielded);
+        }
         const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
         const runtimeContext = readToolRuntimeContext(args);
         const denial = execSandboxDenialNotice({

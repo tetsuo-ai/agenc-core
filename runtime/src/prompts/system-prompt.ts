@@ -34,7 +34,12 @@
  * @module
  */
 
-import { lightWorkflow } from "./light-workflow.js";
+import {
+  lightBudgetWorkflow,
+  lightBudgetSystem,
+  lightBudgetActions,
+  LIGHT_BUDGET_DEADLINE,
+} from "./light-budget-prompt.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1204,13 +1209,13 @@ export async function assembleSystemPrompt(
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
   const staticSections: Array<string | null> = light
     ? [
-        lightWorkflow(opts.outputStyle != null),
-        getLeanSystemSection(),
-        lean ? getLeanActionsSection() : getActionsSection(),
+        lightBudgetWorkflow(opts.outputStyle != null),
+        lightBudgetSystem(),
+        lightBudgetActions(),
         session.services?.runtimeOptions?.nonInteractive === true
           ? null : getMemoryInstructionsSection(opts.memoryInstructions),
         typeof session.services?.runtimeOptions?.deadlineAt === "number"
-          ? HEADLESS_DEADLINE_GUIDANCE
+          ? LIGHT_BUDGET_DEADLINE
           : null,
       ]
     : lean

@@ -726,6 +726,9 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      ...(options.lightMode === true
+        ? { onSessionYielded: () => markDiscovered(["write_stdin"]) }
+        : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),

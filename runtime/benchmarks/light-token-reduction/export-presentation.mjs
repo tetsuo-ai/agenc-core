@@ -31,14 +31,24 @@ function extract(path, names) {
 }
 const frames = execute(extract('tools/untrusted-tool-result-framing.ts', ['LIGHT_WORKSPACE_DATA_BOUNDARY','UNTRUSTED_TOOL_RESULT_BOUNDARY']));
 const workflow = execute(source('prompts/light-workflow.ts'), { '../tools/untrusted-tool-result-framing.js': frames });
+const budget = execute(source('prompts/light-budget-prompt.ts'), { '../tools/untrusted-tool-result-framing.js': frames });
 const presentation = execute(source('tools/light-presentation.ts'));
+const profile = execute(source('tools/light-profile.ts'));
+// Bind executable discovery plumbing to the export without evaluating it here.
+for (const path of ['tool-registry.ts', 'agents/run-agent.ts', 'tools/system/exec-command.ts', 'tools/exec-session-discovery.ts']) source(path);
 const lean = execute(extract('prompts/lean-system-prompt.ts', ['bullets','getLeanSystemSection','getLeanActionsSection']));
 const standard = execute(extract('prompts/system-prompt.ts', ['prependBullets','joinSection','getActionsSection','HEADLESS_DEADLINE_GUIDANCE']));
-const result = { source_sha256: hashes, sections: {
+const legacySections = {
   workflow: workflow.lightWorkflow(false), system: lean.getLeanSystemSection(),
   actions_deepseek: standard.getActionsSection(), actions_openai: lean.getLeanActionsSection(),
   deadline: standard.HEADLESS_DEADLINE_GUIDANCE,
-}, fixtures: {} };
+};
+const result = { source_sha256: hashes, sections: {
+  workflow: budget.lightBudgetWorkflow(false), system: budget.lightBudgetSystem(),
+  actions_deepseek: budget.lightBudgetActions(), actions_openai: budget.lightBudgetActions(),
+  deadline: budget.LIGHT_BUDGET_DEADLINE,
+}, legacy_sections: legacySections,
+initial_tool_names: [...profile.LIGHT_INITIAL_TOOL_NAMES], fixtures: {} };
 // Wire schemas supplied as data; the projector preserves their exact format/name.
 const fixtures = JSON.parse(readFileSync(process.argv[3], 'utf8'));
 for (const [model, body] of Object.entries(fixtures)) {

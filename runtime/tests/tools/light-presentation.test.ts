@@ -12,6 +12,7 @@ function withoutDescriptions(value: unknown): unknown {
 
 test("all eight Light schemas retain the canonical contract and source schema", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin"]);
   const wire = registry.toLLMTools();
   expect(wire.map(t => t.function.name).sort()).toEqual([
     "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
@@ -41,6 +42,7 @@ test("normal sessions and external tool descriptions stay canonical", () => {
     inputSchema: { type: "object" as const, properties: { plugin_field: { type: "string" } } },
     execute: async () => ({ content: "plugin result" }) };
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, extraTools: [custom] });
+  registry.discoverToolNames?.(["Grep"]);
   const wire = registry.toLLMTools().find(t => t.function.name === "Grep")!;
   expect(wire.function.description).toBe(custom.description);
   expect(wire.function.parameters).toEqual(custom.inputSchema);
@@ -58,4 +60,21 @@ test("descriptions do not rewrite data values or hide advanced arguments", () =>
   expect(withoutDescriptions(output.function.parameters)).toEqual(withoutDescriptions(input.function.parameters));
   expect((output.function.parameters.properties as Record<string, unknown>).advanced).toBe((input.function.parameters.properties as Record<string, unknown>).advanced);
   expect(JSON.stringify(input)).toBe(before);
+});
+
+test("compact descriptions retain retrieval, mutation and process lifecycle constraints", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  registry.discoverToolNames?.(["Edit", "Write", "Grep", "Glob", "write_stdin"]);
+  const description = (name: string) => registry.toLLMTools().find(t => t.function.name === name)!.function.description;
+  expect(description("FileRead")).toMatch(/2000 lines.*25000 tokens/);
+  expect(description("FileRead")).toMatch(/PDFs >10 pages require pages, maximum 20/);
+  expect(description("Edit")).toContain("Requires FileRead first");
+  expect(description("Write")).toContain("existing files require FileRead first");
+  expect(description("exec_command")).toContain("leftovers stop on return, yielded processes at session end");
+  expect(description("exec_command")).toContain("danger-full-access, no tty");
+  expect(description("write_stdin")).toContain("input requires initial tty=true");
+  expect(description("Grep")).toContain("no fallback");
+  const grep = registry.toLLMTools().find(t => t.function.name === "Grep")!;
+  const limit = (grep.function.parameters.properties as Record<string, { description: string }>).head_limit;
+  expect(limit.description).toContain("preserving safety ceilings");
 });
