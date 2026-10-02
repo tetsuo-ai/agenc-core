@@ -21,6 +21,7 @@ import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "./environment.js";
+import type { MCPListChangedHandlers } from "./list-changed.js";
 
 /**
  * Create an MCP client connection to an external server.
@@ -37,6 +38,7 @@ export async function createMCPConnection(
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const transportKind = config.transport ?? "stdio";
@@ -65,6 +67,7 @@ export async function createMCPConnection(
       samplingHandlers,
       sandboxExecutionBroker,
       environment,
+      listChangedHandlers,
     );
   }
 
@@ -94,6 +97,7 @@ export async function createMCPConnection(
         elicitationHandlers,
         samplingHandlers,
         environment,
+        listChangedHandlers,
       );
     }
     if (transportKind === "http") {
@@ -103,6 +107,7 @@ export async function createMCPConnection(
         elicitationHandlers,
         samplingHandlers,
         environment,
+        listChangedHandlers,
       );
     }
     return createWebSocketMCPConnection(
@@ -111,6 +116,7 @@ export async function createMCPConnection(
       elicitationHandlers,
       samplingHandlers,
       environment,
+      listChangedHandlers,
     );
   }
 
