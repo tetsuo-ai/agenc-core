@@ -20,6 +20,7 @@ import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
+import { flushAgenCCompileCache } from "../bin/compile-cache.js";
 import { resolveHomeContext } from "../config/home.js";
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
 import { discoverStateDatabasePaths } from "../state/sqlite-driver.js";
@@ -3226,6 +3227,9 @@ export function createNodeDaemonCliHost(
       };
       let child: ChildProcess;
       try {
+        // The CLI stays alive while the daemon starts, so Node's exit flush
+        // would arrive too late for the child to reuse these compiled modules.
+        flushAgenCCompileCache();
         child = spawnProcess(
           process.execPath,
           buildAgenCDaemonChildNodeArgs(entrypointPath, childEnv, userHome),
