@@ -1,4 +1,5 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
@@ -11,6 +12,7 @@ import {
   shellWorkspaceMutationPermission,
 } from "./shell-mutation-permission.js";
 import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
+import { recordSessionRead, resolveSessionId, safePathAllowingSessionPlanFile } from "./filesystem.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
@@ -83,6 +85,53 @@ const PLAIN_INTERACTIVE_SHELL_RE =
  * with another model call. Explicit yields, tty and detached processes keep their own windows.
  */
 export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
+
+/** A plain `cat` of named files: no flags, globs, quoting, pipes, redirection or chaining. */
+const PLAIN_CAT_COMMAND = /^\s*cat((?:[ \t]+[A-Za-z0-9_./@+-]+)+)\s*$/u;
+
+/**
+ * Light records a plain `cat` of workspace files as a full read for the read-before-write gate, but
+ * only when the command exited 0 untruncated and its whole output is byte-identical to the files'
+ * current contents. The model has then seen exactly the current text, which is what the gate asks
+ * for, so the edit that follows no longer bounces off the gate into a FileRead round trip (GPT
+ * models read with cat: 0.2 to 0.3 refusals per benchmark task, each costing two model calls).
+ */
+export async function recordPlainCatReads(params: {
+  readonly cmd: string;
+  readonly output: ExecCommandToolOutput;
+  readonly cwd: string;
+  readonly allowedPaths: readonly string[];
+  readonly args: Record<string, unknown>;
+}): Promise<void> {
+  const { output } = params;
+  if (output.exitCode !== 0 || output.truncated || output.timedOut || output.session_id !== undefined) return;
+  const match = PLAIN_CAT_COMMAND.exec(params.cmd);
+  if (match === null) return;
+  const sessionId = resolveSessionId(params.args);
+  if (sessionId === undefined) return;
+  const files: Array<{ readonly canonical: string; readonly text: string; readonly mtimeMs: number }> = [];
+  for (const rawPath of match[1]!.trim().split(/[ \t]+/u)) {
+    if (rawPath.startsWith("-")) return;
+    const safe = await safePathAllowingSessionPlanFile(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
+    if (!safe.safe) return;
+    try {
+      const [bytes, stats] = await Promise.all([readFile(safe.resolved), stat(safe.resolved)]);
+      if (!stats.isFile() || bytes.includes(0)) return;
+      files.push({ canonical: safe.resolved, text: bytes.toString("utf-8"), mtimeMs: stats.mtimeMs });
+    } catch {
+      return;
+    }
+  }
+  if (files.map(file => file.text).join("") !== output.stdout) return;
+  for (const file of files) {
+    recordSessionRead(sessionId, file.canonical, {
+      content: file.text.split(/\r?\n/u).join("\n"),
+      timestamp: file.mtimeMs,
+      viewKind: "full",
+      rawContent: file.text,
+    });
+  }
+}
 const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
 const DIRECT_MCP_TOOL_COMMAND_RE =
   /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
@@ -902,6 +951,15 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
               ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
               ...(ownerId !== undefined ? { ownerId } : {}),
             });
+        if (config?.lightMode === true && !detach && tty !== true) {
+          await recordPlainCatReads({
+            cmd,
+            output,
+            cwd: effectiveWorkdir ?? config.cwd ?? process.cwd(),
+            allowedPaths: config.allowedPaths ?? (config.cwd !== undefined ? [config.cwd] : []),
+            args: args as Record<string, unknown>,
+          });
+        }
         // exitCode === null has these sub-cases. The reliable discriminator
         // is `process_id !== undefined` (or `detached` with a pid):
         //   - process_id set    → process is still alive (YIELDED to
