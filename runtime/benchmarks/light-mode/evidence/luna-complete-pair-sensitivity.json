@@ -1,0 +1,30 @@
+{
+  "method": "Sensitivity only: same-task/same-repeat pairs with complete usage on both agents. Excludes missing usage pairs and does not replace strict completion or the full-suite gate.",
+  "pairs": 6,
+  "tasks": [
+    "02-split-limit:r1",
+    "05-empty-refactor:r1",
+    "06-key-rotation-map:r1",
+    "07-source-manifest:r1",
+    "08-integer-encoding:r1",
+    "09-separator-payload:r1"
+  ],
+  "groups": [
+    {
+      "agent": "pi",
+      "n": 6,
+      "effective": 6,
+      "tokens": 43350,
+      "median": 41.22578748149681,
+      "p90": 76.17872307798825
+    },
+    {
+      "agent": "light",
+      "n": 6,
+      "effective": 5,
+      "tokens": 24446.333333333332,
+      "median": 55.597863642527955,
+      "p90": 62.0007874139701
+    }
+  ]
+}
