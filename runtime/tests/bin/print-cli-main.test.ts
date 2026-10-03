@@ -3,8 +3,9 @@ import type { AgenCDaemonAutostartOptions } from "../../src/app-server/daemon-au
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(), processMain: vi.fn(), trust: vi.fn(), enabled: vi.fn(),
-  ensure: vi.fn(), cwd: vi.fn(), unavailable: vi.fn(),
+  ensure: vi.fn(), cwd: vi.fn(), unavailable: vi.fn(), flush: vi.fn(),
 }));
+vi.mock("../../src/bin/compile-cache.js", () => ({ flushAgenCCompileCache: mocks.flush }));
 vi.mock("../../src/bin/cli-runtime.js", () => ({ prepareCliRuntime: mocks.prepare }));
 vi.mock("../../src/bin/cli-process-main.js", () => ({ runCliProcessMain: mocks.processMain }));
 vi.mock("../../src/bin/project-trust-preflight.js", () => ({ requireProjectTrustForTui: mocks.trust }));
@@ -58,6 +59,30 @@ afterEach(() => {
 });
 
 describe("print entry import overlap", () => {
+  it("publishes the completed client import while readiness is still pending", async () => {
+    const ready = deferred<void>();
+    const entered = deferred<void>();
+    const imported = deferred<typeof client>();
+    load.mockReturnValue(imported.promise);
+    mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
+      options.onReadinessWaitStarted?.();
+      entered.resolve();
+      await ready.promise;
+      options.onReadinessWaitStarted?.();
+    });
+    const running = printMain(load);
+    await entered.promise;
+    expect(mocks.flush).not.toHaveBeenCalled();
+    imported.resolve(client);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(mocks.flush).toHaveBeenCalledOnce();
+    expect(client.oneShotCLI).not.toHaveBeenCalled();
+    ready.resolve();
+    expect(await running).toBe(7);
+    expect(load).toHaveBeenCalledOnce();
+    expect(mocks.flush).toHaveBeenCalledOnce();
+  });
+
   it.each(["import", "readiness"])("waits for trust and both gates when %s finishes first", async (first) => {
     const trust = deferred<boolean>();
     const ready = deferred<void>();
@@ -149,6 +174,7 @@ describe("print entry import overlap", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(process.stderr.write).toHaveBeenCalledExactlyOnceWith("agenc: daemon autostart failed: authenticated identity refused\n");
     expect(client.oneShotCLI).not.toHaveBeenCalled();
+    expect(mocks.flush).not.toHaveBeenCalled();
   });
 
   it("keeps stdout-TTY autostart fallback and the canonical argument values", async () => {
