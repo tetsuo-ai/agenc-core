@@ -1554,6 +1554,7 @@ test('connectToServer times out hanging in-process Chrome connections and cleans
       args: [],
       scope: 'local',
     }, undefined, { environment: { MCP_TIMEOUT: '5' } })
+    await vi.dynamicImportSettled()
     await vi.advanceTimersByTimeAsync(5)
     const result = await resultPromise
     assert.equal(result.type, 'failed')
@@ -1803,6 +1804,7 @@ test('connectToServer returns failed stdio clients after connection timeout', as
     args: [],
     scope: 'local',
   }, undefined, { environment: { MCP_TIMEOUT: '5' } })
+  await vi.dynamicImportSettled()
   await vi.advanceTimersByTimeAsync(5)
   const result = await resultPromise
 
