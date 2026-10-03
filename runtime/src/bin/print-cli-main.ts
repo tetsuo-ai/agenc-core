@@ -11,6 +11,7 @@ type ClientLoad = { readonly ok: true; readonly client: Client } |
 /** The same print route, with client imports overlapping canonical daemon readiness. */
 export async function printMain(
   loadClient: () => Promise<Client> = () => import("./agenc-main.js"),
+  prepareProvisionalDaemon?: DefaultCliRouteAdapters["prepareProvisionalDaemon"],
 ): Promise<number> {
   const ingressExitCode = prepareCliRuntime();
   if (ingressExitCode !== null) return ingressExitCode;
@@ -32,6 +33,7 @@ export async function printMain(
   };
   return runDefaultCliRoute(process.argv, {
     onReadinessWaitStarted: preload,
+    prepareProvisionalDaemon,
     bootTUIEntry: async (...args) => (await client()).bootTUIEntry(...args),
     resumeTUIEntry: async (...args) => (await client()).resumeTUIEntry(...args),
     continueTUIEntry: async (...args) => (await client()).continueTUIEntry(...args),
@@ -40,5 +42,8 @@ export async function printMain(
 }
 
 export function runPrintCliEntry(): Promise<void> {
-  return runCliProcessMain(printMain);
+  return runCliProcessMain(async () => {
+    const { tryPrepareProvisionalDaemon } = await import("../app-server/daemon-provisional-start.js");
+    return printMain(undefined, () => tryPrepareProvisionalDaemon());
+  });
 }

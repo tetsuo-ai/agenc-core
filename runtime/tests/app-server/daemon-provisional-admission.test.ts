@@ -60,6 +60,17 @@ describe("disabled provisional admission protocol", () => {
     expect(await receiver.decision).toEqual({ kind: "aborted", reason: "closed" });
   });
 
+  it("canonical cancellation aborts admission without closing the cleanup acknowledgement channel", async () => {
+    const channel = new Channel();
+    const receiver = createAgenCProvisionalAdmissionReceiver(TOKEN, channel, 1_000);
+    receiver.abort();
+    await channel.send(agenCProvisionalAdmissionMessage(TOKEN, "admit"));
+    expect(await receiver.decision).toEqual({ kind: "aborted", reason: "parent-abort" });
+    expect(channel.connected).toBe(true);
+    expect(channel.messages.size).toBe(0);
+    receiver.close();
+  });
+
   it("detects a disconnect that predates receiver installation", async () => {
     const channel = new Channel(); channel.close();
     const receiver = createAgenCProvisionalAdmissionReceiver(TOKEN, channel, 1_000);

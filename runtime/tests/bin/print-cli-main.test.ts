@@ -166,6 +166,76 @@ describe("print entry import overlap", () => {
     const result = Promise.resolve();
     mocks.processMain.mockReturnValue(result);
     expect(runPrintCliEntry()).toBe(result);
-    expect(mocks.processMain).toHaveBeenCalledExactlyOnceWith(printMain);
+    expect(mocks.processMain).toHaveBeenCalledExactlyOnceWith(expect.any(Function));
+  });
+});
+
+
+describe("exploratory provisional route coordination", () => {
+  const provisional = () => ({ cancel: vi.fn(async () => {}), finish: vi.fn(async (_io: unknown, ready?: () => void) => ready?.()) });
+  it("starts before canonical trust, then admits only after acceptance", async () => {
+    const child = provisional();
+    const trust = deferred<boolean>();
+    const enteredTrust = deferred<void>();
+    const prepare = vi.fn(async () => child);
+    mocks.trust.mockImplementation(() => { enteredTrust.resolve(); return trust.promise; });
+    const run = printMain(load, prepare);
+    await enteredTrust.promise;
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(child.finish).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    trust.resolve(true);
+    expect(await run).toBe(7);
+    expect(child.finish).toHaveBeenCalledOnce();
+    expect(child.cancel).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled();
+  });
+  it("joins refusal cleanup before returning the original exit code", async () => {
+    const child = provisional();
+    const exit = deferred<void>();
+    const cancelling = deferred<void>();
+    child.cancel.mockImplementation(() => { cancelling.resolve(); return exit.promise; });
+    mocks.trust.mockResolvedValue(false);
+    let done = false;
+    const run = printMain(load, async () => child).then(code => { done = true; return code; });
+    await cancelling.promise;
+    expect(done).toBe(false);
+    expect(child.finish).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    exit.resolve();
+    expect(await run).toBe(1);
+    expect(process.stderr.write).not.toHaveBeenCalled();
+  });
+  it("cancels if the authoritative post-trust config disables autostart", async () => {
+    const child = provisional();
+    mocks.enabled.mockResolvedValue(false);
+    expect(await printMain(load, async () => child)).toBe(7);
+    expect(child.cancel).toHaveBeenCalledOnce();
+    expect(child.finish).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled();
+  });
+  it("preserves trust errors after exact cleanup", async () => {
+    const child = provisional();
+    const failure = new Error("canonical malformed project config");
+    mocks.trust.mockRejectedValue(failure);
+    await expect(printMain(load, async () => child)).rejects.toBe(failure);
+    expect(child.cancel).toHaveBeenCalledOnce();
+    expect(child.finish).not.toHaveBeenCalled();
+  });
+  it("keeps failed cleanup visible", async () => {
+    const child = provisional();
+    mocks.trust.mockResolvedValue(false);
+    child.cancel.mockRejectedValue(new Error("exact exit unavailable"));
+    await expect(printMain(load, async () => child)).rejects.toThrow("exact exit unavailable");
+    expect(child.finish).not.toHaveBeenCalled();
+  });
+  it.each(["tty", "debug", "cwd", "parser"])("does not speculate for %s", async kind => {
+    const prepare = vi.fn(async () => provisional());
+    if (kind === "tty") Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    if (kind === "debug") vi.stubEnv("TUI_E2E_DEBUG", "1");
+    if (kind === "cwd") mocks.cwd.mockReturnValue({ ok: false });
+    if (kind === "parser") process.argv.splice(3, 0, "--deadline=invalid");
+    await printMain(load, prepare);
+    expect(prepare).not.toHaveBeenCalled();
   });
 });

@@ -36,8 +36,13 @@ await import("./compile-cache.js").then((cache) => cache.enableAgenCCompileCache
 const { selectAgenCCliEntry } = await import("./cli-entry-policy.js");
 const entry = selectAgenCCliEntry();
 if (entry === "detached-daemon") {
-  const { runDetachedDaemonChildEntry } = await import("./daemon-child-main.js");
-  await runDetachedDaemonChildEntry();
+  if (process.env.AGENC_DAEMON_PROVISIONAL_START === "1") {
+    const { runProvisionalDaemonChildEntry } = await import("./daemon-provisional-child-main.js");
+    await runProvisionalDaemonChildEntry();
+  } else {
+    const { runDetachedDaemonChildEntry } = await import("./daemon-child-main.js");
+    await runDetachedDaemonChildEntry();
+  }
 } else if (entry === "print") {
   const { runPrintCliEntry } = await import("./print-cli-main.js");
   await runPrintCliEntry();

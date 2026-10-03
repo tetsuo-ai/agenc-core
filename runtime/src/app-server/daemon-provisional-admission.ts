@@ -1,6 +1,6 @@
 /**
- * Disabled early-start protocol foundation. No production entry imports this
- * module. It does not acquire ownership, spawn, recover state or admit clients.
+ * Early-start protocol foundation, wired only by the exploratory variant.
+ * This module itself does not acquire ownership, spawn, recover state or admit clients.
  * A JS lease cannot stop synchronous initialization; activation additionally
  * requires the native lifetime and side-effect proofs in the reviewed design.
  */
@@ -9,6 +9,8 @@ import {
   isAgenCDaemonStartupGuardToken,
   type AgenCDaemonStartupGuardChannel,
 } from "./daemon-startup-guard.js";
+
+export const AGENC_DAEMON_PROVISIONAL_ENV = "AGENC_DAEMON_PROVISIONAL_START";
 
 const ADMISSION_MESSAGE = "agenc.daemon.provisional.admission";
 
@@ -55,6 +57,7 @@ export function createAgenCProvisionalAdmissionReceiver(
 ): {
   readonly decision: Promise<AgenCProvisionalDecision>;
   current(): AgenCProvisionalDecision | null;
+  abort(): void;
   close(): void;
 } {
   assertToken(token);
@@ -106,6 +109,7 @@ export function createAgenCProvisionalAdmissionReceiver(
   return {
     decision,
     current: () => current,
+    abort: () => settle({ kind: "aborted", reason: "parent-abort" }),
     close: () => {
       settle({ kind: "aborted", reason: "closed" });
       detach();

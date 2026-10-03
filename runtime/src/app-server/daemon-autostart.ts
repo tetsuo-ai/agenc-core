@@ -138,6 +138,8 @@ export interface AgenCDaemonAutostartConfig {
 
 export interface AgenCDaemonAutostartOptions {
   readonly host?: AgenCDaemonAutostartHost;
+  /** Exact child already spawned by this invocation through canonical start. */
+  readonly provisionalOwnedPid?: number;
   readonly io?: AgenCDaemonCliIo;
   readonly waitTimeoutMs?: number;
   readonly pollMs?: number;
@@ -207,16 +209,18 @@ export function shouldAutostartAgenCDaemon(
 export async function resolveAgenCDaemonAutostartEnabled(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
+  onWarn?: (message: string) => void,
 ): Promise<boolean> {
-  return (await resolveAgenCDaemonAutostartConfig(env, userHome)).daemonEnabled;
+  return (await resolveAgenCDaemonAutostartConfig(env, userHome, onWarn)).daemonEnabled;
 }
 
 export async function resolveAgenCDaemonAutostartConfig(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
+  onWarn?: (message: string) => void,
 ): Promise<AgenCDaemonAutostartConfig> {
   const home = resolveAgenCDaemonHome(env, userHome);
-  const loaded = await loadCanonicalDaemonConfig({ env, home });
+  const loaded = await loadCanonicalDaemonConfig({ env, home, onWarn });
   const configAutostart = loaded.config.daemon?.autostart ?? true;
   return {
     daemonEnabled: shouldAutostartAgenCDaemon(env, configAutostart),
@@ -277,12 +281,14 @@ async function ensureAgenCDaemonAutostartCycle(
   const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
   let status: AgenCDaemonAutostartStatus = "already-running";
   let pid = await readAgenCDaemonPid(pidPath);
-  let spawnedPid: number | null = null;
+  let spawnedPid: number | null = restartCycle === 0 ? options.provisionalOwnedPid ?? null : null;
   let spawnedProcess: AgenCDaemonProcessIdentity | null = null;
-  let postSpawnPhase = false;
+  let postSpawnPhase = spawnedPid !== null;
+  if (postSpawnPhase) status = "started";
   let spawnedControlReleased = false;
 
   try {
+    if (spawnedPid !== null) spawnedProcess = await captureAgenCDaemonProcessIdentity(spawnedPid, host);
     // A stale pid file may name a live but unrelated reused PID while the real
     // daemon has already published a fresh sidecar. Never probe or signal that
     // numeric PID as the daemon: bind the sidecar to the authenticated socket
