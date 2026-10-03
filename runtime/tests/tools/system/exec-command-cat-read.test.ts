@@ -229,3 +229,37 @@ test("empty commands bash rejects fail closed; a single trailing ; is fine", asy
   expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
 });
 
+
+test("a grep -n window of one file records a partial read of exactly the lines it numbered", async () => {
+  const text = ["package a", "", "// B doubles", "func B(x int) int {", "\treturn 2 * x", "}", ""].join("\n");
+  await writeFile(join(root, "a.go"), text, "utf8");
+  await writeFile(join(root, "a_test.go"), "package a\n\nfunc TestB() {}\n", "utf8");
+  await record(
+    "grep -n -A2 -B1 'func B' a.go; grep -n -e TestB -C1 a_test.go; git status --short",
+    finished("3-// B doubles\n4:func B(x int) int {\n5-\treturn 2 * x\n6-}\n2-\n3:func TestB() {}\n M a.go\n"),
+  );
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "partial", readOffset: 3, readLimit: 4, content: "// B doubles\nfunc B(x int) int {\n\treturn 2 * x\n}" });
+  expect(getSessionReadSnapshot(session, join(root, "a_test.go"))).toMatchObject({ viewKind: "partial", readOffset: 2, readLimit: 2 });
+  const edit = createFileEditTool({ allowedPaths: [root] });
+  const applied = await edit.execute({ file_path: join(root, "a.go"), old_string: "2 * x", new_string: "x + x", cwd: root, [SESSION_ID_ARG]: session });
+  expect(applied.isError).not.toBe(true);
+});
+
+test("grep output that is not this file's numbered lines, or an unsupported grep form, records nothing", async () => {
+  await writeFile(join(root, "a.go"), "package a\nfunc A() {}\n", "utf8");
+  await writeFile(join(root, "b.go"), "package b\n", "utf8");
+  const cases: Array<[string, string]> = [
+    ["grep -n 'func A' a.go", "2:func B() {}\n"],
+    ["grep -n 'func A' a.go", "3:func A() {}\n"],
+    ["grep 'func A' a.go", "2:func A() {}\n"],
+    ["grep -n 'func A' a.go b.go", "a.go:2:func A() {}\n"],
+    ["grep -rn 'func A' a.go", "2:func A() {}\n"],
+    ["grep -n -o 'func A' a.go", "2:func A() {}\n"],
+    ["grep -n 'func A' a.go | head", "2:func A() {}\n"],
+    ["grep -n -A x 'func A' a.go", "2:func A() {}\n"],
+  ];
+  for (const [cmd, stdout] of cases) {
+    await record(cmd, finished(stdout));
+    expect(getSessionReadSnapshot(session, join(root, "a.go")), cmd).toBeUndefined();
+  }
+});

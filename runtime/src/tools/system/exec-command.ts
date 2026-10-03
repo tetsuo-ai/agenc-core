@@ -89,10 +89,14 @@ export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
 
-/** One read step of a `;`/`&&` chain: cat of named files, or an explicit line window of one file. */
+/**
+ * One read step of a `;`/`&&` chain: cat of named files, an explicit line window of one file, or a
+ * `grep -n` of one file, whose output numbers every line it shows.
+ */
 type ShellReadStep =
   | { readonly kind: "full"; readonly paths: readonly string[] }
-  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
+  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number }
+  | { readonly kind: "numbered"; readonly path: string };
 
 /**
  * Simple commands of a command line as the shell would see them: `;`-separated lists of `&&`-joined
@@ -259,6 +263,11 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
       steps.push({ kind: "lines", path: rest[2]!, start: Number(range[1]), end: Number(range[2]) });
       continue;
     }
+    const grepped = name === "grep" ? numberedGrepPath(rest) : undefined;
+    if (grepped !== undefined) {
+      steps.push({ kind: "numbered", path: grepped });
+      continue;
+    }
     if (name !== "head") continue;
     const count = rest.length === 3 && rest[0] === "-n" ? rest[1]!
       : rest.length === 2 && /^-n?\d+$/u.test(rest[0]!) ? rest[0]!.replace(/^-n?/u, "") : undefined;
@@ -268,6 +277,61 @@ function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellRea
     }
   }
   return steps;
+}
+
+/**
+ * The one file of `grep -n [-A N] [-B N] [-C N] [-E|-F|-i|-w|-x] [-e PATTERN | PATTERN] FILE`. With a
+ * single file operand grep prints no file name, so every shown line is `N:text` or `N-text`. Any other
+ * option, or another operand count, gives undefined.
+ */
+function numberedGrepPath(args: readonly string[]): string | undefined {
+  let numbered = false;
+  let patternGiven = false;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (!arg.startsWith("-") || arg === "-") {
+      operands.push(arg);
+    } else if (arg === "-e") {
+      if (i + 1 >= args.length) return undefined;
+      patternGiven = true;
+      i += 1;
+    } else if (/^-[ABC]$/u.test(arg)) {
+      if (!/^\d+$/u.test(args[i + 1] ?? "")) return undefined;
+      i += 1;
+    } else if (/^-[nEFiwx]+$/u.test(arg)) {
+      numbered ||= arg.includes("n");
+    } else if (!/^-[ABC]\d+$/u.test(arg)) {
+      return undefined;
+    }
+  }
+  const files = patternGiven ? operands : operands.slice(1);
+  const file = files[0];
+  return numbered && files.length === 1 && PATH_ARG.test(file!) && !file!.startsWith("-") ? file : undefined;
+}
+
+/**
+ * The longest run of consecutive `N:text` or `N-text` output lines whose text is exactly line N of the
+ * file, as `grep -n` prints matches and their context.
+ */
+function numberedRun(stdout: string, lines: readonly string[]): { readonly start: number; readonly end: number } | undefined {
+  let best: { start: number; end: number } | undefined;
+  let run: { start: number; end: number } | undefined;
+  for (const shown of stdout.split(/\r?\n/u)) {
+    const match = /^(\d+)[:-](.*)$/u.exec(shown);
+    const number = match === null ? 0 : Number(match[1]);
+    if (match === null || number < 1 || number > lines.length || lines[number - 1] !== match[2]) {
+      run = undefined;
+      continue;
+    }
+    run = run !== undefined && number === run.end + 1 ? { start: run.start, end: number } : { start: number, end: number };
+    if (best === undefined || run.end - run.start > best.end - best.start) best = run;
+  }
+  return best;
 }
 
 /** Largest file the optional read proof will snapshot. */
@@ -358,6 +422,19 @@ export async function recordShellReads(params: {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
       const file = await stableWorkspaceText(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
       if (file === undefined) continue;
+      if (step.kind === "numbered") {
+        const lines = file.text.split(/\r?\n/u);
+        const run = numberedRun(output.stdout, lines);
+        if (run === undefined) continue;
+        recordSessionRead(sessionId, file.canonical, {
+          content: lines.slice(run.start - 1, run.end).join("\n"),
+          timestamp: file.mtimeMs,
+          viewKind: "partial",
+          readOffset: run.start,
+          readLimit: run.end - run.start + 1,
+        });
+        continue;
+      }
       if (step.kind === "full") {
         if (!output.stdout.includes(file.text)) continue;
         recordSessionRead(sessionId, file.canonical, {
