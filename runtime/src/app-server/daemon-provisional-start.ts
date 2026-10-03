@@ -7,7 +7,11 @@ import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled } from "
 
 export interface ProvisionalDaemonStart {
   cancel(): Promise<void>;
-  finish(io: AgenCDaemonCliIo, onReadinessWaitStarted?: () => void): Promise<void>;
+  finish(
+    io: AgenCDaemonCliIo,
+    onReadinessWaitStarted?: () => void,
+    onAdmissionWaitStarted?: () => void | Promise<void>,
+  ): Promise<void>;
 }
 
 export async function tryPrepareProvisionalDaemon(
@@ -49,9 +53,17 @@ export async function tryPrepareProvisionalDaemon(
   };
   return {
     cancel,
-    finish: async (io, onReadinessWaitStarted) => {
+    finish: async (io, onReadinessWaitStarted, onAdmissionWaitStarted) => {
       if (settled) throw new Error("provisional daemon already settled");
-      const admitted = await host.admitProvisionalDaemon?.(childPid);
+      const admission = host.admitProvisionalDaemon?.(childPid);
+      // ADMIT is enqueued after authoritative trust/configuration. Import-only
+      // work may overlap its acknowledgment and the child's lifecycle lock;
+      // the canonical readiness callback and deadline remain unchanged.
+      try {
+        if (admission !== undefined) void Promise.resolve(onAdmissionWaitStarted?.()).catch(() => {});
+      }
+      catch { /* An optional observer cannot replace ownership or readiness. */ }
+      const admitted = await admission;
       if (admitted !== true) {
         // A lease expiry is an internal failed speculation. Join it before
         // the normal, post-trust autostart transaction can take ownership.

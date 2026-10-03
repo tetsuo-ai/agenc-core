@@ -33,6 +33,7 @@ export async function printMain(
   };
   return runDefaultCliRoute(process.argv, {
     onReadinessWaitStarted: preload,
+    onAdmissionWaitStarted: preload,
     prepareProvisionalDaemon,
     bootTUIEntry: async (...args) => (await client()).bootTUIEntry(...args),
     resumeTUIEntry: async (...args) => (await client()).resumeTUIEntry(...args),

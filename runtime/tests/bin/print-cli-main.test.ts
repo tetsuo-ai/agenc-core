@@ -172,7 +172,47 @@ describe("print entry import overlap", () => {
 
 
 describe("exploratory provisional route coordination", () => {
-  const provisional = () => ({ cancel: vi.fn(async () => {}), finish: vi.fn(async (_io: unknown, ready?: () => void) => ready?.()) });
+  const provisional = () => ({ cancel: vi.fn(async () => {}), finish: vi.fn(async (
+    _io: unknown, ready?: () => void, admission?: () => void | Promise<void>,
+  ) => { void admission?.(); ready?.(); }) });
+  it("shares one handled import across admission and readiness without early dispatch", async () => {
+    const child = provisional();
+    const entered = deferred<void>();
+    const acknowledged = deferred<void>();
+    const imported = deferred<typeof client>();
+    load.mockReturnValue(imported.promise);
+    child.finish.mockImplementation(async (_io, ready, admission) => {
+      void admission?.();
+      entered.resolve();
+      await acknowledged.promise;
+      ready?.(); ready?.();
+    });
+    const running = printMain(load, async () => child);
+    await entered.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(load).toHaveBeenCalledOnce();
+    imported.resolve(client);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(client.oneShotCLI).not.toHaveBeenCalled();
+    acknowledged.resolve();
+    expect(await running).toBe(7);
+    expect(load).toHaveBeenCalledOnce();
+    expect(client.oneShotCLI).toHaveBeenCalledOnce();
+  });
+  it("keeps failed admission authoritative over an earlier preload rejection", async () => {
+    const child = provisional();
+    load.mockRejectedValue(new Error("client import failed"));
+    child.finish.mockImplementation(async (_io, _ready, admission) => {
+      void admission?.();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      throw new Error("admission failed");
+    });
+    expect(await printMain(load, async () => child)).toBe(1);
+    expect(load).toHaveBeenCalledOnce();
+    expect(child.cancel).toHaveBeenCalledOnce();
+    expect(process.stderr.write).toHaveBeenCalledExactlyOnceWith("agenc: daemon autostart failed: admission failed\n");
+    expect(client.oneShotCLI).not.toHaveBeenCalled();
+  });
   it("starts before canonical trust, then admits only after acceptance", async () => {
     const child = provisional();
     const trust = deferred<boolean>();

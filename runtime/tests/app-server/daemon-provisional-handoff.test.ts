@@ -47,6 +47,40 @@ async function fixture() {
 }
 
 describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("provisional cleanup ownership handoff", () => {
+  it.each(["throws", "rejects", "pending"])("notifies after sending ADMIT without waiting for an observer that %s", async (mode) => {
+    const f = await fixture();
+    const events: string[] = [];
+    let acknowledge!: () => void;
+    const admission = new Promise<void>(resolve => { acknowledge = resolve; });
+    const originalAdmit = f.host.admitProvisionalDaemon!;
+    f.host.admitProvisionalDaemon = async pid => {
+      events.push("admit-sent");
+      await admission;
+      return originalAdmit(pid);
+    };
+    const ready = vi.fn();
+    const observerError = new Error("optional observer failed");
+    const preload = vi.fn(() => {
+      events.push("preload");
+      if (mode === "throws") throw observerError;
+      if (mode === "rejects") return Promise.reject(observerError);
+      return new Promise<void>(() => {});
+    });
+    const running = f.handle.finish({ stdout: sink, stderr: sink }, ready, preload);
+    const observed = expect(running).rejects.toMatchObject({ code: "EACCES" });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(events).toEqual(["admit-sent", "preload"]);
+    expect(ready).not.toHaveBeenCalled();
+    expect(f.cancel).not.toHaveBeenCalled();
+    expect(f.alive()).toBe(true);
+    acknowledge();
+    await observed;
+    expect(preload).toHaveBeenCalledOnce();
+    expect(f.cancel).toHaveBeenCalledExactlyOnceWith(999991);
+    expect(f.alive()).toBe(false);
+    await expect(readFile(f.pidPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("cleans the exact owned child when the first post-admission PID read fails", async () => {
     const f = await fixture();
     await expect(f.handle.finish({ stdout: sink, stderr: sink })).rejects.toMatchObject({ code: "EACCES" });

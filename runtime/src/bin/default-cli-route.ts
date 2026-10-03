@@ -20,6 +20,8 @@ export interface DefaultCliRouteAdapters {
   readonly oneShotCLI: typeof import("./agenc-main.js").oneShotCLI;
   /** Preload only; readiness and authentication still gate all route callbacks. */
   readonly onReadinessWaitStarted?: () => void;
+  /** Import-only work after ADMIT is sent, before its acknowledgment. */
+  readonly onAdmissionWaitStarted?: () => void | Promise<void>;
   readonly prepareProvisionalDaemon?: () => Promise<ProvisionalDaemonStart | null>;
 }
 
@@ -35,7 +37,7 @@ function isInteractiveTuiRoutePlan(
 
 export async function runDefaultCliRoute(
   argv: readonly string[],
-  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI, onReadinessWaitStarted, prepareProvisionalDaemon }: DefaultCliRouteAdapters,
+  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI, onReadinessWaitStarted, onAdmissionWaitStarted, prepareProvisionalDaemon }: DefaultCliRouteAdapters,
 ): Promise<number> {
   const routePlan = classifyCLI({
     argv,
@@ -94,7 +96,11 @@ export async function runDefaultCliRoute(
           "write"
         >;
         if (provisional !== null) {
-          await provisional.finish({ stdout: silentStdout, stderr: process.stderr }, onReadinessWaitStarted);
+          await provisional.finish(
+            { stdout: silentStdout, stderr: process.stderr },
+            onReadinessWaitStarted,
+            onAdmissionWaitStarted,
+          );
           provisional = null;
         } else await ensureAgenCDaemonAutostart({
           io: { stdout: silentStdout, stderr: process.stderr },
