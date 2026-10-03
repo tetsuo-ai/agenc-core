@@ -9,8 +9,8 @@ import {
   main,
   oneShotCLI,
   resolveAttachTargetTrustRoot,
-  runProjectTrustPreflightForTui,
 } from "./agenc-main.js";
+import { runProjectTrustPreflightForTui } from "./project-trust-preflight.js";
 import {
   getSessionTrustAccepted,
   setSessionTrustAccepted,
