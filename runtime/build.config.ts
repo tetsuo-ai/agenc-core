@@ -793,6 +793,9 @@ const external = [
   'audio-capture-napi',
   'cross-spawn',
   'execa',
+  // Relocated sources and external consumers already use this package. Keep
+  // schemas, error constructors and metadata registries on the same instance.
+  'zod',
   'openai',
   'ollama',
   'better-sqlite3',

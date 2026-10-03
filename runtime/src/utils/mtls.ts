@@ -3,6 +3,7 @@ import { Agent as HttpsAgent } from 'https'
 import memoize from 'lodash-es/memoize.js'
 import type * as tls from 'tls'
 import type * as undici from 'undici'
+import { loadUndiciAgent } from '../llm/undici-dispatcher.js'
 import { getCACertificates } from './caCerts.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -148,11 +149,9 @@ export function getTLSFetchOptions(
     return { tls: tlsConfig }
   }
   logForDebugging('TLS: Created undici agent with custom certificates')
-  // Create a custom undici Agent with TLS options. Lazy-required so that
-  // the ~1.5MB undici package is only loaded when mTLS/CA certs are configured.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require('undici') as typeof undici
-  const agent = new undiciMod.Agent({
+  // Load the dispatcher only when mTLS/CA certs are configured.
+  const Agent = loadUndiciAgent()
+  const agent = new Agent({
     connect: {
       cert: tlsConfig.cert,
       key: tlsConfig.key,
