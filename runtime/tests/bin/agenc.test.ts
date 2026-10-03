@@ -1510,7 +1510,12 @@ describe("prepareTurnRuntimeInputs", () => {
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
-    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: nested, configStore: store }));
+    // Presentation identity is separate from the shell environment for paths.
+    // This fixture has no captured provider environment, so it uses the default.
+    expect(load).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cwd: nested, configStore: store }),
+      undefined,
+    );
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);

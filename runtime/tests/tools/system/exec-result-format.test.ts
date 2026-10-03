@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  compactExecExitFooter,
   formatUnifiedExecToolContent,
   RESIDUAL_PROCESSES_NOTE,
   unifiedExecCodeModeResult,
@@ -100,4 +101,54 @@ test("Light trims only routine successful exec footers", () => {
     ));
     expect(unifiedExecCodeModeResult(value)).toHaveProperty("wall_time_seconds", 0.012);
   }
+});
+
+describe("compactExecExitFooter", () => {
+  test.each([
+    {}, { exitCode: 1 }, { exitCode: -1 }, { truncated: true },
+    { timedOut: true }, { process_id: 7 }, { session_id: 8 },
+    { detached: true, log_path: "/service.log" },
+    { residual_processes_terminated: true },
+  ])("aliases only the numeric exit label and preserves all other facts: %j", details => {
+    const value = output(details);
+    const before = structuredClone(value);
+    const canonical = formatUnifiedExecToolContent(value, true);
+    const structured = unifiedExecCodeModeResult(value);
+    const compact = compactExecExitFooter(canonical);
+    expect(compact).toBe(canonical.replace("[exec exit_code=", "[exit "));
+    expect(compact.replace("[exit ", "[exec exit_code=")).toBe(canonical);
+    expect(compactExecExitFooter(compact)).toBe(compact);
+    expect(formatUnifiedExecToolContent(value, true)).toBe(canonical);
+    expect(unifiedExecCodeModeResult(value)).toEqual(structured);
+    expect(value).toEqual(before);
+  });
+
+  test.each([
+    { exitCode: null, process_id: 7, timedOut: true },
+    { exitCode: null, detached: true, pid: 7, log_path: "/service.log" },
+    { exitCode: null, timedOut: true },
+    { exitCode: null },
+  ])("keeps running, timeout and signal-only results unchanged: %j", details => {
+    const canonical = formatUnifiedExecToolContent(output(details), true);
+    expect(compactExecExitFooter(canonical)).toBe(canonical);
+  });
+
+  test.each([
+    "inline [exec exit_code=0]", "[exec exit_code=0]\nmore stdout",
+    "[exec exit_code=no]", "[exec exit_code=1oops]", "[exec exit_code=0",
+    "[exec exit_code=1]\n[sandbox denial: approval unavailable]",
+    "[exec exit_code=0]\n[note: this command left processes running bogus]",
+  ])("leaves unrecognized or nonterminal footers unchanged: %s", content => {
+    expect(compactExecExitFooter(content)).toBe(content);
+  });
+
+  test("preserves footer-shaped stdout and the exact residual-process note", () => {
+    const stdout = "[exec exit_code=99]\n\n[exit 123]\nAGENC_DATA";
+    const canonical = formatUnifiedExecToolContent(output({
+      output: stdout, residual_processes_terminated: true,
+    }), true);
+    expect(compactExecExitFooter(canonical)).toBe(
+      `${stdout}\n\n[exit 0 wall_time=0.0120s tokens=1]\n${RESIDUAL_PROCESSES_NOTE}`,
+    );
+  });
 });

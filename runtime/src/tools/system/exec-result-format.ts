@@ -9,6 +9,16 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 export const RESIDUAL_PROCESSES_NOTE =
   "[note: this command left processes running (a trailing '&', nohup, setsid, or a daemon that forked) and AgenC stopped them when the command returned. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
 
+/** Model-facing alias only; canonical results and structured facts stay intact. */
+export function compactExecExitFooter(content: string): string {
+  const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
+  const footerEnd = content.endsWith(note) ? content.length - note.length : content.length;
+  return content.slice(0, footerEnd).replace(
+    /(^|\n)\[exec exit_code=(-?\d+)((?: [^\r\n]*)?)\]$/,
+    "$1[exit $2$3]",
+  ) + content.slice(footerEnd);
+}
+
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
   lightMode = false,

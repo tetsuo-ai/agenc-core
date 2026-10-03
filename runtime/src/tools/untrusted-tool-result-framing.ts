@@ -1,6 +1,7 @@
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
 import { verifyToolResultIntegrity, withPersistedToolResultRepresentation } from "../session/tool-result-integrity.js";
+import { compactExecExitFooter } from "./system/exec-result-format.js";
 import type { Tool } from "./types.js";
 
 export const LIGHT_WORKSPACE_DATA_BOUNDARY = "AGENC_DATA";
@@ -292,7 +293,12 @@ export function frameUntrustedToolResultContent(
     return content;
   }
   if (compactWorkspace && kind === "workspace") {
-    const body = sanitizeCompactContent(content);
+    const sanitized = sanitizeCompactContent(content);
+    // Transform only new model-facing text, before callers seal its integrity.
+    // Raw completion records and already sealed history keep their old bytes.
+    const body = typeof sanitized === "string" &&
+      (toolName === "exec_command" || toolName === "write_stdin")
+      ? compactExecExitFooter(sanitized) : sanitized;
     if (isRuntimeAuthoredResult(toolName, kind)) return body;
     const boundary = LIGHT_WORKSPACE_DATA_BOUNDARY;
     return typeof body === "string" ? `${boundary}\n${body}\n${boundary}` : [

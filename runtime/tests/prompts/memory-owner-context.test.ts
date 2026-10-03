@@ -75,10 +75,21 @@ describe("memory prompt owner context", () => {
     expect(prompt.memoryPrompt).toContain(project.path);
     expect(prompt.memoryPrompt).toContain(await resolveGlobalMemoryDirectory(target.options));
     expect(prompt.memoryPrompt).toContain("HOST_MEMORY_CONSTRAINT");
-    expect(prompt.memoryPrompt).toContain("Ignore memory if the user asks");
+    expect(prompt.memoryPrompt).toContain("ignore if asked");
     expect(prompt.memoryPrompt).not.toContain("Write to them directly");
     const interactive = await owner("interactive", "", { lightMode: true });
     expect((await resolveMemoryPromptInputs(interactive.session, interactive.cwd)).memoryInstructions).not.toBe("");
+  });
+
+  test("Desktop presentation uses the captured client even when the shell environment differs", async () => {
+    const target = await owner("desktop", "", { lightMode: true, nonInteractive: true });
+    const session = { services: { ...target.session.services,
+      providerEnvironment: { ...target.session.services.providerEnvironment, AGENC_AGENT_SDK_CLIENT_APP: "agenc-desktop-rich-v1" },
+    } };
+    const prompt = await resolveMemoryPromptInputs(session, target.cwd);
+    expect(prompt.memoryPrompt).toContain("Read memory when requested; verify past claims against current files. Ignore memory if the user asks.");
+    expect(prompt.memoryPrompt).toContain((await resolveAutoMemoryDirectory(target.options)).path);
+    expect(prompt.memoryPrompt).toContain(await resolveGlobalMemoryDirectory(target.options));
   });
 
   test("uses the owner's tilde expansion and keeps the global root separate", async () => {
