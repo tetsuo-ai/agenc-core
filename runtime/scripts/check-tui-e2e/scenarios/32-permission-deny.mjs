@@ -3,12 +3,19 @@
  *
  * Default mode. Triggers Bash, denies the overlay, then verifies the command
  * never created its marker file in an isolated cwd.
+ *
+ * The marker goes under the workspace `tmp/` directory, which the scenario
+ * creates first so the command would succeed if it ran. A shell write to any
+ * other workspace path (outside build, dist, logs, .cache, tmp and coverage)
+ * is refused by the shell write policy before approval is asked
+ * (docs/reference/tools-permissions-sandbox.md), so it would never reach the
+ * overlay this scenario denies.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 const marker = "agenc-permission-deny-marker-fe17";
-const markerFile = "permission-deny-output.txt";
+const markerFile = "tmp/permission-deny-output.txt";
 
 function shellQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -24,6 +31,7 @@ export const meta = {
 
 export default async function (session) {
   const markerPath = path.join(session.cwd, markerFile);
+  mkdirSync(path.dirname(markerPath), { recursive: true });
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.type(
