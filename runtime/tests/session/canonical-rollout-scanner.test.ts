@@ -162,6 +162,7 @@ describe("canonical rollout compaction scanner", () => {
         payload: { role: "user", content: "temp authority" },
       });
       store.flushDurable();
+      appendLargeHistory(store, 4);
       await commitWholeHistoryCompaction(store, {
         attemptId: "temp-authority-attempt",
         customInstructions: "payload registry temp authority",
@@ -216,6 +217,7 @@ describe("canonical rollout compaction scanner", () => {
     const rolloutPath = store.rolloutPath;
     try {
       store.appendRollout({ type: "response_item", payload: { role: "user", content: "payload retry" } });
+      appendLargeHistory(store, 4);
       await commitWholeHistoryCompaction(store, {
         attemptId: "payload-retry-attempt",
         customInstructions: "payload initialization retry",
