@@ -6,6 +6,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import type * as undici from "undici";
+import { loadUndiciAgent } from "../llm/undici-dispatcher.js";
 import pMap from "p-map";
 import { resolveHomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
@@ -569,9 +570,8 @@ function getLiveWebFetchSsrfDispatcher(
 
   const mtlsConfig = getMTLSConfig(environment);
   const caCerts = getCACertificates(environment);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require("undici") as typeof undici;
-  const dispatcher = new undiciMod.Agent({
+  const Agent = loadUndiciAgent();
+  const dispatcher = new Agent({
     connect: {
       lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
       ...(mtlsConfig ?? {}),
