@@ -45,7 +45,7 @@ import {
   type Tool,
   type ToolCallProgress,
 } from '../../tools/Tool.js'
-import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
+import type { MCPProgress } from '../../tools/MCPTool/MCPTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { AbortError, isAbortError } from '../../utils/errors.js'
 import {
@@ -1796,6 +1796,13 @@ export const fetchToolsForClient = memoizeWithLRU(
       if (!result) {
         throw lastError ?? new Error('tools/list failed after 3 attempts')
       }
+
+      if (result.tools.length === 0) return []
+
+      // The tool definition includes terminal renderers. Load it only when a
+      // connected server actually supplies tools, inside the existing failure
+      // boundary for tool discovery.
+      const { MCPTool } = await import('../../tools/MCPTool/MCPTool.js')
 
       // Keep the protocol identity byte-for-byte intact for tools/call. Only
       // fields exposed to the model or UI pass through the shared metadata
