@@ -1084,7 +1084,9 @@ its working directory.
 ### Print-mode durability
 
 Fresh, noninteractive one-shot print runs use buffered canonical appends and
-run-scoped SQLite `NORMAL` transactions by default. A process crash ordinarily
+run-scoped SQLite `NORMAL` transactions by default on Linux and macOS. Other
+platforms keep full syncing until they support the durable directory-marker
+proof. A process crash ordinarily
 preserves page-cache bytes; a host crash or power loss can lose the unsynced
 suffix. Interactive, Desktop, routine, goal, child-agent, and resumed (`-c` or
 `--resume`) sessions keep full syncing. Use `agenc -p --full-durability "…"`

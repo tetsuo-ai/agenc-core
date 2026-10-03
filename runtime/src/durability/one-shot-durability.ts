@@ -14,10 +14,17 @@ export function selectRelaxedOneShot(input: {
   readonly resumed?: boolean;
   readonly routine?: boolean;
   readonly goal?: boolean;
+  readonly platform?: NodeJS.Platform;
 }): boolean {
   return input.requested === true && input.nonInteractive === true &&
     input.source === "agenc.prompt" && input.mode === "one-shot" &&
-    !input.resumed && !input.routine && !input.goal;
+    !input.resumed && !input.routine && !input.goal &&
+    supportsRelaxedOneShot(input.platform);
+}
+
+/** Windows has no portable directory-fsync proof for the active marker. */
+export function supportsRelaxedOneShot(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux" || platform === "darwin";
 }
 
 export class OneShotRecoveryError extends Error {
@@ -59,7 +66,11 @@ export function withOneShotWriteScope<T>(projectDir: string, runId: string, oper
 
 export function relaxedOneShotTransaction(projectDir: string, runId?: string): boolean {
   const project = resolve(projectDir);
-  const selected = writeScope?.projectDir === project ? writeScope.runId : runId;
+  // A private connection is owned by exactly one run. Ambient callbacks may
+  // narrow that authority but cannot lend a different owner's relaxed policy.
+  if (runId !== undefined && writeScope !== undefined &&
+      (writeScope.projectDir !== project || writeScope.runId !== runId)) return false;
+  const selected = runId ?? (writeScope?.projectDir === project ? writeScope.runId : undefined);
   if (selected === undefined) return false;
   return [...writers.values()].some(w => w.projectDir === project && w.runId === selected && w.relaxed);
 }

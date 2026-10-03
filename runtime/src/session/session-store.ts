@@ -1,4 +1,4 @@
-import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
+import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
  * guarantees, flock acquisition, atomic write-then-rename, and the
@@ -1537,7 +1537,7 @@ export class SessionStore {
         "resume rollout descriptor lease does not match its path",
       );
     }
-    this.relaxedOneShotRequested = opts.relaxedOneShot === true;
+    this.relaxedOneShotRequested = opts.relaxedOneShot === true && supportsRelaxedOneShot();
     this.checkpointOneShot = opts.checkpointOneShot;
     if (this.relaxedOneShotRequested && (opts.resume || opts.resumeRolloutPath !== undefined || this.checkpointOneShot === undefined)) {
       throw new Error("relaxed one-shot requires a fresh run and a final SQLite checkpoint");

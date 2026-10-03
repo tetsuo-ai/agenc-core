@@ -41,7 +41,7 @@ describe("one-shot durability selection", () => {
     expect(selectRelaxedOneShot(eligible)).toBe(true);
     for (const override of [{ requested: false }, { requested: undefined }, { nonInteractive: false },
       { source: "desktop" }, { source: undefined }, { mode: "tui" }, { resumed: true },
-      { routine: true }, { goal: true }]) expect(selectRelaxedOneShot({ ...eligible, ...override })).toBe(false);
+      { routine: true }, { goal: true }, { platform: "win32" as const }, { platform: "freebsd" as const }]) expect(selectRelaxedOneShot({ ...eligible, ...override })).toBe(false);
   });
   it("captures an opt-out only in the actual CLI option region", () => {
     expect(readStartupCliFlags(["node", "agenc", "-p", "--full-durability", "work"]).fullDurability).toBe(true);
@@ -73,6 +73,20 @@ describe("one-shot physical writes and shared SQLite isolation", () => {
     resumed.setFsyncImplForTest(fd => { resumedSyncs++; fsyncSync(fd); });
     expect(resumed.append({ id: "next", eventId: "next", seq: 2, msg: { type: "agent_message", payload: { message: "continued" } } }, { durable: true })).toBe(true);
     expect(resumedSyncs).toBe(1);
+  });
+  it.each(["state", "logs"] as const)("does not lend a print callback's policy to another private owner's %s database", database => {
+    const run = openRun(true);
+    const sibling = openStateDatabases({ cwd: run.cwd, agencHome: run.home, durabilityRunId: "interactive" });
+    cleanups.push(() => sibling.close());
+    const observed: unknown[] = [];
+    run.store.setOnRolloutCommitted(() => {
+      const readLevel = () => observed.push(sibling[database].pragma("synchronous", { simple: true }));
+      if (database === "state") sibling.transactionImmediate(readLevel); else sibling.logsTransaction(readLevel);
+      run.driver.transactionImmediate(() => observed.push(run.driver.state.pragma("synchronous", { simple: true })));
+    });
+    expect(run.append()).toBe(true);
+    expect(observed).toEqual([2, 1]);
+    expect(sibling[database].pragma("synchronous", { simple: true })).toBe(2);
   });
   it("uses NORMAL only inside the explicitly owned transaction and restores FULL on errors", () => {
     const run = openRun(true);
