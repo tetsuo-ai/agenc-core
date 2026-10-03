@@ -1,4 +1,4 @@
-/** Exploratory guarded entry. No foreground dependency evaluates before ADMIT. */
+/** Exploratory guarded entry. Foreground execution still requires ADMIT. */
 import {
   createAgenCDaemonStartupGuardReceiver, takeAgenCDaemonStartupGuardToken,
 } from "../app-server/daemon-startup-guard.js";
@@ -45,6 +45,10 @@ export async function runProvisionalDaemonChildEntry(): Promise<void> {
     };
     let handedOff = false;
     try {
+      // Compile/evaluate the audited foreground graph while trust is pending.
+      // The canonical foreground entry and all startup effects remain below
+      // admission; refusal keeps this lock until exact-child cleanup finishes.
+      await import("../app-server/daemon-cli.js");
       const decision = await admission.decision;
       if (decision.kind !== "admitted" || guard.wasRequested()) {
         await control.removeAgenCDaemonPid(control.resolveAgenCDaemonPidPath(host.env, host.userHome), host.pid);
@@ -54,8 +58,8 @@ export async function runProvisionalDaemonChildEntry(): Promise<void> {
       }
       await channel.send({ type: "agenc.daemon.provisional.admitted", version: 1, token });
       handedOff = true;
-      // The wrapper dynamically imports foreground only here. It receives
-      // this very lock, with its existing final publication/cleanup barrier.
+      // The wrapper now reuses the loaded module. It receives this very lock,
+      // with its existing final publication/cleanup barrier.
       return await control.runAgenCDaemonCli({ kind: "command", action: "run" }, {
         host, enterDaemonHome: true, releaseProvisionalLifecycleLock: releaseOnce,
       });
