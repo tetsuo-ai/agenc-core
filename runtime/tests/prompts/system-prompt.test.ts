@@ -1418,6 +1418,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       "Read a known file before editing it: FileRead, or cat, sed -n or head of that file.",
       "Search only for missing context needed for the change",
       "Do not weaken tests or requirements, conceal failures or claim unverified work",
+      "Leave files the user asks to preserve unchanged. If existing tests must be preserved, add new cases in separate files.",
       "Write secure code; protect secrets",
       "Reread exact current text lost to compaction",
       "Read/change other assistants' files only when the user names them",
