@@ -9,11 +9,11 @@ import { clearMTLSCache, getMTLSConfig } from "../../src/utils/mtls.js";
 import { RemoteAuthBackend } from "../../src/auth/backends/remote.js";
 import {
   clearProxyCache,
-  createAxiosInstance,
   getProxyAgent,
   getProxyFetchOptions,
   getWebSocketProxyUrl,
 } from "../../src/utils/proxy.js";
+import { createAxiosInstance } from "../../src/utils/axiosProxy.js";
 
 const temporaryDirectories: string[] = [];
 
