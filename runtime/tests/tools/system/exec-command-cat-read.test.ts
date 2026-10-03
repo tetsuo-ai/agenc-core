@@ -52,7 +52,7 @@ test("output that differs from the files, or an unsafe or incomplete command, re
     ["cat *.go", finished("package a\n")],
     ["nl -ba a.go", finished("     1\tpackage a\n")],
     ["cat a.go", finished("package a\n", { truncated: true })],
-    ["cat a.go", finished("package a\n", { exitCode: 1, exit_code: 1 })],
+    ["cat a.go", finished("package a\n", { exitCode: null, exit_code: null })],
     ["cat a.go", finished("package a\n", { exitCode: null, exit_code: null, session_id: 7 })],
   ];
   for (const [cmd, output] of cases) await record(cmd, output);
@@ -195,6 +195,37 @@ test("cd counts only when it names the absolute directory the command already ru
     expect(getSessionReadSnapshot(session, join(root, "a.go")), cmd).toBeUndefined();
   }
   await record(`cd ${root}/ && cat a.go`, finished("package a\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
+});
+
+test("after a nonzero exit only the first step of each ; list counts", async () => {
+  await writeFile(join(root, "a.go"), "package a\n", "utf8");
+  await writeFile(join(root, "b.go"), "package b\n", "utf8");
+  const failed = (stdout: string) => finished(stdout, { exitCode: 2, exit_code: 2 });
+  await record("cat a.go && cat b.go", failed("package a\npackage b\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
+  expect(getSessionReadSnapshot(session, join(root, "b.go"))).toBeUndefined();
+  await rm(join(root, "a.go"));
+  await writeFile(join(root, "c.go"), "package c\n", "utf8");
+  await record("ls missing; cat c.go && cat b.go; ls examples docs", failed("package c\npackage b\n"));
+  expect(getSessionReadSnapshot(session, join(root, "c.go"))).toMatchObject({ viewKind: "full" });
+  expect(getSessionReadSnapshot(session, join(root, "b.go"))).toBeUndefined();
+});
+
+test("a shell that did not exit on its own records nothing", async () => {
+  await writeFile(join(root, "a.go"), "package a\n", "utf8");
+  await record("cat a.go; ls", finished("package a\n", { exitCode: null, exit_code: null }));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toBeUndefined();
+});
+
+test("empty commands bash rejects fail closed; a single trailing ; is fine", async () => {
+  await writeFile(join(root, "a.go"), "package a\n", "utf8");
+  for (const cmd of ["cat a.go; ; true", "; cat a.go", "cat a.go && && true", "cat a.go | | cat", "cat a.go &&", "cat a.go ||", "cat a.go |", "cat a.go;;", ""]) {
+    await record(cmd, finished("package a\n"));
+    await record(cmd, finished("package a\n", { exitCode: 2, exit_code: 2 }));
+    expect(getSessionReadSnapshot(session, join(root, "a.go")), cmd).toBeUndefined();
+  }
+  await record("cat a.go ;  ", finished("package a\n"));
   expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
 });
 

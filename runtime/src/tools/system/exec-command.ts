@@ -99,15 +99,17 @@ type ShellReadStep =
  * steps, where a step is a `|` pipeline of commands and a list may end in `|| true`. Single and
  * double quotes and backslash escapes are honored, so quoted text never separates anything. Any
  * other shell syntax (redirection other than a literal 2>/dev/null, substitution, expansion,
- * subshells, groups, background jobs, `|&`, other `||` forms, newlines) fails closed.
+ * subshells, groups, background jobs, `|&`, other `||` forms, newlines) fails closed, and so does
+ * any empty command bash would reject as a syntax error (only a single trailing `;` may end a line).
  *
- * `all` holds every command. `ran` holds the single-command steps that certainly ran when the whole
- * line exits 0 and whose standard output is the line's own: the first step of every list (it runs
- * whatever came before the `;`) and every step of a final list without `|| true` (exit 0 means none
- * failed). A later step of another list may have been skipped by a failed `&&`; a final `|| true`
- * makes exit 0 say nothing about the steps before it; a pipeline element writes into the next one.
+ * `all` holds every command. `ran` holds the single-command steps that certainly ran when the shell
+ * exited on its own and whose standard output is the line's own: the first step of every list (made
+ * only of chain-safe commands, the shell reaches every `;`) and, when the line exited 0, every step
+ * of a final list without `|| true` (exit 0 means none failed). A later step of another list may have
+ * been skipped by a failed `&&`; a final `|| true` makes exit 0 say nothing about the steps before
+ * it; a pipeline element writes into the next one.
  */
-function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: string[][] } | undefined {
+function shellSteps(cmd: string, exitedZero: boolean): { readonly all: string[][]; readonly ran: string[][] } | undefined {
   const lists: { readonly steps: string[][][]; readonly orTrue: boolean }[] = [];
   let steps: string[][][] = [];
   let pipeline: string[][] = [];
@@ -128,10 +130,11 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
   };
   const endStep = (): boolean => {
     endCommand();
-    const step = pipeline.filter(command => command.length > 0);
+    const step = pipeline;
     pipeline = [];
+    if (step.some(command => command.length === 0)) return false;
     if (orTrue) return step.length === 1 && step[0]!.length === 1 && step[0]![0] === "true";
-    if (step.length > 0) steps.push(step);
+    steps.push(step);
     return true;
   };
   const endList = (): boolean => {
@@ -197,21 +200,23 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
       inWord = true;
     }
   }
-  if (!endList()) return undefined;
+  const trailingSemicolon = /;[ \t]*$/u.test(cmd) && lists.length > 0 && steps.length === 0 &&
+    pipeline.length === 0 && words.length === 0 && !inWord && !orTrue;
+  if (!trailingSemicolon && !endList()) return undefined;
   const all: string[][] = [];
   const ran: string[][] = [];
   lists.forEach((list, index) => {
     for (const step of list.steps) all.push(...step);
     if (list.orTrue) all.push(["true"]);
-    const certain = index === lists.length - 1 && !list.orTrue ? list.steps : list.steps.slice(0, 1);
+    const certain = exitedZero && index === lists.length - 1 && !list.orTrue ? list.steps : list.steps.slice(0, 1);
     for (const step of certain) if (step.length === 1) ran.push(step[0]!);
   });
   return { all, ran };
 }
 
 /**
- * Commands that cannot end, replace or redirect the shell's own execution, so under exit status 0
- * every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
+ * Commands that cannot end, replace or redirect the shell's own execution, so when the shell exits
+ * on its own every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
  * trap, return, functions, variable assignments, unknown commands) fails the whole chain closed.
  */
 /** Shells whose parsing of quotes, `;`, `&&`, `|` and `|| true` matches shellSteps. */
@@ -237,9 +242,9 @@ function chainSafe(words: readonly string[], cwd: string): boolean {
   return rest.length === 1 && VERSION_PROBES.get(name)?.includes(rest[0]!) === true;
 }
 
-function shellReadSteps(cmd: string, cwd: string): ShellReadStep[] {
+function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellReadStep[] {
   const steps: ShellReadStep[] = [];
-  const parsed = shellSteps(cmd);
+  const parsed = shellSteps(cmd, exitedZero);
   // Every command must be safe, including steps a short-circuit may have skipped:
   // "printf x && exit 0; cat a" ends the shell before the cat.
   if (parsed === undefined || parsed.all.some(words => !chainSafe(words, cwd))) return steps;
@@ -329,7 +334,8 @@ async function stableWorkspaceText(
  * Light records the reads a model makes through the shell for the read-before-write gate: a `cat`
  * step of a `;`/`&&` chain is a full read of each named file whose exact current content appears in
  * the output, and a `sed -n 'A,Bp' file` or `head -n N file` step is a partial read of those lines
- * when exactly those lines appear. The command must exit 0 untruncated with no live session. The
+ * when exactly those lines appear. The shell must have exited on its own, untruncated with no live
+ * session; after a nonzero exit only the first step of each `;` list counts. The
  * model has then seen the current text, which is what the gate asks for (GPT models read this way:
  * 0.2 to 0.3 gate refusals per benchmark task, each costing a FileRead and a retry).
  */
@@ -341,11 +347,12 @@ export async function recordShellReads(params: {
   readonly args: Record<string, unknown>;
 }): Promise<void> {
   const { output } = params;
-  if (output.exitCode !== 0 || output.truncated || output.timedOut || output.session_id !== undefined) return;
+  // A null exit code means the shell did not exit on its own (a signal, or still running).
+  if (output.exitCode === null || output.truncated || output.timedOut || output.session_id !== undefined) return;
   if (output.stdout.length === 0) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
-  const steps = shellReadSteps(params.cmd, params.cwd);
+  const steps = shellReadSteps(params.cmd, params.cwd, output.exitCode === 0);
   if (steps.length === 0 || steps.length > 16) return;
   for (const step of steps) {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
