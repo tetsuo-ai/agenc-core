@@ -407,8 +407,8 @@ describe("canonical rollout compaction scanner", () => {
       captureActiveHistory: true,
     } as const;
     try {
-      // Under the ceiling the prefix is worth its memory, and its two disk
-      // registries are the visible sign that a scanner is holding one.
+      // Under the ceiling the prefix is worth its memory, and its identity
+      // registry is the visible sign that a scanner is holding one.
       for (let index = 0; index < 64; index += 1) {
         store.appendRollout({
           type: "response_item",
@@ -418,7 +418,7 @@ describe("canonical rollout compaction scanner", () => {
       store.flushDurable();
       const small = scanner.scan(rolloutPath, options);
       expect(small.activeHistory?.messages).toHaveLength(64);
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
 
       // Past it the prefix would hold a second copy of the whole session, so
       // it answers this scan and is released rather than kept.
@@ -440,9 +440,9 @@ describe("canonical rollout compaction scanner", () => {
       // which this rollout has none of; the two tests below charge it.
       const bookkeeping = { ...options, captureActiveHistory: false } as const;
       scanner.scan(rolloutPath, bookkeeping);
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
       scanner.scan(rolloutPath, bookkeeping);
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
     } finally {
       scanner.close();
       store.close();
@@ -465,9 +465,9 @@ describe("canonical rollout compaction scanner", () => {
       appendLargeHistory(store, 1_000);
 
       // Nothing hydrated yet, so this prefix is small and worth keeping: its
-      // two disk registries are the visible sign that the scanner holds one.
+      // identity registry is the visible sign that the scanner holds one.
       scanner.scan(rolloutPath, options);
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
 
       const transaction = await commitWholeHistory(store, "ceiling-source");
       // A rollback reconstructs the whole pre-compaction conversation back
@@ -537,7 +537,7 @@ describe("canonical rollout compaction scanner", () => {
     try {
       appendMarkedRows(store, 40);
       scanner.scan(rolloutPath, options);
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
 
       // Rollback bookkeeping names the attempt it is reconstructing, so no
       // later scan can ask this prefix its question: holding it would only
@@ -546,7 +546,7 @@ describe("canonical rollout compaction scanner", () => {
         ...options,
         captureHistoryAtAttemptIds: ["rollback-attempt"],
       });
-      expect(readdirSync(sessionTempRoot)).toHaveLength(2);
+      expect(readdirSync(sessionTempRoot)).toHaveLength(1);
     } finally {
       scanner.close();
       store.close();
