@@ -44,6 +44,31 @@ afterEach(() => {
 });
 
 describe("canonical rollout compaction scanner", () => {
+  it("validates a fresh journal without opening a payload spool, including close", () => {
+    const store = createStore("plain-prefix");
+    const scanner = new CanonicalRolloutScanner();
+    const sessionTempRoot = join(temporaryHome, "plain-prefix-temp");
+    const observed: string[] = [];
+    try {
+      const scan = scanner.scan(store.rolloutPath, {
+        ...bookkeepingOptions(sessionTempRoot, "plain-prefix"),
+        nowMilliseconds: () => {
+          try { observed.push(...readdirSync(sessionTempRoot)); } catch { /* root not created yet */ }
+          return Date.now();
+        },
+      });
+      expect(scan.proof.recordCount).toBe(1);
+      expect(scan.attempts.size).toBe(0);
+      expect(observed.some((name) => name.startsWith("agenc-recovery-identities-"))).toBe(true);
+      expect(observed.some((name) => name.startsWith("agenc-c2-payloads-"))).toBe(false);
+    } finally {
+      scanner.close();
+      scanner.close();
+      store.close();
+    }
+    expect(readdirSync(sessionTempRoot)).toEqual([]);
+  });
+
   it("retains no ordinary rows from a large zero-compaction journal", () => {
     const store = createStore("zero-c2-large");
     const rolloutPath = store.rolloutPath;
@@ -137,6 +162,10 @@ describe("canonical rollout compaction scanner", () => {
         payload: { role: "user", content: "temp authority" },
       });
       store.flushDurable();
+      await commitWholeHistoryCompaction(store, {
+        attemptId: "temp-authority-attempt",
+        customInstructions: "payload registry temp authority",
+      });
     } finally {
       store.close();
     }
@@ -182,10 +211,18 @@ describe("canonical rollout compaction scanner", () => {
     expect(readdirSync(rootB)).toEqual([]);
   });
 
-  it("removes a partial payload registry when SQLite initialization fails", () => {
+  it("removes a partial payload registry when SQLite initialization fails and retries", async () => {
     const store = createStore("payload-init-failure");
     const rolloutPath = store.rolloutPath;
-    store.close();
+    try {
+      store.appendRollout({ type: "response_item", payload: { role: "user", content: "payload retry" } });
+      await commitWholeHistoryCompaction(store, {
+        attemptId: "payload-retry-attempt",
+        customInstructions: "payload initialization retry",
+      });
+    } finally {
+      store.close();
+    }
     const sessionTempRoot = join(temporaryHome, "payload-init-temp");
     mkdirSync(sessionTempRoot, { recursive: true });
     const originalPragma = Database.prototype.pragma;
@@ -215,6 +252,15 @@ describe("canonical rollout compaction scanner", () => {
       pragmaSpy.mockRestore();
     }
     expect(readdirSync(sessionTempRoot)).toEqual([]);
+    const recovered = scanCanonicalRollout(rolloutPath, {
+      sessionTempRoot,
+      expectedRunId: "payload-init-failure",
+      expectedEpoch: 1,
+      maximumScanMilliseconds: 30_000,
+      compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+    });
+    expect(recovered.attempts.size).toBe(1);
+    expect(readdirSync(sessionTempRoot)).toEqual([]);
   });
 
   it("agrees with a full replay after a compaction landed on the tail", async () => {
@@ -243,6 +289,7 @@ describe("canonical rollout compaction scanner", () => {
       // Warm the scanner on the pre-compaction prefix, so the whole compaction
       // lifecycle below reaches it as an appended tail.
       scanner.scan(rolloutPath, options);
+      expect(readdirSync(options.sessionTempRoot).some((name) => name.startsWith("agenc-c2-payloads-"))).toBe(false);
 
       const committed = await commitWholeHistoryCompaction(store, {
         attemptId: "agreement-attempt",
@@ -254,10 +301,12 @@ describe("canonical rollout compaction scanner", () => {
       const cold = scanCanonicalRollout(rolloutPath, options);
       expect(comparable(warm)).toEqual(comparable(cold));
       expect(warm.attempts.size).toBe(1);
+      expect(readdirSync(options.sessionTempRoot).filter((name) => name.startsWith("agenc-c2-payloads-"))).toHaveLength(1);
     } finally {
       scanner.close();
       store.close();
     }
+    expect(readdirSync(options.sessionTempRoot)).toEqual([]);
   }, 120_000);
 
   it("does not carry an end-of-file bookkeeping conclusion into a later scan", async () => {
