@@ -1,4 +1,5 @@
-import { Ajv } from 'ajv'
+import type { Ajv } from 'ajv'
+import { loadAjv } from '../../utils/loadAjv.js'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ValidationResult } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -45,18 +46,21 @@ type ResultContent = NonNullable<MCPToolResult>
 // Re-export MCPProgress from centralized types to break import cycles
 export type { MCPProgress } from '../../types/tools.js'
 
-const ajv = new Ajv({ strict: false })
+let ajv: Ajv | undefined
+function getAjv(): Ajv {
+  return ajv ??= new (loadAjv())({ strict: false })
+}
 
 // Cache compiled validators to avoid recompiling on every validateInput call.
 // AJV compilation is expensive — schemas don't change between calls.
 // Uses WeakMap to allow garbage collection of schemas from disconnected/refreshed
 // MCP tools, preventing memory leaks from accumulating strong references.
-const compiledValidatorCache = new WeakMap<object, ReturnType<typeof ajv.compile>>()
+const compiledValidatorCache = new WeakMap<object, ReturnType<Ajv['compile']>>()
 
 function getCompiledValidator(schema: object) {
   let validator = compiledValidatorCache.get(schema)
   if (!validator) {
-    validator = ajv.compile(schema)
+    validator = getAjv().compile(schema)
     compiledValidatorCache.set(schema, validator)
   }
   return validator
@@ -103,7 +107,7 @@ export const MCPTool = buildTool({
         if (!validate(input)) {
           return {
             result: false,
-            message: ajv.errorsText(validate.errors),
+            message: getAjv().errorsText(validate.errors),
             errorCode: 400,
           }
         }

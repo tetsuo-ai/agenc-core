@@ -1,6 +1,7 @@
 /** Public, versioned metadata contract for durable workflow handoffs. */
 
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 
 import { cloneFiniteJsonValue } from "./workflow-finite-json.js";
 
@@ -150,7 +151,7 @@ let artifactValidator: ValidateFunction<WorkflowHandoffArtifact> | undefined;
 
 function getArtifactValidator(): ValidateFunction<WorkflowHandoffArtifact> {
   if (artifactValidator !== undefined) return artifactValidator;
-  const artifactAjv = new Ajv({ allErrors: true, strict: true });
+  const artifactAjv = new (loadAjv())({ allErrors: true, strict: true });
   artifactAjv.addKeyword({
     keyword: "x-agenc-post-validation",
     schemaType: "object",
