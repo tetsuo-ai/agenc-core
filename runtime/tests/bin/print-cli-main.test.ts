@@ -181,10 +181,10 @@ describe("print entry import overlap", () => {
     vi.stubEnv("AGENC_DAEMON_AUTOSTART_FAILURE", "");
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
     mocks.ensure.mockRejectedValue(new Error("offline"));
-    process.argv = ["node", "/install/bin/agenc.js", "-p", "--full-durability", "--image", "file.png", "--", "--help"];
+    process.argv = ["node", "/install/bin/agenc.js", "-p", "--light", "--image", "file.png", "--", "--help"];
     await expect(printMain(load)).resolves.toBe(7);
     expect(process.env.AGENC_DAEMON_AUTOSTART_FAILURE).toBe("offline");
-    expect(client.oneShotCLI).toHaveBeenCalledExactlyOnceWith("--help", ["file.png"], expect.objectContaining({ fullDurability: true }), undefined);
+    expect(client.oneShotCLI).toHaveBeenCalledExactlyOnceWith("--help", ["file.png"], expect.objectContaining({ lightMode: true }), undefined);
     expect(load).toHaveBeenCalledTimes(1);
   });
 

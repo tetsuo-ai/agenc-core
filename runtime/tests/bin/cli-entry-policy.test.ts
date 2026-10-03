@@ -11,7 +11,7 @@ describe("CLI entry selection", () => {
     ["-p", "--model=--help", "hello"],
     ["-p", "--", "--help", "--resume", "session"],
     ["-p", "explain", "--continue", "--version"],
-    ["-p", "--full-durability", "--profile", "test", "hello"],
+    ["-p", "--light", "--profile", "test", "hello"],
     ["-p", "--deadline", "invalid"], ["-p", "--wrong"],
   ])("selects only explicit fresh print: %j", (...args) => {
     expect(selectAgenCCliEntry([...executable, ...args], {}, false)).toBe("print");
