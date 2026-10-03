@@ -59,6 +59,7 @@ export function createAgenCProvisionalAdmissionReceiver(
 } {
   assertToken(token);
   assertTimeout(leaseMs);
+  const deadline = performance.now() + leaseMs;
   let current: AgenCProvisionalDecision | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let resolveDecision!: (decision: AgenCProvisionalDecision) => void;
@@ -83,6 +84,12 @@ export function createAgenCProvisionalAdmissionReceiver(
     const message = value as Record<string, unknown>;
     if (message.type !== ADMISSION_MESSAGE || message.version !== 1 || message.token !== token) return;
     if (!channel.isConnected()) { onClose(); return; }
+    // An IPC callback can run before an overdue timer after synchronous work.
+    // Callback order must not extend the admission authority's lifetime.
+    if (performance.now() >= deadline) {
+      settle({ kind: "aborted", reason: "lease-expired" });
+      return;
+    }
     if (message.action === "admit") settle({ kind: "admitted" });
     else if (message.action === "abort") settle({ kind: "aborted", reason: "parent-abort" });
   };

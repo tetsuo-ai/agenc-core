@@ -29,7 +29,7 @@ class Channel implements AgenCProvisionalChannel {
 }
 
 describe("disabled provisional admission protocol", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it.each(["admit", "abort"] as const)("latches first authenticated %s decision", async (action) => {
     const channel = new Channel();
@@ -98,6 +98,16 @@ describe("disabled provisional admission protocol", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("rejects admission at the monotonic deadline before its timer callback runs", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+    const channel = new Channel();
+    const receiver = createAgenCProvisionalAdmissionReceiver(TOKEN, channel, 20);
+    clock.mockReturnValue(120);
+    await channel.send(agenCProvisionalAdmissionMessage(TOKEN, "admit"));
+    expect(await receiver.decision).toEqual({ kind: "aborted", reason: "lease-expired" });
+    expect(channel.messages.size).toBe(0);
+  });
+
   it.each([0, -1, NaN, Infinity, 0.5, 2_147_483_648])("rejects invalid lease %s before installing listeners", (lease) => {
     const channel = new Channel();
     expect(() => createAgenCProvisionalAdmissionReceiver(TOKEN, channel, lease)).toThrow(/timeout/u);
@@ -113,7 +123,7 @@ describe("disabled provisional admission protocol", () => {
 
 const CHILD = String.raw`
 const [url, mode, token] = process.argv.slice(1);
-const { createAgenCProvisionalAdmissionReceiver } = await import(url);
+const { createAgenCProvisionalAdmissionReceiver, agenCProvisionalAdmissionMessage } = await import(url);
 if (mode === "late-install") {
   process.stdout.write("BEFORE\n");
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -128,8 +138,14 @@ const channel = {
   close: () => { if (process.connected) process.disconnect(); },
   unref: () => process.channel?.unref(),
 };
-const receiver = createAgenCProvisionalAdmissionReceiver(token, channel, mode === "lease" || mode === "blocked" ? 100 : 5000);
+const receiver = createAgenCProvisionalAdmissionReceiver(token, channel, mode === "overdue-admit" ? 20 : mode === "lease" || mode === "blocked" ? 100 : 5000);
 process.stdout.write("READY\n");
+if (mode === "overdue-admit") {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60);
+  // Deliberately deliver a callback before the overdue timer. This pins event
+  // ordering without claiming a particular OS IPC scheduling order.
+  process.emit("message", agenCProvisionalAdmissionMessage(token, "admit"));
+}
 if (mode === "blocked") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
 const result = await receiver.decision;
 process.stdout.write(JSON.stringify(result)+"\n");
@@ -219,6 +235,13 @@ describe("native provisional process controls (not production activation proof)"
     expect(child.exitCode).toBeNull();
     expect((await observer.waitForExit(5_000)).code).toBe(0);
     expect(outputs.get(child)!.stdout).toContain('"kind":"aborted"');
+  });
+
+  it("refuses an overdue native admission callback before the queued timer", async () => {
+    const child = start("overdue-admit"), observer = observeAgenCSpawnedChildExit(child);
+    expect((await observer.waitForExit(5_000)).code).toBe(0);
+    expect(outputs.get(child)!.stdout).toContain('"reason":"lease-expired"');
+    expect(outputs.get(child)!.stdout).not.toContain('"kind":"admitted"');
   });
 
   it("accepts already-observed exit but not a failing cleanup acknowledgement", async () => {
