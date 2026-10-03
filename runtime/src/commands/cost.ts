@@ -20,8 +20,6 @@
  * @module
  */
 
-import React from "react";
-
 import {
   estimateAgentCostUsd,
   formatTokenCount,
@@ -318,7 +316,8 @@ async function openCostModal(
     const { CostUsageModal } = await import(
       "../tui/components/v2/CostUsageModal.js"
     );
-    return React.createElement(CostUsageModal, { report, onDone: close });
+    const { createElement } = await import("react");
+    return createElement(CostUsageModal, { report, onDone: close });
   });
 }
 

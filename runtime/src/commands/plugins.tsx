@@ -7,26 +7,16 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import { requireCommandConfigStore } from "./config-context.js";
-import {
-  installPluginOp,
-  listInstalledPlugins,
-  setPluginEnabledOp,
-  uninstallPluginOp,
-  type InstalledPluginSummary,
-  type PluginOperationOptions,
-  type PluginScope,
+import type {
+  InstalledPluginSummary,
+  PluginOperationOptions,
+  PluginScope,
 } from "../plugins/cli/pluginOperations.js";
-import {
-  installRequiresSignature,
-} from "../plugins/marketplace/catalog-cli.js";
-import {
-  findInstallableMarketplacePlugin,
-  listMarketplaces,
-  readMarketplaceIndex,
-  type Marketplace,
-  type MarketplaceIndex,
-  type MarketplaceListOutcome,
-  type MarketplaceRecord,
+import type {
+  Marketplace,
+  MarketplaceIndex,
+  MarketplaceListOutcome,
+  MarketplaceRecord,
 } from "../plugins/marketplace/marketplace.js";
 
 export type PluginSnapshot = {
@@ -75,6 +65,7 @@ async function resolveInstalledPluginScope(
   if (options.workspaceRoot === undefined) {
     throw new Error("Plugin uninstall requires an explicit workspace root");
   }
+  const { listInstalledPlugins } = await import("../plugins/cli/pluginOperations.js");
   const listed = await listInstalledPlugins(options);
   const matches = listed.plugins.filter((plugin) => plugin.id === pluginId);
   const match = pluginRoot === undefined
@@ -130,13 +121,16 @@ export function createPluginMenuActions(
 ): PluginMenuActions {
   return {
     setEnabled: async (pluginId, enabled) => {
+      const { setPluginEnabledOp } = await import("../plugins/cli/pluginOperations.js");
       await setPluginEnabledOp({ ...options, pluginId, enabled });
     },
     uninstall: async (pluginId, pluginRoot) => {
       const scope = await resolveInstalledPluginScope(pluginId, pluginRoot, options);
+      const { uninstallPluginOp } = await import("../plugins/cli/pluginOperations.js");
       await uninstallPluginOp({ ...options, pluginId, scope });
     },
     listMarketplaces: async () => {
+      const { readMarketplaceIndex, listMarketplaces } = await import("../plugins/marketplace/marketplace.js");
       const index = await readMarketplaceIndex(options);
       const roots = Object.values(index.marketplaces).map(
         (record) => record.installedPath,
@@ -144,6 +138,15 @@ export function createPluginMenuActions(
       return listMarketplaces(roots);
     },
     installFromMarketplace: async (marketplace, pluginName) => {
+      const [
+        { readMarketplaceIndex, findInstallableMarketplacePlugin },
+        { installPluginOp },
+        { installRequiresSignature },
+      ] = await Promise.all([
+        import("../plugins/marketplace/marketplace.js"),
+        import("../plugins/cli/pluginOperations.js"),
+        import("../plugins/marketplace/catalog-cli.js"),
+      ]);
       const index = await readMarketplaceIndex(options);
       const record = marketplaceRecordForMenuSelection(index, marketplace);
       const resolved = await findInstallableMarketplacePlugin(
