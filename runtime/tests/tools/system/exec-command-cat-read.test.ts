@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -112,7 +112,8 @@ test("a read step whose file content is not in the output records nothing for th
 test("unsupported shell syntax and quoted separators fail closed; a literal 2>/dev/null is allowed", async () => {
   await writeFile(join(root, "a.go"), "package a\n", "utf8");
   for (const cmd of [
-    "cat a.go | cat", "cat a.go $(echo x)", "cat `echo a.go`", "cat a.go || true", "cat a.go & wait",
+    "cat a.go | cat", "cat a.go $(echo x)", "cat `echo a.go`", "cat a.go || echo x", "cat a.go & wait",
+    "cat a.go |& cat", "cat a.go || true || true", "cat a.go || true && true", "cat a.go || true | cat",
     "cat a.go\ncat a.go", "echo '; cat a.go'", "echo \"; cat a.go\"", "cat a.go > copy.go", "cat a.g?",
   ]) {
     await record(cmd, finished("package a\n"));
@@ -154,3 +155,46 @@ test("inherited shell startup hooks turn the shell read proof off", async () => 
   const clean = new UnifiedExecProcessManager({ baseEnv: { PATH: "/usr/bin:/bin", HOME: "/tmp" } } as never);
   expect(clean.shellStartupHooksPresent()).toBe(false);
 });
+
+test("pipelines elsewhere in a chain no longer void its plain read steps; pipeline output never records", async () => {
+  await writeFile(join(root, "nested.py"), "\"\"\"nested.\"\"\"\n", "utf8");
+  await writeFile(join(root, "pyproject.toml"), "[project]\nname = \"x\"\n", "utf8");
+  await record(
+    "cat nested.py; cat pyproject.toml | head -85; ls tests | head",
+    finished("\"\"\"nested.\"\"\"\n[project]\nname = \"x\"\ntest_a.py\n"),
+  );
+  expect(getSessionReadSnapshot(session, join(root, "nested.py"))).toMatchObject({ viewKind: "full" });
+  expect(getSessionReadSnapshot(session, join(root, "pyproject.toml"))).toBeUndefined();
+});
+
+test("a list ending in || true counts only its first step", async () => {
+  await writeFile(join(root, "a.go"), "package a\n", "utf8");
+  await writeFile(join(root, "b.go"), "package b\n", "utf8");
+  await record("printf x && cat a.go || true", finished("xpackage a\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toBeUndefined();
+  await record("cat a.go || true; grep -R -n b . || true; cat b.go", finished("package a\n./b.go:1:package b\npackage b\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
+  expect(getSessionReadSnapshot(session, join(root, "b.go"))).toMatchObject({ viewKind: "full" });
+});
+
+test("an exact interpreter version probe keeps a chain readable; other interpreter use does not", async () => {
+  await writeFile(join(root, "a.ts"), "export {}\n", "utf8");
+  await record("cat a.ts; node -e 'console.log(1)'", finished("export {}\n1\n"));
+  await record("cat a.ts; node --version extra", finished("export {}\nv26.8.1\n"));
+  await record("cat a.ts; python3 --version; node script.js", finished("export {}\nPython 3.14.0\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.ts"))).toBeUndefined();
+  await record("cat a.ts; git status --short; node --version", finished("export {}\nv26.8.1\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.ts"))).toMatchObject({ viewKind: "full" });
+});
+
+test("cd counts only when it names the absolute directory the command already runs in", async () => {
+  await writeFile(join(root, "a.go"), "package a\n", "utf8");
+  await mkdir(join(root, "sub"), { recursive: true });
+  for (const cmd of ["cd sub && cat ../a.go", `cd ${join(root, "sub")} && cat ../a.go`, "cd && cat a.go", "cd - && cat a.go", `cd ${root} extra; cat a.go`]) {
+    await record(cmd, finished("package a\n"));
+    expect(getSessionReadSnapshot(session, join(root, "a.go")), cmd).toBeUndefined();
+  }
+  await record(`cd ${root}/ && cat a.go`, finished("package a\n"));
+  expect(getSessionReadSnapshot(session, join(root, "a.go"))).toMatchObject({ viewKind: "full" });
+});
+

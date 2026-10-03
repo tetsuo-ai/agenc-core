@@ -1,6 +1,6 @@
 import { constants as fsConstants, existsSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
@@ -95,27 +95,51 @@ type ShellReadStep =
   | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
 
 /**
- * Words of each `;`/`&&` step as the shell would see them: single and double quotes and backslash
- * escapes are honored, so quoted text never becomes a step. Any other shell syntax (pipes,
- * redirection other than a literal 2>/dev/null, substitution, expansion, subshells, groups,
- * background jobs, `||`, newlines) fails closed with no steps.
+ * Simple commands of a command line as the shell would see them: `;`-separated lists of `&&`-joined
+ * steps, where a step is a `|` pipeline of commands and a list may end in `|| true`. Single and
+ * double quotes and backslash escapes are honored, so quoted text never separates anything. Any
+ * other shell syntax (redirection other than a literal 2>/dev/null, substitution, expansion,
+ * subshells, groups, background jobs, `|&`, other `||` forms, newlines) fails closed.
+ *
+ * `all` holds every command. `ran` holds the single-command steps that certainly ran when the whole
+ * line exits 0 and whose standard output is the line's own: the first step of every list (it runs
+ * whatever came before the `;`) and every step of a final list without `|| true` (exit 0 means none
+ * failed). A later step of another list may have been skipped by a failed `&&`; a final `|| true`
+ * makes exit 0 say nothing about the steps before it; a pipeline element writes into the next one.
  */
 function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: string[][] } | undefined {
-  const steps: string[][] = [];
-  // Index into steps where each `;`-separated and-list starts.
-  const listStarts: number[] = [0];
+  const lists: { readonly steps: string[][][]; readonly orTrue: boolean }[] = [];
+  let steps: string[][][] = [];
+  let pipeline: string[][] = [];
   let words: string[] = [];
   let word = "";
   let inWord = false;
+  // After `||`: the rest of the list must be exactly `true`.
+  let orTrue = false;
   const endWord = () => {
     if (inWord) words.push(word);
     word = "";
     inWord = false;
   };
-  const endStep = () => {
+  const endCommand = () => {
     endWord();
-    steps.push(words);
+    pipeline.push(words);
     words = [];
+  };
+  const endStep = (): boolean => {
+    endCommand();
+    const step = pipeline.filter(command => command.length > 0);
+    pipeline = [];
+    if (orTrue) return step.length === 1 && step[0]!.length === 1 && step[0]![0] === "true";
+    if (step.length > 0) steps.push(step);
+    return true;
+  };
+  const endList = (): boolean => {
+    if (!endStep()) return false;
+    lists.push({ steps, orTrue });
+    steps = [];
+    orTrue = false;
+    return true;
   };
   for (let i = 0; i < cmd.length; i += 1) {
     const ch = cmd[i]!;
@@ -149,14 +173,20 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
     } else if (ch === " " || ch === "\t") {
       endWord();
     } else if (ch === ";") {
-      endStep();
-      listStarts.push(steps.length);
+      if (!endList()) return undefined;
     } else if (ch === "&" && cmd[i + 1] === "&") {
-      endStep();
+      if (orTrue || !endStep()) return undefined;
       i += 1;
+    } else if (ch === "|" && cmd[i + 1] === "|") {
+      if (orTrue || !endStep()) return undefined;
+      orTrue = true;
+      i += 1;
+    } else if (ch === "|" && cmd[i + 1] !== "&") {
+      if (orTrue) return undefined;
+      endCommand();
     } else if (ch === ">" && !inWord) {
       return undefined;
-    } else if (ch === ">" && word === "2" && cmd.startsWith(">/dev/null", i) && /^(?:[ \t;&]|$)/u.test(cmd.slice(i + 10, i + 11))) {
+    } else if (ch === ">" && word === "2" && cmd.startsWith(">/dev/null", i) && /^(?:[ \t;&|]|$)/u.test(cmd.slice(i + 10, i + 11))) {
       word = "";
       inWord = false;
       i += 9;
@@ -167,15 +197,16 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
       inWord = true;
     }
   }
-  endStep();
-  // Only steps that certainly ran under exit status 0: the first step of every and-list (it runs
-  // whatever came before the `;`) and every step of the final and-list (exit 0 means none failed).
-  // A later step of an earlier and-list may have been skipped by a failed `&&`.
-  const finalStart = listStarts[listStarts.length - 1]!;
-  return {
-    all: steps.filter(step => step.length > 0),
-    ran: steps.filter((step, index) => step.length > 0 && (index >= finalStart || listStarts.includes(index))),
-  };
+  if (!endList()) return undefined;
+  const all: string[][] = [];
+  const ran: string[][] = [];
+  lists.forEach((list, index) => {
+    for (const step of list.steps) all.push(...step);
+    if (list.orTrue) all.push(["true"]);
+    const certain = index === lists.length - 1 && !list.orTrue ? list.steps : list.steps.slice(0, 1);
+    for (const step of certain) if (step.length === 1) ran.push(step[0]!);
+  });
+  return { all, ran };
 }
 
 /**
@@ -183,19 +214,35 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
  * every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
  * trap, return, functions, variable assignments, unknown commands) fails the whole chain closed.
  */
-/** Shells whose parsing of quotes, `;` and `&&` matches shellSteps. */
+/** Shells whose parsing of quotes, `;`, `&&`, `|` and `|| true` matches shellSteps. */
 const POSIX_SH_SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "dash"]);
 
 const CHAIN_SAFE_COMMANDS: ReadonlySet<string> = new Set([
   "cat", "sed", "head", "tail", "printf", "echo", "ls", "pwd", "git", "rg", "grep", "find", "wc", "nl", "true",
 ]);
 
-function shellReadSteps(cmd: string): ShellReadStep[] {
+/** Interpreter version probes models append to read chains; each prints a version and exits. */
+const VERSION_PROBES: ReadonlyMap<string, readonly string[]> = new Map([
+  ["node", ["--version", "-v"]],
+  ["python3", ["--version", "-V"]],
+  ["python", ["--version", "-V"]],
+]);
+
+/** An allowlisted command, an exact version probe, or `cd` to the absolute path it already runs in. */
+function chainSafe(words: readonly string[], cwd: string): boolean {
+  const [name, ...rest] = words;
+  if (name === undefined) return false;
+  if (CHAIN_SAFE_COMMANDS.has(name)) return true;
+  if (name === "cd") return rest.length === 1 && isAbsolute(rest[0]!) && resolve(rest[0]!) === resolve(cwd);
+  return rest.length === 1 && VERSION_PROBES.get(name)?.includes(rest[0]!) === true;
+}
+
+function shellReadSteps(cmd: string, cwd: string): ShellReadStep[] {
   const steps: ShellReadStep[] = [];
   const parsed = shellSteps(cmd);
-  // Every syntactic step must be allowlisted, including steps a short-circuit may have skipped:
+  // Every command must be safe, including steps a short-circuit may have skipped:
   // "printf x && exit 0; cat a" ends the shell before the cat.
-  if (parsed === undefined || parsed.all.some(words => !CHAIN_SAFE_COMMANDS.has(words[0]!))) return steps;
+  if (parsed === undefined || parsed.all.some(words => !chainSafe(words, cwd))) return steps;
   for (const words of parsed.ran) {
     const [name, ...rest] = words;
     if (name === "cat" && rest.length > 0 && rest.every(word => PATH_ARG.test(word) && !word.startsWith("-"))) {
@@ -298,7 +345,7 @@ export async function recordShellReads(params: {
   if (output.stdout.length === 0) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
-  const steps = shellReadSteps(params.cmd);
+  const steps = shellReadSteps(params.cmd, params.cwd);
   if (steps.length === 0 || steps.length > 16) return;
   for (const step of steps) {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
