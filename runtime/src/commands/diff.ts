@@ -17,11 +17,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  createDiffMenuSnapshot,
-  openDiffMenu,
-  type DiffMenuSnapshot,
-} from "./diff-menu.js";
+import { createDiffMenuSnapshot, type DiffMenuSnapshot } from "./diff-menu-snapshot.js";
 
 const GIT_TIMEOUT_MS = 5_000;
 
@@ -153,7 +149,10 @@ export const diffCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const snapshot = await collectDiffSnapshot(ctx.cwd);
-      if (openDiffMenu(ctx, snapshot)) return { kind: "skip" };
+      if (
+        typeof ctx.appState?.setToolJSX === "function" &&
+        (await import("./diff-menu.js")).openDiffMenu(ctx, snapshot)
+      ) return { kind: "skip" };
       return { kind: "text", text: formatDiffSnapshot(snapshot) };
     }),
 };

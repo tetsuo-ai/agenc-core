@@ -18,6 +18,7 @@ vi.mock("node:os", async (importOriginal) => {
 const {
   compileCacheDirectory,
   enableAgenCCompileCache,
+  flushAgenCCompileCache,
   preparePrivateDirectory,
   scheduleDaemonCompileCacheFlush,
 } = await import("../../src/bin/compile-cache.js");
@@ -103,6 +104,34 @@ describe("enabling the compile cache", () => {
 });
 
 describe("daemon flush", () => {
+  it("publishes only an already enabled cache without selecting a new directory", () => {
+    flushAgenCCompileCache();
+    expect(nodeModule.flushCompileCache).not.toHaveBeenCalled();
+    nodeModule.getCompileCacheDir.mockReturnValue("/operator/cache");
+    flushAgenCCompileCache();
+    expect(nodeModule.flushCompileCache).toHaveBeenCalledTimes(1);
+    expect(nodeModule.enableCompileCache).not.toHaveBeenCalled();
+  });
+
+  it("keeps cache inspection and publication failures best effort", () => {
+    nodeModule.getCompileCacheDir.mockImplementation(() => { throw new Error("unavailable"); });
+    expect(() => flushAgenCCompileCache()).not.toThrow();
+    nodeModule.getCompileCacheDir.mockReturnValue("/cache");
+    nodeModule.flushCompileCache.mockImplementation(() => { throw new Error("disk full"); });
+    expect(() => flushAgenCCompileCache()).not.toThrow();
+  });
+
+  it("supports Node versions without cache publication APIs", () => {
+    const original = nodeModule.flushCompileCache;
+    try {
+      Reflect.deleteProperty(nodeModule, "flushCompileCache");
+      expect(() => flushAgenCCompileCache()).not.toThrow();
+      expect(nodeModule.getCompileCacheDir).not.toHaveBeenCalled();
+    } finally {
+      nodeModule.flushCompileCache = original;
+    }
+  });
+
   it("saves the cache 5 s and 60 s after start, only when it is on", () => {
     vi.useFakeTimers();
     nodeModule.getCompileCacheDir.mockReturnValue(undefined);

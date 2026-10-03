@@ -19,7 +19,6 @@ import {
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import QRCode from "qrcode";
 import WebSocket from "ws";
 
 import {
@@ -251,6 +250,7 @@ async function renderCodeBox(
 
   let qr = "";
   try {
+    const { default: QRCode } = await import("qrcode");
     qr = await QRCode.toString(deepLink, { type: opts.qrType, small: true });
   } catch {
     /* QR is optional — the code still links the computer */

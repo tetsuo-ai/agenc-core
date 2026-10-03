@@ -13,7 +13,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openAgentsMenu } from "./agents-menu.js";
 
 export const agentsCommand: SlashCommand = {
   name: "agents",
@@ -21,6 +20,13 @@ export const agentsCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
+      if (typeof ctx.appState?.setToolJSX !== "function") {
+        return {
+          kind: "error",
+          message: "/agents requires the interactive TUI.",
+        };
+      }
+      const { openAgentsMenu } = await import("./agents-menu.js");
       if (!openAgentsMenu(ctx)) {
         return {
           kind: "error",

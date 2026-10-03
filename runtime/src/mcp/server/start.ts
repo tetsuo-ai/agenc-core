@@ -6,6 +6,7 @@
  * transport, host, and port defaults before opening real transports.
  */
 
+import "../../bootstrap/node-env.js";
 import type { Server } from "node:http";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -20,8 +21,10 @@ import {
   createMemoryResourceProvider,
   createSkillPromptProvider,
 } from "./content-providers.js";
-import type { AgenCConfig, McpServerModeConfig } from "../../config/schema.js";
-import { VERSION } from "../../index.js";
+import type { AgenCConfig } from "../../config/schema.js";
+import { resolveMcpServeDefaults, type ResolvedMcpServeDefaults } from "./defaults.js";
+export { resolveMcpServeDefaults, type ResolvedMcpServeDefaults } from "./defaults.js";
+import { VERSION } from "../../version.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";
@@ -74,14 +77,6 @@ export interface StartedMcpSseServer {
   waitUntilClosed(): Promise<void>;
 }
 
-export interface ResolvedMcpServeDefaults {
-  readonly enabled: boolean;
-  readonly transport: "stdio" | "sse";
-  readonly host: string;
-  readonly port: number;
-  readonly workspace?: string;
-}
-
 export interface PreparedMcpSseServerReconfiguration {
   readonly defaults: ResolvedMcpServeDefaults;
   /** Applies the validated context and returns the number of revoked sessions. */
@@ -103,19 +98,6 @@ export type ConfiguredMcpServerStartResult =
       readonly defaults: ResolvedMcpServeDefaults;
       readonly server: StartedMcpSseServer;
     };
-
-export function resolveMcpServeDefaults(
-  config: McpServerModeConfig | undefined,
-): ResolvedMcpServeDefaults {
-  const workspace = readMcpServeWorkspace(config?.workspace);
-  return {
-    enabled: config?.enabled === true,
-    transport: config?.transport === "sse" ? "sse" : "stdio",
-    host: readMcpServeHost(config?.host),
-    port: readMcpServePort(config?.port),
-    ...(workspace !== undefined ? { workspace } : {}),
-  };
-}
 
 export async function startMcpServerFromConfig(
   config: Pick<AgenCConfig, "mcp"> | undefined,
@@ -264,27 +246,6 @@ export function formatMcpSseServeUrl(host: string, port: number): string {
   const bracketedHost =
     urlHost.includes(":") && !urlHost.startsWith("[") ? `[${urlHost}]` : urlHost;
   return `http://${bracketedHost}:${port}/mcp`;
-}
-
-function readMcpServeHost(host: unknown): string {
-  return typeof host === "string" && host.trim().length > 0
-    ? host.trim()
-    : "127.0.0.1";
-}
-
-function readMcpServePort(port: unknown): number {
-  const valid =
-    typeof port === "number" &&
-    Number.isInteger(port) &&
-    port >= 0 &&
-    port <= 65_535;
-  return valid ? port : 3334;
-}
-
-function readMcpServeWorkspace(workspace: unknown): string | undefined {
-  return typeof workspace === "string" && workspace.trim().length > 0
-    ? workspace.trim()
-    : undefined;
 }
 
 async function resolveMcpServeWorkspace(workspace: string): Promise<string> {

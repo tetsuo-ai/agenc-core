@@ -5,11 +5,9 @@ import { dirname, join } from 'path'
 import { Worker } from 'node:worker_threads'
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
-import {
-  getMcpConfigForManifest,
-  type McpbManifest,
-  type McpbUserConfigurationOption,
+import type {
+  McpbManifest,
+  McpbUserConfigurationOption,
 } from '../dxt/mcpb.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
@@ -508,6 +506,7 @@ async function generateMcpConfig(
   extractedPath: string,
   userConfig: UserConfigValues = {},
 ): Promise<McpServerConfig> {
+  const { getMcpConfigForManifest } = await import('../dxt/mcpb.js')
   const mcpConfig = await getMcpConfigForManifest({
     manifest,
     extensionPath: extractedPath,
@@ -805,6 +804,7 @@ export async function loadMcpbFile(
     }
 
     const manifestData = new TextEncoder().encode(manifestContent)
+    const { parseAndValidateManifestFromBytes } = await import('../dxt/helpers.js')
     const manifest = await parseAndValidateManifestFromBytes(manifestData)
 
     // Check for user_config requirement
@@ -928,6 +928,7 @@ export async function loadMcpbFile(
   }
 
   // Parse and validate manifest
+  const { parseAndValidateManifestFromBytes } = await import('../dxt/helpers.js')
   const manifest = await parseAndValidateManifestFromBytes(manifestData)
   logForDebugging(
     `MCPB manifest: ${manifest.name} v${manifest.version} by ${manifest.author.name}`,

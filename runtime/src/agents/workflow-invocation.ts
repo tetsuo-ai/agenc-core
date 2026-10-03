@@ -69,9 +69,15 @@ export const WORKFLOW_INVOCATION_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-const invocationValidator = new Ajv({ allErrors: true, strict: true }).compile(
-  WORKFLOW_INVOCATION_SCHEMA,
-) as ValidateFunction<WorkflowInvocation>;
+// Snapshot nested constraints now; the exported schema is only shallow-frozen.
+const validationSchema = JSON.parse(JSON.stringify(WORKFLOW_INVOCATION_SCHEMA));
+let invocationValidator: ValidateFunction<WorkflowInvocation> | undefined;
+
+function getInvocationValidator(): ValidateFunction<WorkflowInvocation> {
+  return invocationValidator ??= new Ajv({ allErrors: true, strict: true }).compile(
+    validationSchema,
+  ) as ValidateFunction<WorkflowInvocation>;
+}
 
 export class WorkflowInvocationValidationError extends Error {
   readonly code: string;
@@ -93,8 +99,9 @@ export function validateWorkflowInvocationValue(
     "WorkflowTool invocation",
     INVOCATION_JSON_LIMITS,
   );
-  if (invocationValidator(finite)) return finite;
-  const issues = formatErrors(invocationValidator.errors);
+  const validator = getInvocationValidator();
+  if (validator(finite)) return finite;
+  const issues = formatErrors(validator.errors);
   throw new WorkflowInvocationValidationError(
     "WORKFLOW_INVOCATION_SCHEMA",
     `WorkflowTool invocation is invalid: ${issues.join("; ")}`,

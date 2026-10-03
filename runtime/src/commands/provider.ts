@@ -17,17 +17,13 @@ import type { ProviderSlug } from "../config/provider-model-authority.js";
 import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { readCommandConfig } from "./config-context.js";
+import { providerMenuFallback, readProviderMenuSnapshot } from "./provider-menu-snapshot.js";
 import {
   safeExecute,
   type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  openProviderMenu,
-  providerMenuFallback,
-  readProviderMenuSnapshot,
-} from "./provider-menu.js";
 import {
   formatSessionSelectionError,
   readSessionSelection,
@@ -261,7 +257,8 @@ export const providerCommand: SlashCommand = {
       if (trimmed.length === 0) {
         const snapshot = readProviderMenuSnapshot(ctx);
         if (
-          openProviderMenu(ctx, snapshot, async (provider, model) => {
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./provider-menu.js")).openProviderMenu(ctx, snapshot, async (provider, model) => {
             const selection = resolveProviderCommandSelection(
               ctx,
               provider,

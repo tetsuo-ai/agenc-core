@@ -73,9 +73,8 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  openPermissionsMenu,
-  type PermissionsMenuController,
+import type {
+  PermissionsMenuController,
 } from "./permissions-menu.js";
 import {
   configStoreFromCommandContext,
@@ -824,7 +823,12 @@ export const permissionsCommand: SlashCommand = {
       }
       const raw = ctx.argsRaw.trim();
       if (raw === "") {
-        if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
+        if (
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./permissions-menu.js")).openPermissionsMenu(
+            ctx, registry.current(), permissionsMenuController(registry, ctx),
+          )
+        ) {
           return { kind: "skip" };
         }
         return { kind: "text", text: formatRuleList(registry.current()) };
@@ -835,7 +839,12 @@ export const permissionsCommand: SlashCommand = {
 
       switch (sub) {
         case "list":
-          if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
+          if (
+            typeof ctx.appState?.setToolJSX === "function" &&
+            (await import("./permissions-menu.js")).openPermissionsMenu(
+              ctx, registry.current(), permissionsMenuController(registry, ctx),
+            )
+          ) {
             return { kind: "skip" };
           }
           return { kind: "text", text: formatRuleList(registry.current()) };

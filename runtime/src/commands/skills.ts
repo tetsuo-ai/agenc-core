@@ -22,7 +22,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openSkillsMenu } from "./skills-menu.js";
 
 export interface SkillsSnapshot {
   readonly invokedSkills: ReadonlyArray<string>;
@@ -518,7 +517,8 @@ export const skillsCommand: SlashCommand = {
       if (
         parsed.query === undefined &&
         parsed.showAll === false &&
-        openSkillsMenu(ctx, snapshot)
+        typeof ctx.appState?.setToolJSX === "function" &&
+        (await import("./skills-menu.js")).openSkillsMenu(ctx, snapshot)
       ) {
         return { kind: "skip" };
       }

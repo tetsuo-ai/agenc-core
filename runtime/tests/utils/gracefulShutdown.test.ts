@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { installGlobalErrorNet } from '../../src/utils/gracefulShutdown.js'
+import { installGlobalErrorNet as installLeafErrorNet } from '../../src/utils/global-error-net.js'
 import {
   _resetErrorLogForTesting,
   getInMemoryErrors,
@@ -28,6 +29,14 @@ function fakeProc(): { on: Handler; handlers: Map<string, Handler[]> } {
 }
 
 describe('installGlobalErrorNet', () => {
+  test('compatibility export and leaf share one memoized installer', () => {
+    expect(installGlobalErrorNet).toBe(installLeafErrorNet)
+    const proc = fakeProc()
+    installGlobalErrorNet(proc as never)
+    installLeafErrorNet(proc as never)
+    expect(proc.handlers.get('uncaughtException')).toHaveLength(1)
+    expect(proc.handlers.get('unhandledRejection')).toHaveLength(1)
+  })
   test('registers uncaughtException + unhandledRejection handlers', () => {
     const proc = fakeProc()
     installGlobalErrorNet(proc as never)
@@ -121,6 +130,41 @@ describe('installGlobalErrorNet persists crashes to the local sink', () => {
         const errors = getInMemoryErrors()
         expect(errors).toHaveLength(1)
         expect(errors[0]!.error).toContain('local-rejection-marker')
+      },
+    )
+  })
+
+  test('shared crash guard blocks reentrant persistence and releases after a sink throws', () => {
+    runWithStartupProviderSelection(
+      { provider: 'openai', model: 'gpt-5', environment: {} },
+      () => {
+        const first = fakeProc()
+        const second = fakeProc()
+        installGlobalErrorNet(first as never)
+        installLeafErrorNet(second as never)
+        const uncaught = first.handlers.get('uncaughtException')![0]!
+        const rejection = second.handlers.get('unhandledRejection')![0]!
+        const originalConsoleError = console.error
+        const originalDaemonRun = process.env.AGENC_DAEMON_RUN
+        let writes = 0
+        try {
+          process.env.AGENC_DAEMON_RUN = '1'
+          console.error = () => {
+            writes++
+            rejection(new Error('nested-crash-must-not-persist'))
+            throw new Error('synthetic sink failure')
+          }
+          expect(() => uncaught(new Error('first-outer-crash'))).not.toThrow()
+          expect(() => rejection(new Error('second-outer-crash'))).not.toThrow()
+          expect(writes).toBe(2)
+          const errors = getInMemoryErrors()
+          expect(errors).toHaveLength(2)
+          expect(errors.some((entry) => entry.error.includes('nested-crash-must-not-persist'))).toBe(false)
+        } finally {
+          console.error = originalConsoleError
+          if (originalDaemonRun === undefined) delete process.env.AGENC_DAEMON_RUN
+          else process.env.AGENC_DAEMON_RUN = originalDaemonRun
+        }
       },
     )
   })

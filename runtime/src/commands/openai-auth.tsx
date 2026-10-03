@@ -7,7 +7,6 @@
  * token/account pair; both command surfaces consume the same native record.
  */
 
-import { Box, Text } from "../tui/ink.js";
 import {
   OpenAiOauthError,
   runOpenAiBrowserLogin,
@@ -25,7 +24,6 @@ import {
   providerEnvironmentFromCommandContext,
   requireCommandConfigStore,
 } from "./config-context.js";
-import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
 import {
   safeExecute,
@@ -82,6 +80,10 @@ async function executeOpenAiLogin(
   return safeExecute(async () => {
     const home = requireCommandConfigStore(ctx).homeContext;
     const environment = providerEnvironmentFromCommandContext(ctx);
+    // Load once before registering synchronous stage callbacks.
+    const showLoginNotice = typeof ctx.appState?.setToolJSX === "function"
+      ? (await import("./openai-auth-menu.js")).showLoginNotice
+      : () => {};
     let login;
     try {
       login = await runOpenAiBrowserLogin({
@@ -175,22 +177,6 @@ async function executeOpenAiLogin(
     );
     return { kind: "text", text: lines.join("\n") };
   });
-}
-
-function showLoginNotice(
-  ctx: SlashCommandContext,
-  info: { heading: string; url: string },
-): void {
-  openLocalJsxCommand(
-    ctx,
-    () => (
-      <Box flexDirection="column" paddingX={1} borderStyle="round">
-        <Text>{info.heading}</Text>
-        <Text dimColor>URL: {info.url}</Text>
-      </Box>
-    ),
-    { shouldHidePromptInput: false },
-  );
 }
 
 function clearLoginNotice(ctx: SlashCommandContext): void {
