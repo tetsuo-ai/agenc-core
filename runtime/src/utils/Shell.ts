@@ -34,7 +34,6 @@ import { getCachedPowerShellPath } from "./shell/powershellDetection.js";
 import { createPowerShellProvider } from "./shell/powershellProvider.js";
 import type { ShellProvider, ShellType } from "./shell/shellProvider.js";
 import {
-  isExecutableShellPath,
   isSupportedPosixShellPath,
   probePosixShellPath,
   supportedPosixShellKind,
@@ -136,13 +135,15 @@ export async function findSuitableShell(
     ),
   ];
 
-  // Always prioritize SHELL env variable if it's a supported shell type
+  // Always prioritize SHELL env variable if it's a supported shell type. A
+  // passing probe is the loop's own check, so return it instead of probing
+  // the same shell a second time.
   if (
     env_shell !== undefined &&
     envShellKind !== undefined &&
-    isExecutableShellPath(env_shell, childEnvironment)
+    probePosixShellPath(env_shell, childEnvironment).ok
   ) {
-    supportedShells.unshift(env_shell);
+    return env_shell;
   }
 
   const failures: string[] = [];
