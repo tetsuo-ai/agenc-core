@@ -280,7 +280,7 @@ async function ensureAgenCDaemonAutostartCycle(
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
   const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
   let status: AgenCDaemonAutostartStatus = "already-running";
-  let pid = await readAgenCDaemonPid(pidPath);
+  let pid: number | null = null;
   let spawnedPid: number | null = restartCycle === 0 ? options.provisionalOwnedPid ?? null : null;
   let spawnedProcess: AgenCDaemonProcessIdentity | null = null;
   let postSpawnPhase = spawnedPid !== null;
@@ -288,6 +288,9 @@ async function ensureAgenCDaemonAutostartCycle(
   let spawnedControlReleased = false;
 
   try {
+    // A provisional child is already owned when this cycle is entered. Even
+    // the first metadata read must stay inside the exact-child cleanup region.
+    pid = await readAgenCDaemonPid(pidPath);
     if (spawnedPid !== null) spawnedProcess = await captureAgenCDaemonProcessIdentity(spawnedPid, host);
     // A stale pid file may name a live but unrelated reused PID while the real
     // daemon has already published a fresh sidecar. Never probe or signal that
