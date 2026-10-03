@@ -27,7 +27,7 @@ const record = async (contents = "{\"tasks\":[]}") => {
 };
 
 describe("cron startup absence boundary", () => {
-  it.each([false, true])("does not load cron machinery when no record exists (directory=%s)", async directory => {
+  it.skipIf(process.platform !== "linux").each([false, true])("does not load cron machinery when no record exists (directory=%s)", async directory => {
     if (directory) await mkdir(join(workspace, ".agenc"), { mode: 0o700 });
     deferred.failure = new Error("cron implementation unavailable");
     expect(await read()).toEqual([]);
@@ -39,7 +39,7 @@ describe("cron startup absence boundary", () => {
     expect(await read()).toEqual([{ id: "persisted" }]);
     expect(deferred.read).toHaveBeenCalledExactlyOnceWith(workspace);
   });
-  it("delegates an unsafe directory to the original confined reader", async () => {
+  it.skipIf(process.platform === "win32")("delegates an unsafe directory to the original confined reader", async () => {
     await mkdir(join(workspace, "other"));
     await symlink(join(workspace, "other"), join(workspace, ".agenc"));
     expect(await read()).toEqual([{ id: "persisted" }]);
@@ -49,6 +49,14 @@ describe("cron startup absence boundary", () => {
     await chmod(workspace, 0o777);
     expect(await read()).toEqual([{ id: "persisted" }]);
     expect(deferred.read).toHaveBeenCalledOnce();
+  });
+  it.each(["DESCRIPTOR_UNSUPPORTED", "EIO", "EACCES"])("delegates uncertain confinement (%s) to the original reader", async code => {
+    const storage = await import("../../src/utils/cron-storage-directory.js");
+    vi.spyOn(storage, "withCronStorageDirectory").mockRejectedValue(
+      Object.assign(new Error("probe unavailable"), { code }),
+    );
+    expect(await read()).toEqual([{ id: "persisted" }]);
+    expect(deferred.read).toHaveBeenCalledExactlyOnceWith(workspace);
   });
   it("propagates deferred module failure for persisted state", async () => {
     await record();
