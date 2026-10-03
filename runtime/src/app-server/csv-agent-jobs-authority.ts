@@ -98,7 +98,7 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
             : {}),
         }));
     this.#openDriver = options.openDriver ??
-      ((paths) => openStateDatabasePaths(paths, undefined, { deferLogs: true }));
+      ((paths) => openStateDatabasePaths(paths, { deferLogs: true }));
     this.#openRepository = options.openRepository ?? openCsvAgentJobsRepository;
   }
 

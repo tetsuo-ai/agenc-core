@@ -989,7 +989,7 @@ export class ExecutionAdmissionKernel {
       return existing;
     }
     // Admission and recovery use state only; retain its eager FULL connection.
-    const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true });
+    const driver = openStateDatabasePaths(paths, { deferLogs: true });
     const binding: WorkspaceBinding = {
       workspaceId: paths.projectDir,
       paths,
