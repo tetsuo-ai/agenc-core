@@ -11,7 +11,7 @@ vi.mock('../../src/tui/components/v2/CostUsageModal.js', () => ({ CostUsageModal
 vi.mock('../../src/commands/hooks-menu.js', () => ({ HooksRuntimeUnavailableModal: () => null }))
 vi.mock('../../src/tui/components/tasks/BackgroundTasksPanel.js', () => ({ BackgroundTasksPanel: () => null }))
 
-test('text command paths avoid React and interactive paths retain element and close behavior', async () => {
+test('headless command paths avoid React and interactive paths retain element and close behavior', async () => {
   const [{ helpCommand }, { costCommand }, { default: hooksCommand }, { tasksCommand }] = await Promise.all([
     import('../../src/commands/help.js'), import('../../src/commands/cost.js'),
     import('../../src/commands/hooks.js'), import('../../src/commands/tasks.js'),
@@ -24,7 +24,12 @@ test('text command paths avoid React and interactive paths retain element and cl
   } as unknown as SlashCommandContext
   expect(state.reactLoads).toBe(0)
   for (const command of commands) {
-    expect((await command.execute(context)).kind).toBe('text')
+    const result = await command.execute(context)
+    if (command === hooksCommand) {
+      expect(result).toEqual({ kind: 'error', message: 'Hooks runtime is not available in this session.' })
+    } else {
+      expect(result.kind, command.name).toBe('text')
+    }
   }
   expect(state.reactLoads).toBe(0)
 
