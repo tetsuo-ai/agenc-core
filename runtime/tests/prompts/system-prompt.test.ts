@@ -1391,9 +1391,11 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const standard = await assembleSystemPromptSnapshot({ ...options, session: { services: { runtimeOptions: { nonInteractive: true } } } as unknown as Session, profile: "standard" });
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length);
     // Light abbreviates Environment and the permission section and omits the
-    // generic token-budget tutorial. Every other dynamic section stays exact.
+    // generic token-budget tutorial. Print folds Workspace into memory; every
+    // other dynamic section stays exact.
     const tailSections = (snapshot: typeof light) => snapshot.sections
       .slice(snapshot.sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) + 1)
+      .map(section => section.replace(`Workspace: ${options.ctx.cwd}. `, ""))
       .filter(section => !section.startsWith("# Environment") &&
         !section.startsWith("Workspace:") &&
         !section.startsWith("# Permission Mode: ") &&
@@ -1401,7 +1403,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
         !section.startsWith("When the user specifies a token target"));
     expect(tailSections(light)).toEqual(tailSections(standard));
     const authority = { sandboxPolicy: options.ctx.sandboxPolicy.value, networkSandboxPolicy: options.ctx.networkSandboxPolicy };
-    expect(light.sections).toContain(getPermissionsSection(options.permissionContext, authority, { light: true }));
+    expect(light.sections).toContain(getPermissionsSection(options.permissionContext, authority, { light: true, lightPrint: true }));
     expect(standard.sections).toContain(getPermissionsSection(options.permissionContext, authority));
     expect(light.text).not.toContain("# Permission Mode");
     for (const rule of [
