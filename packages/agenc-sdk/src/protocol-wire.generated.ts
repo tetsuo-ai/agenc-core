@@ -715,8 +715,8 @@ export interface AgentListParams extends JsonObject {
 }
 
 export interface AgentAttachParams extends JsonObject {
-  /** Collect only the initial print turn; new messages always restore full durability. */
-  readonly oneShotOutput?: boolean;
+    /** Collect only the initial print turn; new messages always restore full durability. */
+    readonly oneShotOutput?: boolean;
     readonly agentId: string;
     readonly clientId?: string;
 }

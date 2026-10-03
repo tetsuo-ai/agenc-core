@@ -602,6 +602,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "createSession"
     | "detachSession"
     | "listSessions"
+    | "getSession"
     | "terminateSession"
   >;
   readonly createMessageId?: () => string;
@@ -741,6 +742,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "createSession"
         | "detachSession"
         | "listSessions"
+        | "getSession"
         | "terminateSession"
       >
     | undefined;
