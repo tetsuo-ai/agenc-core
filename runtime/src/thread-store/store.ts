@@ -330,6 +330,8 @@ interface RegistrySnapshot {
 const REGISTRY_VERSION = 1;
 
 export interface FileThreadStoreOpts {
+  /** Defer the unused logs connection for a session-owned metadata store. */
+  readonly deferLogs?: boolean;
   /**
    * The cwd used to resolve the per-project state path
    * (`getProjectDir(cwd, projectRootMarkers)`). Defaults
@@ -393,12 +395,13 @@ export class FileThreadStore implements ThreadStore {
               ? { agencHome: opts.agencHome }
               : {}),
             projectRootMarkers: markers,
+            deferLogs: opts.deferLogs,
           })
         : openStateDatabasePaths({
             projectDir,
             stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
             logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
-          });
+          }, { deferLogs: opts.deferLogs });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
     this.finishPendingUnarchiveCleanup();

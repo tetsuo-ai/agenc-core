@@ -1292,7 +1292,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       ? advertised.backend.kind
       : undefined;
   const deferredUntilDiscovered =
-    opts.getSession() === null && !hasImagineVideoBackend(opts);
+    opts.getSession() === null;
   return {
     name: "ImagineVideo",
     description: imagineVideoDescription(advertisedKind),

@@ -1186,7 +1186,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       ? advertisedResolution.backend
       : undefined;
   const deferredUntilDiscovered =
-    opts.getSession() === null && !hasImagineImageBackend(opts);
+    opts.getSession() === null;
   return {
     name: "ImagineImage",
     description: imagineImageDescription(advertisedBackend),

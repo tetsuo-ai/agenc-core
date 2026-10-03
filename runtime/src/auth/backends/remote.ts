@@ -579,7 +579,12 @@ async function resolveRemoteAuthToken(
 ): Promise<string | undefined> {
   const explicit = explicitRemoteAuthToken(options);
   if (explicit !== undefined) return explicit;
-  return readRemoteBearerCredential(home)?.bearerToken;
+  // A signed-out home has no grant to use. Match the persisted generation
+  // before using native credentials, as the account snapshot path does.
+  return (await readPersistedRemoteAuthSession(
+    remoteAuthFilePath(options, home),
+    home,
+  ))?.credential.bearerToken;
 }
 
 function explicitRemoteAuthToken(

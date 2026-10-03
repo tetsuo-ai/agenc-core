@@ -31,7 +31,12 @@ import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job
 import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
-export interface OpenStateDatabaseOptions {
+export interface StateSqliteDriverOptions {
+  /** State-only consumers open the independent logs database on first use. */
+  readonly deferLogs?: boolean;
+}
+
+export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
   readonly cwd: string;
   readonly agencHome?: string;
   readonly projectRootMarkers?: readonly string[];
@@ -137,25 +142,28 @@ export class StateSqliteDriver {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
-  readonly logs: SqliteDatabase;
+  #logs: SqliteDatabase | undefined;
   readonly #stateStatements: PreparedStatementCache;
-  readonly #logsStatements: PreparedStatementCache;
+  #logsStatements: PreparedStatementCache | undefined;
 
-  constructor(paths: StateDatabasePaths) {
+  constructor(
+    paths: StateDatabasePaths,
+    options: StateSqliteDriverOptions = {},
+  ) {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     const state = new Database(paths.stateDbPath);
     let logs: SqliteDatabase | undefined;
     try {
-      logs = new Database(paths.logsDbPath);
+      if (options.deferLogs !== true) logs = new Database(paths.logsDbPath);
       // Before the WAL pragma: switching the journal mode writes the file
       // header, and auto_vacuum can only be chosen while there is none.
       configureFreshDatabaseVacuum(state);
       configureDatabase(state);
-      configureDatabase(logs);
+      if (logs !== undefined) configureDatabase(logs);
       applyStateMigrations(state, paths);
-      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+      if (logs !== undefined) applyMigrations(logs, LOGS_DB_MIGRATIONS);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
     } catch (error) {
       if (state.open) state.close();
@@ -163,9 +171,25 @@ export class StateSqliteDriver {
       throw error;
     }
     this.state = state;
-    this.logs = logs;
+    this.#logs = logs;
     this.#stateStatements = new PreparedStatementCache(state);
+    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs);
+  }
+
+  get logs(): SqliteDatabase {
+    if (this.#logs !== undefined) return this.#logs;
+    if (!this.state.open) throw new Error("cannot open logs on a closed state driver");
+    const logs = new Database(this.logsDbPath);
+    try {
+      configureDatabase(logs);
+      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+    } catch (error) {
+      if (logs.open) logs.close();
+      throw error;
+    }
     this.#logsStatements = new PreparedStatementCache(logs);
+    this.#logs = logs;
+    return logs;
   }
 
   /** Compiled statement for `sql`, reused across calls; see {@link PreparedStatementCache}. */
@@ -179,7 +203,9 @@ export class StateSqliteDriver {
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.#logsStatements.prepare<Params, Row>(sql);
+    const logs = this.logs;
+    return (this.#logsStatements ??= new PreparedStatementCache(logs))
+      .prepare<Params, Row>(sql);
   }
 
   transaction<T>(fn: () => T): T {
@@ -208,9 +234,9 @@ export class StateSqliteDriver {
 
   close(): void {
     this.#stateStatements.clear();
-    this.#logsStatements.clear();
+    this.#logsStatements?.clear();
     if (this.state.open) this.state.close();
-    if (this.logs.open) this.logs.close();
+    if (this.#logs?.open) this.#logs.close();
   }
 }
 
@@ -219,9 +245,9 @@ export class StateSqliteReader {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
-  readonly logs: SqliteDatabase;
+  #logs: SqliteDatabase | undefined;
 
-  constructor(paths: StateDatabasePaths) {
+  constructor(paths: StateDatabasePaths, options: StateSqliteDriverOptions = {}) {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
@@ -229,12 +255,30 @@ export class StateSqliteReader {
       readonly: true,
       fileMustExist: true,
     });
-    this.logs = new Database(paths.logsDbPath, {
-      readonly: true,
-      fileMustExist: true,
-    });
-    configureReadOnlyDatabase(this.state);
-    configureReadOnlyDatabase(this.logs);
+    try {
+      configureReadOnlyDatabase(this.state);
+      if (options.deferLogs !== true) this.#logs = this.openLogs();
+    } catch (error) {
+      if (this.state.open) this.state.close();
+      throw error;
+    }
+  }
+
+  get logs(): SqliteDatabase {
+    if (this.#logs !== undefined) return this.#logs;
+    if (!this.state.open) throw new Error("cannot open logs on a closed state reader");
+    return this.#logs = this.openLogs();
+  }
+
+  private openLogs(): SqliteDatabase {
+    const logs = new Database(this.logsDbPath, { readonly: true, fileMustExist: true });
+    try {
+      configureReadOnlyDatabase(logs);
+      return logs;
+    } catch (error) {
+      if (logs.open) logs.close();
+      throw error;
+    }
   }
 
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
@@ -251,7 +295,7 @@ export class StateSqliteReader {
 
   close(): void {
     if (this.state.open) this.state.close();
-    if (this.logs.open) this.logs.close();
+    if (this.#logs?.open) this.#logs.close();
   }
 }
 
@@ -274,27 +318,29 @@ export function openStateDatabases(
   options: OpenStateDatabaseOptions,
 ): StateSqliteDriver {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePaths(paths);
+  return openStateDatabasePaths(paths, options);
 }
 
 export function openStateDatabasePaths(
   paths: StateDatabasePaths,
+  options: StateSqliteDriverOptions = {},
 ): StateSqliteDriver {
   mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-  return new StateSqliteDriver(paths);
+  return new StateSqliteDriver(paths, options);
 }
 
 export function openStateDatabaseReader(
   options: OpenStateDatabaseOptions,
 ): StateSqliteReader {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePathReader(paths);
+  return openStateDatabasePathReader(paths, options);
 }
 
 export function openStateDatabasePathReader(
   paths: StateDatabasePaths,
+  options: StateSqliteDriverOptions = {},
 ): StateSqliteReader {
-  return new StateSqliteReader(paths);
+  return new StateSqliteReader(paths, options);
 }
 
 export function discoverStateDatabasePaths(
