@@ -18,6 +18,8 @@ export interface DefaultCliRouteAdapters {
   readonly resumeTUIEntry: (args: ResumeTUIArgs, flags: StartupCliFlags) => Promise<number>;
   readonly continueTUIEntry: (args: ContinueTUIArgs, flags: StartupCliFlags) => Promise<number>;
   readonly oneShotCLI: typeof import("./agenc-main.js").oneShotCLI;
+  /** Preload only; readiness and authentication still gate all route callbacks. */
+  readonly onReadinessWaitStarted?: () => void;
 }
 
 function isInteractiveTuiRoutePlan(
@@ -32,7 +34,7 @@ function isInteractiveTuiRoutePlan(
 
 export async function runDefaultCliRoute(
   argv: readonly string[],
-  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI }: DefaultCliRouteAdapters,
+  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI, onReadinessWaitStarted }: DefaultCliRouteAdapters,
 ): Promise<number> {
   const routePlan = classifyCLI({
     argv,
@@ -85,6 +87,9 @@ export async function runDefaultCliRoute(
       >;
       await ensureAgenCDaemonAutostart({
         io: { stdout: silentStdout, stderr: process.stderr },
+        ...(routePlan.kind === "oneShotCLI" && onReadinessWaitStarted !== undefined
+          ? { onReadinessWaitStarted }
+          : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -119,4 +124,3 @@ export async function runDefaultCliRoute(
       continueTUIEntry(args, startupCliFlags),
   });
 }
-

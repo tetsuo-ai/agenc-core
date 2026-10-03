@@ -1365,6 +1365,122 @@ autostart = true
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("notifies after spawn and readiness starts, without bypassing publication or authentication", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const events: string[] = [];
+    let makeReady!: (ready: boolean) => void;
+    const readyGate = new Promise<boolean>((resolve) => { makeReady = resolve; });
+    let notified!: () => void;
+    const notification = new Promise<void>((resolve) => { notified = resolve; });
+    let enteredPublication!: () => void;
+    const publication = new Promise<void>((resolve) => { enteredPublication = resolve; });
+    let publish!: () => void;
+    const publicationGate = new Promise<void>((resolve) => { publish = resolve; });
+    const identity = host.requestDaemonInstanceIdentity;
+    host.requestDaemonInstanceIdentity = () => {
+      events.push("authenticate");
+      return identity();
+    };
+    const connect = vi.fn(() => { events.push("connect"); });
+    let settled = false;
+    const ensuring = ensureAgenCDaemonAutostart({
+      host,
+      isReady: () => { events.push("wait"); return readyGate; },
+      onReadinessWaitStarted: () => {
+        events.push("notify");
+        notified();
+      },
+      identityPublicationBarrier: async () => {
+        events.push("publication");
+        enteredPublication();
+        await publicationGate;
+      },
+      findOrphanDaemonPids: () => [],
+      findSupersededDaemonPids: () => [],
+      connect,
+    }).then((result) => { settled = true; return result; });
+    try {
+      await notification;
+      expect(events).toEqual(["wait", "notify"]);
+      expect(host.spawnedPids).toEqual([5201]);
+      expect(settled).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
+      makeReady(true);
+      await publication;
+      expect(events).toEqual(["wait", "notify", "publication"]);
+      expect(settled).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
+      publish();
+      await expect(ensuring).resolves.toMatchObject({ status: "started", connected: true });
+      expect(events.indexOf("authenticate")).toBeGreaterThan(events.indexOf("publication"));
+      expect(events.at(-1)).toBe("connect");
+    } finally {
+      makeReady(true);
+      publish();
+      await ensuring.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["throw", "reject", "pending"])("does not let a %s observer replace an authenticated failure", async (mode) => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pid = 5302;
+    host.runningPids.add(pid);
+    const original = host.recordDaemon(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), pid);
+    host.requestDaemonInstanceIdentity = () => {
+      host.recordDaemon(pid);
+      return original;
+    };
+    const observer = vi.fn(() => {
+      if (mode === "throw") throw new Error("observer error");
+      if (mode === "reject") return Promise.reject(new Error("observer error"));
+      return new Promise<void>(() => {});
+    });
+    const connect = vi.fn();
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, isReady: () => true, onReadinessWaitStarted: observer,
+        findSupersededDaemonPids: () => [], connect,
+      })).rejects.toThrow(/sidecar changed during proof/u);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(connect).not.toHaveBeenCalled();
+      expect(host.spawnedPids).toEqual([]);
+      expect(host.runningPids.has(pid)).toBe(true);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("starts the existing timeout budget before the optional observer", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pid = 5304;
+    host.runningPids.add(pid);
+    host.recordDaemon(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), pid);
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const isReady = vi.fn(() => false);
+    const connect = vi.fn();
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, waitTimeoutMs: 100, isReady, connect,
+        onReadinessWaitStarted: () => { now = 101; },
+        findSupersededDaemonPids: () => [],
+      })).rejects.toThrow(/did not become ready before timeout/u);
+      expect(isReady).toHaveBeenCalledTimes(2); // first poll, then final check
+      expect(connect).not.toHaveBeenCalled();
+      expect(host.spawnedPids).toEqual([]);
+    } finally {
+      clock.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "waits for the spawned foreground identity commit after socket readiness",
     async () => {

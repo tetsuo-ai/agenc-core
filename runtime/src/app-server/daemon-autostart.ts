@@ -141,6 +141,8 @@ export interface AgenCDaemonAutostartOptions {
   readonly io?: AgenCDaemonCliIo;
   readonly waitTimeoutMs?: number;
   readonly pollMs?: number;
+  /** Optional preload notification, not readiness or connection authority. */
+  readonly onReadinessWaitStarted?: () => void | Promise<void>;
   readonly isReady?: (
     target: AgenCDaemonConnectionTarget,
   ) => boolean | Promise<boolean>;
@@ -429,7 +431,17 @@ async function ensureAgenCDaemonAutostartCycle(
     }
 
     const target = { pid, pidPath };
-    const ready = await waitForAgenCDaemonReady(target, host, options);
+    const waitingForReady = waitForAgenCDaemonReady(target, host, options);
+    // Start the existing readiness budget first. Observer work is never awaited
+    // and cannot alter lifecycle checks, their failures or connection authority.
+    if (options.onReadinessWaitStarted !== undefined) {
+      try {
+        void Promise.resolve(options.onReadinessWaitStarted()).catch(() => {});
+      } catch {
+        // A failed optional observer does not change daemon startup.
+      }
+    }
+    const ready = await waitingForReady;
     if (ready === "exited") {
       // The daemon process died before becoming ready. Waiting longer cannot
       // help, and calling this a timeout sends the operator debugging the

@@ -13,6 +13,7 @@ import {
 } from "./cli-process-main.js";
 export { formatUnavailableCliCwdMessage, isUnavailableCliCwdError } from "./cli-process-main.js";
 import { isDirectInvocation, shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
+import { selectAgenCCliEntry } from "./cli-entry-policy.js";
 export { shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
@@ -6207,6 +6208,6 @@ function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
  * `import.meta`, which is forbidden in the CJS output target.
  */
 
-if (isDirectInvocation()) {
+if (isDirectInvocation() && selectAgenCCliEntry() === "main") {
   void runCliProcessMain(main);
 }
