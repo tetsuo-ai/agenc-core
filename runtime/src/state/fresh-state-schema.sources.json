@@ -5,7 +5,7 @@
     "scripts/fresh-state-schema-artifact.mjs": "547b4b3b6c5d1d81975bd6a6c81e558f2e6de7302098dbf7b945869cc94c6b5b",
     "scripts/generate-fresh-state-schema.ts": "0bf6a6142f91e732eda5f64aa36bcfd3949faad488af0f55bffc6c1ef7c90e7f",
     "src/agents/jobs/csv-reader.ts": "3599f2da5fa30719c66ee0c71e78bc837e34ab42d6e20d9291076b8118e4f25b",
-    "src/agents/jobs/csv-schema.ts": "791a5549e06630cf78507c547b4c54f228c2112e7f167f55b01fe317404a5200",
+    "src/agents/jobs/csv-schema.ts": "da97ec8ac4d146403e38ebf541b9de228e39609d26f4549ee6fdca4aaca04784",
     "src/contracts/csv-job-contract.ts": "90d4c5e3e8c74f34f68ba4eded97e2f8c3327064b155b83be6a7b5614783e0fe",
     "src/state/migrations/001_initial_logs_schema.ts": "1dd45124985bbd295df04cd30fcc9efab6275eda16f939cf7c291b83e984ed3f",
     "src/state/migrations/001_initial_state_schema.ts": "ba86166f54dc53ff11c4c8452131368266e5764da975c98fca63e4eb6e8cfe43",
@@ -46,6 +46,7 @@
     "src/state/migrations/036_canonical_projection_marker.ts": "e6e7e71f2a714470a0ae48aed18b9ff436906cef6c5f485983f221fe9055d29a",
     "src/state/migrations/037_workflow_pause.ts": "5b8bf90539421362a860046c4a9cfd9c6829dc15253e74a1eea008fb077000f1",
     "src/state/migrations/index.ts": "ed8b4f054fa92dacfee6bccb0c945509c848495a8d52230612c01b3b7f06d1f1",
-    "src/state/migrations/types.ts": "2a4d0620a863f3eeee287163cc91ce09963098471f9c13583a8f2a2c5f468026"
+    "src/state/migrations/types.ts": "2a4d0620a863f3eeee287163cc91ce09963098471f9c13583a8f2a2c5f468026",
+    "src/utils/loadAjv.ts": "48f631137c1292a5d3b3c14bcb2a67f7bff665233eee7d67a4455644a94b7629"
   }
 }
