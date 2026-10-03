@@ -452,7 +452,12 @@ describe("/context TUI bridge", () => {
     try {
       await contextCommand.execute({ session: session as never, argsRaw: "", cwd: home, home,
         appState: { setToolJSX: vi.fn() } });
-      expect(load).toHaveBeenCalledWith(expect.objectContaining({ cwd: home, configStore }));
+      // The captured client environment controls presentation independently
+      // of the owning configuration and shell environment used for paths.
+      expect(load).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: home, configStore }),
+        session.services.providerEnvironment,
+      );
       expect((await load.mock.results[0]?.value)?.directories).toContain(join(home, "memory"));
     } finally {
       load.mockRestore();
