@@ -59,6 +59,7 @@ import {
   wrapCommandForShell,
 } from "../utils/shell/commandExecution.js";
 import { withChildTempAuthority } from "../utils/subprocessEnv.js";
+import { withWritableGoBuildCache } from "./go-build-cache.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -1542,7 +1543,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           program: params.program,
           args: params.args,
           cwd: params.cwd,
-          env: params.env,
+          env: withWritableGoBuildCache(
+            params.env,
+            permissions,
+            params.runtimeSandbox.additionalPermissions,
+            params.runtimeSandbox.sandboxPolicyCwd,
+            sessionTempRoot,
+          ),
           ...(params.runtimeSandbox.additionalPermissions !== undefined
             ? {
                 additionalPermissions:
