@@ -22,6 +22,7 @@ describe("remote token state gate", () => {
   }
   beforeEach(() => readCredential.mockReset());
   afterEach(async () => {
+    readCredential.mockReset();
     await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true })));
   });
 
@@ -78,7 +79,7 @@ describe("remote token state gate", () => {
   it("propagates native read errors when signed-in metadata is present", async () => {
     const { backend, fetchImpl } = await fixture();
     await writeFile(backend.authFile(), JSON.stringify(state));
-    readCredential.mockImplementation(() => { throw new Error("native storage locked"); });
+    readCredential.mockImplementationOnce(() => { throw new Error("native storage locked"); });
     await expect(backend.getLlmUsage()).rejects.toThrow("native storage locked");
     expect(fetchImpl).not.toHaveBeenCalled();
   });

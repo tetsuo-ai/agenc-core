@@ -26,8 +26,10 @@ describe("bootstrap XSearch credentials", () => {
   });
 
   it("registers a deferred tool without reading native credentials", () => {
-    const tool = createModelFacingTools(options()).find(t => t.name === "XSearch");
-    expect(tool?.metadata?.deferred).toBe(true);
+    const tools = createModelFacingTools(options());
+    for (const name of ["XSearch", "ImagineImage", "ImagineVideo"]) {
+      expect(tools.find(t => t.name === name)?.metadata?.deferred).toBe(true);
+    }
     expect(credential).not.toHaveBeenCalled();
   });
 
