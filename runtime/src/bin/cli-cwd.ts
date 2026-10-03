@@ -1,7 +1,7 @@
 /** Shared startup cwd resolution; no session or RPC implementation dependency. */
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
-import { resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import { resolveWorkspace as resolveWorkspaceFromEnv } from "../config/workspace-environment.js";
 import { formatUnavailableCliCwdMessage } from "./cli-process-main.js";
 
 export function readProcessCwdSafely(cwdFn: () => string = processCwd): string | null {

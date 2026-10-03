@@ -8,7 +8,7 @@ import {
   type OneShotContinueSession,
   type ResumeTUIArgs,
 } from "./route.js";
-import { readStartupCliFlags, type StartupCliFlags } from "./startup-selection.js";
+import { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.js";
 import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled } from "../app-server/daemon-autostart.js";
 import type { ProvisionalDaemonStart } from "../app-server/daemon-provisional-start.js";
 import { resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";

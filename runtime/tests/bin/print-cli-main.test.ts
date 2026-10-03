@@ -288,6 +288,25 @@ describe("exploratory provisional route coordination", () => {
     expect(child.cancel).toHaveBeenCalledOnce();
     expect(child.finish).not.toHaveBeenCalled();
   });
+  it("joins cancellation and preserves full config validation failure after a provisional hint", async () => {
+    const child = provisional();
+    const failure = new Error("canonical invalid global configuration");
+    const exit = deferred<void>();
+    const cancelling = deferred<void>();
+    child.cancel.mockImplementation(() => { cancelling.resolve(); return exit.promise; });
+    mocks.enabled.mockRejectedValueOnce(failure);
+    let settled = false;
+    const run = printMain(load, async () => child).finally(() => { settled = true; });
+    const observed = expect(run).rejects.toBe(failure);
+    await cancelling.promise;
+    expect(settled).toBe(false);
+    expect(child.finish).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled();
+    exit.resolve();
+    await observed;
+    expect(child.cancel).toHaveBeenCalledOnce();
+  });
   it("keeps failed cleanup visible", async () => {
     const child = provisional();
     mocks.trust.mockResolvedValue(false);
