@@ -1,5 +1,5 @@
 import {
-  REGISTERED_MODEL_CATALOG,
+  registeredModelCatalogProviderIds,
   resolveRegisteredModelCatalogEntry,
 } from '../../llm/registry/model-catalog.js'
 import { getCurrentRuntimeSession } from '../../session/current-session.js'
@@ -182,7 +182,7 @@ export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
     return false
   }
   const providers = new Set(
-    REGISTERED_MODEL_CATALOG.map(entry => entry.provider),
+    registeredModelCatalogProviderIds(),
   )
   for (const provider of providers) {
     if (
