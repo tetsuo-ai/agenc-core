@@ -2185,3 +2185,89 @@ autostart = true
     await rm(agencHome, { recursive: true, force: true });
   });
 });
+
+describe("owned daemon IPC readiness", () => {
+  it.each(["autostart", "start"] as const)("%s wakes without polling and still proves identity", async (mode) => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    let socketServer: Server | null = null;
+    const proof = vi.fn(() => base.requestDaemonInstanceIdentity());
+    const sleep = vi.fn(async () => { throw new Error("unexpected readiness polling"); });
+    const release = vi.fn();
+    const wait = vi.fn(async (pid: number) => {
+      expect(pid).toBe(5201);
+      await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+      socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+      return "ready" as const;
+    });
+    const host = { ...base, sleep, waitSpawnedDaemonReady: wait, releaseSpawnedDaemonControl: release };
+    try {
+      if (mode === "autostart") {
+        await expect(ensureAgenCDaemonAutostart({
+          host, requestDaemonInstanceIdentity: proof, findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+        })).resolves.toMatchObject({ pid: 5201, ready: true, status: "started" });
+      } else {
+        await expect(runAgenCDaemonCli({ kind: "command", action: "start" }, {
+          host, requestDaemonInstanceIdentity: proof,
+        })).resolves.toBe(0);
+      }
+      expect(wait).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
+      expect(proof).toHaveBeenCalled();
+      expect(release).toHaveBeenCalledExactlyOnceWith(5201);
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a mismatching identity after a ready hint and cancels only its owned child", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    base.platform = "darwin";
+    let socketServer: Server | null = null;
+    const cancel = vi.fn((pid: number) => { base.runningPids.delete(pid); });
+    const signal = vi.fn();
+    const connect = vi.fn();
+    const host = {
+      ...base, terminatePid: signal, cancelSpawnedDaemon: cancel,
+      waitSpawnedDaemonReady: async () => {
+        await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+        socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+        return "ready" as const;
+      },
+    };
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, connect, findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+        requestDaemonInstanceIdentity: () => ({ ...base.requestDaemonInstanceIdentity(), instanceId: "wrong-instance" }),
+      })).rejects.toThrow(/identity|instance/u);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(5201);
+      expect(signal).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps bounded polling when an owned IPC channel closes before publication", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    let socketServer: Server | null = null;
+    const sleep = vi.fn(async () => {
+      await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+      socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+    });
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host: { ...base, sleep, waitSpawnedDaemonReady: async () => "closed" },
+        findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+      })).resolves.toMatchObject({ pid: 5201, ready: true });
+      expect(sleep).toHaveBeenCalledOnce();
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+});
