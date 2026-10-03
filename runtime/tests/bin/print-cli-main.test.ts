@@ -3,9 +3,9 @@ import type { AgenCDaemonAutostartOptions } from "../../src/app-server/daemon-au
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(), processMain: vi.fn(), trust: vi.fn(), enabled: vi.fn(),
-  ensure: vi.fn(), cwd: vi.fn(), unavailable: vi.fn(), flush: vi.fn(),
+  ensure: vi.fn(), cwd: vi.fn(), unavailable: vi.fn(), flush: vi.fn(), begin: vi.fn(), stop: vi.fn(),
 }));
-vi.mock("../../src/bin/compile-cache.js", () => ({ flushAgenCCompileCache: mocks.flush }));
+vi.mock("../../src/bin/compile-cache.js", () => ({ flushAgenCCompileCache: mocks.flush, beginProgressiveAgenCCompileCachePublication: mocks.begin }));
 vi.mock("../../src/bin/cli-runtime.js", () => ({ prepareCliRuntime: mocks.prepare }));
 vi.mock("../../src/bin/cli-process-main.js", () => ({ runCliProcessMain: mocks.processMain }));
 vi.mock("../../src/bin/project-trust-preflight.js", () => ({ requireProjectTrustForTui: mocks.trust }));
@@ -34,6 +34,7 @@ const load = vi.fn(async () => client);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.begin.mockReturnValue(mocks.stop);
   mocks.prepare.mockReturnValue(null);
   mocks.trust.mockResolvedValue(true);
   mocks.enabled.mockResolvedValue(true);
@@ -73,9 +74,12 @@ describe("print entry import overlap", () => {
     const running = printMain(load);
     await entered.promise;
     expect(mocks.flush).not.toHaveBeenCalled();
+    expect(mocks.begin).toHaveBeenCalledOnce();
+    expect(mocks.stop).not.toHaveBeenCalled();
     imported.resolve(client);
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(mocks.flush).toHaveBeenCalledOnce();
+    expect(mocks.stop).toHaveBeenCalledOnce();
     expect(client.oneShotCLI).not.toHaveBeenCalled();
     ready.resolve();
     expect(await running).toBe(7);
@@ -132,6 +136,7 @@ describe("print entry import overlap", () => {
     expect(await printMain(load)).toBe(mode === "ingress" || mode === "parser" ? 2 : 1);
     expect(mocks.ensure).not.toHaveBeenCalled();
     expect(load).not.toHaveBeenCalled();
+    expect(mocks.begin).not.toHaveBeenCalled();
     expect(client.oneShotCLI).not.toHaveBeenCalled();
     if (mode !== "trust") expect(mocks.trust).not.toHaveBeenCalled();
   });
@@ -156,6 +161,7 @@ describe("print entry import overlap", () => {
     expect(client.oneShotCLI).not.toHaveBeenCalled();
     ready.resolve();
     await observed;
+    expect(mocks.stop).toHaveBeenCalledOnce();
   });
 
   it.each(["import first", "autostart first"])("keeps the autostart failure authoritative: %s", async (order) => {

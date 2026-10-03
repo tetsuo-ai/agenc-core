@@ -1,7 +1,7 @@
 import "../bootstrap/node-env.js";
 import { prepareCliRuntime } from "./cli-runtime.js";
 import { runCliProcessMain } from "./cli-process-main.js";
-import { flushAgenCCompileCache } from "./compile-cache.js";
+import { beginProgressiveAgenCCompileCachePublication, flushAgenCCompileCache } from "./compile-cache.js";
 import { runDefaultCliRoute, type DefaultCliRouteAdapters } from "./default-cli-route.js";
 
 type Client = Pick<DefaultCliRouteAdapters,
@@ -21,7 +21,11 @@ export async function printMain(
   // escape while readiness is pending nor replace an autostart failure.
   let loading: Promise<ClientLoad> | undefined;
   const preload = (): void => {
-    loading ??= Promise.resolve().then(loadClient).then(
+    loading ??= Promise.resolve().then(async () => {
+      const stopPublishing = beginProgressiveAgenCCompileCachePublication();
+      try { return await loadClient(); }
+      finally { stopPublishing(); }
+    }).then(
       (client): ClientLoad => {
         // The early child can still be loading shared modules. Publish this
         // completed import without waiting for the CLI's eventual exit.

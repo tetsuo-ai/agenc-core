@@ -6,6 +6,7 @@ const nodeModule = vi.hoisted(() => ({
   enableCompileCache: vi.fn(),
   getCompileCacheDir: vi.fn<() => string | undefined>(),
   flushCompileCache: vi.fn(),
+  registerHooks: vi.fn(),
 }));
 const osTemp = vi.hoisted(() => ({ dir: "" }));
 
@@ -16,6 +17,7 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 const {
+  beginProgressiveAgenCCompileCachePublication,
   compileCacheDirectory,
   enableAgenCCompileCache,
   flushAgenCCompileCache,
@@ -33,6 +35,7 @@ beforeEach(() => {
   nodeModule.enableCompileCache.mockReset();
   nodeModule.getCompileCacheDir.mockReset();
   nodeModule.flushCompileCache.mockReset();
+  nodeModule.registerHooks.mockReset();
 });
 
 afterEach(() => {
@@ -159,5 +162,36 @@ describe("process entry", () => {
     expect(assign).toBeGreaterThanOrEqual(0);
     expect(cache).toBeGreaterThan(assign);
     expect(main).toBeGreaterThan(cache);
+  });
+});
+
+describe("progressive publication", () => {
+  it("leaves module sources and loader errors unchanged and cleans up", () => {
+    nodeModule.getCompileCacheDir.mockReturnValue("/private/cache");
+    const deregister = vi.fn();
+    nodeModule.registerHooks.mockReturnValue({ deregister });
+    const stop = beginProgressiveAgenCCompileCachePublication();
+    const { load } = nodeModule.registerHooks.mock.calls[0]![0];
+    const context = { format: "module" };
+    const original = { format: "module", source: "export const content = 7;" };
+    const next = vi.fn(() => original);
+    // Cache I/O failure must never replace a successful source load.
+    nodeModule.flushCompileCache.mockImplementation(() => { throw new Error("disk full"); });
+    for (let i = 0; i < 32; ++i) expect(load("file:///same.js", context, next)).toBe(original);
+    expect(next).toHaveBeenLastCalledWith("file:///same.js", context);
+    expect(nodeModule.flushCompileCache).toHaveBeenCalled();
+    const error = new Error("canonical load failure");
+    expect(() => load("file:///missing.js", context, () => { throw error; })).toThrow(error);
+    stop();
+    expect(deregister).toHaveBeenCalledOnce();
+    expect(nodeModule.enableCompileCache).not.toHaveBeenCalled();
+  });
+
+  it("keeps missing cache and failed cache inspection inert", () => {
+    beginProgressiveAgenCCompileCachePublication()();
+    expect(nodeModule.registerHooks).not.toHaveBeenCalled();
+    nodeModule.getCompileCacheDir.mockImplementation(() => { throw new Error("unavailable"); });
+    expect(() => beginProgressiveAgenCCompileCachePublication()()).not.toThrow();
+    expect(nodeModule.registerHooks).not.toHaveBeenCalled();
   });
 });
