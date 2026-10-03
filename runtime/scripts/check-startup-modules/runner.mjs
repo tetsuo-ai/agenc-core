@@ -5,8 +5,13 @@
  * without loading code it does not use there. Several startup cuts removed
  * whole packages from that path; this gate keeps them out. It runs one cold
  * one-shot against the local mock model with a module-load trace in the CLI
- * and in the daemon the CLI starts, then fails if a listed module loaded in
- * either process before the first chat request reached the mock.
+ * and in its daemon, then fails if a listed module loaded in either process
+ * before the first chat request reached the mock.
+ *
+ * Like the pipeline gate, it starts the daemon itself as a retained child, so
+ * cleanup can stop the one-shot and the daemon on any exit path, signals
+ * included. The CLI imports its daemon autostart code statically, so its
+ * module graph is the same whether it starts a daemon or finds one running.
  */
 import { readFile, readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -18,10 +23,15 @@ import {
   createTuiGateProject,
   createTuiGateState,
   installTuiGateSignalHandlers,
+  startTuiGateDaemon,
   teardownTuiGateState,
   writeTuiGateTrust,
 } from "../tui-gate-state.mjs";
-import { runOwnedOneShotProcess } from "../check-llm-pipeline/runner.mjs";
+import {
+  createPipelineGateLifecycle,
+  runOwnedOneShotProcess,
+  terminateActiveOneShots,
+} from "../check-llm-pipeline/runner.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
@@ -79,45 +89,60 @@ export function findStartupOffenders(traces, firstRequestMs, rules = FORBIDDEN_B
   return offenders;
 }
 
+/** The `--import` option that loads the trace hook, writing into `directory`. */
+export function traceImportOption(directory) {
+  const url = pathToFileURL(TRACE_HOOK);
+  url.searchParams.set("dir", directory);
+  return `--import=${url.href}`;
+}
+
 async function readTraces(directory) {
   let names = [];
   try {
-    names = (await readdir(directory)).filter((name) => name.endsWith(".txt"));
+    names = (await readdir(directory)).filter((name) => /^\d+\.txt$/.test(name));
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   return Promise.all(
-    names.map(async (name) => parseStartupTrace(await readFile(path.join(directory, name), "utf8"))),
+    names.map(async (name) => ({
+      pid: Number(name.slice(0, -".txt".length)),
+      ...parseStartupTrace(await readFile(path.join(directory, name), "utf8")),
+    })),
   );
 }
 
-async function main() {
+/**
+ * Run the gate. `binAgenc` is the CLI entry to test; it defaults to this
+ * checkout's build. Returns 0 (pass) or 1 (a listed module loaded early).
+ */
+export async function runStartupModulesGate({ binAgenc = BIN_AGENC } = {}) {
+  const lifecycle = createPipelineGateLifecycle();
   let mockServer;
   let gateState;
+  let gateStatePromise;
   let removeSignalHandlers = () => {};
   let cleanupPromise;
-  let traceEnv;
-  let projectDir;
   const cleanup = () => {
+    lifecycle.beginCleanup();
     cleanupPromise ??= (async () => {
-      const failures = [];
-      if (traceEnv !== undefined) {
+      let state = gateState;
+      if (state === undefined && gateStatePromise !== undefined) {
         try {
-          await runOwnedOneShotProcess({
-            executable: process.execPath,
-            args: [BIN_AGENC, "daemon", "stop"],
-            cwd: projectDir,
-            env: { ...traceEnv, NODE_OPTIONS: "" },
-            timeoutMs: 30_000,
-            label: "agenc daemon stop",
-          });
-        } catch (error) {
-          failures.push(error);
+          state = await gateStatePromise;
+        } catch {
+          // State creation failed before publishing an owned root.
         }
       }
-      if (gateState !== undefined) {
+      const failures = [];
+      // The one-shot first, then the daemon it talks to and the state.
+      try {
+        await terminateActiveOneShots();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (state !== undefined) {
         try {
-          await teardownTuiGateState(gateState, BIN_AGENC);
+          await teardownTuiGateState(state, binAgenc);
         } catch (error) {
           failures.push(error);
         }
@@ -138,36 +163,45 @@ async function main() {
   let runError = null;
   try {
     mockServer = await startMockModelServer();
-    gateState = await createTuiGateState({
+    gateStatePromise = createTuiGateState({
       injectedEnv: buildMockProviderEnv(mockServer.baseUrl, {}),
       prefix: "agenc-startup-modules-gate-",
     });
     removeSignalHandlers = installTuiGateSignalHandlers(cleanup);
-    projectDir = createTuiGateProject(gateState);
+    gateState = await gateStatePromise;
+    lifecycle.assertOpen();
+    const projectDir = createTuiGateProject(gateState);
     await writeTuiGateTrust(gateState.env, [projectDir]);
     // Like the TUI gate: hosts without user namespaces (CI containers) cannot
     // run the required sandbox, and the listed packages do not depend on it.
-    await configureTuiGateSandbox(gateState, BIN_AGENC, "danger-full-access");
+    await configureTuiGateSandbox(gateState, binAgenc, "danger-full-access");
+    lifecycle.assertOpen();
     const traceDir = path.join(gateState.root, "startup-trace");
-    // The gate isolates NODE_OPTIONS; set it only for this run, so the CLI
-    // and the daemon it starts both load the trace hook.
-    traceEnv = { ...gateState.env, NODE_OPTIONS: `--import=${pathToFileURL(TRACE_HOOK).href}`, AGENC_STARTUP_TRACE_DIR: traceDir };
+    const traceImport = traceImportOption(traceDir);
+    const daemonPid = await startTuiGateDaemon(gateState, binAgenc, { nodeArgs: [traceImport] });
+    // The gate env keeps NODE_OPTIONS empty; only this one-shot gets the hook.
     const result = await runOwnedOneShotProcess({
       executable: process.execPath,
-      args: [BIN_AGENC, "-p", "Reply with the single word OK."],
+      args: [binAgenc, "-p", "Reply with the single word OK."],
       cwd: projectDir,
-      env: traceEnv,
+      env: { ...gateState.env, NODE_OPTIONS: traceImport },
       timeoutMs: 120_000,
       label: "agenc -p (startup-modules gate)",
+      lifecycle,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`agenc -p exited ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim()}`);
+      throw new Error(
+        `agenc -p exited ${result.exitCode ?? result.signal}: ${result.stderr.trim() || result.stdout.trim()}`,
+      );
     }
     const firstRequestMs = mockServer.chatRequestTimes[0];
     if (firstRequestMs === undefined) throw new Error("the one-shot made no model request");
     const traces = await readTraces(traceDir);
-    if (traces.length < 2) {
-      throw new Error(`expected traces from the CLI and the daemon, found ${traces.length}`);
+    if (!traces.some((trace) => trace.pid === daemonPid)) {
+      throw new Error(`no module trace from the gate's daemon (pid ${daemonPid})`);
+    }
+    if (!traces.some((trace) => trace.pid !== daemonPid && trace.argv.includes('"-p"'))) {
+      throw new Error("no module trace from the one-shot");
     }
     const offenders = findStartupOffenders(traces, firstRequestMs);
     if (offenders.length === 0) {
@@ -182,14 +216,20 @@ async function main() {
   } catch (error) {
     runError = error;
   }
+
+  let cleanupError = null;
   try {
     await cleanup();
   } catch (error) {
-    if (runError === null) runError = error;
+    cleanupError = error;
   } finally {
     removeSignalHandlers();
   }
+  if (runError !== null && cleanupError !== null) {
+    throw new AggregateError([runError, cleanupError], "startup-modules gate and its cleanup both failed");
+  }
   if (runError !== null) throw runError;
+  if (cleanupError !== null) throw cleanupError;
   return code;
 }
 
@@ -203,11 +243,14 @@ function isEntrypoint() {
 }
 
 if (isEntrypoint()) {
-  main().then(
-    (code) => process.exit(code),
+  // Exit codes are set, not forced, so a signal handler's code wins.
+  runStartupModulesGate().then(
+    (code) => {
+      process.exitCode = code;
+    },
     (error) => {
       console.error(`startup-modules gate failed: ${error?.stack ?? error}`);
-      process.exit(2);
+      process.exitCode = 2;
     },
   );
 }

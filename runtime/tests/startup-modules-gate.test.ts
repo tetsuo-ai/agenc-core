@@ -1,12 +1,26 @@
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 import { describe, expect, test } from "vitest";
 
 import {
   FORBIDDEN_BEFORE_FIRST_REQUEST,
   findStartupOffenders,
   parseStartupTrace,
+  traceImportOption,
 } from "../scripts/check-startup-modules/runner.mjs";
 
 const NM = "file:///opt/agenc/node_modules";
+const runnerPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "scripts",
+  "check-startup-modules",
+  "runner.mjs",
+);
 
 describe("startup-modules gate", () => {
   test("parses the trace header and load lines", () => {
@@ -42,4 +56,147 @@ describe("startup-modules gate", () => {
     ];
     expect(findStartupOffenders(traces, 1000)).toEqual([]);
   });
+
+  test("passes the trace directory in the hook URL, not the environment", () => {
+    const option = traceImportOption("/tmp/agt-x/startup-trace");
+    expect(option.startsWith("--import=file://")).toBe(true);
+    const url = new URL(option.slice("--import=".length));
+    expect(url.pathname.endsWith("/check-startup-modules/trace-hook.mjs")).toBe(true);
+    expect(url.searchParams.get("dir")).toBe("/tmp/agt-x/startup-trace");
+    expect(option).not.toContain(" ");
+  });
+});
+
+type Mark = { pid: number; home: string; nodeOptions?: string; execArgv?: string[] };
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return check();
+}
+
+/**
+ * A stand-in CLI: `daemon start --foreground` records itself and, unless
+ * `slowDaemon`, writes the pid file; `daemon status` reports it; `-p` records
+ * itself and waits forever, like a one-shot waiting on a model.
+ */
+function writeFixtureCli(directory: string, marks: string, slowDaemon: boolean): string {
+  const file = path.join(directory, "agenc.js");
+  writeFileSync(
+    file,
+    [
+      'import { readFileSync, rmSync, writeFileSync } from "node:fs";',
+      'import path from "node:path";',
+      `const marks = ${JSON.stringify(marks)};`,
+      "const args = process.argv.slice(2);",
+      'const pidFile = path.join(process.env.AGENC_HOME, "daemon.pid");',
+      "const mark = (name) => writeFileSync(path.join(marks, name), JSON.stringify({ pid: process.pid, home: process.env.HOME, nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv }));",
+      'if (args[0] === "config") process.exit(0);',
+      'if (args[0] === "daemon" && args[1] === "status") {',
+      '  console.log(`AgenC daemon running (pid ${readFileSync(pidFile, "utf8").trim()})`);',
+      "  process.exit(0);",
+      "}",
+      'if (args[0] === "daemon" && args[1] === "start") {',
+      '  mark("daemon.json");',
+      `  if (!${slowDaemon}) writeFileSync(pidFile, String(process.pid));`,
+      '  process.on("SIGTERM", () => { rmSync(pidFile, { force: true }); process.exit(0); });',
+      "} else {",
+      '  mark("one-shot.json");',
+      "}",
+      "setInterval(() => {}, 1_000);",
+    ].join("\n"),
+  );
+  return file;
+}
+
+async function interruptGate(slowDaemon: boolean, waitForMark: string) {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "agenc-startup-gate-"));
+  const marks = path.join(fixtureRoot, "marks");
+  mkdirSync(marks);
+  const cli = writeFixtureCli(fixtureRoot, marks, slowDaemon);
+  const driver = [
+    `import { runStartupModulesGate } from ${JSON.stringify(pathToFileURL(runnerPath).href)};`,
+    `runStartupModulesGate({ binAgenc: ${JSON.stringify(cli)} }).then(`,
+    "  (code) => { process.exitCode = code; },",
+    "  (error) => { console.error(error); process.exitCode = 2; },",
+    ");",
+  ].join("\n");
+  const gate = spawn(process.execPath, ["--input-type=module", "-e", driver], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  gate.stdout.on("data", (chunk) => (output += chunk));
+  gate.stderr.on("data", (chunk) => (output += chunk));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    gate.once("close", (code, signal) => resolve({ code, signal })),
+  );
+  const pids: number[] = [];
+  try {
+    const markPath = path.join(marks, waitForMark);
+    expect(await waitFor(() => existsSync(markPath), 30_000), output).toBe(true);
+    const read = (name: string): Mark | undefined =>
+      existsSync(path.join(marks, name))
+        ? (JSON.parse(readFileSync(path.join(marks, name), "utf8")) as Mark)
+        : undefined;
+    const daemon = read("daemon.json");
+    const oneShot = read("one-shot.json");
+    for (const mark of [daemon, oneShot]) if (mark !== undefined) pids.push(mark.pid);
+    gate.kill("SIGTERM");
+    const result = await exited;
+    // Checked here, before the finally block below kills any survivor.
+    const allStopped = await waitFor(() => pids.every((pid) => !isAlive(pid)), 5_000);
+    const homeRemoved = daemon !== undefined && !existsSync(daemon.home);
+    return { result, daemon, oneShot, output, allStopped, homeRemoved };
+  } finally {
+    if (gate.exitCode === null && gate.signalCode === null) gate.kill("SIGKILL");
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone, which is what the tests assert.
+      }
+    }
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(process.platform === "win32")("startup-modules gate interruption", () => {
+  test("SIGTERM during the one-shot stops the one-shot and the daemon before removing state", async () => {
+    const { result, daemon, oneShot, output, allStopped, homeRemoved } = await interruptGate(
+      false,
+      "one-shot.json",
+    );
+    expect(result.code, output).toBe(143);
+    expect(daemon).toBeDefined();
+    expect(oneShot).toBeDefined();
+    expect(oneShot!.nodeOptions).toMatch(/trace-hook\.mjs\?dir=/);
+    expect(daemon!.execArgv!.some((arg) => /trace-hook\.mjs\?dir=/.test(arg))).toBe(true);
+    expect(daemon!.nodeOptions).toBe("");
+    expect(allStopped).toBe(true);
+    expect(homeRemoved).toBe(true);
+  }, 60_000);
+
+  test("SIGTERM while the daemon is starting stops it and starts no one-shot", async () => {
+    const { result, daemon, oneShot, output, allStopped, homeRemoved } = await interruptGate(
+      true,
+      "daemon.json",
+    );
+    expect(result.code, output).toBe(143);
+    expect(daemon).toBeDefined();
+    expect(oneShot).toBeUndefined();
+    expect(allStopped).toBe(true);
+    expect(homeRemoved).toBe(true);
+  }, 60_000);
 });
