@@ -821,6 +821,8 @@ export class RolloutStore {
       cwd: opts.cwd,
       agencHome: this.store.agencHome,
       projectRootMarkers: opts.projectRootMarkers,
+      // Rollout authority uses state; open logs only if a caller needs them.
+      deferLogs: true,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);

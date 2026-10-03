@@ -704,6 +704,7 @@ export function buildBootstrapSessionServices(
     threadId: opts.conversationId,
   });
   const fileThreadStore = new FileThreadStore({
+    deferLogs: true,
     cwd: opts.workspaceRoot,
     agencHome: opts.agencHome,
     defaultModelProviderId: opts.providerName,
