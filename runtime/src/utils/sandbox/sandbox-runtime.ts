@@ -14,12 +14,9 @@ import type {
   SandboxDependencyCheck,
   SandboxRuntimeConfig,
   SandboxViolationEvent,
-} from '@anthropic-ai/sandbox-runtime'
-import {
-  SandboxManager as BaseSandboxManager,
-  SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
+import { loadSandboxManager } from './loadSandboxManager.js'
 import { rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
@@ -499,7 +496,7 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
 const checkDependencies = memoize((): SandboxDependencyCheck => {
   try {
     const settings = getCanonicalSettingsAuthority()?.current() ?? { configVersion: 2 }
-    return BaseSandboxManager.checkDependencies(sandboxRipgrep(settings))
+    return loadSandboxManager().checkDependencies(sandboxRipgrep(settings))
   } catch (error) {
     if (!(error instanceof RipgrepUnavailableError)) throw error
     return { errors: [error.message], warnings: [] }
@@ -534,7 +531,7 @@ function areUnsandboxedCommandsAllowed(): boolean {
  * Supports: macOS, Linux, and WSL2+ (WSL1 is not supported)
  */
 const isSupportedPlatform = memoize((): boolean => {
-  return BaseSandboxManager.isSupportedPlatform()
+  return loadSandboxManager().isSupportedPlatform()
 })
 
 /**
@@ -687,7 +684,7 @@ async function wrapWithSandbox(
     }
   }
 
-  return BaseSandboxManager.wrapWithSandbox(
+  return loadSandboxManager().wrapWithSandbox(
     command,
     binShell,
     customConfig,
@@ -741,13 +738,13 @@ async function initialize(
       const runtimeConfig = convertToSandboxRuntimeConfig(settings)
 
       // Log monitor is automatically enabled for macOS
-      await BaseSandboxManager.initialize(runtimeConfig, wrappedCallback)
+      await loadSandboxManager().initialize(runtimeConfig, wrappedCallback)
 
       // Subscribe to settings changes to update sandbox config dynamically
       settingsSubscriptionCleanup = settingsChangeDetector.subscribe(() => {
         const settings = getExecutionAuthoritySettings()
         const newConfig = convertToSandboxRuntimeConfig(settings)
-        BaseSandboxManager.updateConfig(newConfig)
+        loadSandboxManager().updateConfig(newConfig)
         logForDebugging('Sandbox configuration updated from settings change')
       })
     } catch (error) {
@@ -770,7 +767,7 @@ function refreshConfig(): void {
   if (!isSandboxingEnabled()) return
   const settings = getExecutionAuthoritySettings()
   const newConfig = convertToSandboxRuntimeConfig(settings)
-  BaseSandboxManager.updateConfig(newConfig)
+  loadSandboxManager().updateConfig(newConfig)
 }
 
 /**
@@ -789,7 +786,7 @@ async function reset(): Promise<void> {
   initializationPromise = undefined
 
   // Reset the base sandbox manager
-  return BaseSandboxManager.reset()
+  return loadSandboxManager().reset()
 }
 
 /**
@@ -890,10 +887,33 @@ export interface ISandboxManager {
   reset(): Promise<void>
 }
 
+// Resolve forwarded functions once on first access, preserving their identity and
+// the writable/configurable properties callers already receive from this facade.
+function withDeferredBaseMethods<T extends object, K extends keyof ReturnType<typeof loadSandboxManager>>(
+  target: T,
+  names: readonly K[],
+): T & Pick<ReturnType<typeof loadSandboxManager>, K> {
+  for (const name of names) {
+    Object.defineProperty(target, name, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        const value = loadSandboxManager()[name]
+        Object.defineProperty(this, name, { value, writable: true, enumerable: true, configurable: true })
+        return value
+      },
+      set(value) {
+        Object.defineProperty(this, name, { value, writable: true, enumerable: true, configurable: true })
+      },
+    })
+  }
+  return target as T & Pick<ReturnType<typeof loadSandboxManager>, K>
+}
+
 /**
  * AgenC CLI sandbox manager - wraps sandbox-runtime with AgenC-specific features
  */
-export const SandboxManager: ISandboxManager = {
+export const SandboxManager: ISandboxManager = withDeferredBaseMethods({
   // Custom implementations
   initialize,
   isSandboxingEnabled,
@@ -907,30 +927,28 @@ export const SandboxManager: ISandboxManager = {
   refreshConfig,
   reset,
   checkDependencies,
-
-  // Forward to base sandbox manager
-  getFsReadConfig: BaseSandboxManager.getFsReadConfig,
-  getFsWriteConfig: BaseSandboxManager.getFsWriteConfig,
-  getNetworkRestrictionConfig: BaseSandboxManager.getNetworkRestrictionConfig,
-  getIgnoreViolations: BaseSandboxManager.getIgnoreViolations,
   getLinuxGlobPatternWarnings,
   isSupportedPlatform,
-  getAllowUnixSockets: BaseSandboxManager.getAllowUnixSockets,
-  getAllowLocalBinding: BaseSandboxManager.getAllowLocalBinding,
-  getEnableWeakerNestedSandbox: BaseSandboxManager.getEnableWeakerNestedSandbox,
-  getProxyPort: BaseSandboxManager.getProxyPort,
-  getSocksProxyPort: BaseSandboxManager.getSocksProxyPort,
-  getLinuxHttpSocketPath: BaseSandboxManager.getLinuxHttpSocketPath,
-  getLinuxSocksSocketPath: BaseSandboxManager.getLinuxSocksSocketPath,
-  waitForNetworkInitialization: BaseSandboxManager.waitForNetworkInitialization,
-  getSandboxViolationStore: BaseSandboxManager.getSandboxViolationStore,
-  annotateStderrWithSandboxFailures:
-    BaseSandboxManager.annotateStderrWithSandboxFailures,
   cleanupAfterCommand: (): void => {
-    BaseSandboxManager.cleanupAfterCommand()
+    loadSandboxManager().cleanupAfterCommand()
     scrubBareGitRepoFiles()
   },
-}
+}, [
+  'getFsReadConfig',
+  'getFsWriteConfig',
+  'getNetworkRestrictionConfig',
+  'getIgnoreViolations',
+  'getAllowUnixSockets',
+  'getAllowLocalBinding',
+  'getEnableWeakerNestedSandbox',
+  'getProxyPort',
+  'getSocksProxyPort',
+  'getLinuxHttpSocketPath',
+  'getLinuxSocksSocketPath',
+  'waitForNetworkInitialization',
+  'getSandboxViolationStore',
+  'annotateStderrWithSandboxFailures',
+])
 
 // ============================================================================
 // Re-export types from sandbox-runtime
@@ -948,4 +966,7 @@ export type {
   IgnoreViolationsConfig,
 }
 
-export { SandboxViolationStore, SandboxRuntimeConfigSchema }
+// These are the same leaf exports as the package root, without its manager's
+// eager MITM imports. The pinned package ships these paths without an exports map.
+export { SandboxViolationStore } from '@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-violation-store.js'
+export { SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-config.js'
