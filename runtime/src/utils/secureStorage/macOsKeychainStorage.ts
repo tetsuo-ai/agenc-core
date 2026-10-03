@@ -1,4 +1,4 @@
-import { execa, execaSync } from "execa";
+import { loadExeca } from "../loadExeca.js";
 import { dirname, isAbsolute } from "node:path";
 import { jsonStringify } from "../slowOperations.js";
 import {
@@ -230,6 +230,7 @@ async function doReadAsync(
 ): Promise<SecureStorageData | null> {
   let result;
   try {
+    const { execa } = await import("execa");
     result = await execa(executable, ["read", storageServiceName, username], {
       cwd: dirname(executable),
       reject: false,
@@ -278,6 +279,7 @@ export function isMacOsKeychainLocked(): boolean {
   }
 
   try {
+    const { execaSync } = loadExeca();
     const result = execaSync(MACOS_SECURITY_PATH, ["show-keychain-info"], {
       reject: false,
       stdio: ["ignore", "pipe", "pipe"],
