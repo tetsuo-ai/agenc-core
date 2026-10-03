@@ -76,11 +76,13 @@ export function lightPresentation(tool: LLMTool, options: { readonly leanExec?: 
  * The exec_command fields a Light session sees until it asks for more. GPT models write every
  * presented field on every call (on GPT-6 Luna the other fields were about 13 percent of the
  * input per task), so the rest load through system.searchTools (select:exec_command), after which
- * the session sees the full schema. Execution accepts every field either way.
+ * the session sees the full schema. Execution accepts every field either way. yield_time_ms is
+ * among the rest: shown, GPT models set it to 1000 for test runs, so a Go test still compiling
+ * after 1 s yielded and cost a write_stdin call; omitted, Light's 30 s default applies.
  */
-const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs", "yield_time_ms"]);
+const LEAN_EXEC_FIELDS: ReadonlySet<string> = new Set(["cmd", "workdir", "timeoutMs"]);
 const LEAN_EXEC_POINTER =
-  " Advanced fields (tty, login, shell, detach, max_output_tokens, sandbox escalation) are accepted; system.searchTools select:exec_command loads their schema.";
+  " Advanced fields (yield_time_ms, tty, login, shell, detach, max_output_tokens, sandbox escalation) are accepted; system.searchTools select:exec_command loads their schema.";
 
 function lightPresentationCanonical(tool: LLMTool): LLMTool {
   const description = descriptions[tool.function.name];

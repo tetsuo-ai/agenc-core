@@ -64,6 +64,7 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
+import { getPermissionsSection } from "./permissions-prompt.js";
 
 // Minimal TurnContext + Session stubs — only the fields the assembler reads.
 function fakeCtx(overrides?: Partial<TurnContext>): TurnContext {
@@ -1389,14 +1390,20 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     const standard = await assembleSystemPromptSnapshot({ ...options, session: { services: { runtimeOptions: { nonInteractive: true } } } as unknown as Session, profile: "standard" });
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length);
-    // Light already abbreviates Environment and omits the generic token-budget
-    // tutorial. Every other dynamic section, including authority, stays exact.
+    // Light abbreviates Environment and the permission section and omits the
+    // generic token-budget tutorial. Every other dynamic section stays exact.
     const tailSections = (snapshot: typeof light) => snapshot.sections
       .slice(snapshot.sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) + 1)
       .filter(section => !section.startsWith("# Environment") &&
         !section.startsWith("Workspace:") &&
+        !section.startsWith("# Permission Mode: ") &&
+        !section.startsWith("Permission mode: ") &&
         !section.startsWith("When the user specifies a token target"));
     expect(tailSections(light)).toEqual(tailSections(standard));
+    const authority = { sandboxPolicy: options.ctx.sandboxPolicy.value, networkSandboxPolicy: options.ctx.networkSandboxPolicy };
+    expect(light.sections).toContain(getPermissionsSection(options.permissionContext, authority, { light: true }));
+    expect(standard.sections).toContain(getPermissionsSection(options.permissionContext, authority));
+    expect(light.text).not.toContain("# Permission Mode");
     for (const rule of [
       "Local reversible work needs no confirmation",
       "Confirm risky, destructive, irreversible or shared/public/external actions unless authorized for that scope",
