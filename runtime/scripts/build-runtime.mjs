@@ -151,6 +151,16 @@ async function main() {
   ensureSdkWorkspaceBuilt();
   const config = normalizeConfig(await loadConfig());
   await runBundle(config);
+  const nativeBuild = spawnSync(
+    process.execPath,
+    [resolve(distDir, "bin/prepare-peer-credentials.js"), "--build"],
+    { cwd: runtimeRoot, stdio: "inherit" },
+  );
+  if (nativeBuild.error !== undefined || nativeBuild.status !== 0) {
+    throw new Error("peer credential native binding build failed", {
+      cause: nativeBuild.error,
+    });
+  }
   runDeclarations();
 }
 

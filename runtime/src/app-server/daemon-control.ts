@@ -308,6 +308,11 @@ export interface AgenCDaemonCliHost {
   spawnDetachedDaemon(env: NodeJS.ProcessEnv): number;
   /** Exact child capability retained only for this detached start invocation. */
   cancelSpawnedDaemon?(pid: number): Promise<void> | void;
+  /** Readiness hint for this exact owned child; never replaces instance proof. */
+  waitSpawnedDaemonReady?(
+    pid: number,
+    timeoutMs: number,
+  ): Promise<"ready" | "closed" | "timeout"> | undefined;
   releaseSpawnedDaemonControl?(pid: number): void;
   /** Internal child-side endpoint for parent-requested startup cancellation. */
   readonly startupGuardReceiver?: AgenCDaemonStartupGuardReceiver;
@@ -1153,8 +1158,9 @@ export async function isAgenCDaemonControlSocketReady(
 
 
 /**
- * Polls {@link isAgenCDaemonControlSocketReady} until it observes readiness or
- * the bounded timeout elapses. Uses `host.sleep` so tests can drive the clock.
+ * Waits for an owned child's IPC hint, then checks its control socket. Hosts
+ * without that capability retain bounded polling. IPC time counts against the
+ * same budget. Uses `host.sleep` so tests can drive the fallback clock.
  * When `singleShot` is true, the readiness is checked exactly once with no
  * polling (used by `status`, which must not block on a slow/absent socket).
  */
@@ -1170,6 +1176,10 @@ export async function defaultWaitForAgenCDaemonReady(
   }
   const startedAt = Date.now();
   const timeoutMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+  const hint = await host.waitSpawnedDaemonReady?.(pid, timeoutMs);
+  if (hint === "ready" && await isAgenCDaemonControlSocketReady(host, pid)) {
+    return true;
+  }
   while (Date.now() - startedAt < timeoutMs) {
     if (await isAgenCDaemonControlSocketReady(host, pid)) return true;
     if (!host.isPidRunning(pid)) return false;
@@ -3263,12 +3273,17 @@ export function createNodeDaemonCliHost(
       spawnedStartupGuards.set(childPid, { child, controller });
       const forgetGuard = (): void => {
         const current = spawnedStartupGuards.get(childPid);
-        if (current?.child === child) spawnedStartupGuards.delete(childPid);
+        if (current?.child === child) {
+          controller.close();
+          spawnedStartupGuards.delete(childPid);
+        }
       };
       child.once("exit", forgetGuard);
       child.once("error", forgetGuard);
       return childPid;
     },
+    waitSpawnedDaemonReady: (pid, timeoutMs) =>
+      spawnedStartupGuards.get(pid)?.controller.waitUntilReady(timeoutMs),
     cancelSpawnedDaemon: async (pid) => {
       const guard = spawnedStartupGuards.get(pid);
       if (guard === undefined) {

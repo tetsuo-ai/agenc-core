@@ -19,6 +19,7 @@ const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
   'src/bin/agenc-main.ts',
+  'src/bin/prepare-peer-credentials.ts',
   'src/bin/tui-trust-prompt.tsx',
   'src/memory/memory-query-helper.mjs',
   'src/sandbox/linux-launcher/main.ts',
