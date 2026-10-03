@@ -1,3 +1,4 @@
+import { selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * Starts daemon-owned background agents through the existing delegate runtime.
  *
@@ -522,8 +523,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // A routine run is marked in its immutable runtime options, so the shell
     // sandbox, the dispatch path and MCP questions can tell it apart without
     // reading permission state that changes or is fenced mid-run.
-    const runtimeOptions = routineRun
-      ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+    const runtimeOptions = routineRun || params.runtimeOptions?.relaxedOneShot !== undefined
+      ? Object.freeze({
+          ...params.runtimeOptions,
+          ...(routineRun ? { routineRun: true } : {}),
+          ...(params.runtimeOptions?.relaxedOneShot !== undefined ? {
+            relaxedOneShot: selectRelaxedOneShot({ requested: params.runtimeOptions.relaxedOneShot,
+              nonInteractive: params.runtimeOptions.nonInteractive, source: params.metadata?.source,
+              mode: params.metadata?.mode, routine: routineRun || params.runtimeOptions.routineRun === true,
+              goal: params.metadata?.goalRun === true }),
+          } : {}),
+        })
       : params.runtimeOptions;
     // Bootstrap runs helper code that resolves the runtime-options
     // authority ambiently. With a second live session in this process the
@@ -1049,8 +1059,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           params.envOverrides,
         );
         // A restored routine run stays marked as one (see startAgent).
-        const restoreRuntimeOptions = isRoutineRun(params.metadata)
-          ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+        const restoreRuntimeOptions = isRoutineRun(params.metadata) || params.runtimeOptions?.relaxedOneShot !== undefined
+          ? Object.freeze({
+              ...params.runtimeOptions,
+              ...(params.runtimeOptions?.relaxedOneShot !== undefined ? { relaxedOneShot: false } : {}),
+              ...(isRoutineRun(params.metadata) ? { routineRun: true } : {}),
+            })
           : params.runtimeOptions;
         // Same ambient-authority scope as first start: restores also run
         // bootstrap helpers outside any session context.

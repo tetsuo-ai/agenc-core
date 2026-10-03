@@ -6186,6 +6186,32 @@ describe("AgenC delegate background-agent runner", () => {
     expect(argv).not.toContain("--allow-dangerously-skip-permissions");
   });
 
+  it.each([
+    { name: "fresh print", metadata: { source: "agenc.prompt", mode: "one-shot" }, expected: true },
+    { name: "Desktop", metadata: { source: "desktop", mode: "one-shot" }, expected: false },
+    { name: "interactive", metadata: { source: "agenc.prompt", mode: "tui" }, expected: false },
+    { name: "routine", metadata: { source: "agenc.prompt", mode: "one-shot", routineId: "routine", routineRunId: "tick" }, expected: false },
+    { name: "goal", metadata: { source: "agenc.prompt", mode: "one-shot", goalRun: true }, expected: false },
+  ])("isolates print durability selection for $name", async ({ metadata, expected }) => {
+    const { runner, bootstrap } = makeTopLevelRunner({ conversationId: "durability-policy-session" });
+    await runner.startAgent({ objective: "work", metadata,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }) });
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeOptions: expect.objectContaining({ relaxedOneShot: expected }),
+    }));
+  });
+
+  it("forces restored print runs back to full durability", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({ conversationId: "durability-restored-session" });
+    expect(await runner.restoreAgent({ agentId: "durability-restored-session", objective: "resume",
+      metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }),
+    })).toBe(true);
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({ resumeConversation: true,
+      runtimeOptions: expect.objectContaining({ relaxedOneShot: false }),
+    }));
+  });
+
   it("forwards combined dangerous authority only through runtime options", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "dangerous-runtime-options-bootstrap-session",

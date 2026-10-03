@@ -1,3 +1,4 @@
+import { selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -1035,6 +1036,14 @@ export class AgenCDaemonAgentManager {
           (requestedRuntimeOptions.lightMode !== undefined ? false : undefined);
       const runtimeOptions = Object.freeze({
         ...requestedRuntimeOptions,
+        ...(requestedRuntimeOptions.relaxedOneShot !== undefined ? { relaxedOneShot: selectRelaxedOneShot({
+          requested: requestedRuntimeOptions.relaxedOneShot,
+          nonInteractive: requestedRuntimeOptions.nonInteractive,
+          source: params.metadata?.source, mode: params.metadata?.mode,
+          resumed: resumeSessionId !== undefined,
+          routine: requestedRuntimeOptions.routineRun === true || params.metadata?.routineRunId !== undefined,
+          goal: params.metadata?.goalRun === true,
+        }) } : {}),
         // A cold resume restores its presentation profile. A new caller's
         // default must not silently turn a Light conversation into Normal.
         ...(retainedLightMode !== undefined

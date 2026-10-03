@@ -611,6 +611,8 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
     readonly nonInteractive?: boolean;
     /** Skip the completion checklist for an explicit machine-readable output contract. */
     readonly exactOutput?: boolean;
+    /** Fresh print-run request only; the daemon rechecks eligibility. */
+    readonly relaxedOneShot?: boolean;
     readonly stdinDataMode: boolean;
     readonly remoteMode: boolean;
     readonly remoteMemoryRoot?: string;

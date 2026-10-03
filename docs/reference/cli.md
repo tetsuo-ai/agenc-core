@@ -48,6 +48,7 @@ From `formatCliHelpText()`:
 | `-h`, `--help` | Show top-level help |
 | `--version` | Print `agenc <version>` |
 | `-p`, `--print` | Headless one-shot print mode |
+| `--full-durability` | Keep per-write durable syncing in fresh one-shot print runs |
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--deadline <+seconds\|ISO-8601>` | Print mode: the instant the run must end by, as `+<seconds>` from now or an ISO 8601 time with a zone. See the print-mode notes. |
@@ -1079,3 +1080,22 @@ its working directory.
 - Documentation map: [`../INDEX.md`](../INDEX.md)
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Product README: [`../../README.md`](../../README.md)
+
+### Print-mode durability
+
+Fresh, noninteractive one-shot print runs use buffered canonical appends and
+run-scoped SQLite `NORMAL` transactions by default. A process crash ordinarily
+preserves page-cache bytes; a host crash or power loss can lose the unsynced
+suffix. Interactive, Desktop, routine, goal, child-agent, and resumed (`-c` or
+`--resume`) sessions keep full syncing. Use `agenc -p --full-durability "…"`
+to opt out for a fresh print run. Starting a goal or spawning an agent first
+promotes the current run to full durability.
+
+Before buffered work begins, AgenC durably marks its canonical history as
+incomplete. A clean close syncs the canonical file and SQLite WAL, then seals
+its exact length and hash. Continuing an incomplete run or a history that no
+longer matches its seal fails closed and preserves the evidence for review.
+This includes loss of complete JSONL rows: uncertain effects are never silently
+replayed as new work. A killed process can therefore require review even when
+its page-cache bytes survived. A verified clean run can be continued with full
+syncing.
