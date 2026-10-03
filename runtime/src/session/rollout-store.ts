@@ -3731,8 +3731,9 @@ export class RolloutStore {
         if (projectDir === rootProjectDir || !lstatSync(projectDir).isDirectory()) continue;
         const stateDbPath = join(projectDir, STATE_DATABASE_FILENAME);
         const logsDbPath = join(projectDir, LOGS_DATABASE_FILENAME);
-        if (!existsSync(stateDbPath) || !existsSync(logsDbPath)) continue;
-        const reader = new StateSqliteReader({ projectDir, stateDbPath, logsDbPath });
+        if (!existsSync(stateDbPath)) continue;
+        const reader = new StateSqliteReader(
+          { projectDir, stateDbPath, logsDbPath }, { deferLogs: true });
         try {
           const epoch = reader.prepareState<[string], { epoch: number }>(
             `SELECT epoch FROM run_lifecycle_epochs WHERE run_id = ? ORDER BY epoch DESC LIMIT 1`,

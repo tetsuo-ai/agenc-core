@@ -245,9 +245,9 @@ export class StateSqliteReader {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
-  readonly logs: SqliteDatabase;
+  #logs: SqliteDatabase | undefined;
 
-  constructor(paths: StateDatabasePaths) {
+  constructor(paths: StateDatabasePaths, options: StateSqliteDriverOptions = {}) {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
@@ -255,12 +255,30 @@ export class StateSqliteReader {
       readonly: true,
       fileMustExist: true,
     });
-    this.logs = new Database(paths.logsDbPath, {
-      readonly: true,
-      fileMustExist: true,
-    });
-    configureReadOnlyDatabase(this.state);
-    configureReadOnlyDatabase(this.logs);
+    try {
+      configureReadOnlyDatabase(this.state);
+      if (options.deferLogs !== true) this.#logs = this.openLogs();
+    } catch (error) {
+      if (this.state.open) this.state.close();
+      throw error;
+    }
+  }
+
+  get logs(): SqliteDatabase {
+    if (this.#logs !== undefined) return this.#logs;
+    if (!this.state.open) throw new Error("cannot open logs on a closed state reader");
+    return this.#logs = this.openLogs();
+  }
+
+  private openLogs(): SqliteDatabase {
+    const logs = new Database(this.logsDbPath, { readonly: true, fileMustExist: true });
+    try {
+      configureReadOnlyDatabase(logs);
+      return logs;
+    } catch (error) {
+      if (logs.open) logs.close();
+      throw error;
+    }
   }
 
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
@@ -277,7 +295,7 @@ export class StateSqliteReader {
 
   close(): void {
     if (this.state.open) this.state.close();
-    if (this.logs.open) this.logs.close();
+    if (this.#logs?.open) this.#logs.close();
   }
 }
 
@@ -315,13 +333,14 @@ export function openStateDatabaseReader(
   options: OpenStateDatabaseOptions,
 ): StateSqliteReader {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePathReader(paths);
+  return openStateDatabasePathReader(paths, options);
 }
 
 export function openStateDatabasePathReader(
   paths: StateDatabasePaths,
+  options: StateSqliteDriverOptions = {},
 ): StateSqliteReader {
-  return new StateSqliteReader(paths);
+  return new StateSqliteReader(paths, options);
 }
 
 export function discoverStateDatabasePaths(
