@@ -106,12 +106,16 @@ export function inspectReadOnlyCommand(toolName: string, input: unknown, cwd: st
   if (requestedCwd !== undefined && typeof requestedCwd !== "string") return refusal("working directory must be a string");
   const workdir = resolve(cwd, requestedCwd as string | undefined ?? ".");
   if (options.enforceWorkspaceBoundary !== false && !inside(workdir, resolve(cwd))) return refusal("the working directory must remain inside the assigned project");
+  // Every positional operand can name a file the command reads. Git operands
+  // before `--` are usually revisions, but `git diff <path> <path>` compares
+  // files outside the repository as an implicit --no-index, so they are
+  // checked as paths too (a revision resolves inside the workdir).
   let paths = positional;
-  if (command === "git") {
-    const separator = operands.indexOf("--");
-    paths = separator >= 0 ? operands.slice(separator + 1) : configKey === "git ls-files" ? positional : [];
-  } else if (command === "grep" || command === "rg") {
-    const explicitPattern = operands.some((argument) => argument === "-e" || argument === "--regexp" || argument.startsWith("--regexp="));
+  if (command === "grep" || command === "rg") {
+    // The pattern is the first positional unless an option supplies it. That
+    // option can be separate (`-e x`) or attached (`-ex`, `-e=x`, `--regexp=x`);
+    // missing an attached spelling would drop the first FILE operand.
+    const explicitPattern = commandOptions.some((argument) => /^-e/u.test(argument) || /^--regexp(?:=|$)/u.test(argument));
     if (!explicitPattern && !operands.includes("--files")) paths = positional.slice(1);
   }
   const readPaths = [workdir, ...paths.filter((operand) => operand !== "-").map((operand) => resolve(workdir, operand))];
