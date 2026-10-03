@@ -1,3 +1,4 @@
+import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
 import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
@@ -6199,6 +6200,22 @@ describe("AgenC delegate background-agent runner", () => {
     expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
       runtimeOptions: expect.objectContaining({ relaxedOneShot: expected }),
     }));
+  });
+
+  it("promotes a still-live print runtime before accepting a continuation", async () => {
+    const id = "live-print-continuation";
+    const { runner, control } = makeTopLevelRunner({ conversationId: id });
+    await runner.startAgent({ objective: "work", initialContent: [],
+      metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }) });
+    const promote = vi.spyOn(oneShotDurability, "promoteOneShotRun").mockImplementation(() => { throw new Error("checkpoint blocked"); });
+    try {
+      await expect(runner.submitAgentMessage(id, { sessionId: id, content: "continue", originalContent: "continue",
+        messageId: "continue", acceptedAt: "2026-10-03T00:00:00Z", streamId: "continue", ifBusy: "reject" }))
+        .rejects.toThrow("checkpoint blocked");
+      expect(promote).toHaveBeenCalledWith(id);
+      expect(control.sendInput).not.toHaveBeenCalled();
+    } finally { promote.mockRestore(); }
   });
 
   it("forces restored print runs back to full durability", async () => {

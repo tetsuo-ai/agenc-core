@@ -1,4 +1,4 @@
-import { selectRelaxedOneShot } from "../durability/one-shot-durability.js";
+import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -1787,6 +1787,12 @@ export class AgenCDaemonAgentManager {
         "INVALID_ARGUMENT",
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
       );
+    }
+    if (params.oneShotOutput !== true) {
+      promoteOneShotRun(target.agentId);
+      if (runtimeOptions.relaxedOneShot !== undefined) {
+        runtimeOptions = Object.freeze({ ...runtimeOptions, relaxedOneShot: false });
+      }
     }
     // A daemon restart restores the records of a run whose runtime it could
     // not bring back, for example a provider whose credential only the client

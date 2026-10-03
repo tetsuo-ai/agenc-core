@@ -2049,6 +2049,8 @@ describe("main() smoke", () => {
       expect(await run(() => oneShotCLI("work", [], { fullDurability }), 4000)).toBe(0);
       expect(daemon.requests.find(request => request.method === "agent.create")?.params)
         .toMatchObject({ runtimeOptions: { nonInteractive: true, relaxedOneShot: !fullDurability } });
+      expect(daemon.requests.find(request => request.method === "agent.attach")?.params)
+        .toMatchObject({ oneShotOutput: true });
     });
   });
 

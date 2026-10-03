@@ -2514,6 +2514,7 @@ async function runDaemonOneShotPrompt(params: {
       "agent.attach",
       {
         agentId: started.agentId,
+        oneShotOutput: true,
         clientId: `agenc-one-shot-${process.pid}`,
       },
       { signal: params.signal },

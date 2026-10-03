@@ -1,3 +1,4 @@
+import { promoteOneShotRun } from "../durability/one-shot-durability.js";
 import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
 /**
  * JSON-RPC request dispatcher for the local AgenC daemon.
@@ -2011,6 +2012,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       return methodNotImplementedResponse(id, "session.attach");
     }
     const attachParams = validateSessionAttachParams(params);
+    const attachedSession = await this.#sessionManager.getSession(attachParams.sessionId);
+    if (attachedSession !== null) promoteOneShotRun(attachedSession.agentId);
     const multiplexedResult = await this.#attachTrackedClientToSession(
       connection,
       attachParams.clientId,
@@ -3080,6 +3083,7 @@ function validateAgentAttachParams(params: JsonObject): AgentAttachParams {
   const validated = validateObjectShape(params, {
     methodName: "agent.attach",
     stringFields: ["agentId", "clientId"],
+    booleanFields: ["oneShotOutput"],
   });
   if (
     typeof validated.agentId !== "string" ||

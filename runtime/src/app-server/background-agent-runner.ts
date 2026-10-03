@@ -1,4 +1,4 @@
-import { selectRelaxedOneShot } from "../durability/one-shot-durability.js";
+import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * Starts daemon-owned background agents through the existing delegate runtime.
  *
@@ -2139,6 +2139,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    // The fresh print turn is submitted by startAgent. Any later message is a
+    // continuation, including -c attaching to a still-live one-shot runtime.
+    promoteOneShotRun(agentId);
     const contentFingerprint = messageContentFingerprint(
       params.originalContent,
     );
