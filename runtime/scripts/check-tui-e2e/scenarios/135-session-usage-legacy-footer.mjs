@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { stripAnsi } from "../harness.mjs";
 import { waitForFrameText } from "../helpers/frame.mjs";
 
 export const meta = {
@@ -9,8 +10,29 @@ export const meta = {
   args: [],
   env: { AGENC_TUI_WORKBENCH: "0" },
   slimCwd: true,
+  // The daemon runs the status-line command through the session sandbox. A
+  // host without a usable sandbox (a Linux container without bubblewrap)
+  // refuses it with sandbox_policy_unexpressible and the footer stays blank,
+  // so pin full access like the other command-running scenarios. This
+  // scenario checks the usage the command receives, not the sandbox.
+  sandboxMode: "danger-full-access",
   timeoutMs: 90_000,
 };
+
+// The footer notice for a status line the daemon refused or failed to run
+// (daemonStatusLineNotice in src/tui/startup/StatusLine.tsx). The notice is
+// transient, so read it from the whole PTY stream. Ink draws some of its
+// spaces as cursor-forward moves; turn those back into spaces, and stop at
+// the box-drawing characters of the chrome painted next to it.
+const STATUS_LINE_NOTICE =
+  /status\s*line\s*command\s*(?:blocked|failed|timed\s*out|is\s*not\s*supported)[^\n\u2500-\u257f]{0,200}/u;
+
+function statusLineNotice(session) {
+  const text = stripAnsi(
+    session.raw.replace(/\x1b\[(\d*)C/gu, (_, count) => " ".repeat(Number(count || 1))),
+  );
+  return STATUS_LINE_NOTICE.exec(text)?.[0].trim();
+}
 
 export default async function (session) {
   const configPath = join(session.gateState.agencHome, "config.toml");
@@ -73,12 +95,18 @@ export default async function (session) {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
   };
-  await waitForFrameText(
-    session,
-    new RegExp(`STATUS_HOOK_135_OK_${usage.outputTokens}\\b`, "u"),
-    "the custom status-line command with canonical output tokens",
-    15_000,
-  );
+  try {
+    await waitForFrameText(
+      session,
+      new RegExp(`STATUS_HOOK_135_OK_${usage.outputTokens}\\b`, "u"),
+      "the custom status-line command with canonical output tokens",
+      15_000,
+    );
+  } catch (error) {
+    const notice = statusLineNotice(session);
+    if (notice === undefined) throw error;
+    throw new Error(`the status-line command did not render; the footer reported: ${notice}`, { cause: error });
+  }
   const receipts = (await readFile(receiptPath, "utf8"))
     .split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(receipts.some((receipt) => {
