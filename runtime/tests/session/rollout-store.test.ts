@@ -40,12 +40,11 @@ import { getProjectDir, getSessionDir } from "./session-store.js";
 
 const TEST_RUN_TIMESTAMP = "2026-08-03T00:00:00.000Z";
 /**
- * The two disk registries a validated rollout prefix owns while it is held. A
+ * The identity registry a plain rollout prefix owns while it is held. A
  * store holds one prefix per shape of bookkeeping question, up to the
  * scanner's own limit of two.
  */
 const scanRegistryEntries = [
-  expect.stringMatching(/^agenc-c2-payloads-/u),
   expect.stringMatching(/^agenc-recovery-identities-/u),
 ];
 
@@ -329,14 +328,12 @@ describe("RolloutStore temporary authority", () => {
       // history, so it cannot answer from the prefix that does not.
       store.prepareSource("prefix-lifetime-attempt", []);
       expect(readdirSync(root).sort()).toEqual([
-        expect.stringMatching(/^agenc-c2-payloads-/u),
-        expect.stringMatching(/^agenc-c2-payloads-/u),
         expect.stringMatching(/^agenc-recovery-identities-/u),
         expect.stringMatching(/^agenc-recovery-identities-/u),
       ]);
 
       store.prepareSource("prefix-lifetime-attempt-2", []);
-      expect(readdirSync(root)).toHaveLength(4);
+      expect(readdirSync(root)).toHaveLength(2);
     } finally {
       store?.close();
       rmSync(cwd, { recursive: true, force: true });
