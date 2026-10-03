@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -16,6 +15,7 @@ import {
 } from "./config-menu.js";
 import { ConfigStore } from "../config/store.js";
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
+import { canonicalTmpdir } from "../helpers/canonical-temp-dir.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -197,8 +197,13 @@ describe("config menu snapshot", () => {
         dev: { model: "grok-dev" },
       },
     });
-    const snapshot = readConfigMenuSnapshot(stubCtx({ configStore: store }));
-    expect(snapshot.configPath).toBe("/home/test/.agenc/config.toml");
+    // AgenC homes resolve to their real path. macOS reaches /home and /tmp
+    // through symlinks, so this home sits under the canonical temp directory.
+    const agencHome = join(canonicalTmpdir(), "agenc-home");
+    const snapshot = readConfigMenuSnapshot(
+      stubCtx({ configStore: store, agencHome }),
+    );
+    expect(snapshot.configPath).toBe(join(agencHome, "config.toml"));
     expect(
       snapshot.rows.some(
         row => row.key === "session model" && row.value === "grok-4-fast",
@@ -282,7 +287,7 @@ describe("configCommand — get", () => {
 
 describe("configCommand — reload", () => {
   it("calls ConfigStore.reload and reports the new model", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -299,7 +304,7 @@ describe("configCommand — reload", () => {
   });
 
   it("refreshes MCP after reload when the session service is wired", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -325,7 +330,7 @@ describe("configCommand — reload", () => {
   });
 
   it("ignores array-shaped MCP manager services after reload", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -352,7 +357,7 @@ describe("configCommand — reload", () => {
   });
 
   it("re-applies the reloaded config to the daemon and folds in its summary", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -381,7 +386,7 @@ describe("configCommand — reload", () => {
   });
 
   it("does NOT call the daemon forwarder on reload for the in-process path", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -400,7 +405,7 @@ describe("configCommand — reload", () => {
   });
 
   it("returns an error when the daemon reload apply fails", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -427,7 +432,7 @@ describe("configCommand — reload", () => {
   });
 
   it("reports MCP refresh failure after config reload", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
@@ -454,7 +459,7 @@ describe("configCommand — reload", () => {
   });
 
   it("rejects invalid canonical config during reload", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(
         join(tmp, "config.toml"),
@@ -671,22 +676,23 @@ describe("configCommand — profile", () => {
 describe("configCommand — path", () => {
   it("prints the config.toml path under ctx.agencHome when provided", async () => {
     const store = makeStore();
+    const agencHome = join(canonicalTmpdir(), "my-agenc");
     const r = await configCommand.execute(
       stubCtx({
         configStore: store,
         argsRaw: "path",
         home: "/home/alice",
-        agencHome: "/tmp/my-agenc",
+        agencHome,
       }),
     );
     if (r.kind !== "text") throw new Error("expected text");
-    expect(r.text).toBe("/tmp/my-agenc/config.toml");
+    expect(r.text).toBe(join(agencHome, "config.toml"));
   });
 });
 
 describe("configCommand — edit", () => {
   it("spawns the editor when config.toml exists and returns success", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(
         join(tmp, "config.toml"),
@@ -715,7 +721,7 @@ describe("configCommand — edit", () => {
   });
 
   it("edit on missing config.toml uses a private canonical snapshot", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       const spawner = vi.fn().mockResolvedValue(0);
       const cmd = createConfigCommand({
@@ -738,7 +744,7 @@ describe("configCommand — edit", () => {
   });
 
   it("edit reports an error when the editor exits non-zero", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    const tmp = mkdtempSync(join(canonicalTmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(join(tmp, "config.toml"), "config_version = 2\n");
       const spawner = vi.fn().mockResolvedValue(2);

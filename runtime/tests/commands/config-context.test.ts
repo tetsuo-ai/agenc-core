@@ -1,6 +1,8 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
+import { canonicalTmpdir } from "../helpers/canonical-temp-dir.js";
 import {
   agencHomeFromCommandContext,
   configStoreFromCommandContext,
@@ -94,23 +96,28 @@ describe("readCommandConfig", () => {
 });
 
 describe("command config paths", () => {
+  // AgenC homes resolve to their real path. macOS reaches /tmp and /home
+  // through symlinks, so these homes sit under the canonical temp directory.
   it("prefers an explicit AgenC home from the command context", () => {
-    const ctx = contextWithStores({ agencHome: "/tmp/agenc-home" });
+    const agencHome = join(canonicalTmpdir(), "agenc-home");
+    const ctx = contextWithStores({ agencHome });
 
-    expect(agencHomeFromCommandContext(ctx)).toBe("/tmp/agenc-home");
+    expect(agencHomeFromCommandContext(ctx)).toBe(agencHome);
   });
 
   it("falls back to $HOME/.agenc when the command context has no AgenC home", () => {
-    const ctx = contextWithStores({ home: "/home/alice" });
+    const home = join(canonicalTmpdir(), "alice");
+    const ctx = contextWithStores({ home });
 
-    expect(agencHomeFromCommandContext(ctx)).toBe("/home/alice/.agenc");
+    expect(agencHomeFromCommandContext(ctx)).toBe(join(home, ".agenc"));
   });
 
   it("builds config.toml paths from command contexts and raw homes", () => {
-    const ctx = contextWithStores({ agencHome: "/tmp/agenc-home" });
+    const agencHome = join(canonicalTmpdir(), "agenc-home");
+    const ctx = contextWithStores({ agencHome });
 
     expect(configFilePathFromCommandContext(ctx)).toBe(
-      "/tmp/agenc-home/config.toml",
+      join(agencHome, "config.toml"),
     );
     expect(getConfigFilePath("/home/alice/.agenc")).toBe(
       "/home/alice/.agenc/config.toml",
