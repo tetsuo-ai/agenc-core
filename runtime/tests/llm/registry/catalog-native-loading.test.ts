@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { build } from 'esbuild'
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 
@@ -20,7 +20,7 @@ test('native bundled startup selection works without full rows; first full looku
       format: 'esm', platform: 'node', packages: 'external',
       // Match production's jsonc-parser bundling: its published ESM internals
       // have extensionless imports and cannot execute as native external ESM.
-      alias: { 'jsonc-parser': createRequire(import.meta.url).resolve('jsonc-parser/lib/esm/main.js') },
+      alias: { 'jsonc-parser': dirname(createRequire(import.meta.url).resolve('jsonc-parser/package.json')) },
     })
     await copyFile('src/llm/registry/openrouter-pricing.data.json', join(directory, 'openrouter-pricing.data.json'))
     const control = join(directory, 'control.mjs')
