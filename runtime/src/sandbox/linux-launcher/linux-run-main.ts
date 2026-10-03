@@ -44,7 +44,7 @@ import {
   hasFullDiskReadAccess,
   permissionProfileToRuntimePermissions,
   restrictedFileSystemPolicy,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 
 const ACTIVE_INNER_ENV = "AGENC_LINUX_SANDBOX_ACTIVE";
 
