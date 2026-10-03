@@ -4,7 +4,6 @@ import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
 import {
-  createAxiosInstance,
   getNoProxy,
   getProxyUrl,
   shouldBypassProxy,
@@ -205,6 +204,7 @@ export async function execHttpHook(
       logForDebugging(`Hooks: HTTP hook POST to ${hook.url}`)
     }
 
+    const { createAxiosInstance } = await import('../axiosProxy.js')
     const httpClient = sandboxProxy
       ? createAxiosInstance(Object.freeze({}))
       : createAxiosInstance(environment)

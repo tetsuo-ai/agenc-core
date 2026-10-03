@@ -11,7 +11,6 @@ import { sleep } from '../../utils/sleep.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
 import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
-import { createAxiosInstance } from '../../utils/proxy.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
 
 interface SessionIngressError {
@@ -58,6 +57,7 @@ async function appendSessionLogImpl(
   headers: Record<string, string>,
   environment: ProviderEnvironment,
 ): Promise<boolean> {
+  const { createAxiosInstance } = await import('../../utils/axiosProxy.js')
   const httpClient = createAxiosInstance(environment)
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -193,6 +193,7 @@ async function fetchSessionLogsFromUrl(
   environment: ProviderEnvironment,
 ): Promise<Entry[] | null> {
   try {
+    const { createAxiosInstance } = await import('../../utils/axiosProxy.js')
     const response = await createAxiosInstance(environment).get(url, {
       headers,
       timeout: 20000,
