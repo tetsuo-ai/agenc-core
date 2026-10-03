@@ -127,7 +127,8 @@ describe("provisional foreground import gate", () => {
     const f = await fixture();
     const error = new Error("foreground import failed");
     const running = f.run();
-    const observed = expect(running).rejects.toBe(error);
+    // Vitest wraps a rejected asynchronous mock factory with its module error.
+    const observed = expect(running).rejects.toMatchObject({ cause: error });
     await f.importing.promise;
     f.allowImport.reject(error);
     await observed;
