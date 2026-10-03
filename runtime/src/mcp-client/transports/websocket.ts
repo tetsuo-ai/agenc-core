@@ -1,3 +1,4 @@
+import { loadMcpTypes } from "../../services/mcp/sdk-schema.js";
 /**
  * MCP JSON-RPC WebSocket transport for AgenC's MCP client connection
  * boundary.
@@ -14,9 +15,8 @@
 import { VERSION } from "../../version.js";
 import WebSocket, { type RawData } from "ws";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import {
-  type JSONRPCMessage,
-  JSONRPCMessageSchema,
+import type {
+  JSONRPCMessage,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Logger } from "../_deps/logger.js";
@@ -150,7 +150,7 @@ export class MCPWebSocketClientTransport implements Transport {
 
   private readonly onMessage = (data: RawData): void => {
     try {
-      const message = JSONRPCMessageSchema.parse(JSON.parse(rawDataToString(data)));
+      const message = loadMcpTypes().JSONRPCMessageSchema.parse(JSON.parse(rawDataToString(data)));
       this.onmessage?.(message);
     } catch (error) {
       this.onerror?.(toError(error));
