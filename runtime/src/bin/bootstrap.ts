@@ -1958,6 +1958,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           agencVersion: VERSION,
           agencHome,
           sessionTempRoot,
+          relaxedOneShot: runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
+            runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }

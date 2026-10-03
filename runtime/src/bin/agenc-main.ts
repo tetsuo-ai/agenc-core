@@ -441,6 +441,7 @@ export function formatCliHelpText(): string {
     "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  -p, --print                             Run in headless one-shot print mode",
+    "  --full-durability                       Sync every print-run commit (safe continuation after a crash)",
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --deadline <+seconds|ISO-8601>           Print mode: stop the run by this time (exit 5)",
@@ -2473,7 +2474,8 @@ async function runDaemonOneShotPrompt(params: {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
-      runtimeOptions: { ...params.runtimeOptions, exactOutput: outputFormat !== "text" },
+      runtimeOptions: { ...params.runtimeOptions, exactOutput: outputFormat !== "text",
+        relaxedOneShot: params.runtimeOptions.relaxedOneShot === true && params.goal === undefined },
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
@@ -2497,6 +2499,7 @@ async function runDaemonOneShotPrompt(params: {
       metadata: {
         source: "agenc.prompt",
         mode: "one-shot",
+        ...(params.goal !== undefined ? { goalRun: true } : {}),
       },
     };
     const started = await daemonClient.request("agent.create", createParams, {
@@ -2511,6 +2514,7 @@ async function runDaemonOneShotPrompt(params: {
       "agent.attach",
       {
         agentId: started.agentId,
+        oneShotOutput: true,
         clientId: `agenc-one-shot-${process.pid}`,
       },
       { signal: params.signal },
@@ -2947,6 +2951,7 @@ export async function oneShotCLI(
       // auto-denied below, so tools that only exist to ask a person must not
       // be offered in the first place.
       nonInteractive: true,
+      relaxedOneShot: startupCliFlags.fullDurability !== true && continueSession === undefined,
       exactOutput: outputFormat !== "text",
       // `--deadline` (#2503): the instant this run must end by.
       ...readRunDeadlineFlags(process.argv, Date.now()),

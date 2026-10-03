@@ -795,7 +795,7 @@ export class RolloutStore {
       throw new TypeError("RolloutStore sessionTempRoot must be absolute");
     }
     this.sessionTempRoot = normalize(opts.sessionTempRoot);
-    this.store = new SessionStore(opts);
+    this.store = new SessionStore({ ...opts, checkpointOneShot: () => this.stateDriver.checkpointDurability() });
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
       this.store,
@@ -820,6 +820,7 @@ export class RolloutStore {
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
       agencHome: this.store.agencHome,
+      durabilityRunId: opts.sessionId,
       projectRootMarkers: opts.projectRootMarkers,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
@@ -3858,8 +3859,7 @@ export class RolloutStore {
   close(): void {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    this.stateDriver.close();
-    this.store.close();
+    try { this.store.close(); } finally { this.stateDriver.close(); }
   }
 
   private requireRunEpoch(runId: string) {

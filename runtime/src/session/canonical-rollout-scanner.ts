@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable } from "../durability/one-shot-durability.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -461,6 +462,7 @@ function scanCanonicalRolloutUntimed(
   checkOperationalBudget();
   const fd = openSync(rolloutPath, fsConstants.O_RDONLY);
   try {
+    assertOneShotRecoverable(rolloutPath, fd);
     const snapshot = fstatSync(fd, { bigint: true });
     if (!snapshot.isFile()) {
       throw new Error("canonical rollout source is not a regular file");

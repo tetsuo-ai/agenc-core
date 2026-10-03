@@ -1,3 +1,4 @@
+import { promoteOneShotRun, withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -409,11 +410,11 @@ export class ExecutionAdmissionKernel {
   ): AdmissionAttempt {
     this.#assertOpen();
     const request = requestFor(binding, input, this.#now());
-    const attempt = binding.workspace.repository.enqueue(request, {
-      ownerId: this.#ownerId,
-      ownerPid: this.#ownerPid,
-      attached: true,
-    });
+    if (request.kind === "spawn") promoteOneShotRun(request.step.runId);
+    const attempt = withOneShotWriteScope(binding.workspace.paths.projectDir, request.step.runId,
+      () => binding.workspace.repository.enqueue(request, {
+        ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true,
+      }));
     this.#publishNewJournal(binding.workspace);
     return attempt;
   }
@@ -500,7 +501,8 @@ export class ExecutionAdmissionKernel {
     if (found === undefined) {
       throw new AdmissionDeniedError("reservation_not_found");
     }
-    const record = found.binding.repository.markDispatched(reservationId, {
+    const record = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => found.binding.repository.markDispatched(reservationId, {
       ...(evidence.timestamp !== undefined
         ? { dispatchedAt: evidence.timestamp }
         : {}),
@@ -511,7 +513,7 @@ export class ExecutionAdmissionKernel {
         ...(evidence.details ?? {}),
         boundary: evidence.boundary,
       },
-    });
+    }));
     this.#publishNewJournal(found.binding);
     if (record.status !== "running") {
       const error = new AdmissionDeniedError(
@@ -532,7 +534,8 @@ export class ExecutionAdmissionKernel {
     usage: AdmissionUsage,
   ): AdmissionReconcileResult {
     const found = this.#requireReservation(reservationId);
-    const reconciled = reconcileAdmissionAndRunTree(
+    const reconciled = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => reconcileAdmissionAndRunTree(
       found.binding.driver,
       found.binding.repository,
       {
@@ -540,7 +543,7 @@ export class ExecutionAdmissionKernel {
         input: { kind: "reported", usage },
         reconciledAt: this.#timestamp(),
       },
-    );
+    ));
     const result = reconciled.admission;
     this.#finishCapacity(reservationId);
     this.#publishNewJournal(found.binding);
@@ -1206,13 +1209,11 @@ export class ExecutionAdmissionKernel {
       // but it is not a reservation commit and must not be labelled as one in
       // crash-injection evidence.
       hitM4DurabilityFailpoint("before_reservation_commit");
-      const result = entry.binding.repository.claim({
-        key: entry.key,
-        ownerId: this.#ownerId,
-        ownerPid: this.#ownerPid,
-        attached: true,
-        now: this.#timestamp(),
-      });
+      const result = withOneShotWriteScope(entry.binding.paths.projectDir, entry.record.request.step.runId,
+        () => entry.binding.repository.claim({
+          key: entry.key, ownerId: this.#ownerId, ownerPid: this.#ownerPid,
+          attached: true, now: this.#timestamp(),
+        }));
       if (result.kind === "claimed") {
         // The reservation is committed while no live lease or journal
         // subscriber has been notified yet. Restart must recover solely from
