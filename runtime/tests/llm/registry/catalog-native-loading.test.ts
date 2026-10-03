@@ -3,6 +3,7 @@ import { build } from 'esbuild'
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 
 test('native bundled startup selection works without full rows; first full lookup throws and retries', async () => {
   const directory = await mkdtemp(join(process.cwd(), '.catalog-native-'))
@@ -16,7 +17,11 @@ test('native bundled startup selection works without full rows; first full looku
       export { DEFAULT_MODEL_COSTS, conservativeModelCost } from '../src/session/cost.js';
     `)
     await build({ entryPoints: [fixture], outfile: join(directory, 'built.mjs'), bundle: true,
-      format: 'esm', platform: 'node', packages: 'external' })
+      format: 'esm', platform: 'node', packages: 'external',
+      // Match production's jsonc-parser bundling: its published ESM internals
+      // have extensionless imports and cannot execute as native external ESM.
+      alias: { 'jsonc-parser': createRequire(import.meta.url).resolve('jsonc-parser/lib/esm/main.js') },
+    })
     await copyFile('src/llm/registry/openrouter-pricing.data.json', join(directory, 'openrouter-pricing.data.json'))
     const control = join(directory, 'control.mjs')
     await writeFile(control, `
