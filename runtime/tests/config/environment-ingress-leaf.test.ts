@@ -7,6 +7,7 @@ vi.mock("../../src/config/schema.js", () => {
   throw new Error("startup ingress must not construct settings schemas");
 });
 import { assertCanonicalEnvironmentIngress } from "../../src/config/environment-ingress.js";
+import { RETIRED_CONFIG_DIR_ENV } from "../../src/config/home.js";
 import { withChildTempAuthority } from "../../src/utils/subprocessEnv.js";
 import { OBSOLETE_CONFIG_ENV_REPLACEMENTS } from "../../src/config/obsolete-environment.js";
 
@@ -26,6 +27,6 @@ describe("schema-free canonical ingress", () => {
   });
   it("retains runtime and home rejection before obsolete configuration diagnostics", () => {
     expect(() => assertCanonicalEnvironmentIngress({ AGENC_SIMPLE: "0", OPENAI_MODEL: "test" })).toThrow("AGENC_SIMPLE was removed");
-    expect(() => assertCanonicalEnvironmentIngress({ AGENC_CONFIG_DIR: "/old", OPENAI_MODEL: "test" })).toThrow("AGENC_CONFIG_DIR");
+    expect(() => assertCanonicalEnvironmentIngress({ [RETIRED_CONFIG_DIR_ENV]: "/old", OPENAI_MODEL: "test" })).toThrow(RETIRED_CONFIG_DIR_ENV);
   });
 });
