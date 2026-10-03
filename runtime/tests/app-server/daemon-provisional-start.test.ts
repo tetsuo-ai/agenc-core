@@ -8,8 +8,30 @@ import {
 } from "../../src/app-server/daemon-control.js";
 import { AGENC_DAEMON_PROVISIONAL_ENV } from "../../src/app-server/daemon-provisional-admission.js";
 
+const lockTiming = vi.hoisted(() => ({ realProvisionalDeadline: false }));
+vi.mock("../../src/utils/sqlite-lock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/sqlite-lock.js")>();
+  return {
+    ...actual,
+    acquireLocalSqliteLock: (...args: Parameters<typeof actual.acquireLocalSqliteLock>) => {
+      const [path, options] = args;
+      // These owner-state fixtures exercise real locking, not host scheduling.
+      // Keep the actual short deadline only in the explicit contention case.
+      if (!lockTiming.realProvisionalDeadline && options?.timeoutMs === 50) {
+        return actual.acquireLocalSqliteLock(path, {
+          ...options, timeoutMs: 5_000, deadline: performance.now() + 5_000,
+        });
+      }
+      return actual.acquireLocalSqliteLock(...args);
+    },
+  };
+});
+
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  lockTiming.realProvisionalDeadline = false;
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "agenc-provisional-lock-")); roots.push(root);
   const spawned = vi.fn(() => 999991);
@@ -57,6 +79,7 @@ describe("canonical provisional start transaction", () => {
   });
   it("settles bounded contention before fallback and cannot spawn after cancellation", async () => {
     const f = await fixture();
+    lockTiming.realProvisionalDeadline = true;
     const release = await acquireAgenCDaemonLifecycleLock(f.host);
     try {
       const attempt = startAgenCDaemon(f.host, f.io, f.options);
