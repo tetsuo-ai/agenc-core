@@ -86,6 +86,11 @@ async function runBundle(config) {
     format: config.format?.[0] ?? "esm",
     loader: {},
     logLevel: "info",
+    // V8 parses every loaded chunk in full before running it, so source size
+    // is startup time. Identifiers and function names stay as written;
+    // dist/*.map maps positions back to the sources.
+    minifySyntax: true,
+    minifyWhitespace: true,
     outbase: "src",
     outdir: distDir,
     platform: config.platform ?? "node",
