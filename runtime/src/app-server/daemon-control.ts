@@ -114,6 +114,22 @@ export function hasOperatorHeapSnapshotOption(env: NodeJS.ProcessEnv): boolean {
   return env.NODE_OPTIONS?.includes("heapsnapshot-near-heap-limit") ?? false;
 }
 
+/**
+ * Minimum young-generation size (megabytes per semi-space) for the daemon.
+ * V8 starts the young generation at about 1 MB and grows it only after
+ * scavenges, so loading the daemon's code ran several scavenges while it
+ * started. With this minimum they do not happen during start-up. It stays a
+ * minimum for the life of the process: when the daemon is idle, V8 does not
+ * shrink the young generation below it. A semi-space option the operator sets
+ * in NODE_OPTIONS, in either spelling, wins.
+ */
+export const DAEMON_MIN_SEMI_SPACE_MB = 16;
+
+function hasOperatorSemiSpaceOption(env: NodeJS.ProcessEnv): boolean {
+  // Node accepts V8 options with `_` or `-` between words.
+  return env.NODE_OPTIONS?.replaceAll("_", "-").includes("semi-space-size") ?? false;
+}
+
 
 /**
  * Builds the node CLI args for the detached daemon child, prepending an
@@ -144,9 +160,13 @@ export function buildAgenCDaemonChildNodeArgs(
         "--heapsnapshot-near-heap-limit=1",
         `--diagnostic-dir=${diagnosticDirectory}`,
       ];
+  const youngGenerationArgs = hasOperatorSemiSpaceOption(env)
+    ? []
+    : [`--min-semi-space-size=${DAEMON_MIN_SEMI_SPACE_MB}`];
   return [
     `--max-old-space-size=${maxOldSpaceMb}`,
     ...diagnosticArgs,
+    ...youngGenerationArgs,
     entrypointPath,
     "daemon",
     "start",
