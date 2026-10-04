@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable, consumeOneShotSeal } from "./one-shot-durability.js";
 import {
   closeSync,
   constants as fsConstants,
@@ -110,6 +111,7 @@ export function withPinnedOfflineRolloutReadLease<T>(
       fsConstants.O_RDONLY | noFollowFlag(),
     );
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
     const sourceFd = fd;
     let appendDescriptorTransferred = false;
     const rollout: PinnedOfflineRolloutReader = {
@@ -150,6 +152,7 @@ export function withPinnedOfflineRolloutReadLease<T>(
             "offline canonical rollout append descriptor was already transferred",
           );
         }
+        consumeOneShotSeal(scope.sourcePath, sourceFd);
         const appendFd = openPinnedAppendDescriptor(scope, pinned, sourceFd);
         appendDescriptorTransferred = true;
         return appendFd;
@@ -247,8 +250,11 @@ export function withPinnedOfflineRolloutLease<T>(
       fsConstants.O_RDWR | fsConstants.O_APPEND | noFollowFlag(),
     );
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
+    consumeOneShotSeal(scope.sourcePath, fd);
     truncateCorruptTailOnDescriptor(fd);
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
 
     const sourceFd = fd;
     const rollout: PinnedOfflineRollout = {
