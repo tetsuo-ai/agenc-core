@@ -1,6 +1,7 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 import contractSchema from "./contract-v1.schema.json" with { type: "json" };
 import { assertLocalPrivateDirectory } from "../utils/sqlite-lock.js";
 import {
@@ -66,7 +67,7 @@ export class EvalContractValidationError extends Error {
 
 function schemaValidator(): ValidateFunction {
   if (compiledValidator) return compiledValidator;
-  const ajv = new Ajv({
+  const ajv = new (loadAjv())({
     allErrors: true,
     allowUnionTypes: true,
     strict: true,

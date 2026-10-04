@@ -250,6 +250,7 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_START_MAX_WAIT_MS` | Total ceiling for an extended daemon start while its startup log keeps advancing, in readiness-budget steps (default 600000 ms). A home with hundreds of sessions can exceed the readiness budget while recovering runs |
 | `AGENC_DAEMON_REQUEST_TIMEOUT_MS` | Per-request RPC timeout (SDK default 30000 ms) |
 | `AGENC_DAEMON_MAX_OLD_SPACE_MB` | Detached daemon V8 heap cap (default 4096) |
+| `AGENC_COMPILE_CACHE` | `0` turns off the on-disk V8 compile cache that the CLI and the daemon share. It lives in a private per-user temp directory; an explicit `NODE_COMPILE_CACHE` is left alone |
 | `AGENC_DAEMON_MAX_QUEUED_REQUESTS`, `AGENC_DAEMON_MAX_IN_FLIGHT_REQUESTS` | RPC overload bounds |
 | `AGENC_DAEMON_REQUEST_RATE_PER_SECOND`, `AGENC_DAEMON_REQUEST_BURST` | Per-client rate limiter |
 | `AGENC_DAEMON_WEBSOCKET_HOST` | Optional WebSocket bind host (default `127.0.0.1`) |
@@ -375,7 +376,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_C*
 
-`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
+`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPILE_CACHE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
 
 ### AGENC_D*
 

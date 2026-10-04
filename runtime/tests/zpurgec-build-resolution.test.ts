@@ -43,6 +43,12 @@ describe('Z-PURGEC build resolution boundaries', () => {
     ).toBe(true)
   })
 
+  it('bundles lodash-es so its one-file-per-function modules load inside the runtime chunks', () => {
+    expect(__agencBuildConfigTest.isBundledBareImport('lodash-es')).toBe(true)
+    expect(__agencBuildConfigTest.isBundledBareImport('lodash-es/memoize.js')).toBe(true)
+    expect(__agencBuildConfigTest.isBundledBareImport('lodash-es-extra')).toBe(false)
+  })
+
   it('inlines copied-tree feature gates before unresolved import resolution', () => {
     expect(__agencBuildConfigTest.featureFlagLiteral('HISTORY_SNIP')).toBe('false')
     expect(__agencBuildConfigTest.featureFlagLiteral('CONTEXT_COLLAPSE')).toBe('false')

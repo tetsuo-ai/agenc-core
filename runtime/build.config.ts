@@ -144,6 +144,26 @@ const runtimePackage = JSON.parse(
 const displayVersion = runtimePackage.version ?? '0.0.0';
 const publicPackageName = '@tetsuo-ai/agenc';
 
+function copyModelCatalogData(): void {
+  const registry = resolve(runtimeSourceRoot, 'llm/registry');
+  const rows = JSON.parse(readFileSync(resolve(registry, 'openrouter-models.data.json'), 'utf8')) as {
+    model: string; pricing: unknown; priceOverrides?: unknown;
+  }[];
+  const prices = JSON.parse(readFileSync(resolve(registry, 'openrouter-pricing.data.json'), 'utf8'));
+  const indexSource = readFileSync(resolve(registry, 'openrouter-model-ids.ts'), 'utf8');
+  const index = JSON.parse(indexSource.slice(indexSource.indexOf('Object.freeze(') + 14, indexSource.lastIndexOf(');')));
+  const expectedPrices = rows.map(({ model, pricing, priceOverrides }) => ({
+    model, pricing, ...(priceOverrides === undefined ? {} : { priceOverrides }),
+  }));
+  if (JSON.stringify(index) !== JSON.stringify(rows.map(row => row.model)) ||
+      JSON.stringify(prices) !== JSON.stringify(expectedPrices)) {
+    throw new Error('OpenRouter catalog projections are stale; regenerate the catalog');
+  }
+  for (const name of ['openrouter-models.data.json', 'openrouter-pricing.data.json']) {
+    cpSync(resolve(registry, name), resolve(runtimeRoot, 'dist', name));
+  }
+}
+
 function copyYoloClassifierPrompts(): void {
   if (!existsSync(yoloClassifierPromptSourceDir)) return;
   mkdirSync(yoloClassifierPromptDistDir, { recursive: true });
@@ -603,6 +623,7 @@ const agencRuntimeAssets = {
     onEnd: (callback: () => void) => void;
   }) {
     build.onEnd(() => {
+      copyModelCatalogData();
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
       compileLinuxLandlockRun();
@@ -682,7 +703,10 @@ const agencBareSrcAlias = {
   },
 };
 
-const noExternal = ['jsonc-parser', 'semver', 'supports-hyperlinks'];
+// Bundled instead of loaded from node_modules at run time. lodash-es is one
+// module per function (275 files on a cold one-shot across the CLI and the
+// daemon), and Node pays a fixed cost for every module file it loads.
+const noExternal = ['jsonc-parser', 'lodash-es', 'semver', 'supports-hyperlinks'];
 
 function isBundledBareImport(source: string): boolean {
   return noExternal.some(
@@ -794,6 +818,9 @@ const external = [
   'audio-capture-napi',
   'cross-spawn',
   'execa',
+  // Relocated sources and external consumers already use this package. Keep
+  // schemas, error constructors and metadata registries on the same instance.
+  'zod',
   'openai',
   'ollama',
   'better-sqlite3',

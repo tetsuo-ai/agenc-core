@@ -545,10 +545,10 @@ function appendBoundedOutput(record, chunk, key) {
   );
 }
 
-function spawnForegroundDaemon(state, binAgenc) {
+function spawnForegroundDaemon(state, binAgenc, nodeArgs) {
   const child = spawn(
     process.execPath,
-    [binAgenc, "daemon", "start", "--foreground"],
+    [...nodeArgs, binAgenc, "daemon", "start", "--foreground"],
     {
       env: state.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -631,7 +631,7 @@ async function waitForDaemonReady(state, binAgenc, record) {
   );
 }
 
-async function performStartTuiGateDaemon(state, binAgenc) {
+async function performStartTuiGateDaemon(state, binAgenc, nodeArgs) {
   await assertOwnedState(state);
   if (state.closing) {
     throw new Error("private TUI gate daemon start interrupted by cleanup");
@@ -641,7 +641,7 @@ async function performStartTuiGateDaemon(state, binAgenc) {
   );
   if (liveRecords.length > 0) return liveRecords[0].pid;
 
-  const record = spawnForegroundDaemon(state, binAgenc);
+  const record = spawnForegroundDaemon(state, binAgenc, nodeArgs);
   try {
     await waitForDaemonReady(state, binAgenc, record);
     if (state.closing) {
@@ -659,13 +659,26 @@ async function performStartTuiGateDaemon(state, binAgenc) {
   }
 }
 
-export function startTuiGateDaemon(state, binAgenc) {
+/**
+ * Start the private daemon as a retained child of the gate. `nodeArgs` are
+ * extra Node.js options for the daemon process only (for example a
+ * module-load trace hook); the environment stays the private gate env.
+ */
+export function startTuiGateDaemon(state, binAgenc, { nodeArgs = [] } = {}) {
   if (state.cleaned || state.closing) {
     return Promise.reject(
       new Error(`TUI gate state is shutting down: ${state.root}`),
     );
   }
-  const operation = performStartTuiGateDaemon(state, binAgenc);
+  if (
+    !Array.isArray(nodeArgs) ||
+    nodeArgs.some((arg) => typeof arg !== "string" || !arg.startsWith("--"))
+  ) {
+    return Promise.reject(
+      new Error("TUI gate daemon nodeArgs must be Node.js options"),
+    );
+  }
+  const operation = performStartTuiGateDaemon(state, binAgenc, [...nodeArgs]);
   state.pendingDaemonStarts.add(operation);
   operation.then(
     () => state.pendingDaemonStarts.delete(operation),

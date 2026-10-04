@@ -1822,6 +1822,8 @@ export class OpenAIProvider implements LLMProvider {
       // `reasoning`. Preserve either as an explicit hidden thinking channel;
       // neither may become canonical assistant content.
       let reasoningContent = "";
+      let discardedReasoningContent = false;
+      let conflictingReasoningModel = false;
       // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
       // chain-of-thought in `delta.content` behind think markers; the
       // filter reroutes those spans to the same hidden channel so the
@@ -1882,6 +1884,11 @@ export class OpenAIProvider implements LLMProvider {
           throw streamError;
         }
 
+        if (chunk.model !== undefined &&
+            (typeof chunk.model !== "string" ||
+              chunk.model.trim().toLowerCase() !== requestModel.trim().toLowerCase())) {
+          conflictingReasoningModel = true;
+        }
         if (typeof chunk.model === "string" && chunk.model.length > 0) {
           model = chunk.model;
         }
@@ -1952,6 +1959,10 @@ export class OpenAIProvider implements LLMProvider {
             (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined) ??
             (streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
               ? thinkingTextFromContentBlocks(delta.content) : undefined);
+          if (reasoningDelta !== undefined && reasoningDelta !== null &&
+              typeof reasoningDelta !== "string") {
+            discardedReasoningContent = true;
+          }
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({
@@ -2200,6 +2211,7 @@ export class OpenAIProvider implements LLMProvider {
               : {}),
           },
           requestOptions,
+          { discardedReasoningContent, conflictingReasoningModel },
         ),
       );
       onChunk({

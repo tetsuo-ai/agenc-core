@@ -70,7 +70,7 @@ export interface ResolveAutoMemoryDirectoryOptions {
   readonly runtimeOptions?: Pick<
     AgentRuntimeOptions,
     "coworkMemoryPathOverride" | "remoteMode" | "remoteMemoryRoot"
-  > & Partial<Pick<AgentRuntimeOptions, "simpleMode" | "coworkMemoryExtraGuidelines">>;
+  > & Partial<Pick<AgentRuntimeOptions, "simpleMode" | "coworkMemoryExtraGuidelines" | "lightMode" | "nonInteractive" | "routineRun">>;
   readonly settings?: {
     readonly [K in PermissionRuleSource]?: AgenCConfig | null;
   };

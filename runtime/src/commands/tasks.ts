@@ -8,7 +8,6 @@
  * @module
  */
 
-import React from "react";
 import {
   isStoppableTaskStatus,
   isTaskType,
@@ -209,7 +208,8 @@ export const tasksCommand: SlashCommand = {
           const { BackgroundTasksPanel } = await import(
             "../tui/components/tasks/BackgroundTasksPanel.js"
           );
-          return React.createElement(BackgroundTasksPanel, { onDone: close });
+          const { createElement } = await import("react");
+          return createElement(BackgroundTasksPanel, { onDone: close });
         })
       ) {
         return { kind: "skip" };

@@ -20,7 +20,7 @@ import {
   sep,
 } from 'node:path'
 
-import yaml from 'js-yaml'
+import { loadYaml } from '../../utils/lazy-runtime-packages.js'
 import { z } from 'zod/v4'
 
 import type { AgenCConfig } from '../../config/schema.js'
@@ -596,7 +596,7 @@ function parseMarkdown(raw: string): {
   const frontmatterRaw = raw.slice(3, end)
   const contentStart = raw.indexOf('\n', end + 4)
   const content = contentStart === -1 ? '' : raw.slice(contentStart + 1)
-  const parsed = yaml.load(frontmatterRaw)
+  const parsed = loadYaml().load(frontmatterRaw)
   return {
     frontmatter: isRecord(parsed) ? parsed : {},
     content,

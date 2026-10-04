@@ -1,4 +1,3 @@
-import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
@@ -579,6 +578,7 @@ async function downloadMcpb(
   }
 
   try {
+    const { default: axios } = await import('axios')
     const response = await axios.get(url, {
       timeout: 120000, // 2 minute timeout
       responseType: 'arraybuffer',

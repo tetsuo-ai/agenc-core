@@ -31,6 +31,7 @@ export interface StartupCliFlags {
   readonly autonomousMode?: boolean;
   readonly simpleMode?: boolean;
   readonly lightMode?: boolean;
+  readonly fullDurability?: boolean;
 }
 
 export function readStartupCliFlags(
@@ -91,6 +92,7 @@ export function readStartupCliFlags(
     ...(autonomousMode ? { autonomousMode: true } : {}),
     ...(simpleMode ? { simpleMode: true } : {}),
     ...(lightMode ? { lightMode: true } : {}),
+    ...(optionArgs.includes("--full-durability") ? { fullDurability: true } : {}),
   });
 }
 

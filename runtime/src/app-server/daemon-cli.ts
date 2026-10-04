@@ -3375,7 +3375,7 @@ export async function restoreRecoveredAgentRuntime(
     resumeSource.close();
     return { available: false };
   }
-  const initialMessages = recoveredInitialMessages(run.latestSnapshot);
+  const initialMessages = recoveredInitialMessages(run.latestSnapshot, runtimeOptions.lightMode === true);
   const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   const restoreAttemptId = randomUUID();
   let outcome: { readonly available: boolean; readonly restoreAttemptId?: string };
@@ -3555,6 +3555,7 @@ function recoverySnapshotMetadata(
 
 function recoveredInitialMessages(
   snapshot: RecoveredSessionStateSnapshot | undefined,
+  compactWorkspace = false,
 ): ReadonlyArray<LLMMessage> | undefined {
   const conversation = snapshot?.conversation;
   const conversationMessages = Array.isArray(conversation)
@@ -3564,8 +3565,9 @@ function recoveredInitialMessages(
         .filter(isUsefulRecoveredMessage)
     : [];
   const messages = appendRecoveredCompletedToolMessages(
-    frameUntrustedToolHistoryMessages(conversationMessages),
+    frameUntrustedToolHistoryMessages(conversationMessages, compactWorkspace),
     snapshot?.toolState,
+    compactWorkspace,
   );
   return messages.length > 0 ? messages : undefined;
 }
@@ -3722,6 +3724,7 @@ function isUsefulRecoveredMessage(message: LLMMessage): boolean {
 function appendRecoveredCompletedToolMessages(
   messages: readonly LLMMessage[],
   toolState: unknown,
+  compactWorkspace = false,
 ): LLMMessage[] {
   const completed = recoveredCompletedToolCalls(toolState);
   if (completed.length === 0) return [...messages];
@@ -3748,6 +3751,8 @@ function appendRecoveredCompletedToolMessages(
           toolCall.toolName,
           rawResult,
           classifyUntrustedToolResult(toolCall.toolName),
+          compactWorkspace,
+          !compactWorkspace,
         ),
         toolCallId: toolCall.callId,
         toolName: toolCall.toolName,

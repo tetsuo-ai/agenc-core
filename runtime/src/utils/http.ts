@@ -2,7 +2,6 @@
  * HTTP utility constants and helpers
  */
 
-import axios from 'axios'
 import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
 import {
   getAnthropicApiKey,
@@ -103,6 +102,7 @@ export async function withOAuth401Retry<T>(
   try {
     return await request()
   } catch (err) {
+    const { default: axios } = await import('axios')
     if (!axios.isAxiosError(err)) throw err
     const status = err.response?.status
     const isAuthError =

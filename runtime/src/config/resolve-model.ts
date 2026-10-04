@@ -6,7 +6,7 @@ import {
 } from "./resolve-provider.js";
 import type { AgenCConfig } from "./schema.js";
 import {
-  REGISTERED_MODEL_CATALOG,
+  registeredModelCatalogProviderIds,
   resolveRegisteredModelCatalogEntry,
 } from "../llm/registry/model-catalog.js";
 
@@ -30,7 +30,7 @@ function isRegisteredToOtherProvider(
     return false;
   }
   const owningProviders = new Set(
-    REGISTERED_MODEL_CATALOG.map((entry) => entry.provider),
+    registeredModelCatalogProviderIds(),
   );
   for (const owner of owningProviders) {
     if (resolveRegisteredModelCatalogEntry({ provider: owner, model }) !== undefined) {

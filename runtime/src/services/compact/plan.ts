@@ -6,7 +6,7 @@ import {
   requireAdmissibleTokenAccounting,
   type TokenAccountingResult,
 } from "../../llm/token-accounting.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import { isKnownEmptyProviderReasoning, type LLMChatOptions, type LLMMessage } from "../../llm/types.js";
 import { messageText } from "./_deps/runtime.js";
 import { canonicalizeJson, sha256Hex } from "./summary-v1.js";
 import {
@@ -1207,7 +1207,11 @@ function compactionMapReduceTopology(
 function messageForDigest(message: RuntimeMessage): unknown {
   const providerReasoning =
     typeof message.providerReasoningContent === "string" &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (roleOf(message) === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? message.providerReasoningProvenance !== undefined &&
         typeof message.providerReasoningProvenance.provider === "string" &&
         message.providerReasoningProvenance.provider.trim().length > 0 &&

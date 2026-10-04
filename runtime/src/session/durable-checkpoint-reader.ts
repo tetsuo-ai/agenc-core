@@ -6,6 +6,7 @@ import {
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
 } from "./event-log.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   assertAgentInvocationChannelMessage,
@@ -883,7 +884,9 @@ function assertResponseItemShape(
     if (
       (!validV1 && !validV2) ||
       typeof providerReasoning.content !== "string" ||
-      providerReasoning.content.length === 0
+      (providerReasoning.content.length === 0 &&
+        !(validV2 && Array.isArray(item.toolCalls) && item.toolCalls.length > 0 &&
+          isKnownEmptyProviderReasoning(providerReasoning.content, providerReasoning)))
     ) {
       throw malformed(
         `checkpoint response item ${index} has invalid provider reasoning replay`,

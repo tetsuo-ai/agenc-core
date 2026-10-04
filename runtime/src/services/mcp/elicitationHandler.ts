@@ -1,9 +1,8 @@
+import { loadMcpTypes } from "./sdk-schema.js";
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import {
-  ElicitationCompleteNotificationSchema,
-  type ElicitRequestParams,
-  ElicitRequestSchema,
-  type ElicitResult,
+import type {
+  ElicitRequestParams,
+  ElicitResult,
 } from '@modelcontextprotocol/sdk/types.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import {
@@ -70,7 +69,7 @@ export function registerElicitationHandler(
   // Wrapped in try/catch because setRequestHandler throws if the client wasn't
   // created with elicitation capability declared.
   try {
-    client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+    client.setRequestHandler(loadMcpTypes().ElicitRequestSchema, async (request, extra) => {
       logMCPDebug(
         serverName,
         `Received elicitation request: ${jsonStringify(request)}`,
@@ -155,7 +154,7 @@ export function registerElicitationHandler(
     // Register handler for elicitation completion notifications (URL mode).
     // Sets `completed: true` on the matching queue event; the dialog reacts to this flag.
     client.setNotificationHandler(
-      ElicitationCompleteNotificationSchema,
+      loadMcpTypes().ElicitationCompleteNotificationSchema,
       notification => {
         const { elicitationId } = notification.params
         logMCPDebug(

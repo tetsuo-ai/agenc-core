@@ -205,6 +205,7 @@ function modelFacingToolResultContent(
     toolName,
     content,
     classifyUntrustedToolResult(toolName, registeredTool),
+    session.services?.runtimeOptions?.lightMode === true,
   );
 }
 

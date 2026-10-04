@@ -1,3 +1,5 @@
+import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
+export { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -20,7 +22,7 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import { isKnownEmptyProviderReasoning, type LLMChatOptions, type LLMMessage } from "../../llm/types.js";
 import type { CompactionLocalSummarizer } from "./emergency-summarizer.js";
 import {
   CompactionTransactionFailureWithDetails,
@@ -172,34 +174,6 @@ async function acquireCompactionTransactionLease(
   }
 }
 
-export function readCompactionTransactionAdapter(
-  context: CompactContext,
-): CompactionTransactionAdapter | undefined {
-  const direct = context.compactionTransaction;
-  if (direct !== undefined) return direct;
-  const candidate = (context as CompactContext & {
-    readonly rolloutStore?: unknown;
-  }).rolloutStore;
-  if (candidate === null || typeof candidate !== "object") return undefined;
-  const adapter = candidate as Partial<CompactionTransactionAdapter>;
-  const methods: ReadonlyArray<keyof CompactionTransactionAdapter> = [
-    "acquireCompactionLease",
-    "prepareSource",
-    "failureCount",
-    "pinAndRecordIntent",
-    "recordFailure",
-    "commit",
-    "markProjectionComplete",
-    "markProjectionFailed",
-    "markCleanupComplete",
-    "markCleanupPending",
-  ];
-  if (methods.some((name) => typeof adapter[name] !== "function")) return undefined;
-  if (typeof adapter.sessionId !== "string" || !Number.isSafeInteger(adapter.epoch)) {
-    return undefined;
-  }
-  return adapter as CompactionTransactionAdapter;
-}
 
 export async function compactConversationTransactionally(
   context: CompactContext,
@@ -1602,7 +1576,11 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.uuid !== undefined ? { id: message.uuid } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(typeof message.providerReasoningContent === "string" &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (normalizedRole === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning:
             message.providerReasoningProvenance !== undefined &&

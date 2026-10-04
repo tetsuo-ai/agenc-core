@@ -1,3 +1,4 @@
+import { promoteOneShotRun } from "../durability/one-shot-durability.js";
 /**
  * Where a session's goal lives.
  *
@@ -34,6 +35,8 @@ export function commitSessionGoal(
   cause: GoalChangedEvent["cause"],
   turnId?: string,
 ): SessionGoal {
+  const runId = (session as { readonly conversationId?: string }).conversationId;
+  if (runId !== undefined) promoteOneShotRun(runId);
   const frozen = Object.freeze({ ...goal });
   if (goal.status === "cleared") goals.delete(session);
   else goals.set(session, frozen);
