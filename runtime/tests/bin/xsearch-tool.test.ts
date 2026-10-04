@@ -52,7 +52,7 @@ describe("supportsProviderNativeXSearch", () => {
 });
 
 describe("LIVE XSearch independent tool backend", () => {
-  it("is not registered without an xAI backend credential", () => {
+  it("defers credential resolution until discovery in a bootstrap registry", () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -60,7 +60,7 @@ describe("LIVE XSearch independent tool backend", () => {
       env: {},
       grokCapabilities: { x_search: true },
     });
-    expect(tools.some((t) => t.name === "XSearch")).toBe(false);
+    expect(tools.find((t) => t.name === "XSearch")?.metadata?.deferred).toBe(true);
   });
 
   it("is registered for Meta when an independent xAI backend is configured", () => {
