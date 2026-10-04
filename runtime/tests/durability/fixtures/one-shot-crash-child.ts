@@ -1,5 +1,6 @@
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ErrorLogSidecar } from "../../../src/session/error-log.js";
 import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { setSlowStoreOpReporter } from "../../../src/utils/slow-store-op.js";
 
@@ -20,6 +21,15 @@ if (command === "crash") {
   writeFileSync(pathRecord, store.rolloutPath);
   const kill = () => { process.kill(process.pid, "SIGKILL"); throw new Error("SIGKILL returned"); };
   if (boundary === "opened") kill();
+  if (boundary === "pending-logs") {
+    const projectDir = dirname(dirname(dirname(store.rolloutPath)));
+    const sidecar = new ErrorLogSidecar({ projectDir, sessionId: "crash-run", deferStartupIndex: true });
+    const warning = { id: "warning", eventId: "warning", seq: 1,
+      msg: { type: "warning" as const, payload: { cause: "cron_storage_unavailable", message: "startup warning" } } };
+    store.append(warning, { durable: true }); sidecar.onEvent(warning);
+    writeFileSync(join(root, "logs-path"), join(projectDir, "agenc-logs_1.sqlite"));
+    kill();
+  }
   if (!store.append({ id: "intent", eventId: "intent", seq: 1, msg: { type: "effect_intent", payload: {
     formatVersion: 2, minimumReaderRuntime: "0.14.0", runId: "crash-run", stepId: "tool-step", callId: "call",
     toolName: "physical-counter", recoveryCategory: "side-effecting", intentDigest: "digest", attempt: 1, recordedAt: meta.timestamp,

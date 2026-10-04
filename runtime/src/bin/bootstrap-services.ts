@@ -137,6 +137,7 @@ interface BootstrapShellSnapshot {
 }
 
 export interface BootstrapSessionServicesOptions {
+  readonly flushStartupLogIndex?: () => void;
   readonly provider: LLMProvider;
   readonly providerName: string;
   readonly authBackend?: AuthBackend;
@@ -852,6 +853,9 @@ export function buildBootstrapSessionServices(
   });
 
   const services: SessionServices = {
+    ...(opts.flushStartupLogIndex !== undefined
+      ? { flushStartupLogIndex: opts.flushStartupLogIndex }
+      : {}),
     runtimeOptions: opts.runtimeOptions,
     hookExecutionAuthority,
     mcpConnectionManager,
