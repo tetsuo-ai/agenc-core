@@ -1,6 +1,6 @@
 import { constants as fsConstants, existsSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
@@ -89,33 +89,64 @@ export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 const PATH_ARG = /^[A-Za-z0-9_./@+-]+$/u;
 
-/** One read step of a `;`/`&&` chain: cat of named files, or an explicit line window of one file. */
+/**
+ * One read step of a `;`/`&&` chain: cat of named files, an explicit line window of one file, or a
+ * `grep -n` of one file, whose output numbers every line it shows.
+ */
 type ShellReadStep =
   | { readonly kind: "full"; readonly paths: readonly string[] }
-  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number };
+  | { readonly kind: "lines"; readonly path: string; readonly start: number; readonly end: number }
+  | { readonly kind: "numbered"; readonly path: string };
 
 /**
- * Words of each `;`/`&&` step as the shell would see them: single and double quotes and backslash
- * escapes are honored, so quoted text never becomes a step. Any other shell syntax (pipes,
- * redirection other than a literal 2>/dev/null, substitution, expansion, subshells, groups,
- * background jobs, `||`, newlines) fails closed with no steps.
+ * Simple commands of a command line as the shell would see them: `;`-separated lists of `&&`-joined
+ * steps, where a step is a `|` pipeline of commands and a list may end in `|| true`. Single and
+ * double quotes and backslash escapes are honored, so quoted text never separates anything. Any
+ * other shell syntax (redirection other than a literal 2>/dev/null, substitution, expansion,
+ * subshells, groups, background jobs, `|&`, other `||` forms, newlines) fails closed, and so does
+ * any empty command bash would reject as a syntax error (only a single trailing `;` may end a line).
+ *
+ * `all` holds every command. `ran` holds the single-command steps that certainly ran when the shell
+ * exited on its own and whose standard output is the line's own: the first step of every list (made
+ * only of chain-safe commands, the shell reaches every `;`) and, when the line exited 0, every step
+ * of a final list without `|| true` (exit 0 means none failed). A later step of another list may have
+ * been skipped by a failed `&&`; a final `|| true` makes exit 0 say nothing about the steps before
+ * it; a pipeline element writes into the next one.
  */
-function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: string[][] } | undefined {
-  const steps: string[][] = [];
-  // Index into steps where each `;`-separated and-list starts.
-  const listStarts: number[] = [0];
+function shellSteps(cmd: string, exitedZero: boolean): { readonly all: string[][]; readonly ran: string[][] } | undefined {
+  const lists: { readonly steps: string[][][]; readonly orTrue: boolean }[] = [];
+  let steps: string[][][] = [];
+  let pipeline: string[][] = [];
   let words: string[] = [];
   let word = "";
   let inWord = false;
+  // After `||`: the rest of the list must be exactly `true`.
+  let orTrue = false;
   const endWord = () => {
     if (inWord) words.push(word);
     word = "";
     inWord = false;
   };
-  const endStep = () => {
+  const endCommand = () => {
     endWord();
-    steps.push(words);
+    pipeline.push(words);
     words = [];
+  };
+  const endStep = (): boolean => {
+    endCommand();
+    const step = pipeline;
+    pipeline = [];
+    if (step.some(command => command.length === 0)) return false;
+    if (orTrue) return step.length === 1 && step[0]!.length === 1 && step[0]![0] === "true";
+    steps.push(step);
+    return true;
+  };
+  const endList = (): boolean => {
+    if (!endStep()) return false;
+    lists.push({ steps, orTrue });
+    steps = [];
+    orTrue = false;
+    return true;
   };
   for (let i = 0; i < cmd.length; i += 1) {
     const ch = cmd[i]!;
@@ -149,14 +180,20 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
     } else if (ch === " " || ch === "\t") {
       endWord();
     } else if (ch === ";") {
-      endStep();
-      listStarts.push(steps.length);
+      if (!endList()) return undefined;
     } else if (ch === "&" && cmd[i + 1] === "&") {
-      endStep();
+      if (orTrue || !endStep()) return undefined;
       i += 1;
+    } else if (ch === "|" && cmd[i + 1] === "|") {
+      if (orTrue || !endStep()) return undefined;
+      orTrue = true;
+      i += 1;
+    } else if (ch === "|" && cmd[i + 1] !== "&") {
+      if (orTrue) return undefined;
+      endCommand();
     } else if (ch === ">" && !inWord) {
       return undefined;
-    } else if (ch === ">" && word === "2" && cmd.startsWith(">/dev/null", i) && /^(?:[ \t;&]|$)/u.test(cmd.slice(i + 10, i + 11))) {
+    } else if (ch === ">" && word === "2" && cmd.startsWith(">/dev/null", i) && /^(?:[ \t;&|]|$)/u.test(cmd.slice(i + 10, i + 11))) {
       word = "";
       inWord = false;
       i += 9;
@@ -167,35 +204,54 @@ function shellSteps(cmd: string): { readonly all: string[][]; readonly ran: stri
       inWord = true;
     }
   }
-  endStep();
-  // Only steps that certainly ran under exit status 0: the first step of every and-list (it runs
-  // whatever came before the `;`) and every step of the final and-list (exit 0 means none failed).
-  // A later step of an earlier and-list may have been skipped by a failed `&&`.
-  const finalStart = listStarts[listStarts.length - 1]!;
-  return {
-    all: steps.filter(step => step.length > 0),
-    ran: steps.filter((step, index) => step.length > 0 && (index >= finalStart || listStarts.includes(index))),
-  };
+  const trailingSemicolon = /;[ \t]*$/u.test(cmd) && lists.length > 0 && steps.length === 0 &&
+    pipeline.length === 0 && words.length === 0 && !inWord && !orTrue;
+  if (!trailingSemicolon && !endList()) return undefined;
+  const all: string[][] = [];
+  const ran: string[][] = [];
+  lists.forEach((list, index) => {
+    for (const step of list.steps) all.push(...step);
+    if (list.orTrue) all.push(["true"]);
+    const certain = exitedZero && index === lists.length - 1 && !list.orTrue ? list.steps : list.steps.slice(0, 1);
+    for (const step of certain) if (step.length === 1) ran.push(step[0]!);
+  });
+  return { all, ran };
 }
 
 /**
- * Commands that cannot end, replace or redirect the shell's own execution, so under exit status 0
- * every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
+ * Commands that cannot end, replace or redirect the shell's own execution, so when the shell exits
+ * on its own every `;` step of a chain made only of them ran. Anything else (exit, exec, eval, source, set,
  * trap, return, functions, variable assignments, unknown commands) fails the whole chain closed.
  */
-/** Shells whose parsing of quotes, `;` and `&&` matches shellSteps. */
+/** Shells whose parsing of quotes, `;`, `&&`, `|` and `|| true` matches shellSteps. */
 const POSIX_SH_SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "dash"]);
 
 const CHAIN_SAFE_COMMANDS: ReadonlySet<string> = new Set([
   "cat", "sed", "head", "tail", "printf", "echo", "ls", "pwd", "git", "rg", "grep", "find", "wc", "nl", "true",
 ]);
 
-function shellReadSteps(cmd: string): ShellReadStep[] {
+/** Interpreter version probes models append to read chains; each prints a version and exits. */
+const VERSION_PROBES: ReadonlyMap<string, readonly string[]> = new Map([
+  ["node", ["--version", "-v"]],
+  ["python3", ["--version", "-V"]],
+  ["python", ["--version", "-V"]],
+]);
+
+/** An allowlisted command, an exact version probe, or `cd` to the absolute path it already runs in. */
+function chainSafe(words: readonly string[], cwd: string): boolean {
+  const [name, ...rest] = words;
+  if (name === undefined) return false;
+  if (CHAIN_SAFE_COMMANDS.has(name)) return true;
+  if (name === "cd") return rest.length === 1 && isAbsolute(rest[0]!) && resolve(rest[0]!) === resolve(cwd);
+  return rest.length === 1 && VERSION_PROBES.get(name)?.includes(rest[0]!) === true;
+}
+
+function shellReadSteps(cmd: string, cwd: string, exitedZero: boolean): ShellReadStep[] {
   const steps: ShellReadStep[] = [];
-  const parsed = shellSteps(cmd);
-  // Every syntactic step must be allowlisted, including steps a short-circuit may have skipped:
+  const parsed = shellSteps(cmd, exitedZero);
+  // Every command must be safe, including steps a short-circuit may have skipped:
   // "printf x && exit 0; cat a" ends the shell before the cat.
-  if (parsed === undefined || parsed.all.some(words => !CHAIN_SAFE_COMMANDS.has(words[0]!))) return steps;
+  if (parsed === undefined || parsed.all.some(words => !chainSafe(words, cwd))) return steps;
   for (const words of parsed.ran) {
     const [name, ...rest] = words;
     if (name === "cat" && rest.length > 0 && rest.every(word => PATH_ARG.test(word) && !word.startsWith("-"))) {
@@ -207,6 +263,11 @@ function shellReadSteps(cmd: string): ShellReadStep[] {
       steps.push({ kind: "lines", path: rest[2]!, start: Number(range[1]), end: Number(range[2]) });
       continue;
     }
+    const grepped = name === "grep" ? numberedGrepPath(rest) : undefined;
+    if (grepped !== undefined) {
+      steps.push({ kind: "numbered", path: grepped });
+      continue;
+    }
     if (name !== "head") continue;
     const count = rest.length === 3 && rest[0] === "-n" ? rest[1]!
       : rest.length === 2 && /^-n?\d+$/u.test(rest[0]!) ? rest[0]!.replace(/^-n?/u, "") : undefined;
@@ -216,6 +277,61 @@ function shellReadSteps(cmd: string): ShellReadStep[] {
     }
   }
   return steps;
+}
+
+/**
+ * The one file of `grep -n [-A N] [-B N] [-C N] [-E|-F|-i|-w|-x] [-e PATTERN | PATTERN] FILE`. With a
+ * single file operand grep prints no file name, so every shown line is `N:text` or `N-text`. Any other
+ * option, or another operand count, gives undefined.
+ */
+function numberedGrepPath(args: readonly string[]): string | undefined {
+  let numbered = false;
+  let patternGiven = false;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (!arg.startsWith("-") || arg === "-") {
+      operands.push(arg);
+    } else if (arg === "-e") {
+      if (i + 1 >= args.length) return undefined;
+      patternGiven = true;
+      i += 1;
+    } else if (/^-[ABC]$/u.test(arg)) {
+      if (!/^\d+$/u.test(args[i + 1] ?? "")) return undefined;
+      i += 1;
+    } else if (/^-[nEFiwx]+$/u.test(arg)) {
+      numbered ||= arg.includes("n");
+    } else if (!/^-[ABC]\d+$/u.test(arg)) {
+      return undefined;
+    }
+  }
+  const files = patternGiven ? operands : operands.slice(1);
+  const file = files[0];
+  return numbered && files.length === 1 && PATH_ARG.test(file!) && !file!.startsWith("-") ? file : undefined;
+}
+
+/**
+ * The longest run of consecutive `N:text` or `N-text` output lines whose text is exactly line N of the
+ * file, as `grep -n` prints matches and their context.
+ */
+function numberedRun(stdout: string, lines: readonly string[]): { readonly start: number; readonly end: number } | undefined {
+  let best: { start: number; end: number } | undefined;
+  let run: { start: number; end: number } | undefined;
+  for (const shown of stdout.split(/\r?\n/u)) {
+    const match = /^(\d+)[:-](.*)$/u.exec(shown);
+    const number = match === null ? 0 : Number(match[1]);
+    if (match === null || number < 1 || number > lines.length || lines[number - 1] !== match[2]) {
+      run = undefined;
+      continue;
+    }
+    run = run !== undefined && number === run.end + 1 ? { start: run.start, end: number } : { start: number, end: number };
+    if (best === undefined || run.end - run.start > best.end - best.start) best = run;
+  }
+  return best;
 }
 
 /** Largest file the optional read proof will snapshot. */
@@ -282,7 +398,8 @@ async function stableWorkspaceText(
  * Light records the reads a model makes through the shell for the read-before-write gate: a `cat`
  * step of a `;`/`&&` chain is a full read of each named file whose exact current content appears in
  * the output, and a `sed -n 'A,Bp' file` or `head -n N file` step is a partial read of those lines
- * when exactly those lines appear. The command must exit 0 untruncated with no live session. The
+ * when exactly those lines appear. The shell must have exited on its own, untruncated with no live
+ * session; after a nonzero exit only the first step of each `;` list counts. The
  * model has then seen the current text, which is what the gate asks for (GPT models read this way:
  * 0.2 to 0.3 gate refusals per benchmark task, each costing a FileRead and a retry).
  */
@@ -294,16 +411,30 @@ export async function recordShellReads(params: {
   readonly args: Record<string, unknown>;
 }): Promise<void> {
   const { output } = params;
-  if (output.exitCode !== 0 || output.truncated || output.timedOut || output.session_id !== undefined) return;
+  // A null exit code means the shell did not exit on its own (a signal, or still running).
+  if (output.exitCode === null || output.truncated || output.timedOut || output.session_id !== undefined) return;
   if (output.stdout.length === 0) return;
   const sessionId = resolveSessionId(params.args);
   if (sessionId === undefined) return;
-  const steps = shellReadSteps(params.cmd);
+  const steps = shellReadSteps(params.cmd, params.cwd, output.exitCode === 0);
   if (steps.length === 0 || steps.length > 16) return;
   for (const step of steps) {
     for (const rawPath of step.kind === "full" ? step.paths : [step.path]) {
       const file = await stableWorkspaceText(resolve(params.cwd, rawPath), params.allowedPaths, params.args);
       if (file === undefined) continue;
+      if (step.kind === "numbered") {
+        const lines = file.text.split(/\r?\n/u);
+        const run = numberedRun(output.stdout, lines);
+        if (run === undefined) continue;
+        recordSessionRead(sessionId, file.canonical, {
+          content: lines.slice(run.start - 1, run.end).join("\n"),
+          timestamp: file.mtimeMs,
+          viewKind: "partial",
+          readOffset: run.start,
+          readLimit: run.end - run.start + 1,
+        });
+        continue;
+      }
       if (step.kind === "full") {
         if (!output.stdout.includes(file.text)) continue;
         recordSessionRead(sessionId, file.canonical, {

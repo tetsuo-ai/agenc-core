@@ -23,7 +23,7 @@ export function getSessionPermissionInstructions(
     getPermissionsSection(currentPermissions, {
       sandboxPolicy: ctx.sandboxPolicy.value,
       networkSandboxPolicy: ctx.networkSandboxPolicy,
-    }),
+    }, { light: session.services.runtimeOptions?.lightMode === true }),
     getAutonomousWorkSection(ctx.config.autonomousMode === true, currentPermissions),
   ]
     .filter((section): section is string => section !== null && section.length > 0)

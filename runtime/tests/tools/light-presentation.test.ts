@@ -104,11 +104,19 @@ test("compact shell fields keep permission and process-lifecycle conditions", ()
   expect(registry.tools.find(t => t.name === "exec_command")?.requiresApproval).toBe(true);
 });
 
-test("the Light yield hint names the 30 s Light default, so models that write every field copy it", () => {
-  const shell = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true }).toLLMTools()
-    .find(t => t.function.name === "exec_command")!;
+test("the Light yield hint names the 30 s Light default once the full exec_command schema is loaded", () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  registry.discoverToolNames?.(["exec_command"]);
+  const shell = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
   const yieldField = (shell.function.parameters.properties as Record<string, { description?: string }>).yield_time_ms;
   expect(yieldField?.description).toContain("Default 30000 (tty 10000).");
+});
+
+test("the lean exec_command leaves yield_time_ms to its default and names it as an advanced field", () => {
+  const lean = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true }).toLLMTools()
+    .find(t => t.function.name === "exec_command")!;
+  expect(lean.function.parameters.properties).not.toHaveProperty("yield_time_ms");
+  expect(lean.function.description).toContain("Advanced fields (yield_time_ms, tty, login, shell, detach");
 });
 
 function providerRegistry(provider: string | undefined) {
@@ -140,7 +148,7 @@ test("other providers keep Edit and Write, and Edit stays discoverable for GPT s
 test("Light presents a lean exec_command until system.searchTools selects it", () => {
   const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
   const lean = registry.toLLMTools().find(t => t.function.name === "exec_command")!;
-  expect(Object.keys(lean.function.parameters.properties as object).sort()).toEqual(["cmd", "timeoutMs", "workdir", "yield_time_ms"]);
+  expect(Object.keys(lean.function.parameters.properties as object).sort()).toEqual(["cmd", "timeoutMs", "workdir"]);
   expect(lean.function.parameters.required).toEqual(["cmd"]);
   expect(lean.function.description).toContain("select:exec_command loads their schema");
   registry.discoverToolNames?.(["exec_command"]);
