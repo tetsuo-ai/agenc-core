@@ -1236,7 +1236,32 @@ async function waitForBusyRetry(context, path, attempt, cause) {
   if (remaining <= 0) throw timeoutError(context, path, cause);
   const exponentialCap = Math.min(MAX_BUSY_RETRY_MS, 2 ** Math.min(attempt, 6));
   const jitter = Math.max(1, Math.floor(Math.random() * (exponentialCap + 1)));
-  await delay(Math.min(remaining, jitter));
+  const waitMs = Math.min(remaining, jitter);
+  const signal = context.retryWakeSignal;
+  if (signal === undefined || context.retryWakeConsumed) {
+    await delay(waitMs);
+  } else {
+    // A hint only shortens one sleep. The next attempt must still validate
+    // the path and acquire the SQLite transaction against the same deadline.
+    let timer;
+    let wake;
+    try {
+      await new Promise((resolve) => {
+        wake = () => {
+          context.retryWakeConsumed = true;
+          resolve();
+        };
+        timer = setTimeout(resolve, waitMs);
+        signal.addEventListener("abort", wake, { once: true });
+        // Covers readiness before subscription as well as before acquisition.
+        if (signal.aborted) wake();
+        reportProgress(context, "SQLite busy retry wait started");
+      });
+    } finally {
+      clearTimeout(timer);
+      if (wake !== undefined) signal.removeEventListener("abort", wake);
+    }
+  }
   throwIfExpired(context, path, cause);
 }
 
@@ -1323,6 +1348,7 @@ export async function acquireLocalSqliteLocks(
     label = "AgenC operation",
     deadline: suppliedDeadline,
     onProgress,
+    retryWakeSignal,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -1337,6 +1363,9 @@ export async function acquireLocalSqliteLocks(
   if (onProgress !== undefined && typeof onProgress !== "function") {
     throw new TypeError("lock onProgress must be a function");
   }
+  if (retryWakeSignal !== undefined && !(retryWakeSignal instanceof AbortSignal)) {
+    throw new TypeError("lock retryWakeSignal must be an AbortSignal");
+  }
   if (requestedPaths.length === 0) return () => {};
 
   const startedAt = performance.now();
@@ -1348,6 +1377,8 @@ export async function acquireLocalSqliteLocks(
     label,
     timeoutMs,
     onProgress,
+    retryWakeSignal,
+    retryWakeConsumed: false,
   };
   const firstDisplayPath = resolve(requestedPaths[0]);
   throwIfExpired(context, firstDisplayPath);

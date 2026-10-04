@@ -189,15 +189,20 @@ describe("daemon startup cancellation guard", () => {
     const [parentChannel, childChannel] = channelPair();
     const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
     const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    const hint = parent.readinessSignal;
+    expect(hint.aborted).toBe(false);
     if (early) await child.notifyReady();
     const ready = parent.waitUntilReady(1_000);
     if (!early) await child.notifyReady();
     await expect(ready).resolves.toBe("ready");
+    expect(parent.readinessSignal).toBe(hint);
+    expect(hint.aborted).toBe(true);
     await child.notifyReady();
     await expect(parent.waitUntilReady(1_000)).resolves.toBe("ready");
     expect(child.wasRequested()).toBe(false);
     expect(parentChannel.closed).toBe(false);
     parent.close();
+    expect(hint.aborted).toBe(true);
     expect(parentChannel.messages.size).toBe(0);
     expect(parentChannel.closes.size).toBe(0);
   });
@@ -208,6 +213,7 @@ describe("daemon startup cancellation guard", () => {
     await childChannel.send({ type: "agenc.daemon.startup.ready", token: TOKEN_B });
     await childChannel.send({ type: "ready", token: TOKEN_A });
     await expect(parent.waitUntilReady(5)).resolves.toBe("timeout");
+    expect(parent.readinessSignal.aborted).toBe(false);
     parent.close();
   });
 
@@ -236,6 +242,7 @@ describe("daemon startup cancellation guard", () => {
     await childChannel.send({ type: "agenc.daemon.startup.ready", token: TOKEN_A });
     await expect(ready).resolves.toBe("closed");
     await expect(parent.waitUntilReady(1_000)).resolves.toBe("closed");
+    expect(parent.readinessSignal.aborted).toBe(false);
     await child.acknowledgeAfterCleanup(true);
     await cancelled;
   });
@@ -250,6 +257,8 @@ describe("daemon startup cancellation guard", () => {
     await childA.notifyReady();
     await expect(parentA.waitUntilReady(5)).resolves.toBe("ready");
     await expect(parentB.waitUntilReady(5)).resolves.toBe("timeout");
+    expect(parentA.readinessSignal.aborted).toBe(true);
+    expect(parentB.readinessSignal.aborted).toBe(false);
     parentA.close();
     parentB.close();
     childB.close();
@@ -264,6 +273,7 @@ describe("daemon startup cancellation guard", () => {
     else parent.close();
     await expect(ready).resolves.toBe("closed");
     await expect(child.notifyReady()).resolves.toBeUndefined();
+    expect(parent.readinessSignal.aborted).toBe(false);
     expect(parentChannel.messages.size).toBe(0);
     expect(parentChannel.closes.size).toBe(0);
   });
@@ -275,6 +285,7 @@ describe("daemon startup cancellation guard", () => {
     childChannel.send = async () => { throw new Error("IPC send failed"); };
     await expect(child.notifyReady()).resolves.toBeUndefined();
     await expect(parent.waitUntilReady(5)).resolves.toBe("timeout");
+    expect(parent.readinessSignal.aborted).toBe(false);
     parent.close();
   });
 });

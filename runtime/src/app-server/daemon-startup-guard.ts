@@ -26,6 +26,8 @@ export interface AgenCDaemonStartupGuardReceiver {
 }
 
 export interface AgenCDaemonStartupGuardController {
+  /** Scheduling hint only, signalled by the exact child's accepted READY. */
+  readonly readinessSignal: AbortSignal;
   waitUntilReady(timeoutMs: number): Promise<AgenCDaemonStartupReadyHint>;
   requestCancellation(timeoutMs: number): Promise<void>;
   close(): void;
@@ -109,6 +111,7 @@ export function createAgenCDaemonStartupGuardController(
   let closed = false;
   let ready = false;
   let cancellation: Promise<void> | null = null;
+  const readiness = new AbortController();
   const readyWaiters = new Set<(hint: AgenCDaemonStartupReadyHint) => void>();
   const finishReadyWaiters = (hint: AgenCDaemonStartupReadyHint): void => {
     for (const finish of [...readyWaiters]) finish(hint);
@@ -117,6 +120,7 @@ export function createAgenCDaemonStartupGuardController(
     if (closed || cancellation !== null || ready) return;
     if (!isStartupGuardMessage(message, STARTUP_GUARD_READY, token)) return;
     ready = true;
+    readiness.abort();
     channel.removeMessageListener(onReady);
     finishReadyWaiters("ready");
   };
@@ -135,6 +139,7 @@ export function createAgenCDaemonStartupGuardController(
   channel.addCloseListener(onChannelClose);
   channel.unref();
   return {
+    readinessSignal: readiness.signal,
     waitUntilReady: (timeoutMs) => {
       if (closed || cancellation !== null) return Promise.resolve("closed");
       if (ready) return Promise.resolve("ready");
