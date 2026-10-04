@@ -115,17 +115,19 @@ export function hasOperatorHeapSnapshotOption(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * Young-generation size (megabytes per semi-space) the daemon starts with.
- * V8 starts it at about 1 MB and grows it only after scavenges, so loading the
- * daemon's code (about 10 MB of young allocations before the first model
- * request) ran several scavenges on that path. Under load V8 grows it well past
- * this size anyway, so only the start changes. A semi-space option the
- * operator sets in NODE_OPTIONS wins.
+ * Minimum young-generation size (megabytes per semi-space) for the daemon.
+ * V8 starts the young generation at about 1 MB and grows it only after
+ * scavenges, so loading the daemon's code ran several scavenges while it
+ * started. With this minimum they do not happen during start-up. It stays a
+ * minimum for the life of the process: when the daemon is idle, V8 does not
+ * shrink the young generation below it. A semi-space option the operator sets
+ * in NODE_OPTIONS, in either spelling, wins.
  */
 export const DAEMON_MIN_SEMI_SPACE_MB = 16;
 
 function hasOperatorSemiSpaceOption(env: NodeJS.ProcessEnv): boolean {
-  return env.NODE_OPTIONS?.includes("semi-space-size") ?? false;
+  // Node accepts V8 options with `_` or `-` between words.
+  return env.NODE_OPTIONS?.replaceAll("_", "-").includes("semi-space-size") ?? false;
 }
 
 

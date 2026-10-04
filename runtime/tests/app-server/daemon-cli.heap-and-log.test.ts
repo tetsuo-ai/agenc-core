@@ -53,12 +53,17 @@ describe("daemon child heap cap arg construction", () => {
     expect(buildAgenCDaemonChildNodeArgs("/entry.js", {})).toContain(
       "--min-semi-space-size=16",
     );
-    const args = buildAgenCDaemonChildNodeArgs("/entry.js", {
-      NODE_OPTIONS: "--max-semi-space-size=8",
-    });
-    expect(args.some((arg) => arg.includes("semi-space-size"))).toBe(false);
-    expect(args.indexOf("--min-semi-space-size=16")).toBe(-1);
-    expect(args).toContain("/entry.js");
+    for (const nodeOptions of [
+      "--max-semi-space-size=8",
+      "--max_semi_space_size=8",
+      "--inspect --max_semi_space_size=8",
+    ]) {
+      const args = buildAgenCDaemonChildNodeArgs("/entry.js", {
+        NODE_OPTIONS: nodeOptions,
+      });
+      expect(args.some((arg) => arg.includes("semi-space-size"))).toBe(false);
+      expect(args).toContain("/entry.js");
+    }
   });
 
   it("honours the AGENC_DAEMON_MAX_OLD_SPACE_MB override", () => {
