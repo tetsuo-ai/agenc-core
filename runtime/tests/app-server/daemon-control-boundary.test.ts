@@ -10,12 +10,12 @@ vi.mock("../../src/app-server/daemon-cli.js", () => {
 });
 import { runAgenCDaemonCli, type AgenCDaemonCliHost } from "../../src/app-server/daemon-control.js";
 
-function staticLocalGraph(entry: string): Set<string> {
+function staticLocalGraph(entry: string, readSource = (file: string) => readFileSync(file, "utf8")): Set<string> {
   const seen = new Set<string>();
   function visit(file: string): void {
     if (seen.has(file)) return;
     seen.add(file);
-    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const source = ts.createSourceFile(file, readSource(file), ts.ScriptTarget.Latest, true);
     for (const statement of source.statements) {
       if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
       if (!statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
@@ -43,6 +43,26 @@ function staticLocalGraph(entry: string): Set<string> {
 }
 
 describe("daemon control foreground boundary", () => {
+  it.each(["app-server/daemon-control.ts", "app-server/daemon-provisional-start.ts", "bin/print-cli-main.ts"])(
+    "keeps %s outside the project database implementation graph", entry => {
+      const graph = staticLocalGraph(resolve("src", entry));
+      expect(graph.has(resolve("src/state/database-paths.ts"))).toBe(true);
+      for (const target of ["state/sqlite-driver.ts", "state/migrations/index.ts",
+        "state/fresh-state-schema.ts", "session/session-store.ts"]) {
+        expect(graph.has(resolve("src", target)), target).toBe(false);
+      }
+      expect(graph.has(resolve("src/utils/sqlite-lock.ts"))).toBe(true);
+    },
+  );
+
+  it("detects a forbidden driver import added behind the discovery leaf", () => {
+    const leaf = resolve("src/state/database-paths.ts");
+    const graph = staticLocalGraph(resolve("src/app-server/daemon-control.ts"), file =>
+      readFileSync(file, "utf8") + (file === leaf ? '\nimport "./sqlite-driver.js";\n' : ""));
+    expect(graph.has(resolve("src/state/sqlite-driver.ts"))).toBe(true);
+    expect(graph.has(resolve("src/session/session-store.ts"))).toBe(true);
+  });
+
   it("keeps configured MCP decisions outside the server implementation graph", () => {
     const graph = staticLocalGraph(resolve("src/mcp/server/configured-start.ts"));
     for (const file of ["mcp/server/start.ts", "mcp/server/content-providers.ts",
