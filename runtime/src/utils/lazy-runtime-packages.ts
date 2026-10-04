@@ -22,3 +22,7 @@ export function loadJsonRpc(): typeof import("vscode-jsonrpc/node") {
 export function loadChokidar(): typeof import("chokidar").default {
   return require(fileURLToPath(import.meta.resolve("chokidar"))).default;
 }
+
+export function loadYaml(): typeof import("js-yaml") {
+  return require(fileURLToPath(import.meta.resolve("js-yaml")));
+}

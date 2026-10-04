@@ -22,7 +22,7 @@ describe("lazy installed runtime packages", () => {
             return next(specifier, context);
           },
           load(url, context, next) {
-            if (['diff', 'tar', 'vscode-jsonrpc', 'chokidar', 'readdirp'].some(name => url.includes('/node_modules/' + name + '/'))) loads.push(url);
+            if (['diff', 'tar', 'vscode-jsonrpc', 'chokidar', 'readdirp', 'js-yaml'].some(name => url.includes('/node_modules/' + name + '/'))) loads.push(url);
             return next(url, context);
           }
         });
@@ -33,6 +33,7 @@ describe("lazy installed runtime packages", () => {
           ['tar', 'loadTar', ['list', 'extract', 'ReadEntry']],
           ['vscode-jsonrpc/node', 'loadJsonRpc', ['createMessageConnection', 'StreamMessageReader', 'StreamMessageWriter', 'ResponseError']],
           ['chokidar', 'loadChokidar', ['watch']],
+          ['js-yaml', 'loadYaml', ['load', 'YAMLException']],
         ]) {
           blocked = specifier;
           assert.throws(() => core[loader](), error => error === failure);
@@ -49,6 +50,9 @@ describe("lazy installed runtime packages", () => {
         }
         const patch = core.loadDiff().structuredPatch('a', 'a', 'before\\n', 'after\\n');
         assert.deepEqual(patch.hunks[0].lines, ['-before', '+after']);
+        const yaml = core.loadYaml();
+        assert.deepEqual(yaml.load('enabled: true'), { enabled: true });
+        assert.throws(() => yaml.load('enabled: [broken'), yaml.YAMLException);
         hook.deregister();
         console.log('lazy-runtime-package-identity-ok');
       `);
