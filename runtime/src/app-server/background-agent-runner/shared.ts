@@ -63,7 +63,7 @@ import type {
   SessionStatusLineExecuteResult,
 } from "../protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "../realtime.js";
-import type { AgenCRealtimeCallClient } from "../realtime-transport.js";
+import type { AgenCRealtimeCallClientLike } from "../realtime-transport.js";
 import type {
   RealtimeTransportConnection,
   RealtimeTransportRequest,
@@ -879,7 +879,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly realtimeCallClient?: AgenCRealtimeCallClient;
+  readonly realtimeCallClient?: AgenCRealtimeCallClientLike;
   readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
   readonly onActiveAgentTerminated?: (
     agentId: string,

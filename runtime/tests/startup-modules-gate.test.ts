@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  DEFERRED_DAEMON_IMPLEMENTATIONS,
   FORBIDDEN_BEFORE_FIRST_REQUEST,
   addBundledStartupSources,
   findStartupOffenders,
@@ -53,7 +54,20 @@ describe("startup-modules gate", () => {
       "bundled:../src/services/compact/transaction.ts",
       "bundled:../src/mcp/server/start.ts",
     ]);
-    expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length);
+    expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length - DEFERRED_DAEMON_IMPLEMENTATIONS.length);
+  });
+
+  test.each(DEFERRED_DAEMON_IMPLEMENTATIONS)("keeps %s behind first use", (source) => {
+    const url = `bundled:../../src/${source}`;
+    const trace = parseStartupTrace(`# ["daemon"]\n10 ${url}\n`);
+    expect(findStartupOffenders([trace], 1000).map(item => item.url)).toEqual([url]);
+    expect(findStartupOffenders([trace], 10)).toEqual([]);
+  });
+
+  test("keeps shared authority, schema and synchronous data leaves available", () => {
+    const sources = ["commands/lookup.ts", "commands/builtin-command-names.ts", "utils/attachment-message.ts", "eval-contract/canonical-json.ts", "browser/named-keys.ts", "browser/ssrf.ts", "services/lsp/manager.ts", "app-server/fuzzy-file-search-boundary.ts", "search/fuzzy-boundary.ts", "services/compact/thresholds.ts", "services/compact/transaction-types.ts", "workspace/file-mutation-evidence.ts", "utils/debug.ts", "services/heapWatchdog/heapWatchdog.ts"];
+    const trace = parseStartupTrace(`# ["daemon"]\n${sources.map(source => `10 bundled:../../src/${source}\n`).join("")}`);
+    expect(findStartupOffenders([trace], 1000)).toEqual([]);
   });
 
   test.each(["diff", "tar", "vscode-jsonrpc", "chokidar", "readdirp", "js-yaml"])(
@@ -143,12 +157,14 @@ function writeFixtureCli(directory: string, marks: string, slowDaemon: boolean):
       "const mark = (name) => writeFileSync(path.join(marks, name), JSON.stringify({ pid: process.pid, home: process.env.HOME, nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv }));",
       'if (args[0] === "config") process.exit(0);',
       'if (args[0] === "daemon" && args[1] === "status") {',
+      '  mark("status.json");',
       '  console.log(`AgenC daemon running (pid ${readFileSync(pidFile, "utf8").trim()})`);',
       "  process.exit(0);",
       "}",
       'if (args[0] === "daemon" && args[1] === "start") {',
       '  mark("daemon.json");',
       `  if (!${slowDaemon}) writeFileSync(pidFile, String(process.pid));`,
+      `  if (!${slowDaemon}) console.log(\`AgenC daemon running (pid \${process.pid})\`);`,
       '  process.on("SIGTERM", () => { rmSync(pidFile, { force: true }); process.exit(0); });',
       "} else {",
       '  mark("one-shot.json");',
@@ -190,6 +206,7 @@ async function interruptGate(slowDaemon: boolean, waitForMark: string) {
         : undefined;
     const daemon = read("daemon.json");
     const oneShot = read("one-shot.json");
+    expect(read("status.json")).toBeUndefined();
     for (const mark of [daemon, oneShot]) if (mark !== undefined) pids.push(mark.pid);
     gate.kill("SIGTERM");
     const result = await exited;

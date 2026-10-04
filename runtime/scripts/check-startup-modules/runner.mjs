@@ -39,8 +39,41 @@ const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const TRACE_HOOK = path.join(SCRIPT_DIR, "trace-hook.mjs");
 
+/** Heavy implementations; synchronous schemas, authority and lifecycle leaves stay eager. */
+export const DEFERRED_DAEMON_IMPLEMENTATIONS = Object.freeze([
+  "commands.ts",
+  "commands/registry.ts",
+  "utils/attachments.ts",
+  "eval-contract/experiment-bundle.ts",
+  "eval-contract/evaluation-plan.ts",
+  "browser/manager.ts",
+  "browser/page.ts",
+  "browser/cdp.ts",
+  "services/lsp/LSPServerInstance.ts",
+  "services/lsp/LSPClient.ts",
+  "app-server/fuzzy-file-search.ts",
+  "app-server/fuzzy-file-index.ts",
+  "search/fuzzy-match.ts",
+  "app-server/health.ts",
+  "app-server/run-inspection.ts",
+  "remote/service.ts",
+  "gateway/owner-telegram.ts",
+  "audio/whisper.ts",
+  "app-server/realtime.ts",
+  "app-server/realtime-transport.ts",
+  "workspace/file-mutation-transaction.ts",
+  "services/compact/emergency-summarizer.ts",
+  "tui/main.tsx",
+  "tui/components/App.tsx",
+  "commands/terminalSetup/terminalSetup.tsx"
+]);
+
 /** Modules a cold one-shot must not load before its first model request. */
 export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
+  ...DEFERRED_DAEMON_IMPLEMENTATIONS.map((source) => ({
+    pattern: new RegExp(`^bundled:.*\\/src\\/${source.replaceAll(".", "\\.")}$`),
+    reason: `${source} loads at its RPC, service initialization or tool operation`,
+  })),
   {
     pattern: /^bundled:.*\/src\/mcp\/server\/start\.ts$/,
     reason: "disabled daemon MCP configuration must not load the server implementation",
@@ -228,7 +261,10 @@ export async function runStartupModulesGate({ binAgenc = BIN_AGENC } = {}) {
     lifecycle.assertOpen();
     const traceDir = path.join(gateState.root, "startup-trace");
     const traceImport = traceImportOption(traceDir);
-    const daemonPid = await startTuiGateDaemon(gateState, binAgenc, { nodeArgs: [traceImport] });
+    const daemonPid = await startTuiGateDaemon(gateState, binAgenc, {
+      nodeArgs: [traceImport],
+      readiness: "announcement",
+    });
     // The gate env keeps NODE_OPTIONS empty; only this one-shot gets the hook.
     const result = await runOwnedOneShotProcess({
       executable: process.execPath,

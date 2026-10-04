@@ -1,3 +1,5 @@
+import { WhisperError } from "./whisper-error.js";
+export { WhisperError } from "./whisper-error.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -53,9 +55,6 @@ export const MAX_WHISPER_WAV_BYTES = 44 + 16000 * 2 * 30;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TRANSCRIPT_CHARS = 16000;
 
-export class WhisperError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = "WhisperError"; }
-}
 function invalid(message: string): never { throw new WhisperError("WHISPER_INVALID_ARGUMENT", message); }
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Expected an object");

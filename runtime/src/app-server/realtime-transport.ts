@@ -1,3 +1,4 @@
+import { defaultRealtimeFetch } from "./realtime-default-fetch.js";
 /**
  * AgenC realtime WebRTC call negotiation helpers.
  *
@@ -88,6 +89,8 @@ export interface AgenCRealtimeCallClientOptions {
   readonly defaultHeaders?: AgenCRealtimeHeadersProvider;
   readonly fetch?: AgenCRealtimeFetch;
 }
+
+export type AgenCRealtimeCallClientLike = Pick<AgenCRealtimeCallClient, "create" | "createWithSession">;
 
 export class AgenCRealtimeCallClient {
   readonly #baseUrl: string;
@@ -481,23 +484,6 @@ async function decodeRealtimeCallResponse(
     sdp: body,
     callId: decodeRealtimeCallIdFromLocation(location),
   };
-}
-
-function defaultRealtimeFetch(): AgenCRealtimeFetch {
-  const fetch = globalThis.fetch as
-    | undefined
-    | ((
-        url: string,
-        init: {
-          readonly method: "POST";
-          readonly headers: Readonly<Record<string, string>>;
-          readonly body: string;
-        },
-      ) => Promise<AgenCRealtimeHttpResponse>);
-  if (fetch === undefined) {
-    throw new Error("global fetch is unavailable for realtime calls");
-  }
-  return fetch;
 }
 
 function usesBackendRealtimeCallShape(baseUrl: string): boolean {

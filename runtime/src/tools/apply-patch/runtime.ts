@@ -52,12 +52,9 @@ import {
   type ApplyPatchHunk,
   type UpdateFileChunk,
 } from "./types.js";
-import {
-  captureWorkspaceFilePathTransactionGuard,
-  WorkspaceFileMutationPreEffectConflictError,
-  type WorkspaceFilePathExpectedState,
-  type WorkspaceFilePathTransactionGuard,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFilePathExpectedState, type WorkspaceFilePathTransactionGuard } from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceFileMutationPreEffectConflictError } from "../../workspace/file-mutation-evidence.js";
+import { captureWorkspaceFilePathTransactionGuard } from "../../workspace/lazy-file-mutation.js";
 
 type ApplyPatchObservedPathState =
   | { readonly kind: "content"; readonly content: string }

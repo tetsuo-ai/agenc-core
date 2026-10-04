@@ -14,7 +14,8 @@ import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
-import { WhisperError, type WhisperService } from "../audio/whisper.js";
+import type { WhisperService } from "../audio/whisper.js";
+import { WhisperError } from "../audio/whisper-error.js";
 import { RemoteError, REMOTE_METHODS, type RemoteMethod } from "../remote/types.js";
 import type { RemoteAccessBoundary } from "../remote/access.js";
 import type { RemoteService } from "../remote/service.js";
@@ -50,45 +51,39 @@ import {
   type AgenCDaemonSessionManager,
 } from "./session-lifecycle.js";
 import {
-  AgenCFuzzyFileSearchService,
   FuzzyFileSearchBoundaryError,
   MAX_FUZZY_QUERY_CODEPOINTS,
   MAX_FUZZY_RAW_ROOTS,
   MAX_FUZZY_RESULTS,
   MAX_FUZZY_FILE_ROOTS_UTF8_BYTES,
   MAX_FUZZY_FILE_ROOT_UTF8_BYTES,
-  type AgenCFuzzyFileSearch,
-} from "./fuzzy-file-search.js";
+} from "./fuzzy-file-search-boundary.js";
+import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
+import { createLazyFuzzyFileSearch } from "./lazy-fuzzy-file-search.js";
 import {
   FuzzyBoundaryError,
   validateFuzzyCandidate,
   validateFuzzyQuery,
-} from "../search/fuzzy-match.js";
+} from "../search/fuzzy-boundary.js";
 import {
   AgenCCommandExecService,
   type AgenCCommandExec,
 } from "./command-exec.js";
-import {
-  AgenCDaemonHealthService,
-  type AgenCHealthStateCounter,
-} from "./health.js";
+import type { AgenCHealthStateCounter } from "./health.js";
+import { createLazyDaemonHealth, type AgenCDaemonHealthHandlers } from "./lazy-health.js";
 import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
-import {
-  AgenCRealtimeRpcService,
-  type AgenCRealtimeRpcHandlers,
-} from "./realtime.js";
+import type { AgenCRealtimeRpcHandlers } from "./realtime.js";
+import { createLazyRealtimeRpcService } from "./lazy-realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
   daemonCausalRoutineHead,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
-import {
-  AgenCDaemonRunInspectionError,
-  type AgenCDaemonRunInspectionService,
-} from "./run-inspection.js";
+import { AgenCDaemonRunInspectionError } from "./run-inspection-error.js";
+import type { AgenCDaemonRunInspectionHandlers } from "./lazy-run-inspection.js";
 import {
   AgenCCsvJobReviewError,
   type AgenCCsvJobReviewService,
@@ -333,14 +328,14 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
   readonly daemonIdentity: AgenCDaemonDispatcherOptions["daemonIdentity"];
-  readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health: AgenCDaemonHealthHandlers;
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote: RemoteService | undefined;
-  readonly ownerTelegram: OwnerTelegramService | undefined;
+  readonly remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
   readonly pluginSettings: PluginSettingsService | undefined;
@@ -621,19 +616,16 @@ export interface AgenCDaemonDispatcherOptions {
       | { readonly shuttingDown: true; readonly instanceId: string }
       | Promise<{ readonly shuttingDown: true; readonly instanceId: string }>;
   };
-  readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health?: AgenCDaemonHealthHandlers;
   readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly whisper?: WhisperService;
-  readonly runInspection?: Pick<
-    AgenCDaemonRunInspectionService,
-    "status" | "result" | "replay" | "evidence"
-  >;
+  readonly runInspection?: AgenCDaemonRunInspectionHandlers;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote?: RemoteService;
-  readonly ownerTelegram?: OwnerTelegramService;
+  readonly remote?: Pick<RemoteService, "handle" | "stop">;
+  readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
   /**
@@ -764,20 +756,17 @@ export class AgenCDaemonJsonRpcDispatcher {
             }>;
       }
     | undefined;
-  readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly #health: AgenCDaemonHealthHandlers;
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #whisper: WhisperService | undefined;
   readonly #runInspection:
-    | Pick<
-        AgenCDaemonRunInspectionService,
-        "status" | "result" | "replay" | "evidence"
-      >
+    | AgenCDaemonRunInspectionHandlers
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
-  readonly #remote: RemoteService | undefined;
-  readonly #ownerTelegram: OwnerTelegramService | undefined;
+  readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
@@ -795,7 +784,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${randomUUID()}`);
     this.#fuzzyFileSearch =
-      options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+      options.fuzzyFileSearch ?? createLazyFuzzyFileSearch();
     this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
     this.#fuzzyAllowedRoots = Object.freeze([
       ...(options.fuzzyAllowedRoots ?? []),
@@ -806,10 +795,10 @@ export class AgenCDaemonJsonRpcDispatcher {
       TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
     this.#health =
       options.health ??
-      new AgenCDaemonHealthService({
+      createLazyDaemonHealth({
         stateCounter: options.healthStateCounter,
       });
-    this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
+    this.#realtime = options.realtime ?? createLazyRealtimeRpcService();
     this.#whisper = options.whisper;
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
@@ -1263,7 +1252,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.status(validateRunStatusParams(params)),
+          await this.#runInspection.status(validateRunStatusParams(params), signal),
         );
       case "run.result":
         if (this.#runInspection === undefined) {
@@ -1271,7 +1260,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.result(validateRunResultParams(params)),
+          await this.#runInspection.result(validateRunResultParams(params), signal),
         );
       case "run.replay":
         if (this.#runInspection === undefined) {
@@ -1279,7 +1268,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.replay(validateRunReplayParams(params)),
+          await this.#runInspection.replay(validateRunReplayParams(params), signal),
         );
       case "run.evidence":
         if (this.#runInspection === undefined) {
@@ -1287,7 +1276,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.evidence(validateRunEvidenceParams(params)),
+          await this.#runInspection.evidence(validateRunEvidenceParams(params), signal),
         );
       case "run.cancel": {
         const cancelParams = validateRunCancelParams(params);
@@ -1826,9 +1815,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "health.ping":
-        return successResponse(id, this.#health.ping());
+        return successResponse(id, await this.#health.ping());
       case "health.ready":
-        return successResponse(id, this.#health.ready());
+        return successResponse(id, await this.#health.ready());
       case "health.stats":
         return successResponse(id, await this.#health.stats());
       case "daemon.reload":

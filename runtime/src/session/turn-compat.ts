@@ -47,7 +47,7 @@ import {
 import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
 import { appendSystemContext, prependUserContext } from "../utils/api.js";
-import { createAttachmentMessage } from "../utils/attachments.js";
+import { createAttachmentMessage } from "../utils/attachment-message.js";
 import {
   createAssistantAPIErrorMessage,
   createAssistantMessage,

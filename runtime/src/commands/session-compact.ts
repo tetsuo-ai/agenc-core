@@ -53,7 +53,7 @@ import {
   getAutoCompactThresholdForEnvironment,
   getEffectiveContextWindowSizeForEnvironment,
   isAutoCompactEnabledForEnvironment,
-} from "../services/compact/autoCompact.js";
+} from "../services/compact/thresholds.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {

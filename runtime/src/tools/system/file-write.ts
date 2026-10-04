@@ -68,12 +68,9 @@ import {
 } from "../effect-boundary.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 import { logForDebugging } from "../../utils/debug.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";

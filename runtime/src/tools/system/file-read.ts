@@ -81,12 +81,9 @@ import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
-import {
-  bindWorkspaceFileReadCapability,
-  WorkspaceBoundReadFileTooLargeError,
-  type WorkspaceBoundFileReadCapability,
-  type WorkspaceBoundReadFile,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceBoundFileReadCapability, type WorkspaceBoundReadFile } from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceBoundReadFileTooLargeError } from "../../workspace/file-mutation-evidence.js";
+import { bindWorkspaceFileReadCapability } from "../../workspace/lazy-file-mutation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants

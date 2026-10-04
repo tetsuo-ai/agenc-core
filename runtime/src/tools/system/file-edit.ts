@@ -61,12 +61,9 @@ import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
