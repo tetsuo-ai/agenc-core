@@ -28,4 +28,3 @@ export class FuzzyFileSearchBoundaryError extends Error {
     this.name = "FuzzyFileSearchBoundaryError";
   }
 }
-

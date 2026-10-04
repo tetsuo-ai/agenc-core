@@ -36,4 +36,3 @@ export function createAttachmentMessage(
     timestamp: new Date().toISOString(),
   }
 }
-
