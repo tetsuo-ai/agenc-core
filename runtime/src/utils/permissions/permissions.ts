@@ -68,7 +68,6 @@ import {
   clearClassifierChecking,
   setClassifierChecking,
 } from '../classifierApprovals.js'
-import { executePermissionRequestHooks } from '../hooks.js'
 import {
   AUTO_REJECT_MESSAGE,
   buildClassifierUnavailableMessage,
@@ -390,6 +389,7 @@ async function runPermissionRequestHooksForHeadlessAgent(
   suggestions: PermissionUpdate[] | undefined,
 ): Promise<PermissionDecision | null> {
   try {
+    const { executePermissionRequestHooks } = await import('../hooks.js')
     for await (const hookResult of executePermissionRequestHooks(
       tool.name,
       toolUseID,

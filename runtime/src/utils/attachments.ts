@@ -188,12 +188,11 @@ import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from '../services/compact/autoCompact.js'
-import {
-  hasInstructionsLoadedHook,
-  executeInstructionsLoadedHooks,
-  type HookBlockingError,
-  type InstructionsMemoryType,
+import type {
+  HookBlockingError,
+  InstructionsMemoryType,
 } from './hooks.js'
+import { hasInstructionsLoadedHook } from './hooks/instructionsLoaded.js'
 import { jsonStringify } from './slowOperations.js'
 import { isPDFExtension } from './pdfUtils.js'
 import { getLocalISODate } from '../constants/common.js'
@@ -1635,7 +1634,7 @@ export function memoryFilesToAttachments(
           : memoryFile.parent
             ? 'include'
             : 'nested_traversal'
-        void executeInstructionsLoadedHooks(
+        const hookArgs: Parameters<typeof import('./hooks.js').executeInstructionsLoadedHooks> = [
           memoryFile.path,
           memoryFile.type,
           loadReason,
@@ -1644,6 +1643,9 @@ export function memoryFilesToAttachments(
             triggerFilePath,
             parentFilePath: memoryFile.parent,
           },
+        ]
+        void import('./hooks.js').then(({ executeInstructionsLoadedHooks }) =>
+          executeInstructionsLoadedHooks(...hookArgs),
         )
       }
     }

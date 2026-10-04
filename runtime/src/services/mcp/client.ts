@@ -86,11 +86,7 @@ import {
   isPersistError,
   persistToolResult,
 } from '../../utils/toolResultStorage.js'
-import {
-  type ElicitationWaitingState,
-  runElicitationHooks,
-  runElicitationResultHooks,
-} from './elicitationHandler.js'
+import type { ElicitationWaitingState } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import type { AssistantMessage } from 'src/types/message.js'
@@ -2528,6 +2524,7 @@ export async function callMCPToolWithUrlElicitationRetry({
         const { elicitationId } = elicitation
 
         // Run elicitation hooks — they can resolve URL elicitations programmatically
+        const { runElicitationHooks, runElicitationResultHooks } = await import('./elicitationHandler.js')
         const hookResponse = await runElicitationHooks(
           serverName,
           elicitation,
