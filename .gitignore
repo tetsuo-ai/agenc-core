@@ -39,6 +39,7 @@ obj/
 # Keys (CRITICAL - never commit private keys)
 /.wallet/
 *.json
+!/runtime/src/state/fresh-state-schema.sources.json
 !/runtime/src/llm/registry/openrouter-models.data.json
 !/runtime/src/llm/registry/openrouter-pricing.data.json
 !/plugins/*/.agenc-plugin/plugin.json

@@ -46,7 +46,7 @@ import {
   hasFullDiskReadAccess,
   includePlatformDefaults,
   type FileSystemSandboxPolicy,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 
 /** Root directories never granted, whatever the policy says. */
 const NEVER_GRANTED_ROOTS = new Set(["/proc", "/sys"]);

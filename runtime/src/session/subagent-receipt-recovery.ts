@@ -56,8 +56,9 @@ export function readSubagentTaskReceipts(options: {
         if (candidate === options.projectDir || !lstatSync(candidate).isDirectory()) continue;
         const stateDbPath = join(candidate, STATE_DATABASE_FILENAME);
         const logsDbPath = join(candidate, LOGS_DATABASE_FILENAME);
-        if (!existsSync(stateDbPath) || !existsSync(logsDbPath)) continue;
-        const reader = new StateSqliteReader({ projectDir: candidate, stateDbPath, logsDbPath });
+        if (!existsSync(stateDbPath)) continue;
+        const reader = new StateSqliteReader(
+          { projectDir: candidate, stateDbPath, logsDbPath }, { deferLogs: true });
         try {
           const rows = reader.prepareState<[string], {
             run_id: string; child_run_id: string; session_id: string; source_path: string;

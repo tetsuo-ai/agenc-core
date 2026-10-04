@@ -113,7 +113,8 @@ export interface VerifyPlanReminderAttachment {
  */
 export interface AutoModeAttachment {
   readonly kind: "auto_mode";
-  readonly variant: "full" | "sparse";
+  /** Light variants replace `full`; print retains the safety rules and throttle marker. */
+  readonly variant: "full" | "sparse" | "light" | "light-print";
 }
 
 /**

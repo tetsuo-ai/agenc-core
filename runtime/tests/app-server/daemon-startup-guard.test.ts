@@ -184,4 +184,97 @@ describe("daemon startup cancellation guard", () => {
     expect(takeAgenCDaemonStartupGuardToken(env)).toBe(TOKEN_A);
     expect(env[AGENC_DAEMON_STARTUP_GUARD_ENV]).toBeUndefined();
   });
+
+  it.each([false, true])("latches readiness before or after waiting (early=%s)", async (early) => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    if (early) await child.notifyReady();
+    const ready = parent.waitUntilReady(1_000);
+    if (!early) await child.notifyReady();
+    await expect(ready).resolves.toBe("ready");
+    await child.notifyReady();
+    await expect(parent.waitUntilReady(1_000)).resolves.toBe("ready");
+    expect(child.wasRequested()).toBe(false);
+    expect(parentChannel.closed).toBe(false);
+    parent.close();
+    expect(parentChannel.messages.size).toBe(0);
+    expect(parentChannel.closes.size).toBe(0);
+  });
+
+  it("ignores wrong-token and wrong-type readiness messages", async () => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    await childChannel.send({ type: "agenc.daemon.startup.ready", token: TOKEN_B });
+    await childChannel.send({ type: "ready", token: TOKEN_A });
+    await expect(parent.waitUntilReady(5)).resolves.toBe("timeout");
+    parent.close();
+  });
+
+  it("retains exact-child cancellation after readiness", async () => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    await child.notifyReady();
+    const cancelled = parent.requestCancellation(1_000);
+    await child.requested;
+    await expect(parent.waitUntilReady(1_000)).resolves.toBe("closed");
+    await child.acknowledgeAfterCleanup(true);
+    await expect(cancelled).resolves.toBeUndefined();
+    expect(parentChannel.messages.size).toBe(0);
+    expect(parentChannel.closes.size).toBe(0);
+  });
+
+  it("cancellation ends the readiness wait and ignores a late hint", async () => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    const ready = parent.waitUntilReady(1_000);
+    const cancelled = parent.requestCancellation(1_000);
+    await child.requested;
+    await child.notifyReady();
+    await childChannel.send({ type: "agenc.daemon.startup.ready", token: TOKEN_A });
+    await expect(ready).resolves.toBe("closed");
+    await expect(parent.waitUntilReady(1_000)).resolves.toBe("closed");
+    await child.acknowledgeAfterCleanup(true);
+    await cancelled;
+  });
+
+  it("cannot wake a different child's readiness wait", async () => {
+    const [parentAChannel, childAChannel] = channelPair();
+    const [parentBChannel, childBChannel] = channelPair();
+    const parentA = createAgenCDaemonStartupGuardController(TOKEN_A, parentAChannel);
+    const parentB = createAgenCDaemonStartupGuardController(TOKEN_B, parentBChannel);
+    const childA = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childAChannel);
+    const childB = createAgenCDaemonStartupGuardReceiver(TOKEN_B, childBChannel);
+    await childA.notifyReady();
+    await expect(parentA.waitUntilReady(5)).resolves.toBe("ready");
+    await expect(parentB.waitUntilReady(5)).resolves.toBe("timeout");
+    parentA.close();
+    parentB.close();
+    childB.close();
+  });
+
+  it.each([false, true])("settles a pending readiness wait on close (child=%s)", async (closeChild) => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    const ready = parent.waitUntilReady(60_000);
+    if (closeChild) child.close();
+    else parent.close();
+    await expect(ready).resolves.toBe("closed");
+    await expect(child.notifyReady()).resolves.toBeUndefined();
+    expect(parentChannel.messages.size).toBe(0);
+    expect(parentChannel.closes.size).toBe(0);
+  });
+
+  it("does not fail a committed daemon when the readiness send fails", async () => {
+    const [parentChannel, childChannel] = channelPair();
+    const parent = createAgenCDaemonStartupGuardController(TOKEN_A, parentChannel);
+    const child = createAgenCDaemonStartupGuardReceiver(TOKEN_A, childChannel);
+    childChannel.send = async () => { throw new Error("IPC send failed"); };
+    await expect(child.notifyReady()).resolves.toBeUndefined();
+    await expect(parent.waitUntilReady(5)).resolves.toBe("timeout");
+    parent.close();
+  });
 });

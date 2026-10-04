@@ -1,3 +1,20 @@
+import "../bootstrap/node-env.js";
+import { runDefaultCliRoute } from "./default-cli-route.js";
+import { readProcessCwdSafely, resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
+export { resolveCliCwdForStartup } from "./cli-cwd.js";
+import { requireProjectTrustForTui } from "./project-trust-preflight.js";
+export { runProjectTrustPreflightForTui } from "./project-trust-preflight.js";
+export type { ProjectTrustPreflightOptions, ProjectTrustPreflightResult } from "./project-trust-preflight.js";
+import { prepareCliRuntime } from "./cli-runtime.js";
+export { initializeCliRuntime } from "./cli-runtime.js";
+import {
+  cliStartupErrorMessage,
+  runCliProcessMain,
+} from "./cli-process-main.js";
+export { formatUnavailableCliCwdMessage, isUnavailableCliCwdError } from "./cli-process-main.js";
+import { isDirectInvocation, shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
+import { selectAgenCCliEntry } from "./cli-entry-policy.js";
+export { shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
  *
@@ -33,20 +50,16 @@ import {
   realpathSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
-import { cwd as processCwd } from "node:process";
+import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { VERSION } from "../index.js";
+import { VERSION } from "../version.js";
 import {
   APPROVAL_DENIED_ABORT_REASON,
   classifyTurnTerminal,
   type TurnTerminal,
 } from "../contracts/turn-terminal.js";
-import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
-  classifyCLI,
   extractFlagValues,
-  routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
   type ContinueTUIArgs,
@@ -62,7 +75,7 @@ import {
 } from "../prompts/attachments/user-image-input.js";
 import type { PhaseEvent } from "../phases/events.js";
 import {
-  Session,
+  type Session,
   type IdleInputAdmission,
   type IdleInputOwnership,
   type McpSurfaceSnapshot,
@@ -73,22 +86,18 @@ import {
   isAutonomousModeEnabled,
   type SessionSubmitOptions,
 } from "../session/autonomous-mode.js";
-import type { TurnContext } from "../session/turn-context.js";
 import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
-import { runTurn } from "../session/run-turn.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
   SchemaMismatchError,
   SessionLockedError,
 } from "../session/session-store.js";
-import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { goalKickoffPrompt, goalSetRequestParams } from "../commands/goal.js";
 import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
@@ -108,14 +117,7 @@ import {
   startHeapWatchdog,
 } from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
-import {
-  assembleSystemPrompt,
-  buildAssembleSystemPromptOpts,
-  resolveMemoryPromptInputs,
-  type McpServerInstructionsInput,
-} from "../prompts/system-prompt.js";
-import { getOutputStyleConfig } from "../constants/outputStyles.js";
-import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
+import type { PreparedTurnRuntimeInputs, RunSingleTurnOpts } from "./local-turn-runtime.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import {
   resolveLatestSessionId,
@@ -128,12 +130,7 @@ import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
-  type AgenCDaemonCliAction,
-} from "../app-server/daemon-cli.js";
-import {
-  AGENC_DAEMON_STARTUP_GUARD_ENV,
-  isAgenCDaemonStartupGuardToken,
-} from "../app-server/daemon-startup-guard.js";
+} from "../app-server/daemon-control.js";
 import {
   captureRemoteCliRuntimeContext,
   formatAgenCRemoteCliHelpText,
@@ -179,10 +176,6 @@ import type {
   SessionGoalSetRequest,
 } from "../app-server/protocol/index.js";
 import {
-  ensureAgenCDaemonAutostart,
-  resolveAgenCDaemonAutostartEnabled,
-} from "../app-server/daemon-autostart.js";
-import {
   formatAgenCAuthCliHelpText,
   parseAgenCAuthCliArgs,
   runAgenCAuthCli,
@@ -210,13 +203,11 @@ import {
 import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
-  runAgenCMcpCli,
-} from "./mcp-cli.js";
+} from "./mcp-cli-args.js";
 import {
   formatAgenCDoctorCliHelpText,
   parseAgenCDoctorCliArgs,
-  runAgenCDoctorCli,
-} from "./doctor-cli.js";
+} from "./doctor-cli-args.js";
 import {
   formatAgenCOnboardCliHelpText,
   parseAgenCOnboardCliArgs,
@@ -273,8 +264,7 @@ import {
 import {
   formatAgenCSkillsCliHelpText,
   parseAgenCSkillsCliArgs,
-  runAgenCSkillsCli,
-} from "../skills/skills-cli.js";
+} from "../skills/skills-cli-args.js";
 import {
   formatAgenCPermissionsCliHelpText,
   parseAgenCPermissionsCliArgs,
@@ -290,8 +280,7 @@ import { createRecoveryMutationAdapter } from "../state/recovery-mutations.js";
 import {
   formatAgenCTrajectoriesCliHelpText,
   parseAgenCTrajectoriesCliArgs,
-  runAgenCTrajectoriesCli,
-} from "./trajectories-cli.js";
+} from "./trajectories-cli-args.js";
 import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import {
   readRunDeadlineFlags,
@@ -306,19 +295,9 @@ import {
   writeStartupSandboxBypassNotice,
 } from "./bypass-approvals.js";
 import {
-  isProjectTrustedSync,
-  trustProject,
-} from "../permissions/trust/project-trust.js";
-import {
-  formatProjectTrustSources,
-  summarizeProjectTrustSources,
-} from "../permissions/trust/trust-sources.js";
-import {
   setIsRemoteMode,
-  setSessionTrustAccepted,
 } from "../bootstrap/state.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
-import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
@@ -441,6 +420,7 @@ export function formatCliHelpText(): string {
     "  -h, --help                              Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  -p, --print                             Run in headless one-shot print mode",
+    "  --full-durability                       Sync every print-run commit (safe continuation after a crash)",
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --deadline <+seconds|ISO-8601>           Print mode: stop the run by this time (exit 5)",
@@ -980,158 +960,21 @@ export async function maybeReloadConfigBetweenTurns(params: {
  * future multi-turn REPL loop can call `runSingleTurn` repeatedly with
  * the same shared state and a fresh `input` each pass.
  */
-export interface RunSingleTurnOpts {
-  readonly session: Session;
-  readonly ctx: TurnContext;
-  readonly input: string | readonly LLMContentPart[];
-  readonly agencHome?: string;
-  /**
-   * Transcript-facing prompt when `input` has model-only attachments injected.
-   * `null` suppresses the visible user-message event for internal meta turns.
-   */
-  readonly displayInput?: string | null;
-  readonly userStopGenerationToRelease?: number;
-  /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
-  readonly configStore: ConfigStore;
-  readonly configReloadLatch: ConfigReloadLatch;
-  /**
-   * Preferred seam: load fresh prompt/memory/MCP inputs for this turn.
-   * Called after between-turn reload handling so AGENTS, MEMORY, and
-   * MCP instructions observe the latest snapshot on the next turn.
-   */
-  readonly loadTurnInputsFn?: () => Promise<PreparedTurnRuntimeInputs>;
-  /** Compatibility direct inputs retained for focused unit tests. */
-  readonly memoryPromptText?: string;
-  readonly memoryInstructionsText?: string;
-  readonly allMemories?: readonly [];
-  /** Tool registry + MCP inputs that shape the system prompt. */
-  readonly enabledToolNames?: ReadonlySet<string>;
-  readonly mcpServers?: readonly McpServerInstructionsInput[];
-  readonly provider: string;
-  /** Optional: injected for tests so we don't have to spin real runTurn. */
-  readonly runTurnFn?: typeof runTurn;
-  readonly reloadConfigFn?: typeof maybeReloadConfigBetweenTurns;
-  readonly assembleSystemPromptFn?: typeof assembleSystemPrompt;
-}
+export type { RunSingleTurnOpts, PreparedTurnRuntimeInputs } from "./local-turn-runtime.js";
 
-/**
- * Drive a single LLM turn through the T10 pipeline:
- *   1. drain the I-47 config-reload latch (between-turn only)
- *   2. assemble the system prompt (tiered instructions + memory tail)
- *   3. invoke `runTurn` and forward every event
- *
- * A future multi-turn REPL loop calls this repeatedly with the same
- * session + ctx and a fresh `input` each iteration. Today `main()`
- * calls it exactly once for the one-shot CLI flow.
- */
+/** Compatibility seam: ordinary daemon-backed startup does not load local execution. */
 export async function* runSingleTurn(
   opts: RunSingleTurnOpts,
 ): AsyncGenerator<PhaseEvent, Terminal | undefined> {
-  const reload = opts.reloadConfigFn ?? maybeReloadConfigBetweenTurns;
-  const assemble = opts.assembleSystemPromptFn ?? assembleSystemPrompt;
-  const drive = opts.runTurnFn ?? runTurn;
-
-  // I-47: drain SIGUSR1 before we build the system prompt + send the
-  // turn so any reload takes effect on this exact turn, not the one
-  // after. Call is idempotent when the latch is unset.
-  await reload({
-    latch: opts.configReloadLatch,
-    store: opts.configStore,
-    session: opts.session,
-  });
-
-  const turnInputs = opts.loadTurnInputsFn
-    ? await opts.loadTurnInputsFn()
-    : {
-        memoryPromptText: opts.memoryPromptText ?? "",
-        memoryInstructionsText: opts.memoryInstructionsText ?? "",
-        allMemories: opts.allMemories ?? [],
-        enabledToolNames: opts.enabledToolNames ?? new Set<string>(),
-        mcpServers: opts.mcpServers ?? [],
-      };
-
-  // Surface the active permission mode to the model. Approval-policy and
-  // sandbox-mode prose is injected as a dynamic section by the assembler
-  // when a context is supplied.
-  let permissionContext = null as ReturnType<
-    typeof opts.session.permissionModeRegistry.current
-  > | null;
-  try {
-    permissionContext = opts.session.permissionModeRegistry.current();
-  } catch {
-    permissionContext = null;
-  }
-
-  // Route through the shared {@link buildAssembleSystemPromptOpts} helper
-  // so the /context display (`runContextUsage`) and this production turn
-  // driver always pass the same input shape to `assembleSystemPrompt`.
-  // Adding a new required field here forces both sites to update at
-  // compile time, preventing silent under-counts in the displayed
-  // context size.
-  const assembled = await assemble({
-    ...buildAssembleSystemPromptOpts({
-      session: opts.session,
-      ctx: opts.ctx,
-      // Session.runTurn is the sole owner of workspace instruction loading.
-      projectInstructions: "",
-      memoryInstructions: turnInputs.memoryInstructionsText ?? "",
-      memoryPrompt: turnInputs.memoryPromptText,
-      mcpServers: turnInputs.mcpServers,
-      enabledToolNames: turnInputs.enabledToolNames,
-      outputStyle: await getOutputStyleConfig(),
-      provider: opts.provider,
-      permissionContext,
-      autonomousMode:
-        (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
-          ?.autonomousMode === true,
-    }),
-    deferPermissionInstructions: opts.ctx.permissionInstructionsDeferred === true,
-  });
-
-  const iter = drive(opts.session, opts.ctx, opts.input, {
-    systemPrompt: assembled.text,
-    systemPromptReplacesBase: true,
-    displayUserMessage: opts.displayInput,
-    userStopGenerationToRelease: opts.userStopGenerationToRelease,
-  });
-  while (true) {
-    const step = await iter.next();
-    if (step.done) return step.value;
-    yield step.value;
-  }
+  const runtime = await import("./local-turn-runtime.js");
+  return yield* runtime.runSingleTurn(opts, maybeReloadConfigBetweenTurns);
 }
 
-export interface PreparedTurnRuntimeInputs {
-  /** Memory directory block for the dynamic system-prompt tail. */
-  readonly memoryPromptText: string;
-  /** Path-free memory instructions for the cacheable system-prompt head. */
-  readonly memoryInstructionsText?: string;
-  readonly allMemories: readonly [];
-  readonly enabledToolNames: ReadonlySet<string>;
-  readonly mcpServers: readonly McpServerInstructionsInput[];
-}
-
-export async function prepareTurnRuntimeInputs(params: {
-  readonly session: Session;
-  readonly configStore: ConfigStore;
-  readonly workspaceRoot: string;
-  readonly memoryDir: string;
-  readonly memoryMdPath: string;
-  readonly registry: { readonly tools: readonly { readonly name: string }[] };
-}): Promise<PreparedTurnRuntimeInputs> {
-  const currentConfig = params.configStore.current();
-  const memory = await resolveMemoryPromptInputs(params.session, params.workspaceRoot);
-
-  return {
-    memoryPromptText: memory.memoryPrompt,
-    memoryInstructionsText: memory.memoryInstructions,
-    allMemories: [],
-    enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
-    mcpServers: await loadSessionMcpServerInstructions(
-      params.session,
-      currentConfig,
-    ),
-  };
+export async function prepareTurnRuntimeInputs(
+  params: Parameters<typeof import("./local-turn-runtime.js").prepareTurnRuntimeInputs>[0],
+): Promise<PreparedTurnRuntimeInputs> {
+  const runtime = await import("./local-turn-runtime.js");
+  return runtime.prepareTurnRuntimeInputs(params);
 }
 
 function resolveUserHome(
@@ -1141,70 +984,6 @@ function resolveUserHome(
   return env.HOME ?? env.USERPROFILE ?? fallback;
 }
 
-export function formatUnavailableCliCwdMessage(): string {
-  return "current working directory is unavailable. Open a valid directory or set AGENC_WORKSPACE.";
-}
-
-function readProcessCwdSafely(cwdFn: () => string = processCwd): string | null {
-  try {
-    return cwdFn();
-  } catch {
-    return null;
-  }
-}
-
-export function resolveCliCwdForStartup(
-  env: NodeJS.ProcessEnv = process.env,
-  options: {
-    readonly useEnvWorkspace?: boolean;
-    readonly cwdFn?: () => string;
-  } = {},
-):
-  | { readonly ok: true; readonly cwd: string }
-  | { readonly ok: false; readonly message: string } {
-  if (options.useEnvWorkspace !== false) {
-    const workspace = resolveWorkspaceFromEnv(env);
-    if (workspace !== undefined) {
-      if (isAbsolute(workspace)) {
-        return { ok: true, cwd: resolve(workspace) };
-      }
-      const baseCwd = readProcessCwdSafely(options.cwdFn);
-      if (baseCwd === null) {
-        return {
-          ok: false,
-          message:
-            "AGENC_WORKSPACE must be absolute when the current working directory is unavailable.",
-        };
-      }
-      return { ok: true, cwd: resolve(baseCwd, workspace) };
-    }
-  }
-  const cwd = readProcessCwdSafely(options.cwdFn);
-  if (cwd === null) {
-    return { ok: false, message: formatUnavailableCliCwdMessage() };
-  }
-  return { ok: true, cwd: resolve(cwd) };
-}
-
-export function isUnavailableCliCwdError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const nodeError = error as NodeJS.ErrnoException & {
-    readonly syscall?: string;
-  };
-  return nodeError.syscall === "uv_cwd" || error.message.includes("uv_cwd");
-}
-
-function cliStartupErrorMessage(error: unknown): string {
-  if (isUnavailableCliCwdError(error)) {
-    return formatUnavailableCliCwdMessage();
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-function writeUnavailableCliCwd(): number {
-  process.stderr.write(`agenc: ${formatUnavailableCliCwdMessage()}\n`);
-  return 1;
-}
 
 function installTuiSessionContract(params: {
   readonly session: Session;
@@ -1362,6 +1141,7 @@ function installTuiSessionContract(params: {
             appStateBridge?: SlashCommandAppStateBridge;
           }
         ).appStateBridge;
+        const { runSlashCommand } = await import("./slash.js");
         const slash = await runSlashCommand(message, {
           session: params.session,
           cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
@@ -2473,7 +2253,8 @@ async function runDaemonOneShotPrompt(params: {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
-      runtimeOptions: { ...params.runtimeOptions, exactOutput: outputFormat !== "text" },
+      runtimeOptions: { ...params.runtimeOptions, exactOutput: outputFormat !== "text",
+        relaxedOneShot: params.runtimeOptions.relaxedOneShot === true && params.goal === undefined },
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
@@ -2497,6 +2278,7 @@ async function runDaemonOneShotPrompt(params: {
       metadata: {
         source: "agenc.prompt",
         mode: "one-shot",
+        ...(params.goal !== undefined ? { goalRun: true } : {}),
       },
     };
     const started = await daemonClient.request("agent.create", createParams, {
@@ -2511,6 +2293,7 @@ async function runDaemonOneShotPrompt(params: {
       "agent.attach",
       {
         agentId: started.agentId,
+        oneShotOutput: true,
         clientId: `agenc-one-shot-${process.pid}`,
       },
       { signal: params.signal },
@@ -2947,6 +2730,7 @@ export async function oneShotCLI(
       // auto-denied below, so tools that only exist to ask a person must not
       // be offered in the first place.
       nonInteractive: true,
+      relaxedOneShot: startupCliFlags.fullDurability !== true && continueSession === undefined,
       exactOutput: outputFormat !== "text",
       // `--deadline` (#2503): the instant this run must end by.
       ...readRunDeadlineFlags(process.argv, Date.now()),
@@ -3209,161 +2993,6 @@ export async function exitOrResumeAfterTui(
   return daemonCliDeps().resumeTui({ resumeId }, startupCliFlags);
 }
 
-async function loadProjectTrustPrompt(): Promise<
-  (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly bypassPermissionsRequested?: boolean;
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>
-> {
-  const specifier = "./tui-trust-prompt.js";
-  const mod = (await import(specifier)) as {
-    readonly renderProjectTrustPrompt: (opts: {
-      readonly workspaceRoot: string;
-      readonly riskSources?: readonly string[];
-      readonly bypassPermissionsRequested?: boolean;
-      readonly stdin?: NodeJS.ReadStream;
-      readonly stdout?: NodeJS.WriteStream;
-      readonly stderr?: NodeJS.WriteStream;
-    }) => Promise<boolean>;
-  };
-  return mod.renderProjectTrustPrompt;
-}
-
-async function markLegacySessionTrustAccepted(): Promise<void> {
-  setSessionTrustAccepted(true);
-}
-
-export interface ProjectTrustPreflightOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly argv?: readonly string[];
-  readonly startupCliFlags?: StartupCliFlags;
-  readonly cwd?: string;
-  readonly stdin?: NodeJS.ReadStream;
-  readonly stdout?: NodeJS.WriteStream;
-  readonly stderr?: NodeJS.WriteStream;
-  readonly useEnvWorkspace?: boolean;
-  readonly allowPrompt?: boolean;
-  readonly renderPrompt?: (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>;
-  readonly markSessionTrusted?: () => Promise<void>;
-}
-
-export interface ProjectTrustPreflightResult {
-  readonly accepted: boolean;
-  readonly projectRoot: string;
-  readonly prompted: boolean;
-}
-
-export async function runProjectTrustPreflightForTui(
-  options: ProjectTrustPreflightOptions = {},
-): Promise<ProjectTrustPreflightResult> {
-  const env = options.env ?? process.env;
-  const stdin = options.stdin ?? process.stdin;
-  const stdout = options.stdout ?? process.stdout;
-  const stderr = options.stderr ?? process.stderr;
-  const agencHome = resolveAgencHome(env);
-  const startupCliFlags =
-    options.startupCliFlags ??
-    readStartupCliFlags(options.argv ?? process.argv);
-  const rawWorkspace =
-    options.useEnvWorkspace === false
-      ? (options.cwd ?? process.cwd())
-      : (resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd());
-  const configStore = new ConfigStore({
-    home: agencHome,
-    env,
-    cwd: rawWorkspace,
-    ...startupConfigLayerOptions({
-      cli: startupCliFlags,
-      cwd: rawWorkspace,
-    }),
-  });
-  const config = await configStore.reload();
-  const profileName = resolvedStartupProfileName(startupCliFlags, env);
-  const startup = resolveCanonicalStartupSelection({
-    config,
-    ...(profileName !== undefined ? { profileName } : {}),
-  });
-  // ConfigStore's repository discovery is the sole project-root authority.
-  // Re-running marker discovery after later layers would let configuration
-  // come from one root while trust authorizes another.
-  const projectRoot = configStore.projectRoot;
-  if (
-    isProjectTrustedSync({
-      agencHome,
-      env,
-      projectRoot,
-      projectRootMarkers: startup.config.project_root_markers,
-    })
-  ) {
-    await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
-    return { accepted: true, projectRoot, prompted: false };
-  }
-
-  const canPrompt =
-    options.allowPrompt !== false &&
-    Boolean(stdin.isTTY) &&
-    Boolean(stdout.isTTY);
-  if (!canPrompt) {
-    stderr.write(`agenc: project is not trusted: ${projectRoot}\n`);
-    return { accepted: false, projectRoot, prompted: false };
-  }
-
-  const riskSources = formatProjectTrustSources(
-    await summarizeProjectTrustSources({
-      cwd: projectRoot,
-      configStore,
-    }),
-  );
-  const renderProjectTrustPrompt =
-    options.renderPrompt ?? (await loadProjectTrustPrompt());
-  const accepted = await renderProjectTrustPrompt({
-    workspaceRoot: projectRoot,
-    riskSources,
-    bypassPermissionsRequested:
-      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true ||
-      startupCliFlags.permissionMode === "bypassPermissions",
-    stdin,
-    stdout,
-    stderr,
-  });
-  if (!accepted) {
-    return { accepted: false, projectRoot, prompted: true };
-  }
-  await trustProject({
-    agencHome,
-    env,
-    projectRoot,
-  });
-  await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
-  return { accepted: true, projectRoot, prompted: true };
-}
-
-async function requireProjectTrustForTui(
-  options: ProjectTrustPreflightOptions = {},
-): Promise<boolean> {
-  return (await runProjectTrustPreflightForTui(options)).accepted;
-}
-
-function isInteractiveTuiRoutePlan(
-  plan: ReturnType<typeof classifyCLI>,
-): boolean {
-  return (
-    plan.kind === "bootTUI" ||
-    plan.kind === "resumeTUI" ||
-    plan.kind === "continueTUI"
-  );
-}
-
 export async function resolveAttachTargetTrustRoot(
   client: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
@@ -3563,6 +3192,7 @@ async function handleLocalTuiSlashCommand(params: {
       appStateBridge?: SlashCommandAppStateBridge;
     }
   ).appStateBridge;
+  const { runSlashCommand } = await import("./slash.js");
   const slash = await runSlashCommand(params.message, {
     session: params.session as unknown as Session,
     cwd: params.cwd,
@@ -6241,19 +5871,6 @@ export async function continueTUIEntry(
   });
 }
 
-/**
- * Apply process hardening before CLI routing. Configuration and runtime-state
- * access is owned by each explicit ConfigStore/RuntimeStateRepository; there
- * is deliberately no process-global "enabled" latch.
- */
-export function initializeCliRuntime(): void {
-  // Apply pre-main process hardening before any I/O or subprocess spawn:
-  // scrub LD_*/DYLD_* dynamic-loader env vars, drop RLIMIT_CORE to 0, and
-  // disable core/ptrace dumping via PR_SET_DUMPABLE on Linux or
-  // PT_DENY_ATTACH on macOS. Best-effort — failures are non-fatal so the
-  // CLI still starts on platforms where the native binding is unavailable.
-  applyBestEffortPreMainProcessHardening();
-}
 
 async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
   try {
@@ -6307,22 +5924,6 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  * audit there would duplicate config and native secure-storage reads before the child
  * can publish readiness. Direct foreground launches still run the audit.
  */
-export function shouldRunDaemonStartupSecurityAudit(
-  action: AgenCDaemonCliAction,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  hasParentIpc = typeof process.send === "function",
-): boolean {
-  if (action !== "start" && action !== "run" && action !== "restart") {
-    return false;
-  }
-  const startupGuardToken = env[AGENC_DAEMON_STARTUP_GUARD_ENV];
-  const isDetachedChild =
-    action === "run" &&
-    env.AGENC_DAEMON_RUN === "1" &&
-    hasParentIpc &&
-    isAgenCDaemonStartupGuardToken(startupGuardToken);
-  return !isDetachedChild;
-}
 
 /**
  * Top-level dispatcher. Branches between the full Ink TUI and the
@@ -6330,15 +5931,8 @@ export function shouldRunDaemonStartupSecurityAudit(
  * for the routing table.
  */
 export async function main(): Promise<number> {
-  try {
-    assertCanonicalEnvironmentIngress(process.env);
-  } catch (error) {
-    process.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    return 2;
-  }
-  initializeCliRuntime();
+  const ingressExitCode = prepareCliRuntime();
+  if (ingressExitCode !== null) return ingressExitCode;
   const argv = process.argv.slice(2);
   const initCommand = parseAgenCInitCliArgs(argv);
   if (initCommand !== null) {
@@ -6474,10 +6068,12 @@ export async function main(): Promise<number> {
     : undefined;
   const mcpCommand = parseAgenCMcpCliArgs(argv, mcpConfig);
   if (mcpCommand !== null) {
+    const { runAgenCMcpCli } = await import("./mcp-cli.js");
     return runAgenCMcpCli(mcpCommand);
   }
   const doctorCommand = parseAgenCDoctorCliArgs(argv);
   if (doctorCommand !== null) {
+    const { runAgenCDoctorCli } = await import("./doctor-cli.js");
     return runAgenCDoctorCli(doctorCommand);
   }
   const onboardCommand = parseAgenCOnboardCliArgs(argv);
@@ -6554,6 +6150,7 @@ export async function main(): Promise<number> {
   if (skillsCommand !== null) {
     const skillsEnvironment = Object.freeze({ ...process.env });
     const skillsRuntimeOptions = resolveAgentRuntimeOptions(skillsEnvironment);
+    const { runAgenCSkillsCli } = await import("../skills/skills-cli.js");
     return runAgenCSkillsCli(skillsCommand, {
       agencHome: resolveAgencHome(skillsEnvironment),
       env: skillsEnvironment,
@@ -6573,6 +6170,7 @@ export async function main(): Promise<number> {
   }
   const trajectoriesCommand = parseAgenCTrajectoriesCliArgs(argv);
   if (trajectoriesCommand !== null) {
+    const { runAgenCTrajectoriesCli } = await import("./trajectories-cli.js");
     return runAgenCTrajectoriesCli(trajectoriesCommand);
   }
 
@@ -6596,93 +6194,8 @@ function shouldLaunchTuiAfterLogin(): boolean {
   );
 }
 
-async function runDefaultAgenCCliRoute(
-  argv: readonly string[],
-): Promise<number> {
-  const routePlan = classifyCLI({
-    argv,
-    isTTY: Boolean(process.stdin.isTTY),
-    isStdoutTTY: Boolean(process.stdout.isTTY),
-  });
-  const startupCliFlags: StartupCliFlags =
-    routePlan.kind === "errorAndExit"
-      ? Object.freeze({})
-      : readStartupCliFlags(argv);
-  const targetResumeRoute =
-    routePlan.kind === "resumeTUI" || routePlan.kind === "continueTUI";
-  const routeNeedsToolTrust =
-    routePlan.kind === "oneShotCLI" ||
-    (isInteractiveTuiRoutePlan(routePlan) && !targetResumeRoute);
-  const routeCwd = routeNeedsToolTrust
-    ? resolveCliCwdForStartup(process.env)
-    : null;
-  if (routeCwd !== null && !routeCwd.ok) {
-    return writeUnavailableCliCwd();
-  }
-  if (routeNeedsToolTrust) {
-    if (routeCwd === null) {
-      return writeUnavailableCliCwd();
-    }
-    if (
-      !(await requireProjectTrustForTui({
-        env: process.env,
-        argv,
-        startupCliFlags,
-        cwd: routeCwd.cwd,
-      }))
-    ) {
-      return 1;
-    }
-  }
-  if (
-    routePlan.kind !== "errorAndExit" &&
-    !targetResumeRoute &&
-    (await resolveAgenCDaemonAutostartEnabled(process.env))
-  ) {
-    try {
-      // Surface respawn reasons on stderr instead of the historical
-      // silentIo(): a failing autostart used to look like a frozen blank
-      // terminal. Keep stdout quiet so the daemon CLI banner stays out of
-      // interactive TUI rendering (mirrors defaultEnsureDaemonReady).
-      const silentStdout = { write: () => true } as Pick<
-        NodeJS.WriteStream,
-        "write"
-      >;
-      await ensureAgenCDaemonAutostart({
-        io: { stdout: silentStdout, stderr: process.stderr },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`agenc: daemon autostart failed: ${message}\n`);
-      if (!process.stdout.isTTY) {
-        return 1;
-      }
-      // Interactive sessions still get a working (daemon-less) TUI with a
-      // visible error notice rather than an exit back to the shell. The
-      // notice reads this env var at render time (StatusNotices).
-      setCoreOnlyEnvironmentVariable("AGENC_DAEMON_AUTOSTART_FAILURE", message);
-    }
-  }
-  return routeCLI({
-    argv,
-    isTTY: Boolean(process.stdin.isTTY),
-    isStdoutTTY: Boolean(process.stdout.isTTY),
-    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args, startupCliFlags),
-    oneShotCLI: (
-      userMessage: string,
-      startupImages?: readonly string[],
-      continueSession?: OneShotContinueSession,
-    ) =>
-      oneShotCLI(
-        userMessage.length > 0 ? userMessage : null,
-        startupImages ?? [],
-        startupCliFlags,
-        continueSession,
-      ),
-    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args, startupCliFlags),
-    continueTUI: (args: ContinueTUIArgs) =>
-      continueTUIEntry(args, startupCliFlags),
-  });
+function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
+  return runDefaultCliRoute(argv, { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI });
 }
 
 /**
@@ -6699,40 +6212,7 @@ async function runDefaultAgenCCliRoute(
  * Works under both CJS and ESM emit from tsup without touching
  * `import.meta`, which is forbidden in the CJS output target.
  */
-function isDirectInvocation(): boolean {
-  // Env opt-out: tests can force the IIFE off even on odd harnesses.
-  if (process.env.AGENC_CLI_ENTRY_DISABLE === "1") return false;
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  // The CLI binary resolves to `<prefix>/bin/agenc.js` (or `.mjs`) and
-  // the `agenc` shim in `package.json.bin` symlinks to this script.
-  // Match the tail of the entry path so both `node .../agenc.js` and
-  // the installed `agenc` CLI pass the check.
-  return /[\\/]bin[\\/]agenc(?:\.[mc]?js)?$/.test(argv1);
-}
 
-if (isDirectInvocation()) {
-  void (async () => {
-    // Install the process-global error net before anything runs so a stray
-    // uncaught exception / unhandled rejection on the daemon or TUI main path
-    // is logged instead of vanishing silently or crashing with a raw stack.
-    // Only on direct invocation — tests import main() and must keep vitest's
-    // own rejection detection intact.
-    installGlobalErrorNet();
-    let code: number;
-    try {
-      code = await main();
-    } catch (error) {
-      process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
-      code = 1;
-    }
-    // Pipe writes can still be buffered when main returns. Wait for both
-    // streams before forcing exit so large JSON and errors arrive intact.
-    await Promise.all(
-      [process.stdout, process.stderr].map(
-        (stream) => new Promise<void>((resolve) => stream.write("", () => resolve())),
-      ),
-    );
-    process.exit(code);
-  })();
+if (isDirectInvocation() && selectAgenCCliEntry() === "main") {
+  void runCliProcessMain(main);
 }

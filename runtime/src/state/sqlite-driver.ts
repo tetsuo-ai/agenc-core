@@ -1,3 +1,4 @@
+import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -30,8 +31,16 @@ import { EFFECT_EVIDENCE_V2_SCHEMA_VERSION } from "./migrations/017_effect_evide
 import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job_identity_replay.js";
 import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
+import { tryInitializeFreshStateSchema } from "./fresh-state-schema.js";
 
-export interface OpenStateDatabaseOptions {
+export interface StateSqliteDriverOptions {
+  /** State-only consumers open the independent logs database on first use. */
+  readonly deferLogs?: boolean;
+}
+
+export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
+  /** Explicit owner for a session-private projection connection. */
+  readonly durabilityRunId?: string;
   readonly cwd: string;
   readonly agencHome?: string;
   readonly projectRootMarkers?: readonly string[];
@@ -137,25 +146,29 @@ export class StateSqliteDriver {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
-  readonly logs: SqliteDatabase;
+  #logs: SqliteDatabase | undefined;
   readonly #stateStatements: PreparedStatementCache;
-  readonly #logsStatements: PreparedStatementCache;
+  #logsStatements: PreparedStatementCache | undefined;
 
-  constructor(paths: StateDatabasePaths) {
+  constructor(
+    paths: StateDatabasePaths,
+    private readonly durabilityRunId?: string,
+    options: StateSqliteDriverOptions = {},
+  ) {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     const state = new Database(paths.stateDbPath);
     let logs: SqliteDatabase | undefined;
     try {
-      logs = new Database(paths.logsDbPath);
+      if (options.deferLogs !== true) logs = new Database(paths.logsDbPath);
       // Before the WAL pragma: switching the journal mode writes the file
       // header, and auto_vacuum can only be chosen while there is none.
       configureFreshDatabaseVacuum(state);
       configureDatabase(state);
-      configureDatabase(logs);
+      if (logs !== undefined) configureDatabase(logs);
       applyStateMigrations(state, paths);
-      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+      if (logs !== undefined) applyMigrations(logs, LOGS_DB_MIGRATIONS);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
     } catch (error) {
       if (state.open) state.close();
@@ -163,9 +176,25 @@ export class StateSqliteDriver {
       throw error;
     }
     this.state = state;
-    this.logs = logs;
+    this.#logs = logs;
     this.#stateStatements = new PreparedStatementCache(state);
+    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs);
+  }
+
+  get logs(): SqliteDatabase {
+    if (this.#logs !== undefined) return this.#logs;
+    if (!this.state.open) throw new Error("cannot open logs on a closed state driver");
+    const logs = new Database(this.logsDbPath);
+    try {
+      configureDatabase(logs);
+      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+    } catch (error) {
+      if (logs.open) logs.close();
+      throw error;
+    }
     this.#logsStatements = new PreparedStatementCache(logs);
+    this.#logs = logs;
+    return logs;
   }
 
   /** Compiled statement for `sql`, reused across calls; see {@link PreparedStatementCache}. */
@@ -179,11 +208,13 @@ export class StateSqliteDriver {
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.#logsStatements.prepare<Params, Row>(sql);
+    const logs = this.logs;
+    return (this.#logsStatements ??= new PreparedStatementCache(logs))
+      .prepare<Params, Row>(sql);
   }
 
   transaction<T>(fn: () => T): T {
-    return this.state.transaction(fn)();
+    return this.withTransactionDurability(this.state, () => this.state.transaction(fn)());
   }
 
   /**
@@ -194,11 +225,38 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    return this.state.transaction(fn).immediate();
+    return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
   }
 
   logsTransaction<T>(fn: () => T): T {
-    return this.logs.transaction(fn)();
+    return this.withTransactionDurability(this.logs, () => this.logs.transaction(fn)());
+  }
+
+  private withTransactionDurability<T>(db: SqliteDatabase, operation: () => T): T {
+    const relaxed = relaxedOneShotTransaction(this.projectDir, this.durabilityRunId);
+    if (db.inTransaction) {
+      if (!relaxed && db.pragma("synchronous", { simple: true }) !== 2) {
+        throw new Error("a full-durability operation cannot nest in a relaxed transaction");
+      }
+      return operation();
+    }
+    if (!relaxed) return operation();
+    db.pragma("synchronous = NORMAL");
+    try { return operation(); }
+    finally { db.pragma("synchronous = FULL"); }
+  }
+
+  /** A clean one-shot seal requires stable WAL and database bytes. */
+  checkpointDurability(): void {
+    for (const db of [this.state, this.logs]) {
+      if (db.inTransaction) throw new Error("cannot seal a one-shot inside a transaction");
+      db.pragma("synchronous = FULL");
+      const rows = db.pragma("wal_checkpoint(FULL)") as { busy: number; log: number; checkpointed: number }[];
+      const result = rows[0];
+      if (result === undefined || result.busy !== 0 || result.checkpointed < result.log) {
+        throw new Error("one-shot WAL checkpoint did not complete; continuation remains refused");
+      }
+    }
   }
 
   /** Return free pages of the state database to the file system; see `reclaimStateFreePages`. */
@@ -208,9 +266,9 @@ export class StateSqliteDriver {
 
   close(): void {
     this.#stateStatements.clear();
-    this.#logsStatements.clear();
+    this.#logsStatements?.clear();
     if (this.state.open) this.state.close();
-    if (this.logs.open) this.logs.close();
+    if (this.#logs?.open) this.#logs.close();
   }
 }
 
@@ -219,9 +277,9 @@ export class StateSqliteReader {
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
-  readonly logs: SqliteDatabase;
+  #logs: SqliteDatabase | undefined;
 
-  constructor(paths: StateDatabasePaths) {
+  constructor(paths: StateDatabasePaths, options: StateSqliteDriverOptions = {}) {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
@@ -229,12 +287,30 @@ export class StateSqliteReader {
       readonly: true,
       fileMustExist: true,
     });
-    this.logs = new Database(paths.logsDbPath, {
-      readonly: true,
-      fileMustExist: true,
-    });
-    configureReadOnlyDatabase(this.state);
-    configureReadOnlyDatabase(this.logs);
+    try {
+      configureReadOnlyDatabase(this.state);
+      if (options.deferLogs !== true) this.#logs = this.openLogs();
+    } catch (error) {
+      if (this.state.open) this.state.close();
+      throw error;
+    }
+  }
+
+  get logs(): SqliteDatabase {
+    if (this.#logs !== undefined) return this.#logs;
+    if (!this.state.open) throw new Error("cannot open logs on a closed state reader");
+    return this.#logs = this.openLogs();
+  }
+
+  private openLogs(): SqliteDatabase {
+    const logs = new Database(this.logsDbPath, { readonly: true, fileMustExist: true });
+    try {
+      configureReadOnlyDatabase(logs);
+      return logs;
+    } catch (error) {
+      if (logs.open) logs.close();
+      throw error;
+    }
   }
 
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
@@ -251,7 +327,7 @@ export class StateSqliteReader {
 
   close(): void {
     if (this.state.open) this.state.close();
-    if (this.logs.open) this.logs.close();
+    if (this.#logs?.open) this.#logs.close();
   }
 }
 
@@ -274,27 +350,30 @@ export function openStateDatabases(
   options: OpenStateDatabaseOptions,
 ): StateSqliteDriver {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePaths(paths);
+  return openStateDatabasePaths(paths, options.durabilityRunId, options);
 }
 
 export function openStateDatabasePaths(
   paths: StateDatabasePaths,
+  durabilityRunId?: string,
+  options: StateSqliteDriverOptions = {},
 ): StateSqliteDriver {
   mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-  return new StateSqliteDriver(paths);
+  return new StateSqliteDriver(paths, durabilityRunId, options);
 }
 
 export function openStateDatabaseReader(
   options: OpenStateDatabaseOptions,
 ): StateSqliteReader {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePathReader(paths);
+  return openStateDatabasePathReader(paths, options);
 }
 
 export function openStateDatabasePathReader(
   paths: StateDatabasePaths,
+  options: StateSqliteDriverOptions = {},
 ): StateSqliteReader {
-  return new StateSqliteReader(paths);
+  return new StateSqliteReader(paths, options);
 }
 
 export function discoverStateDatabasePaths(
@@ -466,7 +545,7 @@ function applyStateMigrations(
         );
       }
     }
-    applyMigrations(db, STATE_DB_MIGRATIONS);
+    if (!tryInitializeFreshStateSchema(db)) applyMigrations(db, STATE_DB_MIGRATIONS);
     db.exec("COMMIT");
   } catch (error) {
     if (db.inTransaction) db.exec("ROLLBACK");

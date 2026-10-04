@@ -8,9 +8,9 @@ const securityMocks = vi.hoisted(() => ({
   buildAudit: vi.fn(),
 }));
 
-vi.mock("../../src/app-server/daemon-cli.js", async (importOriginal) => ({
+vi.mock("../../src/app-server/daemon-control.js", async (importOriginal) => ({
   ...(await importOriginal<
-    typeof import("../../src/app-server/daemon-cli.js")
+    typeof import("../../src/app-server/daemon-control.js")
   >()),
   parseAgenCDaemonCliArgs: daemonMocks.parse,
   runAgenCDaemonCli: daemonMocks.run,

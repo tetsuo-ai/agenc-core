@@ -224,6 +224,7 @@ const sandboxContractExportFiles = [
   // execpolicy exports are security/runtime surfaces with direct test coverage.
   "src/sandbox/engine/bwrap.ts",
   "src/sandbox/engine/index.ts",
+  "src/sandbox/engine/policy.ts",
   "src/sandbox/engine/landlock.ts",
   "src/sandbox/engine/policy-transforms.ts",
   "src/sandbox/engine/seatbelt.ts",

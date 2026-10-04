@@ -5,6 +5,13 @@
  * forced. Drive the whole wizard with the mock openai-compatible provider
  * (keyless local provider path), finish it, then complete a real first turn
  * against the mock model — the Phase 0 acceptance criterion.
+ *
+ * Finishing the wizard after a successful connection check makes the TUI
+ * send a starter turn on its own (useOnboardingStarterTurn in
+ * src/onboarding). The scenario waits for that turn to answer and for the
+ * TUI to go idle before it sends its own turn. The composer placeholder is
+ * not an anchor: it only shows before the first submit, and the starter
+ * turn is that submit.
  */
 import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
@@ -93,15 +100,28 @@ export default async function (session) {
   );
   await session.submit("");
 
-  // Wizard done: the normal composer prompt appears; complete a first turn.
+  // Wizard done: the starter turn is the first model turn. Wait for its
+  // answer and for the composer to accept input again.
   await waitForFrameText(
     session,
-    /Describe a task|commands\s+@ attach/iu,
-    "post-onboarding composer",
+    /Introduce yourself in a sentence/u,
+    "automatic onboarding starter turn",
     60_000,
   );
+  await session.waitForAssistantReply({ timeout: 60_000 });
+  await session.waitForPrompt({ timeout: 30_000 });
+
+  // A turn the user sends after onboarding completes against the mock model.
+  // Match the reply row under the AGENC header: the transcript also shows the
+  // submitted prompt, which contains the same word.
   await session.submit("reply with the single word ONBOARDED");
-  await session.waitFor(/ONBOARDED/, { timeout: 60_000 });
+  await session.waitForAssistantReply({ timeout: 60_000 });
+  await waitForFrameText(
+    session,
+    /\u2502 AGENC[^\n]*\n\u2502 ONBOARDED\b/u,
+    "ONBOARDED reply",
+    15_000,
+  );
   await session.waitForIdle({ timeout: 30_000 });
 
   // The wizard persisted completion in the temp home.

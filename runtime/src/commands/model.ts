@@ -33,17 +33,13 @@ import {
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
 import { readCommandConfig } from "./config-context.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
 import {
   safeExecute,
   type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  modelMenuFallback,
-  openModelMenu,
-  readModelMenuSnapshot,
-} from "./model-menu.js";
 import {
   formatSessionSelectionError,
   readSessionSelection,
@@ -331,7 +327,8 @@ export const modelCommand: SlashCommand = {
       if (target.length === 0) {
         const snapshot = readModelMenuSnapshot(ctx);
         if (
-          openModelMenu(ctx, snapshot, async (provider, model) => {
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./model-menu.js")).openModelMenu(ctx, snapshot, async (provider, model) => {
             const selection = resolveCommandSelection(ctx, {
               model_provider: provider,
               model,

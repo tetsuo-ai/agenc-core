@@ -65,6 +65,7 @@ describe("provider authority architecture", () => {
     expect(providerOptions).toMatch(/resolveProviderBaseURLEnvironment/u);
 
     const providerCredentialConsumers = [
+      "commands/provider-menu-snapshot.ts",
       "commands/provider-menu.tsx",
       "llm/discovery/provider-discovery.ts",
       "llm/provider-options.ts",
@@ -107,8 +108,8 @@ describe("provider authority architecture", () => {
       "utf8",
     );
     for (const path of [
-      "commands/model-menu.tsx",
-      "commands/provider-menu.tsx",
+      "commands/model-menu-snapshot.ts",
+      "commands/provider-menu-snapshot.ts",
     ]) {
       const menu = readFileSync(`${SRC}/${path}`, "utf8");
       expect(menu, path).toMatch(/createProviderCommandAccessOverlay/u);
@@ -226,7 +227,7 @@ describe("provider authority architecture", () => {
     }
 
     const providerMenu = readFileSync(
-      `${SRC}/commands/provider-menu.tsx`,
+      `${SRC}/commands/provider-menu-snapshot.ts`,
       "utf8",
     );
     expect(providerMenu).toMatch(/createProviderCommandAccessOverlay/u);
@@ -318,7 +319,7 @@ describe("provider authority architecture", () => {
       "utf8",
     );
     const providerMenu = readFileSync(
-      `${SRC}/commands/provider-menu.tsx`,
+      `${SRC}/commands/provider-menu-snapshot.ts`,
       "utf8",
     );
     const providersDoc = readFileSync(

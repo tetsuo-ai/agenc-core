@@ -22,7 +22,7 @@ import {
   validateFlags,
 } from '../../utils/shell/readOnlyCommandValidation.js'
 import type { BashTool } from './BashTool.js'
-import { isNormalizedGitCommand } from './bashPermissions.js'
+import { commandHasAnyCd, isNormalizedGitCommand } from './bashPermissions.js'
 import { bashCommandIsSafe_DEPRECATED } from './bashSecurity.js'
 import {
   COMMAND_OPERATION_TYPE,
@@ -1824,6 +1824,19 @@ function commandWritesToGitInternalPaths(command: string): boolean {
  *                              This is computed by commandHasAnyCd() and passed in to avoid duplicate computation.
  * @returns PermissionResult indicating whether the command is read-only
  */
+/**
+ * BashTool.isReadOnly. Lives here so permission checks can ask it without
+ * importing the tool module and its UI.
+ */
+export function isReadOnlyBashInput(
+  input: z.infer<typeof BashTool.inputSchema>,
+): boolean {
+  return (
+    checkReadOnlyConstraints(input, commandHasAnyCd(input.command)).behavior ===
+    'allow'
+  )
+}
+
 export function checkReadOnlyConstraints(
   input: z.infer<typeof BashTool.inputSchema>,
   compoundCommandHasCd: boolean,

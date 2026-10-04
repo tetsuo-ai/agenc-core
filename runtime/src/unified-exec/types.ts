@@ -221,6 +221,10 @@ export interface ExecCommandToolOutput {
 export interface UnifiedExecProcessManagerLike {
   /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
+  /** Shell used when a request names none, when the manager exposes it. */
+  readonly shellPath?: string;
+  /** Whether commands inherit shell startup hooks (BASH_ENV, exported functions, SHELLOPTS). */
+  shellStartupHooksPresent?(): boolean;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
   startDetachedProcess?(

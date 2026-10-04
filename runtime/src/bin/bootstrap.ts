@@ -1,3 +1,4 @@
+import { readStartupCronTasks } from "../utils/cron-startup.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { fstatSync, lstatSync, realpathSync } from "node:fs";
@@ -1958,6 +1959,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           agencVersion: VERSION,
           agencHome,
           sessionTempRoot,
+          relaxedOneShot: runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
+            runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }
@@ -2254,9 +2257,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           const rearmPersistedCron = async (): Promise<void> => {
             assertStartupActive();
             try {
-              const { readCronTasks } = await import("../utils/cronTasks.js");
-              assertStartupActive();
-              const persisted = await readCronTasks(workspaceRoot);
+              const persisted = await readStartupCronTasks(workspaceRoot, assertStartupActive);
               assertStartupActive();
               if (persisted.length > 0) {
                 const { startCronSchedulerRunner } =

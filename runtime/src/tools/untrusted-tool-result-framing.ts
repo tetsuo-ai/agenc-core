@@ -1,6 +1,10 @@
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
+import { verifyToolResultIntegrity, withPersistedToolResultRepresentation } from "../session/tool-result-integrity.js";
+import { compactExecExitFooter } from "./system/exec-result-format.js";
 import type { Tool } from "./types.js";
+
+export const LIGHT_WORKSPACE_DATA_BOUNDARY = "AGENC_DATA";
 
 export const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
@@ -186,6 +190,30 @@ function canonicalFramedPartsBody(
     : undefined;
 }
 
+/** Compact Light workspace frame. Only already sealed history may preserve it. */
+function compactFramedBody(content: LLMMessage["content"]): LLMMessage["content"] | undefined {
+  const boundary = LIGHT_WORKSPACE_DATA_BOUNDARY;
+  if (typeof content === "string") {
+    if (!content.startsWith(`${boundary}\n`) || !content.endsWith(`\n${boundary}`)) return undefined;
+    const body = content.slice(boundary.length + 1, -boundary.length - 1);
+    return !body.includes(boundary) && sanitizeToolResultText(body) === body ? body : undefined;
+  }
+  const first = content[0];
+  const last = content.at(-1);
+  if (content.length < 2 || first?.type !== "text" || first.text !== boundary ||
+      last?.type !== "text" || last.text !== boundary) return undefined;
+  const body = content.slice(1, -1);
+  return body.every(part => part.type !== "text" ||
+    (!part.text.includes(boundary) && sanitizeToolResultText(part.text) === part.text)) ? body : undefined;
+}
+
+function sanitizeCompactContent(content: LLMMessage["content"]): LLMMessage["content"] {
+  const sanitize = (text: string) => sanitizeToolResultText(text)
+    .split(LIGHT_WORKSPACE_DATA_BOUNDARY).join("A G E N C _ D A T A");
+  return typeof content === "string" ? sanitize(content) : content.map(part =>
+    part.type === "text" ? { ...part, text: sanitize(part.text) } : part);
+}
+
 function canonicalFramedBody(
   toolName: string,
   content: LLMMessage["content"],
@@ -253,17 +281,34 @@ export function frameUntrustedToolResultContent(
   toolName: string,
   content: LLMMessage["content"],
   kind: UntrustedToolResultKind = "external",
+  compactWorkspace = false,
+  preserveExisting = !compactWorkspace,
 ): LLMMessage["content"] {
   // Model-visible history can cross compatibility and daemon-recovery
   // boundaries more than once. Preserve an exact, sanitized AgenC frame so
   // those boundaries remain single and unambiguous; lookalike or unsanitized
   // payloads still flow through the normal fail-closed framing path.
-  if (isCanonicallyFramedUntrustedToolResult(toolName, content)) {
+  if (preserveExisting && (isCanonicallyFramedUntrustedToolResult(toolName, content) ||
+      (compactWorkspace && kind === "workspace" && compactFramedBody(content) !== undefined))) {
     return content;
+  }
+  if (compactWorkspace && kind === "workspace") {
+    const sanitized = sanitizeCompactContent(content);
+    // Transform only new model-facing text, before callers seal its integrity.
+    // Raw completion records and already sealed history keep their old bytes.
+    const body = typeof sanitized === "string" &&
+      (toolName === "exec_command" || toolName === "write_stdin")
+      ? compactExecExitFooter(sanitized) : sanitized;
+    if (isRuntimeAuthoredResult(toolName, kind)) return body;
+    const boundary = LIGHT_WORKSPACE_DATA_BOUNDARY;
+    return typeof body === "string" ? `${boundary}\n${body}\n${boundary}` : [
+      { type: "text", text: boundary }, ...body, { type: "text", text: boundary },
+    ];
   }
   if (isRuntimeAuthoredResult(toolName, kind)) {
     return sanitizeUnframedContent(content);
   }
+  if (compactWorkspace) content = sanitizeCompactContent(content);
   if (typeof content === "string") {
     return [
       framingHeader(toolName, kind),
@@ -306,6 +351,7 @@ export function unframeUntrustedToolResultContent(
  */
 export function frameUntrustedToolHistoryMessages(
   messages: readonly LLMMessage[],
+  compactWorkspace = false,
 ): LLMMessage[] {
   const toolNamesByCallId = new Map<string, string>();
   return messages.map((message) => {
@@ -321,13 +367,30 @@ export function frameUntrustedToolHistoryMessages(
       recordedToolName && recordedToolName.length > 0
         ? recordedToolName
         : pairedToolName ?? "legacy_tool_result";
+    // The mode alone is not provenance. Preserve a compact history frame only
+    // when runtime-owned integrity metadata authenticates its current bytes.
+    // Legacy/imported results are data and are sealed anew in Light.
+    const verified = compactWorkspace && typeof message.toolCallId === "string" && message.runtimeOnly?.toolResultIntegrity !== undefined
+      ? verifyToolResultIntegrity({
+          toolCallId: message.toolCallId,
+          content: message.content,
+          integrity: message.runtimeOnly.toolResultIntegrity,
+        }) : undefined;
+    const preserveSealed = verified?.status === "valid" && (
+      isCanonicallyFramedUntrustedToolResult(toolName, message.content) ||
+      (classifyUntrustedToolResult(toolName) === "workspace" && compactFramedBody(message.content) !== undefined)
+    );
+    const content = preserveSealed ? message.content : frameUntrustedToolResultContent(
+      toolName, message.content, classifyUntrustedToolResult(toolName), compactWorkspace, !compactWorkspace,
+    );
     return {
       ...message,
-      content: frameUntrustedToolResultContent(
-        toolName,
-        message.content,
-        classifyUntrustedToolResult(toolName),
-      ),
+      content,
+      ...(verified?.status === "valid" && content !== message.content ? {
+        runtimeOnly: { ...message.runtimeOnly, toolResultIntegrity: withPersistedToolResultRepresentation(
+          verified.integrity, "redacted", content,
+        ) },
+      } : {}),
       ...(message.toolName === undefined && pairedToolName !== undefined
         ? { toolName: pairedToolName }
         : {}),

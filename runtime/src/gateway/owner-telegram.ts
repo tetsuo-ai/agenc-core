@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { normalizeDaemonClientEnvOverrides } from "../app-server/client-env-snapshot.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { telegramSessionFailure } from "./telegram-session-failure.js";
-import QRCode from "qrcode";
 import type { AgenCDaemonResponse, JsonObject } from "../app-server/protocol/index.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "../app-server/protocol/index.js";
 import { canonicalRemoteWorkspace, RemoteAccessBoundary, type RemoteSessionLookup } from "../remote/access.js";
@@ -422,6 +421,7 @@ export class OwnerTelegramService {
     this.#store().save(record); entry.record = record;
     const nonce = randomBytes(32).toString("base64url");
     const url = `https://t.me/${identity.username}?start=${nonce}`;
+    const { default: QRCode } = await import("qrcode");
     const qrDataUrl = await QRCode.toDataURL(url, { width: 256, margin: 2 });
     this.#operations.signal.throwIfAborted();
     signal.throwIfAborted();
