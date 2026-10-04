@@ -23,7 +23,7 @@ describe("lazy auxiliary services", () => {
   });
 
   test("realtime captures the supplied fetch and consults live headers on use", async () => {
-    const response = { status: 201, headers: { get: () => "/v1/realtime/calls/call-1" }, text: async () => "sdp-answer" };
+    const response = { status: 201, headers: { get: () => "/v1/realtime/calls/rtc_test" }, text: async () => "sdp-answer" };
     const fetch = vi.fn().mockResolvedValue(response);
     let token = "before";
     const headers = vi.fn(() => ({ authorization: token }));
