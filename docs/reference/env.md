@@ -457,11 +457,20 @@ launcher, child process, integration, or test runner.
 | Family | Direct inputs |
 | --- | --- |
 | Supervised child-process controls | `AGENC_BOUND_READ_USE_NOFOLLOW`, `AGENC_PROCESS_WATCHDOG_CONFIG` |
+| Native package build inputs | `CC`, `npm_config_nodedir` |
 | Anthropic-compatible client controls | `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET`, `API_TIMEOUT_MS`, `AZURE_OPENAI_API_VERSION`, `MAX_THINKING_TOKENS` |
 | Search and custom HTTP connectors | `APP_URL`, `BING_API_KEY`, `EMBEDDED_SEARCH_TOOLS`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `LINKUP_API_KEY`, `MOJEEK_API_KEY`, `PROJECT_DOMAIN`, `TAVILY_API_KEY`, `WEB_AUTH_HEADER`, `WEB_AUTH_SCHEME`, `WEB_BODY_TEMPLATE`, `WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS`, `WEB_CUSTOM_ALLOW_HTTP`, `WEB_CUSTOM_ALLOW_PRIVATE`, `WEB_CUSTOM_MAX_BODY_KB`, `WEB_CUSTOM_TIMEOUT_SEC`, `WEB_HEADERS`, `WEB_JSON_PATH`, `WEB_KEY`, `WEB_METHOD`, `WEB_PARAMS`, `WEB_PROVIDER`, `WEB_QUERY_PARAM`, `WEB_SEARCH_API`, `WEB_SEARCH_PROVIDER`, `WEB_URL_TEMPLATE`, `YOU_API_KEY` |
 | MCP transport and OAuth tuning | `ENABLE_MCP_LARGE_OUTPUT_FILES`, `MAX_MCP_OUTPUT_TOKENS`, `MCP_CLIENT_SECRET`, `MCP_OAUTH_CLIENT_METADATA_URL`, `MCP_SERVER_CONNECTION_BATCH_SIZE`, `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT`, `MCP_XAA_IDP_CLIENT_SECRET` |
 | Runtime, update, and test controls | `ATOMIC_CHAT_BASE_URL`, `BASH_MAX_OUTPUT_LENGTH`, `DEBUG`, `DEBUG_SDK`, `DISABLE_AUTOUPDATER`, `DISABLE_COST_WARNINGS`, `DISABLE_ERROR_REPORTING`, `DISABLE_EXTRA_USAGE_COMMAND`, `DISABLE_INSTALLATION_CHECKS`, `DISABLE_INTERLEAVED_THINKING`, `ENABLE_LOCKLESS_UPDATES`, `ENABLE_PID_BASED_VERSION_LOCKING`, `ENABLE_SESSION_PERSISTENCE`, `FORCE_AUTOUPDATE_PLUGINS`, `FORCE_CODE_TERMINAL`, `IS_DEMO`, `LOCAL_BRIDGE`, `SESSION_INGRESS_URL`, `SLASH_COMMAND_TOOL_CHAR_BUDGET`, `TASK_MAX_OUTPUT_LENGTH`, `TEST_ENABLE_SESSION_PERSISTENCE`, `USE_BUILTIN_RIPGREP`, `USE_LOCAL_OAUTH`, `USE_STAGING_OAUTH`, `UV_THREADPOOL_SIZE`, `WALLET_PASS` |
 | Auth and hosted integration metadata | `CURSOR_TRACE_ID`, `GITHUB_DEVICE_FLOW_CLIENT_ID`, `SESSIONNAME`, `SPACE_CREATOR_USER_ID` |
+
+`CC` selects the C compiler executable for native helper builds, including
+the Linux peer-credential binding prepared with `--build`; it defaults to `cc`.
+`npm_config_nodedir` supplies the Node headers root, with headers under
+`include/node`. Peer-credential package preparation uses this root when set;
+native runtime tarball builds require an absolute root with verified headers.
+These are build-process inputs. Install-time cache preparation and the daemon's
+runtime compile fallback keep their existing compiler and header discovery.
 
 `API_TIMEOUT_MS` is captured in the provider binding used by each request.
 Timeout messages do not display the daemon process's current value because it

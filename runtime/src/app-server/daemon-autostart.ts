@@ -1757,6 +1757,10 @@ async function waitForAgenCDaemonReady(
     ((readyTarget: AgenCDaemonConnectionTarget) =>
       isAgenCDaemonPidAndCookieReady(readyTarget, host));
 
+  if (options.isReady === undefined) {
+    const hint = await host.waitSpawnedDaemonReady?.(target.pid, timeoutMs);
+    if (hint === "ready" && await isReady(target)) return "ready";
+  }
   while (Date.now() - startedAt < timeoutMs) {
     if (await Promise.resolve(isReady(target))) return "ready";
     // A dead daemon can never become ready — bail out with the accurate

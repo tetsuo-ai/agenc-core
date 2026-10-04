@@ -1780,6 +1780,9 @@ async function runAgenCDaemonForegroundLocked(
         }
       }
       if (!shuttingDown) {
+        // Only the committed listeners and identity publication may wake the
+        // spawning parent. It still performs its authenticated instance proof.
+        await host.startupGuardReceiver?.notifyReady();
         io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
         scheduleDaemonCompileCacheFlush();
         // The daemon serves from here on. The sessions open at its last

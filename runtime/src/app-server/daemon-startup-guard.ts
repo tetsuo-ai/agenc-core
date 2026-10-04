@@ -3,6 +3,9 @@ export const AGENC_DAEMON_STARTUP_GUARD_ENV =
 
 const STARTUP_GUARD_CANCEL = "agenc.daemon.startup.cancel";
 const STARTUP_GUARD_CANCELLED = "agenc.daemon.startup.cancelled";
+const STARTUP_GUARD_READY = "agenc.daemon.startup.ready";
+
+export type AgenCDaemonStartupReadyHint = "ready" | "closed" | "timeout";
 
 export interface AgenCDaemonStartupGuardChannel {
   addMessageListener(listener: (message: unknown) => void): void;
@@ -17,11 +20,13 @@ export interface AgenCDaemonStartupGuardChannel {
 export interface AgenCDaemonStartupGuardReceiver {
   readonly requested: Promise<void>;
   wasRequested(): boolean;
+  notifyReady(): Promise<void>;
   acknowledgeAfterCleanup(cleanupOk: boolean): Promise<void>;
   close(): void;
 }
 
 export interface AgenCDaemonStartupGuardController {
+  waitUntilReady(timeoutMs: number): Promise<AgenCDaemonStartupReadyHint>;
   requestCancellation(timeoutMs: number): Promise<void>;
   close(): void;
 }
@@ -42,6 +47,7 @@ export function createAgenCDaemonStartupGuardReceiver(
   assertStartupGuardToken(token);
   let requested = false;
   let closed = false;
+  let readySent = false;
   let resolveRequested!: () => void;
   const requestedPromise = new Promise<void>((resolve) => {
     resolveRequested = resolve;
@@ -66,6 +72,16 @@ export function createAgenCDaemonStartupGuardReceiver(
   return {
     requested: requestedPromise,
     wasRequested: () => requested,
+    notifyReady: async () => {
+      if (closed || requested || readySent) return;
+      readySent = true;
+      try {
+        await channel.send({ type: STARTUP_GUARD_READY, token });
+      } catch {
+        // A lost parent/hint does not invalidate the committed daemon. The
+        // parent still has its bounded socket check and full identity proof.
+      }
+    },
     acknowledgeAfterCleanup: async (cleanupOk) => {
       if (!requested || closed) {
         close();
@@ -91,21 +107,62 @@ export function createAgenCDaemonStartupGuardController(
 ): AgenCDaemonStartupGuardController {
   assertStartupGuardToken(token);
   let closed = false;
+  let ready = false;
   let cancellation: Promise<void> | null = null;
+  const readyWaiters = new Set<(hint: AgenCDaemonStartupReadyHint) => void>();
+  const finishReadyWaiters = (hint: AgenCDaemonStartupReadyHint): void => {
+    for (const finish of [...readyWaiters]) finish(hint);
+  };
+  const onReady = (message: unknown): void => {
+    if (closed || cancellation !== null || ready) return;
+    if (!isStartupGuardMessage(message, STARTUP_GUARD_READY, token)) return;
+    ready = true;
+    channel.removeMessageListener(onReady);
+    finishReadyWaiters("ready");
+  };
+  const onChannelClose = (): void => close();
   const close = (): void => {
     if (closed) return;
     closed = true;
+    channel.removeMessageListener(onReady);
+    channel.removeCloseListener(onChannelClose);
+    finishReadyWaiters("closed");
     channel.close();
   };
+  // Listen before the caller first waits: a fast child can publish while the
+  // parent is still writing its provisional pid or capturing process identity.
+  channel.addMessageListener(onReady);
+  channel.addCloseListener(onChannelClose);
   channel.unref();
   return {
+    waitUntilReady: (timeoutMs) => {
+      if (closed || cancellation !== null) return Promise.resolve("closed");
+      if (ready) return Promise.resolve("ready");
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+        return Promise.resolve("timeout");
+      }
+      return new Promise<AgenCDaemonStartupReadyHint>((resolve) => {
+        const finish = (hint: AgenCDaemonStartupReadyHint): void => {
+          clearTimeout(timer);
+          readyWaiters.delete(finish);
+          resolve(hint);
+        };
+        const timer = setTimeout(() => finish("timeout"), timeoutMs);
+        readyWaiters.add(finish);
+      });
+    },
     requestCancellation: (timeoutMs) => {
       if (cancellation !== null) return cancellation;
+      if (closed) {
+        return Promise.reject(new Error("spawned daemon startup guard is closed"));
+      }
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
         return Promise.reject(
           new TypeError("daemon startup cancellation timeout is invalid"),
         );
       }
+      channel.removeMessageListener(onReady);
+      finishReadyWaiters("closed");
       cancellation = new Promise<void>((resolve, reject) => {
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
