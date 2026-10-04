@@ -302,6 +302,7 @@ export async function runAgenCDaemonForeground(
   io: AgenCDaemonCliIo,
   options: {
     readonly enterDaemonHome?: boolean;
+    readonly releaseProvisionalLifecycleLock?: () => Promise<void>;
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
@@ -334,7 +335,7 @@ export async function runAgenCDaemonForeground(
     startupStartedAt,
     "lifecycle lock acquisition started",
   );
-  const release = await acquireAgenCDaemonLifecycleLock(host, (phase) => {
+  const release = options.releaseProvisionalLifecycleLock ?? await acquireAgenCDaemonLifecycleLock(host, (phase) => {
     writeAgenCDaemonStartupDebug(host, io, startupStartedAt, phase);
   });
   writeAgenCDaemonStartupDebug(

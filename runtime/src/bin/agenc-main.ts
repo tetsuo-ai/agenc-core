@@ -1,13 +1,19 @@
 import "../bootstrap/node-env.js";
+import { runDefaultCliRoute } from "./default-cli-route.js";
+import { readProcessCwdSafely, resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
+export { resolveCliCwdForStartup } from "./cli-cwd.js";
+import { requireProjectTrustForTui } from "./project-trust-preflight.js";
+export { runProjectTrustPreflightForTui } from "./project-trust-preflight.js";
+export type { ProjectTrustPreflightOptions, ProjectTrustPreflightResult } from "./project-trust-preflight.js";
 import { prepareCliRuntime } from "./cli-runtime.js";
 export { initializeCliRuntime } from "./cli-runtime.js";
 import {
   cliStartupErrorMessage,
-  formatUnavailableCliCwdMessage,
   runCliProcessMain,
 } from "./cli-process-main.js";
 export { formatUnavailableCliCwdMessage, isUnavailableCliCwdError } from "./cli-process-main.js";
 import { isDirectInvocation, shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
+import { selectAgenCCliEntry } from "./cli-entry-policy.js";
 export { shouldRunDaemonStartupSecurityAudit } from "./daemon-entry-policy.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
@@ -44,8 +50,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
-import { cwd as processCwd } from "node:process";
+import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../version.js";
 import {
@@ -54,9 +59,7 @@ import {
   type TurnTerminal,
 } from "../contracts/turn-terminal.js";
 import {
-  classifyCLI,
   extractFlagValues,
-  routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
   type ContinueTUIArgs,
@@ -172,10 +175,6 @@ import type {
   MessageStreamResult,
   SessionGoalSetRequest,
 } from "../app-server/protocol/index.js";
-import {
-  ensureAgenCDaemonAutostart,
-  resolveAgenCDaemonAutostartEnabled,
-} from "../app-server/daemon-autostart.js";
 import {
   formatAgenCAuthCliHelpText,
   parseAgenCAuthCliArgs,
@@ -296,16 +295,7 @@ import {
   writeStartupSandboxBypassNotice,
 } from "./bypass-approvals.js";
 import {
-  isProjectTrustedSync,
-  trustProject,
-} from "../permissions/trust/project-trust.js";
-import {
-  formatProjectTrustSources,
-  summarizeProjectTrustSources,
-} from "../permissions/trust/trust-sources.js";
-import {
   setIsRemoteMode,
-  setSessionTrustAccepted,
 } from "../bootstrap/state.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
@@ -994,53 +984,6 @@ function resolveUserHome(
   return env.HOME ?? env.USERPROFILE ?? fallback;
 }
 
-
-function readProcessCwdSafely(cwdFn: () => string = processCwd): string | null {
-  try {
-    return cwdFn();
-  } catch {
-    return null;
-  }
-}
-
-export function resolveCliCwdForStartup(
-  env: NodeJS.ProcessEnv = process.env,
-  options: {
-    readonly useEnvWorkspace?: boolean;
-    readonly cwdFn?: () => string;
-  } = {},
-):
-  | { readonly ok: true; readonly cwd: string }
-  | { readonly ok: false; readonly message: string } {
-  if (options.useEnvWorkspace !== false) {
-    const workspace = resolveWorkspaceFromEnv(env);
-    if (workspace !== undefined) {
-      if (isAbsolute(workspace)) {
-        return { ok: true, cwd: resolve(workspace) };
-      }
-      const baseCwd = readProcessCwdSafely(options.cwdFn);
-      if (baseCwd === null) {
-        return {
-          ok: false,
-          message:
-            "AGENC_WORKSPACE must be absolute when the current working directory is unavailable.",
-        };
-      }
-      return { ok: true, cwd: resolve(baseCwd, workspace) };
-    }
-  }
-  const cwd = readProcessCwdSafely(options.cwdFn);
-  if (cwd === null) {
-    return { ok: false, message: formatUnavailableCliCwdMessage() };
-  }
-  return { ok: true, cwd: resolve(cwd) };
-}
-
-
-function writeUnavailableCliCwd(): number {
-  process.stderr.write(`agenc: ${formatUnavailableCliCwdMessage()}\n`);
-  return 1;
-}
 
 function installTuiSessionContract(params: {
   readonly session: Session;
@@ -3048,161 +2991,6 @@ export async function exitOrResumeAfterTui(
   const resumeId = await consumePendingResumeSessionId();
   if (resumeId === null) return exitCode;
   return daemonCliDeps().resumeTui({ resumeId }, startupCliFlags);
-}
-
-async function loadProjectTrustPrompt(): Promise<
-  (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly bypassPermissionsRequested?: boolean;
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>
-> {
-  const specifier = "./tui-trust-prompt.js";
-  const mod = (await import(specifier)) as {
-    readonly renderProjectTrustPrompt: (opts: {
-      readonly workspaceRoot: string;
-      readonly riskSources?: readonly string[];
-      readonly bypassPermissionsRequested?: boolean;
-      readonly stdin?: NodeJS.ReadStream;
-      readonly stdout?: NodeJS.WriteStream;
-      readonly stderr?: NodeJS.WriteStream;
-    }) => Promise<boolean>;
-  };
-  return mod.renderProjectTrustPrompt;
-}
-
-async function markLegacySessionTrustAccepted(): Promise<void> {
-  setSessionTrustAccepted(true);
-}
-
-export interface ProjectTrustPreflightOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly argv?: readonly string[];
-  readonly startupCliFlags?: StartupCliFlags;
-  readonly cwd?: string;
-  readonly stdin?: NodeJS.ReadStream;
-  readonly stdout?: NodeJS.WriteStream;
-  readonly stderr?: NodeJS.WriteStream;
-  readonly useEnvWorkspace?: boolean;
-  readonly allowPrompt?: boolean;
-  readonly renderPrompt?: (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>;
-  readonly markSessionTrusted?: () => Promise<void>;
-}
-
-export interface ProjectTrustPreflightResult {
-  readonly accepted: boolean;
-  readonly projectRoot: string;
-  readonly prompted: boolean;
-}
-
-export async function runProjectTrustPreflightForTui(
-  options: ProjectTrustPreflightOptions = {},
-): Promise<ProjectTrustPreflightResult> {
-  const env = options.env ?? process.env;
-  const stdin = options.stdin ?? process.stdin;
-  const stdout = options.stdout ?? process.stdout;
-  const stderr = options.stderr ?? process.stderr;
-  const agencHome = resolveAgencHome(env);
-  const startupCliFlags =
-    options.startupCliFlags ??
-    readStartupCliFlags(options.argv ?? process.argv);
-  const rawWorkspace =
-    options.useEnvWorkspace === false
-      ? (options.cwd ?? process.cwd())
-      : (resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd());
-  const configStore = new ConfigStore({
-    home: agencHome,
-    env,
-    cwd: rawWorkspace,
-    ...startupConfigLayerOptions({
-      cli: startupCliFlags,
-      cwd: rawWorkspace,
-    }),
-  });
-  const config = await configStore.reload();
-  const profileName = resolvedStartupProfileName(startupCliFlags, env);
-  const startup = resolveCanonicalStartupSelection({
-    config,
-    ...(profileName !== undefined ? { profileName } : {}),
-  });
-  // ConfigStore's repository discovery is the sole project-root authority.
-  // Re-running marker discovery after later layers would let configuration
-  // come from one root while trust authorizes another.
-  const projectRoot = configStore.projectRoot;
-  if (
-    isProjectTrustedSync({
-      agencHome,
-      env,
-      projectRoot,
-      projectRootMarkers: startup.config.project_root_markers,
-    })
-  ) {
-    await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
-    return { accepted: true, projectRoot, prompted: false };
-  }
-
-  const canPrompt =
-    options.allowPrompt !== false &&
-    Boolean(stdin.isTTY) &&
-    Boolean(stdout.isTTY);
-  if (!canPrompt) {
-    stderr.write(`agenc: project is not trusted: ${projectRoot}\n`);
-    return { accepted: false, projectRoot, prompted: false };
-  }
-
-  const riskSources = formatProjectTrustSources(
-    await summarizeProjectTrustSources({
-      cwd: projectRoot,
-      configStore,
-    }),
-  );
-  const renderProjectTrustPrompt =
-    options.renderPrompt ?? (await loadProjectTrustPrompt());
-  const accepted = await renderProjectTrustPrompt({
-    workspaceRoot: projectRoot,
-    riskSources,
-    bypassPermissionsRequested:
-      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true ||
-      startupCliFlags.permissionMode === "bypassPermissions",
-    stdin,
-    stdout,
-    stderr,
-  });
-  if (!accepted) {
-    return { accepted: false, projectRoot, prompted: true };
-  }
-  await trustProject({
-    agencHome,
-    env,
-    projectRoot,
-  });
-  await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
-  return { accepted: true, projectRoot, prompted: true };
-}
-
-async function requireProjectTrustForTui(
-  options: ProjectTrustPreflightOptions = {},
-): Promise<boolean> {
-  return (await runProjectTrustPreflightForTui(options)).accepted;
-}
-
-function isInteractiveTuiRoutePlan(
-  plan: ReturnType<typeof classifyCLI>,
-): boolean {
-  return (
-    plan.kind === "bootTUI" ||
-    plan.kind === "resumeTUI" ||
-    plan.kind === "continueTUI"
-  );
 }
 
 export async function resolveAttachTargetTrustRoot(
@@ -6406,93 +6194,8 @@ function shouldLaunchTuiAfterLogin(): boolean {
   );
 }
 
-async function runDefaultAgenCCliRoute(
-  argv: readonly string[],
-): Promise<number> {
-  const routePlan = classifyCLI({
-    argv,
-    isTTY: Boolean(process.stdin.isTTY),
-    isStdoutTTY: Boolean(process.stdout.isTTY),
-  });
-  const startupCliFlags: StartupCliFlags =
-    routePlan.kind === "errorAndExit"
-      ? Object.freeze({})
-      : readStartupCliFlags(argv);
-  const targetResumeRoute =
-    routePlan.kind === "resumeTUI" || routePlan.kind === "continueTUI";
-  const routeNeedsToolTrust =
-    routePlan.kind === "oneShotCLI" ||
-    (isInteractiveTuiRoutePlan(routePlan) && !targetResumeRoute);
-  const routeCwd = routeNeedsToolTrust
-    ? resolveCliCwdForStartup(process.env)
-    : null;
-  if (routeCwd !== null && !routeCwd.ok) {
-    return writeUnavailableCliCwd();
-  }
-  if (routeNeedsToolTrust) {
-    if (routeCwd === null) {
-      return writeUnavailableCliCwd();
-    }
-    if (
-      !(await requireProjectTrustForTui({
-        env: process.env,
-        argv,
-        startupCliFlags,
-        cwd: routeCwd.cwd,
-      }))
-    ) {
-      return 1;
-    }
-  }
-  if (
-    routePlan.kind !== "errorAndExit" &&
-    !targetResumeRoute &&
-    (await resolveAgenCDaemonAutostartEnabled(process.env))
-  ) {
-    try {
-      // Surface respawn reasons on stderr instead of the historical
-      // silentIo(): a failing autostart used to look like a frozen blank
-      // terminal. Keep stdout quiet so the daemon CLI banner stays out of
-      // interactive TUI rendering (mirrors defaultEnsureDaemonReady).
-      const silentStdout = { write: () => true } as Pick<
-        NodeJS.WriteStream,
-        "write"
-      >;
-      await ensureAgenCDaemonAutostart({
-        io: { stdout: silentStdout, stderr: process.stderr },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`agenc: daemon autostart failed: ${message}\n`);
-      if (!process.stdout.isTTY) {
-        return 1;
-      }
-      // Interactive sessions still get a working (daemon-less) TUI with a
-      // visible error notice rather than an exit back to the shell. The
-      // notice reads this env var at render time (StatusNotices).
-      setCoreOnlyEnvironmentVariable("AGENC_DAEMON_AUTOSTART_FAILURE", message);
-    }
-  }
-  return routeCLI({
-    argv,
-    isTTY: Boolean(process.stdin.isTTY),
-    isStdoutTTY: Boolean(process.stdout.isTTY),
-    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args, startupCliFlags),
-    oneShotCLI: (
-      userMessage: string,
-      startupImages?: readonly string[],
-      continueSession?: OneShotContinueSession,
-    ) =>
-      oneShotCLI(
-        userMessage.length > 0 ? userMessage : null,
-        startupImages ?? [],
-        startupCliFlags,
-        continueSession,
-      ),
-    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args, startupCliFlags),
-    continueTUI: (args: ContinueTUIArgs) =>
-      continueTUIEntry(args, startupCliFlags),
-  });
+function runDefaultAgenCCliRoute(argv: readonly string[]): Promise<number> {
+  return runDefaultCliRoute(argv, { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI });
 }
 
 /**
@@ -6510,6 +6213,6 @@ async function runDefaultAgenCCliRoute(
  * `import.meta`, which is forbidden in the CJS output target.
  */
 
-if (isDirectInvocation()) {
+if (isDirectInvocation() && selectAgenCCliEntry() === "main") {
   void runCliProcessMain(main);
 }
