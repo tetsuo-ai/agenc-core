@@ -24,7 +24,7 @@ import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protoc
 import { flushAgenCCompileCache } from "../bin/compile-cache.js";
 import { resolveHomeContext } from "../config/home.js";
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
-import { discoverStateDatabasePaths } from "../state/sqlite-driver.js";
+import { discoverStateDatabasePaths } from "../state/database-paths.js";
 import { BoundedRegularFileError, readBoundedRegularFile } from "../utils/bounded-regular-file.js";
 import { writeDurableAtomicFile } from "../utils/durable-atomic-file.js";
 import { createSizeCappedFileLogSink, type SizeCappedFileLogSink } from "../utils/logger.js";

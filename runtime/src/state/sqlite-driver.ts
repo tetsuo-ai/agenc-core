@@ -3,14 +3,11 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
-  existsSync,
   fsyncSync,
   linkSync,
   mkdirSync,
   openSync,
-  readdirSync,
   unlinkSync,
-  type Dirent,
 } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -32,6 +29,17 @@ import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job
 import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 import { tryInitializeFreshStateSchema } from "./fresh-state-schema.js";
+import {
+  LOGS_DATABASE_FILENAME,
+  STATE_DATABASE_FILENAME,
+  type StateDatabasePaths,
+} from "./database-paths.js";
+export {
+  discoverStateDatabasePaths,
+  LOGS_DATABASE_FILENAME,
+  STATE_DATABASE_FILENAME,
+  type StateDatabasePaths,
+} from "./database-paths.js";
 
 export interface StateSqliteDriverOptions {
   /** State-only consumers open the independent logs database on first use. */
@@ -46,14 +54,6 @@ export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
   readonly projectRootMarkers?: readonly string[];
 }
 
-export interface StateDatabasePaths {
-  readonly projectDir: string;
-  readonly stateDbPath: string;
-  readonly logsDbPath: string;
-}
-
-export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
-export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
 export const STATE_PRE_V12_BACKUP_FILENAME = "agenc-state_1.pre-v12.sqlite";
 export const STATE_PRE_V15_BACKUP_FILENAME = "agenc-state_1.pre-v15.sqlite";
 export const STATE_PRE_V17_BACKUP_FILENAME = "agenc-state_1.pre-v17.sqlite";
@@ -374,30 +374,6 @@ export function openStateDatabasePathReader(
   options: StateSqliteDriverOptions = {},
 ): StateSqliteReader {
   return new StateSqliteReader(paths, options);
-}
-
-export function discoverStateDatabasePaths(
-  agencHome: string,
-): StateDatabasePaths[] {
-  const projectsDir = join(agencHome, "projects");
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(projectsDir, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const projectDir = join(projectsDir, entry.name);
-      return {
-        projectDir,
-        stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
-        logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
-      };
-    })
-    .filter((paths) => existsSync(paths.stateDbPath));
 }
 
 function configureDatabase(db: SqliteDatabase): void {
