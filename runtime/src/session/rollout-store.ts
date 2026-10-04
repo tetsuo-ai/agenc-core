@@ -795,7 +795,7 @@ export class RolloutStore {
       throw new TypeError("RolloutStore sessionTempRoot must be absolute");
     }
     this.sessionTempRoot = normalize(opts.sessionTempRoot);
-    this.store = new SessionStore(opts);
+    this.store = new SessionStore({ ...opts, checkpointOneShot: () => this.stateDriver.checkpointDurability() });
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
       this.store,
@@ -820,7 +820,10 @@ export class RolloutStore {
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
       agencHome: this.store.agencHome,
+      durabilityRunId: opts.sessionId,
       projectRootMarkers: opts.projectRootMarkers,
+      // Rollout authority uses state; open logs only if a caller needs them.
+      deferLogs: true,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
@@ -3729,8 +3732,9 @@ export class RolloutStore {
         if (projectDir === rootProjectDir || !lstatSync(projectDir).isDirectory()) continue;
         const stateDbPath = join(projectDir, STATE_DATABASE_FILENAME);
         const logsDbPath = join(projectDir, LOGS_DATABASE_FILENAME);
-        if (!existsSync(stateDbPath) || !existsSync(logsDbPath)) continue;
-        const reader = new StateSqliteReader({ projectDir, stateDbPath, logsDbPath });
+        if (!existsSync(stateDbPath)) continue;
+        const reader = new StateSqliteReader(
+          { projectDir, stateDbPath, logsDbPath }, { deferLogs: true });
         try {
           const epoch = reader.prepareState<[string], { epoch: number }>(
             `SELECT epoch FROM run_lifecycle_epochs WHERE run_id = ? ORDER BY epoch DESC LIMIT 1`,
@@ -3858,8 +3862,7 @@ export class RolloutStore {
   close(): void {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    this.stateDriver.close();
-    this.store.close();
+    try { this.store.close(); } finally { this.stateDriver.close(); }
   }
 
   private requireRunEpoch(runId: string) {

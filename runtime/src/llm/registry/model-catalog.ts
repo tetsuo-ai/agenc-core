@@ -22,6 +22,8 @@ import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS } from "./openrouter-models.js";
+import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
+import { frozenLazyArray } from "./catalog-array.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
@@ -875,9 +877,9 @@ const ANTHROPIC_UNCURATED_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
   visibility: "none" as const,
 }));
 
-export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
-  Object.freeze([
-    ...OPENROUTER_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+let openRouterCatalog: readonly RegisteredModelCatalogEntry[] | undefined;
+function openRouterCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return openRouterCatalog ??= Object.freeze(OPENROUTER_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "openrouter",
       model: entry.model,
       displayName: entry.label,
@@ -898,7 +900,11 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: index + 100,
       visibility: "list",
-    })),
+    })));
+}
+
+const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+  Object.freeze([
     ...MISTRAL_MODEL_CATALOG,
     ANTHROPIC_OPUS_5_5_ENTRY,
     ANTHROPIC_SONNET_5_5_ENTRY,
@@ -1674,13 +1680,30 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     ...OPENAI_CURRENT_MODEL_CATALOG,
   ]);
 
+// Names, ordering and provider authority do not require capability/pricing rows.
+const OPENROUTER_INDEX = OPENROUTER_MODEL_IDS.map((model, index) => ({ model, index }));
+const REGISTERED_MODEL_PROVIDERS = Object.freeze([
+  ...new Set([...(OPENROUTER_MODEL_IDS.length > 0 ? ["openrouter"] : []), ...NON_OPENROUTER_MODEL_CATALOG.map(entry => entry.provider)]),
+]);
+
+export function registeredModelCatalogProviderIds(): readonly string[] {
+  return REGISTERED_MODEL_PROVIDERS;
+}
+
+export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = frozenLazyArray(
+  OPENROUTER_MODEL_IDS.length + NON_OPENROUTER_MODEL_CATALOG.length,
+  index => index < OPENROUTER_MODEL_IDS.length
+    ? openRouterCatalogEntries()[index]!
+    : NON_OPENROUTER_MODEL_CATALOG[index - OPENROUTER_MODEL_IDS.length]!,
+);
+
 /**
  * The registered Claude rows, keyed by the canonical id the shared parser
  * (utils/model/claudeModelId.ts) reads from each row.
  */
 const CLAUDE_CATALOG_ROWS: ReadonlyMap<string, RegisteredModelCatalogEntry> =
   new Map(
-    REGISTERED_MODEL_CATALOG.flatMap((entry) => {
+    NON_OPENROUTER_MODEL_CATALOG.flatMap((entry) => {
       const id = entry.provider === "anthropic"
         ? parseClaudeModelId(entry.model)
         : undefined;
@@ -1693,7 +1716,9 @@ export function listRegisteredModelCatalogEntries(
 ): readonly RegisteredModelCatalogEntry[] {
   const normalizedProvider = normalizeId(provider ?? "");
   return Object.freeze(
-    REGISTERED_MODEL_CATALOG.filter(
+    (normalizedProvider.length === 0 ? REGISTERED_MODEL_CATALOG
+      : normalizedProvider === "openrouter" ? openRouterCatalogEntries()
+      : NON_OPENROUTER_MODEL_CATALOG).filter(
       (entry) =>
         normalizedProvider.length === 0 ||
         normalizeId(entry.provider) === normalizedProvider,
@@ -1708,6 +1733,13 @@ export function resolveRegisteredModelCatalogEntry(input: {
   const provider = modelCatalogProviderIdentity(input.provider);
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
+  if (provider === "openrouter") {
+    const match = findExactModel(model, OPENROUTER_INDEX) ??
+      findNamespacedSuffix(model, OPENROUTER_INDEX, true) ??
+      findNamespacedSuffix(model, OPENROUTER_INDEX) ??
+      findLongestPrefix(model, OPENROUTER_INDEX);
+    return match === undefined ? undefined : openRouterCatalogEntries()[match.index];
+  }
   if (provider === "gemini") {
     return findExactModel(
       resolveGeminiThinkingModel(model)?.model ?? "",
@@ -1718,7 +1750,7 @@ export function resolveRegisteredModelCatalogEntry(input: {
   // PAYG hosted/vendor models are distinct deployments. Do not give an
   // unlisted variant another route's limits or reasoning enum.
   if (provider === "qwen") {
-    const exact = REGISTERED_MODEL_CATALOG.find((entry) => entry.provider === "qwen" && normalizeId(entry.model) === normalizeId(model));
+    const exact = NON_OPENROUTER_MODEL_CATALOG.find((entry) => entry.provider === "qwen" && normalizeId(entry.model) === normalizeId(model));
     if (exact !== undefined) return exact;
     if (QWEN_CURRENT_MODEL_CATALOG.some((entry) => normalizeId(model).startsWith(normalizeId(entry.model)))) return undefined;
   }
@@ -1733,14 +1765,14 @@ export function resolveRegisteredModelCatalogEntry(input: {
   if (provider === "amazon-bedrock") {
     const documented = findExactModel(
       model,
-      REGISTERED_MODEL_CATALOG.filter((entry) => entry.provider === provider),
+      NON_OPENROUTER_MODEL_CATALOG.filter((entry) => entry.provider === provider),
     );
     const claude = resolveBedrockCatalogEntry(model);
     // Native Anthropic picker policy must not hide a separately reviewed AWS ID.
     return claude === undefined ? documented : documented === undefined ? claude
       : Object.freeze({ ...claude, visibility: documented.visibility });
   }
-  const candidates = REGISTERED_MODEL_CATALOG.filter(
+  const candidates = NON_OPENROUTER_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
   const exact = findExactModel(model, candidates) ??
@@ -1805,8 +1837,11 @@ export function resolveModelCatalogMetadata(input: {
  * entry here surfaces the model in every flat-catalog consumer.
  */
 export function deriveFlatCatalog(): Readonly<Record<string, readonly string[]>> {
-  const byProvider = new Map<string, RegisteredModelCatalogEntry[]>();
-  for (const entry of REGISTERED_MODEL_CATALOG) {
+  const byProvider = new Map<string, Pick<RegisteredModelCatalogEntry, "model" | "priority">[]>();
+  if (OPENROUTER_MODEL_IDS.length > 0) {
+    byProvider.set("openrouter", OPENROUTER_MODEL_IDS.map((model, index) => ({ model, priority: index + 100 })));
+  }
+  for (const entry of NON_OPENROUTER_MODEL_CATALOG) {
     if (entry.visibility === "none") continue;
     const key = modelCatalogProviderIdentity(entry.provider);
     const list = byProvider.get(key);
@@ -1927,19 +1962,19 @@ export function bedrockConverseEffortLevels(
     NO_REASONING_LEVELS;
 }
 
-function findExactModel(
+function findExactModel<T extends { readonly model: string }>(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
-): RegisteredModelCatalogEntry | undefined {
+  candidates: readonly T[],
+): T | undefined {
   const normalized = normalizeId(model);
   return candidates.find((entry) => normalizeId(entry.model) === normalized);
 }
 
-function findNamespacedSuffix(
+function findNamespacedSuffix<T extends { readonly model: string }>(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
+  candidates: readonly T[],
   exactOnly = false,
-): RegisteredModelCatalogEntry | undefined {
+): T | undefined {
   const [namespace, suffix, extra] = model.split("/");
   if (extra !== undefined || suffix === undefined) return undefined;
   if (!/^\w+$/.test(namespace)) return undefined;
@@ -1947,10 +1982,10 @@ function findNamespacedSuffix(
     (exactOnly ? undefined : findLongestPrefix(suffix, candidates));
 }
 
-function findLongestPrefix(
+function findLongestPrefix<T extends { readonly model: string }>(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
-): RegisteredModelCatalogEntry | undefined {
+  candidates: readonly T[],
+): T | undefined {
   const normalized = normalizeId(model);
   return candidates
     .filter((entry) => {

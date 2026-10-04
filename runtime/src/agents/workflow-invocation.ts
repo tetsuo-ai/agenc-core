@@ -1,6 +1,7 @@
 /** Frozen WorkflowTool invocation contract, independent of the tool caller. */
 
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 import { types as utilTypes } from "node:util";
 
 import { cloneFiniteJsonValue } from "./workflow-finite-json.js";
@@ -74,7 +75,7 @@ const validationSchema = JSON.parse(JSON.stringify(WORKFLOW_INVOCATION_SCHEMA));
 let invocationValidator: ValidateFunction<WorkflowInvocation> | undefined;
 
 function getInvocationValidator(): ValidateFunction<WorkflowInvocation> {
-  return invocationValidator ??= new Ajv({ allErrors: true, strict: true }).compile(
+  return invocationValidator ??= new (loadAjv())({ allErrors: true, strict: true }).compile(
     validationSchema,
   ) as ValidateFunction<WorkflowInvocation>;
 }

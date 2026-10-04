@@ -31,7 +31,9 @@
     "dist/agenc-keychain-helper"
   ],
   "scripts": {
+    "postinstall": "node bin/prepare-peer-credentials.mjs",
     "build": "node scripts/check-launcher-preflight.mjs --check && node scripts/sync-shipped-plugins.mjs && node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
+    "generate:fresh-state-schema": "node --import tsx scripts/generate-fresh-state-schema.ts",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",
@@ -51,9 +53,10 @@
     "check:tui-command-visual-smoke": "node scripts/check-tui-command-visual-smoke.mjs",
     "check:tui-v2-design-audit": "npm run build && node scripts/run-hermetic-vitest.mjs --design run --config vitest.design.config.ts && node scripts/check-tui-command-visual-smoke.mjs",
     "check:llm-pipeline": "node scripts/check-llm-pipeline/runner.mjs",
+    "check:startup-modules": "node scripts/check-startup-modules/runner.mjs",
     "check:local-vllm": "node scripts/check-local-vllm-smoke.mjs",
     "check:daemon-errors": "node scripts/check-daemon-errors/runner.mjs",
-    "check:e2e-all": "npm run check:daemon-errors && npm run check:llm-pipeline && npm run check:tui-e2e",
+    "check:e2e-all": "npm run check:daemon-errors && npm run check:llm-pipeline && npm run check:startup-modules && npm run check:tui-e2e",
     "check:unused": "knip --config knip.config.mjs --production --no-progress",
     "check:unused:all": "knip --config knip.config.mjs --no-progress",
     "check:unused:production": "knip --config knip.config.mjs --production --no-progress",

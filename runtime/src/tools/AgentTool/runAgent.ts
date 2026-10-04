@@ -26,10 +26,6 @@ import { transitionPermissionMode } from '../../permissions/permission-mode.js'
 import type { ToolPermissionContext as CanonicalToolPermissionContext } from '../../permissions/types.js'
 import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
-import {
-  connectToServer,
-  fetchToolsForClient,
-} from '../../services/mcp/client.js'
 import { getApprovedMcpConfigByName } from '../../services/mcp/config.js'
 import type {
   MCPServerConnection,
@@ -217,6 +213,9 @@ async function initializeAgentMcpServers(
 
     // Connect to the server. Inline frontmatter MCP servers are owned by this
     // agent run, so they can safely use the active session sampler.
+    const { connectToServer, fetchToolsForClient } = await import(
+      '../../services/mcp/client.js'
+    )
     const client = await connectToServer(
       name,
       config,

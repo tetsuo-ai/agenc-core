@@ -1,6 +1,7 @@
 /** Canonical version-2 workflow manifest schema and validation. */
 
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 
 import {
   digestCanonicalJson,
@@ -171,7 +172,7 @@ const validationSchema = JSON.parse(JSON.stringify(WORKFLOW_MANIFEST_V2_SCHEMA))
 let validateV2: ValidateFunction<WorkflowDagManifestV2> | undefined;
 
 function getManifestValidator(): ValidateFunction<WorkflowDagManifestV2> {
-  return validateV2 ??= new Ajv({ allErrors: true, strict: true }).compile(
+  return validateV2 ??= new (loadAjv())({ allErrors: true, strict: true }).compile(
     validationSchema,
   ) as ValidateFunction<WorkflowDagManifestV2>;
 }

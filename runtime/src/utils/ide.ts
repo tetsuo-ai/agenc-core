@@ -1,11 +1,10 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { execa } from 'execa'
 import capitalize from 'lodash-es/capitalize.js'
 import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
 import { basename, join, sep as pathSeparator, resolve } from 'path'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
-import { callIdeRpc } from '../services/mcp/client.js'
+import { callIdeRpc } from '../services/mcp/ideRpc.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
@@ -24,17 +23,12 @@ import { logError } from './log.js'
 import { getPlatform } from './platform.js'
 import { lt } from './semver.js'
 
-// Lazy: IdeOnboardingDialog.tsx pulls React/ink; only needed in interactive onboarding path
-/* eslint-disable @typescript-eslint/no-require-imports */
-const ideOnboardingDialog =
-  (): typeof import('src/tui/components/IdeOnboardingDialog.js') =>
-    require('src/tui/components/IdeOnboardingDialog.js')
+import { hasIdeOnboardingDialogBeenShown } from './ideOnboardingState.js'
 
 import { createAbortController } from './abortController.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { envDynamic } from './envDynamic.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import {
   checkWSLDistroMatch,
   WindowsToWSLConverter,
@@ -1062,6 +1056,7 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
     const platform = getPlatform()
     if (platform === 'macos') {
       // On macOS, use ps with process name matching
+      const { execa } = await import('execa')
       const result = await execa(
         'ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm|WebStorm|PhpStorm|RubyMine|CLion|GoLand|Rider|DataGrip|AppCode|DataSpell|Aqua|Gateway|Fleet|Android Studio" | grep -v grep',
         { shell: true, reject: false },
@@ -1077,6 +1072,7 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
       }
     } else if (platform === 'windows') {
       // On Windows, use tasklist with findstr for multiple patterns
+      const { execa } = await import('execa')
       const result = await execa(
         'tasklist | findstr /I "Code.exe Cursor.exe Windsurf.exe idea64.exe pycharm64.exe webstorm64.exe phpstorm64.exe rubymine64.exe clion64.exe goland64.exe rider64.exe datagrip64.exe appcode.exe dataspell64.exe aqua64.exe gateway64.exe fleet.exe studio64.exe"',
         { shell: true, reject: false },
@@ -1095,6 +1091,7 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
       }
     } else if (platform === 'linux') {
       // On Linux, use ps with process name matching
+      const { execa } = await import('execa')
       const result = await execa(
         'ps aux | grep -E "code|cursor|windsurf|idea|pycharm|webstorm|phpstorm|rubymine|clion|goland|rider|datagrip|dataspell|aqua|gateway|fleet|android-studio" | grep -v grep',
         { shell: true, reject: false },
@@ -1310,7 +1307,7 @@ export async function initializeIdeIntegration(
               if (
                 !isAlreadyInstalled &&
                 status?.installed === true &&
-                !ideOnboardingDialog().hasIdeOnboardingDialogBeenShown()
+                !hasIdeOnboardingDialogBeenShown()
               ) {
                 onShowIdeOnboarding()
               }
@@ -1321,7 +1318,7 @@ export async function initializeIdeIntegration(
         void isIDEExtensionInstalled(ideType).then(async installed => {
           if (
             installed &&
-            !ideOnboardingDialog().hasIdeOnboardingDialogBeenShown()
+            !hasIdeOnboardingDialogBeenShown()
           ) {
             onShowIdeOnboarding()
           }
@@ -1348,6 +1345,7 @@ const detectHostIP = memoize(
     // Windows, then we must use a different IP address to connect to the extension.
     // https://learn.microsoft.com/en-us/windows/wsl/networking
     try {
+      const { execa } = await import('execa')
       const routeResult = await execa('ip route show | grep -i default', {
         shell: true,
         reject: false,

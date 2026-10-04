@@ -9,8 +9,19 @@ import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 export const RESIDUAL_PROCESSES_NOTE =
   "[note: this command left processes running (a trailing '&', nohup, setsid, or a daemon that forked) and AgenC stopped them when the command returned. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
 
+/** Model-facing alias only; canonical results and structured facts stay intact. */
+export function compactExecExitFooter(content: string): string {
+  const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
+  const footerEnd = content.endsWith(note) ? content.length - note.length : content.length;
+  return content.slice(0, footerEnd).replace(
+    /(^|\n)\[exec exit_code=(-?\d+)((?: [^\r\n]*)?)\]$/,
+    "$1[exit $2$3]",
+  ) + content.slice(footerEnd);
+}
+
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
+  lightMode = false,
 ): string {
   // Output FIRST, metadata after. The previous order put a multi-line
   // "Wall time: ... / Process exited with code 0 / Original token count: N
@@ -50,8 +61,15 @@ export function formatUnifiedExecToolContent(
     // by an external signal (SIGKILL/SIGTERM/OOM/sandbox kill).
     footerLines.push(`signal_terminated=true`);
   }
-  footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
-  footerLines.push(`tokens=${output.original_token_count}`);
+  const routineLightSuccess = lightMode && output.exitCode === 0 &&
+    !output.truncated && !output.timedOut && output.process_id === undefined &&
+    output.session_id === undefined && output.detached !== true &&
+    output.residual_processes_terminated !== true;
+  if (!routineLightSuccess) {
+    footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
+    footerLines.push(`tokens=${output.original_token_count}`);
+  }
+  if (lightMode && output.truncated) footerLines.push("truncated=true");
   const sessionId = output.process_id ?? output.session_id;
   if (sessionId !== undefined) {
     footerLines.push(`session_id=${sessionId}`);

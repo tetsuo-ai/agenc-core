@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 export interface AgenCNativePeerCredentialBinding {
   getPeerUid(fd: number): number | null;
@@ -31,6 +32,8 @@ export interface AgenCNativePeerCredentialOptions {
   readonly nativeBinding?: AgenCNativePeerCredentialBinding;
   readonly nodeIncludeDir?: string;
   readonly platform?: NodeJS.Platform;
+  /** @internal Override the bundled artifact directory for isolated tests. */
+  readonly bundledDirectory?: string;
 }
 
 export interface AgenCNativePeerCredentialLoadResult {
@@ -139,6 +142,26 @@ export function loadAgenCNativePeerCredentialBinding(
       return { binding: null, error: errorMessage(error) };
     }
   }
+  try {
+    const bundledDirectory = options.bundledDirectory ?? bundledNativeDirectory();
+    if (bundledDirectory !== undefined) {
+      const directory = lstatSync(bundledDirectory);
+      if (!directory.isDirectory() || (directory.mode & 0o022) !== 0) {
+        throw new Error("unsafe bundled peer credential directory");
+      }
+      assertOwnedByCurrentOrRootUser(bundledDirectory, directory.uid);
+      const addonPath = path.join(bundledDirectory, "agenc-peer-credentials.node");
+      const manifestPath = path.join(bundledDirectory, "manifest.json");
+      assertTrustedNativeAddonFile(addonPath, false);
+      assertTrustedNativeAddonFile(manifestPath, false);
+      if (nativeManifestMatches(addonPath, manifestPath, platform)) {
+        return { binding: loadNativePeerCredentialBindingFromPath(addonPath) };
+      }
+    }
+  } catch {
+    // A package built for another host, or an unusable artifact, can only
+    // fall back to the existing local build and its private-cache checks.
+  }
   if (options.allowRuntimeNativeBuild === false) {
     return {
       binding: null,
@@ -151,6 +174,40 @@ export function loadAgenCNativePeerCredentialBinding(
   } catch (error) {
     return { binding: null, error: errorMessage(error) };
   }
+}
+
+/** Resolve from this loaded package only, never the caller's working directory. */
+function bundledNativeDirectory(): string | undefined {
+  let directory = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    const manifestPath = path.join(directory, "package.json");
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        readonly name?: unknown;
+      };
+      return manifest.name === "@tetsuo-ai/runtime"
+        ? path.join(directory, "dist", "native", "peer-credentials")
+        : undefined;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+/** Package builds use the same source, hardening, manifest and load smoke test. */
+export function buildAgenCBundledPeerCredentialBinding(
+  options: Pick<AgenCNativePeerCredentialOptions, "compiler" | "nodeIncludeDir"> = {},
+): void {
+  if (process.platform !== "linux") return;
+  const directory = bundledNativeDirectory();
+  if (directory === undefined) throw new Error("runtime package root unavailable");
+  compileAndLoadAgenCNativePeerCredentialBinding({ ...options, cacheDir: directory });
+  chmodSync(path.join(directory, "agenc-peer-credentials.node"), 0o644);
+  chmodSync(path.join(directory, "manifest.json"), 0o644);
+  chmodSync(directory, 0o755);
+  // mkdir's recursive mode also applies to the new native parent directory.
+  chmodSync(path.dirname(directory), 0o755);
 }
 
 export function compileAndLoadAgenCNativePeerCredentialBinding(
@@ -262,19 +319,27 @@ function isNativeCacheCurrent(
   try {
     assertSafeCacheFile(addonPath);
     assertSafeCacheFile(manifestPath);
-    const manifest = JSON.parse(
-      readFileSync(manifestPath, "utf8"),
-    ) as NativePeerCredentialCacheManifest;
-    return (
-      manifest.sourceHash === NATIVE_SOURCE_HASH &&
-      manifest.platform === platform &&
-      manifest.arch === process.arch &&
-      manifest.modules === process.versions.modules &&
-      manifest.artifactHash === fileSha256(addonPath)
-    );
+    return nativeManifestMatches(addonPath, manifestPath, platform);
   } catch {
     return false;
   }
+}
+
+function nativeManifestMatches(
+  addonPath: string,
+  manifestPath: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const manifest = JSON.parse(
+    readFileSync(manifestPath, "utf8"),
+  ) as NativePeerCredentialCacheManifest;
+  return (
+    manifest.sourceHash === NATIVE_SOURCE_HASH &&
+    manifest.platform === platform &&
+    manifest.arch === process.arch &&
+    manifest.modules === process.versions.modules &&
+    manifest.artifactHash === fileSha256(addonPath)
+  );
 }
 
 function createNativeCacheManifest(

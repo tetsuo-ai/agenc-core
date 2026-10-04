@@ -16,6 +16,7 @@ async function importFreshUserModule() {
 function installCommonMocks(options?: {
   oauthEmail?: string;
   gitEmail?: string;
+  onExecaLoad?: () => void;
 }) {
   // NOTE: Do NOT mock ../bootstrap/state.js here.
   // Mocking state.js leaks getSessionId = () => 'session-test' into
@@ -56,16 +57,19 @@ function installCommonMocks(options?: {
       !!value && value !== "0" && value.toLowerCase() !== "false",
   }));
 
-  vi.doMock(execaModulePath, () => ({
-    execa: async () => ({
-      exitCode: options?.gitEmail ? 0 : 1,
-      stdout: options?.gitEmail ?? "",
-    }),
-    execaSync: () => ({
-      exitCode: options?.gitEmail ? 0 : 1,
-      stdout: options?.gitEmail ?? "",
-    }),
-  }));
+  vi.doMock(execaModulePath, () => {
+    options?.onExecaLoad?.();
+    return {
+      execa: async () => ({
+        exitCode: options?.gitEmail ? 0 : 1,
+        stdout: options?.gitEmail ?? "",
+      }),
+      execaSync: () => ({
+        exitCode: options?.gitEmail ? 0 : 1,
+        stdout: options?.gitEmail ?? "",
+      }),
+    };
+  });
 }
 
 afterEach(() => {
@@ -82,6 +86,22 @@ afterEach(() => {
 });
 
 describe("user email fallbacks", () => {
+  test("does not load execa when OAuth already supplies the email", async () => {
+    (globalThis as Record<string, unknown>).MACRO = { VERSION: "0.0.0" };
+    const load = vi.fn(() => { throw new Error("execa unavailable"); });
+    installCommonMocks({ oauthEmail: "oauth@example.com", onExecaLoad: load });
+    const { initUser, getCoreUserData } = await importFreshUserModule();
+    await initUser();
+    expect(getCoreUserData().email).toBe("oauth@example.com");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  test("propagates a deferred execa load failure when git email is needed", async () => {
+    installCommonMocks({ onExecaLoad: () => { throw new Error("execa unavailable"); } });
+    const { getGitEmail } = await importFreshUserModule();
+    await expect(getGitEmail()).rejects.toThrow();
+  });
+
   test("getCoreUserData does not synthesize provider email from COO_CREATOR", async () => {
     process.env.COO_CREATOR = "alice";
     (globalThis as Record<string, unknown>).MACRO = { VERSION: "0.0.0" };

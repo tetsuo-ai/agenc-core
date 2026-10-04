@@ -100,6 +100,7 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--version",
   "--bare",
   "--light",
+  "--full-durability",
   "--continue",
   "-c",
   "-p",

@@ -33,9 +33,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
-import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
+import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
@@ -1863,6 +1864,7 @@ function normalizedReasoningProvenance(
 }
 
 function normalizedProviderReasoning(candidate: {
+  readonly toolCalls?: unknown;
   readonly providerReasoningContent?: unknown;
   readonly providerReasoningProvenance?: unknown;
   readonly providerReasoning?: unknown;
@@ -1872,8 +1874,7 @@ function normalizedProviderReasoning(candidate: {
 > {
   const hasFlatContent = candidate.providerReasoningContent !== undefined;
   const flatContent =
-    typeof candidate.providerReasoningContent === "string" &&
-    candidate.providerReasoningContent.length > 0
+    typeof candidate.providerReasoningContent === "string"
       ? candidate.providerReasoningContent
       : undefined;
   const hasFlatProvenance =
@@ -1889,7 +1890,7 @@ function normalizedProviderReasoning(candidate: {
       ? (candidate.providerReasoning as Record<string, unknown>)
       : undefined;
   const durableContent =
-    typeof durable?.content === "string" && durable.content.length > 0
+    typeof durable?.content === "string"
       ? durable.content
       : undefined;
 
@@ -1899,7 +1900,10 @@ function normalizedProviderReasoning(candidate: {
   if (
     (hasFlatContent && flatContent === undefined) ||
     (hasFlatProvenance && flatProvenance === undefined) ||
-    (hasDurable && durable === undefined)
+    (hasDurable && durable === undefined) ||
+    (flatContent === "" &&
+      (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+        !isKnownEmptyProviderReasoning(flatContent, flatProvenance)))
   ) {
     return {};
   }
@@ -1907,7 +1911,10 @@ function normalizedProviderReasoning(candidate: {
   if (durable !== undefined) {
     if (durable.version === 2) {
       const durableProvenance = normalizedReasoningProvenance(durable);
-      if (durableContent === undefined || durableProvenance === undefined) {
+      if (durableContent === undefined || durableProvenance === undefined ||
+          (durableContent === "" &&
+            (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+              !isKnownEmptyProviderReasoning(durableContent, durableProvenance)))) {
         return {};
       }
       if (
@@ -1923,7 +1930,7 @@ function normalizedProviderReasoning(candidate: {
         providerReasoningProvenance: durableProvenance,
       };
     }
-    if (durable.version !== 1 || durableContent === undefined) return {};
+    if (durable.version !== 1 || durableContent === undefined || durableContent.length === 0) return {};
     if (flatContent !== undefined && flatContent !== durableContent) return {};
     // V1 is deliberately unbound. Never upgrade it from adjacent flat fields;
     // only a producer-written V2 record is authoritative provenance.
@@ -2964,7 +2971,7 @@ export class Session {
     }
     const saved = this.services.configStore === undefined
       ? (value: string) => value
-      : createSavedPluginSecretRedactor(this.services.configStore.homeContext);
+      : createLazySavedPluginSecretRedactor(this.services.configStore.homeContext);
     const plugin = (manager as McpManagerLike & { redactPluginSecrets?: (value: string) => string }).redactPluginSecrets;
     return projectMcpManagerToConnections(manager, value => plugin?.call(manager, saved(value)) ?? saved(value));
   }

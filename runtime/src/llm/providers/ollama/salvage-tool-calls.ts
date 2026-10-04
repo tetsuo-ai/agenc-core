@@ -11,7 +11,8 @@
  * fragments, incomplete values, or arbitrary source-code fences.
  */
 import { randomUUID } from "node:crypto";
-import { Ajv, type ValidateFunction } from "ajv";
+import type { Ajv, ValidateFunction } from "ajv";
+import { loadAjv } from "../../../utils/loadAjv.js";
 
 import type { LLMTool, LLMToolCall } from "../../types.js";
 
@@ -24,21 +25,22 @@ export interface SalvagedToolCalls {
 const MAX_CONTENT_CHARS = 1_048_576;
 const MAX_CALLS = 64;
 const MAX_DEPTH = 64;
-const ajv = new Ajv({ strict: false, validateFormats: false, ownProperties: true });
+let ajv: Ajv | undefined;
 const validators = new WeakMap<object, ValidateFunction | null>();
 
 function matchesSchema(schema: Record<string, unknown>, value: object): boolean {
+  const validatorEngine = ajv ??= new (loadAjv())({ strict: false, validateFormats: false, ownProperties: true });
   let validate = validators.get(schema);
   if (validate === undefined) {
     try {
-      validate = ajv.compile(schema);
+      validate = validatorEngine.compile(schema);
     } catch {
       // Unsupported/invalid schemas must not make speculative text executable.
       validate = null;
     } finally {
       // Request catalogs can be regenerated each turn. Let the WeakMap own
       // their lifetime, rather than retaining every schema in AJV's cache.
-      ajv.removeSchema(schema);
+      validatorEngine.removeSchema(schema);
     }
     validators.set(schema, validate);
   }

@@ -16,9 +16,8 @@
  * `tests/bootstrap/node-env.test.ts` pins that contract.
  *
  * `??=` so an explicitly-set NODE_ENV (tests, deliberate dev-React
- * debugging) still wins. The CLI implementation, including the
- * direct-invocation guard keyed on `process.argv[1]`, lives unchanged in
- * `./agenc-main.ts`.
+ * debugging) still wins. Entry selection happens only after that bootstrap;
+ * each selected entry uses the canonical process wrapper and routing code.
  */
 // Keep this capture inline and import-free: bundle chunks may load React before
 // a static bootstrap import. Share it with subprocesses via runtimeEnvironment.ts.
@@ -34,10 +33,19 @@ process.env.NODE_ENV ??= "production";
 // Before the implementation graph loads, so V8 reuses its compiled code
 // (see compile-cache.ts). It imports only Node built-ins.
 await import("./compile-cache.js").then((cache) => cache.enableAgenCCompileCache());
-const { shouldUseDetachedDaemonEntry } = await import("./daemon-entry-policy.js");
-if (shouldUseDetachedDaemonEntry()) {
-  const { runDetachedDaemonChildEntry } = await import("./daemon-child-main.js");
-  await runDetachedDaemonChildEntry();
+const { selectAgenCCliEntry } = await import("./cli-entry-policy.js");
+const entry = selectAgenCCliEntry();
+if (entry === "detached-daemon") {
+  if (process.env.AGENC_DAEMON_PROVISIONAL_START === "1") {
+    const { runProvisionalDaemonChildEntry } = await import("./daemon-provisional-child-main.js");
+    await runProvisionalDaemonChildEntry();
+  } else {
+    const { runDetachedDaemonChildEntry } = await import("./daemon-child-main.js");
+    await runDetachedDaemonChildEntry();
+  }
+} else if (entry === "print") {
+  const { runPrintCliEntry } = await import("./print-cli-main.js");
+  await runPrintCliEntry();
 } else {
   await import("./agenc-main.js");
 }

@@ -1,4 +1,5 @@
 /** Canonical daemon lifecycle/control surface. Foreground runtime loads only on run. */
+import { agenCProvisionalAdmissionMessage, observeAgenCSpawnedChildExit, AGENC_DAEMON_PROVISIONAL_ENV } from "./daemon-provisional-admission.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -114,6 +115,22 @@ export function hasOperatorHeapSnapshotOption(env: NodeJS.ProcessEnv): boolean {
   return env.NODE_OPTIONS?.includes("heapsnapshot-near-heap-limit") ?? false;
 }
 
+/**
+ * Minimum young-generation size (megabytes per semi-space) for the daemon.
+ * V8 starts the young generation at about 1 MB and grows it only after
+ * scavenges, so loading the daemon's code ran several scavenges while it
+ * started. With this minimum they do not happen during start-up. It stays a
+ * minimum for the life of the process: when the daemon is idle, V8 does not
+ * shrink the young generation below it. A semi-space option the operator sets
+ * in NODE_OPTIONS, in either spelling, wins.
+ */
+export const DAEMON_MIN_SEMI_SPACE_MB = 16;
+
+function hasOperatorSemiSpaceOption(env: NodeJS.ProcessEnv): boolean {
+  // Node accepts V8 options with `_` or `-` between words.
+  return env.NODE_OPTIONS?.replaceAll("_", "-").includes("semi-space-size") ?? false;
+}
+
 
 /**
  * Builds the node CLI args for the detached daemon child, prepending an
@@ -144,9 +161,13 @@ export function buildAgenCDaemonChildNodeArgs(
         "--heapsnapshot-near-heap-limit=1",
         `--diagnostic-dir=${diagnosticDirectory}`,
       ];
+  const youngGenerationArgs = hasOperatorSemiSpaceOption(env)
+    ? []
+    : [`--min-semi-space-size=${DAEMON_MIN_SEMI_SPACE_MB}`];
   return [
     `--max-old-space-size=${maxOldSpaceMb}`,
     ...diagnosticArgs,
+    ...youngGenerationArgs,
     entrypointPath,
     "daemon",
     "start",
@@ -306,8 +327,15 @@ export interface AgenCDaemonCliHost {
     "runtimeVersion" | "commit" | "buildTime"
   > | null;
   spawnDetachedDaemon(env: NodeJS.ProcessEnv): number;
+  /** Private admission capability; present only on this exact provisional child. */
+  admitProvisionalDaemon?(pid: number): Promise<boolean>;
   /** Exact child capability retained only for this detached start invocation. */
   cancelSpawnedDaemon?(pid: number): Promise<void> | void;
+  /** Readiness hint for this exact owned child; never replaces instance proof. */
+  waitSpawnedDaemonReady?(
+    pid: number,
+    timeoutMs: number,
+  ): Promise<"ready" | "closed" | "timeout"> | undefined;
   releaseSpawnedDaemonControl?(pid: number): void;
   /** Internal child-side endpoint for parent-requested startup cancellation. */
   readonly startupGuardReceiver?: AgenCDaemonStartupGuardReceiver;
@@ -350,6 +378,10 @@ export interface RunAgenCDaemonCliOptions {
   readonly stopTimeoutMs?: number;
   /** Internal: caller already serializes this lifecycle mutation. */
   readonly lifecycleLockHeld?: boolean;
+  /** Exploratory only: conservative empty-owner start, without repair or adoption. */
+  readonly provisionalStart?: { readonly signal: AbortSignal };
+  /** Transfer the same canonical lock into foreground initialization. */
+  readonly releaseProvisionalLifecycleLock?: () => Promise<void>;
   /** Internal restart handoff after stop+spawn mutation, before readiness. */
   readonly releaseLifecycleLockAfterStartMutation?: () => Promise<void>;
   /** Internal: a higher-level caller owns readiness, proof, and diagnostics. */
@@ -1097,6 +1129,7 @@ export async function runAgenCDaemonAction(
     case "run":
       return runAgenCDaemonForeground(host, io, {
         enterDaemonHome: options.enterDaemonHome,
+        releaseProvisionalLifecycleLock: options.releaseProvisionalLifecycleLock,
         signalProcess: options.signalProcess,
         beforeDaemonReady: options.beforeDaemonReady,
         beforeDaemonReloadAdoption: options.beforeDaemonReloadAdoption,
@@ -1153,8 +1186,9 @@ export async function isAgenCDaemonControlSocketReady(
 
 
 /**
- * Polls {@link isAgenCDaemonControlSocketReady} until it observes readiness or
- * the bounded timeout elapses. Uses `host.sleep` so tests can drive the clock.
+ * Waits for an owned child's IPC hint, then checks its control socket. Hosts
+ * without that capability retain bounded polling. IPC time counts against the
+ * same budget. Uses `host.sleep` so tests can drive the fallback clock.
  * When `singleShot` is true, the readiness is checked exactly once with no
  * polling (used by `status`, which must not block on a slow/absent socket).
  */
@@ -1170,6 +1204,10 @@ export async function defaultWaitForAgenCDaemonReady(
   }
   const startedAt = Date.now();
   const timeoutMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+  const hint = await host.waitSpawnedDaemonReady?.(pid, timeoutMs);
+  if (hint === "ready" && await isAgenCDaemonControlSocketReady(host, pid)) {
+    return true;
+  }
   while (Date.now() - startedAt < timeoutMs) {
     if (await isAgenCDaemonControlSocketReady(host, pid)) return true;
     if (!host.isPidRunning(pid)) return false;
@@ -1242,6 +1280,7 @@ export async function startAgenCDaemon(
             };
       }
     | { readonly kind: "identity-conflict"; readonly message: string }
+    | { readonly kind: "provisional-fallback" }
     | { readonly kind: "pending"; readonly pid: number }
     | { readonly kind: "spawned"; readonly pid: number }
   > => {
@@ -1249,6 +1288,19 @@ export async function startAgenCDaemon(
     const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
     let runtimeInfo = readDaemonRuntimeInfo(runtimeInfoPath);
     const recorded = daemonInstanceIdentityFromRuntimeInfo(runtimeInfo);
+    if (options.provisionalStart !== undefined) {
+      // This is an early exit from the canonical mutation, not another owner
+      // discovery implementation. Even stale or malformed artifacts defer to
+      // the ordinary post-trust path; speculation never repairs them.
+      if (options.provisionalStart.signal.aborted) return { kind: "provisional-fallback" };
+      for (const path of [pidPath, runtimeInfoPath,
+        resolveAgenCDaemonCookiePath(host.env, host.userHome),
+        resolveAgenCDaemonSocketPath(host.env, host.userHome)]) {
+        try { await lstat(path); return { kind: "provisional-fallback" }; }
+        catch (error) { if (asNodeError(error).code !== "ENOENT") return { kind: "provisional-fallback" }; }
+      }
+      if (existingPid !== null || runtimeInfo !== null) return { kind: "provisional-fallback" };
+    }
 
     // The authenticated sidecar is the modern generation authority. Consult
     // it independently of daemon.pid so a missing/dead/stale pid file cannot
@@ -1392,6 +1444,10 @@ export async function startAgenCDaemon(
         message: `untracked daemon discovery failed: ${formatCleanupError(error)}`,
       };
     }
+    if (options.provisionalStart !== undefined &&
+        (untracked !== null || options.provisionalStart.signal.aborted)) {
+      return { kind: "provisional-fallback" };
+    }
     if (untracked?.kind === "unbound-socket") {
       return {
         kind: "identity-conflict",
@@ -1420,6 +1476,7 @@ export async function startAgenCDaemon(
     const childPid = host.spawnDetachedDaemon({
       ...userRuntimeEnvironment(host.env),
       AGENC_DAEMON_RUN: "1",
+      ...(options.provisionalStart === undefined ? {} : { [AGENC_DAEMON_PROVISIONAL_ENV]: "1" }),
     });
     // From this instruction onward every failure must cancel this exact child
     // through its retained startup capability. Record it before the first
@@ -1446,7 +1503,7 @@ export async function startAgenCDaemon(
     );
     release = await acquireAgenCDaemonLifecycleLock(host, (phase) => {
       writeAgenCDaemonStartupDebug(host, io, startupStartedAt, phase);
-    });
+    }, options.provisionalStart === undefined ? undefined : 50);
     writeAgenCDaemonStartupDebug(
       host,
       io,
@@ -1493,6 +1550,7 @@ export async function startAgenCDaemon(
   if (decision === undefined) {
     throw new Error("daemon start mutation completed without a decision");
   }
+  if (decision.kind === "provisional-fallback") return 2;
   if (decision.kind === "identity-conflict") {
     io.stderr.write(`agenc: refusing daemon start: ${decision.message}\n`);
     return 1;
@@ -3131,7 +3189,9 @@ export function reportAgenCDaemonLifecycleLockProgress(
 export async function acquireAgenCDaemonLifecycleLock(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   onProgress?: (phase: string) => void | PromiseLike<void>,
+  timeoutMs = 120_000,
 ): Promise<() => Promise<void>> {
+  const deadline = performance.now() + timeoutMs;
   reportAgenCDaemonLifecycleLockProgress(
     onProgress,
     "daemon home resolution started",
@@ -3150,7 +3210,8 @@ export async function acquireAgenCDaemonLifecycleLock(
     join(daemonHome, "daemon-lifecycle.lock.sqlite"),
     {
       label: "AgenC daemon lifecycle",
-      timeoutMs: 120_000,
+      timeoutMs,
+      deadline,
       ...(onProgress === undefined ? {} : { onProgress }),
     },
   );
@@ -3183,6 +3244,9 @@ export function createNodeDaemonCliHost(
     {
       readonly child: ChildProcess;
       readonly controller: AgenCDaemonStartupGuardController;
+      readonly token: string;
+      readonly provisional: boolean;
+      readonly exit: ReturnType<typeof observeAgenCSpawnedChildExit>;
     }
   >();
   const startupGuardReceiver = createProcessStartupGuardReceiver(process.env);
@@ -3260,15 +3324,57 @@ export function createNodeDaemonCliHost(
         startupGuardToken,
         createChildProcessStartupGuardChannel(child),
       );
-      spawnedStartupGuards.set(childPid, { child, controller });
+      const provisional = env[AGENC_DAEMON_PROVISIONAL_ENV] === "1";
+      spawnedStartupGuards.set(childPid, {
+        child, controller, token: startupGuardToken, provisional,
+        exit: observeAgenCSpawnedChildExit(child),
+      });
       const forgetGuard = (): void => {
         const current = spawnedStartupGuards.get(childPid);
-        if (current?.child === child) spawnedStartupGuards.delete(childPid);
+        if (current?.child === child && !current.provisional) {
+          controller.close();
+          spawnedStartupGuards.delete(childPid);
+        }
       };
       child.once("exit", forgetGuard);
       child.once("error", forgetGuard);
       return childPid;
     },
+    admitProvisionalDaemon: async (pid) => {
+      const guard = spawnedStartupGuards.get(pid);
+      if (guard === undefined || !guard.provisional) throw new Error("exact provisional child admission unavailable");
+      if (!guard.child.connected) {
+        await guard.exit.waitForExit(AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS);
+        return false;
+      }
+      const channel = createChildProcessStartupGuardChannel(guard.child);
+      const admitted = await new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        const finish = (value: boolean, error?: unknown): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          channel.removeMessageListener(onMessage);
+          channel.removeCloseListener(onClose);
+          if (error !== undefined) reject(error); else resolve(value);
+        };
+        const onMessage = (value: unknown): void => {
+          if (typeof value === "object" && value !== null &&
+              (value as Record<string, unknown>).type === "agenc.daemon.provisional.admitted" &&
+              (value as Record<string, unknown>).version === 1 &&
+              (value as Record<string, unknown>).token === guard.token) finish(true);
+        };
+        const onClose = (): void => finish(false);
+        const timer = setTimeout(() => finish(false, new Error("provisional admission acknowledgement timed out")), 45_000);
+        channel.addMessageListener(onMessage);
+        channel.addCloseListener(onClose);
+        channel.send(agenCProvisionalAdmissionMessage(guard.token, "admit")).catch((error) => finish(false, error));
+      });
+      if (!admitted) await guard.exit.waitForExit(AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS);
+      return admitted;
+    },
+    waitSpawnedDaemonReady: (pid, timeoutMs) =>
+      spawnedStartupGuards.get(pid)?.controller.waitUntilReady(timeoutMs),
     cancelSpawnedDaemon: async (pid) => {
       const guard = spawnedStartupGuards.get(pid);
       if (guard === undefined) {
@@ -3276,9 +3382,16 @@ export function createNodeDaemonCliHost(
           `exact startup cancellation channel is unavailable for pid ${pid}`,
         );
       }
-      await guard.controller.requestCancellation(
-        AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS,
-      );
+      if (guard.provisional && (guard.child.exitCode !== null || guard.child.signalCode !== null)) {
+        await guard.exit.waitForExit(AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS);
+      } else if (guard.provisional) {
+        await guard.exit.cancelAndWaitForExit(
+          () => guard.controller.requestCancellation(AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS),
+          AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS,
+        );
+      } else {
+        await guard.controller.requestCancellation(AGENC_DAEMON_STARTUP_CANCELLATION_TIMEOUT_MS);
+      }
       spawnedStartupGuards.delete(pid);
     },
     releaseSpawnedDaemonControl: (pid) => {

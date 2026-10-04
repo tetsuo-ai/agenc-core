@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -13,7 +13,7 @@ import type { MultiAgentV2Options } from "../../src/agents/v2/common.js";
 import type { Session } from "../../src/session/session.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import type { Event, SubagentTurnOutcomeEvent } from "../../src/session/event-log.js";
-import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import { openStateDatabases, resolveStateDatabasePaths } from "../../src/state/sqlite-driver.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 
 let temporary = "";
@@ -64,6 +64,16 @@ function appendReceipt(store: RolloutStore, sequence = 1,
   store.append({ id: `event-${sequence}`, eventId: `event-${sequence}`, seq: sequence,
     msg: { type: "subagent_turn_outcome", payload: receipt } }, { durable: true });
   return receipt;
+}
+
+function finishRun(store: RolloutStore): void {
+  const eventId = `run-terminal:${store.sessionId}:1`;
+  expect(store.append({ id: eventId, eventId, seq: 1,
+    msg: { type: "run_terminal", payload: {
+      runId: store.sessionId, epoch: 1, status: "completed", exitCode: 0,
+      stopReason: "turn_completed", finalMessage: "done", usage: null,
+      lastSequenceBeforeTerminal: null, finishedAt: "2026-09-29T00:01:00Z",
+    } } }, { durable: true })).toBe(true);
 }
 
 function controlFixture(store: RolloutStore) {
@@ -276,7 +286,9 @@ describe("durable child results after daemon restart", () => {
     appendReceipt(child);
     appendReceipt(child, 2);
     const childPath = child.rolloutPath;
+    const childLogsPath = resolveStateDatabasePaths({ cwd: child.store.cwd, agencHome }).logsDbPath;
     close(child);
+    if (worktree) expect(existsSync(childLogsPath)).toBe(false);
     close(parent);
     const restored = open("parent", cwd, true);
     const state = controlFixture(restored);
@@ -297,7 +309,60 @@ describe("durable child results after daemon restart", () => {
     const second = JSON.parse((await state.wait.execute({}, {} as never)).content);
     expect(second).toMatchObject({ timed_out: true });
     expect(second.updates).toBeUndefined();
+    if (worktree) expect(existsSync(childLogsPath)).toBe(false);
   });
+
+  test.each(["absent", "corrupt"])("discovers terminal worktree evidence with %s unused logs", (logs) => {
+    const parent = open("parent");
+    edge(parent, "reviewer");
+    const worktree = join(temporary, "worktree");
+    const child = open("reviewer", worktree);
+    finishRun(child);
+    close(child);
+    parent.setThreadSpawnEdgeStatus("reviewer", "closed");
+    const paths = resolveStateDatabasePaths({ cwd: worktree, agencHome });
+    expect(existsSync(paths.stateDbPath)).toBe(true);
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+    if (logs === "corrupt") writeFileSync(paths.logsDbPath, "unused corrupt logs");
+    const before = readFileSync(paths.stateDbPath);
+    expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(true);
+    expect(readFileSync(paths.stateDbPath)).toEqual(before);
+    if (logs === "absent") expect(existsSync(paths.logsDbPath)).toBe(false);
+    else expect(readFileSync(paths.logsDbPath, "utf8")).toBe("unused corrupt logs");
+  });
+
+  test.each(["open edge", "missing terminal", "duplicate identity", "corrupt state"])(
+    "withholds root continuation for %s even when a worktree has no logs", (reason) => {
+      const parent = open("parent");
+      edge(parent, "reviewer");
+      const worktree = join(temporary, "worktree-1");
+      const child = open("reviewer", worktree);
+      if (reason !== "missing terminal") finishRun(child);
+      close(child);
+      if (reason !== "open edge") parent.setThreadSpawnEdgeStatus("reviewer", "closed");
+      const firstPaths = resolveStateDatabasePaths({ cwd: worktree, agencHome });
+      expect(existsSync(firstPaths.logsDbPath)).toBe(false);
+      if (reason === "duplicate identity" || reason === "corrupt state") {
+        // The first candidate has logs. The legacy both-files filter would
+        // silently ignore the second project and incorrectly return true.
+        const writer = openStateDatabases({ cwd: worktree, agencHome });
+        writer.close();
+        expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(true);
+        const otherCwd = join(temporary, "worktree-2");
+        const otherPaths = resolveStateDatabasePaths({ cwd: otherCwd, agencHome });
+        if (reason === "duplicate identity") {
+          const duplicate = open("reviewer", otherCwd);
+          finishRun(duplicate);
+          close(duplicate);
+        } else {
+          mkdirSync(otherPaths.projectDir, { recursive: true });
+          writeFileSync(otherPaths.stateDbPath, "corrupt state");
+        }
+        expect(existsSync(otherPaths.stateDbPath)).toBe(true);
+        expect(existsSync(otherPaths.logsDbPath)).toBe(false);
+      }
+      expect(parent.rootHasOnlyTerminalDescendants("parent")).toBe(false);
+    });
 
   test("preserves a closed funds-stop outcome without requiring or reviving consent", () => {
     const parent = open("parent");
@@ -372,10 +437,20 @@ describe("durable child results after daemon restart", () => {
     const first = open("reviewer", join(temporary, "worktree-1"));
     appendReceipt(first);
     close(first);
+    const firstLogsPath = resolveStateDatabasePaths({ cwd: first.store.cwd, agencHome }).logsDbPath;
+    expect(existsSync(firstLogsPath)).toBe(false);
     const second = open("reviewer", join(temporary, "worktree-2"));
     appendReceipt(second);
     close(second);
+    const secondLogsPath = resolveStateDatabasePaths({ cwd: second.store.cwd, agencHome }).logsDbPath;
+    expect(existsSync(secondLogsPath)).toBe(false);
     expect(() => parent.readThreadSpawnTaskReceipts("reviewer")).toThrow("multiple projects");
+    // Also reject a mixed pair: having logs on one claim does not make a
+    // duplicate state-only claim invisible.
+    const writer = openStateDatabases({ cwd: first.store.cwd, agencHome });
+    writer.close();
+    expect(() => parent.readThreadSpawnTaskReceipts("reviewer")).toThrow("multiple projects");
+    expect(existsSync(secondLogsPath)).toBe(false);
   });
 
   test("does not replay a child created in this control generation after it closes", () => {

@@ -302,6 +302,7 @@ export async function runAgenCDaemonForeground(
   io: AgenCDaemonCliIo,
   options: {
     readonly enterDaemonHome?: boolean;
+    readonly releaseProvisionalLifecycleLock?: () => Promise<void>;
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
@@ -334,7 +335,7 @@ export async function runAgenCDaemonForeground(
     startupStartedAt,
     "lifecycle lock acquisition started",
   );
-  const release = await acquireAgenCDaemonLifecycleLock(host, (phase) => {
+  const release = options.releaseProvisionalLifecycleLock ?? await acquireAgenCDaemonLifecycleLock(host, (phase) => {
     writeAgenCDaemonStartupDebug(host, io, startupStartedAt, phase);
   });
   writeAgenCDaemonStartupDebug(
@@ -1780,6 +1781,9 @@ async function runAgenCDaemonForegroundLocked(
         }
       }
       if (!shuttingDown) {
+        // Only the committed listeners and identity publication may wake the
+        // spawning parent. It still performs its authenticated instance proof.
+        await host.startupGuardReceiver?.notifyReady();
         io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
         scheduleDaemonCompileCacheFlush();
         // The daemon serves from here on. The sessions open at its last
@@ -3371,7 +3375,7 @@ export async function restoreRecoveredAgentRuntime(
     resumeSource.close();
     return { available: false };
   }
-  const initialMessages = recoveredInitialMessages(run.latestSnapshot);
+  const initialMessages = recoveredInitialMessages(run.latestSnapshot, runtimeOptions.lightMode === true);
   const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   const restoreAttemptId = randomUUID();
   let outcome: { readonly available: boolean; readonly restoreAttemptId?: string };
@@ -3551,6 +3555,7 @@ function recoverySnapshotMetadata(
 
 function recoveredInitialMessages(
   snapshot: RecoveredSessionStateSnapshot | undefined,
+  compactWorkspace = false,
 ): ReadonlyArray<LLMMessage> | undefined {
   const conversation = snapshot?.conversation;
   const conversationMessages = Array.isArray(conversation)
@@ -3560,8 +3565,9 @@ function recoveredInitialMessages(
         .filter(isUsefulRecoveredMessage)
     : [];
   const messages = appendRecoveredCompletedToolMessages(
-    frameUntrustedToolHistoryMessages(conversationMessages),
+    frameUntrustedToolHistoryMessages(conversationMessages, compactWorkspace),
     snapshot?.toolState,
+    compactWorkspace,
   );
   return messages.length > 0 ? messages : undefined;
 }
@@ -3718,6 +3724,7 @@ function isUsefulRecoveredMessage(message: LLMMessage): boolean {
 function appendRecoveredCompletedToolMessages(
   messages: readonly LLMMessage[],
   toolState: unknown,
+  compactWorkspace = false,
 ): LLMMessage[] {
   const completed = recoveredCompletedToolCalls(toolState);
   if (completed.length === 0) return [...messages];
@@ -3744,6 +3751,8 @@ function appendRecoveredCompletedToolMessages(
           toolCall.toolName,
           rawResult,
           classifyUntrustedToolResult(toolCall.toolName),
+          compactWorkspace,
+          !compactWorkspace,
         ),
         toolCallId: toolCall.callId,
         toolName: toolCall.toolName,

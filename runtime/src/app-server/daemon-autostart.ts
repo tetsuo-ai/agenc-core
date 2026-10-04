@@ -138,9 +138,13 @@ export interface AgenCDaemonAutostartConfig {
 
 export interface AgenCDaemonAutostartOptions {
   readonly host?: AgenCDaemonAutostartHost;
+  /** Exact child already spawned by this invocation through canonical start. */
+  readonly provisionalOwnedPid?: number;
   readonly io?: AgenCDaemonCliIo;
   readonly waitTimeoutMs?: number;
   readonly pollMs?: number;
+  /** Optional preload notification, not readiness or connection authority. */
+  readonly onReadinessWaitStarted?: () => void | Promise<void>;
   readonly isReady?: (
     target: AgenCDaemonConnectionTarget,
   ) => boolean | Promise<boolean>;
@@ -205,16 +209,18 @@ export function shouldAutostartAgenCDaemon(
 export async function resolveAgenCDaemonAutostartEnabled(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
+  onWarn?: (message: string) => void,
 ): Promise<boolean> {
-  return (await resolveAgenCDaemonAutostartConfig(env, userHome)).daemonEnabled;
+  return (await resolveAgenCDaemonAutostartConfig(env, userHome, onWarn)).daemonEnabled;
 }
 
 export async function resolveAgenCDaemonAutostartConfig(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
+  onWarn?: (message: string) => void,
 ): Promise<AgenCDaemonAutostartConfig> {
   const home = resolveAgenCDaemonHome(env, userHome);
-  const loaded = await loadCanonicalDaemonConfig({ env, home });
+  const loaded = await loadCanonicalDaemonConfig({ env, home, onWarn });
   const configAutostart = loaded.config.daemon?.autostart ?? true;
   return {
     daemonEnabled: shouldAutostartAgenCDaemon(env, configAutostart),
@@ -274,13 +280,18 @@ async function ensureAgenCDaemonAutostartCycle(
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
   const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
   let status: AgenCDaemonAutostartStatus = "already-running";
-  let pid = await readAgenCDaemonPid(pidPath);
-  let spawnedPid: number | null = null;
+  let pid: number | null = null;
+  let spawnedPid: number | null = restartCycle === 0 ? options.provisionalOwnedPid ?? null : null;
   let spawnedProcess: AgenCDaemonProcessIdentity | null = null;
-  let postSpawnPhase = false;
+  let postSpawnPhase = spawnedPid !== null;
+  if (postSpawnPhase) status = "started";
   let spawnedControlReleased = false;
 
   try {
+    // A provisional child is already owned when this cycle is entered. Even
+    // the first metadata read must stay inside the exact-child cleanup region.
+    pid = await readAgenCDaemonPid(pidPath);
+    if (spawnedPid !== null) spawnedProcess = await captureAgenCDaemonProcessIdentity(spawnedPid, host);
     // A stale pid file may name a live but unrelated reused PID while the real
     // daemon has already published a fresh sidecar. Never probe or signal that
     // numeric PID as the daemon: bind the sidecar to the authenticated socket
@@ -429,7 +440,17 @@ async function ensureAgenCDaemonAutostartCycle(
     }
 
     const target = { pid, pidPath };
-    const ready = await waitForAgenCDaemonReady(target, host, options);
+    const waitingForReady = waitForAgenCDaemonReady(target, host, options);
+    // Start the existing readiness budget first. Observer work is never awaited
+    // and cannot alter lifecycle checks, their failures or connection authority.
+    if (options.onReadinessWaitStarted !== undefined) {
+      try {
+        void Promise.resolve(options.onReadinessWaitStarted()).catch(() => {});
+      } catch {
+        // A failed optional observer does not change daemon startup.
+      }
+    }
+    const ready = await waitingForReady;
     if (ready === "exited") {
       // The daemon process died before becoming ready. Waiting longer cannot
       // help, and calling this a timeout sends the operator debugging the
@@ -1757,6 +1778,10 @@ async function waitForAgenCDaemonReady(
     ((readyTarget: AgenCDaemonConnectionTarget) =>
       isAgenCDaemonPidAndCookieReady(readyTarget, host));
 
+  if (options.isReady === undefined) {
+    const hint = await host.waitSpawnedDaemonReady?.(target.pid, timeoutMs);
+    if (hint === "ready" && await isReady(target)) return "ready";
+  }
   while (Date.now() - startedAt < timeoutMs) {
     if (await Promise.resolve(isReady(target))) return "ready";
     // A dead daemon can never become ready — bail out with the accurate

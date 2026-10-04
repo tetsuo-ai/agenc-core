@@ -22,7 +22,7 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import { isKnownEmptyProviderReasoning, type LLMChatOptions, type LLMMessage } from "../../llm/types.js";
 import type { CompactionLocalSummarizer } from "./emergency-summarizer.js";
 import {
   CompactionTransactionFailureWithDetails,
@@ -1576,7 +1576,11 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.uuid !== undefined ? { id: message.uuid } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(typeof message.providerReasoningContent === "string" &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (normalizedRole === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning:
             message.providerReasoningProvenance !== undefined &&
