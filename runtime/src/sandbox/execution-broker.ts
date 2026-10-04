@@ -67,6 +67,7 @@ import {
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
+import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "./agenc-home-protection.js";
 import { protectDaemonSocket } from "./daemon-socket-protection.js";
 import {
   confineProfileToWorktree,
@@ -564,6 +565,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #desktopAuthorityRoot: string;
+  readonly #agencHome: string;
   readonly #cronAuthorityRoots: readonly string[];
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
@@ -590,6 +592,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
     this.#desktopAuthorityRoot = desktopAuthorityRoot(undefined, this.#env);
+    this.#agencHome = sandboxAgencHome(undefined, this.#env);
     this.#cronAuthorityRoots = cronLockAuthorityRoots();
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
@@ -1137,12 +1140,18 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   }
 
   #protectedProfile(): PermissionProfile {
-    return protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
-      this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
-      this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots));
+    return this.#protectProfile(this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
+      cwd: this.#cwd,
+    }));
+  }
+
+  #protectProfile(profile: PermissionProfile): PermissionProfile {
+    return protectAgencHomeUnderWritableRoot(
+      protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+        profile, this.#desktopAuthorityRoot,
+      ), this.#cronAuthorityRoots)),
+      this.#agencHome, this.#cwd, this.#sessionTempRoot,
+    );
   }
 
   /** A worktree child's command surface: its profile writes inside the worktree only. */
@@ -1228,7 +1237,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
               ...modeSandbox,
               permissionProfile: this.#confineToWorktree(
                 surface,
-                protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots)),
+                this.#protectProfile(command.permissionProfileOverride),
                 modeSandbox.sessionTempRoot,
               ),
             }
