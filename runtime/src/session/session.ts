@@ -69,10 +69,6 @@ import {
   projectRuntimeOnly,
   projectToolExchangeFields,
 } from "./runtime-message-conversion.js";
-import {
-  buildPostCompactMessages,
-  partialCompactConversationAsync,
-} from "../services/compact/compact.js";
 import type {
   CompactContext,
   CompactionResult,
@@ -3979,6 +3975,9 @@ export class Session {
     }
 
     try {
+      this.throwIfPartialCompactAborted(abortController.signal);
+      const { buildPostCompactMessages, partialCompactConversationAsync } =
+        await import("../services/compact/compact.js");
       this.throwIfPartialCompactAborted(abortController.signal);
       await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();

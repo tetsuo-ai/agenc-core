@@ -33,7 +33,7 @@ import type { LLMMessage } from "../llm/types.js";
 import {
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
-import { compactConversation } from "../services/compact/compact.js";
+import type { compactConversation } from "../services/compact/compact.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
 import {
   CompactionCleanupPendingError,
@@ -386,6 +386,7 @@ async function recoverFromOverflow(
       }
   > => {
     try {
+      const { compactConversation } = await import("../services/compact/compact.js");
       const compacted = await compactConversation(
         messages,
         context,
