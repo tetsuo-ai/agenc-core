@@ -292,13 +292,13 @@ export function permissionProfileForRuntimeContext(
       readonly configStore?: { readonly homeContext?: { readonly path?: string } };
       readonly runtimeOptions?: { readonly sessionTempRoot?: string };
     };
-  };
-  const temp = session.services?.runtimeOptions?.sessionTempRoot;
+  } | undefined;
+  const temp = session?.services?.runtimeOptions?.sessionTempRoot;
   if (typeof temp !== "string" || !path.isAbsolute(temp)) {
     throw new Error("[sandbox_surface_uncovered] authenticated runtime session has no absolute captured temp-root authority");
   }
   return protectAgencHomeUnderWritableRoot(profile,
-    sandboxAgencHome(session.services?.configStore?.homeContext?.path), options.cwd, temp);
+    sandboxAgencHome(session?.services?.configStore?.homeContext?.path), options.cwd, temp);
 }
 
 function basePermissionProfileForRuntimeContext(
