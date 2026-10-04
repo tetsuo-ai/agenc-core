@@ -33,6 +33,13 @@ export interface OllamaToolChoiceResolution {
   readonly toolSuppressionReason?: "tool_choice_none";
 }
 
+function namedFunctionChoiceName(toolChoice: LLMToolChoice): string | undefined {
+  if (typeof toolChoice !== "object" || toolChoice.type !== "function") {
+    return undefined;
+  }
+  return typeof toolChoice.name === "string" ? toolChoice.name : undefined;
+}
+
 function ollamaToolChoiceKind(
   toolChoice: LLMToolChoice | undefined,
 ): "auto" | "none" | "required" | "function" {
@@ -48,9 +55,11 @@ function ollamaToolChoiceKind(
     return "required";
   }
 
-  // The remaining LLMToolChoice variant is the named function choice.
-  // TypeScript 6 does not narrow that object union to `never` here.
-  return "function";
+  if (namedFunctionChoiceName(toolChoice) !== undefined) {
+    return "function";
+  }
+
+  throw new LLMProviderError("ollama", "unsupported toolChoice");
 }
 
 function emptyAdvertisedNames(): OllamaToolNameProjection {
@@ -115,7 +124,13 @@ export function resolveOllamaToolChoice(
         advertisedNames: names,
       };
     case "function": {
-      const canonicalName = (toolChoice as { name: string }).name.trim();
+      const functionName = toolChoice === undefined
+        ? undefined
+        : namedFunctionChoiceName(toolChoice);
+      if (functionName === undefined) {
+        throw new LLMProviderError("ollama", "unsupported toolChoice");
+      }
+      const canonicalName = functionName.trim();
       if (canonicalName.length === 0) {
         throw new LLMProviderError(
           "ollama",

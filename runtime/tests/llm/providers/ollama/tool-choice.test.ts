@@ -166,6 +166,22 @@ describe("resolveOllamaToolChoice", () => {
       resolveOllamaToolChoice({ type: "function", name: "missing" }, names),
     ).toThrow(/toolChoice references unavailable tool: missing/u);
   });
+
+  test("rejects an unknown object shape instead of treating it as a function", () => {
+    const unknownShapes = [
+      { type: "tool", name: "system.echo" },
+      { name: "system.echo" },
+      { type: "function" },
+    ];
+    for (const toolChoice of unknownShapes) {
+      expect(() =>
+        resolveOllamaToolChoice(toolChoice as LLMToolChoice, names),
+      ).toThrow(LLMProviderError);
+      expect(() =>
+        resolveOllamaToolChoice(toolChoice as LLMToolChoice, names),
+      ).toThrow(/unsupported toolChoice/u);
+    }
+  });
 });
 
 describe("assertOllamaToolChoiceResponse", () => {
