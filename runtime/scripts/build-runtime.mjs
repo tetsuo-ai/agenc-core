@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, transform } from "esbuild";
+import { verifyFreshStateSchemaSources } from "./fresh-state-schema-artifact.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -153,6 +154,7 @@ function ensureSdkWorkspaceBuilt() {
 }
 
 async function main() {
+  await verifyFreshStateSchemaSources(runtimeRoot);
   ensureSdkWorkspaceBuilt();
   const config = normalizeConfig(await loadConfig());
   await runBundle(config);

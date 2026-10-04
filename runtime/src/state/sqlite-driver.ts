@@ -31,6 +31,7 @@ import { EFFECT_EVIDENCE_V2_SCHEMA_VERSION } from "./migrations/017_effect_evide
 import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job_identity_replay.js";
 import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
+import { tryInitializeFreshStateSchema } from "./fresh-state-schema.js";
 
 export interface OpenStateDatabaseOptions {
   /** Explicit owner for a session-private projection connection. */
@@ -497,7 +498,7 @@ function applyStateMigrations(
         );
       }
     }
-    applyMigrations(db, STATE_DB_MIGRATIONS);
+    if (!tryInitializeFreshStateSchema(db)) applyMigrations(db, STATE_DB_MIGRATIONS);
     db.exec("COMMIT");
   } catch (error) {
     if (db.inTransaction) db.exec("ROLLBACK");
