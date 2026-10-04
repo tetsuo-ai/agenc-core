@@ -21,7 +21,6 @@ import {
 } from "./types.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
-import React from "react";
 
 function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | null {
   return ctx.session.services?.hooksRuntime ?? null;
@@ -108,7 +107,8 @@ function daemonHooksFns(ctx: SlashCommandContext): DaemonHooksFns | null {
 function openHooksUnavailableMenu(ctx: SlashCommandContext): Promise<boolean> {
   return openAsyncLocalJsxCommand(ctx, async (close) => {
     const { HooksRuntimeUnavailableModal } = await import("./hooks-menu.js");
-    return React.createElement(HooksRuntimeUnavailableModal, { onDone: close });
+    const { createElement } = await import("react");
+    return createElement(HooksRuntimeUnavailableModal, { onDone: close });
   });
 }
 

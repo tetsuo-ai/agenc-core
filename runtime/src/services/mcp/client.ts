@@ -31,7 +31,7 @@ import {
   type Tool,
   type ToolCallProgress,
 } from '../../tools/Tool.js'
-import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
+import type { MCPProgress } from '../../tools/MCPTool/MCPTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { AbortError, isAbortError } from '../../utils/errors.js'
 import {
@@ -223,13 +223,6 @@ function getMcpToolTimeoutMs(
 
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
 
-// Lazy: toolRendering.tsx pulls React/ink; only needed when AgenC-in-Chrome MCP server is connected
-/* eslint-disable @typescript-eslint/no-require-imports */
-const agencInChromeToolRendering =
-  (): typeof import('../../utils/agencInChrome/toolRendering.js') =>
-    require('../../utils/agencInChrome/toolRendering.js')
-
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { StringDecoder } from 'node:string_decoder'
 
@@ -1794,6 +1787,19 @@ export const fetchToolsForClient = memoizeWithLRU(
         throw lastError ?? new Error('tools/list failed after 3 attempts')
       }
 
+      if (result.tools.length === 0) return []
+
+      // The tool definition includes terminal renderers. Load it only when a
+      // connected server actually supplies tools, inside the existing failure
+      // boundary for tool discovery.
+      const { MCPTool } = await import('../../tools/MCPTool/MCPTool.js')
+
+      const chromeToolRendering =
+        isAgenCInChromeMCPServer(client.name) &&
+        (client.config.type === 'stdio' || !client.config.type)
+          ? await import('../../utils/agencInChrome/toolRendering.js')
+          : undefined
+
       // Keep the protocol identity byte-for-byte intact for tools/call. Only
       // fields exposed to the model or UI pass through the shared metadata
       // sanitizer below.
@@ -2018,11 +2024,8 @@ export const fetchToolsForClient = memoizeWithLRU(
               const displayName = modelFacingTitle || modelFacingRawToolName
               return `${client.name} - ${displayName} (MCP)`
             },
-            ...(isAgenCInChromeMCPServer(client.name) &&
-              (client.config.type === 'stdio' || !client.config.type)
-              ? agencInChromeToolRendering().getAgenCInChromeMCPToolOverrides(
-                tool.name,
-              )
+            ...(chromeToolRendering
+              ? chromeToolRendering.getAgenCInChromeMCPToolOverrides(tool.name)
               : {}),
           }
         })
@@ -2071,6 +2074,8 @@ export const fetchResourcesForClient = memoizeWithLRU(
 )
 
 
+export { callIdeRpc } from './ideRpc.js'
+
 /**
  * Call an IDE tool directly as an RPC
  * @param toolName The name of the tool to call
@@ -2078,7 +2083,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
  * @param client The IDE client to use for the RPC call
  * @returns The result of the tool call
  */
-export async function callIdeRpc(
+export async function callIdeRpcWithLoadedClient(
   toolName: string,
   args: Record<string, unknown>,
   client: ConnectedMCPServer,
