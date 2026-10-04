@@ -1,4 +1,4 @@
-import chalk from "chalk";
+import { createRequire } from "node:module";
 import { writeSync } from "fs";
 import type { ExitReason } from "src/entrypoints/sdk/coreTypes.generated.js";
 import {
@@ -162,6 +162,9 @@ function printResumeHint(): void {
         resumeArg = sessionId;
       }
 
+      // This import is already external in the runtime build. Node's
+      // synchronous ESM require shares the instance used by other importers.
+      const chalk = (createRequire(import.meta.url)("chalk") as typeof import("chalk")).default;
       writeSync(
         1,
         chalk.dim(`\nResume this session with:\nagenc --resume ${resumeArg}\n`),
