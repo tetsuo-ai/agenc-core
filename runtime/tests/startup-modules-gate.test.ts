@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   FORBIDDEN_BEFORE_FIRST_REQUEST,
+  addBundledStartupSources,
   findStartupOffenders,
   parseStartupTrace,
   traceImportOption,
@@ -37,7 +38,7 @@ describe("startup-modules gate", () => {
   test("flags each listed package loaded before the first request, once per process", () => {
     const traces = [
       parseStartupTrace(
-        `# ["daemon"]\n10 ${NM}/axios/lib/axios.js\n11 ${NM}/axios/lib/core.js\n12 ${NM}/lodash-es/lodash.js\n13 ${NM}/@modelcontextprotocol/sdk/client/index.js\n14 ${NM}/ajv/dist/ajv.js\n15 ${NM}/ajv-formats/dist/index.js\n`,
+        `# ["daemon"]\n10 ${NM}/axios/lib/axios.js\n11 ${NM}/axios/lib/core.js\n12 ${NM}/lodash-es/lodash.js\n13 ${NM}/@modelcontextprotocol/sdk/client/index.js\n14 ${NM}/ajv/dist/ajv.js\n15 ${NM}/ajv-formats/dist/index.js\n16 ${NM}/undici/index.js\n17 bundled:../node_modules/zod/v4/core/core.js\n18 ${NM}/diff/libesm/index.js\n19 bundled:../src/services/compact/transaction.ts\n`,
       ),
     ];
     const offenders = findStartupOffenders(traces, 1000);
@@ -46,15 +47,51 @@ describe("startup-modules gate", () => {
       `${NM}/lodash-es/lodash.js`,
       `${NM}/@modelcontextprotocol/sdk/client/index.js`,
       `${NM}/ajv/dist/ajv.js`,
+      `${NM}/undici/index.js`,
+      "bundled:../node_modules/zod/v4/core/core.js",
+      `${NM}/diff/libesm/index.js`,
+      "bundled:../src/services/compact/transaction.ts",
     ]);
     expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length);
   });
+
+  test.each(["diff", "tar", "vscode-jsonrpc", "chokidar", "readdirp", "js-yaml"])(
+    "flags raw and bundled %s before the first request",
+    (name) => {
+      for (const url of [`${NM}/${name}/index.js`, `bundled:../node_modules/${name}/index.js`]) {
+        const trace = parseStartupTrace(`# ["daemon"]\n10 ${url}\n`);
+        expect(findStartupOffenders([trace], 1000).map((offender) => offender.url)).toEqual([url]);
+        expect(findStartupOffenders([trace], 5)).toEqual([]);
+      }
+    },
+  );
 
   test("allows single lodash functions and anything loaded after the first request", () => {
     const traces = [
       parseStartupTrace(`# ["cli"]\n10 ${NM}/lodash-es/memoize.js\n2000 ${NM}/axios/lib/axios.js\n`),
     ];
     expect(findStartupOffenders(traces, 1000)).toEqual([]);
+  });
+
+  test("checks sources of early dist chunks, while allowing raw Zod and dispatcher helpers", async () => {
+    const dist = mkdtempSync(path.join(tmpdir(), "startup-maps-"));
+    try {
+      const early = pathToFileURL(path.join(dist, "early.js")).href;
+      const late = pathToFileURL(path.join(dist, "late.js")).href;
+      const sources = ["../../node_modules/zod/v4/core/core.js", "../../node_modules/undici/lib/mock/mock-agent.js"];
+      writeFileSync(path.join(dist, "early.js.map"), JSON.stringify({ sources }));
+      // The late chunk deliberately has no map: the cutoff must be applied first.
+      const trace = parseStartupTrace(`# ["daemon"]\n10 ${NM}/zod/v4/index.js\n11 ${NM}/undici/lib/dispatcher/agent.js\n12 ${NM}/undici/lib/web/fetch/body.js\n20 ${early}\n1000 ${late}\n`);
+      const mapped = await addBundledStartupSources([trace], 1000, dist);
+      expect(findStartupOffenders(mapped, 1000).map(o => o.url)).toEqual(sources.map(s => `bundled:${s}`));
+      expect(trace.loads).toHaveLength(5);
+      const postRequest = await addBundledStartupSources([trace], 20, dist);
+      expect(findStartupOffenders(postRequest, 20)).toEqual([]);
+      rmSync(path.join(dist, "early.js.map"));
+      await expect(addBundledStartupSources([trace], 1000, dist)).rejects.toThrow();
+      writeFileSync(path.join(dist, "early.js.map"), JSON.stringify({ sources: [null] }));
+      await expect(addBundledStartupSources([trace], 1000, dist)).rejects.toThrow("invalid sources");
+    } finally { rmSync(dist, { recursive: true, force: true }); }
   });
 
   test("passes the trace directory in the hook URL, not the environment", () => {

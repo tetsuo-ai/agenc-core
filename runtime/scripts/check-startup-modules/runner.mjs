@@ -42,6 +42,10 @@ const TRACE_HOOK = path.join(SCRIPT_DIR, "trace-hook.mjs");
 /** Modules a cold one-shot must not load before its first model request. */
 export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
   {
+    pattern: /^bundled:.*\/src\/services\/compact\/(?:compact|transaction|prompt)\.ts$/,
+    reason: "compaction transaction code loads only when compaction is attempted",
+  },
+  {
     pattern: /\/node_modules\/lodash-es\/lodash\.js$/,
     reason: "the lodash-es package entry re-exports every function (about 640 modules); import single functions",
   },
@@ -56,6 +60,18 @@ export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
   {
     pattern: /\/node_modules\/ajv(?:-formats)?\//,
     reason: "Ajv is needed only when a schema is validated",
+  },
+  {
+    pattern: /\/node_modules\/undici\/(?:index\.js$|lib\/(?:mock\/|web\/websocket\/|web\/fetch\/index\.js$))/,
+    reason: "the first request needs Undici dispatchers, not its full fetch, mock or WebSocket entrypoints",
+  },
+  {
+    pattern: /^bundled:.*\/node_modules\/zod\//,
+    reason: "Zod must use the installed package instance rather than a second bundled copy",
+  },
+  {
+    pattern: /\/node_modules\/(?:diff|tar|vscode-jsonrpc|chokidar|readdirp|js-yaml)\//,
+    reason: "diffs, archive extraction, LSP connections, settings watches and YAML parsing load their packages on first use",
   },
 ]);
 
@@ -87,6 +103,36 @@ export function findStartupOffenders(traces, firstRequestMs, rules = FORBIDDEN_B
     }
   }
   return offenders;
+}
+
+/** Inspect the sources in loaded dist chunks, whose hashed URLs hide packages. */
+export async function addBundledStartupSources(traces, firstRequestMs, distDirectory) {
+  const root = path.resolve(distDirectory) + path.sep;
+  const maps = new Map();
+  return Promise.all(traces.map(async (trace) => {
+    const loads = [...trace.loads];
+    for (const load of trace.loads) {
+      if (load.time >= firstRequestMs || !load.url.startsWith("file:")) continue;
+      const filename = fileURLToPath(load.url);
+      if (!filename.startsWith(root) || !filename.endsWith(".js")) continue;
+      let sources = maps.get(filename);
+      if (sources === undefined) {
+        // Missing or malformed maps must fail the gate, not hide a regression.
+        sources = readFile(`${filename}.map`, "utf8").then((text) => {
+          const map = JSON.parse(text);
+          if (!Array.isArray(map.sources) || map.sources.some((source) => typeof source !== "string")) {
+            throw new Error(`invalid sources in ${filename}.map`);
+          }
+          return map.sources;
+        });
+        maps.set(filename, sources);
+      }
+      for (const source of await sources) {
+        loads.push({ time: load.time, url: `bundled:${source.replaceAll("\\", "/")}`, chunk: load.url });
+      }
+    }
+    return { ...trace, loads };
+  }));
 }
 
 /** The `--import` option that loads the trace hook, writing into `directory`. */
@@ -203,7 +249,10 @@ export async function runStartupModulesGate({ binAgenc = BIN_AGENC } = {}) {
     if (!traces.some((trace) => trace.pid !== daemonPid && trace.argv.includes('"-p"'))) {
       throw new Error("no module trace from the one-shot");
     }
-    const offenders = findStartupOffenders(traces, firstRequestMs);
+    const mappedTraces = await addBundledStartupSources(
+      traces, firstRequestMs, path.resolve(path.dirname(binAgenc), ".."),
+    );
+    const offenders = findStartupOffenders(mappedTraces, firstRequestMs);
     if (offenders.length === 0) {
       console.log(`startup-modules gate passed: ${traces.length} processes, no listed module before the first request`);
       code = 0;
