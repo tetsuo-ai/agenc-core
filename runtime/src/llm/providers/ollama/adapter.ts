@@ -982,7 +982,12 @@ export class OllamaProvider implements LLMProvider {
   ): LLMToolCall[] {
     return calls.map((call) => {
       const canonical = names.canonicalizeToolCall(call);
-      if (!canonical) throw new Error("Ollama returned a tool outside the advertised request catalog");
+      if (!canonical) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          "Ollama returned a tool outside the advertised request catalog",
+        );
+      }
       return canonical;
     });
   }

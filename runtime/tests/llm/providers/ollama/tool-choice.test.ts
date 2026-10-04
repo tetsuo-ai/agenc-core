@@ -464,11 +464,20 @@ describe("Ollama adapter toolChoice", () => {
   test.each([false, true])(
     "a specific function rejects a call to a different catalog tool (stream=%s)",
     async (streaming) => {
+      // Streamed prose makes the partial-return path reachable. A wrong tool
+      // must still fail the call instead of coming back as partial success.
+      const response = toolCallResponse("system.search", { query: "nope" });
       const { result, error, requests } = await invoke(
         providerWithTools(),
         streaming,
         { toolChoice: { type: "function", name: "system.echo" } },
-        toolCallResponse("system.search", { query: "nope" }),
+        {
+          ...response,
+          message: {
+            ...response.message,
+            content: "calling a different tool",
+          },
+        },
       );
 
       expect(result).toBeUndefined();
@@ -478,6 +487,7 @@ describe("Ollama adapter toolChoice", () => {
           function: echo.function,
         },
       ]);
+      expect(error).toBeInstanceOf(LLMInvalidResponseError);
       expect(error).toEqual(
         expect.objectContaining({
           message: expect.stringMatching(/outside the advertised request catalog/u),
