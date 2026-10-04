@@ -52,7 +52,6 @@ import {
   resolveCompactionLadderPolicy,
   type CompactionLadderTier,
 } from "../services/compact/ladder.js";
-import { createRuntimeEmergencySummarizer } from "../services/compact/emergency-summarizer.js";
 import { runPostCompactCleanup } from "../services/compact/postCompactCleanup.js";
 import { resetMicrocompactState } from "../services/compact/microCompact.js";
 import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
@@ -294,16 +293,16 @@ function collapseTierFocus(tier: CompactionLadderTier): string {
   }
 }
 
-function collapseTierOptions(
+async function collapseTierOptions(
   tier: CompactionLadderTier,
-): Parameters<typeof compactConversation>[3] {
+): Promise<Parameters<typeof compactConversation>[3]> {
   switch (tier) {
     case "standard":
       return {};
     case "aggressive_summary":
       return { keepCount: 0 };
     case "emergency_local":
-      return { keepCount: 0, summarizer: createRuntimeEmergencySummarizer() };
+      return { keepCount: 0, summarizer: (await import("../services/compact/emergency-summarizer.js")).createRuntimeEmergencySummarizer() };
     default: {
       const exhaustive: never = tier;
       throw new Error(`unknown compaction ladder tier: ${String(exhaustive)}`);
@@ -391,7 +390,7 @@ async function recoverFromOverflow(
         messages,
         context,
         collapseTierFocus(tier),
-        collapseTierOptions(tier),
+        await collapseTierOptions(tier),
       );
       if (compacted.transaction === undefined) {
         throw new Error(
