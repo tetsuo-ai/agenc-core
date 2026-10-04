@@ -326,13 +326,13 @@ describe("configuration authority residue", () => {
       (path) => {
         const name = relative(SOURCE_ROOT, path);
         const content = readFileSync(path, "utf8");
-        if (retiredPreferenceEnv.test(content) && name !== "config/env.ts") {
+        if (retiredPreferenceEnv.test(content) && name !== "config/obsolete-environment.ts") {
           return [`${name}: retired preference env`];
         }
         if (
           retiredHooksAlias.test(content) &&
           !new Set([
-            "config/env.ts",
+            "config/obsolete-environment.ts",
             "config/retired-auth-migration.ts",
             "gateway/run.ts",
             "utils/secretEnv.ts",

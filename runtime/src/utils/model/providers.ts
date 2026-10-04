@@ -7,7 +7,7 @@ import { normalizeProviderIdentity } from '../../provider-identity.js'
 import {
   snapshotProviderEnvironment,
   type ProviderEnvironment,
-} from '../../llm/provider-options.js'
+} from '../../llm/provider-environment.js'
 import {
   enterStartupProviderSelectionSnapshotForTests,
   readStartupProviderSelectionSnapshot,

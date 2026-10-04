@@ -1,4 +1,4 @@
-import { assertNoObsoleteConfigEnvironment } from "./env.js";
+import { assertNoObsoleteConfigEnvironment } from "./obsolete-environment.js";
 import { assertNoRetiredConfigDir } from "./home.js";
 import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
 

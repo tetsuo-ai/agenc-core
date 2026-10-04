@@ -422,7 +422,7 @@ describe("provider authority architecture", () => {
       .filter(
         ({ name, source }) =>
           source.includes("AGENC_XAI_API_KEY") &&
-          name !== "config/env.ts" &&
+          name !== "config/obsolete-environment.ts" &&
           name !== "utils/secretEnv.ts",
       )
       .map(({ name }) => name);
@@ -521,14 +521,14 @@ describe("provider authority architecture", () => {
       /\b(?:OPENAI_MODEL|OPENAI_COMPATIBLE_MODEL|ANTHROPIC_MODEL|OLLAMA_MODEL|LMSTUDIO_MODEL|OPENROUTER_MODEL|GROQ_MODEL|DEEPSEEK_MODEL|GEMINI_MODEL|MISTRAL_MODEL|NVIDIA_MODEL|MINIMAX_MODEL|GITHUB_MODEL|AWS_BEDROCK_MODEL|ANTHROPIC_DEFAULT_(?:HAIKU|OPUS|SONNET)_MODEL|ANTHROPIC_SMALL_FAST_MODEL|ANTHROPIC_CUSTOM_MODEL_OPTION|AGENC_SUBAGENT_MODEL|AGENC_AUTO_MODE_MODEL)\b/u;
     const retiredSelectorOffenders = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/.test(path))
-      .filter((path) => !path.endsWith("/config/env.ts"))
+      .filter((path) => !path.endsWith("/config/obsolete-environment.ts"))
       .filter((path) => retiredModelSelector.test(readFileSync(path, "utf8")))
       .map((path) => relative(SRC, path));
     expect(retiredSelectorOffenders).toEqual([]);
 
-    const envSource = readFileSync(`${SRC}/config/env.ts`, "utf8");
-    expect(envSource).toMatch(/OPENAI_MODEL: "AGENC_MODEL/u);
-    expect(envSource).toMatch(/AWS_BEDROCK_MODEL: "AGENC_MODEL/u);
+    const rejectionSource = readFileSync(`${SRC}/config/obsolete-environment.ts`, "utf8");
+    expect(rejectionSource).toMatch(/OPENAI_MODEL: "AGENC_MODEL/u);
+    expect(rejectionSource).toMatch(/AWS_BEDROCK_MODEL: "AGENC_MODEL/u);
   });
 
   test("the test-only ambient provider binding cannot enter production code", () => {

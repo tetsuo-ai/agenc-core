@@ -109,3 +109,34 @@ export function scheduleDaemonCompileCacheFlush(): void {
     }, delay).unref();
   }
 }
+
+/**
+ * Publish already compiled client modules while the cold child is importing.
+ * This invocation-local hook does not transform sources or resolve modules.
+ * It only makes the existing private runtime compile cache available sooner.
+ */
+export function beginProgressiveAgenCCompileCachePublication(): () => void {
+  try {
+    if (module.getCompileCacheDir?.() === undefined) return () => {};
+    const cacheModule = module as unknown as {
+      registerHooks?: (hooks: {
+        load: (url: string, context: unknown, nextLoad: (url: string, context: unknown) => unknown) => unknown;
+      }) => { deregister: () => void };
+    };
+    if (typeof cacheModule.registerHooks !== "function") return () => {};
+    let loaded = 0;
+    const hook = cacheModule.registerHooks({
+      load(url, context, nextLoad) {
+        const result = nextLoad(url, context);
+        // The current module has not compiled yet; earlier modules have.
+        if (++loaded % 16 === 0) flushAgenCCompileCache();
+        return result;
+      },
+    });
+    return () => {
+      try { hook.deregister(); } catch { /* optional cache acceleration */ }
+    };
+  } catch {
+    return () => {};
+  }
+}

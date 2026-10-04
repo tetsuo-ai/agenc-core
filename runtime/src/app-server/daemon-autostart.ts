@@ -46,7 +46,6 @@ import {
   type AgenCDaemonInstanceIdentity,
   type AgenCDaemonProcessIdentity,
 } from "./daemon-instance-identity.js";
-import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
@@ -220,6 +219,7 @@ export async function resolveAgenCDaemonAutostartConfig(
   onWarn?: (message: string) => void,
 ): Promise<AgenCDaemonAutostartConfig> {
   const home = resolveAgenCDaemonHome(env, userHome);
+  const { loadCanonicalDaemonConfig } = await import("../config/repository.js");
   const loaded = await loadCanonicalDaemonConfig({ env, home, onWarn });
   const configAutostart = loaded.config.daemon?.autostart ?? true;
   return {

@@ -8,8 +8,8 @@
  * never participate in provider selection here.
  */
 
-import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
-import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
+import { snapshotProviderEnvironment, type ProviderEnvironment } from "./provider-environment.js";
+export { snapshotProviderEnvironment, type ProviderEnvironment } from "./provider-environment.js";
 import {
   getGeminiProjectIdHint,
   resolveGeminiCredentialPlan,
@@ -56,7 +56,6 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
 import { LLMMissingCredentialsError } from "./errors.js";
 
-export type ProviderEnvironment = Readonly<Record<string, string | undefined>>;
 
 /** Lower-precedence credentials discovered at the canonical ingress. */
 export interface ProviderCredentialCandidates {
@@ -161,19 +160,6 @@ function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
   return canonical;
 }
 
-/** Copy an environment so later process-global mutation cannot affect a session. */
-export function snapshotProviderEnvironment(
-  env: ProviderEnvironment,
-): ProviderEnvironment {
-  assertCanonicalEnvironmentIngress(env);
-  return Object.freeze(
-    Object.fromEntries(
-      canonicalSessionEnvironmentKeys(env).flatMap((key) =>
-        env[key] === undefined ? [] : [[key, env[key]]],
-      ),
-    ),
-  );
-}
 
 function readyCredential(
   mode: ProviderCredentialReadyMode,

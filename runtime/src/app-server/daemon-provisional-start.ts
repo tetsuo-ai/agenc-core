@@ -1,9 +1,11 @@
 /** Isolated exploratory coordinator. Uses the canonical mutation and proof. */
 import {
   cancelDirectSpawnFailure, createNodeDaemonCliHost, resolveAgenCDaemonPidPath,
-  startAgenCDaemon, type AgenCDaemonCliHost, type AgenCDaemonCliIo,
+  startAgenCDaemon, resolveAgenCDaemonHome, type AgenCDaemonCliHost, type AgenCDaemonCliIo,
 } from "./daemon-control.js";
-import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled } from "./daemon-autostart.js";
+import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled, shouldAutostartAgenCDaemon } from "./daemon-autostart.js";
+
+import { tryReadDaemonAutostart } from "./daemon-autostart-projection.js";
 
 export interface ProvisionalDaemonStart {
   cancel(): Promise<void>;
@@ -20,7 +22,13 @@ export async function tryPrepareProvisionalDaemon(
 ): Promise<ProvisionalDaemonStart | null> {
   // Speculative diagnostics cannot outrank the canonical trust/config error.
   try {
-    if (!await resolveAgenCDaemonAutostartEnabled(host.env, host.userHome, () => {})) return null;
+    const projected = await tryReadDaemonAutostart(
+      host.env, resolveAgenCDaemonHome(host.env, host.userHome),
+    );
+    const enabled = projected === null
+      ? await resolveAgenCDaemonAutostartEnabled(host.env, host.userHome, () => {})
+      : shouldAutostartAgenCDaemon(host.env, projected);
+    if (!enabled) return null;
   } catch { return null; }
   if (signal.aborted) return null;
   let pid: number | null = null;
