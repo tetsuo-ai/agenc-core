@@ -88,11 +88,19 @@ describe("bounded fresh one-shot diagnostic indexing", () => {
     sidecar.onEvent(event(33)); sidecar.onEvent(event(34));
     expect(rows().map(row => row.message)).toEqual(Array.from({ length: 34 }, (_, i) => `warning ${i + 1}`));
   });
-  it.each(["x".repeat(40_000), "界".repeat(6_000)])("bounds retained UTF-8 bytes including a single oversized row (%#)", large => {
+  it.each(["x".repeat(40_000), "界".repeat(12_000)])("bounds retained UTF-8 bytes including a single oversized row (%#)", large => {
     const sidecar = make(); sidecar.onEvent(event(1)); sidecar.onEvent(event(2, large));
     expect(existsSync(logsPath())).toBe(true);
     sidecar.onEvent(event(3));
     expect(rows().map(row => row.message)).toEqual(["warning 1", large, "warning 3"]);
+  });
+  it("drains on cumulative bytes even while each individual entry fits", () => {
+    const sidecar = make(); const message = "界".repeat(6_000);
+    sidecar.onEvent(event(1, message));
+    expect(existsSync(logsPath())).toBe(false);
+    sidecar.onEvent(event(2, message));
+    expect(rows().map(row => row.message)).toEqual([message, message]);
+    sidecar.onEvent(event(3)); expect(rows()).toHaveLength(3);
   });
   it.each(["error", "stream_error"])("drains preceding warnings before %s", type => {
     const sidecar = make(); sidecar.onEvent(event(1)); sidecar.onEvent(event(2, "failed", type));

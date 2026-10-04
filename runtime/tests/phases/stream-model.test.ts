@@ -2305,3 +2305,19 @@ describe("startup diagnostic drain at actual provider outcomes", () => {
     expect(flush).toHaveBeenCalledOnce();
   });
 });
+
+
+test("drains startup diagnostics if admission refuses before provider invocation", async () => {
+  const ctx = mkCtx(); const state = mkState(ctx);
+  const flush = vi.fn();
+  const chatStream = vi.fn(async () => ({ content: "", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
+  const { session } = mkSession(mkProvider(chatStream));
+  const acquire = vi.fn(async () => { throw new Error("startup admission denied"); });
+  Object.assign(session.services, { flushStartupLogIndex: flush, admissionRequired: true,
+    executionAdmission: { scope: { runId: "run", workspaceId: "workspace", sessionId: "conv-stream", autonomous: false },
+      acquire, recordFallback: vi.fn(), subscribe: vi.fn(() => () => {}) } });
+  await expect(streamModel(state, ctx, session, mkRequest([{ role: "user", content: "hello" }])))
+    .rejects.toThrow("startup admission denied");
+  expect(acquire).toHaveBeenCalledOnce(); expect(chatStream).not.toHaveBeenCalled();
+  expect(flush).toHaveBeenCalledOnce();
+});
