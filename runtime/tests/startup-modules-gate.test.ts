@@ -156,12 +156,14 @@ function writeFixtureCli(directory: string, marks: string, slowDaemon: boolean):
       "const mark = (name) => writeFileSync(path.join(marks, name), JSON.stringify({ pid: process.pid, home: process.env.HOME, nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv }));",
       'if (args[0] === "config") process.exit(0);',
       'if (args[0] === "daemon" && args[1] === "status") {',
+      '  mark("status.json");',
       '  console.log(`AgenC daemon running (pid ${readFileSync(pidFile, "utf8").trim()})`);',
       "  process.exit(0);",
       "}",
       'if (args[0] === "daemon" && args[1] === "start") {',
       '  mark("daemon.json");',
       `  if (!${slowDaemon}) writeFileSync(pidFile, String(process.pid));`,
+      `  if (!${slowDaemon}) console.log(\`AgenC daemon running (pid \${process.pid})\`);`,
       '  process.on("SIGTERM", () => { rmSync(pidFile, { force: true }); process.exit(0); });',
       "} else {",
       '  mark("one-shot.json");',
@@ -203,6 +205,7 @@ async function interruptGate(slowDaemon: boolean, waitForMark: string) {
         : undefined;
     const daemon = read("daemon.json");
     const oneShot = read("one-shot.json");
+    expect(read("status.json")).toBeUndefined();
     for (const mark of [daemon, oneShot]) if (mark !== undefined) pids.push(mark.pid);
     gate.kill("SIGTERM");
     const result = await exited;

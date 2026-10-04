@@ -586,7 +586,7 @@ function spawnForegroundDaemon(state, binAgenc, nodeArgs) {
   return record;
 }
 
-async function waitForDaemonReady(state, binAgenc, record) {
+async function waitForDaemonReady(state, binAgenc, record, readiness) {
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
   let lastStatus = null;
   while (Date.now() < deadline) {
@@ -605,6 +605,15 @@ async function waitForDaemonReady(state, binAgenc, record) {
     }
     const pid = await readDaemonPid(state.agencHome);
     if (pid === record.pid) {
+      if (readiness === "announcement") {
+        // This retained child's announcement follows listener setup, identity
+        // publication and lifecycle-lock release. Avoid `daemon status` here:
+        // it explicitly requests health.stats, contaminating startup traces.
+        // The real one-shot still performs its authenticated instance proof.
+        if (record.stdout.split("\n").includes(`AgenC daemon running (pid ${record.pid})`)) return;
+        await sleep(DAEMON_POLL_MS);
+        continue;
+      }
       const status = daemonCommand(binAgenc, ["status"], state.env, 5_000);
       lastStatus = status;
       if (
@@ -631,7 +640,7 @@ async function waitForDaemonReady(state, binAgenc, record) {
   );
 }
 
-async function performStartTuiGateDaemon(state, binAgenc, nodeArgs) {
+async function performStartTuiGateDaemon(state, binAgenc, nodeArgs, readiness) {
   await assertOwnedState(state);
   if (state.closing) {
     throw new Error("private TUI gate daemon start interrupted by cleanup");
@@ -643,7 +652,7 @@ async function performStartTuiGateDaemon(state, binAgenc, nodeArgs) {
 
   const record = spawnForegroundDaemon(state, binAgenc, nodeArgs);
   try {
-    await waitForDaemonReady(state, binAgenc, record);
+    await waitForDaemonReady(state, binAgenc, record, readiness);
     if (state.closing) {
       throw new Error("private TUI gate daemon start interrupted by cleanup");
     }
@@ -663,8 +672,10 @@ async function performStartTuiGateDaemon(state, binAgenc, nodeArgs) {
  * Start the private daemon as a retained child of the gate. `nodeArgs` are
  * extra Node.js options for the daemon process only (for example a
  * module-load trace hook); the environment stays the private gate env.
+ * The startup-module gate uses `announcement` to avoid requesting health
+ * diagnostics before the first model request. Other gates retain `status`.
  */
-export function startTuiGateDaemon(state, binAgenc, { nodeArgs = [] } = {}) {
+export function startTuiGateDaemon(state, binAgenc, { nodeArgs = [], readiness = "status" } = {}) {
   if (state.cleaned || state.closing) {
     return Promise.reject(
       new Error(`TUI gate state is shutting down: ${state.root}`),
@@ -678,7 +689,10 @@ export function startTuiGateDaemon(state, binAgenc, { nodeArgs = [] } = {}) {
       new Error("TUI gate daemon nodeArgs must be Node.js options"),
     );
   }
-  const operation = performStartTuiGateDaemon(state, binAgenc, [...nodeArgs]);
+  if (readiness !== "status" && readiness !== "announcement") {
+    return Promise.reject(new Error("invalid TUI gate daemon readiness mode"));
+  }
+  const operation = performStartTuiGateDaemon(state, binAgenc, [...nodeArgs], readiness);
   state.pendingDaemonStarts.add(operation);
   operation.then(
     () => state.pendingDaemonStarts.delete(operation),

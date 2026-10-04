@@ -257,7 +257,10 @@ export async function runStartupModulesGate({ binAgenc = BIN_AGENC } = {}) {
     lifecycle.assertOpen();
     const traceDir = path.join(gateState.root, "startup-trace");
     const traceImport = traceImportOption(traceDir);
-    const daemonPid = await startTuiGateDaemon(gateState, binAgenc, { nodeArgs: [traceImport] });
+    const daemonPid = await startTuiGateDaemon(gateState, binAgenc, {
+      nodeArgs: [traceImport],
+      readiness: "announcement",
+    });
     // The gate env keeps NODE_OPTIONS empty; only this one-shot gets the hook.
     const result = await runOwnedOneShotProcess({
       executable: process.execPath,
