@@ -1,4 +1,5 @@
-import { execaSync, type SyncOptions } from 'execa'
+import type { SyncOptions } from 'execa'
+import { loadExeca } from './loadExeca.js'
 import { getCwd } from './cwd.js'
 import { slowLogging } from './slowOperations.js'
 
@@ -69,6 +70,7 @@ export function execSyncWithDefaults_DEPRECATED(
   abortSignal?.throwIfAborted()
   using _ = slowLogging`exec: ${command.slice(0, 200)}`
   try {
+    const { execaSync } = loadExeca()
     const result = execaSync(command, {
       env: process.env,
       maxBuffer: 1_000_000,
