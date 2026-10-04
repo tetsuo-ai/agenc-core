@@ -42,6 +42,15 @@ export interface BwrapOptions {
   readonly extraDeviceBindPaths?: readonly string[];
   readonly inheritedReadOnlyCwd?: boolean;
   readonly boundReadOnlyCwd?: BoundReadOnlyCwdIdentity;
+  /**
+   * Always pass `--chdir` with the directory bubblewrap starts the command in
+   * on its own: where the sandbox mounts the command cwd, or its physical
+   * path when the host root is bound at `/`. Bubblewrap starts in getcwd()
+   * and exports it as PWD whatever $PWD says, so this only turns an unmapped
+   * cwd into an error instead of a fallback to HOME. Set when bubblewrap
+   * execs the command itself.
+   */
+  readonly chdirToCommandCwd?: boolean;
 }
 
 export interface BwrapCommandArgs {
@@ -110,7 +119,7 @@ export function createBwrapCommandArgs(
   const protectedCreateTargets: string[] = [];
 
   const args = fullWrite
-    ? createBwrapFlagsFullFilesystem(command, options)
+    ? createBwrapFlagsFullFilesystem(command, commandCwd, options)
     : createBwrapFlags(
         command,
         fileSystemSandboxPolicy,
@@ -146,6 +155,7 @@ export function insertInnerCommandArgv0(
 
 function createBwrapFlagsFullFilesystem(
   command: readonly string[],
+  commandCwd: string,
   options: BwrapOptions,
 ): string[] {
   const args = [
@@ -158,6 +168,10 @@ function createBwrapFlagsFullFilesystem(
   appendProcMask(args, options);
   args.push("--unshare-user", "--unshare-pid");
   appendNamespaceArgs(args, options);
+  if (options.chdirToCommandCwd === true) {
+    // The host root is bound at `/`: bubblewrap would start in getcwd().
+    args.push("--chdir", fs.realpathSync.native(commandCwd));
+  }
   args.push("--");
   args.push(...command);
   return args;
@@ -191,6 +205,7 @@ function createBwrapFlags(
       ? INHERITED_CWD_SANDBOX_PATH
       : filesystem.commandCwd;
   if (
+    options.chdirToCommandCwd === true ||
     options.inheritedReadOnlyCwd === true ||
     normalizedCommandCwd !== normalizePathForPolicy(commandCwd)
   ) {
