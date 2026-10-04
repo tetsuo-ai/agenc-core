@@ -6,7 +6,7 @@ import {
   type PermissionEnforcement,
   type PermissionProfile,
   permissionProfileToRuntimePermissions,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "./config.js";
 import { parseBoundReadOnlyCwdIdentity, type BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 

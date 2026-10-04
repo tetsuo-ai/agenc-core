@@ -16,7 +16,7 @@ import {
   resolvePermissionPath,
   type FileSystemSandboxPolicy,
   type WritableRoot,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 import {
   INHERITED_CWD_FD,
   INHERITED_CWD_SANDBOX_PATH,
