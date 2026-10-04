@@ -12,9 +12,10 @@ export function protectAgencHomeUnderWritableRoot(
   home: string,
   cwd: string,
   sessionTempRoot: string,
+  grantedProfile: PermissionProfile = profile,
 ): PermissionProfile {
   const canonicalHome = canonicalAuthorityPath(home);
-  const containsHome = getWritableRootsWithCwd(profile.fileSystem, cwd, sessionTempRoot)
+  const containsHome = getWritableRootsWithCwd(grantedProfile.fileSystem, cwd, sessionTempRoot)
     .some(({ root }) => isWithinAuthorityPath(canonicalHome, canonicalAuthorityPath(root)));
   // A separately authorized child, such as a plugin's private data directory,
   // does not grant the rest of home. Preserve that narrower authority.

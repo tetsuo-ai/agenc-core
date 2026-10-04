@@ -1229,7 +1229,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       // A surface may TIGHTEN its own boundary (plugin MCP servers confined
       // to their data dir) — never widen a stricter global mode, so the
       // override applies only under workspace_write.
-      const runtimeSandbox =
+      let runtimeSandbox =
         modeSandbox !== undefined &&
         command.permissionProfileOverride !== undefined &&
         this.mode === "workspace_write"
@@ -1242,6 +1242,20 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
               ),
             }
           : modeSandbox;
+      if (runtimeSandbox !== undefined && command.additionalPermissions !== undefined &&
+          !this.#routineConfines(surface)) {
+        // A per-command grant can introduce a containing root after the base
+        // profile was protected. Inspect the final grants, but add only the
+        // reservation here; the existing transform still owns their merge.
+        runtimeSandbox = {
+          ...runtimeSandbox,
+          permissionProfile: protectAgencHomeUnderWritableRoot(
+            runtimeSandbox.permissionProfile, this.#agencHome, this.#cwd,
+            runtimeSandbox.sessionTempRoot,
+            effectivePermissionProfile(runtimeSandbox.permissionProfile, command.additionalPermissions),
+          ),
+        };
+      }
       const resolvedProgram = resolveSpawnExecutable({
         program: command.program,
         cwd: command.cwd,

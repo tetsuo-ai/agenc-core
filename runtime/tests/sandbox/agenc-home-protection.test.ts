@@ -1,13 +1,15 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { protectAgencHomeUnderWritableRoot } from "../../src/sandbox/agenc-home-protection.js";
 import { canWritePathWithCwd } from "../../src/sandbox/engine/index.js";
 import { effectivePermissionProfile } from "../../src/sandbox/engine/policy-transforms.js";
 import { createBwrapCommandArgs } from "../../src/sandbox/linux-launcher/bwrap.js";
 import { planLandlockConfinement } from "../../src/sandbox/linux-launcher/landlock-exec.js";
 import { permissionProfileForSandboxMode, pluginMcpPermissionProfile } from "../../src/tools/runtimes/sandboxing.js";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import type { PermissionProfile } from "../../src/sandbox/engine/policy.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -58,5 +60,30 @@ describe("AgenC home beneath writable roots", () => {
       f.home, f.cwd, join(data, "tmp"));
     expect(canWritePathWithCwd(profile.fileSystem, join(data, "state.json"), f.cwd, data)).toBe(true);
     expect(canWritePathWithCwd(profile.fileSystem, join(f.home, "config.toml"), f.cwd, data)).toBe(false);
+  });
+
+  it("reserves home when a per-command grant introduces the writable ancestor", () => {
+    const f = fixture();
+    const temp = join(f.cwd, "tmp");
+    mkdirSync(temp);
+    const additionalPermissions = { fileSystem: { entries: [
+      { path: { kind: "path" as const, path: f.root }, access: "write" as const },
+    ] } };
+    const transform = vi.fn((_request: { permissions: PermissionProfile }) => ({
+      command: [process.execPath], cwd: f.cwd, env: {}, arg0: "node",
+    }));
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write", cwd: f.cwd, sessionTempRoot: temp,
+      env: { AGENC_HOME: f.home }, platform: "linux",
+      probe: () => ({ kind: "ready", mode: "workspace_write", platform: "linux", helperPath: "/sandbox/helper" }),
+      sandboxManager: { selectInitial: () => "linux_seccomp", transform } as never,
+    });
+    broker.prepareSpawn("tool", {
+      program: process.execPath, args: [], cwd: f.cwd, env: {}, additionalPermissions,
+    });
+    expect(transform).toHaveBeenCalledOnce();
+    const effective = effectivePermissionProfile(transform.mock.calls[0]![0].permissions, additionalPermissions);
+    expect(canWritePathWithCwd(effective.fileSystem, join(f.home, "config.toml"), f.cwd, temp)).toBe(false);
+    expect(canWritePathWithCwd(effective.fileSystem, join(f.root, "ordinary.txt"), f.cwd, temp)).toBe(true);
   });
 });
