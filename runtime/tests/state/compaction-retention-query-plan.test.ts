@@ -53,6 +53,30 @@ afterEach(() => {
 });
 
 describe("compaction retention ordered query plans", () => {
+  it("keeps an absent reset cursor implicit and replays all pins after a persisted reset", () => {
+    insertPin({ attemptId: "first", state: "preparing", createdAtMs: 10 });
+    insertPin({ attemptId: "second", state: "preparing", createdAtMs: 20 });
+    const cursor = () => driver.prepareState<[string], {
+      created_at_ms: number; attempt_id: string; updated_at_ms: number;
+    }>(`SELECT created_at_ms, attempt_id, updated_at_ms
+        FROM compaction_reconciliation_cursors WHERE cursor_name = ?`).get(SESSION_ID);
+    const attempts = () => repository.listReconciliationPage(SESSION_ID).map(pin => pin.attemptId);
+    repository.resetReconciliationCursor(SESSION_ID, 30);
+    expect(cursor()).toBeUndefined();
+    expect(attempts()).toEqual(["first", "second"]);
+    repository.persistReconciliationCursor(SESSION_ID, repository.require("first"), 40);
+    expect(attempts()).toEqual(["second"]);
+    repository.resetReconciliationCursor(SESSION_ID, 50);
+    expect(cursor()).toEqual({ created_at_ms: 0, attempt_id: "", updated_at_ms: 50 });
+    expect(attempts()).toEqual(["first", "second"]);
+    const paths = { cwd: join(root, "workspace"), agencHome: join(root, "agenc-home") };
+    driver.close();
+    driver = openStateDatabases(paths);
+    repository = new CompactionRetentionRepository(driver);
+    expect(attempts()).toEqual(["first", "second"]);
+    expect(cursor()?.updated_at_ms).toBe(50);
+  });
+
   it("uses bounded ordered indexes without temporary B-trees", () => {
     const plans = [
       {
