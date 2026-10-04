@@ -340,7 +340,7 @@ async function ensureAgenCDaemonAutostartCycle(
             pid = await readAgenCDaemonPid(pidPath);
           }
         }
-      });
+      }, spawnedPid === null ? undefined : host.spawnedDaemonReadinessSignal?.(spawnedPid));
     }
 
     let respawnReason: string | null = null;

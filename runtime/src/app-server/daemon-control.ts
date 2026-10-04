@@ -336,6 +336,8 @@ export interface AgenCDaemonCliHost {
     pid: number,
     timeoutMs: number,
   ): Promise<"ready" | "closed" | "timeout"> | undefined;
+  /** Exact-child READY can wake a lock retry, but cannot establish ownership. */
+  spawnedDaemonReadinessSignal?(pid: number): AbortSignal | undefined;
   releaseSpawnedDaemonControl?(pid: number): void;
   /** Internal child-side endpoint for parent-requested startup cancellation. */
   readonly startupGuardReceiver?: AgenCDaemonStartupGuardReceiver;
@@ -3100,8 +3102,11 @@ export async function writeAgenCDaemonPid(
 export async function withAgenCDaemonLifecycleLock<T>(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   operation: () => Promise<T>,
+  retryWakeSignal?: AbortSignal,
 ): Promise<T> {
-  const release = await acquireAgenCDaemonLifecycleLock(host);
+  const release = await acquireAgenCDaemonLifecycleLock(
+    host, undefined, undefined, retryWakeSignal,
+  );
   try {
     return await operation();
   } finally {
@@ -3190,6 +3195,7 @@ export async function acquireAgenCDaemonLifecycleLock(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   onProgress?: (phase: string) => void | PromiseLike<void>,
   timeoutMs = 120_000,
+  retryWakeSignal?: AbortSignal,
 ): Promise<() => Promise<void>> {
   const deadline = performance.now() + timeoutMs;
   reportAgenCDaemonLifecycleLockProgress(
@@ -3212,6 +3218,7 @@ export async function acquireAgenCDaemonLifecycleLock(
       label: "AgenC daemon lifecycle",
       timeoutMs,
       deadline,
+      ...(retryWakeSignal === undefined ? {} : { retryWakeSignal }),
       ...(onProgress === undefined ? {} : { onProgress }),
     },
   );
@@ -3375,6 +3382,8 @@ export function createNodeDaemonCliHost(
     },
     waitSpawnedDaemonReady: (pid, timeoutMs) =>
       spawnedStartupGuards.get(pid)?.controller.waitUntilReady(timeoutMs),
+    spawnedDaemonReadinessSignal: (pid) =>
+      spawnedStartupGuards.get(pid)?.controller.readinessSignal,
     cancelSpawnedDaemon: async (pid) => {
       const guard = spawnedStartupGuards.get(pid);
       if (guard === undefined) {

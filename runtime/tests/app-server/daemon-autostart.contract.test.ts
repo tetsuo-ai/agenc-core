@@ -1,6 +1,7 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -224,6 +225,61 @@ async function closeServer(server: Server | null): Promise<void> {
 }
 
 describe("AgenC daemon autostart", () => {
+  it("wakes the owned provisional child's initial lifecycle acquisition, then proves identity", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    const pid = 5201;
+    base.runningPids.add(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(base.env, base.userHome), pid);
+    (await acquireAgenCDaemonLifecycleLock(base))();
+    const owner = new DatabaseSync(join(agencHome, "daemon-lifecycle.lock.sqlite"), { timeout: 0 });
+    owner.exec("BEGIN IMMEDIATE");
+    const ready = new AbortController();
+    const subscribed = Promise.withResolvers<void>();
+    const add = ready.signal.addEventListener.bind(ready.signal);
+    const addSpy = vi.spyOn(ready.signal, "addEventListener").mockImplementation((type, listener, options) => {
+      add(type, listener, options);
+      if (type === "abort") subscribed.resolve();
+    });
+    const hint = vi.fn((ownedPid: number) => ownedPid === pid ? ready.signal : undefined);
+    const proof = vi.fn(base.requestDaemonInstanceIdentity);
+    const connect = vi.fn();
+    const releaseControl = vi.fn();
+    let pending: ReturnType<typeof ensureAgenCDaemonAutostart> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      pending = ensureAgenCDaemonAutostart({
+        host: { ...base, spawnedDaemonReadinessSignal: hint, releaseSpawnedDaemonControl: releaseControl },
+        provisionalOwnedPid: pid,
+        isReady: () => true,
+        requestDaemonInstanceIdentity: proof,
+        findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [], connect,
+      });
+      void pending.catch(() => {});
+      await subscribed.promise;
+      expect(proof).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      base.recordDaemon(pid);
+      owner.exec("ROLLBACK");
+      ready.abort();
+      await expect(pending).resolves.toMatchObject({ pid, status: "started", ready: true });
+      expect(hint).toHaveBeenCalledExactlyOnceWith(pid);
+      expect(proof).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledOnce();
+      expect(releaseControl).toHaveBeenCalledExactlyOnceWith(pid);
+      expect(base.spawnedPids).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (owner.isTransaction) owner.exec("ROLLBACK");
+      owner.close();
+      ready.abort();
+      vi.useRealTimers();
+      addSpy.mockRestore();
+      await pending?.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the default readiness window long enough for cold starts", () => {
     // Raised from 15s to give cold hydration comfortable margin, and kept in
     // sync with the shared bare-control default so both paths move together.
