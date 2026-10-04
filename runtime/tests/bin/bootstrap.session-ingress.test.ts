@@ -308,6 +308,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
   });
 
   it("activates restored-session startup effects once, in order, before the first ordinary submit", async () => {
+    await mkdir(join(workspace, ".agenc"), { mode: 0o700 });
+    await writeFile(join(workspace, ".agenc", "scheduled_tasks.json"), '{"tasks":[]}');
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
       () =>
@@ -500,6 +502,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
   });
 
   it("does not start cron or job recovery after shutdown wins an in-flight startup read", async () => {
+    await mkdir(join(workspace, ".agenc"), { mode: 0o700 });
+    await writeFile(join(workspace, ".agenc", "scheduled_tasks.json"), '{"tasks":[]}');
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
       () =>

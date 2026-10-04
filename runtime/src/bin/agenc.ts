@@ -34,4 +34,10 @@ process.env.NODE_ENV ??= "production";
 // Before the implementation graph loads, so V8 reuses its compiled code
 // (see compile-cache.ts). It imports only Node built-ins.
 await import("./compile-cache.js").then((cache) => cache.enableAgenCCompileCache());
-await import("./agenc-main.js");
+const { shouldUseDetachedDaemonEntry } = await import("./daemon-entry-policy.js");
+if (shouldUseDetachedDaemonEntry()) {
+  const { runDetachedDaemonChildEntry } = await import("./daemon-child-main.js");
+  await runDetachedDaemonChildEntry();
+} else {
+  await import("./agenc-main.js");
+}

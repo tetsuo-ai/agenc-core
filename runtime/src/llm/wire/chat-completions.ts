@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isKnownEmptyProviderReasoning } from "../types.js";
 import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import type {
   LLMChatOptions,
@@ -178,7 +179,10 @@ function reasoningToolContinuation(
     if (
       assistant?.role !== "assistant" ||
       !assistant.toolCalls?.length ||
-      !assistant.providerReasoningContent ||
+      typeof assistant.providerReasoningContent !== "string" ||
+      (assistant.providerReasoningContent.length === 0 && !isKnownEmptyProviderReasoning(
+        assistant.providerReasoningContent, assistant.providerReasoningProvenance,
+      )) ||
       assistant.providerReasoningProvenance === undefined
     ) {
       return undefined;
@@ -201,15 +205,21 @@ function reasoningToolContinuation(
       return undefined;
     }
     index += 1;
-    for (const toolCallId of toolCallIds) {
+    // Parallel tools may finish in a different order from the assistant's
+    // calls. Match this contiguous batch by ID without reordering messages or
+    // reasoning blocks; every call must still have exactly one result.
+    const pendingToolCallIds = new Set(toolCallIds);
+    while (pendingToolCallIds.size > 0) {
       const result = messages[index];
+      const resultId = result?.toolCallId?.trim();
       if (
         result?.role !== "tool" ||
-        result.toolCallId?.trim() !== toolCallId
+        resultId === undefined ||
+        !pendingToolCallIds.delete(resultId)
       ) {
         return undefined;
       }
-      seenToolCallIds.add(toolCallId);
+      seenToolCallIds.add(resultId);
       index += 1;
     }
     groups.push({
@@ -359,7 +369,10 @@ function toChatCompletionsMessages(
     if (
       !replaysReasoningContent ||
       !allowsFullReasoningHistoryReplay ||
-      !message.providerReasoningContent ||
+      (!message.providerReasoningContent && !(replayOnlyAdjacentToolContinuation &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        ))) ||
       reasoningContentProvenance === undefined ||
       message.providerReasoningProvenance === undefined
     ) {
@@ -884,6 +897,10 @@ export function parseChatCompletionsResponse(
   model: string,
   response: Record<string, unknown>,
   request: ChatCompletionsRequestOptions,
+  reconstruction?: {
+    readonly discardedReasoningContent: boolean;
+    readonly conflictingReasoningModel: boolean;
+  },
 ): LLMResponse {
   // Keep hashed aliases request-scoped. Meta's auto-only compatibility
   // contract strips the complete tool catalog when callers select `none`;
@@ -1026,7 +1043,21 @@ export function parseChatCompletionsResponse(
     typeof rawProviderReasoningContent === "string" &&
       rawProviderReasoningContent.length > 0
       ? rawProviderReasoningContent
-      : undefined;
+      // Establish known-empty only at the successful provider-response boundary.
+      // A missing history field, truncated call or discarded stream fragment
+      // must never acquire this representation during replay or recovery.
+      : request.providerCapabilityHints
+          ?.replaysReasoningContentOnlyForAdjacentToolContinuation === true &&
+          reconstruction?.discardedReasoningContent !== true &&
+          reconstruction?.conflictingReasoningModel !== true &&
+          finishReason === "tool_calls" && toolCalls.length > 0 &&
+          (rawProviderReasoningContent === undefined || rawProviderReasoningContent === "") &&
+          (response.model === undefined ||
+            (typeof response.model === "string" &&
+              response.model.trim().toLowerCase() === model.trim().toLowerCase())) &&
+          isKnownEmptyProviderReasoning("", request.providerCapabilityHints.reasoningContentProvenance)
+        ? ""
+        : undefined;
   const rawContent =
     typeof message.content === "string"
       ? message.content
@@ -1079,7 +1110,7 @@ export function parseChatCompletionsResponse(
 
   return {
     content,
-    ...(providerReasoningContent !== undefined || inlineThinking.length > 0
+    ...((providerReasoningContent?.length ?? 0) > 0 || inlineThinking.length > 0
       ? {
           thinking: Object.freeze([
             Object.freeze({

@@ -1,3 +1,4 @@
+import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -1035,6 +1036,14 @@ export class AgenCDaemonAgentManager {
           (requestedRuntimeOptions.lightMode !== undefined ? false : undefined);
       const runtimeOptions = Object.freeze({
         ...requestedRuntimeOptions,
+        ...(requestedRuntimeOptions.relaxedOneShot !== undefined ? { relaxedOneShot: selectRelaxedOneShot({
+          requested: requestedRuntimeOptions.relaxedOneShot,
+          nonInteractive: requestedRuntimeOptions.nonInteractive,
+          source: params.metadata?.source, mode: params.metadata?.mode,
+          resumed: resumeSessionId !== undefined,
+          routine: requestedRuntimeOptions.routineRun === true || params.metadata?.routineRunId !== undefined,
+          goal: params.metadata?.goalRun === true,
+        }) } : {}),
         // A cold resume restores its presentation profile. A new caller's
         // default must not silently turn a Light conversation into Normal.
         ...(retainedLightMode !== undefined
@@ -1778,6 +1787,12 @@ export class AgenCDaemonAgentManager {
         "INVALID_ARGUMENT",
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
       );
+    }
+    if (params.oneShotOutput !== true) {
+      promoteOneShotRun(target.agentId);
+      if (runtimeOptions.relaxedOneShot !== undefined) {
+        runtimeOptions = Object.freeze({ ...runtimeOptions, relaxedOneShot: false });
+      }
     }
     // A daemon restart restores the records of a run whose runtime it could
     // not bring back, for example a provider whose credential only the client

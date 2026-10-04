@@ -80,6 +80,17 @@ export function enableAgenCCompileCache(
   }
 }
 
+/** Publish already compiled modules before a child loads the same install. */
+export function flushAgenCCompileCache(): void {
+  try {
+    if (typeof module.flushCompileCache !== "function") return;
+    if (module.getCompileCacheDir?.() === undefined) return;
+    module.flushCompileCache();
+  } catch {
+    // Cache publication is optional; it must never change child startup.
+  }
+}
+
 /**
  * A daemon can run for days and may end without a clean exit, which is when
  * Node would otherwise write the cache. Save shortly after start and once

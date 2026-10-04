@@ -26,10 +26,7 @@ import {
   resolve,
   sep,
 } from "node:path";
-import {
-  deserializeMessage,
-  serializeMessage,
-} from "@modelcontextprotocol/sdk/shared/stdio.js";
+import { loadMcpStdio } from "../../services/mcp/sdk-schema.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -316,7 +313,7 @@ export class AgenCStdioClientTransport implements Transport {
       throw new Error("Not connected");
     }
 
-    const serialized = serializeMessage(message);
+    const serialized = loadMcpStdio().serializeMessage(message);
     assertMcpTransportToolDispatch(message);
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -364,7 +361,7 @@ export class AgenCStdioClientTransport implements Transport {
         .replace(/\r$/, "");
       this.resetStdoutFrame();
       try {
-        this.onmessage?.(deserializeMessage(line));
+        this.onmessage?.(loadMcpStdio().deserializeMessage(line));
       } catch (error) {
         this.onerror?.(toError(error));
       }

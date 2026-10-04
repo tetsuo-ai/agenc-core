@@ -9,7 +9,7 @@
  * session seams (no bootstraps, no network).
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -320,7 +320,10 @@ function makeSeams(): WorkflowSessionSeams & {
   };
 }
 
-function makeWiring(options: { readonly config?: () => { readonly model?: string } } = {}) {
+function makeWiring(options: {
+  readonly config?: () => { readonly model?: string };
+  readonly primaryCwd?: string;
+} = {}) {
   const admission = new FakeAdmission();
   const kernel = {
     bindClient: ({ scope }: { scope: { runId: string } }) => {
@@ -331,7 +334,7 @@ function makeWiring(options: { readonly config?: () => { readonly model?: string
   const seams = makeSeams();
   const wiring = createDaemonWorkflowController({
     agencHome: home,
-    primaryCwd: projectA.cwd,
+    primaryCwd: options.primaryCwd ?? projectA.cwd,
     kernel,
     warn: () => {},
     env: {},
@@ -504,5 +507,45 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
       projectB.repo.getCurrentTerminalResult("wf-resume-b"),
     ).toMatchObject({ status: "failed" });
     wiring.close();
+  });
+
+  it("recovers existing projects without creating an absent primary project", async () => {
+    const primaryCwd = join(home, "unused-workspace");
+    mkdirSync(join(primaryCwd, ".git"), { recursive: true });
+    const primaryPaths = resolveStateDatabasePaths({ cwd: primaryCwd, agencHome: home });
+    const journal = new TestJournal(projectB.repo, "wf-existing-with-new-primary");
+    journal.appendIntent({
+      stepId: "workflow.intake",
+      toolName: "workflow.intake",
+      recoveryCategory: "idempotent",
+      idempotencyKey: "sha256:intake",
+      intentDigest: sha256Digest("intent"),
+      intentAt: new Date().toISOString(),
+    });
+    const { wiring } = makeWiring({ primaryCwd });
+    try {
+      expect(existsSync(primaryPaths.projectDir)).toBe(false);
+      expect(await wiring.resumeOpenWorkflows()).toEqual(["wf-existing-with-new-primary"]);
+      expect(projectB.repo.getCurrentTerminalResult("wf-existing-with-new-primary")).toMatchObject({ status: "failed" });
+      expect(existsSync(primaryPaths.projectDir)).toBe(false);
+    } finally {
+      await wiring.close();
+    }
+  });
+
+  it("keeps recovery initialization for an existing empty primary project", async () => {
+    const primaryCwd = join(home, "partial-workspace");
+    mkdirSync(join(primaryCwd, ".git"), { recursive: true });
+    const primaryPaths = resolveStateDatabasePaths({ cwd: primaryCwd, agencHome: home });
+    mkdirSync(primaryPaths.projectDir, { recursive: true });
+    const { wiring } = makeWiring({ primaryCwd });
+    try {
+      expect(existsSync(primaryPaths.stateDbPath)).toBe(false);
+      expect(await wiring.resumeOpenWorkflows()).toEqual([]);
+      expect(existsSync(primaryPaths.stateDbPath)).toBe(true);
+      expect(existsSync(primaryPaths.logsDbPath)).toBe(true);
+    } finally {
+      await wiring.close();
+    }
   });
 });

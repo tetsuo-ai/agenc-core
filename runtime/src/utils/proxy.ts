@@ -2,7 +2,6 @@
 // dynamically in getAWSClientProxyConfig() to defer ~929KB of AWS SDK.
 // undici is lazy-required inside the request-scoped agent factories to defer
 // ~1.5MB when no HTTPS_PROXY/mTLS env vars are set (the common case).
-import axios, { type AxiosInstance } from 'axios'
 import type { LookupOptions } from 'dns'
 import type { Agent } from 'http'
 import { HttpsProxyAgent, type HttpsProxyAgentOptions } from 'https-proxy-agent'
@@ -11,7 +10,6 @@ import { getCACertificates } from './caCerts.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
-  getMTLSAgent,
   getMTLSConfig,
   getTLSFetchOptions,
   type TLSConfig,
@@ -133,7 +131,7 @@ export function shouldBypassProxy(
  * Create an HttpsProxyAgent with optional mTLS configuration
  * Skips local DNS resolution to let the proxy handle it
  */
-function createHttpsProxyAgent(
+export function createHttpsProxyAgent(
   proxyUrl: string,
   extra: HttpsProxyAgentOptions<string>,
   environment: EnvLike,
@@ -160,38 +158,6 @@ function createHttpsProxyAgent(
   }
 
   return new HttpsProxyAgent(proxyUrl, { ...agentOptions, ...extra })
-}
-
-/**
- * Axios instance with its own proxy agent. Same NO_PROXY/mTLS/CA
- * resolution as the global interceptor, but agent options stay
- * scoped to this instance.
- */
-export function createAxiosInstance(
-  environment: EnvLike,
-  extra: HttpsProxyAgentOptions<string> = {},
-): AxiosInstance {
-  const proxyUrl = getProxyUrl(environment)
-  const mtlsAgent = getMTLSAgent(environment)
-  const instance = axios.create({ proxy: false })
-
-  if (!proxyUrl) {
-    if (mtlsAgent) instance.defaults.httpsAgent = mtlsAgent
-    return instance
-  }
-
-  const proxyAgent = createHttpsProxyAgent(proxyUrl, extra, environment)
-  instance.interceptors.request.use(config => {
-    if (config.url && shouldBypassProxy(config.url, getNoProxy(environment))) {
-      config.httpsAgent = mtlsAgent
-      config.httpAgent = mtlsAgent
-    } else {
-      config.httpsAgent = proxyAgent
-      config.httpAgent = proxyAgent
-    }
-    return config
-  })
-  return instance
 }
 
 /**

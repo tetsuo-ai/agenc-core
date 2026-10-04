@@ -48,6 +48,8 @@ export interface AgentRuntimeOptions {
   readonly nonInteractive: boolean;
   /** Caller explicitly requests machine-readable / exact output. */
   readonly exactOutput?: boolean;
+  /** Fresh print-run request only; the daemon rechecks eligibility. */
+  readonly relaxedOneShot?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -406,6 +408,7 @@ function resolveAgentRuntimeOptionsAtIngress(
       overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     nonInteractive: overrides.nonInteractive ?? false,
     ...(overrides.exactOutput !== undefined ? { exactOutput: overrides.exactOutput } : {}),
+    ...(overrides.relaxedOneShot !== undefined ? { relaxedOneShot: overrides.relaxedOneShot } : {}),
     stdinDataMode:
       overrides.stdinDataMode ??
       parseBoolean(env, "AGENC_USE_DATA_STDIN", false),
@@ -602,6 +605,7 @@ export function validateAgentRuntimeOptions(
     "dangerouslyBypassApprovalsAndSandbox",
     "nonInteractive",
     "exactOutput",
+    "relaxedOneShot",
     "stdinDataMode",
     "remoteMode",
     "remoteMemoryRoot",
@@ -661,6 +665,9 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.nonInteractive must be boolean",
     );
+  }
+  if (input.relaxedOneShot !== undefined && typeof input.relaxedOneShot !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.relaxedOneShot must be boolean");
   }
   if (input.exactOutput !== undefined && typeof input.exactOutput !== "boolean") {
     throw new AgentRuntimeOptionsError("runtimeOptions.exactOutput must be boolean");

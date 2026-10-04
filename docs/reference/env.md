@@ -250,6 +250,7 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_START_MAX_WAIT_MS` | Total ceiling for an extended daemon start while its startup log keeps advancing, in readiness-budget steps (default 600000 ms). A home with hundreds of sessions can exceed the readiness budget while recovering runs |
 | `AGENC_DAEMON_REQUEST_TIMEOUT_MS` | Per-request RPC timeout (SDK default 30000 ms) |
 | `AGENC_DAEMON_MAX_OLD_SPACE_MB` | Detached daemon V8 heap cap (default 4096) |
+| `AGENC_COMPILE_CACHE` | `0` turns off the on-disk V8 compile cache that the CLI and the daemon share. It lives in a private per-user temp directory; an explicit `NODE_COMPILE_CACHE` is left alone |
 | `AGENC_DAEMON_MAX_QUEUED_REQUESTS`, `AGENC_DAEMON_MAX_IN_FLIGHT_REQUESTS` | RPC overload bounds |
 | `AGENC_DAEMON_REQUEST_RATE_PER_SECOND`, `AGENC_DAEMON_REQUEST_BURST` | Per-client rate limiter |
 | `AGENC_DAEMON_WEBSOCKET_HOST` | Optional WebSocket bind host (default `127.0.0.1`) |
@@ -375,7 +376,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_C*
 
-`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
+`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPILE_CACHE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
 
 ### AGENC_D*
 
@@ -456,11 +457,20 @@ launcher, child process, integration, or test runner.
 | Family | Direct inputs |
 | --- | --- |
 | Supervised child-process controls | `AGENC_BOUND_READ_USE_NOFOLLOW`, `AGENC_PROCESS_WATCHDOG_CONFIG` |
+| Native package build inputs | `CC`, `npm_config_nodedir` |
 | Anthropic-compatible client controls | `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET`, `API_TIMEOUT_MS`, `AZURE_OPENAI_API_VERSION`, `MAX_THINKING_TOKENS` |
 | Search and custom HTTP connectors | `APP_URL`, `BING_API_KEY`, `EMBEDDED_SEARCH_TOOLS`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `LINKUP_API_KEY`, `MOJEEK_API_KEY`, `PROJECT_DOMAIN`, `TAVILY_API_KEY`, `WEB_AUTH_HEADER`, `WEB_AUTH_SCHEME`, `WEB_BODY_TEMPLATE`, `WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS`, `WEB_CUSTOM_ALLOW_HTTP`, `WEB_CUSTOM_ALLOW_PRIVATE`, `WEB_CUSTOM_MAX_BODY_KB`, `WEB_CUSTOM_TIMEOUT_SEC`, `WEB_HEADERS`, `WEB_JSON_PATH`, `WEB_KEY`, `WEB_METHOD`, `WEB_PARAMS`, `WEB_PROVIDER`, `WEB_QUERY_PARAM`, `WEB_SEARCH_API`, `WEB_SEARCH_PROVIDER`, `WEB_URL_TEMPLATE`, `YOU_API_KEY` |
 | MCP transport and OAuth tuning | `ENABLE_MCP_LARGE_OUTPUT_FILES`, `MAX_MCP_OUTPUT_TOKENS`, `MCP_CLIENT_SECRET`, `MCP_OAUTH_CLIENT_METADATA_URL`, `MCP_SERVER_CONNECTION_BATCH_SIZE`, `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT`, `MCP_XAA_IDP_CLIENT_SECRET` |
 | Runtime, update, and test controls | `ATOMIC_CHAT_BASE_URL`, `BASH_MAX_OUTPUT_LENGTH`, `DEBUG`, `DEBUG_SDK`, `DISABLE_AUTOUPDATER`, `DISABLE_COST_WARNINGS`, `DISABLE_ERROR_REPORTING`, `DISABLE_EXTRA_USAGE_COMMAND`, `DISABLE_INSTALLATION_CHECKS`, `DISABLE_INTERLEAVED_THINKING`, `ENABLE_LOCKLESS_UPDATES`, `ENABLE_PID_BASED_VERSION_LOCKING`, `ENABLE_SESSION_PERSISTENCE`, `FORCE_AUTOUPDATE_PLUGINS`, `FORCE_CODE_TERMINAL`, `IS_DEMO`, `LOCAL_BRIDGE`, `SESSION_INGRESS_URL`, `SLASH_COMMAND_TOOL_CHAR_BUDGET`, `TASK_MAX_OUTPUT_LENGTH`, `TEST_ENABLE_SESSION_PERSISTENCE`, `USE_BUILTIN_RIPGREP`, `USE_LOCAL_OAUTH`, `USE_STAGING_OAUTH`, `UV_THREADPOOL_SIZE`, `WALLET_PASS` |
 | Auth and hosted integration metadata | `CURSOR_TRACE_ID`, `GITHUB_DEVICE_FLOW_CLIENT_ID`, `SESSIONNAME`, `SPACE_CREATOR_USER_ID` |
+
+`CC` selects the C compiler executable for native helper builds, including
+the Linux peer-credential binding prepared with `--build`; it defaults to `cc`.
+`npm_config_nodedir` supplies the Node headers root, with headers under
+`include/node`. Peer-credential package preparation uses this root when set;
+native runtime tarball builds require an absolute root with verified headers.
+These are build-process inputs. Install-time cache preparation and the daemon's
+runtime compile fallback keep their existing compiler and header discovery.
 
 `API_TIMEOUT_MS` is captured in the provider binding used by each request.
 Timeout messages do not display the daemon process's current value because it

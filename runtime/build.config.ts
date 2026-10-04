@@ -19,6 +19,7 @@ const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
   'src/bin/agenc-main.ts',
+  'src/bin/prepare-peer-credentials.ts',
   'src/bin/tui-trust-prompt.tsx',
   'src/memory/memory-query-helper.mjs',
   'src/sandbox/linux-launcher/main.ts',
@@ -681,7 +682,10 @@ const agencBareSrcAlias = {
   },
 };
 
-const noExternal = ['jsonc-parser', 'semver', 'supports-hyperlinks'];
+// Bundled instead of loaded from node_modules at run time. lodash-es is one
+// module per function (275 files on a cold one-shot across the CLI and the
+// daemon), and Node pays a fixed cost for every module file it loads.
+const noExternal = ['jsonc-parser', 'lodash-es', 'semver', 'supports-hyperlinks'];
 
 function isBundledBareImport(source: string): boolean {
   return noExternal.some(

@@ -26,9 +26,6 @@ import { randomUUID } from "node:crypto";
 import {
   resolveApiKey,
 } from "../config/env.js";
-import {
-  createProvider,
-} from "../llm/provider.js";
 import type {
   LLMProvider,
   LLMStructuredOutputSchema,
@@ -43,7 +40,6 @@ import {
 import type { ToolPermissionContext } from "./types.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
-import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   LIST_MCP_RESOURCES_TOOL_NAME,
@@ -471,6 +467,12 @@ async function defaultRemoteClassifierStageRunner(
   config: RemoteClassifierConfig,
   session: Session,
 ): Promise<RemoteClassifierStageResponse> {
+  // Permission-mode predicates also import this module in thin clients. Load
+  // provider construction and admission only when a remote stage actually runs.
+  const [{ createProvider }, { runAdmittedModelCall }] = await Promise.all([
+    import("../llm/provider.js"),
+    import("../budget/admitted-model-call.js"),
+  ]);
   const provider = createProvider("grok", {
     apiKey: config.apiKey,
     model: request.model,

@@ -24,7 +24,7 @@ import {
   writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
-} from "./daemon-cli.js";
+} from "./daemon-control.js";
 import {
   daemonInstanceIdentityFromRuntimeInfo,
   readDaemonRuntimeInfo,
@@ -50,7 +50,7 @@ import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
-} from "../mcp/server/start.js";
+} from "../mcp/server/defaults.js";
 import {
   canConnectToUnixSocket,
   isAgenCWindowsNamedPipePath,
@@ -1757,6 +1757,10 @@ async function waitForAgenCDaemonReady(
     ((readyTarget: AgenCDaemonConnectionTarget) =>
       isAgenCDaemonPidAndCookieReady(readyTarget, host));
 
+  if (options.isReady === undefined) {
+    const hint = await host.waitSpawnedDaemonReady?.(target.pid, timeoutMs);
+    if (hint === "ready" && await isReady(target)) return "ready";
+  }
   while (Date.now() - startedAt < timeoutMs) {
     if (await Promise.resolve(isReady(target))) return "ready";
     // A dead daemon can never become ready — bail out with the accurate
