@@ -42,6 +42,10 @@ const TRACE_HOOK = path.join(SCRIPT_DIR, "trace-hook.mjs");
 /** Modules a cold one-shot must not load before its first model request. */
 export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
   {
+    pattern: /^bundled:.*\/src\/mcp\/server\/start\.ts$/,
+    reason: "disabled daemon MCP configuration must not load the server implementation",
+  },
+  {
     pattern: /^bundled:.*\/src\/services\/compact\/(?:compact|transaction|prompt)\.ts$/,
     reason: "compaction transaction code loads only when compaction is attempted",
   },
