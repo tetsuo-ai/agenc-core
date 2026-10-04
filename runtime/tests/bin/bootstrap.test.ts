@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
+import * as oneShotDurability from "../durability/one-shot-durability.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { StateSqliteReader } from "../state/sqlite-driver.js";
 
@@ -4616,10 +4617,12 @@ describe("fresh startup diagnostic index policy", () => {
   afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
   it.each([
     { name: "eligible print", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: true },
+    { name: "unsupported full fallback", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: false, supported: false },
     { name: "full opt-out", relaxedOneShot: false, nonInteractive: true, routineRun: false, buffered: false },
     { name: "interactive", relaxedOneShot: true, nonInteractive: false, routineRun: false, buffered: false },
     { name: "routine", relaxedOneShot: true, nonInteractive: true, routineRun: true, buffered: false },
   ])("keeps the real cron warning immediate for $name", async selection => {
+    if (selection.supported === false) vi.spyOn(oneShotDurability, "supportsRelaxedOneShot").mockReturnValue(false);
     const home = await mkdtemp(join(tmpdir(), "bootstrap-log-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "bootstrap-log-workspace-"));
     await mkdir(join(workspace, ".git"));
@@ -4642,6 +4645,10 @@ describe("fresh startup diagnostic index policy", () => {
         item.payload.msg.type === "warning" && item.payload.msg.payload.cause === "cron_storage_unavailable" ? [item.payload.msg.payload] : []);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]!.message).toContain("Durable scheduled tasks could not be restored");
+      if (selection.supported === false) {
+        expect(oneShotDurability.relaxedOneShotTransaction(projectDir, boot.session.conversationId)).toBe(false);
+        expect(existsSync(`${boot.rolloutStore.rolloutPath}.durability.json`)).toBe(false);
+      }
       expect(existsSync(paths.logsDbPath)).toBe(!selection.buffered);
       boot.session.services.flushStartupLogIndex?.();
       const reader = new StateSqliteReader(paths);

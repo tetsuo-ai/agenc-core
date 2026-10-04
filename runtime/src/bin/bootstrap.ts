@@ -1,3 +1,4 @@
+import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { readStartupCronTasks } from "../utils/cron-startup.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
@@ -2137,7 +2138,10 @@ async function bootstrapLocalRuntimeSessionScoped(
         errorLogSidecar = new ErrorLogSidecar({
           projectDir,
           sessionId: conversationId,
-          deferStartupIndex: relaxedOneShot,
+          // The store may have fallen back to FULL or been promoted since
+          // the request. Only its active run-bound authority allows buffering.
+          deferStartupIndex: relaxedOneShot &&
+            relaxedOneShotTransaction(projectDir, conversationId),
         });
         sidecarManager.register(errorLogSidecar);
 
