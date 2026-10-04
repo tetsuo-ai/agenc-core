@@ -6,6 +6,7 @@ import type { LookupOptions } from 'dns'
 import type { Agent } from 'http'
 import { HttpsProxyAgent, type HttpsProxyAgentOptions } from 'https-proxy-agent'
 import type * as undici from 'undici'
+import { loadUndiciAgent, loadUndiciEnvHttpProxyAgent } from '../llm/undici-dispatcher.js'
 import { getCACertificates } from './caCerts.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -179,8 +180,7 @@ export function getProxyAgent(
   const cached = agents.get(uri)
   if (cached !== undefined) return cached
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require('undici') as typeof undici
+  const EnvHttpProxyAgent = loadUndiciEnvHttpProxyAgent()
   const mtlsConfig = getMTLSConfig(environment)
   const caCerts = getCACertificates(environment)
 
@@ -216,7 +216,7 @@ export function getProxyAgent(
     proxyOptions.requestTls = tlsOpts
   }
 
-  const agent = new undiciMod.EnvHttpProxyAgent(proxyOptions)
+  const agent = new EnvHttpProxyAgent(proxyOptions)
   agents.set(uri, agent)
   return agent
 }
@@ -328,8 +328,7 @@ function getDirectAgent(environment: EnvLike): undici.Dispatcher {
     return tlsDispatcher
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const agent = new (require('undici') as typeof undici).Agent({ pipelining: 1 })
+  const agent = new (loadUndiciAgent())({ pipelining: 1 })
   directAgentsByEnvironment.set(environment, agent)
   return agent
 }
