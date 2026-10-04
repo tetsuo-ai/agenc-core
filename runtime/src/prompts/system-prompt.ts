@@ -40,6 +40,7 @@ import {
   lightBudgetActions,
   LIGHT_BUDGET_DEADLINE,
 } from "./light-budget-prompt.js";
+import { lightEditsWithApplyPatch } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1209,7 +1210,7 @@ export async function assembleSystemPrompt(
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
   const staticSections: Array<string | null> = light
     ? [
-        lightBudgetWorkflow(opts.outputStyle != null),
+        lightBudgetWorkflow(opts.outputStyle != null, lightEditsWithApplyPatch(envInfoInputs.provider)),
         lightBudgetSystem(),
         lightBudgetActions(),
         session.services?.runtimeOptions?.nonInteractive === true

@@ -502,7 +502,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly env?: Record<string, string>;
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
   private readonly sessionTempRoot: string;
-  private readonly shellPath: string;
+  /** Shell used when a request names none. */
+  readonly shellPath: string;
+
+  /**
+   * Whether commands inherit shell startup hooks: BASH_ENV/ENV files, exported functions
+   * (BASH_FUNC_*) or SHELLOPTS/BASHOPTS. With any of them a command name no longer proves which
+   * program or function runs.
+   */
+  shellStartupHooksPresent(): boolean {
+    // The same merged environment commands spawn with (base plus configured overrides).
+    const env = buildEnv(this.baseEnv, this.env);
+    return Object.keys(env).some(name =>
+      name === "BASH_ENV" || name === "ENV" || name === "SHELLOPTS" || name === "BASHOPTS" || name.startsWith("BASH_FUNC_"));
+  }
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
