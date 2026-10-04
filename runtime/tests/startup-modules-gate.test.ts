@@ -38,7 +38,7 @@ describe("startup-modules gate", () => {
   test("flags each listed package loaded before the first request, once per process", () => {
     const traces = [
       parseStartupTrace(
-        `# ["daemon"]\n10 ${NM}/axios/lib/axios.js\n11 ${NM}/axios/lib/core.js\n12 ${NM}/lodash-es/lodash.js\n13 ${NM}/@modelcontextprotocol/sdk/client/index.js\n14 ${NM}/ajv/dist/ajv.js\n15 ${NM}/ajv-formats/dist/index.js\n16 ${NM}/undici/index.js\n17 bundled:../node_modules/zod/v4/core/core.js\n`,
+        `# ["daemon"]\n10 ${NM}/axios/lib/axios.js\n11 ${NM}/axios/lib/core.js\n12 ${NM}/lodash-es/lodash.js\n13 ${NM}/@modelcontextprotocol/sdk/client/index.js\n14 ${NM}/ajv/dist/ajv.js\n15 ${NM}/ajv-formats/dist/index.js\n16 ${NM}/undici/index.js\n17 bundled:../node_modules/zod/v4/core/core.js\n18 ${NM}/diff/libesm/index.js\n19 bundled:../src/services/compact/transaction.ts\n`,
       ),
     ];
     const offenders = findStartupOffenders(traces, 1000);
@@ -49,9 +49,22 @@ describe("startup-modules gate", () => {
       `${NM}/ajv/dist/ajv.js`,
       `${NM}/undici/index.js`,
       "bundled:../node_modules/zod/v4/core/core.js",
+      `${NM}/diff/libesm/index.js`,
+      "bundled:../src/services/compact/transaction.ts",
     ]);
     expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length);
   });
+
+  test.each(["diff", "tar", "vscode-jsonrpc", "chokidar", "readdirp", "js-yaml"])(
+    "flags raw and bundled %s before the first request",
+    (name) => {
+      for (const url of [`${NM}/${name}/index.js`, `bundled:../node_modules/${name}/index.js`]) {
+        const trace = parseStartupTrace(`# ["daemon"]\n10 ${url}\n`);
+        expect(findStartupOffenders([trace], 1000).map((offender) => offender.url)).toEqual([url]);
+        expect(findStartupOffenders([trace], 5)).toEqual([]);
+      }
+    },
+  );
 
   test("allows single lodash functions and anything loaded after the first request", () => {
     const traces = [

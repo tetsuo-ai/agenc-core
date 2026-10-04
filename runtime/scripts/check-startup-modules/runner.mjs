@@ -42,6 +42,10 @@ const TRACE_HOOK = path.join(SCRIPT_DIR, "trace-hook.mjs");
 /** Modules a cold one-shot must not load before its first model request. */
 export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
   {
+    pattern: /^bundled:.*\/src\/services\/compact\/(?:compact|transaction|prompt)\.ts$/,
+    reason: "compaction transaction code loads only when compaction is attempted",
+  },
+  {
     pattern: /\/node_modules\/lodash-es\/lodash\.js$/,
     reason: "the lodash-es package entry re-exports every function (about 640 modules); import single functions",
   },
@@ -64,6 +68,10 @@ export const FORBIDDEN_BEFORE_FIRST_REQUEST = Object.freeze([
   {
     pattern: /^bundled:.*\/node_modules\/zod\//,
     reason: "Zod must use the installed package instance rather than a second bundled copy",
+  },
+  {
+    pattern: /\/node_modules\/(?:diff|tar|vscode-jsonrpc|chokidar|readdirp|js-yaml)\//,
+    reason: "diffs, archive extraction, LSP connections, settings watches and YAML parsing load their packages on first use",
   },
 ]);
 
