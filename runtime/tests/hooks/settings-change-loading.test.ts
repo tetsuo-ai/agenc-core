@@ -6,10 +6,10 @@ const effects = vi.hoisted(() => ({
   execute: vi.fn(async (..._args: unknown[]) => [] as { blocked: boolean }[]),
   reload: vi.fn(async () => undefined),
 }));
-vi.mock("chokidar", () => ({ default: { watch: () => {
+vi.mock("../../src/utils/lazy-runtime-packages.js", () => ({ loadChokidar: () => ({ watch: () => {
   const watcher = { on: (event: string, callback: (...args: string[]) => void) => { effects.listeners.set(event, callback); return watcher; }, close: async () => undefined };
   return watcher;
-} } }));
+} }) }));
 vi.mock("../../src/utils/settings/settings.js", () => ({
   getSettingsFilePathForSource: (source: string) => source === "userSettings" ? "/tmp/gd-hook-settings.toml" : undefined,
 }));
