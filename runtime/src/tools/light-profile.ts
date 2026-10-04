@@ -5,7 +5,4 @@ export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Edit",
   "Write",
   "exec_command",
-  "write_stdin",
-  "Grep",
-  "Glob",
 ]);
