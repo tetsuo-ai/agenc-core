@@ -334,7 +334,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote: Pick<RemoteService, "handle"> | undefined;
+  readonly remote: Pick<RemoteService, "handle" | "stop"> | undefined;
   readonly ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
@@ -624,7 +624,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote?: Pick<RemoteService, "handle">;
+  readonly remote?: Pick<RemoteService, "handle" | "stop">;
   readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
@@ -760,15 +760,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #whisper: WhisperService | undefined;
   readonly #runInspection:
-    | Pick<
-        AgenCDaemonRunInspectionService,
-        "status" | "result" | "replay" | "evidence"
-      >
+    | AgenCDaemonRunInspectionHandlers
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
-  readonly #remote: Pick<RemoteService, "handle"> | undefined;
+  readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
   readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;

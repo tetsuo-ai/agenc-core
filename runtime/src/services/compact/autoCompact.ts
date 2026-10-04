@@ -29,7 +29,6 @@ import {
   EMERGENCY_COMPACTION_FOCUS,
   type CompactionLadderTier,
 } from "./ladder.js";
-import { createRuntimeEmergencySummarizer } from "./emergency-summarizer.js";
 import { usesLocalToolProfile } from "../../llm/wire/capability-gating.js";
 
 export type AutoCompactTrackingState = {
@@ -154,7 +153,7 @@ export async function autoCompactIfNeeded(
           : {
               keepCount: 0,
               ...(tier === "emergency_local"
-                ? { summarizer: createRuntimeEmergencySummarizer() }
+                ? { summarizer: (await import("./emergency-summarizer.js")).createRuntimeEmergencySummarizer() }
                 : {}),
             },
       );

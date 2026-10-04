@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import {
+  DEFERRED_DAEMON_IMPLEMENTATIONS,
   FORBIDDEN_BEFORE_FIRST_REQUEST,
   addBundledStartupSources,
   findStartupOffenders,
@@ -52,7 +53,20 @@ describe("startup-modules gate", () => {
       `${NM}/diff/libesm/index.js`,
       "bundled:../src/services/compact/transaction.ts",
     ]);
-    expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length);
+    expect(offenders).toHaveLength(FORBIDDEN_BEFORE_FIRST_REQUEST.length - DEFERRED_DAEMON_IMPLEMENTATIONS.length);
+  });
+
+  test.each(DEFERRED_DAEMON_IMPLEMENTATIONS)("keeps %s behind first use", (source) => {
+    const url = `bundled:../../src/${source}`;
+    const trace = parseStartupTrace(`# ["daemon"]\n10 ${url}\n`);
+    expect(findStartupOffenders([trace], 1000).map(item => item.url)).toEqual([url]);
+    expect(findStartupOffenders([trace], 10)).toEqual([]);
+  });
+
+  test("keeps shared authority, schema and synchronous data leaves available", () => {
+    const sources = ["commands/lookup.ts", "commands/builtin-command-names.ts", "utils/attachment-message.ts", "eval-contract/canonical-json.ts", "browser/named-keys.ts", "browser/ssrf.ts", "services/lsp/manager.ts", "app-server/fuzzy-file-search-boundary.ts", "search/fuzzy-boundary.ts", "services/compact/thresholds.ts", "services/compact/transaction-types.ts", "workspace/file-mutation-evidence.ts", "utils/debug.ts", "services/heapWatchdog/heapWatchdog.ts"];
+    const trace = parseStartupTrace(`# ["daemon"]\n${sources.map(source => `10 bundled:../../src/${source}\n`).join("")}`);
+    expect(findStartupOffenders([trace], 1000)).toEqual([]);
   });
 
   test.each(["diff", "tar", "vscode-jsonrpc", "chokidar", "readdirp", "js-yaml"])(

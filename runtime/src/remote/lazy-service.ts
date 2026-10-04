@@ -2,8 +2,8 @@ import { RemoteApprovalProjection } from "./approvals.js";
 import { RemoteError, type RemoteStatus } from "./types.js";
 import type { RemoteService, RemoteServiceOptions } from "./service.js";
 
-type Runtime = Pick<RemoteService, "handle" | "status" | "close">;
-export type LazyRemoteService = Pick<RemoteService, "handle" | "status" | "observeSessionEvent"> & {
+type Runtime = Pick<RemoteService, "handle" | "status" | "stop" | "close">;
+export type LazyRemoteService = Pick<RemoteService, "handle" | "status" | "stop" | "observeSessionEvent"> & {
   close(): Promise<void>;
 };
 
@@ -21,6 +21,7 @@ export function createLazyRemoteService(
   let pending: Promise<Runtime> | undefined;
   let current: Runtime | undefined;
   let closed = false;
+  let generation = 0;
   let closing: Promise<void> | undefined;
   const initialStatus = (): RemoteStatus => ({
     enabled: false, state: "stopped", connectedDevices: 0,
@@ -29,13 +30,18 @@ export function createLazyRemoteService(
   return {
     observeSessionEvent: (sessionId, event) => approvals.observe(sessionId, event),
     status: () => current?.status() ?? initialStatus(),
+    stop() {
+      generation += 1;
+      return current?.stop() ?? initialStatus();
+    },
     async handle(method, params) {
+      const expectedGeneration = generation;
       if (closed) throw new RemoteError("REMOTE_OPERATION_CANCELLED");
       const service = await (pending ??= load(captured, approvals).then(value => {
         current = value;
         return value;
       }));
-      if (closed) throw new RemoteError("REMOTE_OPERATION_CANCELLED");
+      if (closed || generation !== expectedGeneration) throw new RemoteError("REMOTE_OPERATION_CANCELLED");
       return service.handle(method, params);
     },
     close() {

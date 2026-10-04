@@ -69,7 +69,7 @@ describe("lazy auxiliary services", () => {
     const close = vi.fn();
     const load = vi.fn(async (_options: RemoteServiceOptions, approvals: RemoteApprovalProjection) => ({
       handle: vi.fn(async () => ({ pending: approvals.list("session-1") })),
-      status: vi.fn(), close,
+      status: vi.fn(), stop: vi.fn(), close,
     }));
     const service = createLazyRemoteService({} as RemoteServiceOptions, load);
     service.observeSessionEvent("session-1", {
@@ -102,6 +102,26 @@ describe("lazy auxiliary services", () => {
     expect(load).not.toHaveBeenCalled();
     const failure = new Error("malformed metadata");
     expect(() => createLazyOwnerTelegramService({ storage: { load: () => { throw failure; } } } as unknown as OwnerTelegramOptions, load)).toThrow(failure);
+  });
+
+  test("auth logout stops a remote request waiting for its implementation", async () => {
+    type Runtime = Pick<import("../../src/remote/service.js").RemoteService, "handle" | "status" | "stop" | "close">;
+    let finish!: (value: Runtime) => void;
+    const pending = new Promise<Runtime>(resolve => { finish = resolve; });
+    const service = createLazyRemoteService({} as RemoteServiceOptions, () => pending);
+    const request = service.handle("remote.start", {});
+    const rejected = expect(request).rejects.toMatchObject({ code: "REMOTE_OPERATION_CANCELLED" });
+    expect(service.stop()).toMatchObject({ enabled: false, state: "stopped" });
+    const handle = vi.fn<Runtime["handle"]>().mockResolvedValue({});
+    const close = vi.fn();
+    finish({ handle, status: vi.fn(), stop: vi.fn(), close });
+    await rejected;
+    expect(handle).not.toHaveBeenCalled();
+    // A later authenticated start is still usable after stop, as before.
+    await service.handle("remote.start", {});
+    expect(handle).toHaveBeenCalledTimes(1);
+    await service.close();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   test("Telegram shutdown during loading owns cleanup and never starts the pending RPC", async () => {
