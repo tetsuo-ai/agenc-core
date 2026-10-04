@@ -1024,7 +1024,20 @@ export class OllamaProvider implements LLMProvider {
 
   projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
     const execution = this.requireExecution(options);
-    const toolChoice = resolveOllamaToolChoice(options.toolChoice, execution.names);
+    return this.projectExecutionRequest(
+      messages,
+      options,
+      execution,
+      resolveOllamaToolChoice(options.toolChoice, execution.names),
+    );
+  }
+
+  private projectExecutionRequest(
+    messages: readonly LLMMessage[],
+    options: LLMChatOptions,
+    execution: ReturnType<OllamaProvider["requireExecution"]>,
+    toolChoice: OllamaToolChoiceResolution,
+  ) {
     validateAgentInvocationMessageSequence([...messages]);
     const repaired = repairToolTurnSequence([...messages]);
     validateToolTurnSequence(repaired, { providerName: this.name });
@@ -1066,7 +1079,12 @@ export class OllamaProvider implements LLMProvider {
   ): Record<string, unknown> {
     const execution = this.requireExecution(options ?? {});
     const resolution = toolChoice ?? this.resolveToolChoice(options);
-    const projection = this.projectRequestForAccounting(messages, options ?? {});
+    const projection = this.projectExecutionRequest(
+      messages,
+      options ?? {},
+      execution,
+      resolution,
+    );
     options = projection.options;
     const requestMessages =
       options?.systemPrompt?.trim()
