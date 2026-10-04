@@ -26,10 +26,11 @@ async function child(command: string, root: string, boundary: string) {
 }
 
 describe("relaxed one-shot process death and host-crash suffix loss", () => {
-  it.each(["opened", "intent", "effect", "receipt", "sealed"])("fails closed after SIGKILL at %s except a verified clean seal", async boundary => {
+  it.each(["opened", "pending-logs", "intent", "effect", "receipt", "sealed"])("fails closed after SIGKILL at %s except a verified clean seal", async boundary => {
     const root = mkdtempSync(join(tmpdir(), "one-shot-crash-")); roots.push(root);
     const crashed = await child("crash", root, boundary);
     expect(crashed.stderr).toBe(""); expect(crashed.signal).toBe("SIGKILL");
+    if (boundary === "pending-logs") expect(existsSync(readFileSync(join(root, "logs-path"), "utf8"))).toBe(false);
     const recovered = await child("recover", root, boundary);
     expect(recovered.stderr).toBe(""); expect(recovered.code).toBe(0);
     const report = JSON.parse(recovered.stdout.trim().split("\n").at(-1)!);

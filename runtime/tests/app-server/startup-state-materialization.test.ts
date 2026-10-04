@@ -140,7 +140,9 @@ describe("daemon startup state materialization", () => {
         id: "new-run", objective: "new work", status: "pending",
         startedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
       });
-      const driver = openStateDatabasePaths(paths);
+      expect(existsSync(paths.stateDbPath)).toBe(true);
+      expect(existsSync(paths.logsDbPath)).toBe(false);
+      const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true });
       try {
         expect(driver.prepareState("SELECT id FROM agent_runs WHERE id = 'new-run'").get()).toEqual({ id: "new-run" });
       } finally {
@@ -159,6 +161,7 @@ describe("daemon startup state materialization", () => {
     });
     try {
       expect(existsSync(paths.stateDbPath)).toBe(true);
+      expect(existsSync(paths.logsDbPath)).toBe(false);
     } finally {
       policies.close();
     }
@@ -227,4 +230,12 @@ describe("daemon startup state materialization", () => {
       agencHome: home, defaultCwd: cwd, onError: () => {},
     })).toThrow("project directory access denied");
   });
+});
+
+
+it.each(["malformed", "access-error"])("keeps existing logs validation eager for snapshot policy: %s", failure => {
+  const paths = pathsFor(); mkdirSync(paths.projectDir, { recursive: true });
+  if (failure === "malformed") writeFileSync(paths.logsDbPath, "malformed SQLite");
+  else denied.projectDir = paths.logsDbPath;
+  expect(() => new AgenCDaemonSnapshotPolicyRegistry({ agencHome: home, defaultCwd: cwd, onError: () => {} })).toThrow();
 });

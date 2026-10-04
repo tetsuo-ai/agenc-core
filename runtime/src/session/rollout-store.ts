@@ -174,6 +174,8 @@ import {
 import { redactDurableSecrets } from "./provider-replay-redaction.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
+  /** Drain auxiliary startup diagnostics before the existing one-shot seal. */
+  readonly beforeOneShotCheckpoint?: () => void;
   /** Session-owned temporary root captured at request ingress. */
   readonly sessionTempRoot: string;
   /** Flush interval in ms. Default 100. */
@@ -795,7 +797,10 @@ export class RolloutStore {
       throw new TypeError("RolloutStore sessionTempRoot must be absolute");
     }
     this.sessionTempRoot = normalize(opts.sessionTempRoot);
-    this.store = new SessionStore({ ...opts, checkpointOneShot: () => this.stateDriver.checkpointDurability() });
+    this.store = new SessionStore({ ...opts, checkpointOneShot: () => {
+      opts.beforeOneShotCheckpoint?.();
+      this.stateDriver.checkpointDurability();
+    } });
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
       this.store,

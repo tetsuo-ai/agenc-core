@@ -1665,6 +1665,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
+  let errorLogSidecar: ErrorLogSidecar | undefined;
+  const flushStartupLogIndex = (): void => errorLogSidecar?.flushStartupIndex();
   let clearActiveCostSidecar: (() => void) | null = null;
   let shutdownTask: Promise<void> | null = null;
   let shutdownComplete = false;
@@ -1688,6 +1690,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
+      flushStartupLogIndex,
       provider,
       providerName: resolvedProvider,
       ...(options.authBackend !== undefined
@@ -1953,14 +1956,16 @@ async function bootstrapLocalRuntimeSessionScoped(
         // canonical rollout descriptor is claimed and any resumed writer is
         // activated.
         assertPinnedResumeCwd(options, workspaceRoot);
+        const relaxedOneShot = runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
+          runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined;
         const rolloutStore = new RolloutStore({
           cwd: workspaceRoot,
           sessionId: conversationId,
           agencVersion: VERSION,
           agencHome,
           sessionTempRoot,
-          relaxedOneShot: runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
-            runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined,
+          relaxedOneShot,
+          beforeOneShotCheckpoint: flushStartupLogIndex,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }
@@ -2129,12 +2134,12 @@ async function bootstrapLocalRuntimeSessionScoped(
         );
         s.attachFileHistory(fileHistory);
 
-        sidecarManager.register(
-          new ErrorLogSidecar({
-            projectDir,
-            sessionId: conversationId,
-          }),
-        );
+        errorLogSidecar = new ErrorLogSidecar({
+          projectDir,
+          sessionId: conversationId,
+          deferStartupIndex: relaxedOneShot,
+        });
+        sidecarManager.register(errorLogSidecar);
 
         const costSidecar = new CostSidecar({
           defaultModel: model,

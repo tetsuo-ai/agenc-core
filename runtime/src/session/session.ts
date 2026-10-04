@@ -1335,6 +1335,8 @@ export interface StateDbContext {
 
 /** DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Flush only auxiliary startup log indexing at the first provider outcome. */
+  readonly flushStartupLogIndex?: () => void;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;

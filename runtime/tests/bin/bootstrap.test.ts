@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdir,
+  chmod,
   lstat,
   mkdtemp,
   readFile,
@@ -9,7 +10,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { StateSqliteReader } from "../state/sqlite-driver.js";
 
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import { readStartupCliFlags } from "../bin/startup-selection.js";
@@ -4605,4 +4609,50 @@ required = true
       await rm(workspace, { recursive: true, force: true });
     }
   });
+});
+
+
+describe("fresh startup diagnostic index policy", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it.each([
+    { name: "eligible print", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: true },
+    { name: "full opt-out", relaxedOneShot: false, nonInteractive: true, routineRun: false, buffered: false },
+    { name: "interactive", relaxedOneShot: true, nonInteractive: false, routineRun: false, buffered: false },
+    { name: "routine", relaxedOneShot: true, nonInteractive: true, routineRun: true, buffered: false },
+  ])("keeps the real cron warning immediate for $name", async selection => {
+    const home = await mkdtemp(join(tmpdir(), "bootstrap-log-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bootstrap-log-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    await chmod(workspace, 0o775);
+    trustWorkspaceForTest(home, workspace);
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { relaxedOneShot: selection.relaxedOneShot,
+          nonInteractive: selection.nonInteractive, routineRun: selection.routineRun }), fetchImpl: offlineFetchFixture() });
+      shutdown = boot.shutdown;
+      const projectDir = dirname(dirname(dirname(boot.rolloutStore.rolloutPath)));
+      const paths = { projectDir, stateDbPath: join(projectDir, "agenc-state_1.sqlite"), logsDbPath: join(projectDir, "agenc-logs_1.sqlite") };
+      boot.rolloutStore.flushDurable();
+      const warnings = boot.rolloutStore.readAll().flatMap(item => item.type === "event_msg" &&
+        item.payload.msg.type === "warning" && item.payload.msg.payload.cause === "cron_storage_unavailable" ? [item.payload.msg.payload] : []);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.message).toContain("Durable scheduled tasks could not be restored");
+      expect(existsSync(paths.logsDbPath)).toBe(!selection.buffered);
+      boot.session.services.flushStartupLogIndex?.();
+      const reader = new StateSqliteReader(paths);
+      try {
+        expect(reader.prepareLogs("SELECT message FROM logs WHERE event_type = 'cron_storage_unavailable'").all())
+          .toEqual([{ message: warnings[0]!.message }]);
+      } finally { reader.close(); }
+    } finally {
+      await shutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

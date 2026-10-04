@@ -2260,3 +2260,48 @@ describe("streamModel — execution admission identity", () => {
     expect(state.pendingAdmissionFallback).toBeUndefined();
   });
 });
+
+
+describe("startup diagnostic drain at actual provider outcomes", () => {
+  test.each(["chunk", "empty", "failure"])("drains once for %s after provider invocation", async outcome => {
+    const ctx = mkCtx();
+    const state = mkState(ctx);
+    const flush = vi.fn();
+    const provider = mkProvider(async (_messages, onChunk) => {
+      expect(flush).not.toHaveBeenCalled();
+      if (outcome === "failure") throw new Error("provider failed before chunks");
+      if (outcome === "chunk") {
+        onChunk({ content: "hello", done: false });
+        expect(flush).toHaveBeenCalledOnce();
+        onChunk({ content: " world", done: true });
+      }
+      return { content: "", toolCalls: [], model: "test-model", finishReason: "stop" };
+    });
+    const { session } = mkSession(provider);
+    Object.assign(session.services, { flushStartupLogIndex: flush });
+    const result = streamModel(state, ctx, session, mkRequest([{ role: "user", content: "hello" }]));
+    if (outcome === "failure") await expect(result).rejects.toThrow("provider failed before chunks");
+    else await result;
+    expect(flush).toHaveBeenCalledOnce();
+  });
+
+  test("drains before a tool-only first chunk enters early dispatch", async () => {
+    const ctx = mkCtx(); const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const flush = vi.fn(() => expect(streamedDispatchCalls).toEqual([]));
+    const registry = mkRegistry([{ name: "FileRead", description: "reads", inputSchema: { type: "object" },
+      concurrencyClass: { kind: "shared_read" }, execute: async () => ({ content: "read" }) }]);
+    const toolCalls = [{ id: "startup-tool", name: "FileRead", arguments: "{}" }];
+    const provider = mkProvider(async (_messages, onChunk) => {
+      expect(flush).not.toHaveBeenCalled();
+      onChunk({ content: "", done: false, toolCalls });
+      expect(flush).toHaveBeenCalledOnce();
+      expect(streamedDispatchCalls).toEqual(["startup-tool"]);
+      return { content: "", toolCalls, model: "test-model", finishReason: "tool_calls" };
+    });
+    const { session } = mkSession(provider, null, registry);
+    Object.assign(session.services, { flushStartupLogIndex: flush });
+    await streamModel(state, ctx, session, { ...mkRequest([{ role: "user", content: "hello" }]), tools: registry.toLLMTools() });
+    expect(flush).toHaveBeenCalledOnce();
+  });
+});

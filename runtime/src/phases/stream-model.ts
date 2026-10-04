@@ -1091,6 +1091,12 @@ export async function streamModel(
   const malformedToolNames = new Set<string>();
   state.truncatedToolCallNames = undefined;
   let receivedProviderChunk = false;
+  let startupLogIndexFlushed = false;
+  const flushStartupLogIndex = (): void => {
+    if (startupLogIndexFlushed) return;
+    startupLogIndexFlushed = true;
+    session.services.flushStartupLogIndex?.();
+  };
   let streamedCanonicalAssistantText = "";
 
   const resetCanonicalAssistantOutput = (): void => {
@@ -1117,6 +1123,8 @@ export async function streamModel(
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     if (scoped.signal.aborted) return;
+    // Includes tool-only chunks, before the early streaming executor can run.
+    flushStartupLogIndex();
     receivedProviderChunk = true;
     const previousVisibleText = display.visibleText;
     const previousPlanText = display.parser.planText;
@@ -1304,6 +1312,8 @@ export async function streamModel(
       invoke: (admittedOptions) =>
         provider.chatStream(messages, onChunk, admittedOptions),
     });
+    // Some providers return an empty/nonstreamed result without any chunks.
+    flushStartupLogIndex();
     // Legacy admission-disabled providers can resolve after an abort. Never
     // accept that response as success. Admitted calls settle usage first.
     if (scoped.signal.aborted) throw scoped.signal.reason;
@@ -1340,6 +1350,7 @@ export async function streamModel(
     // error propagates so a retried attempt (reconnect ladder or the prewarm
     // fallback below) streams into fresh blocks instead of appending to, or
     // duplicating, reasoning the UI already rendered.
+    flushStartupLogIndex();
     closeOpenThinkingDisplays(thinkingDisplays, session);
     thinkingDisplays.clear();
     if (

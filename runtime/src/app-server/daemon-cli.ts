@@ -245,6 +245,8 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 
+import { logsDatabaseFilesAreAbsent } from "../state/logs-availability.js";
+
 import { FileThreadStore } from "../thread-store/store.js";
 
 import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
@@ -2940,7 +2942,11 @@ export class AgenCDaemonSnapshotPolicyRegistry {
   #policyForPaths(paths: StateDatabasePaths): AgenCDaemonSnapshotPolicyEntry {
     const existing = this.#policies.get(paths.stateDbPath);
     if (existing !== undefined) return existing;
-    const driver = openStateDatabasePaths(paths);
+    // Snapshot policy only uses state. Existing logs retain eager validation;
+    // an observed-absent index opens normally if a later consumer needs it.
+    const driver = openStateDatabasePaths(paths, undefined, {
+      deferLogs: logsDatabaseFilesAreAbsent(paths.logsDbPath),
+    });
     const policy = new AgenCSessionSnapshotPolicy(driver, {
       agencHome: this.#agencHome,
       snapshotRetention: this.#snapshotRetention,
