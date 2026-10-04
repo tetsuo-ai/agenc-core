@@ -1,6 +1,6 @@
+export { compactCommand, contextCommand } from "./session-compact-commands.js";
 import {
   safeExecute,
-  type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
@@ -134,14 +134,10 @@ function daemonCompactFn(ctx: SlashCommandContext): DaemonCompactFn | null {
   return typeof fn === "function" ? fn.bind(ctx.session) : null;
 }
 
-export const compactCommand: SlashCommand = {
-  name: "compact",
-  description: "Compact the current conversation",
-  supportedSurfaces: ["runtime", "daemon-tui"],
-  immediate: true,
-  supportsNonInteractive: true,
-  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
+export function executeCompactCommand(
+  ctx: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  return safeExecute(async () => {
       await ensureNoActiveTurn(ctx);
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
@@ -202,18 +198,13 @@ export const compactCommand: SlashCommand = {
         kind: "compact",
         text: result.displayText,
       };
-    }),
-};
+    });
+}
 
-export const contextCommand: SlashCommand = {
-  name: "context",
-  aliases: ["ctx"],
-  description: "Show current context usage",
-  supportedSurfaces: ["runtime", "daemon-tui"],
-  immediate: true,
-  supportsNonInteractive: true,
-  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
+export function executeContextCommand(
+  ctx: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  return safeExecute(async () => {
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
         const text = await buildFallbackContextUsageText(ctx, allocated.message);
@@ -235,8 +226,8 @@ export const contextCommand: SlashCommand = {
         kind: "text",
         text: result.text,
       };
-    }),
-};
+    });
+}
 
 async function openContextUsageModal(
   ctx: SlashCommandContext,
