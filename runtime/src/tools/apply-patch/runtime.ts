@@ -862,6 +862,12 @@ async function applyHunksToFilesInner(
       }
       parseTextDocument(hunk.contents, hunk.path, control);
       const before = await planReadStateIfPresent(pathAbs);
+      // Add File over an existing file replaces it, as Write does, so it needs the same read gate.
+      // A path that does not exist yet stays a plain create.
+      if (before.existed) {
+        await assertReadBeforeWriteGate(opts.sessionId, pathAbs, before.content);
+        assertApplyPatchActive(control, "read-before-write validation");
+      }
       plannedOps.push({
         kind: "write",
         path: pathAbs,
@@ -938,6 +944,11 @@ async function applyHunksToFilesInner(
       writePathAbs === pathAbs
         ? { existed: true, content: currentContents }
         : await planReadStateIfPresent(writePathAbs);
+    // A move onto an existing file replaces that file too; reading only the source is not enough.
+    if (writePathAbs !== pathAbs && destinationBefore.existed) {
+      await assertReadBeforeWriteGate(opts.sessionId, writePathAbs, destinationBefore.content);
+      assertApplyPatchActive(control, "read-before-write validation");
+    }
     plannedOps.push({
       kind: "write",
       path: writePathAbs,

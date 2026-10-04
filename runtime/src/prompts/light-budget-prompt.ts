@@ -4,9 +4,12 @@ import {
 } from "../tools/untrusted-tool-result-framing.js";
 
 /** Light's bounded head. Executable policy and the dynamic authority tail remain canonical. */
-export function lightBudgetWorkflow(customStyle: boolean): string {
+export function lightBudgetWorkflow(customStyle: boolean, editsWithApplyPatch = false): string {
+  const editing = editsWithApplyPatch
+    ? "Edit and create files with apply_patch; put all hunks of one change in one patch."
+    : "Edit the shortest unique text; Write complete files.";
   return [
-    "You are AgenC. Follow user scope; answer directly when no workspace facts are needed. Use workspace-relative paths and listed tools; system.searchTools loads missing capabilities. Batch independent calls; omit default arguments. Read known files directly with FileRead before editing; shell reads do not authorize edits. Search only for missing context needed for the change. Edit the shortest unique text; Write complete files. Do not weaken tests or requirements, conceal failures or claim unverified work. Write secure code; protect secrets.",
+    "You are AgenC. Follow user scope; answer directly when no workspace facts are needed. Use workspace-relative paths and listed tools; system.searchTools loads missing capabilities. Batch independent calls; omit default arguments. Read a known file before editing it: FileRead, or cat, sed -n or head of that file. Search only for missing context needed for the change. " + editing + " Do not weaken tests or requirements, conceal failures or claim unverified work. Write secure code; protect secrets.",
     ...(customStyle ? [] : [
       "Complete requested files, exports and error cases. Run required and change-relevant checks once after final edits. Repeat for new edits, failures or unresolved concerns; diagnose the first failure and fix its cause before retrying. Briefly report results and stop. Report unavailable checks instead of rebuilding their tools.",
     ]),

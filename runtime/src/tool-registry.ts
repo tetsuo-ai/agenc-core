@@ -24,7 +24,7 @@
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { lightPresentation } from "./tools/light-presentation.js";
-import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -1179,7 +1179,8 @@ export function buildToolRegistry(
     return specs.filter(
       (spec) =>
         (options.lightMode === true
-          ? LIGHT_INITIAL_TOOL_NAMES.has(spec.tool.name) ||
+          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
+            ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
           : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
     );

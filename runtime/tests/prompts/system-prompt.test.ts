@@ -1408,7 +1408,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       "never bypass checks",
       "Investigate unfamiliar files, branches, configuration and locks before deleting/overwriting",
       "preserve others' work and resolve conflicts without discarding changes",
-      "Read known files directly with FileRead before editing; shell reads do not authorize edits",
+      "Read a known file before editing it: FileRead, or cat, sed -n or head of that file.",
       "Search only for missing context needed for the change",
       "Do not weaken tests or requirements, conceal failures or claim unverified work",
       "Write secure code; protect secrets",
@@ -1494,4 +1494,13 @@ test("Light says loaded AGENC.md instructions are already included, so the model
     "AGENC.md is the instruction file. If one is loaded, its text appears in this prompt; do not search for it.",
   );
   expect(snapshot.staticPrefix).toContain("Read/change other assistants' files only when the user names them");
+});
+
+test.each([["openai", true], ["deepseek", false]])("Light names apply_patch as the editing tool only for GPT-family sessions (%s)", async (provider, applyPatch) => {
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: "light", ctx: fakeCtx(), provider,
+    session: { services: { runtimeOptions: { lightMode: true, nonInteractive: true } } } as unknown as Session,
+  });
+  expect(snapshot.staticPrefix.includes("Edit and create files with apply_patch; put all hunks of one change in one patch.")).toBe(applyPatch);
+  expect(snapshot.staticPrefix.includes("Edit the shortest unique text; Write complete files.")).toBe(!applyPatch);
 });
