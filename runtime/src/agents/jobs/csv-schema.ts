@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../../utils/loadAjv.js";
 import {
   CSV_COMPILED_SCHEMA_CACHE_TTL_MS,
   CSV_MAX_COMPILED_SCHEMA_CACHE_BYTES,
@@ -352,6 +353,7 @@ export function assertCsvOutputSchemaMigrationCompatible(
 }
 
 function compileCompatibilityValidator(schema: unknown): ValidateFunction {
+  const Ajv = loadAjv();
   const startedAt = performance.now();
   const ajv = new Ajv({
     allErrors: true,

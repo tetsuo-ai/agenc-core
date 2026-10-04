@@ -401,7 +401,7 @@ export class FileThreadStore implements ThreadStore {
             projectDir,
             stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
             logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
-          }, { deferLogs: opts.deferLogs });
+          }, undefined, { deferLogs: opts.deferLogs });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
     this.finishPendingUnarchiveCleanup();

@@ -1,3 +1,4 @@
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
@@ -1414,6 +1415,10 @@ function readProjectionMessage(
   const providerReasoning = record.providerReasoning === undefined
     ? undefined
     : readProviderReasoningReplay(record.providerReasoning);
+  if (providerReasoning?.content === "" &&
+      (role !== "assistant" || (toolCalls?.length ?? 0) === 0)) {
+    throw malformed("empty provider reasoning requires an assistant tool call");
+  }
   if (record.toolResultIntegrity !== undefined) {
     if (toolCallId === undefined) {
       throw malformed("tool-result integrity requires toolCallId");
@@ -1475,7 +1480,8 @@ function readProviderReasoningReplay(
   }
   if (candidate.version === 2) {
     const record = exact(candidate, ["version", "content", "provider", "model"]);
-    if (typeof record.content !== "string" || record.content.length === 0) {
+    if (typeof record.content !== "string" ||
+        (record.content.length === 0 && !isKnownEmptyProviderReasoning(record.content, record))) {
       throw malformed("provider reasoning content must be nonempty");
     }
     return {

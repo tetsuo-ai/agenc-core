@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, transform } from "esbuild";
+import { verifyFreshStateSchemaSources } from "./fresh-state-schema-artifact.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,6 +87,11 @@ async function runBundle(config) {
     format: config.format?.[0] ?? "esm",
     loader: {},
     logLevel: "info",
+    // V8 parses every loaded chunk in full before running it, so source size
+    // is startup time. Identifiers and function names stay as written;
+    // dist/*.map maps positions back to the sources.
+    minifySyntax: true,
+    minifyWhitespace: true,
     outbase: "src",
     outdir: distDir,
     platform: config.platform ?? "node",
@@ -148,9 +154,20 @@ function ensureSdkWorkspaceBuilt() {
 }
 
 async function main() {
+  await verifyFreshStateSchemaSources(runtimeRoot);
   ensureSdkWorkspaceBuilt();
   const config = normalizeConfig(await loadConfig());
   await runBundle(config);
+  const nativeBuild = spawnSync(
+    process.execPath,
+    [resolve(distDir, "bin/prepare-peer-credentials.js"), "--build"],
+    { cwd: runtimeRoot, stdio: "inherit" },
+  );
+  if (nativeBuild.error !== undefined || nativeBuild.status !== 0) {
+    throw new Error("peer credential native binding build failed", {
+      cause: nativeBuild.error,
+    });
+  }
   runDeclarations();
 }
 

@@ -12,7 +12,8 @@
  * @module
  */
 
-import { Ajv, type ValidateFunction } from "ajv";
+import type { Ajv, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 import type {
   LLMStructuredOutputRequest,
   LLMStructuredOutputResult,
@@ -45,7 +46,7 @@ function validateStructuredValueWithAjv(
       // Each caller-owned schema gets an isolated AJV registry. This preserves
       // absolute recursive self-refs through `$id` while allowing unrelated
       // sessions to reuse that same `$id` without global registry collisions.
-      const ajv = new Ajv({
+      const ajv = new (loadAjv())({
         allErrors: true,
         strict: false,
         validateFormats: false,

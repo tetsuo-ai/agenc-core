@@ -15,7 +15,7 @@ describe("state-only logs deferral", () => {
     return { projectDir, stateDbPath: join(projectDir, "state.sqlite"), logsDbPath: join(projectDir, "logs.sqlite") };
   }
   function open(p = paths()) {
-    const driver = openStateDatabasePaths(p, { deferLogs: true });
+    const driver = openStateDatabasePaths(p, undefined, { deferLogs: true });
     drivers.push(driver);
     return driver;
   }
@@ -55,6 +55,14 @@ describe("state-only logs deferral", () => {
       expect(driver.logs.pragma("synchronous", { simple: true })).toBe(2);
       expect(driver.prepareLogs("SELECT count(*) AS n FROM logs").get()).toEqual({ n: 0 });
     });
+  });
+
+  it("still opens and checkpoints both databases for the clean-seal barrier", () => {
+    const driver = open();
+    expect(existsSync(driver.logsDbPath)).toBe(false);
+    driver.checkpointDurability();
+    expect(existsSync(driver.logsDbPath)).toBe(true);
+    expect(driver.logs.pragma("synchronous", { simple: true })).toBe(2);
   });
 
   it("closes a failed logs initializer and retries without losing state", () => {

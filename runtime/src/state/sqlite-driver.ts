@@ -1,3 +1,4 @@
+import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -30,6 +31,7 @@ import { EFFECT_EVIDENCE_V2_SCHEMA_VERSION } from "./migrations/017_effect_evide
 import { CSV_JOB_IDENTITY_REPLAY_SCHEMA_VERSION } from "./migrations/019_csv_job_identity_replay.js";
 import { CSV_JOB_SCHEDULER_SCHEMA_VERSION } from "./migrations/021_csv_job_scheduler.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
+import { tryInitializeFreshStateSchema } from "./fresh-state-schema.js";
 
 export interface StateSqliteDriverOptions {
   /** State-only consumers open the independent logs database on first use. */
@@ -37,6 +39,8 @@ export interface StateSqliteDriverOptions {
 }
 
 export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
+  /** Explicit owner for a session-private projection connection. */
+  readonly durabilityRunId?: string;
   readonly cwd: string;
   readonly agencHome?: string;
   readonly projectRootMarkers?: readonly string[];
@@ -148,6 +152,7 @@ export class StateSqliteDriver {
 
   constructor(
     paths: StateDatabasePaths,
+    private readonly durabilityRunId?: string,
     options: StateSqliteDriverOptions = {},
   ) {
     this.projectDir = paths.projectDir;
@@ -209,7 +214,7 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
-    return this.state.transaction(fn)();
+    return this.withTransactionDurability(this.state, () => this.state.transaction(fn)());
   }
 
   /**
@@ -220,11 +225,38 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    return this.state.transaction(fn).immediate();
+    return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
   }
 
   logsTransaction<T>(fn: () => T): T {
-    return this.logs.transaction(fn)();
+    return this.withTransactionDurability(this.logs, () => this.logs.transaction(fn)());
+  }
+
+  private withTransactionDurability<T>(db: SqliteDatabase, operation: () => T): T {
+    const relaxed = relaxedOneShotTransaction(this.projectDir, this.durabilityRunId);
+    if (db.inTransaction) {
+      if (!relaxed && db.pragma("synchronous", { simple: true }) !== 2) {
+        throw new Error("a full-durability operation cannot nest in a relaxed transaction");
+      }
+      return operation();
+    }
+    if (!relaxed) return operation();
+    db.pragma("synchronous = NORMAL");
+    try { return operation(); }
+    finally { db.pragma("synchronous = FULL"); }
+  }
+
+  /** A clean one-shot seal requires stable WAL and database bytes. */
+  checkpointDurability(): void {
+    for (const db of [this.state, this.logs]) {
+      if (db.inTransaction) throw new Error("cannot seal a one-shot inside a transaction");
+      db.pragma("synchronous = FULL");
+      const rows = db.pragma("wal_checkpoint(FULL)") as { busy: number; log: number; checkpointed: number }[];
+      const result = rows[0];
+      if (result === undefined || result.busy !== 0 || result.checkpointed < result.log) {
+        throw new Error("one-shot WAL checkpoint did not complete; continuation remains refused");
+      }
+    }
   }
 
   /** Return free pages of the state database to the file system; see `reclaimStateFreePages`. */
@@ -318,15 +350,16 @@ export function openStateDatabases(
   options: OpenStateDatabaseOptions,
 ): StateSqliteDriver {
   const paths = resolveStateDatabasePaths(options);
-  return openStateDatabasePaths(paths, options);
+  return openStateDatabasePaths(paths, options.durabilityRunId, options);
 }
 
 export function openStateDatabasePaths(
   paths: StateDatabasePaths,
+  durabilityRunId?: string,
   options: StateSqliteDriverOptions = {},
 ): StateSqliteDriver {
   mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
-  return new StateSqliteDriver(paths, options);
+  return new StateSqliteDriver(paths, durabilityRunId, options);
 }
 
 export function openStateDatabaseReader(
@@ -512,7 +545,7 @@ function applyStateMigrations(
         );
       }
     }
-    applyMigrations(db, STATE_DB_MIGRATIONS);
+    if (!tryInitializeFreshStateSchema(db)) applyMigrations(db, STATE_DB_MIGRATIONS);
     db.exec("COMMIT");
   } catch (error) {
     if (db.inTransaction) db.exec("ROLLBACK");

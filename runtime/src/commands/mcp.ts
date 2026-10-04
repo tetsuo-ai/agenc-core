@@ -23,7 +23,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openMcpMenu } from "./mcp-menu.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 export interface McpServerStatus {
@@ -719,7 +718,12 @@ export const mcpCommand: SlashCommand = {
       if (parsed.kind === "status") {
         const servers = await collectMcpServerStatus(ctx.session);
         const toolsByServer = collectMcpToolStatusByServer(ctx.session, servers);
-        if (openMcpMenu(ctx, servers, toolsByServer, createMcpMenuController(ctx))) {
+        if (
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./mcp-menu.js")).openMcpMenu(
+            ctx, servers, toolsByServer, createMcpMenuController(ctx),
+          )
+        ) {
           return { kind: "skip" };
         }
         return {

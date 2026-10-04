@@ -21,6 +21,7 @@ import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 export interface WriteStdinToolConfig {
+  readonly lightMode?: boolean;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -230,7 +231,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
         return {
-          content: formatUnifiedExecToolContent(output),
+          content: formatUnifiedExecToolContent(output, config?.lightMode === true),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
           // The manager returned an authoritative process observation. A

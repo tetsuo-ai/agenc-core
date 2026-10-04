@@ -4,33 +4,19 @@ import type {
   ContentBlockParam,
   MessageParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import {
-  SSEClientTransport,
-  type SSEClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/sse.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import {
-  StreamableHTTPClientTransport,
-  type StreamableHTTPClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import {
-  createFetchWithInit,
-  type FetchLike,
-  type Transport,
+import type { SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js'
+import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import type { StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type {
+  FetchLike,
+  Transport,
 } from '@modelcontextprotocol/sdk/shared/transport.js'
-import {
-  CallToolResultSchema,
-  ElicitRequestSchema,
-  type ElicitRequestURLParams,
-  type ElicitResult,
-  ErrorCode,
-  ListResourcesResultSchema,
-  type ListToolsResult,
-  ListToolsResultSchema,
-  McpError,
-  type PromptMessage,
-  type ResourceLink,
+import type {
+  ElicitRequestURLParams,
+  ElicitResult,
+  ListToolsResult,
+  PromptMessage,
+  ResourceLink,
 } from '@modelcontextprotocol/sdk/types.js'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
@@ -100,18 +86,12 @@ import {
   isPersistError,
   persistToolResult,
 } from '../../utils/toolResultStorage.js'
-import {
-  type ElicitationWaitingState,
-  runElicitationHooks,
-  runElicitationResultHooks,
-} from './elicitationHandler.js'
+import type { ElicitationWaitingState } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
 import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForCollapse.js'
 import { sleep } from '../../utils/sleep.js'
-import { AgenCAuthProvider, wrapFetchWithStepUpDetection } from './auth.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import {
   buildModelFacingMcpToolDescription,
@@ -632,6 +612,21 @@ export const connectToServer = memoize(
       ))
     }
     try {
+      const [
+        { Client }, { SSEClientTransport }, { StdioClientTransport },
+        { StreamableHTTPClientTransport }, { createFetchWithInit },
+        { ElicitRequestSchema }, { UnauthorizedError },
+        { AgenCAuthProvider, wrapFetchWithStepUpDetection },
+      ] = await Promise.all([
+        import('@modelcontextprotocol/sdk/client/index.js'),
+        import('@modelcontextprotocol/sdk/client/sse.js'),
+        import('@modelcontextprotocol/sdk/client/stdio.js'),
+        import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+        import('@modelcontextprotocol/sdk/shared/transport.js'),
+        import('@modelcontextprotocol/sdk/types.js'),
+        import('@modelcontextprotocol/sdk/client/auth.js'),
+        import('./auth.js'),
+      ])
       let transport
       const credentialHome =
         serverRef.type === 'sse' ||
@@ -1770,6 +1765,8 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
+      const { ListToolsResultSchema } = await import('@modelcontextprotocol/sdk/types.js')
+
       // Retry tool list fetch up to 2 times on transient failures.
       // Without retry, a single timeout during tools/list makes all MCP tools
       // silently disappear from the model's context until the next reconnect.
@@ -2048,6 +2045,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
+      const { ListResourcesResultSchema } = await import('@modelcontextprotocol/sdk/types.js')
       const result = await client.client.request(
         { method: 'resources/list' },
         ListResourcesResultSchema,
@@ -2446,6 +2444,7 @@ export async function callMCPToolWithUrlElicitationRetry({
     signal: AbortSignal,
   ) => Promise<ElicitResult>
 }): Promise<MCPToolCallResult> {
+  const { McpError, ErrorCode } = await import('@modelcontextprotocol/sdk/types.js')
   const MAX_URL_ELICITATION_RETRIES = 3
   for (let attempt = 0; ; attempt++) {
     // Check abort signal before each attempt — without this, a cancelled
@@ -2525,6 +2524,7 @@ export async function callMCPToolWithUrlElicitationRetry({
         const { elicitationId } = elicitation
 
         // Run elicitation hooks — they can resolve URL elicitations programmatically
+        const { runElicitationHooks, runElicitationResultHooks } = await import('./elicitationHandler.js')
         const hookResponse = await runElicitationHooks(
           serverName,
           elicitation,
@@ -2649,6 +2649,10 @@ async function callMCPTool({
   _meta?: Record<string, unknown>
   structuredContent?: Record<string, unknown>
 }> {
+  const [{ CallToolResultSchema }, { UnauthorizedError }] = await Promise.all([
+    import('@modelcontextprotocol/sdk/types.js'),
+    import('@modelcontextprotocol/sdk/client/auth.js'),
+  ])
   const { client, name, config, homeContext } = connectedServer
   const { environment, runtimeOptions } = mcpConnectionAuthority(connectedServer)
   const toolStartTime = Date.now()

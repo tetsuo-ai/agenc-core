@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import QRCode from "qrcode";
 import WebSocket from "ws";
 import { RemoteApprovalProjection } from "./approvals.js";
 import type { AgenCDaemonResponse, JsonObject } from "../app-server/protocol/index.js";
@@ -106,7 +105,10 @@ export class RemoteService {
       assertCurrent();
       pair = await this.#options.backend.start({ machineName: hostname() || "Computer", role: grant.role, workspaceIds: [grant.workspaceId] }, signal);
       assertCurrent();
-      const qrDataUrl = await (this.#options.qrDataUrl ?? ((value) => QRCode.toDataURL(value, { width: 256, margin: 2 })))(pair.pairUrl);
+      const qrDataUrl = await (this.#options.qrDataUrl ?? (async (value) => {
+        const { default: QRCode } = await import("qrcode");
+        return QRCode.toDataURL(value, { width: 256, margin: 2 });
+      }))(pair.pairUrl);
       assertCurrent();
       const record: PairRecord = { pair, grant, generation, controller: new AbortController(), peers: new Map(), seen: new Set(), timers: new Set(), polling: false, connecting: false, pairing: { pairingId: pair.pairingId, code: pair.code, pairUrl: pair.pairUrl, qrDataUrl, expiresAt: pair.expiresAt, status: "pending", ...grant } };
       this.#pending = record; this.#error = null;

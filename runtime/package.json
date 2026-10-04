@@ -31,7 +31,9 @@
     "dist/agenc-keychain-helper"
   ],
   "scripts": {
+    "postinstall": "node bin/prepare-peer-credentials.mjs",
     "build": "node scripts/check-launcher-preflight.mjs --check && node scripts/sync-shipped-plugins.mjs && node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
+    "generate:fresh-state-schema": "node --import tsx scripts/generate-fresh-state-schema.ts",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",
