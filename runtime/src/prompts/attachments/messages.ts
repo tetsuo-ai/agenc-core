@@ -805,7 +805,10 @@ function planModeExitBody(
 You have exited plan mode. You can now make edits, run tools, and take actions.${planRef}`;
 }
 
-function autoModeBody(variant: "full" | "sparse" | "light"): string {
+function autoModeBody(variant: "full" | "sparse" | "light" | "light-print"): string {
+  if (variant === "light-print") {
+    return `Auto mode is active. Destructive actions and changes to shared or production systems still need explicit user confirmation. Never share secrets or post messages unless the user directed that exact action.`;
+  }
   if (variant === "light") {
     return `Auto mode is active: work autonomously and make reasonable assumptions instead of asking routine questions. Destructive actions and changes to shared or production systems still need explicit user confirmation. Never share secrets or post messages unless the user directed that exact action.`;
   }

@@ -8,6 +8,7 @@ import {
   setOriginalCwd,
   setProjectRoot,
 } from "../bootstrap/state.js";
+import { resolveAutoMemoryDirectory, resolveGlobalMemoryDirectory } from "../../src/services/extractMemories/memory-paths.js";
 import { ConfigStore } from "../config/store.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import {
@@ -133,6 +134,31 @@ describe("memory prompt", () => {
     expect(prompt?.directories).toContain(getGlobalMemoryPath());
     expect(existsSync(getGlobalMemoryPath())).toBe(true);
     expect(existsSync(getProjectMemoryPath())).toBe(true);
+  });
+
+  it("shortens only Light print memory text and keeps directory creation and owner policy", async () => {
+    const env = { HOME: tempRoot, AGENC_HOME: join(tempRoot, "home") };
+    const cwd = join(tempRoot, "repo");
+    const configStore = new ConfigStore({ home: env.AGENC_HOME, env, cwd });
+    const runtimeOptions = { remoteMode: false, lightMode: true, nonInteractive: true, coworkMemoryExtraGuidelines: "OWNER_POLICY\nKeep exact." };
+    const owner = { cwd, env, configStore, runtimeOptions };
+    const prompt = await memory.loadMemoryPrompt(owner);
+    expect(prompt?.instructions).toBe("");
+    expect(prompt?.directories).toContain("Read on request; verify against files; ignore if asked.");
+    expect(prompt?.directories.endsWith("\nOWNER_POLICY\nKeep exact.")).toBe(true);
+    expect(existsSync((await resolveGlobalMemoryDirectory(owner))!)).toBe(true);
+    expect(existsSync((await resolveAutoMemoryDirectory(owner)).path!)).toBe(true);
+    // Presentation comes from the captured client, even if shell env lacks it.
+    const desktop = await memory.loadMemoryPrompt(owner, { AGENC_AGENT_SDK_CLIENT_APP: "agenc-desktop-rich-v1" });
+    const routine = await memory.loadMemoryPrompt({ ...owner, runtimeOptions: { ...runtimeOptions, routineRun: true } });
+    for (const unchanged of [desktop, routine]) {
+      expect(unchanged?.directories).toContain("Read memory when requested; verify past claims against current files. Ignore memory if the user asks.");
+      expect(unchanged?.directories.endsWith("\nOWNER_POLICY\nKeep exact.")).toBe(true);
+    }
+    const interactive = await memory.loadMemoryPrompt({ ...owner, runtimeOptions: { ...runtimeOptions, nonInteractive: false } });
+    expect(interactive?.instructions).toContain("# auto memory");
+    expect(interactive?.directories).toContain("# Memory directories");
+    expect(await memory.loadMemoryPrompt({ ...owner, settings: { userSettings: { autoMemoryEnabled: false } } })).toBeNull();
   });
 
   it.skipIf(process.platform === "win32")(

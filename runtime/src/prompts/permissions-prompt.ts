@@ -291,7 +291,7 @@ function renderSandbox(
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,
   authority: PermissionPromptExecutionAuthority,
-  options: { readonly light?: boolean } = {},
+  options: { readonly light?: boolean; readonly lightPrint?: boolean } = {},
 ): string | null {
   if (ctx === null) return null;
   if (ctx.mode === "unattended") {
@@ -314,7 +314,11 @@ export function getPermissionsSection(
   }
   const binding = MODE_BINDINGS[ctx.mode];
   if (binding === undefined) return null;
-  if (options.light === true) return lightPermissionsSection(ctx, authority);
+  if (options.light === true) {
+    return options.lightPrint === true && unattendedPolicyForContext(ctx).noApprover !== true
+      ? lightPrintPermissionsSection(ctx, authority)
+      : lightPermissionsSection(ctx, authority);
+  }
 
   const sandboxText = renderSandbox(
     sandboxTemplateForPolicy(authority.sandboxPolicy),
@@ -397,6 +401,28 @@ const LIGHT_APPROVAL_TEXT: Partial<Record<PermissionMode, string>> = {
   acceptEdits: LIGHT_APPROVAL_ON_FAILURE,
   bypassPermissions: LIGHT_APPROVAL_NEVER,
 };
+
+const LIGHT_PRINT_SANDBOX_TEXT: Readonly<Record<SandboxPolicy, string>> = {
+  danger_full_access: "no filesystem sandbox",
+  workspace_write: "read files; write only cwd and writable_roots",
+  read_only: "read files only",
+  external_sandbox: "externally controlled; never widen or replace it",
+};
+
+function lightPrintPermissionsSection(
+  ctx: ToolPermissionContext,
+  authority: PermissionPromptExecutionAuthority,
+): string | null {
+  const binding = MODE_BINDINGS[ctx.mode];
+  if (binding === undefined) return null;
+  const sandbox = authority.sandboxPolicy.replaceAll("_", "-");
+  const network = authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted";
+  return [
+    `Permission mode: ${binding.label}. Sandbox ${sandbox}: ${LIGHT_PRINT_SANDBOX_TEXT[authority.sandboxPolicy]}; network ${network}.`,
+    "No approver: approval requests are denied. Do not bypass restrictions.",
+    ...(ctx.mode === "bypassPermissions" ? [LIGHT_APPROVAL_NEVER] : []),
+  ].join("\n");
+}
 
 function lightPermissionsSection(
   ctx: ToolPermissionContext,

@@ -1,6 +1,7 @@
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getPermissionsSection } from "../prompts/permissions-prompt.js";
+import { isLightPrintRun } from "../prompts/light-print.js";
 import { getAutonomousWorkSection } from "../prompts/system-prompt.js";
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
@@ -23,7 +24,10 @@ export function getSessionPermissionInstructions(
     getPermissionsSection(currentPermissions, {
       sandboxPolicy: ctx.sandboxPolicy.value,
       networkSandboxPolicy: ctx.networkSandboxPolicy,
-    }, { light: session.services.runtimeOptions?.lightMode === true }),
+    }, {
+      light: session.services.runtimeOptions?.lightMode === true,
+      lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
+    }),
     getAutonomousWorkSection(ctx.config.autonomousMode === true, currentPermissions),
   ]
     .filter((section): section is string => section !== null && section.length > 0)

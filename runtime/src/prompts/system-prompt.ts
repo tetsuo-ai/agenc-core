@@ -83,6 +83,7 @@ import {
   selectOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import { isLightPrintRun } from "./light-print.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -537,7 +538,7 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    });
+    }, session.services?.providerEnvironment);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -1137,6 +1138,11 @@ export async function assembleSystemPrompt(
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
   const agentsEnabled = opts.agentsEnabled ?? false;
   const light = opts.lightProfile === true || session.services?.runtimeOptions?.lightMode === true;
+  const lightPrint = isLightPrintRun(
+    { ...session.services?.runtimeOptions, lightMode: light },
+    session.services?.providerEnvironment,
+  );
+  const memorySection = getMemorySection(opts.memoryPrompt);
 
   const clientRendering = getClientRenderingSection(
     session.services?.providerEnvironment,
@@ -1264,7 +1270,7 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-            }, { light }),
+            }, { light, lightPrint }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1279,7 +1285,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
-      () => getMemorySection(opts.memoryPrompt),
+      () => lightPrint && memorySection !== null
+        ? `Workspace: ${cwd}. ${memorySection}`
+        : memorySection,
       "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1292,7 +1300,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
+      () => lightPrint && memorySection !== null
+        ? null
+        : light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
