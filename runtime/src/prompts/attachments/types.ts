@@ -113,7 +113,8 @@ export interface VerifyPlanReminderAttachment {
  */
 export interface AutoModeAttachment {
   readonly kind: "auto_mode";
-  readonly variant: "full" | "sparse";
+  /** `light` replaces `full` in Light sessions: the same rules in one short paragraph. */
+  readonly variant: "full" | "sparse" | "light";
 }
 
 /**

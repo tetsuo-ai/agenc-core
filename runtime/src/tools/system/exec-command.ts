@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import {
   shellAdditionalWriteRoots,
@@ -67,12 +68,21 @@ import {
 } from "../../sandbox/worktree-confinement.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
+  readonly lightMode?: boolean;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
+  /** Advertise the continuation tool before a yielded handle reaches the model. */
+  readonly onSessionYielded?: () => void;
 }
 
 const PLAIN_INTERACTIVE_SHELL_RE =
   /^\s*(?:(?:\/[\w.-]+)+\/)?(?:bash|dash|ksh|sh|zsh)(?:\s+-[A-Za-z]*[il][A-Za-z]*)*\s*$/u;
+/**
+ * Light waits up to the yield ceiling for a command without an explicit yield, so builds and test
+ * runs that pass the 10 s default return their result instead of a session_id the model must poll
+ * with another model call. Explicit yields, tty and detached processes keep their own windows.
+ */
+export const LIGHT_DEFAULT_EXEC_YIELD_TIME_MS = 30_000;
 const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
 const DIRECT_MCP_TOOL_COMMAND_RE =
   /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
@@ -865,7 +875,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           callId: asString(args.__callId),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
-            : {}),
+            : config?.lightMode === true && !detach && tty !== true
+              ? { yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }
+              : {}),
           ...(asNumber(args.max_output_tokens) !== undefined
             ? { max_output_tokens: asNumber(args.max_output_tokens) }
             : {}),
@@ -916,7 +928,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // errno text. Say plainly that the sandbox did it and whether
         // escalation can change the answer, so a denial reads as a verdict
         // instead of an invitation to retry with a longer timeout.
-        const execContent = formatUnifiedExecToolContent(output);
+        if ((output.process_id ?? output.session_id) !== undefined && output.detached !== true) {
+          notifyExecSessionDiscovery(args, config?.onSessionYielded);
+        }
+        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
         const runtimeContext = readToolRuntimeContext(args);
         const denial = execSandboxDenialNotice({
           output: execContent,

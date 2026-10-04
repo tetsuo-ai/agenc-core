@@ -1614,6 +1614,7 @@ export async function drainInFlight(
           toolName,
           result.content,
           classifyUntrustedToolResult(toolName, registryTool),
+          session.services.runtimeOptions?.lightMode === true,
         );
         // Emit the tool_call_completed event so rollouts + observers
         // close the turn boundary with the synthetic result (I-8).

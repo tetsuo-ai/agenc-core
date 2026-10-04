@@ -11,6 +11,7 @@ export const RESIDUAL_PROCESSES_NOTE =
 
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
+  lightMode = false,
 ): string {
   // Output FIRST, metadata after. The previous order put a multi-line
   // "Wall time: ... / Process exited with code 0 / Original token count: N
@@ -50,8 +51,15 @@ export function formatUnifiedExecToolContent(
     // by an external signal (SIGKILL/SIGTERM/OOM/sandbox kill).
     footerLines.push(`signal_terminated=true`);
   }
-  footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
-  footerLines.push(`tokens=${output.original_token_count}`);
+  const routineLightSuccess = lightMode && output.exitCode === 0 &&
+    !output.truncated && !output.timedOut && output.process_id === undefined &&
+    output.session_id === undefined && output.detached !== true &&
+    output.residual_processes_terminated !== true;
+  if (!routineLightSuccess) {
+    footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
+    footerLines.push(`tokens=${output.original_token_count}`);
+  }
+  if (lightMode && output.truncated) footerLines.push("truncated=true");
   const sessionId = output.process_id ?? output.session_id;
   if (sessionId !== undefined) {
     footerLines.push(`session_id=${sessionId}`);

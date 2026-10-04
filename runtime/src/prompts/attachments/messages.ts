@@ -805,7 +805,10 @@ function planModeExitBody(
 You have exited plan mode. You can now make edits, run tools, and take actions.${planRef}`;
 }
 
-function autoModeBody(variant: "full" | "sparse"): string {
+function autoModeBody(variant: "full" | "sparse" | "light"): string {
+  if (variant === "light") {
+    return `Auto mode is active: work autonomously and make reasonable assumptions instead of asking routine questions. Destructive actions and changes to shared or production systems still need explicit user confirmation. Never share secrets or post messages unless the user directed that exact action.`;
+  }
   if (variant === "sparse") {
     return `Auto mode is active. Auto mode still active (see full instructions earlier in conversation). Execute autonomously, minimize interruptions, prefer action over planning.`;
   }
