@@ -43,6 +43,24 @@ function staticLocalGraph(entry: string): Set<string> {
 }
 
 describe("daemon control foreground boundary", () => {
+  it("keeps configured MCP decisions outside the server implementation graph", () => {
+    const graph = staticLocalGraph(resolve("src/mcp/server/configured-start.ts"));
+    for (const file of ["mcp/server/start.ts", "mcp/server/content-providers.ts",
+      "memory/index.ts", "mcp-server/framework.ts", "mcp-server/http-sse.ts", "mcp-server/stdio.ts"]) {
+      expect(graph.has(resolve("src", file)), file).toBe(false);
+    }
+    const file = resolve("src/app-server/daemon-cli.ts");
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const imports = source.statements.filter(ts.isImportDeclaration);
+    const serverEdges = imports.filter(statement => ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === "../mcp/server/start.js");
+    expect(serverEdges).toHaveLength(1);
+    expect(serverEdges[0]?.importClause?.isTypeOnly).toBe(true);
+    expect(imports.some(statement => ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === "../mcp/server/configured-start.js" &&
+      !statement.importClause?.isTypeOnly)).toBe(true);
+  });
+
   it("has no static local path to foreground services", () => {
     const graph = staticLocalGraph(resolve("src/app-server/daemon-control.ts"));
     for (const target of ["app-server/daemon-cli.ts", "app-server/agent-lifecycle.ts",

@@ -188,10 +188,10 @@ import { BUILT_IN_PROVIDER_BASE_URLS, resolveBuiltInProviderSlug } from "../llm/
 
 import {
   prepareMcpSseServerReconfigurationFromConfig,
-  resolveMcpServeDefaults,
   startMcpServerFromConfig,
-  type StartedMcpSseServer,
-} from "../mcp/server/start.js";
+} from "../mcp/server/configured-start.js";
+import { resolveMcpServeDefaults } from "../mcp/server/defaults.js";
+import type { StartedMcpSseServer } from "../mcp/server/start.js";
 
 import {
   recoverDaemonStateOnStartup,
