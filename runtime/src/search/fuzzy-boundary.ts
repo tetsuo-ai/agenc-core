@@ -118,6 +118,3 @@ function validateTextEncoding(value: string, label: string): void {
     }
   }
 }
-
-const FUZZY_SIGNATURE_WORDS = 8;
-

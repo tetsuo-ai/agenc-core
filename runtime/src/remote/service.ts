@@ -46,9 +46,9 @@ export class RemoteService {
   #pairingOperation = 0;
   #beginController?: AbortController;
   #error: string | null = null;
-  readonly #approvals = new RemoteApprovalProjection();
+  readonly #approvals: RemoteApprovalProjection;
 
-  constructor(options: RemoteServiceOptions) { this.#options = options; }
+  constructor(options: RemoteServiceOptions, approvals = new RemoteApprovalProjection()) { this.#options = options; this.#approvals = approvals; }
   capabilities(): RemoteCapabilities { return { available: true, contractVersion: 1, browserProtocol: "agenc-browser-v2", roles: ["view", "control"], workspaceScope: "explicit-sessions", supportsFiles: true, supportsApprovals: true, supportsSessionCreate: this.#options.createSession !== undefined, supportsPendingApprovals: true, requiresLocalApproval: true, requiresSignIn: true }; }
   observeSessionEvent(sessionId: string, event: JsonObject): void { this.#approvals.observe(sessionId, event); }
   status(): RemoteStatus {

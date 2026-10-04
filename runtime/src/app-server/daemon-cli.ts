@@ -27,15 +27,15 @@ import { dirname, isAbsolute, join } from "node:path";
 
 import { resolveHomeContext } from "../config/home.js";
 
-import { LocalWhisperService } from "../audio/whisper.js";
+import { createLazyWhisperService } from "../audio/lazy-whisper.js";
 
-import { RemoteService } from "../remote/service.js";
+import { createLazyRemoteService } from "../remote/lazy-service.js";
 
 import { createRemoteBackend } from "../remote/backend.js";
 
 import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
 
-import { OwnerTelegramService } from "../gateway/owner-telegram.js";
+import { createLazyOwnerTelegramService } from "../gateway/lazy-owner-telegram.js";
 
 import { createOwnerTelegramStorage } from "../gateway/owner-telegram-storage.js";
 
@@ -95,9 +95,9 @@ import {
 
 import { AgenCDaemonJsonRpcDispatcher, type AgenCDaemonJsonRpcConnection } from "./daemon-dispatcher.js";
 
-import { AgenCRealtimeRpcService } from "./realtime.js";
+import { createLazyRealtimeRpcService, createLazyRealtimeTransports } from "./lazy-realtime.js";
 
-import { AgenCRealtimeCallClient, AgenCRealtimeWebSocketTransportConnector, type AgenCRealtimeHeadersProvider } from "./realtime-transport.js";
+import type { AgenCRealtimeHeadersProvider } from "./realtime-transport.js";
 
 import {
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
@@ -135,9 +135,9 @@ import {
 
 import type { AgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
 
-import { AgenCDaemonHealthService } from "./health.js";
+import { createLazyDaemonHealth } from "./lazy-health.js";
 
-import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
+import { createLazyRunInspection } from "./lazy-run-inspection.js";
 
 import { AgenCProjectTrustService } from "./project-trust.js";
 
@@ -145,7 +145,6 @@ import { PluginSettingsService } from "../plugins/settings-service.js";
 
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 
-import { closeAllBrowserManagers } from "../browser/manager.js";
 
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 
@@ -963,8 +962,8 @@ async function runAgenCDaemonForegroundLocked(
       },
     });
     let routines: RoutineService | undefined;
-    let remote: RemoteService | undefined;
-    let ownerTelegram: OwnerTelegramService | undefined;
+    let remote: ReturnType<typeof createLazyRemoteService> | undefined;
+    let ownerTelegram: ReturnType<typeof createLazyOwnerTelegramService> | undefined;
     const agentManager: AgenCDaemonAgentManager = new AgenCDaemonAgentManager({
       approvalBroker,
       agencHome: authStartup.daemonHome,
@@ -1163,7 +1162,7 @@ async function runAgenCDaemonForegroundLocked(
       warn: (message) => io.stderr.write(`agenc: ${message}\n`),
     });
     const workflowControlService = new DaemonWorkflowControlService(workflowWiring.controller);
-    const health = new AgenCDaemonHealthService({
+    const health = createLazyDaemonHealth({
       sessionCounter: sessionManager,
       stateCounter: new StateSqliteHealthStatsReader(
         discoverAgenCDaemonStateDatabasePaths(
@@ -1174,7 +1173,7 @@ async function runAgenCDaemonForegroundLocked(
       ready: () => !shuttingDown,
       restoringSessions: () => startupRestores.unsettled,
     });
-    const realtime = new AgenCRealtimeRpcService({
+    const realtime = createLazyRealtimeRpcService({
       resolveThread: (threadId) =>
         runner.resolveRealtimeThread?.(threadId) ?? null,
     });
@@ -1328,7 +1327,7 @@ async function runAgenCDaemonForegroundLocked(
         }
         return { sessionId: agent.sessionId, agentId: agent.agentId };
       };
-    remote = new RemoteService({
+    remote = createLazyRemoteService({
       home: authStartup.daemonHome,
       backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
       lookupSession: (sessionId) => sessionManager.getSession(sessionId),
@@ -1338,7 +1337,7 @@ async function runAgenCDaemonForegroundLocked(
     });
     cleanup.register("daemon-browser-remote", () => remote?.close());
     try {
-      ownerTelegram = new OwnerTelegramService({
+      ownerTelegram = createLazyOwnerTelegramService({
         home: authStartup.daemonHome,
         storage: createOwnerTelegramStorage(remoteContext.home),
         onSessionFailure: (diagnostic) => writeErrorLog(`agenc: Telegram session.create failed: ${diagnostic}\n`),
@@ -1382,8 +1381,8 @@ async function runAgenCDaemonForegroundLocked(
       },
       health,
       realtime,
-      whisper: new LocalWhisperService({ home: authStartup.daemonHome, env: host.env }),
-      runInspection: new AgenCDaemonRunInspectionService({
+      whisper: createLazyWhisperService({ home: authStartup.daemonHome, env: host.env }),
+      runInspection: createLazyRunInspection({
         runtimeFailure: (runId) => workflowWiring.controller.currentRuntimeFailure(runId),
         effectivePermissionMode: (runId) => workflowWiring.controller.currentPermissionMode(runId),
         providerWait: (runId, stepId) => workflowWiring.controller.currentProviderWait(runId, stepId),
@@ -1594,6 +1593,7 @@ async function runAgenCDaemonForegroundLocked(
       "daemon services constructed",
     );
     cleanup.register("daemon-browser", async () => {
+      const { closeAllBrowserManagers } = await import("../browser/manager.js");
       await closeAllBrowserManagers();
     });
     cleanup.register("daemon-fuzzy-file-index", async () => {
@@ -3983,20 +3983,14 @@ function createAgenCDaemonDelegateRunnerRuntimeConfig(
     authBackend,
     host.env,
   );
-  const realtimeCallClient = new AgenCRealtimeCallClient({
+  const realtime = createLazyRealtimeTransports({
     baseUrl: realtimeBaseUrl,
     defaultHeaders: realtimeHeaders,
   });
-  const realtimeWebSocketTransport =
-    new AgenCRealtimeWebSocketTransportConnector({
-      baseUrl: realtimeBaseUrl,
-      defaultHeaders: realtimeHeaders,
-    });
   return {
     authBackend,
-    realtimeCallClient,
-    realtimeConnectTransport: (request) =>
-      realtimeWebSocketTransport.connect(request),
+    realtimeCallClient: realtime.callClient,
+    realtimeConnectTransport: realtime.connect,
   };
 }
 

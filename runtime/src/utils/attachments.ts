@@ -189,7 +189,7 @@ import {
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
-} from '../services/compact/autoCompact.js'
+} from '../services/compact/thresholds.js'
 import type {
   HookBlockingError,
   InstructionsMemoryType,

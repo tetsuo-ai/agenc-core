@@ -1,4 +1,4 @@
-import { MAX_FUZZY_QUERY_UTF8_BYTES, MAX_FUZZY_QUERY_CODE_POINTS, MAX_FUZZY_CANDIDATE_UTF8_BYTES, MAX_FUZZY_CANDIDATE_CODE_POINTS, type FuzzyBoundaryReason, FuzzyBoundaryError, validateFuzzyQuery, validateFuzzyCandidate } from "./fuzzy-boundary.js";
+import { FuzzyBoundaryError, validateFuzzyQuery, validateFuzzyCandidate } from "./fuzzy-boundary.js";
 export { MAX_FUZZY_QUERY_UTF8_BYTES, MAX_FUZZY_QUERY_CODE_POINTS, MAX_FUZZY_CANDIDATE_UTF8_BYTES, MAX_FUZZY_CANDIDATE_CODE_POINTS, type FuzzyBoundaryReason, FuzzyBoundaryError, validateFuzzyQuery, validateFuzzyCandidate } from "./fuzzy-boundary.js";
 /**
  * One bounded fuzzy-subsequence matcher for daemon and TUI file search.
@@ -709,6 +709,8 @@ function boundedSumFits(
     current + addition <= maximum
   );
 }
+
+const FUZZY_SIGNATURE_WORDS = 8;
 
 export function prepareFuzzyCandidate(value: string): PreparedFuzzyCandidate {
   const utf8Bytes = validateFuzzyCandidate(value);

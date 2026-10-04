@@ -1,4 +1,4 @@
-import { FuzzyFileSearchBoundaryError, type FuzzyFileSearchBoundaryReason, MAX_FUZZY_QUERY_CODEPOINTS, MAX_FUZZY_RAW_ROOTS, MAX_FUZZY_RESULTS, MAX_FUZZY_FILE_ROOTS_UTF8_BYTES, MAX_FUZZY_FILE_ROOT_UTF8_BYTES } from "./fuzzy-file-search-boundary.js";
+import { FuzzyFileSearchBoundaryError, MAX_FUZZY_QUERY_CODEPOINTS, MAX_FUZZY_RAW_ROOTS, MAX_FUZZY_RESULTS, MAX_FUZZY_FILE_ROOTS_UTF8_BYTES, MAX_FUZZY_FILE_ROOT_UTF8_BYTES } from "./fuzzy-file-search-boundary.js";
 export { FuzzyFileSearchBoundaryError, type FuzzyFileSearchBoundaryReason, MAX_FUZZY_QUERY_CODEPOINTS, MAX_FUZZY_RAW_ROOTS, MAX_FUZZY_RESULTS, MAX_FUZZY_FILE_ROOTS_UTF8_BYTES, MAX_FUZZY_FILE_ROOT_UTF8_BYTES } from "./fuzzy-file-search-boundary.js";
 /** Persistent, cancellation-safe fuzzy-file search for the daemon protocol. */
 

@@ -21,7 +21,7 @@ import {
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
 import { modelContextWindow } from "../session/turn-context.js";
-import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/autoCompact.js";
+import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -150,7 +150,7 @@ import type {
   SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
-import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
+import type { AgenCRealtimeCallClientLike } from "./realtime-transport.js";
 import type {
   RealtimeTransportConnection,
 } from "../conversation/realtime/conversation.js";
@@ -437,7 +437,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     CsvAgentJobsRepositoryProvider | undefined;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
-  #realtimeCallClient: AgenCRealtimeCallClient | undefined;
+  #realtimeCallClient: AgenCRealtimeCallClientLike | undefined;
   #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #quiescing = new WeakMap<ActiveBackgroundAgent, Promise<void>>();

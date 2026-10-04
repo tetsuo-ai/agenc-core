@@ -18,7 +18,7 @@ import {
   registerPermissionCallback,
   unregisterPermissionCallback,
 } from '../../tui/hooks/useSwarmPermissionPoller.js'
-import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
+import { getAutoCompactThreshold } from '../../services/compact/thresholds.js'
 import {
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
