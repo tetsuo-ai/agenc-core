@@ -56,10 +56,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  createPlanDashboardSnapshot,
-  openPlanDashboard,
-} from "./plan-menu.js";
 
 export {
   clearAllPlanSlugs,
@@ -154,14 +150,17 @@ function planFileContext(ctx: SlashCommandContext): PlanFileContext {
   };
 }
 
-function maybeOpenPlanDashboard(
+async function maybeOpenPlanDashboard(
   ctx: SlashCommandContext,
   params: {
     readonly mode: "plan";
     readonly previousMode?: PermissionMode;
     readonly planText: string | null;
   },
-): boolean {
+): Promise<boolean> {
+  if (typeof ctx.appState?.setToolJSX !== "function") return false;
+  const { createPlanDashboardSnapshot, openPlanDashboard } =
+    await import("./plan-menu.js");
   const fileCtx = planFileContext(ctx);
   return openPlanDashboard(
     ctx,
@@ -244,7 +243,7 @@ export const planCommand: SlashCommand = {
           return { kind: "prompt", content: argsTrimmed };
         }
         if (
-          maybeOpenPlanDashboard(ctx, {
+          await maybeOpenPlanDashboard(ctx, {
             mode: "plan",
             previousMode,
             planText: getPlan(planFileContext(ctx)),
@@ -263,7 +262,7 @@ export const planCommand: SlashCommand = {
       const plan = getPlan(fileCtx);
       if (!plan) {
         if (
-          maybeOpenPlanDashboard(ctx, {
+          await maybeOpenPlanDashboard(ctx, {
             mode: "plan",
             previousMode: currentCtx.prePlanMode,
             planText: null,
@@ -293,7 +292,7 @@ export const planCommand: SlashCommand = {
         };
       }
       if (
-        maybeOpenPlanDashboard(ctx, {
+        await maybeOpenPlanDashboard(ctx, {
           mode: "plan",
           previousMode: currentCtx.prePlanMode,
           planText: plan,

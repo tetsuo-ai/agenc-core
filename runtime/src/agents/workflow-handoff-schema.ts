@@ -144,24 +144,32 @@ export const WORKFLOW_HANDOFF_ARTIFACT_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-const artifactAjv = new Ajv({ allErrors: true, strict: true });
-artifactAjv.addKeyword({
-  keyword: "x-agenc-post-validation",
-  schemaType: "object",
-  type: "object",
-  errors: false,
-  validate: (_schema: unknown, value: unknown) => {
-    try {
-      assertArtifactRelationships(value as WorkflowHandoffArtifact);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-});
-const artifactValidator = artifactAjv.compile(
-  WORKFLOW_HANDOFF_ARTIFACT_SCHEMA,
-) as ValidateFunction<WorkflowHandoffArtifact>;
+// Snapshot nested constraints now; the exported schema is only shallow-frozen.
+const validationSchema = JSON.parse(JSON.stringify(WORKFLOW_HANDOFF_ARTIFACT_SCHEMA));
+let artifactValidator: ValidateFunction<WorkflowHandoffArtifact> | undefined;
+
+function getArtifactValidator(): ValidateFunction<WorkflowHandoffArtifact> {
+  if (artifactValidator !== undefined) return artifactValidator;
+  const artifactAjv = new Ajv({ allErrors: true, strict: true });
+  artifactAjv.addKeyword({
+    keyword: "x-agenc-post-validation",
+    schemaType: "object",
+    type: "object",
+    errors: false,
+    validate: (_schema: unknown, value: unknown) => {
+      try {
+        assertArtifactRelationships(value as WorkflowHandoffArtifact);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  artifactValidator = artifactAjv.compile(
+    validationSchema,
+  ) as ValidateFunction<WorkflowHandoffArtifact>;
+  return artifactValidator;
+}
 
 export class WorkflowHandoffArtifactSchemaError extends Error {
   readonly code = "WORKFLOW_HANDOFF_SCHEMA" as const;
@@ -207,11 +215,12 @@ export function validateWorkflowHandoffArtifactValue(
     maximumStringUtf8Bytes: MAX_WORKFLOW_STEP_PREVIEW_BYTES,
     maximumTotalStringUtf8Bytes: 16_384,
   });
-  if (artifactValidator(finite)) {
+  const validator = getArtifactValidator();
+  if (validator(finite)) {
     assertArtifactRelationships(finite);
     return finite;
   }
-  const issues = formatErrors(artifactValidator.errors);
+  const issues = formatErrors(validator.errors);
   throw new WorkflowHandoffArtifactSchemaError(
     `workflow handoff artifact is invalid: ${issues.join("; ")}`,
     issues,

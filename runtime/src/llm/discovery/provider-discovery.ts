@@ -19,11 +19,9 @@ import {
 import {
   BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
-} from "../registry/provider-info.js";
-import {
   resolveBuiltInProviderSlug,
-  type ProviderName,
-} from "../provider.js";
+} from "../registry/provider-info.js";
+import type { ProviderName } from "../provider.js";
 import { assertHostedAgencModelAuthority, resolveProviderCredentialAuthority } from "../provider-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";

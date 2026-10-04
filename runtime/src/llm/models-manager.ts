@@ -14,8 +14,7 @@ import type { ModelInfo } from "../session/turn-context.js";
 export class StaticModelsManager implements ModelsManager {
   private readonly fallbackProvider?: string;
   private readonly configDefaultProvider?: string;
-  private readonly allModels: readonly ModelInfo[];
-  private readonly availableModels: readonly ModelInfo[];
+  private availableModels: readonly ModelInfo[] | undefined;
   private readonly modelRegistry: ModelRegistry;
   private readonly inFlightModelInfo = new Map<string, Promise<ModelInfo>>();
   private readonly modelInfoCache = new Map<string, ModelInfo>();
@@ -33,13 +32,6 @@ export class StaticModelsManager implements ModelsManager {
       config: params.config,
       metadata: params.metadata,
     });
-    this.allModels = this.modelRegistry
-      .listEntriesSync()
-      .map((entry) => modelRegistryEntryToModelInfo(entry));
-    this.availableModels = this.allModels.filter((model) =>
-      model.showInPicker !== false && model.visibility !== "hide" &&
-      model.visibility !== "none"
-    );
   }
 
   async getModelInfo(modelSlug: string): Promise<ModelInfo> {
@@ -58,11 +50,18 @@ export class StaticModelsManager implements ModelsManager {
   }
 
   tryListModels(): ReadonlyArray<ModelInfo> | undefined {
-    return this.availableModels;
+    return this.pickerModels();
   }
 
   async listModels(): Promise<ReadonlyArray<ModelInfo>> {
-    return this.availableModels;
+    return this.pickerModels();
+  }
+
+  /** A new session needs one selected model, not every picker entry. */
+  private pickerModels(): readonly ModelInfo[] {
+    return this.availableModels ??= this.modelRegistry.listEntriesSync()
+      .map((entry) => modelRegistryEntryToModelInfo(entry))
+      .filter((model) => model.showInPicker !== false && model.visibility !== "hide" && model.visibility !== "none");
   }
 
   private async resolveModelInfo(params: {

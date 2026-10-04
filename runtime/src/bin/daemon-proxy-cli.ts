@@ -3,7 +3,7 @@ import { createConnection } from "node:net";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { posix, win32 } from "node:path";
-import { createNodeDaemonCliHost, resolveAgenCDaemonCookiePath, resolveAgenCDaemonSocketPath } from "../app-server/daemon-cli.js";
+import { createNodeDaemonCliHost, resolveAgenCDaemonCookiePath, resolveAgenCDaemonSocketPath } from "../app-server/daemon-control.js";
 
 const MAX_LINE = 1024 * 1024;
 const MAX_BUFFER = 4 * MAX_LINE;

@@ -8262,6 +8262,9 @@ snapshot_max_bytes = 64
 
   it("retains a failed snapshot policy and its driver for a later close retry", async () => {
     const agencHome = await tempAgencHome();
+    // This fault injection needs an existing default-project policy. Fresh,
+    // unused projects intentionally no longer manufacture one at startup.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const host = createHost(agencHome);
     const io = createIo();
     const signalProcess = createSignalProcess();
@@ -8311,6 +8314,8 @@ snapshot_max_bytes = 64
 
   it("periodic snapshot failure in one project does not starve another project", async () => {
     const agencHome = await tempAgencHome();
+    // Exercise two real project policies, including the failing default one.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-periodic-other-"));
     await mkdir(join(otherCwd, ".git"));
     const host = createHost(agencHome);

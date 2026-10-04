@@ -12,8 +12,14 @@ import {
   type RolloutItem,
 } from "./rollout-item.js";
 
-export const AGENC_TRAJECTORY_EXPORT_PATH_ENV = "AGENC_TRAJECTORY_EXPORT_PATH";
-export const AGENC_TRAJECTORY_EXPORT_DIR_ENV = "AGENC_TRAJECTORY_EXPORT_DIR";
+import {
+  AGENC_TRAJECTORY_EXPORT_PATH_ENV,
+  AGENC_TRAJECTORY_EXPORT_DIR_ENV,
+} from "./trajectory-export-constants.js";
+export {
+  AGENC_TRAJECTORY_EXPORT_PATH_ENV,
+  AGENC_TRAJECTORY_EXPORT_DIR_ENV,
+} from "./trajectory-export-constants.js";
 export const TRAJECTORY_EXPORT_SCHEMA_VERSION = 1;
 
 export interface TrajectoryExportRecord {
