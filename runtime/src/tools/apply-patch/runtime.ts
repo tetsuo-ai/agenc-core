@@ -13,7 +13,7 @@
 
 import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { structuredPatch } from "diff";
+import { loadDiff } from "../../utils/lazy-runtime-packages.js";
 
 import {
   dropSessionReadSnapshot,
@@ -399,7 +399,7 @@ function unifiedPatchBody(
   afterText: string,
   context: number,
 ): string {
-  const patch = structuredPatch(
+  const patch = loadDiff().structuredPatch(
     path,
     path,
     beforeText,

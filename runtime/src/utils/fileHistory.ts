@@ -1,5 +1,5 @@
 import { createHash, type UUID } from "crypto";
-import { diffLines } from "diff";
+import { loadDiff } from "./lazy-runtime-packages.js";
 import type { Stats } from "fs";
 import {
   chmod,
@@ -643,7 +643,7 @@ async function computeDiffStatsForFile(
     filesChanged.push(originalFile);
 
     // Compute the diff
-    const changes = diffLines(originalContent ?? "", backupContent ?? "");
+    const changes = loadDiff().diffLines(originalContent ?? "", backupContent ?? "");
     changes.forEach((c) => {
       if (c.added) {
         insertions += c.count || 0;
