@@ -85,9 +85,8 @@ import {
   type Attachment,
   type HookAttachment,
   type HookPermissionDecisionAttachment,
-  isRetiredAttachmentType,
-  memoryHeader,
 } from './attachments.js'
+import { isRetiredAttachmentType, memoryHeader } from './attachment-message.js'
 import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
 import { getPewterLedgerVariant } from './planModeV2.js'

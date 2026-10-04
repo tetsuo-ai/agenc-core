@@ -8,12 +8,8 @@ import { canonicalAgentRoleName } from 'src/agents/role-presentation.js'
 import { assertAgentRoleWorkspaceMatches } from 'src/agents/role.js'
 import type { EffortValue } from '../../utils/effort.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
-import {
-  type Command,
-  getCommand,
-  getSkillToolCommands,
-  hasCommand,
-} from '../../commands.js'
+import type { Command } from '../../commands.js'
+import { getCommand, hasCommand } from '../../commands/lookup.js'
 import {
   assembleSubagentSystemPrompt,
   DEFAULT_AGENT_PROMPT,
@@ -51,7 +47,7 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../../types/message.js'
-import { createAttachmentMessage } from '../../utils/attachments.js'
+import { createAttachmentMessage } from '../../utils/attachment-message.js'
 import { AbortError } from '../../utils/errors.js'
 import {
   cloneFileStateCache,
@@ -739,6 +735,7 @@ export async function* runAgent({
     ? []
     : agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
+    const { getSkillToolCommands } = await import('../../commands.js')
     const allSkills = await getSkillToolCommands(
       getProjectRoot(),
       null,

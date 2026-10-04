@@ -50,20 +50,20 @@ import {
   type AgenCDaemonSessionManager,
 } from "./session-lifecycle.js";
 import {
-  AgenCFuzzyFileSearchService,
   FuzzyFileSearchBoundaryError,
   MAX_FUZZY_QUERY_CODEPOINTS,
   MAX_FUZZY_RAW_ROOTS,
   MAX_FUZZY_RESULTS,
   MAX_FUZZY_FILE_ROOTS_UTF8_BYTES,
   MAX_FUZZY_FILE_ROOT_UTF8_BYTES,
-  type AgenCFuzzyFileSearch,
-} from "./fuzzy-file-search.js";
+} from "./fuzzy-file-search-boundary.js";
+import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
+import { createLazyFuzzyFileSearch } from "./lazy-fuzzy-file-search.js";
 import {
   FuzzyBoundaryError,
   validateFuzzyCandidate,
   validateFuzzyQuery,
-} from "../search/fuzzy-match.js";
+} from "../search/fuzzy-boundary.js";
 import {
   AgenCCommandExecService,
   type AgenCCommandExec,
@@ -795,7 +795,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${randomUUID()}`);
     this.#fuzzyFileSearch =
-      options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+      options.fuzzyFileSearch ?? createLazyFuzzyFileSearch();
     this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
     this.#fuzzyAllowedRoots = Object.freeze([
       ...(options.fuzzyAllowedRoots ?? []),

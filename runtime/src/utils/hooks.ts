@@ -131,7 +131,7 @@ import {
   emitHookResponse,
   startHookProgressInterval,
 } from "./hooks/hookEvents.js";
-import { createAttachmentMessage } from "./attachments.js";
+import { createAttachmentMessage } from "./attachment-message.js";
 import { all } from "./generators.js";
 import {
   findToolByName,

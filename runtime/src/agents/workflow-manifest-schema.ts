@@ -3,10 +3,8 @@
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { loadAjv } from "../utils/loadAjv.js";
 
-import {
-  digestCanonicalJson,
-  type Sha256Digest,
-} from "../eval-contract/index.js";
+import { digestCanonicalJson } from "../eval-contract/canonical-json.js";
+import type { Sha256Digest } from "../eval-contract/types.js";
 import {
   cloneFiniteJsonValue,
   parseFiniteJsonBytes,
