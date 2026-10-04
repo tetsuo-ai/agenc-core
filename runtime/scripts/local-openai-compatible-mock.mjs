@@ -408,6 +408,9 @@ async function handleChatCompletions(request, response) {
 }
 
 export async function startMockModelServer() {
+  // Wall-clock time of each chat request, for gates that compare it with
+  // what the agent did before its first model call.
+  const chatRequestTimes = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/v1/models") {
@@ -421,6 +424,7 @@ export async function startMockModelServer() {
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+      chatRequestTimes.push(Date.now());
       handleChatCompletions(request, response).catch((error) => {
         response.writeHead(500, { "Content-Type": "application/json" });
         response.end(
@@ -452,6 +456,7 @@ export async function startMockModelServer() {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    chatRequestTimes,
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
