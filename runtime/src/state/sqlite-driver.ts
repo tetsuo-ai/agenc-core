@@ -168,7 +168,7 @@ export class StateSqliteDriver {
       configureDatabase(state);
       if (logs !== undefined) configureDatabase(logs);
       applyStateMigrations(state, paths);
-      if (logs !== undefined) applyMigrations(logs, LOGS_DB_MIGRATIONS);
+      if (logs !== undefined) applyLogsMigrations(logs);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
     } catch (error) {
       if (state.open) state.close();
@@ -187,7 +187,7 @@ export class StateSqliteDriver {
     const logs = new Database(this.logsDbPath);
     try {
       configureDatabase(logs);
-      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+      applyLogsMigrations(logs);
     } catch (error) {
       if (logs.open) logs.close();
       throw error;
@@ -406,6 +406,13 @@ function configureDatabase(db: SqliteDatabase): void {
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("temp_store = MEMORY");
+}
+
+function applyLogsMigrations(db: SqliteDatabase): void {
+  // Publish the migration table and log schema together. Keep applyMigrations'
+  // nested savepoint and this connection's FULL durability; snapshot recovery
+  // and state migration backups are outside this transaction.
+  db.transaction(() => applyMigrations(db, LOGS_DB_MIGRATIONS)).immediate();
 }
 
 /**
