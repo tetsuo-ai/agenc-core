@@ -6,8 +6,7 @@
  */
 
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
-import { compactConversation } from "./compact.js";
-import { readCompactionTransactionAdapter } from "./transaction.js";
+import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import {
   compactionFailureDetails,
   type CompactionFailureDetails,
@@ -173,6 +172,7 @@ export async function autoCompactIfNeeded(
   if (options.force !== true && tokenCount < autoCompactThreshold(context)) {
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
+  const { compactConversation } = await import("./compact.js");
   let transientRetries = 0;
   for (;;) {
     try {

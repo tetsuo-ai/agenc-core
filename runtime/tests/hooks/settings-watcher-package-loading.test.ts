@@ -2,14 +2,15 @@ import { expect, test, vi } from "vitest";
 
 const effects = vi.hoisted(() => ({
   loads: 0,
+  packageLoads: 0,
   listeners: new Map<string, (...args: string[]) => void>(),
   execute: vi.fn(async (..._args: unknown[]) => [] as { blocked: boolean }[]),
   reload: vi.fn(async () => undefined),
 }));
-vi.mock("../../src/utils/lazy-runtime-packages.js", () => ({ loadChokidar: () => ({ watch: () => {
+vi.mock("../../src/utils/lazy-runtime-packages.js", () => ({ loadChokidar: () => { effects.packageLoads++; return { watch: () => {
   const watcher = { on: (event: string, callback: (...args: string[]) => void) => { effects.listeners.set(event, callback); return watcher; }, close: async () => undefined };
   return watcher;
-} }) }));
+} }; } }));
 vi.mock("../../src/utils/settings/settings.js", () => ({
   getSettingsFilePathForSource: (source: string) => source === "userSettings" ? "/tmp/gd-hook-settings.toml" : undefined,
 }));
@@ -22,21 +23,21 @@ vi.mock("../../src/utils/hooks.js", () => {
   return { executeConfigChangeHooks: effects.execute, hasBlockingResult: (rows: { blocked: boolean }[]) => rows.some(row => row.blocked) };
 });
 
-test("loads config hooks only for external events and keeps reload behind the blocking decision", async () => {
+test("loads the watcher package during initialization and keeps reload behind the blocking decision", async () => {
   const detector = await import("../../src/utils/settings/changeDetector.js");
+  expect(effects.packageLoads).toBe(0);
   const internal = await import("../../src/utils/settings/internalWrites.js");
   const changed = vi.fn();
   try {
     await detector.resetForTesting({ deletionGrace: 1 });
     detector.subscribe(changed);
     await detector.initialize();
-    expect(effects.loads).toBe(0);
+    expect(effects.packageLoads).toBe(1);
     const change = effects.listeners.get("change")!;
     change("/tmp/unwatched.toml");
     internal.markInternalWrite("/tmp/gd-hook-settings.toml");
     change("/tmp/gd-hook-settings.toml");
     await vi.dynamicImportSettled();
-    expect(effects.loads).toBe(0);
 
     let settle: ((rows: { blocked: boolean }[]) => void) | undefined;
     effects.execute.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));

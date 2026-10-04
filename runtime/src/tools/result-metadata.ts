@@ -1,4 +1,4 @@
-import { structuredPatch } from "diff";
+import { loadDiff } from "../utils/lazy-runtime-packages.js";
 
 import { isRecord } from "../utils/record.js";
 
@@ -58,7 +58,7 @@ export function recoverableFailureKind(
 export function buildFileMutationMetadata(
   input: FileMutationMetadataInput,
 ): Record<string, unknown> {
-  const patch = structuredPatch(
+  const patch = loadDiff().structuredPatch(
     input.filePath,
     input.filePath,
     input.beforeText,

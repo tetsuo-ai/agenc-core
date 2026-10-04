@@ -1,4 +1,5 @@
-import chokidar, { type FSWatcher } from "chokidar";
+import type { FSWatcher } from "chokidar";
+import { loadChokidar } from "../lazy-runtime-packages.js";
 import { stat } from "node:fs/promises";
 import * as platformPath from "node:path";
 
@@ -91,7 +92,7 @@ export async function initialize(): Promise<void> {
   logForDebugging(
     `Watching canonical config/state files ${[...watchedSources.keys()].join(", ")}`,
   );
-  watcher = chokidar.watch(directories, {
+  watcher = loadChokidar().watch(directories, {
     persistent: true,
     ignoreInitial: true,
     depth: 1,

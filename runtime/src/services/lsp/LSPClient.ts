@@ -11,14 +11,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 
-import {
-  createMessageConnection,
-  type HandlerResult,
-  type MessageConnection,
-  StreamMessageReader,
-  StreamMessageWriter,
-  Trace,
-} from "vscode-jsonrpc/node";
+import type { HandlerResult, MessageConnection } from "vscode-jsonrpc/node";
+import { loadJsonRpc } from "../../utils/lazy-runtime-packages.js";
 
 import type {
   InitializeParams,
@@ -320,6 +314,12 @@ export function createLSPClient(
         if (sandboxExecutionBroker === undefined) {
           throw missingSandboxExecutionBoundary("lsp");
         }
+        const {
+          createMessageConnection,
+          StreamMessageReader,
+          StreamMessageWriter,
+          Trace,
+        } = loadJsonRpc();
         const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
           "lsp",
           {

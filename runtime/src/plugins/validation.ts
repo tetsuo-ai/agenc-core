@@ -6,7 +6,7 @@ import {
   readContainedUtf8,
   walkContainedFiles,
 } from "../fs/root-contained-read.js";
-import { load as loadYaml } from "js-yaml";
+import { loadYaml } from "../utils/lazy-runtime-packages.js";
 import {
   findPluginManifestPath,
   loadPluginManifest,
@@ -499,8 +499,9 @@ function readMarkdownFrontmatter(
     });
     return undefined;
   }
+  const { load: parseYaml } = loadYaml();
   try {
-    const parsed = loadYaml(raw.slice(3, end).trim()) ?? {};
+    const parsed = parseYaml(raw.slice(3, end).trim()) ?? {};
     if (!isRecord(parsed)) {
       errors.push({
         path: "frontmatter",
