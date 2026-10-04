@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -9,6 +9,7 @@ import {
   formatPlanText,
   getPlan,
   getPlanFilePath,
+  getExistingPlanFilePath,
   getPlansDirectory,
   isSessionPlanFile,
   recoverPlanFromMessages,
@@ -274,6 +275,53 @@ describe("isSessionPlanFile", () => {
 
     expect(copiedPath).toBe(getPlanFilePath(target));
     expect(getPlan(target)).toBe("# Transcript Plan\n\nRecovered.");
+  });
+
+  test("does not allocate paths or slug metadata for a session with no plan", () => {
+    const source = { sessionId: "no-plan", agencHome };
+    const target = { sessionId: "no-plan-target", agencHome };
+    expect(copyPlanForResume(source, target, { messages: [{ type: "session_meta" }] })).toBeNull();
+    expect(copyPlanForResume(source, source)).toBeNull();
+    expect(getExistingPlanFilePath(source)).toBeNull();
+    expect(getExistingPlanFilePath(target)).toBeNull();
+    expect(existsSync(join(agencHome, "plans"))).toBe(false);
+  });
+
+  test("leaves an existing slug index unchanged when the source plan is absent", () => {
+    const source = { sessionId: "missing-plan", agencHome };
+    const target = { sessionId: "untouched-target", agencHome };
+    setPlanSlug(source, "known-source");
+    const index = join(agencHome, "plans", ".slugs.json");
+    const before = readFileSync(index, "utf8");
+    expect(copyPlanForResume(source, target)).toBeNull();
+    expect(readFileSync(index, "utf8")).toBe(before);
+    expect(getExistingPlanFilePath(target)).toBeNull();
+  });
+
+  test("copies the correct agent-suffixed source and keeps an existing same-source path", () => {
+    const source = { sessionId: "agent-plan", agentId: "worker", agencHome };
+    const target = { sessionId: "agent-target", agentId: "reviewer", agencHome };
+    const sourcePath = writePlanSync(source, "# Worker plan");
+    writePlanSync({ ...source, agentId: undefined }, "# Main plan");
+    const before = statSync(sourcePath, { bigint: true });
+    expect(copyPlanForResume(source, source)).toBe(sourcePath);
+    expect(statSync(sourcePath, { bigint: true })).toMatchObject({ ino: before.ino, mtimeNs: before.mtimeNs });
+    const targetPath = copyPlanForResume(source, target);
+    expect(targetPath).toContain("-agent-reviewer.md");
+    expect(readFileSync(targetPath!, "utf8")).toBe("# Worker plan");
+  });
+
+  test.skipIf(process.platform === "win32")("preserves errors copying an unreadable existing source", () => {
+    const source = { sessionId: "unreadable-source", agencHome };
+    const target = { sessionId: "copy-target", agencHome };
+    const path = writePlanSync(source, "# Keep this error");
+    chmodSync(path, 0o000);
+    try {
+      expect(() => copyPlanForResume(source, target, {
+        messages: [{ toolName: "ExitPlanMode", input: { plan: "must not replace source" } }],
+      })).toThrow();
+    } finally { chmodSync(path, 0o600); }
+    expect(readFileSync(path, "utf8")).toBe("# Keep this error");
   });
   test.skipIf(process.platform === "win32")(
     "getPlansDirectory creates the directory owner-only under a permissive umask",

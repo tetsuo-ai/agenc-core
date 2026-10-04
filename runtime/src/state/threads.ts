@@ -132,7 +132,20 @@ export class StateThreadRepository {
           memory_mode = excluded.memory_mode,
           rollout_path = excluded.rollout_path,
           archived_rollout_path = excluded.archived_rollout_path,
-          archive_cleanup_generation = excluded.archive_cleanup_generation`,
+          archive_cleanup_generation = excluded.archive_cleanup_generation
+        WHERE threads.name IS NOT excluded.name
+           OR threads.created_at IS NOT excluded.created_at
+           OR threads.updated_at IS NOT excluded.updated_at
+           OR threads.archived_at IS NOT excluded.archived_at
+           OR threads.cwd IS NOT excluded.cwd
+           OR threads.source_json IS NOT excluded.source_json
+           OR threads.forked_from_id IS NOT excluded.forked_from_id
+           OR threads.model IS NOT excluded.model
+           OR threads.model_provider IS NOT excluded.model_provider
+           OR threads.memory_mode IS NOT excluded.memory_mode
+           OR threads.rollout_path IS NOT excluded.rollout_path
+           OR threads.archived_rollout_path IS NOT excluded.archived_rollout_path
+           OR threads.archive_cleanup_generation IS NOT excluded.archive_cleanup_generation`,
       )
       .run(
         record.threadId,
