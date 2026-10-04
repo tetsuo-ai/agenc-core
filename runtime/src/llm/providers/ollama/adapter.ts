@@ -795,7 +795,9 @@ export class OllamaProvider implements LLMProvider {
       toolCalls = acceptToolCalls
         ? this.canonicalizeCalls(toolCalls, toolChoice.advertisedNames)
         : [];
-      if (acceptToolCalls) {
+      // `none` already failed above, before an empty catalog could hide it
+      // as an unadvertised-tool error. This check is the named-function case.
+      if (acceptToolCalls && toolChoice.effective !== "none") {
         assertOllamaToolChoiceResponse(toolChoice, toolCalls);
       }
       if (toolCallRecovery) toolCallRecovery = {
@@ -1283,7 +1285,9 @@ export class OllamaProvider implements LLMProvider {
       salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported,
       toolChoice.advertisedNames,
     );
-    if (acceptToolCalls) {
+    // `none` already failed above, before an empty catalog could hide it
+    // as an unadvertised-tool error. This check is the named-function case.
+    if (acceptToolCalls && toolChoice.effective !== "none") {
       assertOllamaToolChoiceResponse(toolChoice, toolCalls);
     }
     const toolCallRecovery = toolCalls.length === 0 && acceptToolCalls
