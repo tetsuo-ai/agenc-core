@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // The dialog calls useInput, which (in the real hook) flips the terminal into
 // raw mode — unsupported on the non-TTY test stream. Stub it so the render is
-// pure; we exercise the path LAYOUT here, not the keyboard logic (covered by
+// pure; we exercise the card LAYOUT here, not the keyboard logic (covered by
 // the trustDialogOptionLabel unit test).
 vi.mock("../../../src/tui/ink/hooks/use-input.js", () => ({
   default: () => {},
@@ -18,12 +18,21 @@ import { renderToString } from "../../../src/utils/staticRender.js";
 const LONG_PATH =
   "/tmp/user/1000/claude-1000/-home-tetsuo-git-AgenC-agenc-core/5ea051e8-c097-408c-8fcc-841eb4b0e57a/scratchpad/visualqa/frames-build/sandbox";
 
-function renderTrust(path: string, columns: number): Promise<string> {
+function renderTrust(
+  path: string,
+  columns: number,
+  extra: Partial<React.ComponentProps<typeof TrustDialog>> = {},
+): Promise<string> {
   return renderToString(
-    <TerminalSizeContext.Provider value={{ columns, rows: 24 }}>
-      <TrustDialog workspaceRoot={path} onAccept={() => {}} onReject={() => {}} />
+    <TerminalSizeContext.Provider value={{ columns, rows: 40 }}>
+      <TrustDialog
+        workspaceRoot={path}
+        onAccept={() => {}}
+        onReject={() => {}}
+        {...extra}
+      />
     </TerminalSizeContext.Provider>,
-    { columns, rows: 24 },
+    { columns, rows: 40 },
   );
 }
 
@@ -71,10 +80,10 @@ describe("formatTrustPath", () => {
 describe("TrustDialog path presentation", () => {
   it("frames the path and elides it instead of hard-wrapping mid-segment", async () => {
     const out = await renderTrust(LONG_PATH, 80);
-    // The dialog still shows its core copy + choices (logic unchanged).
+    // The dialog still shows its question and both choices.
     expect(out).toContain("Trust this project?");
-    expect(out).toContain("Yes, I trust this project");
-    expect(out).toContain("No, exit");
+    expect(out).toContain("[ Trust  y ]");
+    expect(out).toContain("[ Exit  n ]");
 
     // The path is framed: a bordered box surrounds it.
     expect(out).toMatch(/[╭┌]/);
@@ -114,10 +123,98 @@ describe("TrustDialog path presentation", () => {
     // The long path's line is elided — proving the truncation path is exercised
     // (a revert to the raw `props.workspaceRoot` text would carry no ellipsis
     // and would hard-wrap the segment instead).
+    // The folder name row shows "sandbox" alone; the path row carries the
+    // deeper tail and is the one that must be elided.
     const longLine = longOut
       .split("\n")
-      .find((line) => line.includes("sandbox"));
+      .find((line) => line.includes("frames-build/sandbox"));
     expect(longLine).toBeDefined();
     expect(longLine).toContain("…");
+  });
+});
+
+describe("TrustDialog card", () => {
+  const review = {
+    repoItems: [
+      {
+        label: "Hooks",
+        values: [
+          "./scripts/audit.sh before each tool",
+          "./scripts/notify.sh when a turn ends",
+        ],
+      },
+      { label: "MCP servers", values: ["github (npx github-mcp)"] },
+      { label: "Shell env", values: ["API_URL"] },
+    ],
+    userItems: [],
+  };
+
+  it("sets the question into the top border of the card", async () => {
+    const out = await renderTrust("/work/shop", 100);
+    const top = out.split("\n").find((line) => line.includes("╭"));
+    expect(top).toBeDefined();
+    expect(top).toContain("Trust this project?");
+    expect(top).toMatch(/╭─ Trust this project\? ─+╮/u);
+  });
+
+  it("shows the folder name over its full path", async () => {
+    const lines = (await renderTrust("/work/shop", 100)).split("\n");
+    const nameRow = lines.findIndex((line) => /│\s+shop\s+│/u.test(line));
+    expect(nameRow).toBeGreaterThan(-1);
+    expect(lines[nameRow + 1]).toContain("/work/shop");
+  });
+
+  it("lists what trusting turns on as a labeled table", async () => {
+    const out = await renderTrust("/work/shop", 100, { review });
+    expect(out).toContain("Trusting turns on the AgenC settings this repo ships:");
+    const hookLine = out
+      .split("\n")
+      .find((line) => line.includes("./scripts/audit.sh"));
+    expect(hookLine).toMatch(/Hooks\s+\.\/scripts\/audit\.sh before each tool/u);
+    const second = out
+      .split("\n")
+      .find((line) => line.includes("./scripts/notify.sh"));
+    expect(second).not.toContain("Hooks");
+    expect(out).toMatch(/MCP servers\s+github \(npx github-mcp\)/u);
+    expect(out).toMatch(/Shell env\s+API_URL/u);
+    expect(out).toContain("Approvals and the sandbox still apply.");
+  });
+
+  it("shows no table when trust turns nothing on", async () => {
+    const out = await renderTrust("/work/shop", 100, {
+      review: { repoItems: [], userItems: [] },
+    });
+    expect(out).not.toContain("Trusting turns");
+    expect(out).toContain("Approvals and the sandbox still apply.");
+  });
+
+  it("warns before trusting the home folder", async () => {
+    const out = await renderTrust("/Users/me", 100, { location: "home" });
+    expect(out).toContain(
+      "This is your home folder. AgenC can work on every file in it.",
+    );
+  });
+
+  it("says plainly when a bypass flag turns protections off", async () => {
+    const both = await renderTrust("/work/shop", 100, {
+      bypassPermissionsRequested: true,
+      bypassSandboxRequested: true,
+    });
+    expect(both).toContain("Approvals and the sandbox are off for this run.");
+    expect(both).not.toContain("still apply");
+    const approvals = await renderTrust("/work/shop", 100, {
+      bypassPermissionsRequested: true,
+    });
+    expect(approvals).toContain(
+      "Approvals are off for this run. The sandbox still applies.",
+    );
+  });
+
+  it("keeps the card inside a narrow terminal", async () => {
+    const out = await renderTrust("/work/shop", 50, { review });
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(50);
+    }
+    expect(out).toContain("[ Trust  y ]");
   });
 });

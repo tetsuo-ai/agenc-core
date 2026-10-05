@@ -187,6 +187,10 @@ describe("canonical/resident print byte and exit parity", () => {
   });
   it("refuses an untrusted repository before any admission or agent", async () => {
     rmSync(join(home, "trusted-projects.json"));
+    // A repo that ships a hook needs review; one that ships nothing would be
+    // trusted automatically and reach admission.
+    mkdirSync(join(cwd, ".agenc"));
+    writeFileSync(join(cwd, ".agenc", "config.toml"), 'config_version = 2\n[[hooks.Stop]]\nhooks = [{ type = "command", command = "./notify.sh" }]\n');
     const argv = ["-p", "--output-format", "bad", "hello"];
     const expected = await canonical(argv); const f = resident(params(argv));
     expect(await f.invocation.run()).toEqual({ kind: "exit", exitCode: 1 });

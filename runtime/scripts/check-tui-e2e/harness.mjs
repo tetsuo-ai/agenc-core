@@ -517,6 +517,7 @@ export class TuiSession {
     gateState,
     useTempHome = false,
     sandboxMode,
+    preTrust = true,
   } = {}) {
     this.args = args;
     this.cols = cols;
@@ -526,6 +527,8 @@ export class TuiSession {
     this.gateState = gateState ?? null;
     this.useTempHome = useTempHome;
     this.sandboxMode = sandboxMode;
+    // Trust scenarios start in a folder that is NOT trusted in advance.
+    this.preTrust = preTrust;
     this.tempHome = null;
     this.ownsTempHome = false;
     this.runtimeEnv = null;
@@ -591,7 +594,7 @@ export class TuiSession {
       this.ownsTempHome = true;
       env = tuiGateEnvironment(home, env, this.envOverrides);
     }
-    await ensureProjectTrusted(this.cwd, env);
+    if (this.preTrust) await ensureProjectTrusted(this.cwd, env);
     this.throwIfAborted();
     this.runtimeEnv = env;
     return env;

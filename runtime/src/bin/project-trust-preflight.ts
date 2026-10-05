@@ -1,4 +1,7 @@
 /** Canonical CLI project trust check, shared before daemon startup and invocation. */
+import { homedir } from "node:os";
+import { parse as parsePath } from "node:path";
+
 import { ConfigStore } from "../config/store.js";
 import {
   resolveAgencHome,
@@ -11,31 +14,42 @@ import {
   startupConfigLayerOptions,
   type StartupCliFlags,
 } from "./startup-selection.js";
-import { isProjectTrustedSync, trustProject } from "../permissions/trust/project-trust.js";
-import { formatProjectTrustSources, summarizeProjectTrustSources } from "../permissions/trust/trust-sources.js";
+import {
+  canonicalizeProjectTrustPathSync,
+  projectConfigDigestSync,
+  resolveProjectTrustKindSync,
+  trustProject,
+  trustProjectAutomatically,
+} from "../permissions/trust/project-trust.js";
+import {
+  projectTrustReviewIsEmpty,
+  reviewProjectTrust,
+  summarizeProjectTrustReview,
+  type ProjectTrustReview,
+} from "../permissions/trust/trust-sources.js";
+import type { TrustLocation } from "../permissions/trust/TrustDialog.js";
 import { setSessionTrustAccepted } from "../bootstrap/state.js";
 
+export interface ProjectTrustPromptOptions {
+  readonly workspaceRoot: string;
+  readonly review?: ProjectTrustReview;
+  readonly location?: TrustLocation;
+  readonly bypassPermissionsRequested?: boolean;
+  readonly bypassSandboxRequested?: boolean;
+  readonly stdin?: NodeJS.ReadStream;
+  readonly stdout?: NodeJS.WriteStream;
+  readonly stderr?: NodeJS.WriteStream;
+}
+
 async function loadProjectTrustPrompt(): Promise<
-  (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly bypassPermissionsRequested?: boolean;
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>
+  (opts: ProjectTrustPromptOptions) => Promise<boolean>
 > {
   // A literal lets the bundler preserve this lazy entry edge when the preflight
   // moves into a shared chunk outside dist/bin.
   const mod = (await import("./tui-trust-prompt.js")) as {
-    readonly renderProjectTrustPrompt: (opts: {
-      readonly workspaceRoot: string;
-      readonly riskSources?: readonly string[];
-      readonly bypassPermissionsRequested?: boolean;
-      readonly stdin?: NodeJS.ReadStream;
-      readonly stdout?: NodeJS.WriteStream;
-      readonly stderr?: NodeJS.WriteStream;
-    }) => Promise<boolean>;
+    readonly renderProjectTrustPrompt: (
+      opts: ProjectTrustPromptOptions,
+    ) => Promise<boolean>;
   };
   return mod.renderProjectTrustPrompt;
 }
@@ -55,13 +69,7 @@ export interface ProjectTrustPreflightOptions {
   readonly onWarn?: (message: string) => void;
   readonly useEnvWorkspace?: boolean;
   readonly allowPrompt?: boolean;
-  readonly renderPrompt?: (opts: {
-    readonly workspaceRoot: string;
-    readonly riskSources?: readonly string[];
-    readonly stdin?: NodeJS.ReadStream;
-    readonly stdout?: NodeJS.WriteStream;
-    readonly stderr?: NodeJS.WriteStream;
-  }) => Promise<boolean>;
+  readonly renderPrompt?: (opts: ProjectTrustPromptOptions) => Promise<boolean>;
   readonly markSessionTrusted?: () => Promise<void>;
 }
 
@@ -69,6 +77,42 @@ export interface ProjectTrustPreflightResult {
   readonly accepted: boolean;
   readonly projectRoot: string;
   readonly prompted: boolean;
+  /**
+   * Set when the root was trusted without a prompt because trust had nothing
+   * to turn on there (see `trustProjectAutomatically`).
+   */
+  readonly automatic?: true;
+}
+
+/**
+ * Folders where a trust grant is never automatic: the home folder and a
+ * filesystem root hold far more than one project, so the user confirms them.
+ */
+function sensitiveTrustLocation(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+): TrustLocation | undefined {
+  const root = canonicalizeProjectTrustPathSync(projectRoot);
+  if (parsePath(root).root === root) return "root";
+  const home = env.HOME || env.USERPROFILE || homedir();
+  if (home && canonicalizeProjectTrustPathSync(home) === root) return "home";
+  return undefined;
+}
+
+function headlessRefusalDetail(
+  review: ProjectTrustReview,
+  location: TrustLocation | undefined,
+): string {
+  if (!projectTrustReviewIsEmpty(review)) {
+    return `agenc: trusting it turns on ${summarizeProjectTrustReview(review)}; run agenc there in a terminal to review them\n`;
+  }
+  if (location === "home") {
+    return "agenc: it is your home folder; run agenc there in a terminal to confirm\n";
+  }
+  if (location === "root") {
+    return "agenc: it is the root of the disk; run agenc there in a terminal to confirm\n";
+  }
+  return "";
 }
 
 export async function runProjectTrustPreflightForTui(
@@ -112,16 +156,59 @@ export async function runProjectTrustPreflightForTui(
   // Re-running marker discovery after later layers would let configuration
   // come from one root while trust authorizes another.
   const projectRoot = configStore.projectRoot;
-  if (
-    isProjectTrustedSync({
-      agencHome,
-      env,
-      projectRoot,
-      projectRootMarkers: startup.config.project_root_markers,
-    })
-  ) {
-    await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
+  const trustLookup = {
+    agencHome,
+    env,
+    projectRoot,
+    projectRootMarkers: startup.config.project_root_markers,
+  };
+  const trustKind = resolveProjectTrustKindSync(trustLookup);
+  const bypassSandboxRequested =
+    startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true;
+  const bypassPermissionsRequested =
+    bypassSandboxRequested ||
+    startupCliFlags.permissionMode === "bypassPermissions";
+  const markSessionTrusted =
+    options.markSessionTrusted ?? markLegacySessionTrustAccepted;
+  if (trustKind === "explicit") {
+    await markSessionTrusted();
     return { accepted: true, projectRoot, prompted: false };
+  }
+
+  // Not explicitly trusted. Trust is granted without a prompt only when it
+  // has nothing to turn on: no repository settings that need it, none of the
+  // user's own hooks, not a home folder or disk root, and no bypass request.
+  // The fingerprint brackets the review so a config file that changes while
+  // it runs can never be recorded as reviewed.
+  const digestBefore = projectConfigDigestSync(projectRoot);
+  const review = await reviewProjectTrust({
+    projectRoot,
+    config: configStore.current(),
+  });
+  const digestAfter = projectConfigDigestSync(projectRoot);
+  const location = sensitiveTrustLocation(projectRoot, env);
+  const automaticGrant =
+    digestBefore !== null &&
+    digestBefore === digestAfter &&
+    projectTrustReviewIsEmpty(review) &&
+    location === undefined &&
+    !bypassPermissionsRequested;
+  if (automaticGrant) {
+    if (trustKind === "none") {
+      await trustProjectAutomatically({
+        agencHome,
+        env,
+        projectRoot,
+        configDigest: digestBefore,
+      });
+    }
+    await markSessionTrusted();
+    return {
+      accepted: true,
+      projectRoot,
+      prompted: false,
+      ...(trustKind === "none" ? { automatic: true as const } : {}),
+    };
   }
 
   const canPrompt =
@@ -130,23 +217,19 @@ export async function runProjectTrustPreflightForTui(
     Boolean(stdout.isTTY);
   if (!canPrompt) {
     stderr.write(`agenc: project is not trusted: ${projectRoot}\n`);
+    const detail = headlessRefusalDetail(review, location);
+    if (detail.length > 0) stderr.write(detail);
     return { accepted: false, projectRoot, prompted: false };
   }
 
-  const riskSources = formatProjectTrustSources(
-    await summarizeProjectTrustSources({
-      cwd: projectRoot,
-      configStore,
-    }),
-  );
   const renderProjectTrustPrompt =
     options.renderPrompt ?? (await loadProjectTrustPrompt());
   const accepted = await renderProjectTrustPrompt({
     workspaceRoot: projectRoot,
-    riskSources,
-    bypassPermissionsRequested:
-      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true ||
-      startupCliFlags.permissionMode === "bypassPermissions",
+    review,
+    ...(location !== undefined ? { location } : {}),
+    bypassPermissionsRequested,
+    bypassSandboxRequested,
     stdin,
     stdout,
     stderr: stderr as NodeJS.WriteStream,
@@ -159,7 +242,7 @@ export async function runProjectTrustPreflightForTui(
     env,
     projectRoot,
   });
-  await (options.markSessionTrusted ?? markLegacySessionTrustAccepted)();
+  await markSessionTrusted();
   return { accepted: true, projectRoot, prompted: true };
 }
 
