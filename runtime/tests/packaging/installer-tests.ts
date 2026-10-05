@@ -3569,10 +3569,10 @@ function registerInstallPs1Tests(): void {
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
       const xmlPath = join(prefix, "agenc-daemon.xml");
       const parsed = parseAgencDaemonWinSWServiceXml(readFileSync(xmlPath, "utf8"));
-      expect(parsed.executable).toBe("C:\\Windows\\System32\\cmd.exe");
+      expect(parsed.executable).toBe(String.raw`C:\Windows\System32\cmd.exe`);
       expect(parsed.launcher).toBe(join(prefix, "bin", "agenc.cmd"));
       expect(parsed.agencHome).toBe(agencHome);
-      expect(parsed.accountUsername).toBe("ADA-PC\\Ada");
+      expect(parsed.accountUsername).toBe(String.raw`ADA-PC\Ada`);
       expect(parsed.xml).toContain("prefix &amp; tools");
       expect(parsed.xml).toContain(".agenc &amp; home");
       expect(parsed.xml).not.toContain("<executable>agenc</executable>");

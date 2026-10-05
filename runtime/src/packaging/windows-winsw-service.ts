@@ -4,7 +4,7 @@ import { escapeXmlAttr, unescapeXml } from "../utils/xml.js";
 
 const AGENC_DAEMON_WINSW_SERVICE_ID = "agenc-daemon";
 const AGENC_DAEMON_WINSW_SERVICE_NAME = "AgenC Daemon";
-const WINDOWS_SYSTEM32_CMD_EXE = "C:\\Windows\\System32\\cmd.exe";
+const WINDOWS_SYSTEM32_CMD_EXE = String.raw`C:\Windows\System32\cmd.exe`;
 
 /** Packaging does not download WinSW. Service XML is pinned to this release. */
 export const AGENC_DAEMON_WINSW_VERSION = "2.12.0";
@@ -114,7 +114,7 @@ function splitWinSW212ServiceAccount(username: string): {
   const user = separator === -1 ? account : account.slice(separator + 1);
   if (domain === "" || user === "") {
     throw new Error(
-      "WinSW 2.12 service account must be DOMAIN\\user so the service is not LocalSystem",
+      String.raw`WinSW 2.12 service account must be DOMAIN\user so the service is not LocalSystem`,
     );
   }
   return { domain, user };
@@ -180,7 +180,7 @@ function resolveWindowsAgencLauncher(
   assertLauncher(launcher);
   if (!existsSync(launcher)) {
     throw new Error(
-      `agenc.cmd was not found at ${launcher}; AGENC_INSTALL_PREFIX must be the directory that contains bin\\agenc.cmd`,
+      String.raw`agenc.cmd was not found at ${launcher}; AGENC_INSTALL_PREFIX must be the directory that contains bin\agenc.cmd`,
     );
   }
   return launcher;
@@ -289,7 +289,7 @@ export function renderAgencDaemonWinSWService(
 }
 
 function xmlText(xml: string, tag: string): string {
-  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "u");
+  const pattern = new RegExp(String.raw`<${tag}>([\s\S]*?)</${tag}>`, "u");
   const match = pattern.exec(xml);
   if (match?.[1] === undefined) {
     throw new Error(`WinSW XML is missing <${tag}>`);
@@ -369,7 +369,7 @@ function formatWinSWServiceInstallInstructions(input: {
     "does not install or start a Windows service.",
     "",
     `Pinned WinSW version: ${AGENC_DAEMON_WINSW_VERSION}`,
-    "WinSW 2.12.0 loads <exe directory>\\<exe basename>.xml (Program.cs).",
+    String.raw`WinSW 2.12.0 loads <exe directory>\<exe basename>.xml (Program.cs).`,
     "Place the v2.12.0 binary beside this file and name it:",
     `  "${executable}"`,
     "",
@@ -384,7 +384,7 @@ function formatWinSWServiceInstallInstructions(input: {
     "installs as LocalSystem. Password: is skipped for LocalSystem,",
     "LocalService, and NetworkService.",
     "",
-    "install with no /p passes DOMAIN\\user and a null password to CreateServiceW.",
+    String.raw`install with no /p passes DOMAIN\user and a null password to CreateServiceW.`,
     "CreateServiceW checks that the account exists, not the password.",
     "install records the XML account with no password. start fails with error 1069",
     "until the password is set.",
