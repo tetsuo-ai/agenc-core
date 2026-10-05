@@ -320,6 +320,8 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   applyDaemonConfig?(params: {
     profile?: string;
     reload?: boolean;
+    /** Apply only this effort to the idle session. */
+    reasoningEffort?: string;
   }): Promise<SessionApplyConfigResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   executeShellCommand?(
@@ -1666,6 +1668,9 @@ export function createDaemonTuiSession<
             sessionId,
             ...(p.profile !== undefined ? { profile: p.profile } : {}),
             ...(p.reload !== undefined ? { reload: p.reload } : {}),
+            ...(p.reasoningEffort !== undefined
+              ? { reasoningEffort: p.reasoningEffort }
+              : {}),
           } satisfies SessionApplyConfigParams);
           if (!result.applied) return result;
           if (

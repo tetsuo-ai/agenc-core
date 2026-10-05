@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../tui/remoteAuthSessionContext.fixture.js";
 
 const settings = vi.hoisted(() => ({
-  update: vi.fn(),
+  update: vi.fn(async () => ({ error: null })),
 }));
 
 vi.mock("../../src/utils/settings/settings.js", () => ({
@@ -66,15 +66,15 @@ function commandContext(
 }
 
 describe("/effort Gemini catalog levels", () => {
-  beforeEach(() => settings.update.mockReset());
+  beforeEach(() => settings.update.mockClear());
 
   test("displays the exact Pro levels and provider default", async () => {
     const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
     const result = await effortCommand.execute(context);
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("high effort (model default)");
-      expect(result.text).toContain("low/medium/high");
+      expect(result.text).toContain("high effort");
+      expect(result.text).toContain("low, medium, high");
     }
   });
 
@@ -113,7 +113,7 @@ describe("/effort Gemini catalog levels", () => {
 
 describe("/effort Grok catalog levels", () => {
   beforeEach(() => {
-    settings.update.mockReset();
+    settings.update.mockClear();
   });
 
   test("sets grok-4.6 xhigh through the canonical reasoning_effort setting", async () => {
@@ -123,7 +123,7 @@ describe("/effort Grok catalog levels", () => {
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("xhigh effort set for grok-4.6");
+      expect(result.text).toContain("xhigh effort for grok-4.6");
     }
     expect(settings.update).toHaveBeenCalledWith("userSettings", {
       reasoning_effort: "xhigh",
@@ -181,10 +181,62 @@ describe("/effort Grok catalog levels", () => {
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("xhigh effort set for gpt-5.2");
+      expect(result.text).toContain("xhigh effort for gpt-5.2");
     }
     expect(settings.update).toHaveBeenCalledWith("userSettings", {
       reasoning_effort: "xhigh",
     });
+  });
+});
+
+describe("/effort picker and live session", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("opens a picker of the current model's levels", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
+    const setToolJSX = vi.fn();
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = setToolJSX;
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "skip" });
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({ isLocalJSXCommand: true }),
+    );
+  });
+
+  test("applies the chosen level to the running session", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "high", { provider: "gemini" });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "text" });
+    expect(applyDaemonConfig).toHaveBeenCalledWith({ reasoningEffort: "high" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: "high" });
+  });
+
+  test("keeps the saved choice when the first conversation has not started", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "low", { provider: "gemini" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => ({
+      sessionId: "pending",
+      applied: false,
+      summary: "No live session exists; the first conversation will use the current config.",
+    }));
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "text" });
+  });
+
+  test("reports a save failure instead of claiming success", async () => {
+    settings.update.mockResolvedValueOnce({ error: new Error("read-only settings") });
+    const { context } = commandContext("gemini-3.1-pro-preview", "low", { provider: "gemini" });
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "error" });
+    if (result.kind === "error") expect(result.message).toContain("read-only settings");
   });
 });

@@ -9,6 +9,7 @@ import {
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
+import { resolveReasoningEffort } from '../llm/reasoning-effort.js'
 import { isVerifiedOpenAiReasoningModel } from '../llm/registry/openai-reasoning-models.js'
 import { resolveGeminiThinkingModel } from '../llm/registry/gemini-thinking-models.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
@@ -68,18 +69,21 @@ function inferCatalogProvider(
   return undefined
 }
 
+/**
+ * Levels from Core's own effort resolver, the same source the wire layer
+ * validates against and the Desktop catalog is generated from. Undefined
+ * when Core knows nothing about the model, so the legacy heuristics below
+ * still apply to unregistered identities.
+ */
 function getRegisteredEffortLevels(
   model: string,
   context?: ProviderAuthReadContext,
 ): AvailableEffortLevel[] | undefined {
   const provider = inferCatalogProvider(model, context)
   if (provider === undefined) return undefined
-  const entry = resolveRegisteredModelCatalogEntry({
-    provider,
-    model,
-  })
-  if (entry === undefined) return undefined
-  return entry.supportedReasoningLevels.filter(isAvailableEffortLevel)
+  const resolved = resolveReasoningEffort({ provider, model })
+  if (!resolved.registered && resolved.levels.length === 0) return undefined
+  return resolved.levels.filter(isAvailableEffortLevel)
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
@@ -541,6 +545,17 @@ function getDefaultEffortForModelForOptionalContext(
   const registeredProvider = inferCatalogProvider(model, context)
   if (registeredProvider === 'gemini') {
     return resolveGeminiThinkingModel(model)?.defaultLevel
+  }
+  // Core's resolver knows the default the provider applies when no level is
+  // sent; show that rather than guess.
+  if (registeredProvider !== undefined) {
+    const coreDefault = resolveReasoningEffort({
+      provider: registeredProvider,
+      model,
+    }).defaultLevel
+    if (coreDefault !== undefined && isAvailableEffortLevel(coreDefault)) {
+      return coreDefault
+    }
   }
   const registeredEntry =
     registeredProvider === 'meta' ||
