@@ -13,7 +13,10 @@ import { tryMicroPrint } from "../../src/bin/micro-print-client.js";
 import { trustProject } from "../../src/permissions/trust/project-trust.js";
 import type { JsonObject } from "../../src/app-server/protocol/index.js";
 
-it("negotiates the real dispatcher capability and completes print on one authenticated connection", async () => {
+it.each([
+  { format: "text", large: false },
+  ...["text", "json", "stream-json"].map(format => ({ format, large: true })),
+])("delivers $format (large=$large) through the real dispatcher and acknowledged slow sink", async ({ format, large }) => {
   const home = mkdtempSync(join(tmpdir(), "micro-print-integration-"));
   const env = { HOME: home, AGENC_HOME: home, AGENC_DAEMON_REQUEST_TIMEOUT_MS: "1000" };
   const identity = { pid: 5200, processStart: "test:5200", instanceId: "instance", runtimeVersion: "test", commit: "commit", buildTime: "now" };
@@ -50,8 +53,18 @@ it("negotiates the real dispatcher capability and completes print on one authent
     onConnectionClosed: () => { void connection?.close(); },
   });
   let stdout = "", stderr = "";
+  let releaseFirst!: () => void;
+  let firstWritten!: () => void;
+  const firstWrite = new Promise<void>(resolve => { firstWritten = resolve; });
+  let writes = 0;
+  const answer = large ? "x".repeat(5 * 1024 * 1024) + "π🌍" : "hello π🌍";
   const io = {
-    stdout: new Writable({ write(chunk, _encoding, done) { stdout += String(chunk); done(); } }),
+    stdout: new Writable({ highWaterMark: 1, write(chunk, _encoding, done) {
+      stdout += String(chunk); writes++;
+      if (large && writes === 1) { releaseFirst = done; firstWritten(); }
+      else if (large) setImmediate(done);
+      else done();
+    } }),
     stderr: new Writable({ write(chunk, _encoding, done) { stderr += String(chunk); done(); } }),
     signals: new EventEmitter() as unknown as NodeJS.Process,
   };
@@ -63,13 +76,32 @@ it("negotiates the real dispatcher capability and completes print on one authent
     const open = async () => resident.current = await openResidentPrintConnection(env, home, {
       userHome: home, publicationBarrier, isPidRunning: pid => pid === identity.pid, readProcessIdentity,
     });
-    const run = tryMicroPrint({ argv: ["-p", "hello"], cwd: home, env,
+    const run = tryMicroPrint({ argv: ["-p", "--output-format", format, "hello"], cwd: home, env,
       caller: { pid: 5100, stdinIsTTY: false, stdoutIsTTY: false, stderrIsTTY: false } }, home, io, open);
     await vi.waitFor(() => expect(manager.attachAgent).toHaveBeenCalledOnce());
-    await connection!.printEventSink!({ method: "event.message_chunk", params: { sessionId: "session", delta: "hello π🌍" } });
-    await connection!.printEventSink!({ method: "event.agent_status", params: { sessionId: "session", status: "idle", runStatus: "completed" } });
-    expect(await run).toBe(0);
-    expect(stdout).toBe("hello π🌍\n"); expect(stderr).toBe("");
+    let finished = false;
+    const delivered = (async () => {
+      await connection!.printEventSink!({ method: "event.message_chunk", params: { sessionId: "session", delta: answer } });
+      await connection!.printEventSink!({ method: "event.agent_status", params: { sessionId: "session", status: "idle", runStatus: "completed" } });
+      return await run;
+    })().finally(() => { finished = true; });
+    if (large) {
+      await firstWrite;
+      await new Promise(resolve => setImmediate(resolve));
+      expect(finished).toBe(false); expect(writes).toBe(1);
+      expect(methods).not.toContain("print.ack");
+      releaseFirst();
+    }
+    expect(await delivered).toBe(0);
+    if (format === "text") expect(stdout).toBe(`${answer}\n`);
+    else {
+      const lines = stdout.trimEnd().split("\n").map(line => JSON.parse(line));
+      expect(lines.at(-1)).toMatchObject({ type: "result", exitCode: 0, finalMessage: answer });
+      if (format === "json") expect(lines[0].events).toHaveLength(2);
+      else expect(lines).toHaveLength(3);
+    }
+    expect(stderr).toBe("");
+    if (large) expect(Buffer.byteLength(stdout)).toBeGreaterThan(5 * 1024 * 1024);
     expect(manager.createAgent).toHaveBeenCalledOnce(); expect(manager.stopAgent).toHaveBeenCalledOnce();
     expect(capabilities).toEqual({ "print.invoke.v1": true });
     expect(acceptedConnections).toBe(1);
@@ -80,4 +112,4 @@ it("negotiates the real dispatcher capability and completes print on one authent
     resident.current?.transport.close(); await connection?.close(); await server.close(); await dispatcher.close();
     rmSync(home, { recursive: true, force: true });
   }
-});
+}, 30_000);

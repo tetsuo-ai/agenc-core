@@ -49,7 +49,7 @@ function requests() {
     return { jsonrpc: "2.0", id: "nested", result } as AgenCDaemonResponse;
   });
 }
-async function canonical(argv: string[], deny = false) {
+async function canonical(argv: string[], deny = false, replay = events(deny)) {
   let stdout = "", stderr = "";
   const out = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { stdout += String(chunk); return true; });
   const err = vi.spyOn(process.stderr, "write").mockImplementation(chunk => { stderr += String(chunk); return true; });
@@ -60,7 +60,7 @@ async function canonical(argv: string[], deny = false) {
   const client = {
     request: async (method: AgenCDaemonMethod, p: JsonObject) => { const response = await call(method, p); return (response as { result: unknown }).result; },
     close: async () => {}, subscribeToConnectionState: () => () => {},
-    subscribeToSessionEvents: (_id: string, cb: (event: JsonObject) => void) => { queueMicrotask(() => events(deny).forEach(cb)); return () => {}; },
+    subscribeToSessionEvents: (_id: string, cb: (event: JsonObject) => void) => { queueMicrotask(() => replay.forEach(cb)); return () => {}; },
   } as unknown as AgenCJsonLineDaemonTuiClient;
   process.argv = ["node", "agenc", ...argv];
   let exitCode = 1;
@@ -133,6 +133,46 @@ describe("canonical/resident print byte and exit parity", () => {
     const result = await f.invocation.run();
     expect({ ...f.output(), ...result }).toEqual({ kind: "exit", exitCode: 2, stdout: expected.stdout, stderr: expected.stderr });
     expect(f.call.mock.calls.some(([method]) => method === "tool.deny")).toBe(true);
+  });
+  it.each(["text", "json", "stream-json"])("matches the 9,521-event long-run shape in %s", async format => {
+    // GD's 20-tool smoke retained 9,521 event_msg records: 21 model calls,
+    // 8,400 thinking deltas and 641 answer deltas. Keep that cardinality and
+    // multi-megabyte structured result without committing a machine rollout.
+    const replay: JsonObject[] = Array.from({ length: 8400 }, (_, index) => ({
+      method: "event.session", params: { sessionId: "session", event: {
+        type: "assistant_thinking_delta", payload: { index: 0, delta: `think-${index} ` + "r".repeat(192) },
+      } },
+    }));
+    for (let i = 0; i < 641; i++) replay.push({ method: "event.message_chunk", params: { sessionId: "session", delta: "π🌍 step " } });
+    for (let i = 0; i < 20; i++) replay.push({ method: "event.session", params: { sessionId: "session", event: {
+      type: "tool_call_completed", payload: { callId: `tool-${i}`, toolName: "exec_command", result: "done", isError: false },
+    } } });
+    while (replay.length < 9520) replay.push({ method: "event.session", params: { sessionId: "session", event: {
+      type: "session_usage", payload: { modelCalls: 21, totalTokens: 23100 },
+    } } });
+    replay.push(events()[1]!);
+    expect(replay).toHaveLength(9521);
+    const argv = ["-p", "--output-format", format, "hello"];
+    const expected = await canonical(argv, false, replay);
+    const f = resident(params(argv), { complete: false });
+    const run = f.invocation.run();
+    await vi.waitFor(() => expect(f.call.mock.calls.some(([method]) => method === "agent.attach")).toBe(true));
+    for (const event of replay) await f.invocation.event(event);
+    expect({ ...f.output(), ...await run }).toEqual({ kind: "exit", exitCode: expected.exitCode, stdout: expected.stdout, stderr: expected.stderr });
+    expect(expected.exitCode).toBe(0);
+    if (format !== "text") expect(Buffer.byteLength(expected.stdout)).toBeGreaterThan(2 * 1024 * 1024);
+  });
+  it.each(["text", "json", "stream-json"])("preserves denied-tool status after a large %s result", async format => {
+    const replay = events(true);
+    (replay[1]!.params as JsonObject).delta = "x".repeat(2 * 1024 * 1024) + "π🌍";
+    const argv = ["-p", "--output-format", format, "hello"];
+    const expected = await canonical(argv, true, replay);
+    const f = resident(params(argv), { complete: false });
+    const run = f.invocation.run();
+    await vi.waitFor(() => expect(f.call.mock.calls.some(([method]) => method === "agent.attach")).toBe(true));
+    for (const event of replay) await f.invocation.event(event);
+    expect({ ...f.output(), ...await run }).toEqual({ kind: "exit", exitCode: 2, stdout: expected.stdout, stderr: expected.stderr });
+    expect(expected.exitCode).toBe(2);
   });
   it("preserves warning bytes and multiplicity without daemon-global stderr", async () => {
     vi.stubEnv("AGENC_MAX_OUTPUT_TOKENS", "invalid");
