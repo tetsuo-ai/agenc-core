@@ -72,6 +72,15 @@ struct launch_payload {
 int main(int argc, char **argv);
 static int describe_v2_protocol(void);
 static int launch_v2_supervised_target(sigset_t *wait_mask);
+static int v2_pending_stop(void);
+static int v2_owner_alive(void);
+static int v2_read(void *buffer, size_t length, int64_t deadline, bool require_eof);
+static int v2_descriptor_inventory(bool with_source);
+static int v2_sealed_snapshot(const unsigned char *bytes, size_t size);
+static void v2_free_payload(struct launch_payload *payload);
+static int v2_seccomp_argv(const struct launch_payload *payload, bool has_fd);
+static int read_v2_payload(struct launch_payload *payload, int *snapshot_fd);
+static _Noreturn void run_v2_target_child(struct launch_payload *payload, int snapshot_fd, pid_t broker_pid);
 static int launch_supervised_target(int argc, sigset_t *wait_mask);
 static int complete_broker_cleanup(void);
 static int validate_invocation(int argc);

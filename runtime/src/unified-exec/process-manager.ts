@@ -1,3 +1,4 @@
+import { prepareDirectBwrapPlan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
@@ -699,6 +700,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
       ...(ownerId !== undefined ? { ownerId } : {}),
       tty,
+      allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
       startedAt,
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
@@ -1297,6 +1299,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly ownerId?: string;
     readonly argv0?: string;
     readonly tty: boolean;
+    readonly allowDirectBwrap: boolean;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
     readonly sandboxAuthorityGeneration: number;
@@ -1414,6 +1417,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),
+        ...(params.allowDirectBwrap && params.runtimeSandbox !== undefined ? {
+          directBwrap: {
+            prepare: () => prepareDirectBwrapPlan({ program: params.program,
+              args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
+            validateAdmission: () => this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration),
+            signal: abortController.signal,
+          },
+        } : {}),
       });
     } catch (error) {
       probeHint?.invalidate();
