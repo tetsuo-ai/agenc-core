@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   classifyShellWorkspaceWritePolicy,
@@ -419,7 +419,7 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
       args: { command },
       workspaceRoot: WORKSPACE_ROOT,
       allowWorkspaceDeletions,
-      fileWriteTools: { listed, unlisted, loadWith: "system.searchTools" },
+      fileWriteTools: () => ({ listed, unlisted, loadWith: "system.searchTools" }),
     });
   }
 
@@ -536,6 +536,54 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
     expect(without.blocked).toBe(true);
     expect(without.message).toContain("shell_workspace_file_delete_requires_approval");
     expect(without.message).not.toMatch(FILE_TOOL_NAME_RE);
+  });
+
+  it("never lists the session's tools for a command it allows", () => {
+    for (const command of [
+      "echo hi > tmp/vr-probe.txt",
+      "ls -la src",
+      "npm test 2>&1 | tail -20",
+      REFACTOR_CLEANUP,
+    ]) {
+      const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command },
+        workspaceRoot: WORKSPACE_ROOT,
+        allowWorkspaceDeletions: true,
+        fileWriteTools,
+      });
+      expect(decision.blocked).toBe(false);
+      expect(fileWriteTools).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lists them at most once for a refusal with several messages", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: 'echo hi > notes.txt; rm src/a.js; echo "$(id)" > "$OUT"' },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: false,
+      fileWriteTools,
+    });
+    expect(decision.message).toContain("use Write instead.");
+    expect(decision.message).toContain("Write cannot delete files.");
+    expect(decision.message).toContain("use Write for workspace files.");
+    expect(fileWriteTools).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not list them for a refusal that names no tool", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: "rm -rf .git" },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      fileWriteTools,
+    });
+    expect(decision.blocked).toBe(true);
+    expect(fileWriteTools).not.toHaveBeenCalled();
   });
 
   it("keeps the refusal itself: the tools a session has never widen what a shell may write", () => {

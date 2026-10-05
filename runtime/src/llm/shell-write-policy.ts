@@ -175,10 +175,13 @@ export interface ShellWorkspaceWritePolicyInput {
    * The editing tools the session has. A refusal names only these as the way
    * to change a workspace file, preferring the ones in the model's tool list;
    * with none (a read-only subagent) it says the session cannot change those
-   * files and points at the generated directories. Absent when there is no
-   * session to ask, and then the refusal names Edit and Write.
+   * files and points at the generated directories. Absent, or answering
+   * undefined, when there is no session to ask, and then the refusal names
+   * Edit and Write. Called only while a refusal message is written, at most
+   * once per classification: listing a session's tools costs time that an
+   * allowed command must not pay.
    */
-  readonly fileWriteTools?: ShellFileWriteTools;
+  readonly fileWriteTools?: () => ShellFileWriteTools | undefined;
   /**
    * The host the command runs on; `process.platform` when absent. On macOS
    * and the BSDs `sed` may be BSD sed, which reads `-i` differently.
@@ -1140,12 +1143,12 @@ function buildProtectedWritePolicyMessage(blockedTargets: readonly string[]): st
 function buildDeletionPolicyMessage(
   reasons: ReadonlySet<DeletionBlockReason>,
   blockedDeletions: readonly string[],
-  fileWriteTools: NamedFileWriteTools,
+  fileWriteTools: () => NamedFileWriteTools,
 ): string {
-  // apply_patch can remove a file; the others cannot.
-  const cannotDelete = fileWriteTools.names.filter((name) => name !== "apply_patch");
   const parts: string[] = [];
   if (reasons.has("needs_approval")) {
+    // apply_patch can remove a file; the others cannot.
+    const cannotDelete = fileWriteTools().names.filter((name) => name !== "apply_patch");
     parts.push(
       "shell_workspace_file_delete_requires_approval: deleting or moving " +
         "workspace files with a shell command needs the user's approval in this " +
@@ -1272,7 +1275,7 @@ export function classifyShellWorkspaceWritePolicy(
       blockedDeletions: [],
       message: buildIndeterminatePolicyMessage(
         [],
-        fileWriteToolsToName(params.fileWriteTools),
+        fileWriteToolsToName(params.fileWriteTools?.()),
       ),
     };
   }
@@ -1351,9 +1354,12 @@ export function classifyShellWorkspaceWritePolicy(
   if (protectedTargets.length > 0) {
     messages.push(buildProtectedWritePolicyMessage(protectedTargets));
   }
-  const fileWriteTools = fileWriteToolsToName(params.fileWriteTools);
+  // Resolved on the first message that names a tool, never for an allowed command.
+  let namedFileWriteTools: NamedFileWriteTools | undefined;
+  const fileWriteTools = (): NamedFileWriteTools =>
+    (namedFileWriteTools ??= fileWriteToolsToName(params.fileWriteTools?.()));
   if (routedTargets.length > 0) {
-    messages.push(buildPolicyMessage(routedTargets, fileWriteTools));
+    messages.push(buildPolicyMessage(routedTargets, fileWriteTools()));
   }
   // Refused even with approvals bypassed: where these land is unknown, so they
   // could reach a protected path.
@@ -1372,7 +1378,7 @@ export function classifyShellWorkspaceWritePolicy(
   // the model rewrite `echo "$(id)"` and `for f in *; do ... done` until they
   // parsed. The decision still reports `indeterminate` for callers.
   if (collected.indeterminate && !bypassesApprovalsAndSandbox) {
-    messages.push(buildIndeterminatePolicyMessage(observedTargets, fileWriteTools));
+    messages.push(buildIndeterminatePolicyMessage(observedTargets, fileWriteTools()));
   }
 
   return {

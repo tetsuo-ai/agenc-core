@@ -261,10 +261,10 @@ describe("shellFileWriteTools", () => {
   test("reaches the shell tools through the permission they read from their args", () => {
     const args: Record<string, unknown> = { cmd: "echo hi > notes.txt" };
     attachToolRuntimeContext(args, contextWithRegistry(registryOf(["exec_command"])));
-    expect(shellWorkspaceMutationPermission(args).fileWriteTools).toEqual({
+    expect(shellWorkspaceMutationPermission(args).fileWriteTools()).toEqual({
       listed: [],
       unlisted: [],
     });
-    expect(shellWorkspaceMutationPermission({}).fileWriteTools).toBeUndefined();
+    expect(shellWorkspaceMutationPermission({}).fileWriteTools()).toBeUndefined();
   });
 });

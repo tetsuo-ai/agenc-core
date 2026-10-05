@@ -941,6 +941,39 @@ describe("exec_command tool", () => {
       expect(execCommand).toHaveBeenCalledTimes(1);
     });
 
+    test("an allowed command never lists the session's tools", async () => {
+      // Per-command overhead: listing the tools runs only while a refusal is
+      // written, never on the path an allowed command takes.
+      const base = registryOf(PARENT_TOOLS);
+      const toLLMTools = vi.fn(() => base.toLLMTools());
+      const getUnavailableToolNames = vi.fn(() => new Set<string>());
+      const toolsRead = vi.fn(() => base.tools);
+      const registry = {
+        get tools() {
+          return toolsRead();
+        },
+        toLLMTools,
+        getUnavailableToolNames,
+        dispatch: base.dispatch,
+      } as unknown as ToolRegistry;
+      const { tool, execCommand } = mockManagerTool();
+      await mkdir(join(root, "tmp"), { recursive: true });
+
+      for (const cmd of ["echo hi > tmp/vr-probe.txt", "ls -la", "rm -f tmp/vr-probe.txt"]) {
+        expect(tool.preflight?.(liveArgs(cmd, registry))).toBeNull();
+        const result = await tool.execute(liveArgs(cmd, registry));
+        expect(result.isError).toBeUndefined();
+      }
+      expect(execCommand).toHaveBeenCalledTimes(3);
+      expect(toLLMTools).not.toHaveBeenCalled();
+      expect(getUnavailableToolNames).not.toHaveBeenCalled();
+      expect(toolsRead).not.toHaveBeenCalled();
+
+      const refused = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+      expect(refused.content).toContain("use Edit or Write instead");
+      expect(toLLMTools).toHaveBeenCalledTimes(1);
+    });
+
     test("lets the way out it names through: a scratch file under the workspace's tmp", async () => {
       const { tool, execCommand } = mockManagerTool();
       await mkdir(join(root, "tmp"), { recursive: true });

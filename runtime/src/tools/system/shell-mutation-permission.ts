@@ -37,8 +37,8 @@ export interface ShellWorkspaceMutationPermission {
   readonly additionalRoots: readonly string[];
   /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
   readonly bypassesApprovalsAndSandbox: boolean;
-  /** The editing tools a refusal may name; absent without a session registry. */
-  readonly fileWriteTools?: ShellFileWriteTools;
+  /** The editing tools a refusal may name, read only when one is written. */
+  readonly fileWriteTools: () => ShellFileWriteTools | undefined;
 }
 
 type SessionLike = {
@@ -235,12 +235,12 @@ export function shellWorkspaceMutationPermission(
   args: Record<string, unknown>,
 ): ShellWorkspaceMutationPermission {
   const context = readToolRuntimeContext(args);
-  const fileWriteTools = shellFileWriteTools(context);
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
-    ...(fileWriteTools !== undefined ? { fileWriteTools } : {}),
+    // Lazy: an allowed command never lists the session's tools.
+    fileWriteTools: () => shellFileWriteTools(context),
   };
 }
