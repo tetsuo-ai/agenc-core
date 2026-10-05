@@ -6,8 +6,24 @@ import {
   shellAdditionalWriteRoots,
   shellBypassesApprovalsAndSandbox,
   shellDeletionProtectedRoots,
+  shellFileWriteToolNames,
+  shellWorkspaceMutationPermission,
 } from "src/tools/system/shell-mutation-permission.js";
 import type { ToolRuntimeAttemptContext } from "src/tools/runtimes/context.js";
+import { attachToolRuntimeContext } from "src/tools/runtimes/context.js";
+import { SHELL_FILE_WRITE_TOOL_NAMES } from "src/llm/shell-write-policy.js";
+import {
+  FILE_EDIT_TOOL_NAME,
+  FILE_MULTI_EDIT_TOOL_NAME,
+} from "src/tools/system/file-edit.js";
+import { FILE_WRITE_TOOL_NAME } from "src/tools/system/file-write.js";
+import { APPLY_PATCH_TOOL_NAME } from "src/tools/apply-patch/tool.js";
+import {
+  buildFilteredRegistry,
+  mergeRoleDisallowlist,
+} from "src/agents/run-agent.js";
+import { BUILTIN_READONLY_DISALLOWLIST } from "src/agents/built-in-prompts.js";
+import type { ToolRegistry } from "src/tool-registry.js";
 
 describe("shell deletion protected roots", () => {
   afterEach(() => {
@@ -116,5 +132,99 @@ describe("shellAdditionalWriteRoots", () => {
 
   test("is empty without a session", () => {
     expect(shellAdditionalWriteRoots(undefined)).toEqual([]);
+  });
+});
+
+describe("shellFileWriteToolNames", () => {
+  function registryOf(
+    names: readonly string[],
+    unavailable: readonly string[] = [],
+  ): ToolRegistry {
+    const tools = names.map((name) => ({
+      name,
+      description: name,
+      inputSchema: { type: "object" } as const,
+      execute: async () => ({ content: "{}" }),
+    }));
+    return {
+      tools,
+      toLLMTools: () =>
+        tools.map((tool) => ({
+          type: "function" as const,
+          function: { name: tool.name, description: tool.name, parameters: { type: "object" } },
+        })),
+      getUnavailableToolNames: () => new Set(unavailable),
+      dispatch: async () => ({ content: "{}" }),
+    } as unknown as ToolRegistry;
+  }
+
+  function contextWithRegistry(registry: ToolRegistry | undefined): ToolRuntimeAttemptContext {
+    return {
+      callId: "call-file-tools",
+      toolName: "exec_command",
+      approvalPolicy: "never",
+      sandboxMode: "workspace_write",
+      approvalResolved: false,
+      invocation: {
+        session: { services: registry === undefined ? {} : { registry } },
+      },
+    } as unknown as ToolRuntimeAttemptContext;
+  }
+
+  test("lists the file tools a refusal may name under the names the tools register", () => {
+    expect(SHELL_FILE_WRITE_TOOL_NAMES).toEqual([
+      FILE_EDIT_TOOL_NAME,
+      FILE_WRITE_TOOL_NAME,
+      FILE_MULTI_EDIT_TOOL_NAME,
+      APPLY_PATCH_TOOL_NAME,
+    ]);
+  });
+
+  test("reads the file tools from the session's own registry", () => {
+    const context = contextWithRegistry(
+      registryOf(["exec_command", "FileRead", "Write", "Edit", "apply_patch"]),
+    );
+    expect(shellFileWriteToolNames(context)).toEqual(["Edit", "Write", "apply_patch"]);
+  });
+
+  test("leaves out a tool the registry keeps only for telemetry", () => {
+    const context = contextWithRegistry(
+      registryOf(["exec_command", "Edit", "Write"], ["Write"]),
+    );
+    expect(shellFileWriteToolNames(context)).toEqual(["Edit"]);
+  });
+
+  test("is empty for a read-only role's registry", () => {
+    // The registry a verification, Plan or scanner child gets: the parent's
+    // tools with the role's denylist folded in, as run-agent builds it.
+    const parent = registryOf([
+      "exec_command",
+      "write_stdin",
+      "FileRead",
+      "Grep",
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "NotebookEdit",
+      "apply_patch",
+    ]);
+    const child = buildFilteredRegistry(parent, {
+      childConversationId: "verify-child",
+      disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
+    });
+    expect(child.tools.map((tool) => tool.name)).toContain("exec_command");
+    expect(shellFileWriteToolNames(contextWithRegistry(child))).toEqual([]);
+  });
+
+  test("is undefined without a session registry, so the refusal keeps its defaults", () => {
+    expect(shellFileWriteToolNames(undefined)).toBeUndefined();
+    expect(shellFileWriteToolNames(contextWithRegistry(undefined))).toBeUndefined();
+  });
+
+  test("reaches the shell tools through the permission they read from their args", () => {
+    const args: Record<string, unknown> = { cmd: "echo hi > notes.txt" };
+    attachToolRuntimeContext(args, contextWithRegistry(registryOf(["exec_command"])));
+    expect(shellWorkspaceMutationPermission(args).fileWriteToolNames).toEqual([]);
+    expect(shellWorkspaceMutationPermission({}).fileWriteToolNames).toBeUndefined();
   });
 });

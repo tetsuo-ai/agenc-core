@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
+import { SHELL_FILE_WRITE_TOOL_NAMES } from "../../llm/shell-write-policy.js";
 
 import {
   readToolRuntimeContext,
@@ -32,6 +33,8 @@ export interface ShellWorkspaceMutationPermission {
   readonly additionalRoots: readonly string[];
   /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
   readonly bypassesApprovalsAndSandbox: boolean;
+  /** The file tools a refusal may name; absent without a session registry. */
+  readonly fileWriteToolNames?: readonly string[];
 }
 
 type SessionLike = {
@@ -39,6 +42,10 @@ type SessionLike = {
   readonly services?: {
     readonly permissionModeRegistry?: { readonly current?: () => unknown };
     readonly configStore?: { readonly homeContext?: { readonly path?: unknown } };
+    readonly registry?: {
+      readonly tools?: unknown;
+      readonly getUnavailableToolNames?: () => ReadonlySet<string>;
+    };
   };
 };
 
@@ -133,6 +140,35 @@ export function shellWorkspaceDeletionsAllowed(
   return mode !== undefined && PROMPT_FREE_PERMISSION_MODES.has(mode);
 }
 
+/**
+ * The tools of SHELL_FILE_WRITE_TOOL_NAMES this session can call, read from
+ * the session's own registry: a subagent's registry already lacks what its
+ * role denies (the read-only roles have none of them). A refused shell write
+ * names only these, so the model is never sent to a tool it cannot call.
+ * Undefined when there is no session registry to read.
+ */
+export function shellFileWriteToolNames(
+  context: ToolRuntimeAttemptContext | undefined,
+): readonly string[] | undefined {
+  const registry = sessionOf(context)?.services?.registry;
+  if (registry === undefined || registry === null) return undefined;
+  try {
+    const tools = registry.tools;
+    if (!Array.isArray(tools)) return undefined;
+    const unavailable = registry.getUnavailableToolNames?.() ?? new Set<string>();
+    const names = new Set<string>();
+    for (const tool of tools as readonly { readonly name?: unknown }[]) {
+      if (typeof tool?.name === "string" && !unavailable.has(tool.name)) {
+        names.add(tool.name);
+      }
+    }
+    return SHELL_FILE_WRITE_TOOL_NAMES.filter((name) => names.has(name));
+  } catch {
+    // A registry that cannot list its tools right now names the defaults.
+    return undefined;
+  }
+}
+
 /** The AgenC home directories a shell command may never remove. */
 export function shellDeletionProtectedRoots(
   context: ToolRuntimeAttemptContext | undefined,
@@ -173,10 +209,12 @@ export function shellWorkspaceMutationPermission(
   args: Record<string, unknown>,
 ): ShellWorkspaceMutationPermission {
   const context = readToolRuntimeContext(args);
+  const fileWriteToolNames = shellFileWriteToolNames(context);
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
+    ...(fileWriteToolNames !== undefined ? { fileWriteToolNames } : {}),
   };
 }
