@@ -1,3 +1,10 @@
+import { resolveHomeContext } from "../config/home.js";
+import { readAgenCDaemonPid } from "./daemon-discovery.js";
+export { readAgenCDaemonPid, AGENC_DAEMON_PID_MAX_BYTES } from "./daemon-discovery.js";
+import { withAgenCDaemonLifecycleLock, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
+export { withAgenCDaemonLifecycleLock, reportAgenCDaemonLifecycleLockProgress, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
+import { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSocketPath, resolveAgenCDaemonCookiePath, AGENC_DAEMON_PID_FILENAME } from "./daemon-discovery.js";
+export { resolveAgenCDaemonHome, resolveAgenCDaemonPidPath, resolveAgenCDaemonSocketPath, resolveAgenCDaemonCookiePath, AGENC_DAEMON_PID_FILENAME, AGENC_DAEMON_COOKIE_FILENAME } from "./daemon-discovery.js";
 /** Canonical daemon lifecycle/control surface. Foreground runtime loads only on run. */
 import { agenCProvisionalAdmissionMessage, observeAgenCSpawnedChildExit, AGENC_DAEMON_PROVISIONAL_ENV } from "./daemon-provisional-admission.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -13,7 +20,6 @@ import {
 } from "node:fs";
 import {
   lstat,
-  mkdir,
   readFile,
   rm,
 } from "node:fs/promises";
@@ -22,15 +28,12 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { flushAgenCCompileCache } from "../bin/compile-cache.js";
-import { resolveHomeContext } from "../config/home.js";
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
 import { discoverStateDatabasePaths } from "../state/database-paths.js";
-import { BoundedRegularFileError, readBoundedRegularFile } from "../utils/bounded-regular-file.js";
 import { writeDurableAtomicFile } from "../utils/durable-atomic-file.js";
 import { createSizeCappedFileLogSink, type SizeCappedFileLogSink } from "../utils/logger.js";
 import { isRecord } from "../utils/record.js";
 import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
-import { acquireLocalSqliteLock } from "../utils/sqlite-lock.js";
 import { type AgenCBackgroundAgentRunner } from "./background-agent-runner.js";
 import {
   AGENC_DAEMON_HEARTBEAT_FRESH_MS,
@@ -85,12 +88,10 @@ import {
   type JsonValue,
 } from "./protocol/index.js";
 import type { AgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
-import { agenCDaemonLocalEndpoint, canConnectToUnixSocket, isAgenCWindowsNamedPipePath } from "./transport/unix-socket.js";
+import { canConnectToUnixSocket, isAgenCWindowsNamedPipePath } from "./transport/unix-socket.js";
 
 
-export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 
-export const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 
 export const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
 
@@ -539,12 +540,6 @@ export function defaultAgenCDaemonPidPath(userHome = homedir()): string {
 }
 
 
-export function resolveAgenCDaemonHome(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome = homedir(),
-): string {
-  return resolveHomeContext(env, { platformHome: userHome }).path;
-}
 
 
 export function resolveAgenCDaemonWebSocketListenOptions(
@@ -653,35 +648,10 @@ export function allowsNonLoopbackDaemonWebSocketHost(env: NodeJS.ProcessEnv): bo
 }
 
 
-export function resolveAgenCDaemonPidPath(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome = homedir(),
-): string {
-  return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_PID_FILENAME);
-}
 
 
-export function resolveAgenCDaemonSocketPath(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome = homedir(),
-  platform: NodeJS.Platform = process.platform,
-): string {
-  return agenCDaemonLocalEndpoint(
-    resolveAgenCDaemonHome(env, userHome),
-    platform,
-  );
-}
 
 
-export function resolveAgenCDaemonCookiePath(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome = homedir(),
-): string {
-  return join(
-    resolveAgenCDaemonHome(env, userHome),
-    AGENC_DAEMON_COOKIE_FILENAME,
-  );
-}
 
 
 /**
@@ -2555,7 +2525,7 @@ export async function requestAgenCDaemonHealthStats(
  * proof instead of being adopted or signalled by PID alone.
  */
 export async function requestAgenCDaemonInstanceIdentity(
-  host: AgenCDaemonCliHost,
+  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
 ): Promise<AgenCDaemonInstanceIdentity> {
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
@@ -3060,31 +3030,8 @@ export function sendAgenCDaemonJsonLineRequests(
 }
 
 
-export async function readAgenCDaemonPid(
-  pidPath: string,
-): Promise<number | null> {
-  try {
-    const raw = await readBoundedRegularFile(
-      pidPath,
-      AGENC_DAEMON_PID_MAX_BYTES,
-    );
-    const canonical = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-    if (!/^[1-9]\d*$/u.test(canonical)) return null;
-    const pid = Number(canonical);
-    return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
-  } catch (error) {
-    if (
-      asNodeError(error).code === "ENOENT" ||
-      error instanceof BoundedRegularFileError
-    ) {
-      return null;
-    }
-    throw error;
-  }
-}
 
 
-export const AGENC_DAEMON_PID_MAX_BYTES = 64;
 
 
 export async function writeAgenCDaemonPid(
@@ -3099,20 +3046,6 @@ export async function writeAgenCDaemonPid(
 }
 
 
-export async function withAgenCDaemonLifecycleLock<T>(
-  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
-  operation: () => Promise<T>,
-  retryWakeSignal?: AbortSignal,
-): Promise<T> {
-  const release = await acquireAgenCDaemonLifecycleLock(
-    host, undefined, undefined, retryWakeSignal,
-  );
-  try {
-    return await operation();
-  } finally {
-    await release();
-  }
-}
 
 
 export interface AgenCDaemonLifecyclePhases {
@@ -3174,58 +3107,8 @@ export async function withAgenCDaemonLifecyclePhases<T>(
 }
 
 
-export function reportAgenCDaemonLifecycleLockProgress(
-  onProgress:
-    | ((phase: string) => void | PromiseLike<void>)
-    | undefined,
-  phase: string,
-): void {
-  try {
-    const result = onProgress?.(phase);
-    if (result !== undefined) {
-      void Promise.resolve(result).catch(() => {});
-    }
-  } catch {
-    // Diagnostics must never change daemon lifecycle lock semantics.
-  }
-}
 
 
-export async function acquireAgenCDaemonLifecycleLock(
-  host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
-  onProgress?: (phase: string) => void | PromiseLike<void>,
-  timeoutMs = 120_000,
-  retryWakeSignal?: AbortSignal,
-): Promise<() => Promise<void>> {
-  const deadline = performance.now() + timeoutMs;
-  reportAgenCDaemonLifecycleLockProgress(
-    onProgress,
-    "daemon home resolution started",
-  );
-  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
-  reportAgenCDaemonLifecycleLockProgress(
-    onProgress,
-    "daemon home resolution complete",
-  );
-  await mkdir(daemonHome, { recursive: true, mode: 0o700 });
-  reportAgenCDaemonLifecycleLockProgress(
-    onProgress,
-    "daemon home creation complete",
-  );
-  const release = await acquireLocalSqliteLock(
-    join(daemonHome, "daemon-lifecycle.lock.sqlite"),
-    {
-      label: "AgenC daemon lifecycle",
-      timeoutMs,
-      deadline,
-      ...(retryWakeSignal === undefined ? {} : { retryWakeSignal }),
-      ...(onProgress === undefined ? {} : { onProgress }),
-    },
-  );
-  return async () => {
-    release();
-  };
-}
 
 
 export async function removeAgenCDaemonPid(

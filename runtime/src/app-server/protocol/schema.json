@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.28.0",
+  "x-agenc-protocol-version": "1.30.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -37,6 +37,10 @@
     "telegram.agents.pair.cancel",
     "initialize",
     "request.cancel",
+    "print.invoke",
+    "print.admit",
+    "print.ack",
+    "print.cancel",
     "agent.create",
     "agent.list",
     "agent.attach",
@@ -112,6 +116,8 @@
     "auth.logout"
   ],
   "x-agenc-notifications": [
+    "print.admission",
+    "print.output",
     "routine.updated",
     "routine.session.prepare",
     "commandExec.outputDelta",
@@ -153,6 +159,298 @@
     }
   ],
   "definitions": {
+    "PrintInvokeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+        },
+        "argv": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "maxProperties": 4096,
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "caller": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "stdinIsTTY": {
+              "type": "boolean"
+            },
+            "stdoutIsTTY": {
+              "type": "boolean"
+            },
+            "stderrIsTTY": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pid",
+            "stdinIsTTY",
+            "stdoutIsTTY",
+            "stderrIsTTY"
+          ]
+        }
+      },
+      "required": [
+        "invocationId",
+        "argv",
+        "cwd",
+        "env",
+        "caller"
+      ]
+    },
+    "PrintAdmitParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+        },
+        "challenge": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "invocationId",
+        "challenge"
+      ]
+    },
+    "PrintAckParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "invocationId",
+        "sequence"
+      ]
+    },
+    "PrintCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+        },
+        "reason": {
+          "enum": [
+            "signal",
+            "broken_pipe"
+          ]
+        },
+        "signal": {
+          "enum": [
+            "SIGINT",
+            "SIGTERM",
+            "SIGHUP"
+          ]
+        },
+        "stream": {
+          "enum": [
+            "stdout",
+            "stderr"
+          ]
+        }
+      },
+      "required": [
+        "invocationId",
+        "reason"
+      ]
+    },
+    "PrintOutputParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stream": {
+          "enum": [
+            "stdout",
+            "stderr"
+          ]
+        },
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "invocationId",
+        "sequence",
+        "stream",
+        "data"
+      ]
+    },
+    "PrintInvokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "print.invoke"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintInvokeParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "PrintAdmitRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "print.admit"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintAdmitParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "PrintAckRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "print.ack"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintAckParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "PrintCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "print.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintCancelParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "PrintAdmissionNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "print.admission"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintAdmitParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
+    },
+    "PrintOutputNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "print.output"
+        },
+        "params": {
+          "$ref": "#/definitions/PrintOutputParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
+    },
     "RunPauseParams": {
       "type": "object",
       "additionalProperties": false,
@@ -4374,42 +4672,114 @@
     },
     "AgenCDaemonRequest": {
       "oneOf": [
-        { "$ref": "#/definitions/RemoteCapabilitiesRequest" },
-        { "$ref": "#/definitions/RemoteStatusRequest" },
-        { "$ref": "#/definitions/RemoteStartRequest" },
-        { "$ref": "#/definitions/RemoteStopRequest" },
-        { "$ref": "#/definitions/RemotePairBeginRequest" },
-        { "$ref": "#/definitions/RemotePairRefreshRequest" },
-        { "$ref": "#/definitions/RemotePairCancelRequest" },
-        { "$ref": "#/definitions/RemoteDevicesRequest" },
-        { "$ref": "#/definitions/RemotePendingRequest" },
-        { "$ref": "#/definitions/RemoteApproveRequest" },
-        { "$ref": "#/definitions/RemoteRevokeRequest" },
-        { "$ref": "#/definitions/TelegramCapabilitiesRequest" },
-        { "$ref": "#/definitions/TelegramStatusRequest" },
-        { "$ref": "#/definitions/TelegramConfigureRequest" },
-        { "$ref": "#/definitions/TelegramStartRequest" },
-        { "$ref": "#/definitions/TelegramStopRequest" },
-        { "$ref": "#/definitions/TelegramRevokeRequest" },
-        { "$ref": "#/definitions/TelegramAgentsListRequest" },
-        { "$ref": "#/definitions/TelegramAgentsCreateRequest" },
-        { "$ref": "#/definitions/TelegramAgentsUpdateRequest" },
-        { "$ref": "#/definitions/TelegramAgentsStartRequest" },
-        { "$ref": "#/definitions/TelegramAgentsStopRequest" },
-        { "$ref": "#/definitions/TelegramAgentsRemoveRequest" },
-        { "$ref": "#/definitions/TelegramAgentsPairBeginRequest" },
-        { "$ref": "#/definitions/TelegramAgentsPairConfirmRequest" },
-        { "$ref": "#/definitions/TelegramAgentsPairCancelRequest" },
-        { "$ref": "#/definitions/RoutineCapabilitiesRequest" },
-        { "$ref": "#/definitions/RoutineListRequest" },
-        { "$ref": "#/definitions/RoutineGetRequest" },
-        { "$ref": "#/definitions/RoutineCreateRequest" },
-        { "$ref": "#/definitions/RoutineUpdateRequest" },
-        { "$ref": "#/definitions/RoutineDeleteRequest" },
-        { "$ref": "#/definitions/RoutineRunRequest" },
-        { "$ref": "#/definitions/RoutineRunsRequest" },
-        { "$ref": "#/definitions/RoutineCancelRequest" },
-        { "$ref": "#/definitions/RoutineSessionPrepareResponseRequest" },
+        {
+          "$ref": "#/definitions/RemoteCapabilitiesRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteStatusRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteStartRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteStopRequest"
+        },
+        {
+          "$ref": "#/definitions/RemotePairBeginRequest"
+        },
+        {
+          "$ref": "#/definitions/RemotePairRefreshRequest"
+        },
+        {
+          "$ref": "#/definitions/RemotePairCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteDevicesRequest"
+        },
+        {
+          "$ref": "#/definitions/RemotePendingRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteApproveRequest"
+        },
+        {
+          "$ref": "#/definitions/RemoteRevokeRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramCapabilitiesRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramStatusRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramConfigureRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramStartRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramStopRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramRevokeRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsListRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsUpdateRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsStartRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsStopRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsRemoveRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsPairBeginRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsPairConfirmRequest"
+        },
+        {
+          "$ref": "#/definitions/TelegramAgentsPairCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineCapabilitiesRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineListRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineGetRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineUpdateRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineDeleteRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineRunRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineRunsRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/RoutineSessionPrepareResponseRequest"
+        },
         {
           "$ref": "#/definitions/InitializeRequest"
         },
@@ -4515,9 +4885,15 @@
         {
           "$ref": "#/definitions/SessionMcpAddServerRequest"
         },
-        { "$ref": "#/definitions/PluginSettingsGetRequest" },
-        { "$ref": "#/definitions/PluginSettingsSetRequest" },
-        { "$ref": "#/definitions/PluginSettingsResetRequest" },
+        {
+          "$ref": "#/definitions/PluginSettingsGetRequest"
+        },
+        {
+          "$ref": "#/definitions/PluginSettingsSetRequest"
+        },
+        {
+          "$ref": "#/definitions/PluginSettingsResetRequest"
+        },
         {
           "$ref": "#/definitions/MessageSendRequest"
         },
@@ -4598,13 +4974,29 @@
         },
         {
           "$ref": "#/definitions/AuthLogoutRequest"
+        },
+        {
+          "$ref": "#/definitions/PrintInvokeRequest"
+        },
+        {
+          "$ref": "#/definitions/PrintAdmitRequest"
+        },
+        {
+          "$ref": "#/definitions/PrintAckRequest"
+        },
+        {
+          "$ref": "#/definitions/PrintCancelRequest"
         }
       ]
     },
     "AgenCDaemonNotification": {
       "oneOf": [
-        { "$ref": "#/definitions/RoutineUpdatedNotification" },
-        { "$ref": "#/definitions/RoutineSessionPrepareNotification" },
+        {
+          "$ref": "#/definitions/RoutineUpdatedNotification"
+        },
+        {
+          "$ref": "#/definitions/RoutineSessionPrepareNotification"
+        },
         {
           "$ref": "#/definitions/CommandExecOutputDeltaNotification"
         },
@@ -4658,6 +5050,12 @@
         },
         {
           "$ref": "#/definitions/ThreadRealtimeClosedNotification"
+        },
+        {
+          "$ref": "#/definitions/PrintAdmissionNotification"
+        },
+        {
+          "$ref": "#/definitions/PrintOutputNotification"
         }
       ]
     },

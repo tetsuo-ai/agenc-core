@@ -1775,7 +1775,7 @@ function probeLinuxSandbox(options: {
   readonly agencLinuxSandboxExe?: string;
 }): SandboxExecutionStatus {
   const helper = resolveTrustedLinuxSandboxExecutable(
-    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(),
+    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(undefined, options.env),
     options.cwd,
   );
   if (helper.error !== undefined) {
@@ -1998,12 +1998,13 @@ function executableFile(
 
 export function resolveDefaultLinuxSandboxExecutable(
   moduleUrl = import.meta.url,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   // Dev checkouts live inside the writable workspace, which trips the
   // "helper must be outside the workspace" trust invariant enforced by
   // resolveTrustedLinuxSandboxExecutable. AGENC_LINUX_SANDBOX_EXE points at a
   // helper installed outside the workspace; packaged installs never need it.
-  const override = process.env.AGENC_LINUX_SANDBOX_EXE;
+  const override = env.AGENC_LINUX_SANDBOX_EXE;
   if (override !== undefined && override.trim() !== "") {
     return override;
   }

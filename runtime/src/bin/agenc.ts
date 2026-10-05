@@ -44,8 +44,11 @@ if (entry === "detached-daemon") {
     await runDetachedDaemonChildEntry();
   }
 } else if (entry === "print") {
-  const { runPrintCliEntry } = await import("./print-cli-main.js");
-  await runPrintCliEntry();
+  const { runMicroPrintEntry } = await import("./micro-print-entry.js");
+  if (!(await runMicroPrintEntry())) {
+    const { runPrintCliEntry } = await import("./print-cli-main.js");
+    await runPrintCliEntry();
+  }
 } else {
   await import("./agenc-main.js");
 }

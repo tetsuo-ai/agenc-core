@@ -1,6 +1,6 @@
+import "../bootstrap/node-env.js";
 import type { OneShotContinueSession } from "./route.js";
 import { reproveResumeDescriptor, type ResumeCwdProof, openResumeCwdProof, assertResumeCwdProof, assertLiveAgentMatchesResumeDescriptor, isCanonicalSessionAlreadyActiveError } from "./daemon-one-shot-continue.js";
-import "../bootstrap/node-env.js";
 import { runDefaultCliRoute } from "./default-cli-route.js";
 import { readProcessCwdSafely, resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
 import { requireProjectTrustForTui } from "./project-trust-preflight.js";

@@ -1,3 +1,4 @@
+import { captureResidentProcessIdentity, proveRecordedResidentInstance } from "./daemon-resident-proof.js";
 /**
  * AgenC daemon autostart orchestration.
  *
@@ -41,7 +42,6 @@ import {
 import {
   findLinuxAgenCDaemonProcesses,
   inspectLinuxAgenCDaemonProcess,
-  readAgenCDaemonProcessStart,
   sameAgenCDaemonInstanceIdentity,
   type AgenCDaemonInstanceIdentity,
   type AgenCDaemonProcessIdentity,
@@ -1058,16 +1058,7 @@ async function captureAgenCDaemonProcessIdentity(
   pid: number,
   host: AgenCDaemonAutostartHost,
 ): Promise<AgenCDaemonProcessIdentity | null> {
-  if (!host.isPidRunning(pid)) return null;
-  const processStart = await readAgenCDaemonProcessStart(
-    pid,
-    host.readProcessIdentity,
-  );
-  if (processStart === null) {
-    if (!host.isPidRunning(pid)) return null;
-    throw processIdentityUnavailable(pid);
-  }
-  return { pid, processStart };
+  return captureResidentProcessIdentity(pid, host, processIdentityUnavailable);
 }
 
 async function isAgenCDaemonProcessIdentityCurrent(
@@ -1086,72 +1077,17 @@ async function proveRecordedAgenCDaemonInstance(params: {
   readonly host: AgenCDaemonAutostartHost;
   readonly options: AgenCDaemonAutostartOptions;
 }): Promise<BoundAgenCDaemonInstance | null> {
-  // Deliberate proof order: immutable sidecar snapshot, stable OS process
-  // identity, authenticated RPC, sidecar reread, then OS identity recapture.
-  const before = daemonInstanceIdentityFromRuntimeInfo(
-    readDaemonRuntimeInfo(params.runtimeInfoPath),
-  );
-  if (before === null) return null;
-  if (params.expectedPid !== undefined && before.pid !== params.expectedPid) {
-    throw instanceProofFailed(
-      params.expectedPid,
-      `sidecar records pid ${before.pid}`,
-    );
-  }
-  const processBefore = await captureAgenCDaemonProcessIdentity(
-    before.pid,
-    params.host,
-  );
-  if (processBefore === null) return null;
-  if (processBefore.processStart !== before.processStart) {
-    throw instanceProofFailed(before.pid, "process start identity changed");
-  }
-
-  let rpcIdentity: AgenCDaemonInstanceIdentity;
-  try {
-    const requestIdentity =
-      params.options.requestDaemonInstanceIdentity ??
-      params.host.requestDaemonInstanceIdentity;
-    rpcIdentity = await Promise.resolve(
-      requestIdentity?.({
-        pid: before.pid,
-        pidPath: params.pidPath,
-      }) ?? requestAgenCDaemonInstanceIdentity(params.host),
-    );
-  } catch (error) {
-    throw instanceProofFailed(
-      before.pid,
-      `authenticated identity RPC failed: ${formatProofError(error)}`,
-    );
-  }
-  if (!sameAgenCDaemonInstanceIdentity(before, rpcIdentity)) {
-    throw instanceProofFailed(
-      before.pid,
-      "authenticated identity does not match the sidecar",
-    );
-  }
-
-  const after = daemonInstanceIdentityFromRuntimeInfo(
-    readDaemonRuntimeInfo(params.runtimeInfoPath),
-  );
-  if (after === null || !sameAgenCDaemonInstanceIdentity(before, after)) {
-    throw instanceProofFailed(before.pid, "sidecar changed during proof");
-  }
-  const processAfter =
-    hostPlatform(params.host) === "linux"
-      ? await captureAgenCDaemonProcessIdentity(before.pid, params.host)
-      : processBefore;
-  if (
-    processAfter === null ||
-    processAfter.processStart !== processBefore.processStart ||
-    processAfter.processStart !== after.processStart
-  ) {
-    throw instanceProofFailed(
-      before.pid,
-      "process identity changed during proof",
-    );
-  }
-  return { identity: after, process: processAfter };
+  return proveRecordedResidentInstance({
+    expectedPid: params.expectedPid,
+    runtimeInfoPath: params.runtimeInfoPath,
+    platform: hostPlatform(params.host),
+    captureProcess: pid => captureAgenCDaemonProcessIdentity(pid, params.host),
+    requestIdentity: async pid => {
+      const requestIdentity = params.options.requestDaemonInstanceIdentity ?? params.host.requestDaemonInstanceIdentity;
+      return requestIdentity?.({ pid, pidPath: params.pidPath }) ?? requestAgenCDaemonInstanceIdentity(params.host);
+    },
+    proofError: instanceProofFailed,
+  });
 }
 
 async function revalidateRecordedAgenCDaemonInstance(params: {
