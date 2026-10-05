@@ -91,6 +91,39 @@ def invoke(payload,source=None,extra=False,hold=False,prefix_stop=False,timeout=
  os.close(out_r);os.close(status_r)
  return os.waitstatus_to_exitcode(status),output,proof
 
+class Faults(unittest.TestCase):
+ def test_snapshot_failures_short_reads_and_source_mutation(self):
+  global BROKER
+  original=BROKER
+  source=(ROOT/'native/agenc-process-broker.c').read_text()
+  read='ssize_t n = pread(5, verified + offset, data_length - offset, (off_t)offset);'
+  snapshot='*snapshot_fd = v2_sealed_snapshot(verified, data_length);'
+  cases=[
+   ('memfd-failure','int fd = memfd_create("agenc-seccomp", MFD_CLOEXEC | MFD_ALLOW_SEALING);','int fd = -1; errno = EMFILE;',False),
+   ('seal-failure','fcntl(fd, F_ADD_SEALS, seals)','(errno = EPERM, -1)',False),
+   ('read-failure',read,'ssize_t n = (errno = EIO, -1);',False),
+   ('short-eintr',read,'static unsigned reads; ssize_t n; if (++reads == 1) { errno = EINTR; n = -1; } else n = pread(5, verified + offset, 1, (off_t)offset);',True),
+   ('mutation-during-read',read,'if (offset == 1 && pwrite(5, "abcdefgh", 8, 0) != 8) goto failure; ssize_t n = pread(5, verified + offset, 1, (off_t)offset);',False),
+   ('mutation-after-compare',snapshot,'if (pwrite(5, "abcdefgh", 8, 0) != 8) goto failure; '+snapshot,True),
+   ('fork-failure','root_pid = fork();\n  if (root_pid == 0) run_v2_target_child','root_pid = -1; errno = EAGAIN;\n  if (root_pid == 0) run_v2_target_child',False),
+  ]
+  try:
+   for name,before,after,accepted in cases:
+    with self.subTest(name=name):
+     self.assertEqual(source.count(before),1)
+     fixture=D/(name+'.c');fixture.write_text(source.replace(before,after))
+     BROKER=D/name
+     subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-o',str(BROKER),str(fixture)],check=True)
+     effect=D/(name+'.effect')
+     with tempfile.TemporaryFile(dir=D) as file:
+      file.write(b'12345678');file.flush()
+      code,out,proof=invoke(frame(data=b'12345678',env=(f'FIXTURE_EFFECT_PATH={effect}',)),source=file.fileno())
+      self.assertEqual((code,proof),(0,b'SC') if accepted else (125,b''))
+      self.assertEqual(effect.read_bytes() if effect.exists() else b'',b'X' if accepted else b'')
+      if accepted:self.assertIn(b'FIRST=49',out);self.assertIn(b'SEALS=15',out)
+      else:self.assertNotIn(b'EXEC',out)
+  finally:BROKER=original
+
 class Protocol(unittest.TestCase):
  def setUp(self):self.file=tempfile.TemporaryFile(dir=D)
  def tearDown(self):self.file.close()
