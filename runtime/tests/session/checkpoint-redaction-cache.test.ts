@@ -30,7 +30,11 @@ describe("turn-owned checkpoint redaction", () => {
       runtimeOnly: { toolResultIntegrity: createToolResultIntegrity({ runId: "test-run", toolCallId: "call-one", content }) } };
     expect(project(message)).toEqual(llmMessageToCheckpointResponseItem(message));
     expect(project(message)).toEqual(llmMessageToCheckpointResponseItem(message));
+    // Checkpoint projection intentionally preserves the original durable seal
+    // when a tool body has been bounded in memory. Keep that existing policy.
     message.content = "X" + content.slice(1);
+    expect(project(message)).toEqual(llmMessageToCheckpointResponseItem(message));
+    message.toolCallId = "different-call";
     expect(() => llmMessageToCheckpointResponseItem(message)).toThrow();
     expect(() => project(message)).toThrow();
   });
