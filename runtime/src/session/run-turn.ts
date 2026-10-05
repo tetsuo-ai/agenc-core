@@ -41,6 +41,7 @@
  */
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
+import { isLightPrintRun } from "../prompts/light-print.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -120,13 +121,16 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
   type LiveInstructionPolicy,
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import {
+  appendVolatileInstructions,
+  sessionTailCacheEnabled,
+} from "./session-tail-cache.js";
 import { projectRetainedAttachments } from "./attachment-retention.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
@@ -140,7 +144,13 @@ import {
   isTransientProviderError,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import { waitForProviderRetry } from "../recovery/provider-wait.js";
+import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
+import {
+  STREAM_RETRY_WINDOW_MS,
+  STREAM_STALL_RETRY_BUDGET_MS,
+  StreamProgressError,
+} from "../llm/stream-progress.js";
 import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
@@ -241,6 +251,7 @@ import {
   isRetryableStreamError,
   streamRetryErrorStatus,
   streamRetryNoticeMessage,
+  isStreamProgressStop,
   suppressInterruptedStreamToolHistory,
   type InterruptedStreamHistoryState,
 } from "./run-turn-stream-retry.js";
@@ -294,7 +305,13 @@ export type {
   AutoCompactImpl,
 } from "./run-turn-compaction.js";
 
+import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
+
 export interface RunTurnOptions {
+  /** Explicit output contract; never inferred from user prose. */
+  readonly exactOutput?: boolean;
+  /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
+  readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
   /** Classifies a supplemental prompt without allowing it to replace core instructions. */
   readonly systemPromptTrust?: "trusted_internal" | "workspace_role";
@@ -761,6 +778,78 @@ function reportWithheldImages(
   });
 }
 
+function projectSamplingImages(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  currentConfig: AgenCConfig,
+): void {
+  // Leave out every image the selected model must not receive: all of them
+  // when the registry knows the model is text-only, and any image this
+  // provider and model refused earlier in this session. Before the byte
+  // budget, so the budget counts only images that are sent.
+  const imagePolicy = modelImagePolicy(
+    session,
+    ctx,
+    state,
+    currentConfig,
+  );
+  rememberRequestImageRoute(state, imagePolicy.route);
+  // A refusal matters only while its image can be sent again.
+  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
+  const withheldForModel = withholdImagesForModel(
+    state.messagesForQuery,
+    imagePolicy,
+    rejectedImagesFor(session, imagePolicy.route),
+  );
+  state.messagesForQuery = withheldForModel.messages;
+
+  // Bound the fully assembled query, including fresh image mentions from
+  // attachment producers. Durable history and retained attachments keep
+  // every image; only this request projection changes.
+  const imageBudgetBytes = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  const boundedImages = boundContextImageBytes(
+    state.messagesForQuery,
+    imageBudgetBytes,
+  );
+  if (boundedImages.omitted > 0) {
+    state.messagesForQuery = boundedImages.messages;
+    const tracked = state as TurnState & { contextImagesOmitted?: number };
+    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
+      tracked.contextImagesOmitted = boundedImages.omitted;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "context_images_omitted",
+            message:
+              `${boundedImages.omitted} inline image(s) left out of the request: ` +
+              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
+              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+          },
+        },
+      });
+    }
+  }
+
+  // A tool-result image whose bytes are not a complete image is refused by
+  // every provider, and because tool results are replayed, by every request
+  // after it. After the budget, so only images still on the wire are decoded.
+  const withheldUndecodable = withholdUndecodableToolImages(
+    state.messagesForQuery,
+  );
+  state.messagesForQuery = withheldUndecodable.messages;
+  reportWithheldImages(session, state, {
+    unsupported: withheldForModel.unsupported,
+    rejected: withheldForModel.rejected,
+    undecodable: withheldUndecodable.undecodable,
+  });
+}
+
 async function prepareSamplingRequestBoundary(
   state: TurnState,
   ctx: TurnContext,
@@ -835,6 +924,8 @@ async function prepareSamplingRequestBoundary(
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
+    lightMode: session.services.runtimeOptions?.lightMode === true,
+    lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -888,70 +979,7 @@ async function prepareSamplingRequestBoundary(
   }
   state.attachmentsAnchoredForTurn = true;
 
-  // Leave out every image the selected model must not receive: all of them
-  // when the registry knows the model is text-only, and any image this
-  // provider and model refused earlier in this session. Before the byte
-  // budget, so the budget counts only images that are sent.
-  const imagePolicy = modelImagePolicy(
-    session,
-    samplingContext,
-    state,
-    currentConfig,
-  );
-  rememberRequestImageRoute(state, imagePolicy.route);
-  // A refusal matters only while its image can be sent again.
-  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
-  const withheldForModel = withholdImagesForModel(
-    state.messagesForQuery,
-    imagePolicy,
-    rejectedImagesFor(session, imagePolicy.route),
-  );
-  state.messagesForQuery = withheldForModel.messages;
-
-  // Bound the fully assembled query, including fresh image mentions from
-  // attachment producers. Durable history and retained attachments keep
-  // every image; only this request projection changes.
-  const imageBudgetBytes = resolveContextImageBudgetBytes(
-    session.services.userShell?.childEnvironment ?? process.env,
-  );
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
-    imageBudgetBytes,
-  );
-  if (boundedImages.omitted > 0) {
-    state.messagesForQuery = boundedImages.messages;
-    const tracked = state as TurnState & { contextImagesOmitted?: number };
-    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
-      tracked.contextImagesOmitted = boundedImages.omitted;
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "context_images_omitted",
-            message:
-              `${boundedImages.omitted} inline image(s) left out of the request: ` +
-              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
-              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
-          },
-        },
-      });
-    }
-  }
-
-  // A tool-result image whose bytes are not a complete image is refused by
-  // every provider, and because tool results are replayed, by every request
-  // after it. After the budget, so only images still on the wire are decoded.
-  const withheldUndecodable = withholdUndecodableToolImages(
-    state.messagesForQuery,
-  );
-  state.messagesForQuery = withheldUndecodable.messages;
-  reportWithheldImages(session, state, {
-    unsupported: withheldForModel.unsupported,
-    rejected: withheldForModel.rejected,
-    undecodable: withheldUndecodable.undecodable,
-  });
+  projectSamplingImages(state, samplingContext, session, currentConfig);
 
   // Remaining run budget on each tool result (#2503), fixed when the result
   // completed so its bytes never change between requests. Projection only.
@@ -963,21 +991,11 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
-    trackingState: getAttachmentTrackingState(session),
-    turnId: ctx.subId,
-    subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
 
   return {
     kind: "request",
     samplingContext,
-    request: snapshotSamplingRequestContract({
-      ...request,
-      ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
-    }),
+    request: snapshotSamplingRequestContract(request),
   };
 }
 
@@ -1004,6 +1022,7 @@ async function tryRunSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
   assistantOutputSink?: AssistantOutputStreamSink,
+  stallRetryStarted = false,
 ): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -1089,6 +1108,11 @@ async function tryRunSamplingRequest(
 
   // Phase 3: post-sample recovery. Always runs — even on stream
   // error — so the ladder can decide between recovery vs terminal.
+  // Progress stops have their own one-retry bound. No fallback trigger may
+  // swallow them or errors from their retry and restart the recovery ladder.
+  if (streamModelError && (stallRetryStarted || isStreamProgressStop(streamModelError))) {
+    throw streamModelError;
+  }
   await postSampleRecovery(state, ctx, session, signal);
 
   // If recovery applied a transition (any of I-10's triggers fired),
@@ -1192,8 +1216,6 @@ async function runSamplingRequest(
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
 ): Promise<SamplingRequestResult> {
-  const trackingState = getAttachmentTrackingState(session);
-  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
   let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
@@ -1204,9 +1226,6 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
   if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
-    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
-      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
-    }
     prepared = await prepareSamplingRequestBoundary(
       state, ctx, session, signal, events, querySource,
     );
@@ -1221,103 +1240,131 @@ async function runSamplingRequest(
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
   let outageRetries = 0;
-  for (;;) {
-    let retryBlocked = false;
-    const outcome = await reconnectWithBackoff<SamplingRequestResult>({
-      session,
-      signal,
-      // One initial provider call plus the five recovery-ladder reservations.
-      // The reservation hook remains authoritative when another recovery path
-      // has already consumed part of the shared A1 ladder.
-      maxAttempts: MAX_RECOVERY_REENTRIES + 1,
-      attempt: () =>
-        tryRunSamplingRequest(
-          state,
-          samplingContext,
-          session,
-          request,
-          signal,
-          events,
-          assistantOutputSink,
-        ),
-      isTransient: isTransientSamplingError,
-      onTransientRetry: async (attempt, err) => {
-        const blockedReason = interruptedStreamRetryBlockReason(state, session);
-        if (blockedReason !== null) {
-          retryBlocked = true;
-          suppressInterruptedStreamToolHistory(state);
-          cancelQueuedInterruptedTools(state);
+  let stallRetryStarted = false;
+  const stallRetryController = new AbortController();
+  signal = AbortSignal.any([signal, stallRetryController.signal]);
+  let stallRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    for (;;) {
+      let retryBlocked = false;
+      const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+        session,
+        signal,
+        // One initial provider call plus the five recovery-ladder reservations.
+        // The reservation hook remains authoritative when another recovery path
+        // has already consumed part of the shared A1 ladder.
+        maxAttempts: MAX_RECOVERY_REENTRIES + 1,
+        giveUpMs: STREAM_RETRY_WINDOW_MS,
+        attempt: () =>
+          tryRunSamplingRequest(
+            state,
+            samplingContext,
+            session,
+            request,
+            signal,
+            events,
+            assistantOutputSink,
+            stallRetryStarted,
+          ),
+        isTransient: isTransientSamplingError,
+        onTransientRetry: async (attempt, err) => {
+          // A stopped stream gets at most one new physical request, including
+          // when that retry fails for a different transient reason.
+          if (stallRetryStarted) return false;
+          const progressStop = isStreamProgressStop(err);
+          const blockedReason = interruptedStreamRetryBlockReason(state, session);
+          if (blockedReason !== null) {
+            retryBlocked = true;
+            suppressInterruptedStreamToolHistory(state);
+            cancelQueuedInterruptedTools(state);
+            emitError(session, session.nextInternalSubId(), {
+              cause: "stream_disconnected",
+              message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+              provider: session.services.provider.name,
+              status: streamRetryErrorStatus(err),
+              streamError: true,
+            });
+            return false;
+          }
+          const reservation = await reserveRecoveryReentry(session, state, {
+            triggerName: "reconnect",
+          });
+          if (reservation.kind !== "reserved") {
+            // The fast ladder is spent. Whether the turn now waits for the
+            // provider or ends is decided below, once the outcome is known.
+            return false;
+          }
+          cleanupInterruptedStreamAttempt(state, session, err);
+          if (progressStop) {
+            stallRetryStarted = true;
+            session.resetProviderIncrementalState();
+            stallRetryTimer = setTimeout(() => {
+              stallRetryController.abort(new StreamProgressError(
+                session.services.provider.name, "stream_retry_budget",
+              ));
+            }, STREAM_STALL_RETRY_BUDGET_MS);
+            stallRetryTimer.unref?.();
+          }
           emitError(session, session.nextInternalSubId(), {
             cause: "stream_disconnected",
-            message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+            message: streamRetryNoticeMessage(
+              err,
+              progressStop ? 1 : attempt,
+              progressStop ? 2 : MAX_RECOVERY_REENTRIES + 1,
+            ),
             provider: session.services.provider.name,
             status: streamRetryErrorStatus(err),
             streamError: true,
           });
-          return false;
-        }
-        const reservation = await reserveRecoveryReentry(session, state, {
-          triggerName: "reconnect",
-        });
-        if (reservation.kind !== "reserved") {
-          // The fast ladder is spent. Whether the turn now waits for the
-          // provider or ends is decided below, once the outcome is known.
-          return false;
-        }
-        cleanupInterruptedStreamAttempt(state, session, err);
-        emitError(session, session.nextInternalSubId(), {
-          cause: "stream_disconnected",
-          message: streamRetryNoticeMessage(
-            err,
-            attempt,
-            MAX_RECOVERY_REENTRIES + 1,
-          ),
-          provider: session.services.provider.name,
-          status: streamRetryErrorStatus(err),
-          streamError: true,
-        });
-        return true;
-      },
-    });
+          return true;
+        },
+      });
 
-    if (outcome.kind === "ok") return outcome.value;
-    if (outcome.kind === "aborted") {
-      throw samplingAbortError(signal, outcome.reason);
-    }
-    // The fast ladder is exhausted. A provider that is down for minutes is
-    // not the turn's fault (#2212): wait with a slow backoff and try again,
-    // within the operator's patience, unless retrying is unsafe.
-    const lastError = outcome.lastError;
-    const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
-    const canWait =
-      !retryBlocked &&
-      outage.waitMs > 0 &&
-      waitedMs + delayMs <= outage.waitMs &&
-      isTransientSamplingError(lastError);
-    if (!canWait) {
-      if (!retryBlocked) {
-        suppressInterruptedStreamToolHistory(state);
-        cancelQueuedInterruptedTools(state);
+      if (outcome.kind === "ok") return outcome.value;
+      if (outcome.kind === "aborted") {
+        throw samplingAbortError(signal, outcome.reason);
       }
-      if (lastError instanceof Error) throw lastError;
-      throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      // The fast ladder is exhausted. A provider that is down for minutes is
+      // not the turn's fault (#2212): wait with a slow backoff and try again,
+      // within the operator's patience, unless retrying is unsafe.
+      const lastError = outcome.lastError;
+      const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
+      const canWait =
+        !retryBlocked &&
+        !stallRetryStarted &&
+        !isStreamProgressStop(lastError) &&
+        outage.waitMs > 0 &&
+        waitedMs + delayMs <= outage.waitMs &&
+        isTransientSamplingError(lastError);
+      if (!canWait) {
+        if (!retryBlocked) {
+          suppressInterruptedStreamToolHistory(state);
+          cancelQueuedInterruptedTools(state);
+        }
+        if (lastError instanceof Error) throw lastError;
+        throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      }
+      outageRetries += 1;
+      waitedMs += delayMs;
+      cleanupInterruptedStreamAttempt(state, session, lastError);
+      const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+      await waitForProviderRetry({
+        session,
+        cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+        message: rateLimitNotice ??
+          (`${session.services.provider.name} is unavailable. ` +
+            `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+            `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+        delayMs,
+        wait: () => abortableSleep(delayMs, signal),
+      });
+      if (signal.aborted) throw samplingAbortError(signal, "aborted");
+      // The fast recovery counter remains spent. This is a new physical sample,
+      // so persist a distinct identity without reusing its unknown reservation.
+      beforeOutageRetry?.();
     }
-    outageRetries += 1;
-    waitedMs += delayMs;
-    cleanupInterruptedStreamAttempt(state, session, lastError);
-    emitWarning(
-      session.eventLog,
-      session.nextInternalSubId(),
-      "provider_outage_wait",
-      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
-        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
-        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
-    );
-    await abortableSleep(delayMs, signal);
-    if (signal.aborted) throw samplingAbortError(signal, "aborted");
-    // The fast recovery counter remains spent. This is a new physical sample,
-    // so persist a distinct identity without reusing its unknown reservation.
-    beforeOutageRetry?.();
+  } finally {
+    clearTimeout(stallRetryTimer);
   }
 }
 
@@ -1424,11 +1471,6 @@ function turnSignalAbortReason(reason: unknown): TurnAbortReason {
     default:
       return "interrupted";
   }
-}
-
-function errorSummary(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 /**
@@ -1574,6 +1616,7 @@ export async function drainInFlight(
           toolName,
           result.content,
           classifyUntrustedToolResult(toolName, registryTool),
+          session.services.runtimeOptions?.lightMode === true,
         );
         // Emit the tool_call_completed event so rollouts + observers
         // close the turn boundary with the synthetic result (I-8).
@@ -2006,7 +2049,7 @@ interface RunTurnKernelCommons {
     error?: unknown,
   ) => void;
   readonly emitTurnAborted: (reason: string) => void;
-  readonly emitTurnFailed: (message: string) => void;
+  readonly emitTurnFailed: (message: string, code?: string) => void;
   readonly referenceContextItem: TurnContextItem;
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
@@ -2073,8 +2116,18 @@ async function* runTurnKernelInner(
     ...referenceContextItem,
     instructionEvidence: instructionEnvelope.evidence,
   };
+  // With session-tail caching on, per-turn guidance rides after the volatile
+  // marker so the session-fixed part of the prompt stays byte-identical
+  // across turns and remains in the provider's cached prefix.
+  const volatileTurnGuidance =
+    commons.ledgerRootTurnGuidance !== undefined &&
+    sessionTailCacheEnabled(
+      session.services.userShell?.childEnvironment ??
+        session.services.providerEnvironment,
+      ctx.modelProviderId,
+    );
   const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined
+    commons.ledgerRootTurnGuidance === undefined || volatileTurnGuidance
       ? instructionEnvelope.text
       : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
           .filter(
@@ -2082,13 +2135,16 @@ async function* runTurnKernelInner(
               typeof value === "string" && value.length > 0,
           )
           .join("\n\n");
-  const effectiveSystemPrompt =
+  const resolvedSystemPrompt =
     systemPromptWithTrustedTurnGuidance.length > 0
       ? resolveModelInstructionsForTurn(
           ctx,
           systemPromptWithTrustedTurnGuidance,
         )
       : "";
+  const effectiveSystemPrompt = volatileTurnGuidance
+    ? appendVolatileInstructions(resolvedSystemPrompt, [commons.ledgerRootTurnGuidance!])
+    : resolvedSystemPrompt;
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt.length > 0
       ? { ...opts, systemPrompt: effectiveSystemPrompt }
@@ -2221,6 +2277,7 @@ async function* runTurnKernelInner(
     session,
     isRootHumanTurn: commons.rootHumanTurnText !== undefined,
     taskText: commons.rootHumanTurnText,
+    exactOutput: opts.exactOutput,
   });
   // Phase 4c: restate an active goal at the top of every root human turn. The
   // goal is session state, not conversation, so a compacted history or a
@@ -2633,6 +2690,8 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
+  const stepTrail = new StepLimitTrail();
+  const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   // The deadline stop (#2503): a bounded failure, not a cancellation, so the
@@ -2728,21 +2787,6 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    const maxTurns = resolveMaxTurns(ctx);
-    if (state.turnCount > maxTurns) {
-      await drainInFlight(state, ctx, session);
-      await syncSessionState();
-      emitTurnComplete(lastContent, "max_turns");
-      const terminal: Terminal = { reason: "max_turns" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "max_turns",
-      };
-      return terminal;
-    }
-
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
     const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
     if (
@@ -2764,6 +2808,54 @@ async function* runTurnKernelInner(
         stopReason: "max_budget_usd",
       };
       return terminal;
+    }
+
+    // A cross-provider allocation covers the final sample too. Reserve one
+    // of its calls without widening the consented allocation.
+    const maxTurns = Math.min(resolveMaxTurns(ctx),
+      opts.stepLimitWrapup?.maxModelCalls !== undefined
+        ? Math.max(0, opts.stepLimitWrapup.maxModelCalls - 1) : Infinity);
+    if (state.turnCount > maxTurns) {
+      await drainInFlight(state, ctx, session);
+      if (opts.stepLimitWrapup !== undefined) {
+        state.messages.push({ role: "user", content: STEP_LIMIT_WRAPUP_INSTRUCTION,
+          runtimeOnly: { excludeFromDurableHistory: true } });
+        await prepareAgenCTurnContext(state, ctx, session, turnQuerySource, signal);
+        state.messagesForQuery = projectRetainedAttachments(
+          state.messagesForQuery,
+          getAttachmentTrackingState(session).retainedAttachments,
+          session.permissionModeRegistry.current().mode,
+        ).messages;
+        projectSamplingImages(state, ctx, session, session.services.configStore!.current());
+        const wrapped = await stepLimitWrapup({ session, ctx,
+          request: buildSamplingRequestContract(state, session, ctx), signal,
+          fallback: stepTrail.fallback(lastContent) });
+        const cancelled = await finishCancelledIfAborted();
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        opts.assistantOutputSink?.reset();
+        opts.assistantOutputSink?.writeCanonicalDelta(wrapped.text);
+        lastContent = wrapped.text;
+        if (wrapped.usage) usage = cumulativeUsage(usage, wrapped.usage);
+        state.messages.push({ role: "assistant", content: lastContent });
+        session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: lastContent },
+        } });
+        yield { type: "assistant_text", content: lastContent };
+      }
+      await syncSessionState();
+      emitTurnComplete(lastContent, "max_turns");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
+      return { reason: "max_turns" };
+    }
+    if (opts.stepLimitWrapup !== undefined && !stepReminders.has(state.turnCount)) {
+      const reminder = stepLimitReminder(state.turnCount - 1, maxTurns);
+      if (reminder) {
+        state.messages.push(reminder);
+        stepReminders.add(state.turnCount);
+      }
     }
 
     // Run deadline (#2503): tell the model its remaining budget once per
@@ -3034,8 +3126,12 @@ async function* runTurnKernelInner(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
           : "turn failed",
+        underlying instanceof StreamProgressError ? underlying.reason : undefined,
       );
-      const terminal: Terminal = { reason: "completed", error: underlying };
+      const terminal: Terminal = {
+        reason: underlying instanceof StreamProgressError ? "model_error" : "completed",
+        error: underlying,
+      };
       yield {
         type: "turn_complete",
         content: lastContent,
@@ -3345,6 +3441,7 @@ async function* runTurnKernelInner(
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
+        stepTrail.record(toolCall);
         const event: PhaseEvent = { type: "tool_call", toolCall };
         yield event;
       }
@@ -3636,6 +3733,8 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        exactOutput?: boolean;
+        stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3657,6 +3756,8 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      exactOutput: opts.exactOutput,
+      stepLimitWrapup: opts.stepLimitWrapup,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,

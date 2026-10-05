@@ -33,7 +33,7 @@ import {
 import {
   readAgenCDaemonPid,
   resolveAgenCDaemonPidPath,
-} from "../app-server/daemon-cli.js";
+} from "../app-server/daemon-control.js";
 
 export type AgenCOnboardCliCommand =
   | { readonly kind: "launch" }

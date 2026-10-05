@@ -8,6 +8,29 @@ import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
 import { isProviderFundsFailure } from "./funds.js";
 
+const preGenerationRejections = new WeakMap<Error, string>();
+
+/**
+ * Adapter evidence that this single wire attempt was rejected before generation.
+ * Mark only at the initial HTTP rejection boundary, never from an error's name,
+ * message, missing usage, or an in-stream status. Preserve the mapped error's
+ * identity so recovery still sees its rate-limit/auth/etc. classification.
+ */
+export function markLLMPreGenerationRejection<T extends Error>(
+  error: T,
+  provider: string,
+): T {
+  preGenerationRejections.set(error, provider);
+  return error;
+}
+
+export function isLLMPreGenerationRejection(
+  error: unknown,
+  provider: string,
+): boolean {
+  return error instanceof Error && preGenerationRejections.get(error) === provider;
+}
+
 export interface TlsValidationDetails {
   readonly code: string;
   readonly message: string;

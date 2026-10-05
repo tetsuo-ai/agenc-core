@@ -14,6 +14,7 @@ import type {
   HealthStatsResult,
 } from "./protocol/index.js";
 import type { AgenCSessionCounts } from "./session-lifecycle.js";
+import { healthPingResult } from "./health-ping.js";
 
 export interface AgenCHealthSessionCounter {
   countSessions(): Promise<AgenCSessionCounts> | AgenCSessionCounts;
@@ -30,6 +31,11 @@ export interface AgenCDaemonHealthServiceOptions {
   readonly sessionCounter?: AgenCHealthSessionCounter;
   readonly stateCounter?: AgenCHealthStateCounter;
   readonly ready?: () => boolean;
+  /**
+   * How many sessions open at the daemon's last shutdown it is still
+   * restoring. `health.ready` reports it once this is provided.
+   */
+  readonly restoringSessions?: () => number;
 }
 
 export class AgenCDaemonHealthService {
@@ -39,6 +45,7 @@ export class AgenCDaemonHealthService {
   readonly #sessionCounter?: AgenCHealthSessionCounter;
   readonly #stateCounter?: AgenCHealthStateCounter;
   readonly #ready: () => boolean;
+  readonly #restoringSessions: (() => number) | undefined;
 
   constructor(options: AgenCDaemonHealthServiceOptions = {}) {
     this.#startedAtMs = options.startedAtMs ?? Date.now();
@@ -47,13 +54,11 @@ export class AgenCDaemonHealthService {
     this.#sessionCounter = options.sessionCounter;
     this.#stateCounter = options.stateCounter;
     this.#ready = options.ready ?? (() => true);
+    this.#restoringSessions = options.restoringSessions;
   }
 
   ping(): HealthPingResult {
-    return {
-      ok: true,
-      now: this.#nowIso(),
-    };
+    return healthPingResult(this.#nowMs());
   }
 
   ready(): HealthReadyResult {
@@ -61,6 +66,9 @@ export class AgenCDaemonHealthService {
       ready: this.#ready(),
       uptimeMs: this.#uptimeMs(),
       now: this.#nowIso(),
+      ...(this.#restoringSessions !== undefined
+        ? { restoringSessions: this.#restoringSessions() }
+        : {}),
     };
   }
 

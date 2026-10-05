@@ -61,11 +61,12 @@ function extractionContext(opts: {
 
 function sessionWithBus(
   warnings: Array<{ cause: string; message: string }>,
+  runtimeOptions = defaultRuntimeOptions,
 ): Session {
   let subId = 0;
   return {
     conversationId: `bus-${Math.random().toString(36).slice(2)}`,
-    services: { runtimeOptions: defaultRuntimeOptions },
+    services: { runtimeOptions },
     nextInternalSubId: () => String(subId++),
     emit: (event: { msg: { type: string; payload: unknown } }) => {
       if (event.msg.type === "warning") {
@@ -879,7 +880,12 @@ describe("extract memories service", () => {
 
   it.each(["workspace_write", "read_only"] as const)("skips an unwritable memory root before dispatch in %s", async (mode) => {
     const warnings: Array<{ cause: string; message: string }> = [];
-    const session = sessionWithBus(warnings);
+    // workspace_write may write the session temp root. The default one is the
+    // temp directory the test process started with, which can contain this
+    // test's root, so give the session its own.
+    const session = sessionWithBus(warnings, resolveAgentRuntimeOptions({}, {
+      sessionTempRoot: join(root, "session-tmp"),
+    }));
     const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
     const scan = vi.fn(async () => []);
     initExtractMemories({ env: {}, minEligibleTurns: 1,

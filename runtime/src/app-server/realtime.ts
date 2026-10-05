@@ -1,3 +1,5 @@
+import { TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START, REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC } from "./realtime-admission.js";
+export { TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START, REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC } from "./realtime-admission.js";
 /**
  * AgenC daemon realtime JSON-RPC method handlers.
  *
@@ -27,7 +29,7 @@ import type {
   RealtimeStartupContextOptions,
   RealtimeStartupContextSessionLike,
 } from "../conversation/realtime/context.js";
-import { type AgenCRealtimeCallClient } from "./realtime-transport.js";
+import { type AgenCRealtimeCallClientLike } from "./realtime-transport.js";
 import {
   JSON_RPC_VERSION,
   type AgenCDaemonNotification,
@@ -60,7 +62,7 @@ export interface AgenCRealtimeThreadBinding {
     request: RealtimeTransportRequest,
   ) => Promise<RealtimeTransportConnection> | RealtimeTransportConnection;
   readonly routeRealtimeTextInput?: (text: string) => Promise<void> | void;
-  readonly callClient?: AgenCRealtimeCallClient;
+  readonly callClient?: AgenCRealtimeCallClientLike;
   readonly backendPrompt?: string | null;
   readonly startupContext?: string | null;
   readonly startupContextOptions?: Omit<
@@ -104,13 +106,6 @@ export interface AgenCRealtimeRpcServiceOptions {
   readonly unadmittedStartOverride?:
     typeof TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START;
 }
-
-export const TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START = Symbol(
-  "test-only-allow-unadmitted-realtime-start",
-);
-
-export const REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC =
-  "thread/realtime/start is disabled: realtime provider traffic has no durable run/step admission, bounded budget reservation, or authoritative usage reconciliation; use ordinary daemon session turns until realtime admission is implemented";
 
 interface ActiveRealtimeFanout {
   readonly active: RealtimeActiveHandle;

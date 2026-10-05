@@ -683,6 +683,10 @@ export class OllamaProvider implements LLMProvider {
               const chunk = isRecord(rawChunk) ? rawChunk : {};
               const message = isRecord(chunk.message) ? chunk.message : {};
               const chunkContent = readString(message.content);
+              const thinking = readString(message.thinking);
+              if (thinking) {
+                onChunk({ content: "", done: false, thinkingDelta: { delta: thinking, index: 0 } });
+              }
 
               if (chunkContent) {
                 content += chunkContent;
@@ -703,12 +707,16 @@ export class OllamaProvider implements LLMProvider {
                   });
                   emittedLength = safeLength;
                 }
+                if (chunkContent.slice(safeDeltaLength).trim()) {
+                  onChunk({ content: "", done: false, bufferedContentProgress: true });
+                }
               }
 
-              toolCalls = [
-                ...toolCalls,
-                ...normalizeOllamaToolCalls(message.tool_calls),
-              ];
+              const chunkToolCalls = normalizeOllamaToolCalls(message.tool_calls);
+              if (chunkToolCalls.length > 0) {
+                toolCalls = [...toolCalls, ...chunkToolCalls];
+                onChunk({ content: "", done: false, bufferedContentProgress: true });
+              }
 
               const chunkModel = readString(chunk.model);
               if (chunkModel) model = chunkModel;

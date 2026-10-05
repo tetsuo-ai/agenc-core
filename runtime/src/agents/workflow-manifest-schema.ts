@@ -1,11 +1,10 @@
 /** Canonical version-2 workflow manifest schema and validation. */
 
-import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 
-import {
-  digestCanonicalJson,
-  type Sha256Digest,
-} from "../eval-contract/index.js";
+import { digestCanonicalJson } from "../eval-contract/canonical-json.js";
+import type { Sha256Digest } from "../eval-contract/types.js";
 import {
   cloneFiniteJsonValue,
   parseFiniteJsonBytes,
@@ -165,10 +164,16 @@ export const WORKFLOW_MANIFEST_V2_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-const ajv = new Ajv({ allErrors: true, strict: true });
-const validateV2 = ajv.compile(
-  WORKFLOW_MANIFEST_V2_SCHEMA,
-) as ValidateFunction<WorkflowDagManifestV2>;
+// The public schema is only shallow-frozen. Preserve the original constraints
+// before consumers can mutate nested properties, even before first validation.
+const validationSchema = JSON.parse(JSON.stringify(WORKFLOW_MANIFEST_V2_SCHEMA));
+let validateV2: ValidateFunction<WorkflowDagManifestV2> | undefined;
+
+function getManifestValidator(): ValidateFunction<WorkflowDagManifestV2> {
+  return validateV2 ??= new (loadAjv())({ allErrors: true, strict: true }).compile(
+    validationSchema,
+  ) as ValidateFunction<WorkflowDagManifestV2>;
+}
 
 export function parseWorkflowManifestBytes(
   bytes: Uint8Array,
@@ -198,7 +203,7 @@ function normalizeFiniteWorkflowManifest(
     );
   }
 
-  assertSchema(validateV2, value, label, "version-2 DAG manifest");
+  assertSchema(getManifestValidator(), value, label, "version-2 DAG manifest");
   enforceAggregateLimits(value, label);
   validateDagSemantics(value, label);
   return Object.freeze({

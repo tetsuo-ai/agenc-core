@@ -1,4 +1,5 @@
-import { type StructuredPatchHunk, structuredPatch } from 'diff'
+import type { StructuredPatchHunk } from 'diff'
+import { loadDiff } from '../../utils/lazy-runtime-packages.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import { countCharInString } from '../../utils/stringUtils.js'
@@ -371,7 +372,7 @@ export function getSnippetForTwoFileDiff(
   fileAContents: string,
   fileBContents: string,
 ): string {
-  const patch = structuredPatch(
+  const patch = loadDiff().structuredPatch(
     'file.txt',
     'file.txt',
     fileAContents,

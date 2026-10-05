@@ -7,12 +7,11 @@ import {
 } from "node:dns";
 import { isIP, type LookupFunction } from "node:net";
 
-import {
-  Agent,
-  fetch as undiciFetch,
-  type Dispatcher,
-  type RequestInit as UndiciRequestInit,
+import type {
+  Dispatcher,
+  RequestInit as UndiciRequestInit,
 } from "undici";
+import { loadUndiciAgent } from "../../undici-dispatcher.js";
 
 type AddressFamily = 4 | 6;
 type ResolveFamily = (
@@ -72,11 +71,12 @@ const DEFAULT_DEPENDENCIES: QwenDnsTransportDependencies = {
   resolve6,
   fallbackLookup,
   createDispatcher: (lookup) =>
-    new Agent({
+    new (loadUndiciAgent())({
       connect: { lookup },
     }),
   primaryFetch: (input, init) => fetch(input, init),
   fetchWithDispatcher: async (input, init, dispatcher) => {
+    const { fetch: undiciFetch } = await import("undici");
     // The request URL remains the official hostname. Only socket address
     // resolution changes, so Undici continues to derive TLS SNI and
     // certificate validation from that hostname rather than from an IP.

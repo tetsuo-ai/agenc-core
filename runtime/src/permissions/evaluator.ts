@@ -76,6 +76,7 @@ import {
 } from "./unattended-policy.js";
 import { runWithCwdOverride } from "../utils/cwd.js";
 import type { Session } from "../session/session.js";
+import type { SandboxMode } from "../tools/orchestrator.js";
 import { isSessionPlanMutation } from "../planning/session-plan-authority.js";
 import {
   classifyYoloAction,
@@ -132,6 +133,12 @@ export interface ToolEvaluatorContext {
    * in AgenC. Defaults to false.
    */
   readonly autoAllowBashIfSandboxed?: boolean;
+  /**
+   * The sandbox mode the orchestrator runs this dispatch's tool calls under.
+   * exec_command reads it to tell whether a call will run inside the OS
+   * sandbox. Absent, no call is taken to run sandboxed.
+   */
+  readonly sandboxMode?: SandboxMode;
   /**
    * Execution surface hint for denial-limit handling. Headless runs
    * hit the hard abort at `totalDenials >= 20`; CLI runs degrade to

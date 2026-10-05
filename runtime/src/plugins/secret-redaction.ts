@@ -22,6 +22,16 @@ export function createSavedPluginSecretRedactor(home: HomeContext): (value: stri
   return value => redactLiteralSecrets(value, ordered)
 }
 
+/**
+ * The same redactor, built when it first has a value to redact. Secure storage
+ * is read through a helper process, so a projection that never redacts
+ * anything (no MCP servers configured) never spawns it.
+ */
+export function createLazySavedPluginSecretRedactor(home: HomeContext): (value: string) => string {
+  let redact: ((value: string) => string) | undefined
+  return value => (redact ??= createSavedPluginSecretRedactor(home))(value)
+}
+
 export function redactSavedPluginSecrets(value: string, home: HomeContext): string {
   return createSavedPluginSecretRedactor(home)(value)
 }

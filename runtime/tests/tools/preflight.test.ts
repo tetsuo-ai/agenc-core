@@ -91,7 +91,7 @@ describe("tool preflight before approval", () => {
       arguments: JSON.stringify({ message: "Write a test", task_name: "tests", [field]: "  \t " }),
     }, options);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain(`${field} is required`);
+    expect(result.content).toContain(field === "message" ? "message or message_ref is required" : `${field} is required`);
     expect(resolver.request).not.toHaveBeenCalled();
     expect(canUseTool).not.toHaveBeenCalled();
     expect(ensureAgentControl).not.toHaveBeenCalled();

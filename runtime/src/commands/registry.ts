@@ -37,7 +37,7 @@ import { coordinatorCommand } from "./coordinator.js";
 import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
-import { compactCommand, contextCommand } from "./session-compact.js";
+import { compactCommand, contextCommand } from "./session-compact-commands.js";
 import {
   compactRetainCommand,
   compactRollbackCommand,

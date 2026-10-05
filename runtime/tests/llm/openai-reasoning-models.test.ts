@@ -12,7 +12,7 @@ import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
 import { resolveProviderModelCapabilities } from "../../src/llm/capabilities.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../src/llm/wire/capability-gating.js";
 import { buildOpenAIResponsesRequest } from "../../src/llm/wire/responses-openai.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import { defaultConfig } from "../../src/config/schema.js";
 import { effortValueToReasoningEffort, getAvailableEffortLevelsForContext } from "../../src/utils/effort.js";
@@ -139,6 +139,7 @@ describe("GPT-6 Sol and GPT-6 Luna", () => {
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
     ]);

@@ -9,7 +9,7 @@
  * @module
  */
 
-import { Agent as UndiciAgent } from "undici";
+import { loadUndiciAgent } from "../../llm/undici-dispatcher.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
@@ -56,7 +56,7 @@ export async function createHttpMCPConnection(
 
   const timeout = config.timeout ?? 30_000;
   const socketAgent = config.desktopAuthorityGrant === undefined ? undefined :
-    new UndiciAgent({ connect: { socketPath: config.desktopAuthorityGrant.socketPath } });
+    new (loadUndiciAgent())({ connect: { socketPath: config.desktopAuthorityGrant.socketPath } });
   const proxyOptions = socketAgent ? { dispatcher: socketAgent } : getProxyFetchOptions({
     // This supplies an explicit direct dispatcher, avoiding even a process-
     // global fetch proxy while retaining the existing owned agent lifecycle.

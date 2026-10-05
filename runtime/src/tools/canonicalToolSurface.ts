@@ -1,5 +1,14 @@
 import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
-import { z } from "zod/v4";
+import type { z } from "zod/v4";
+import {
+  createFileReadInputSchema,
+  createFileEditInputSchema,
+  createFileWriteInputSchema,
+  createGrepInputSchema,
+  createGlobInputSchema,
+  createBashInputSchema,
+  createNotebookEditInputSchema,
+} from "./canonical-input-schemas.js";
 
 import { runAdmittedLegacyToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { getSessionId } from "../bootstrap/state.js";
@@ -35,7 +44,7 @@ import type {
   ToolRecoveryCategory,
   ToolResult as RuntimeToolResult,
 } from "./types.js";
-import { buildTool, type Tool, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
+import { buildTool, type Tool, type ToolDef, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
 
 type RuntimeToolFactory = (workspaceRoot: string) => RuntimeTool;
 type SearchOrReadClassification = {
@@ -57,7 +66,7 @@ interface CanonicalToolOptions {
   readonly aliases?: readonly string[];
   readonly searchHint: string;
   readonly maxResultSizeChars: number;
-  readonly inputSchema: z.ZodType<Record<string, unknown>>;
+  readonly createInputSchema: () => z.ZodType<Record<string, unknown>>;
   readonly createRuntimeTool: RuntimeToolFactory;
   readonly recoveryCategory: ToolRecoveryCategory;
   readonly mapInput?: (
@@ -393,7 +402,8 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     }
     return tool;
   }
-  return buildTool({
+  let inputSchema: z.ZodType<Record<string, unknown>> | undefined;
+  const definition: ToolDef = {
     name: options.name,
     recoveryCategory: options.recoveryCategory,
     admissionEstimate(input) {
@@ -406,7 +416,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     maxResultSizeChars: options.maxResultSizeChars,
     strict: true,
     get inputSchema() {
-      return options.inputSchema;
+      return inputSchema ??= options.createInputSchema();
     },
     async description(input) {
       return options.summary?.(input) ?? options.userFacingName?.(input) ?? options.name;
@@ -520,6 +530,13 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     extractSearchText(content) {
       return canonicalResultText(content);
     },
+  };
+  // buildTool spreads enumerable properties, which would force the getter.
+  // Keep it hidden during that spread, then restore the public accessor.
+  Object.defineProperty(definition, "inputSchema", { enumerable: false });
+  return Object.defineProperty(buildTool(definition), "inputSchema", {
+    ...Object.getOwnPropertyDescriptor(definition, "inputSchema"),
+    enumerable: true,
   });
 }
 
@@ -588,67 +605,11 @@ function mapCanonicalInput(
     : mapped;
 }
 
-const fileReadInputSchema = z.strictObject({
-  file_path: z.string(),
-  offset: z.union([z.number(), z.string().regex(/^[1-9]\d*$/)]).optional(),
-  limit: z.union([z.number(), z.string().regex(/^[1-9]\d*$/)]).optional(),
-  pages: z.string().optional(),
-});
-
-const fileEditInputSchema = z.strictObject({
-  file_path: z.string(),
-  old_string: z.string(),
-  new_string: z.string(),
-  replace_all: z.boolean().optional(),
-});
-
-const fileWriteInputSchema = z.strictObject({
-  file_path: z.string(),
-  content: z.string(),
-});
-
-const grepInputSchema = z.strictObject({
-  pattern: z.string(),
-  path: z.string().optional(),
-  glob: z.string().optional(),
-  type: z.string().optional(),
-  output_mode: z.enum(["content", "files_with_matches", "count"]).optional(),
-  "-B": z.number().optional(),
-  "-A": z.number().optional(),
-  "-C": z.number().optional(),
-  context: z.number().optional(),
-  "-n": z.boolean().optional(),
-  "-i": z.boolean().optional(),
-  head_limit: z.number().optional(),
-  offset: z.number().optional(),
-  multiline: z.boolean().optional(),
-});
-
-const globInputSchema = z.strictObject({
-  pattern: z.string(),
-  path: z.string().optional(),
-});
-
-const bashInputSchema = z.strictObject({
-  command: z.string(),
-  args: z.array(z.string()).optional(),
-  cwd: z.string().optional(),
-  timeoutMs: z.number().optional(),
-});
-
-const notebookEditInputSchema = z.strictObject({
-  notebook_path: z.string(),
-  cell_id: z.string().optional(),
-  new_source: z.string().optional(),
-  cell_type: z.enum(["code", "markdown"]).optional(),
-  edit_mode: z.enum(["replace", "insert", "delete"]).optional(),
-});
-
 export const CanonicalBashTool = createCanonicalTool({
   name: "system.bash",
   searchHint: "execute shell commands",
   maxResultSizeChars: Infinity,
-  inputSchema: bashInputSchema,
+  createInputSchema: createBashInputSchema,
   createRuntimeTool: (root) =>
     createBashTool({
       cwd: root,
@@ -677,7 +638,7 @@ export const CanonicalFileReadTool = createCanonicalTool({
   name: "FileRead",
   searchHint: "read local files",
   maxResultSizeChars: Infinity,
-  inputSchema: fileReadInputSchema,
+  createInputSchema: createFileReadInputSchema,
   createRuntimeTool: (root) => createFileReadTool({ allowedPaths: [root] }),
   recoveryCategory: "idempotent",
   getPath: (input) =>
@@ -692,7 +653,7 @@ export const CanonicalFileEditTool = createCanonicalTool({
   name: "Edit",
   searchHint: "edit local files",
   maxResultSizeChars: 30_000,
-  inputSchema: fileEditInputSchema,
+  createInputSchema: createFileEditInputSchema,
   createRuntimeTool: (root) => createFileEditTool({ allowedPaths: [root] }),
   recoveryCategory: "side-effecting",
   getPath: (input) =>
@@ -711,7 +672,7 @@ export const CanonicalFileWriteTool = createCanonicalTool({
   name: "Write",
   searchHint: "write local files",
   maxResultSizeChars: 30_000,
-  inputSchema: fileWriteInputSchema,
+  createInputSchema: createFileWriteInputSchema,
   createRuntimeTool: (root) => createFileWriteTool({ allowedPaths: [root] }),
   recoveryCategory: "side-effecting",
   getPath: (input) =>
@@ -734,7 +695,7 @@ export const CanonicalGrepTool = createCanonicalTool({
   name: "Grep",
   searchHint: "search file contents",
   maxResultSizeChars: 30_000,
-  inputSchema: grepInputSchema,
+  createInputSchema: createGrepInputSchema,
   createRuntimeTool: (root) => createGrepTool({ allowedPaths: [root] }),
   recoveryCategory: "idempotent",
   getPath: (input) => (typeof input.path === "string" ? input.path : undefined),
@@ -748,7 +709,7 @@ export const CanonicalGlobTool = createCanonicalTool({
   name: "Glob",
   searchHint: "find files by pattern",
   maxResultSizeChars: 30_000,
-  inputSchema: globInputSchema,
+  createInputSchema: createGlobInputSchema,
   createRuntimeTool: (root) => createGlobTool({ allowedPaths: [root] }),
   recoveryCategory: "idempotent",
   getPath: (input) => (typeof input.path === "string" ? input.path : undefined),
@@ -762,7 +723,7 @@ export const CanonicalNotebookEditTool = createCanonicalTool({
   name: "NotebookEdit",
   searchHint: "edit Jupyter notebook cells",
   maxResultSizeChars: 100_000,
-  inputSchema: notebookEditInputSchema,
+  createInputSchema: createNotebookEditInputSchema,
   createRuntimeTool: (root) =>
     createSystemNotebookEditTool({ workspaceRoot: root }),
   recoveryCategory: "side-effecting",

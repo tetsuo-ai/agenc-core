@@ -7,14 +7,22 @@
  * the same way so a leaked key cannot be reintroduced via options.env.
  */
 
+import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
+
 export { isSecretEnvKey } from "../utils/secretEnv.js";
 import { isSecretEnvKey } from "../utils/secretEnv.js";
 
 /**
- * Copy env entries, dropping secret keys. Undefined values are skipped.
+ * Restore the user runtime environment and drop secret keys and undefined values.
  */
 export function scrubEnvForChildProcess(
   source: NodeJS.ProcessEnv | Record<string, string | undefined> | undefined,
+): Record<string, string> {
+  return scrubSecrets(source === undefined ? undefined : userRuntimeEnvironment(source));
+}
+
+function scrubSecrets(
+  source: NodeJS.ProcessEnv | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   if (source === undefined) return out;
@@ -35,6 +43,7 @@ export function buildScrubbedSpawnEnv(
 ): Record<string, string> {
   return {
     ...scrubEnvForChildProcess(baseEnvironment),
-    ...scrubEnvForChildProcess(overrides),
+    // Explicit per-command values win, including NODE_ENV=production.
+    ...scrubSecrets(overrides),
   };
 }

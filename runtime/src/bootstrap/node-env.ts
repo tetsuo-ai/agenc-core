@@ -14,6 +14,15 @@
  * `??=` so an explicitly-set NODE_ENV (tests, debugging a dev reconciler on
  * purpose) still wins.
  */
+// Keep this capture inline and import-free: bundle chunks may load React before
+// a static bootstrap import. Share it with subprocesses via runtimeEnvironment.ts.
+const originalEnvironmentKey = Symbol.for("agenc.originalRuntimeEnvironment");
+if (!Object.prototype.hasOwnProperty.call(globalThis, originalEnvironmentKey)) {
+  Object.defineProperty(globalThis, originalEnvironmentKey, {
+    value: Object.freeze({ NODE_ENV: process.env.NODE_ENV }),
+    configurable: true,
+  });
+}
 process.env.NODE_ENV ??= "production";
 
 export {};

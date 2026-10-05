@@ -70,16 +70,20 @@ test("control: genuine associated rerun supersedes an earlier failure", async ()
   expect(f.outcomes().at(-1)?.outcome).toBe("verified");
 });
 
-test("an investigation prompt alone is not observed capability evidence", async () => {
+test("an investigation prompt answered with no tool call settles as the round cap would", async () => {
   const f = fixture("- [-] pytest is unavailable in this environment");
   f.state.completedToolResults.push(tool("read", { toolName: "FileRead", content: "project README" }));
   await completionGate(f.state, f.ctx, f.session);
   expect(f.outcomes().at(-1)).toMatchObject({ outcome: "injected", reason: "unavailable_unproven" });
   f.state.transition = undefined;
-  // No command or capability probe occurred after the runtime prompt.
+  // No tool ran after the runtime prompt and the claim is unchanged, so asking
+  // again could not change the answer. The prompt is still not evidence: the
+  // gate settles through the round cap's fallback, well before the cap of 10.
   await completionGate(f.state, f.ctx, f.session);
-  expect(f.outcomes().at(-1)?.outcome).not.toBe("partial");
-  expect(f.state.completionGateSettled).toBe(false);
+  expect(f.outcomes().at(-1)).toMatchObject({
+    outcome: "partial", reason: "unavailable_checks", round: 2, toolCallsSinceInjection: 0,
+  });
+  expect(f.state.completionGateSettled).toBe(true);
 });
 
 test("user-quoted marker text is not a runtime investigation record", async () => {
@@ -102,7 +106,10 @@ test("an extra unavailable prompt must not erase the earlier failed runnable che
   await completionGate(f.state, f.ctx, f.session);
   expect(f.outcomes().at(-1)?.outcome).not.toBe("partial");
   f.state.transition = undefined;
+  // Nothing ran since the last prompt and the verdict is unchanged, so the gate
+  // settles as the round cap would, with the failed check still holding the item.
   await completionGate(f.state, f.ctx, f.session);
-  expect(f.outcomes().at(-1)?.outcome).not.toBe("partial");
-  expect(f.state.completionGateSettled).toBe(false);
+  expect(f.outcomes().at(-1)).toMatchObject({
+    outcome: "exhausted", reason: "rounds_exhausted", unmetItems: ["pytest is unavailable in this environment"],
+  });
 });

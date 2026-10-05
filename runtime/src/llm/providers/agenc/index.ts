@@ -26,6 +26,7 @@ import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
 import { normalizeProviderIdentity } from "../../../provider-identity.js";
 import { BUILT_IN_PROVIDER_DEFAULT_MODELS, resolveBuiltInProviderInfo } from "../../registry/provider-info.js";
 import { createPinnedProviderFetch } from "../../credential-redirect-fetch.js";
+import { withResponseDetailSystemPrompt } from "../../../prompts/response-detail.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -157,7 +158,8 @@ export class AgenCProvider implements LLMProvider {
       model: prepared.delegate.model,
       ...(prepared.innerHandle ? { providerExecutionHandle: prepared.innerHandle } : {}),
     };
-    return prepared.delegate.instance.projectRequestForAccounting?.(messages, delegateOptions) ?? { messages, options: delegateOptions };
+    const routedOptions = withConcreteResponseDetail(prepared.delegate, delegateOptions);
+    return prepared.delegate.instance.projectRequestForAccounting?.(messages, routedOptions) ?? { messages, options: routedOptions };
   }
 
   private async executionFor(options?: LLMChatOptions): Promise<{
@@ -166,9 +168,10 @@ export class AgenCProvider implements LLMProvider {
   }> {
     const handle = options?.providerExecutionHandle;
     if (handle === undefined) {
+      const delegate = await this.resolveDelegate(options);
       return {
-        delegate: await this.resolveDelegate(options),
-        delegateOptions: withoutExecutionHandle(options),
+        delegate,
+        delegateOptions: withConcreteResponseDetail(delegate, withoutExecutionHandle(options)),
       };
     }
     const prepared = this.#preparedExecutions.get(handle);
@@ -182,10 +185,10 @@ export class AgenCProvider implements LLMProvider {
     this.#preparedExecutions.delete(handle);
     return {
       delegate: prepared.delegate,
-      delegateOptions: {
+      delegateOptions: withConcreteResponseDetail(prepared.delegate, {
         ...withoutExecutionHandle(options),
         ...(prepared.innerHandle ? { providerExecutionHandle: prepared.innerHandle } : {}),
-      },
+      }),
     };
   }
 
@@ -325,6 +328,17 @@ export class AgenCProvider implements LLMProvider {
       ? Math.floor(configured)
       : DEFAULT_DELEGATE_CACHE_TTL_MS;
   }
+}
+
+function withConcreteResponseDetail(
+  delegate: ResolvedAgenCDelegate,
+  options: LLMChatOptions,
+): LLMChatOptions {
+  if (delegate.provider === "openai" || options.responseDetailOverride === undefined) return options;
+  return {
+    ...options,
+    systemPrompt: withResponseDetailSystemPrompt(options.systemPrompt, options.responseDetailOverride),
+  };
 }
 
 function withoutExecutionHandle(

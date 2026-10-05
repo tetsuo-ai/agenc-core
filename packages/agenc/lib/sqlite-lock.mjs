@@ -73,6 +73,8 @@ const DARWIN_ACL_KNOWN_TOKENS = new Set([
   ...DARWIN_ACL_INHERITANCE_FLAGS,
   ...DARWIN_ACL_MUTATION_RIGHTS,
 ]);
+const DARWIN_ACL_VERDICT_CACHE_LIMIT = 512;
+const darwinAclVerdicts = new Map();
 
 const WINDOWS_SECURITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -421,10 +423,45 @@ function validateDarwinAclListing(stdout, path, role) {
 }
 
 async function assertDarwinPathSecurity(path, role, context) {
+  return assertDarwinPathSecurityWithIO(
+    path,
+    role,
+    context,
+    execFileUtf8,
+    (candidate) => lstat(candidate, { bigint: true }),
+  );
+}
+
+// HFS+ reports change time in whole seconds, so an ACL edit within the same
+// second can leave the identity unchanged. Only sub-second change times are
+// precise enough to cache a verdict.
+function hasSubsecondChangeTime(stats) {
+  if (typeof stats.ctimeNs === "bigint") return stats.ctimeNs % 1_000_000_000n !== 0n;
+  return Number.isFinite(stats.ctimeMs) && stats.ctimeMs % 1000 !== 0;
+}
+
+function darwinAclIdentity(stats) {
+  return [
+    stats.dev, stats.ino, stats.ctimeNs ?? stats.ctimeMs,
+    stats.mode, stats.uid, stats.gid,
+    process.getuid?.(), process.geteuid?.(),
+  ].join(":");
+}
+
+async function assertDarwinPathSecurityWithIO(path, role, context, lister, statPath) {
   throwIfExpired(context, path);
+  // A Darwin ACL edit advances ctime. Re-stat on every lookup so an old
+  // successful verdict cannot authorize a changed inode, owner, or ACL.
+  const before = darwinAclIdentity(await statPath(path));
+  const cacheKey = `${role}\0${path}`;
+  if (darwinAclVerdicts.get(cacheKey) === before) {
+    throwIfExpired(context, path);
+    return;
+  }
+  darwinAclVerdicts.delete(cacheKey);
   let result;
   try {
-    result = await execFileUtf8(
+    result = await lister(
       "/bin/ls",
       ["-ldeq", path],
       {
@@ -442,6 +479,16 @@ async function assertDarwinPathSecurity(path, role, context) {
   }
   validateDarwinAclListing(result.stdout, path, role);
   throwIfExpired(context, path);
+  // A path changed while ls ran must never seed a verdict for its new state.
+  const afterStats = await statPath(path);
+  const after = darwinAclIdentity(afterStats);
+  throwIfExpired(context, path);
+  if (after === before && hasSubsecondChangeTime(afterStats)) {
+    if (darwinAclVerdicts.size >= DARWIN_ACL_VERDICT_CACHE_LIMIT) {
+      darwinAclVerdicts.delete(darwinAclVerdicts.keys().next().value);
+    }
+    darwinAclVerdicts.set(cacheKey, before);
+  }
 }
 
 function trustedWindowsPowerShellPath(
@@ -1189,7 +1236,32 @@ async function waitForBusyRetry(context, path, attempt, cause) {
   if (remaining <= 0) throw timeoutError(context, path, cause);
   const exponentialCap = Math.min(MAX_BUSY_RETRY_MS, 2 ** Math.min(attempt, 6));
   const jitter = Math.max(1, Math.floor(Math.random() * (exponentialCap + 1)));
-  await delay(Math.min(remaining, jitter));
+  const waitMs = Math.min(remaining, jitter);
+  const signal = context.retryWakeSignal;
+  if (signal === undefined || context.retryWakeConsumed) {
+    await delay(waitMs);
+  } else {
+    // A hint only shortens one sleep. The next attempt must still validate
+    // the path and acquire the SQLite transaction against the same deadline.
+    let timer;
+    let wake;
+    try {
+      await new Promise((resolve) => {
+        wake = () => {
+          context.retryWakeConsumed = true;
+          resolve();
+        };
+        timer = setTimeout(resolve, waitMs);
+        signal.addEventListener("abort", wake, { once: true });
+        // Covers readiness before subscription as well as before acquisition.
+        if (signal.aborted) wake();
+        reportProgress(context, "SQLite busy retry wait started");
+      });
+    } finally {
+      clearTimeout(timer);
+      if (wake !== undefined) signal.removeEventListener("abort", wake);
+    }
+  }
   throwIfExpired(context, path, cause);
 }
 
@@ -1276,6 +1348,7 @@ export async function acquireLocalSqliteLocks(
     label = "AgenC operation",
     deadline: suppliedDeadline,
     onProgress,
+    retryWakeSignal,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -1290,6 +1363,9 @@ export async function acquireLocalSqliteLocks(
   if (onProgress !== undefined && typeof onProgress !== "function") {
     throw new TypeError("lock onProgress must be a function");
   }
+  if (retryWakeSignal !== undefined && !(retryWakeSignal instanceof AbortSignal)) {
+    throw new TypeError("lock retryWakeSignal must be an AbortSignal");
+  }
   if (requestedPaths.length === 0) return () => {};
 
   const startedAt = performance.now();
@@ -1301,6 +1377,8 @@ export async function acquireLocalSqliteLocks(
     label,
     timeoutMs,
     onProgress,
+    retryWakeSignal,
+    retryWakeConsumed: false,
   };
   const firstDisplayPath = resolve(requestedPaths[0]);
   throwIfExpired(context, firstDisplayPath);

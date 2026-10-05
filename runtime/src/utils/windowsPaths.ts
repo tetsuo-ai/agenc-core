@@ -1,15 +1,31 @@
 import { memoizeWithLRU } from './memoize.js'
 import { convertWindowsPathToPosix } from './windows-path-conversion.js'
 
+function memoizeWindowsPathConverter(convert: (path: string) => string) {
+  let memoized: ReturnType<typeof memoizeWithLRU<[string], string>> | undefined
+  function getMemoized() {
+    return memoized ??= memoizeWithLRU(convert, (path: string) => path, 500)
+  }
+  const result = (path: string) => getMemoized()(path)
+  // Observing an empty cache must not allocate it. Keep this facade stable
+  // before and after the first conversion, including non-promoting get().
+  result.cache = {
+    clear: () => { memoized?.cache.clear() },
+    size: () => memoized?.cache.size() ?? 0,
+    delete: (key: string) => memoized?.cache.delete(key) ?? false,
+    get: (key: string) => memoized?.cache.get(key),
+    has: (key: string) => memoized?.cache.has(key) ?? false,
+  }
+  return result
+}
+
 /** Convert a Windows path to a POSIX path using pure JS. */
-export const windowsPathToPosixPath = memoizeWithLRU(
+export const windowsPathToPosixPath = memoizeWindowsPathConverter(
   convertWindowsPathToPosix,
-  (p: string) => p,
-  500,
 )
 
 /** Convert a POSIX path to a Windows path using pure JS. */
-export const posixPathToWindowsPath = memoizeWithLRU(
+export const posixPathToWindowsPath = memoizeWindowsPathConverter(
   (posixPath: string): string => {
     // Handle UNC paths: //server/share -> \\server\share
     if (posixPath.startsWith('//')) {
@@ -32,6 +48,4 @@ export const posixPathToWindowsPath = memoizeWithLRU(
     // Already Windows or relative — just flip slashes
     return posixPath.replace(/\//g, '\\')
   },
-  (p: string) => p,
-  500,
 )

@@ -1,3 +1,4 @@
+import { lightPresentation } from "../src/tools/light-presentation.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1199,9 +1200,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
     ).toMatchObject({
       metadata: expect.objectContaining({ family: "agent" }),
       inputSchema: expect.objectContaining({
-        required: ["message", "task_name"],
+        required: ["task_name"],
         additionalProperties: false,
         properties: expect.objectContaining({
+          message_ref: expect.objectContaining({ required: ["source"], additionalProperties: false }),
           agent_type: expect.objectContaining({
             enum: expect.arrayContaining(["netrunner", "scanner", "runner"]),
             description: expect.stringContaining(
@@ -2112,4 +2114,124 @@ describe("tool-registry dynamic and deferred catalog", () => {
       mcpTool.name,
     );
   });
+});
+
+describe("Light presentation and deferred capability preservation", () => {
+  test("omitted and explicit false retain the same Normal tools while another session discovers tools", async () => {
+    const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const disabled = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: false });
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const baseline = structuredClone(normal.toLLMTools());
+    expect(disabled.toLLMTools()).toEqual(baseline);
+    expect(disabled.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
+    expect(baseline.length).toBeGreaterThan(light.toLLMTools().length);
+
+    await light.dispatch({ id: "other-session-discovery", name: "system.searchTools", arguments: '{"select":"MultiEdit"}' });
+    expect(normal.toLLMTools()).toEqual(baseline);
+    expect(disabled.toLLMTools()).toEqual(baseline);
+    expect(normal.getDiscoveredToolNames?.().size).toBe(0);
+    expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
+  });
+
+  test("keeps the complete executable catalog with Light-only presentation", () => {
+    const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
+    expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
+      "FileRead", "Edit", "Write", "exec_command", "system.searchTools",
+    ].sort());
+    for (const presented of light.toLLMTools()) {
+      const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
+      expect(presented).toEqual(lightPresentation({ type: "function", function: { name: canonical.name, description: canonical.description, parameters: canonical.inputSchema } }, { leanExec: presented.function.name === "exec_command" }));
+    }
+    expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
+    expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
+  });
+
+  test("loads full deferred schemas through real discovery without changing another profile", async () => {
+    const execute = vi.fn(async () => ({ content: "capability executed" }));
+    const extra: Tool = { name: "Specialist", description: "Complete specialist instructions", inputSchema: { type: "object", properties: { exact: { type: "string" } }, required: ["exact"] }, execute };
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, extraTools: [extra] });
+    const other = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, extraTools: [extra] });
+    const normal = buildToolRegistry({ workspaceRoot: "/tmp", extraTools: [extra] });
+    const normalBefore = normal.toLLMTools();
+    expect(light.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
+    await light.dispatch({ id: "load-specialist", name: "system.searchTools", arguments: JSON.stringify({ select: extra.name }) });
+    expect(light.toLLMTools().find(tool => tool.function.name === extra.name)?.function).toEqual({ name: extra.name, description: extra.description, parameters: extra.inputSchema });
+    expect(await light.dispatch({ id: "run-specialist", name: extra.name, arguments: '{"exact":"value"}' })).toMatchObject({ content: "capability executed" });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(other.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
+    expect(normal.toLLMTools()).toEqual(normalBefore);
+    await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
+    const read = light.tools.find(tool => tool.name === "FileRead")!;
+    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(lightPresentation({ type: "function", function: { name: read.name, description: read.description, parameters: read.inputSchema } }));
+  });
+
+  test("loads search schemas on demand without changing canonical tools or other sessions", async () => {
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const other = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const baseline = light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }));
+    for (const name of ["Grep", "Glob"]) {
+      expect(light.toLLMTools().some(t => t.function.name === name)).toBe(false);
+      const result = await light.dispatch({ id: `select-${name}`, name: "system.searchTools",
+        arguments: JSON.stringify({ select: name }) });
+      expect(JSON.parse(result.content).loaded).toEqual([name]);
+      const tool = light.tools.find(tool => tool.name === name)!;
+      expect(light.toLLMTools().find(t => t.function.name === name)).toEqual(lightPresentation({
+        type: "function", function: { name, description: tool.description, parameters: tool.inputSchema },
+      }));
+      expect(other.toLLMTools().some(t => t.function.name === name)).toBe(false);
+    }
+    expect(light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }))).toEqual(baseline);
+  });
+
+  test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
+    "never offers an unavailable tool that Light would show at start or after discovery (%j)",
+    (toolsConfig) => {
+      const light = buildToolRegistry({
+        workspaceRoot: "/tmp",
+        lightMode: true,
+        unavailableCalledTools: ["Grep", "Edit", "Write"],
+        ...(toolsConfig !== undefined ? { toolsConfig } : {}),
+      });
+      light.discoverToolNames?.(["Grep", "Edit", "Write"]);
+      for (const name of ["Grep", "Edit", "Write"]) {
+        expect(light.tools.map(tool => tool.name)).toContain(name);
+        expect(light.toLLMTools().map(tool => tool.function.name)).not.toContain(name);
+      }
+    },
+  );
+
+  test("discovery cannot re-enable disabled tools or bypass required admission", async () => {
+    const disabled = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, toolsConfig: { disabled_tools: ["Write"] } });
+    await disabled.dispatch({ id: "load-disabled", name: "system.searchTools", arguments: '{"select":"Write"}' });
+    disabled.discoverToolNames?.(["Write"]);
+    expect(disabled.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
+    expect(await disabled.dispatch({ id: "disabled", name: "Write", arguments: '{}' })).toMatchObject({ isError: true, content: expect.stringContaining("unknown tool: Write") });
+    const admitted = buildProductionToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    for (const name of ["FileRead", "Edit", "Write"]) {
+      expect(admitted.toLLMTools().some(tool => tool.function.name === name)).toBe(true);
+      expect(await admitted.dispatch({ id: `no-authority-${name}`, name,
+        arguments: JSON.stringify({ file_path: "/tmp/never-read",
+          ...(name === "Write" ? { content: "blocked" } : {}),
+          ...(name === "Edit" ? { old_string: "before", new_string: "after" } : {}),
+        }) }))
+        .toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
+    }
+  });
+});
+
+test.each([
+  { enabled_tools: ["Specialist"] },
+  { disabled_tools: ["system.searchTools", "Write"] },
+])("Light keeps policy-enabled capabilities reachable when discovery is unavailable (%j)", async toolsConfig => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, toolsConfig,
+    extraTools: [{ name: "Specialist", description: "Specialist", inputSchema: { type: "object", properties: {} }, execute: async () => ({ content: "done" }) }],
+  });
+  expect(registry.toLLMTools().map(tool => tool.function.name).sort()).toEqual(registry.tools.map(tool => tool.name).sort());
+  expect(registry.toLLMTools().some(tool => tool.function.name === "system.searchTools")).toBe(false);
+  expect(registry.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
+  expect(await registry.dispatch({ id: "reachable", name: "Specialist", arguments: '{}' })).toMatchObject({ content: "done" });
 });

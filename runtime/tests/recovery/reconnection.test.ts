@@ -504,6 +504,51 @@ describe("reconnectWithBackoff orchestration", () => {
     expect(sleeps).toBe(1);
   });
 
+  test.each([false, true])("announces a rate-limit wait before sleeping (wrapped: %s)", async (wrapped) => {
+    const log = new EventLog();
+    const events: unknown[] = [];
+    log.subscribe((event) => events.push(event));
+    const error = new LLMRateLimitError("mistral", 30_000);
+    const outcome = await reconnectWithBackoff(reconnectOptions({
+      session: sessionWithLog(log),
+      attempt: async (attempt) => {
+        if (attempt === 0) throw wrapped ? new Error("stream failed", { cause: error }) : error;
+        return "ok";
+      },
+      sleeper: async (delayMs) => {
+        expect(delayMs).toBe(30_000);
+        expect(events).toContainEqual(expect.objectContaining({
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "provider_rate_limited",
+              message: "The provider is limiting requests. Retrying in 30 s.",
+            },
+          },
+        }));
+      },
+    }));
+    expect(outcome).toMatchObject({ kind: "ok", attempts: 2 });
+  });
+
+  test("does not announce a rate-limit wait after retry exhaustion", async () => {
+    const log = new EventLog();
+    const causes: string[] = [];
+    log.subscribe((event) => {
+      if (event.msg.type === "warning") causes.push(event.msg.payload.cause);
+    });
+    const sleeper = vi.fn<ReconnectSleeper>(async () => {});
+    const outcome = await reconnectWithBackoff(reconnectOptions({
+      session: sessionWithLog(log),
+      maxAttempts: 1,
+      attempt: async () => { throw new LLMRateLimitError("mistral", 30_000); },
+      sleeper,
+    }));
+    expect(outcome).toMatchObject({ kind: "exhausted" });
+    expect(sleeper).not.toHaveBeenCalled();
+    expect(causes).not.toContain("provider_rate_limited");
+  });
+
   test("safe warning telemetry omits raw provider error text", async () => {
     const log = new EventLog();
     const events: unknown[] = [];

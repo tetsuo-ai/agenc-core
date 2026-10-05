@@ -25,6 +25,10 @@ import type { TurnState } from "./turn-state.js";
 import { messageText } from "./run-turn-messages.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getSessionPermissionInstructions } from "./permission-instructions.js";
+import {
+  appendVolatileInstructions,
+  sessionTailCacheEnabled,
+} from "./session-tail-cache.js";
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 
@@ -191,16 +195,33 @@ function buildSamplingRequestContract(
           ...uniqueDurableSystemHistory,
           "</durable_system_history>",
         ].join("\n\n");
+  const permissionInstructions = getSessionPermissionInstructions(
+    session,
+    samplingContext,
+    permissionContext,
+  ).trim();
   const instructionParts = [
     framedDurableSystemHistory,
     currentInstructions,
-    getSessionPermissionInstructions(session, samplingContext, permissionContext),
+    permissionInstructions,
   ]
     .map((part) => part.trim())
     .filter(
       (part, index, all) => part.length > 0 && all.indexOf(part) === index,
     );
-  const baseInstructions = instructionParts.join("\n\n");
+  const promptEnvironment =
+    session.services.userShell?.childEnvironment ??
+    session.services.providerEnvironment;
+  let baseInstructions = instructionParts.join("\n\n");
+  if (sessionTailCacheEnabled(promptEnvironment, samplingContext.modelProviderId)) {
+    const volatileParts = instructionParts.includes(permissionInstructions)
+      ? [permissionInstructions]
+      : [];
+    baseInstructions = appendVolatileInstructions(
+      instructionParts.filter((part) => part !== permissionInstructions).join("\n\n"),
+      volatileParts,
+    );
+  }
   const request = buildPrompt(
     state.messagesForQuery.slice(messageStart),
     builtTools(session, samplingContext),

@@ -241,7 +241,7 @@ describe('home and runtime-state authority boundary', () => {
   test('keeps direct AGENC_HOME reads at explicit ingress and isolation boundaries', () => {
     const allowed = new Set([
       'app-server/daemon-instance-identity.ts', // Inspecting a foreign process.
-      'bin/agenc-main.ts', // Initial writable-home ingress validation.
+      'bin/daemon-one-shot-cli.ts', // validateAgencHome moved with the canonical print ingress.
       'config/home.ts', // The canonical authority implementation.
       'eval-executor/trust-run.ts', // Scoped in-process conformance isolation.
       'utils/secureStorage/migrationIdentity.ts', // Explicit retired-namespace migration reconstruction.

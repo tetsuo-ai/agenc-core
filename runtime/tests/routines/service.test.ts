@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +28,63 @@ function workspaceExpectation(cwd: string) {
 }
 
 describe("daemon-owned local routines", () => {
+  it("leaves missing empty storage absent until the first durable mutation", async () => {
+    const f = setup();
+    expect(f.service.list()).toEqual({ routines: [] });
+    expect(existsSync(f.path)).toBe(false);
+    const routine = f.service.create(f.params).routine;
+    expect(JSON.parse(readFileSync(f.path, "utf8")).entries[0].routine).toEqual(routine);
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor: f.executor }); services.push(restored);
+    restored.start();
+    expect(restored.get({ id: routine.id }).routine).toEqual(routine);
+  });
+
+  it("does not replace an existing validated empty document on startup", async () => {
+    const f = setup(); await f.service.close();
+    const contents = '{ "version": 1, "entries": [] }\n';
+    writeFileSync(f.path, contents, { mode: 0o600 });
+    const before = statSync(f.path, { bigint: true });
+    const restored = new RoutineService({ home: f.home, executor: f.executor }); services.push(restored);
+    restored.start();
+    expect(restored.list()).toEqual({ routines: [] });
+    expect(readFileSync(f.path, "utf8")).toBe(contents);
+    expect(statSync(f.path, { bigint: true })).toMatchObject({ ino: before.ino, mtimeNs: before.mtimeNs });
+  });
+
+  it.each(["root-replacement", "target-directory", "target-symlink", "target-hardlink"])(
+    "fails closed when %s appears between empty construction and start", async (kind) => {
+      const f = setup(); await f.service.close();
+      const pending = new RoutineService({ home: f.home, executor: f.executor }); services.push(pending);
+      const victim = join(f.home, "preserved"); writeFileSync(victim, "preserve", { mode: 0o600 });
+      if (kind === "root-replacement") {
+        renameSync(join(f.home, "routines"), join(f.home, "old-routines"));
+        mkdirSync(join(f.home, "routines"), { mode: 0o700 });
+      } else if (kind === "target-directory") mkdirSync(f.path);
+      else if (kind === "target-symlink") symlinkSync(victim, f.path);
+      else linkSync(victim, f.path);
+      expect(() => pending.start()).toThrow("could not be saved");
+      expect(() => pending.list()).toThrow("unavailable");
+      expect(readFileSync(victim, "utf8")).toBe("preserve");
+      expect(f.executor.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("rolls back a first mutation when empty storage is not writable", async () => {
+    const f = setup(); const events: unknown[] = [];
+    f.service.onUpdated(event => events.push(event));
+    chmodSync(join(f.home, "routines"), 0o500);
+    try {
+      expect(() => f.service.create(f.params)).toThrow("could not be saved");
+      expect(events).toEqual([]);
+      expect(f.executor.execute).not.toHaveBeenCalled();
+      expect(existsSync(f.path)).toBe(false);
+      expect(() => f.service.list()).toThrow("unavailable");
+    } finally { chmodSync(join(f.home, "routines"), 0o700); }
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor: f.executor }); services.push(restored);
+    restored.start(); expect(restored.list()).toEqual({ routines: [] });
+  });
   it("still honours an explicitly chosen plan mode and never rewrites a stored one", async () => {
     // The default changed; a routine the operator configured as plan must not
     // be silently converted, on create or on reload.
@@ -104,12 +161,13 @@ describe("daemon-owned local routines", () => {
     if (kind === "ancestor-symlink") mkdirSync(join(other, "child"));
     renameSync(f.cwd, join(f.home, "original-project"));
     if (kind === "replacement") mkdirSync(f.cwd); else symlinkSync(other, f.cwd, "dir");
-    const disk = readFileSync(f.path, "utf8"), events: unknown[] = [];
+    expect(existsSync(f.path)).toBe(false);
+    const events: unknown[] = [];
     f.service.onUpdated(event => events.push(event));
     expect(() => f.service.create({ ...f.params, cwd: approved, expectedWorkspace }))
       .toThrow(expect.objectContaining({ code: "ROUTINE_CONFLICT" }));
     expect(f.service.list().routines).toEqual([]); expect(events).toEqual([]);
-    expect(f.executor.execute).not.toHaveBeenCalled(); expect(readFileSync(f.path, "utf8")).toBe(disk);
+    expect(f.executor.execute).not.toHaveBeenCalled(); expect(existsSync(f.path)).toBe(false);
     // A rejected expectation does not poison the service's storage health.
     expect(f.service.create({ ...f.params, cwd: other }).routine.cwd).toBe(other);
   });

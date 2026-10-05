@@ -34,7 +34,8 @@ import {
 import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { extract, list, type ReadEntry } from "tar";
+import type { ReadEntry } from "tar";
+import { loadTar } from "../../utils/lazy-runtime-packages.js";
 import { resolveHomeContext } from "../../config/home.js";
 import * as lockfile from "../../utils/lockfile.js";
 import { isSignalablePid } from "../../utils/child-signal.js";
@@ -777,6 +778,7 @@ async function extractVerifiedPackage(
   ]);
   let executableEntries = 0;
   let unpackedBytes = 0;
+  const { list, extract } = loadTar();
   await list({
     file: archivePath,
     strict: true,

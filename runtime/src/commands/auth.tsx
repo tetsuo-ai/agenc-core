@@ -3,8 +3,6 @@ import { createAuthBackend } from "../auth/selection.js";
 import { readAccountModelAccess } from "../auth/account-access.js";
 import { saveAccountDefaultModel } from "../auth/account-default.js";
 import { defaultConfig } from "../config/schema.js";
-import { Box, Text } from "../tui/ink.js";
-import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import { openLocalBrowser } from "../utils/browser.js";
 import {
@@ -200,11 +198,14 @@ function createSlashAuthBackend(ctx: SlashCommandContext): AuthBackend {
     remote: {
       onDeviceCode: async ({ verificationUri, userCode }) => {
         if (verificationUri === undefined) return;
-        showBrowserLoginNotice(ctx, verificationUri, userCode);
+        const notices = typeof ctx.appState?.setToolJSX === "function"
+          ? await import("./auth-menu.js")
+          : undefined;
+        notices?.showBrowserLoginNotice(ctx, verificationUri, userCode);
         try {
           await openUrlInBrowser(verificationUri);
         } catch {
-          showCopyUrlLoginNotice(ctx, verificationUri, userCode);
+          notices?.showCopyUrlLoginNotice(ctx, verificationUri, userCode);
         }
       },
     },
@@ -232,44 +233,6 @@ async function resolveLlmUsage(
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
-}
-
-function showBrowserLoginNotice(
-  ctx: SlashCommandContext,
-  url: string,
-  userCode: string | undefined,
-): void {
-  openLocalJsxCommand(
-    ctx,
-    () => (
-      <Box flexDirection="column" paddingX={1} borderStyle="round">
-        <Text>Sign in with Google to continue.</Text>
-        <Text dimColor>Browser opened. Finish sign in there, then return here.</Text>
-        {userCode ? <Text dimColor>Code: {userCode}</Text> : null}
-        <Text dimColor>URL: {url}</Text>
-      </Box>
-    ),
-    { shouldHidePromptInput: false },
-  );
-}
-
-function showCopyUrlLoginNotice(
-  ctx: SlashCommandContext,
-  url: string,
-  userCode: string | undefined,
-): void {
-  openLocalJsxCommand(
-    ctx,
-    () => (
-      <Box flexDirection="column" paddingX={1} borderStyle="round">
-        <Text>Sign in with Google to continue.</Text>
-        <Text dimColor>Open this URL in your browser:</Text>
-        {userCode ? <Text dimColor>Code: {userCode}</Text> : null}
-        <Text dimColor>URL: {url}</Text>
-      </Box>
-    ),
-    { shouldHidePromptInput: false },
-  );
 }
 
 function clearLocalAuthNotice(ctx: SlashCommandContext): void {

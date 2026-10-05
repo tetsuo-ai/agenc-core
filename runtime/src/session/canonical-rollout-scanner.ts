@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable } from "../durability/one-shot-durability.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -68,8 +69,43 @@ import {
 const MAX_COMPACTION_LIFECYCLE_RECORDS = MAX_COMPACTION_PIN_HISTORY_TOTAL * 6;
 const COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB = 1_024;
 
-/** Disk-backed payload spool keeps manifest replay bounded by one payload. */
+/** Plain journals need no payload spool; validation itself remains eager. */
 class DiskCompactionPayloadRegistry {
+  #spool: DiskCompactionPayloadSpool | undefined;
+  #closed = false;
+
+  constructor(private readonly temporaryRoot: string) {}
+
+  add(chunk: CompactionPayloadChunkV1): void {
+    this.#getSpool().add(chunk);
+  }
+
+  reconstruct(manifest: CompactionPayloadManifestV1, retained = true): unknown {
+    return this.#getSpool().reconstruct(manifest, retained);
+  }
+
+  get retainedPayloadBytes(): number {
+    return this.#spool?.retainedPayloadBytes ?? 0;
+  }
+
+  hasComplete(manifest: CompactionPayloadManifestV1): boolean {
+    return this.#getSpool().hasComplete(manifest);
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#spool?.close();
+  }
+
+  #getSpool(): DiskCompactionPayloadSpool {
+    if (this.#closed) throw new Error("compaction payload registry is closed");
+    return this.#spool ??= new DiskCompactionPayloadSpool(this.temporaryRoot);
+  }
+}
+
+/** Disk-backed payload spool keeps manifest replay bounded by one payload. */
+class DiskCompactionPayloadSpool {
   readonly #directory: string;
   readonly #database: BetterSqlite3.Database;
   readonly #insert: BetterSqlite3.Statement<[string, string, number, string]>;
@@ -400,7 +436,8 @@ interface PrefixOwner {
  * payload, and a prefix keyed to one attempt, are released once they have
  * answered.
  *
- * Every prefix owns two disk registries, so a scanner must be closed.
+ * Every prefix owns an identity registry and a lazy payload spool, so a
+ * scanner must be closed even when no payloads were encountered.
  */
 export class CanonicalRolloutScanner {
   readonly #owner: PrefixOwner = { prefixes: [] };
@@ -461,6 +498,7 @@ function scanCanonicalRolloutUntimed(
   checkOperationalBudget();
   const fd = openSync(rolloutPath, fsConstants.O_RDONLY);
   try {
+    assertOneShotRecoverable(rolloutPath, fd);
     const snapshot = fstatSync(fd, { bigint: true });
     if (!snapshot.isFile()) {
       throw new Error("canonical rollout source is not a regular file");

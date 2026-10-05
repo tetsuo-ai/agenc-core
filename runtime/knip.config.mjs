@@ -170,6 +170,7 @@ const sessionContractExportFiles = [
   "src/session/rollout-reconstruction.ts",
   "src/session/rollout-trace.ts",
   "src/session/run-turn.ts",
+  "src/session/session-reasoning-effort.ts",
   "src/session/session-store.ts",
   "src/session/session.ts",
   "src/session/current-session.ts",
@@ -223,6 +224,7 @@ const sandboxContractExportFiles = [
   // execpolicy exports are security/runtime surfaces with direct test coverage.
   "src/sandbox/engine/bwrap.ts",
   "src/sandbox/engine/index.ts",
+  "src/sandbox/engine/policy.ts",
   "src/sandbox/engine/landlock.ts",
   "src/sandbox/engine/policy-transforms.ts",
   "src/sandbox/engine/seatbelt.ts",

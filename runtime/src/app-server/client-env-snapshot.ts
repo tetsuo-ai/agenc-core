@@ -83,6 +83,9 @@ export function mergeDaemonClientEnvironment(
   )
   const merged: NodeJS.ProcessEnv = { ...(inheritedEnvironment ?? {}) }
   for (const [key, value] of Object.entries(normalized)) {
+    // PATH is command lookup infrastructure, not session credential state.
+    // A client with no tool path keeps the daemon's expanded startup path.
+    if (key === "PATH" && value.length === 0) continue
     if (value.length === 0) {
       delete merged[key]
     } else {

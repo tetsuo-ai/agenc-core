@@ -15,6 +15,7 @@ import { delegate } from "../delegate.js";
 import { terminalFromAgentStatus } from "../status.js";
 import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
+import { AGENT_MESSAGE_REFERENCE_GUIDANCE, agentMessageReferenceSchema, resolveAgentMessage } from "../message-reference.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import {
@@ -155,7 +156,8 @@ from the Environment section of this prompt — never assume "/root" or
 
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
-The new agent's canonical task name will be provided to it along with the message.`;
+The new agent's canonical task name will be provided to it along with the message.
+${AGENT_MESSAGE_REFERENCE_GUIDANCE}`;
   const cfg = session?.config?.multiAgentV2;
   const policy = session?.services == null ? undefined : childProviderPolicy(session);
   const pairs = policy?.cross_provider_enabled === true ? allowedChildPairs(session!) : [];
@@ -299,6 +301,18 @@ export function shortAgentTaskTitle(
       : (prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ??
         prompt.trim());
   return base.length > 60 ? `${base.slice(0, 59).trimEnd()}…` : base;
+}
+
+/**
+ * Names a model uses for the standard tier. Every model serves that tier with
+ * no service tier sent, so these mean the same as leaving service_tier out. A
+ * model without tiers used to refuse them and fail the whole spawn.
+ */
+const STANDARD_SERVICE_TIER_NAMES: ReadonlySet<string> = new Set(["default", "standard", "none"]);
+
+function explicitServiceTier(value: string | undefined): string | undefined {
+  return value !== undefined && STANDARD_SERVICE_TIER_NAMES.has(value.toLowerCase())
+    ? undefined : value;
 }
 
 function serviceTierIds(modelInfo: ModelInfo): readonly string[] {
@@ -501,8 +515,9 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       message: {
         type: "string",
         description:
-          "REQUIRED. The complete task prompt for the spawned agent: the overall goal, the files it owns, local conventions it must follow, and how to verify its work. The agent sees only this message (plus any forked turns) — never assume it has context you did not include. A call without `message` is rejected.",
+          "The complete task prompt (at most 256 KiB UTF-8). Supply either message or message_ref. Prefer message_ref for existing user text, especially long tasks; never copy large context through your output tokens.",
       },
+      message_ref: { ...agentMessageReferenceSchema, description: AGENT_MESSAGE_REFERENCE_GUIDANCE },
       task_name: {
         type: "string",
         description:
@@ -524,6 +539,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
+      exact_output: { type: "boolean", description: "Set true when this task needs an exact machine-readable answer, such as verbatim JSON. Skips the child completion checklist; child results are always delivered unchanged to the parent." },
       tool_free: {
         type: "boolean",
         description: "Only for a model without client-side tool calling, which requires it. A model that can call tools always keeps all of them, web search included, and this flag is ignored for it.",
@@ -540,17 +556,20 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
           "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from its session-scoped full agent identity and this spawn), so parallel agents that WRITE files never clobber each other or your working tree and a later logical respawn cannot inherit retained state. Requires the cwd to be inside a git repository. Unchanged newly created worktrees are removed automatically when the agent closes; worktrees resumed within the same logical spawn and worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
       },
     },
-    required: ["message", "task_name"],
+    required: ["task_name"],
     additionalProperties: false,
   };
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const preflight: NonNullable<Tool["preflight"]> = (args) => {
-    for (const key of ["message", "task_name"]) {
+    for (const key of ["task_name"]) {
       if (typeof args[key] !== "string" || args[key].trim().length === 0) {
         return { code: `missing-${key}`, message: `${key} is required` };
       }
+    }
+    if (args.message_ref === undefined && (typeof args.message !== "string" || args.message.trim().length === 0)) {
+      return { code: "missing-message", message: "message or message_ref is required" };
     }
     return null;
   };
@@ -571,6 +590,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const strict = strictArgs(args, {
       allowed: new Set([
         "message",
+        "message_ref",
         "task_name",
         "agent_type",
         "model",
@@ -578,11 +598,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "reasoning_effort",
         "service_tier",
         "tool_free",
+        "exact_output",
         "fork_turns",
         "fork_context",
         "isolation",
       ]),
-      required: ["message", "task_name"],
+      required: ["task_name"],
     });
     if (strict) return confirmedNoSpawn(strict);
     for (const key of [
@@ -606,12 +627,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     ) {
       return spawnValidationError("fork_context must be a boolean");
     }
+    if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+      return spawnValidationError("exact_output must be a boolean");
+    }
     if (args.tool_free !== undefined && typeof args.tool_free !== "boolean") {
       return spawnValidationError("tool_free must be a boolean");
-    }
-    const prompt = stringValue(args.message);
-    if (!prompt || prompt.trim().length === 0) {
-      return spawnValidationError("message is required");
     }
     if (args.fork_context !== undefined) {
       return spawnValidationError(
@@ -657,6 +677,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return spawnValidationError(error instanceof Error ? error.message : String(error));
     }
+    let prompt: string;
+    try {
+      prompt = resolveAgentMessage(args, session);
+    } catch (error) {
+      return spawnValidationError(error instanceof Error ? error.message : String(error));
+    }
     const rawRole = stringValue(args.agent_type);
     // The session catalog performs exact-name lookup before public alias
     // fallback. Canonicalizing here would make an executable plugin/workspace
@@ -673,7 +699,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const taskName = normalizeSpawnTaskName(rawTaskName);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
-    const requestedServiceTier = stringValue(args.service_tier);
+    const requestedServiceTier = explicitServiceTier(stringValue(args.service_tier));
     if (forkMode?.kind === "full_history" &&
         (role !== undefined || model !== undefined || reasoningEffort !== undefined ||
           requestedServiceTier !== undefined) &&
@@ -958,7 +984,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           });
         } catch (error) {
           if (error instanceof ProviderNotRequestedError) return refuseNotRequested(error);
-          throw error;
+          // Planning only resolves the child's route, endpoint and credentials;
+          // nothing has started yet, so a refusal here (a custom base URL, an
+          // unsupported sign-in) spawned nothing and must not hold the session
+          // for an effect review.
+          return failSpawn(error instanceof Error ? error.message : String(error));
         }
         const consent = await authorizeChildExecutionPlan(session, proposedPlan);
         if (consent.kind !== "granted") {
@@ -991,6 +1021,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         control,
         registry,
         taskPrompt: prompt,
+        exactOutput: args.exact_output === true,
         taskId: callId,
         agentName: taskName,
         depthCap: depthOfAgentPath(current.agentPath) + 1,
@@ -999,6 +1030,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // Keep collab workers alive so assign_task after first completion
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
+        // Tasks are unattended even though the worker remains reusable.
+        summarizeAtStepLimit: true,
         ...(toolFree ? { toolAllowlist: [] } : {}),
         ...(role !== undefined ? { role } : {}),
         ...(plan !== undefined ? { plan } : {}),

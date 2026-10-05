@@ -57,6 +57,7 @@ import { getCompactPrompt } from "../../../src/services/compact/prompt.js";
 import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { reduceAll } from "../../../src/session/event-log-reducer.js";
 import { readCompactionRolloutPayload } from "../../../src/session/compaction-event-reader.js";
+import { createToolResultIntegrity } from "../../../src/session/tool-result-integrity.js";
 import type { RolloutItem } from "../../../src/session/rollout-item.js";
 import type { Session } from "../../../src/session/session.js";
 import type {
@@ -331,6 +332,31 @@ describe("transactional compaction strict contracts", () => {
         ...persisted[0]!,
         providerReasoning,
       }]))).not.toBe(canonical);
+    }
+  });
+
+  it("distinguishes known-empty GLM reasoning from missing state in compaction digests", () => {
+    const runtime: RuntimeMessage = {
+      role: "assistant", content: "",
+      toolCalls: [{ id: "empty-glm", name: "FileRead", arguments: "{}" }],
+      providerReasoningContent: "",
+      providerReasoningProvenance: { provider: "ZAI-CODING-PLAN", model: "GLM-5.3-Flash" },
+    };
+    const persisted = llmMessageToDurableResponseItem(runtime as LLMMessage);
+    expect(persisted.providerReasoning).toEqual({
+      version: 2, content: "", provider: "zai-coding-plan", model: "glm-5.3-flash",
+    });
+    const canonical = canonicalizeJson(canonicalCompactionSourceMessages([runtime]));
+    expect(canonicalizeJson(canonicalCompactionProjectionMessages([persisted])))
+      .toBe(canonical);
+    for (const change of [
+      { providerReasoningContent: undefined },
+      { providerReasoningContent: "nonempty" },
+      { providerReasoningProvenance: { provider: "zai", model: "glm-5.3-flash" } },
+      { providerReasoningProvenance: { provider: "zai-coding-plan", model: "glm-5.3" } },
+    ]) {
+      expect(canonicalizeJson(canonicalCompactionSourceMessages([{ ...runtime, ...change }])))
+        .not.toBe(canonical);
     }
   });
 });
@@ -764,6 +790,37 @@ describe("transactional compaction production path", () => {
         model: "qwen3.8-max",
       } as const;
       expectReplaySurvivedCompaction(store, result, expected);
+    });
+  });
+
+  it("preserves known-empty GLM reasoning through a real compaction commit and disk replay", async () => {
+    const sessionId = "transaction-empty-glm-replay";
+    await withTransactionalStore(sessionId, async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const origin = { provider: "zai-coding-plan", model: "glm-5.3-flash" };
+      const kept: LLMMessage[] = [
+        { role: "user", content: "Read the current file." },
+        { role: "assistant", content: "", providerReasoningContent: "",
+          providerReasoningProvenance: origin,
+          toolCalls: [{ id: "call-empty", name: "FileRead", arguments: "{}" }] },
+        { role: "tool", content: "file contents", toolCallId: "call-empty", toolName: "FileRead",
+          runtimeOnly: { toolResultIntegrity: createToolResultIntegrity({
+            runId: sessionId, toolCallId: "call-empty", content: "file contents",
+          }) } },
+      ];
+      for (const message of kept) {
+        store.appendRollout({ type: "response_item", payload: llmMessageToDurableResponseItem(message) },
+          { durable: true });
+      }
+      const complete = [...source, ...kept as RuntimeMessage[]];
+      const result = await runRealTransaction(store, complete, compactionProvider(), {
+        messagesToKeep: kept as RuntimeMessage[], messagesToSummarize: source,
+      });
+      expectReplaySurvivedCompaction(store, result, { version: 2, content: "", ...origin });
+      const restored = reduceAll(store.readAll()).state.history.map(responseItemToLlmMessage);
+      expect(restored.find(message => message.providerReasoningContent !== undefined))
+        .toMatchObject({ role: "assistant", providerReasoningContent: "", providerReasoningProvenance: origin,
+          toolCalls: kept[1]!.toolCalls });
     });
   });
 

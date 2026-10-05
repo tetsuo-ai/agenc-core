@@ -23,7 +23,7 @@ import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import { modelSupportsPersonality } from "../context/personality-spec-instructions.js";
 import {
   DEFAULT_MODEL_COSTS,
-  DEFAULT_UNKNOWN_MODEL_COST,
+  conservativeModelCost,
   resolveModelCostEntry,
   type ModelCostEntry,
 } from "../session/cost.js";
@@ -124,6 +124,8 @@ function inferServiceTiers(
         // multiple, at 2x every token rate (providers/grok/priority-processing.ts).
         description: entry.provider === "grok"
           ? "Higher scheduling priority at 2x price"
+          : entry.provider === "minimax"
+          ? "Higher scheduling priority at 1.5x price"
           : "1.5x speed, increased usage",
       });
     } else if (tier === "flex") {
@@ -153,8 +155,8 @@ function resolveCostEntry(params: {
     params.registry,
   );
   return {
-    entry: match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST,
-    known: match !== null,
+    entry: match === null || match.entry.costEstimated ? conservativeModelCost(params.registry) : match.entry,
+    known: match !== null && match.entry.costEstimated !== true,
     ...(match ? { matchedKey: match.key } : {}),
   };
 }

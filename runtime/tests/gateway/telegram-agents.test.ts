@@ -42,7 +42,8 @@ function fixture() {
   };
   const invoke = vi.fn(async (message: JsonObject): Promise<AgenCDaemonResponse> => ({ jsonrpc: "2.0", id: message.id as string, result: message.method === "session.transcript.v2" ? { messages: [{ role: "assistant", text: "Completed.", turnId: "fixture-turn" }] } : message.method === "message.send" ? { turnId: "fixture-turn", terminal: { code: 0 } } : {} }));
   const createSession = vi.fn(async (cwd: string) => { const sessionId = `session-${++sequence}`; sessions.set(sessionId, cwd); return { sessionId, agentId: `runtime-${sequence}` }; });
-  const makeService = () => new OwnerTelegramService({ home, storage, lookupSession: async (sessionId) => sessions.has(sessionId) ? { sessionId, cwd: sessions.get(sessionId)! } : null, createSession, transport, createConnection: (access) => ({
+  const failures = vi.fn();
+  const makeService = () => new OwnerTelegramService({ home, storage, onSessionFailure: failures, lookupSession: async (sessionId) => sessions.has(sessionId) ? { sessionId, cwd: sessions.get(sessionId)! } : null, createSession, transport, createConnection: (access) => ({
     dispatch: async (message) => {
       const params = message.params as JsonObject ?? {}; await access.authorize(message.method as string, params);
       if (message.method === "session.create") return { jsonrpc: "2.0", id: message.id as string, result: await access.createSession(params) };
@@ -65,7 +66,7 @@ function fixture() {
   }
   const status = (agentId: string) => service.list().agents.find((agent) => agent.agentId === agentId)!;
   cleanups.push(() => { service.close(); rmSync(root, { recursive: true, force: true }); });
-  return { service, rpc, create, begin, link, status, update, deliver, tokens, records, agents, getMe, getUpdates, createSession, invoke, sends, workspace, workspaceB, token, makeService };
+  return { failures, service, rpc, create, begin, link, status, update, deliver, tokens, records, agents, getMe, getUpdates, createSession, invoke, sends, workspace, workspaceB, token, makeService };
 }
 
 describe("Telegram agent manager", () => {
@@ -219,4 +220,68 @@ describe("Telegram agent manager", () => {
     await f.deliver(101, f.update(3, "Another task"));
     expect(f.sends).toHaveBeenCalledWith("101", "123456", "Task cancelled.");
   });
+});
+
+it("passes the saved provider/model and fresh ephemeral credentials to each Telegram session", async () => {
+  const f = fixture();
+  const agent = await f.create(101, { provider: "deepseek", model: "deepseek-flash" });
+  await f.link(agent.agentId);
+  await f.rpc("telegram.agents.start", { agentId: agent.agentId, provider: "deepseek", envOverrides: { DEEPSEEK_API_KEY: "private-key-one" } });
+  await f.deliver(101, f.update(2, "/new"));
+  expect(f.createSession).toHaveBeenLastCalledWith(f.workspace, "Telegram · Agent 101", expect.any(AbortSignal), expect.objectContaining({ provider: "deepseek", model: "deepseek-flash", envOverrides: expect.objectContaining({ DEEPSEEK_API_KEY: "private-key-one", OPENAI_API_KEY: "" }) }));
+  await f.rpc("telegram.agents.stop", { agentId: agent.agentId });
+  await f.rpc("telegram.agents.start", { agentId: agent.agentId, provider: "deepseek", envOverrides: { DEEPSEEK_API_KEY: "private-key-two" } });
+  await f.deliver(101, f.update(3, "/new"));
+  expect(f.createSession).toHaveBeenLastCalledWith(f.workspace, expect.any(String), expect.any(AbortSignal), expect.objectContaining({ envOverrides: expect.objectContaining({ DEEPSEEK_API_KEY: "private-key-two" }) }));
+  expect(JSON.stringify([...f.records.values()])).not.toContain("private-key");
+  expect(JSON.stringify(f.service.list())).not.toContain("private-key");
+  f.service.close();
+  const restarted = f.makeService();
+  try {
+    expect(restarted.list().agents[0]).toMatchObject({ provider: "deepseek", model: "deepseek-flash", enabled: false });
+    await restarted.handle("telegram.agents.start", { agentId: agent.agentId, provider: "deepseek", envOverrides: { DEEPSEEK_API_KEY: "private-key-after-restart" } });
+    await f.deliver(101, f.update(4, "/new"));
+    expect(f.createSession).toHaveBeenLastCalledWith(f.workspace, expect.any(String), expect.any(AbortSignal), expect.objectContaining({ envOverrides: expect.objectContaining({ DEEPSEEK_API_KEY: "private-key-after-restart" }) }));
+  } finally { restarted.close(); }
+});
+it("logs safe session failures, keeps them visible across polls, and replies with a recovery action", async () => {
+  const f = fixture(); const agent = await f.create(); await f.link(agent.agentId);
+  f.createSession.mockRejectedValueOnce({ code: -32603, message: "deepseek authentication failed (HTTP 401): deepseek provider requires credentials. Set DEEPSEEK_API_KEY." });
+  await f.rpc("telegram.agents.start", { agentId: agent.agentId });
+  await f.deliver(101, f.update(2, "hi"));
+  expect(f.failures).toHaveBeenCalledWith(expect.stringContaining("Set DEEPSEEK_API_KEY."));
+  expect(f.sends).toHaveBeenCalledWith("101", "123456", expect.stringContaining("No credential for deepseek"));
+  await f.deliver(101);
+  expect(f.status(agent.agentId).error).toBe("TELEGRAM_PROVIDER_CREDENTIAL_MISSING");
+  await f.deliver(101, f.update(3, "/new"));
+  expect(f.status(agent.agentId).error).toBeNull();
+});
+it("refuses invalid provider/model profiles and environment injection before activation", async () => {
+  const f = fixture();
+  await expect(f.create(101, { provider: "not-a-provider", model: "anything" })).rejects.toThrow("TELEGRAM_CONFIG_INVALID");
+  await expect(f.create(101, { provider: "deepseek" })).rejects.toThrow("TELEGRAM_CONFIG_INVALID");
+  const agent = await f.create(101, { provider: "deepseek", model: "deepseek-flash" }); await f.link(agent.agentId);
+  await expect(f.rpc("telegram.agents.start", { agentId: agent.agentId, provider: "openai", envOverrides: { OPENAI_API_KEY: "wrong-provider-secret" } })).rejects.toThrow("TELEGRAM_PROVIDER_CHANGED");
+  for (const envOverrides of [{ HOME: "/elsewhere" }, { DEEPSEEK_API_KEY: 123 }, []]) {
+    await expect(f.rpc("telegram.agents.start", { agentId: agent.agentId, provider: "deepseek", envOverrides })).rejects.toThrow("TELEGRAM_CONFIG_INVALID");
+  }
+  expect(f.status(agent.agentId).enabled).toBe(false);
+});
+
+it("clears transient send errors after a successful exchange without losing a session failure", async () => {
+  const f = fixture(); const a = await f.create(); await f.link(a.agentId);
+  await f.rpc("telegram.agents.start", { agentId: a.agentId });
+  f.sends.mockRejectedValueOnce(new Error("transient transport error"));
+  await f.deliver(101, f.update(2, "hi"));
+  expect(f.status(a.agentId)).toMatchObject({ state: "error", error: "TELEGRAM_COMMAND_FAILED" });
+  await f.deliver(101, f.update(3, "hi again"));
+  expect(f.status(a.agentId)).toMatchObject({ state: "running", error: null });
+  f.createSession.mockRejectedValueOnce(new Error("deepseek provider requires credentials. Set DEEPSEEK_API_KEY."));
+  f.sends.mockRejectedValueOnce(new Error("failed error delivery"));
+  await f.deliver(101, f.update(4, "/new"));
+  expect(f.status(a.agentId).error).toBe("TELEGRAM_PROVIDER_CREDENTIAL_MISSING");
+  await f.deliver(101, f.update(5, "/status"));
+  expect(f.status(a.agentId).error).toBe("TELEGRAM_PROVIDER_CREDENTIAL_MISSING");
+  await f.deliver(101, f.update(6, "/new"));
+  expect(f.status(a.agentId)).toMatchObject({ state: "running", error: null });
 });

@@ -1,5 +1,14 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  PLUGIN_MARKDOWN_WALK,
+  bindContainedRoot,
+  containedRejectReason,
+  inspectContainedPath,
+  readContainedUtf8,
+  walkContainedFiles,
+  type ContainedReject,
+} from "../fs/root-contained-read.js";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -12,7 +21,7 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
-import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
+import { isExcludedPluginPayloadDirectory } from "./payload-paths.js";
 import {
   createPluginStorageAuthority,
   isReservedPluginStorageChildName,
@@ -23,6 +32,7 @@ import {
   assertNoRetiredRootPluginManifest,
   findPluginManifestPath,
   loadRequiredPluginManifest,
+  MAX_PLUGIN_JSON_BYTES,
   PLUGIN_MANIFEST_FILE,
   PLUGIN_MANIFEST_RELATIVE_PATH,
   readJsonText,
@@ -47,8 +57,6 @@ import {
 } from "./package-authority.js";
 
 const INSTALL_METADATA_FILE = "agenc-install.json";
-const MAX_PLUGIN_MARKDOWN_FILES = 512;
-const MAX_PLUGIN_SCAN_DEPTH = 8;
 const LSP_SERVER_KEYS = new Set([
   "command",
   "args",
@@ -982,15 +990,38 @@ async function loadCommands(
   errors: PluginLoadIssue[],
 ): Promise<LoadedPluginCommand[]> {
   const commands: LoadedPluginCommand[] = [];
+  const bound = await bindContainedRoot(pluginRoot);
   const defaultCommandsDir = join(pluginRoot, DEFAULT_COMPONENT_DIRS.commands);
-  if (manifest.commands === undefined && await pathIsDirectory(defaultCommandsDir)) {
-    commands.push(
-      ...(await collectMarkdownFiles(defaultCommandsDir, pluginRoot)).map((path) => ({
-        name: basename(path).replace(/\.md$/iu, ""),
-        path,
-        metadata: { source: path },
-      })),
-    );
+  if (manifest.commands === undefined && bound !== null) {
+    const inspected = await inspectContainedPath(bound, defaultCommandsDir);
+    if (inspected.ok && inspected.kind === "directory") {
+      const walked = await walkContainedFiles(
+        bound,
+        defaultCommandsDir,
+        {
+          ...PLUGIN_MARKDOWN_WALK,
+          skipDir: isExcludedPluginPayloadDirectory,
+        },
+      );
+      pushContainedRejections(
+        errors,
+        walked.rejections,
+        source,
+        manifest.name,
+        "commands",
+      );
+      commands.push(
+        ...walked.files.map((path) => ({
+          name: basename(path).replace(/\.md$/iu, ""),
+          path,
+          metadata: { source: path },
+        })),
+      );
+    } else if (!inspected.ok && inspected.code !== "not-found") {
+      errors.push(
+        containedPathIssue(inspected, source, manifest.name, "commands"),
+      );
+    }
   }
   if (manifest.commands !== undefined) {
     commands.push(
@@ -1069,9 +1100,25 @@ async function loadComponentPaths(
   pluginName: string,
 ): Promise<readonly string[]> {
   const defaultDir = defaultDirForComponent(pluginRoot, component);
-  const paths = declaration === undefined && defaultDir !== null && await pathIsDirectory(defaultDir)
-    ? [defaultDir]
-    : await resolveExistingPaths(pluginRoot, component, declaration, source, pluginName, errors);
+  const bound = await bindContainedRoot(pluginRoot);
+  if (declaration === undefined && defaultDir !== null && bound !== null) {
+    const inspected = await inspectContainedPath(bound, defaultDir);
+    if (inspected.ok && inspected.kind === "directory") {
+      return [defaultDir];
+    }
+    if (!inspected.ok && inspected.code !== "not-found") {
+      errors.push(containedPathIssue(inspected, source, pluginName, component));
+    }
+    return [];
+  }
+  const paths = await resolveExistingPaths(
+    pluginRoot,
+    component,
+    declaration,
+    source,
+    pluginName,
+    errors,
+  );
   return [...new Set(paths)].sort((a, b) => a.localeCompare(b));
 }
 
@@ -1102,14 +1149,17 @@ async function resolveExistingPaths(
   errors: PluginLoadIssue[],
 ): Promise<string[]> {
   if (declaration === undefined) return [];
+  const bound = await bindContainedRoot(pluginRoot);
+  if (bound === null) return [];
   const declarations = Array.isArray(declaration) ? declaration : [declaration];
   const out: string[] = [];
   for (const entry of declarations) {
     try {
       const resolved = resolveManifestRelativePath(pluginRoot, field, entry);
-      if (await pathIsFile(resolved) || await pathIsDirectory(resolved)) {
+      const inspected = await inspectContainedPath(bound, resolved);
+      if (inspected.ok) {
         out.push(resolved);
-      } else {
+      } else if (inspected.code === "not-found") {
         errors.push({
           type: "path-not-found",
           source,
@@ -1118,6 +1168,15 @@ async function resolveExistingPaths(
           component: componentFromField(field),
           message: `Plugin component path not found: ${entry}`,
         });
+      } else {
+        errors.push(
+          containedPathIssue(
+            inspected,
+            source,
+            pluginName,
+            componentFromField(field),
+          ),
+        );
       }
     } catch (error) {
       errors.push({
@@ -1144,38 +1203,32 @@ function componentFromField(field: string): PluginComponentKind | undefined {
   return undefined;
 }
 
-async function collectMarkdownFiles(root: string, pluginRoot: string): Promise<string[]> {
-  const out: string[] = [];
-  const queue: Array<{ readonly path: string; readonly depth: number }> = [
-    { path: root, depth: 0 },
-  ];
-  const visitedDirs = new Set<string>();
-  while (queue.length > 0) {
-    if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
-    const current = queue.shift()!;
-    if (current.depth > MAX_PLUGIN_SCAN_DEPTH) continue;
-    const identity = await maybeRealpath(current.path);
-    if (isExcludedPluginPayloadPath(pluginRoot, current.path) ||
-      isExcludedPluginPayloadPath(await maybeRealpath(pluginRoot), identity)) continue;
-    if (visitedDirs.has(identity)) continue;
-    visitedDirs.add(identity);
-    let entries;
-    try {
-      entries = await readdir(current.path, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
-      const path = join(current.path, entry.name);
-      if (entry.isDirectory() && !isExcludedPluginPayloadDirectory(entry.name)) {
-        queue.push({ path, depth: current.depth + 1 });
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        out.push(path);
-      }
-    }
+function containedPathIssue(
+  reject: ContainedReject,
+  source: string,
+  pluginName: string,
+  component: PluginComponentKind | undefined,
+): PluginLoadIssue {
+  return {
+    type: "path-not-found",
+    source,
+    plugin: pluginName,
+    path: reject.declaredPath,
+    ...(component === undefined ? {} : { component }),
+    message: containedRejectReason(reject.code),
+  };
+}
+
+function pushContainedRejections(
+  errors: PluginLoadIssue[],
+  rejections: readonly ContainedReject[],
+  source: string,
+  pluginName: string,
+  component: PluginComponentKind | undefined,
+): void {
+  for (const reject of rejections) {
+    errors.push(containedPathIssue(reject, source, pluginName, component));
   }
-  return out.sort((a, b) => a.localeCompare(b));
 }
 
 async function loadHooks(
@@ -1247,8 +1300,34 @@ async function appendHookFile(
   sources: PluginHookSource[],
   errors: PluginLoadIssue[],
 ): Promise<void> {
+  const bound = await bindContainedRoot(pluginRoot);
+  if (bound === null) {
+    errors.push({
+      type: "hooks",
+      source,
+      plugin: pluginName,
+      path,
+      component: "hooks",
+      message: "plugin root is not a verified directory",
+    });
+    return;
+  }
+  const read = await readContainedUtf8(bound, path, {
+    maxBytes: MAX_PLUGIN_JSON_BYTES,
+  });
+  if (!read.ok) {
+    errors.push({
+      type: "hooks",
+      source,
+      plugin: pluginName,
+      path: read.declaredPath,
+      component: "hooks",
+      message: containedRejectReason(read.code),
+    });
+    return;
+  }
   try {
-    const parsed = JSON.parse(await readJsonText(path));
+    const parsed = JSON.parse(read.text);
     const hooks = normalizeHooksMap(parsed);
     if (hooks === null) {
       errors.push({

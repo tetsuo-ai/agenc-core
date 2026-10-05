@@ -64,6 +64,22 @@ describe("auto-mode attachment producer", () => {
     );
   });
 
+  test("Light sessions get the short variant where the full reminder would fire", async () => {
+    const opts = makeOpts({
+      lightMode: true,
+      permissionContext: { mode: "bypassPermissions" } as ToolPermissionContext,
+    });
+    const tracking = getAttachmentTrackingState(opts.sessionKey);
+
+    const out = await autoModeProducer(opts, tracking);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.kind).toBe("auto_mode");
+    expect((out[0] as { variant: string }).variant).toBe("light");
+
+    _resetAttachmentTrackingStateForTest(opts.sessionKey);
+  });
+
   test("first auto-mode turn fires variant: full (acceptEdits)", async () => {
     const opts = makeOpts({
       permissionContext: { mode: "acceptEdits" } as ToolPermissionContext,

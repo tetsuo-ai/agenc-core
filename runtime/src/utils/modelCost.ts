@@ -15,6 +15,7 @@ import {
   AGENC_OPUS_5_5_CONFIG,
   AGENC_OPUS_5_CONFIG,
   AGENC_SONNET_5_CONFIG,
+  AGENC_SONNET_5_5_CONFIG,
   AGENC_OPUS_4_8_CONFIG,
   AGENC_OPUS_4_CONFIG,
   AGENC_SONNET_4_5_CONFIG,
@@ -220,13 +221,15 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // The current lineup (platform.claude.com, 2026-09-11): Fable 5.1 keeps
   // Fable's $10/$50, Opus 5 the modern Opus $5/$25, Sonnet 5 is $2/$10.
   [firstPartyNameToCanonicalForCost(AGENC_FABLE_5_1_CONFIG.firstParty)]:
-    COST_TIER_10_50,
+    { ...COST_TIER_10_50, promptCacheReadTokens: 0.25 },
   [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
   // Opus 5.5 (platform.claude.com, 2026-09-22): $4/$20, cache reads 0.05x.
   [firstPartyNameToCanonicalForCost(AGENC_OPUS_5_5_CONFIG.firstParty)]:
     COST_TIER_4_20,
   [firstPartyNameToCanonicalForCost(AGENC_SONNET_5_CONFIG.firstParty)]:
+    COST_TIER_2_10,
+  [firstPartyNameToCanonicalForCost(AGENC_SONNET_5_5_CONFIG.firstParty)]:
     COST_TIER_2_10,
 }
 

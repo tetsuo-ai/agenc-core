@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as logging from '../../src/utils/log.js'
 
-vi.mock('../../src/utils/model/providers.js', () => ({
+vi.mock('../../src/utils/model/provider-selection.js', () => ({
   getSelectedProviderName: () => 'grok',
 }))
 vi.mock('../../src/utils/privacyLevel.js', () => ({

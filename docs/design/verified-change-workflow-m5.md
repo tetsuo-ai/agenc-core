@@ -186,6 +186,35 @@ machine-readable stop reason from `WORKFLOW_STOP_REASONS`. Non-blocking
 reviewer findings are preserved as a `risk_register` artifact and in the
 terminal message — surfaced honestly, never converted into success text.
 
+A required verification command is a `{ label, script }` pair. `script` is
+the command: the controller runs it in the worktree, and its exit code is
+what the first rule above checks. `label` is a name for people. It appears
+in the evidence record, the `test_result` artifact, and failure messages,
+and it never reaches a model. The plan, re-implement, verifier, and reviewer
+prompts name each command by its exact script (`formatVerificationCommand`
+in `runtime/src/workflow/verification.ts`). The verifier's brief also says
+that the workflow already ran each command, and gives the exit code it
+recorded. Before this rule, the verifier saw only `- verify: exit 0`. It ran
+`verify` as a command, got 127, and failed changes whose `npm test` had
+passed. AgenC Desktop names a client check by its script.
+
+When intake supplies no commands, planning selects the repository's real checks,
+or the checks a new project will create. Its final message contains one fenced
+`agenc-verification` block with a JSON array of scripts. Core validates that block
+before committing the plan and stores the frozen pairs in the plan effect's
+`requiredVerification` evidence. Invalid or placeholder lists fail planning,
+never proceed to implementation. Client checks remain fixed at intake and take
+precedence over any planner suggestions.
+
+The intake spec and digest remain unchanged. Resume reads the committed plan
+checks, or adopts and validates the durable child's message if the plan commit
+was interrupted. Implementation retries cannot replace the checks. Command
+records and the verifier's verdict still independently gate completion. The
+existing child plan message exposes the selected checks to Desktop; no wire
+schema or protocol version changes are needed. Desktop renders the block under
+Planned verification and uses Core's terminal reason to distinguish a failed
+command from successful commands followed by PARTIAL, FAIL or a missing verdict.
+
 The reviewer is invoked once, has no tools, and its reply is taken as final.
 The prompt says so (`buildReviewerMessages` in
 `runtime/src/workflow/independent-review.ts`). An unstructured reply (no
@@ -278,3 +307,4 @@ change their algorithm label, or overwrite their stored seal digest.
 | `workflow.review` fails with `no structured ReviewOutput (N chars): <excerpt>` | Reviewer narrated, refused, or was truncated after the one repair turn | The excerpt is the actual reply. Pin a reviewer that can emit `ReviewOutput` JSON; implement/verify already passed |
 | Finalize succeeded but `git branch --contains <head>` is empty | The worktree branch is deleted on purpose | The product is `refs/agenc/runs/<runId>`. If that ref is missing, cleanup left the worktree because the pin failed |
 | Spawn rejected: `agent_name must use only lowercase letters...` | Child run ids contain `-`, `:`, `#` | `workflowChildAgentName` must fold those to `_`. A raw id is not a valid registry name |
+| `verification_failed` with `commands passed, agent verdict FAIL`, and the verifier's report fails a required command named like the label (`verify`: exit 127, command not found) | Core before the label rule above showed the verifier only the label | Run a Core with the fix. The label is a name, the script is the command; a re-implement attempt may have added a `verify` script or file to satisfy the report, so check the patch |

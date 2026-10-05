@@ -301,6 +301,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "user_prompt_submit_hook_stopped",
   "user_prompt_submit_hook_threw",
   "pre_hook_denied",
+  "sandbox_policy_unexpressible",
   // Turn-outcome explanation
   "mid_turn_compact_failed",
   "pre_sampling_compact_failed",

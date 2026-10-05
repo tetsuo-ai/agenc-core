@@ -127,6 +127,14 @@ describe("compaction maximal chunk packing", () => {
 
     expect(plan.units).toHaveLength(1);
     expect(plan.units[0]?.messages).toHaveLength(3);
+    // The summarizer reads the calls by per-unit ref and each result, in
+    // completion order, names the ref of its call.
+    expect(
+      plan.units[0]?.messages[0]?.tool_calls?.map((call) => call.id),
+    ).toEqual(["c1", "c2"]);
+    expect(
+      plan.units[0]?.messages.slice(1).map((message) => message.tool_call_id),
+    ).toEqual(["c2", "c1"]);
     expect(
       plan.units[0]?.tool_pairs.map((pair) => pair.tool_call_id),
     ).toEqual(["call-b", "call-a"]);

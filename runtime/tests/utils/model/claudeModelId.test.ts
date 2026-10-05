@@ -194,7 +194,8 @@ describe("one identity for pricing and capabilities", () => {
       expect(
         resolveRegisteredModelCatalogEntry({ provider: "anthropic", model })?.model,
         model,
-      ).toBe(claudeApiOpus55 ? "claude-opus-5-5" : undefined);
+      ).toBe(claudeApiOpus55 ? "claude-opus-5-5" :
+        id?.platform === "anthropic" && id.canonical === "claude-opus-5" ? "claude-opus-5" : undefined);
     }
   });
 });

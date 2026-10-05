@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BEDROCK_CONVERSE_MODELS } from "../../registry/bedrock-converse-models.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
@@ -277,8 +278,8 @@ describe("providers/bedrock", () => {
     const sentBody = (fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>) =>
       JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
 
-    it("sends Opus 5.5 no temperature, no forced tool, and its effort in chat and streaming", async () => {
-      for (const model of ["anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"]) {
+    it("sends current Claude no temperature, no forced tool, and its effort in chat and streaming", async () => {
+      for (const model of ["anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"]) {
         const chatFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
         await provider(model, chatFetch).chat([{ role: "user", content: "hello" }], options);
         const streamFetch = vi.fn<typeof fetch>().mockResolvedValue(streamReply());
@@ -430,11 +431,11 @@ describe("providers/bedrock", () => {
     });
 
     it("sends effort only at the levels of a registered Bedrock contract", async () => {
-      // Fable 5.1 is always-on but has no registered Bedrock contract, so
+      // An unknown Fable minor has no registered Bedrock contract, so
       // registry validation offers it no levels and the wire sends none,
       // while the always-on request rules still apply.
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
-      await provider("global.anthropic.claude-fable-5-1", fetchImpl).chat(
+      await provider("global.anthropic.claude-fable-5-99", fetchImpl).chat(
         [{ role: "user", content: "hello" }],
         options,
       );
@@ -1194,6 +1195,24 @@ describe("providers/bedrock", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("forwards ConverseStream reasoning text to the shared guard, excluding signatures", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { signature: "opaque" } } } },
+      { contentBlockStop: { contentBlockIndex: 0 } },
+      { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "Done." } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    const chunks: unknown[] = [];
+    const response = await provider.chatStream([{ role: "user", content: "hello" }], chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingDelta: { delta: "Check the invariant.", index: 0 } });
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingBlockStop: { index: 0 } });
+    expect(JSON.stringify(chunks)).not.toContain("opaque");
+    expect(response.content).toBe("Done.");
+  });
+
   it("streams ConverseStream text, tool input, final tool calls, and usage", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       eventStreamResponse([
@@ -1476,5 +1495,28 @@ describe("providers/bedrock", () => {
       /AWS_BEDROCK_ACCESS_KEY_ID.*AWS_ACCESS_KEY_ID.*AWS_BEDROCK_SECRET_ACCESS_KEY.*AWS_SECRET_ACCESS_KEY/u,
     );
     await expect(provider.healthCheck()).resolves.toBe(false);
+  });
+});
+
+
+describe("reviewed Bedrock Converse model routing", () => {
+  it.each(BEDROCK_CONVERSE_MODELS)("serializes and parses tools for $model", async ({ model }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      output: { message: { role: "assistant", content: [
+        { toolUse: { toolUseId: "echo_call", name: "echo", input: { value: "ok" } } },
+      ] } }, stopReason: "tool_use", usage: { inputTokens: 2, outputTokens: 2, totalTokens: 4 },
+    }));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret", model,
+      fetchImpl, tools: [{ type: "function", function: { name: "echo", description: "Echo text",
+        parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } } }],
+    });
+    const response = await provider.chat([{ role: "user", content: "Call echo" }], { maxOutputTokens: 32 });
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toContain(`/model/${encodeURIComponent(model)}/converse`);
+    const body = JSON.parse(String(init?.body));
+    expect(body.inferenceConfig.maxTokens).toBe(32);
+    expect(body.toolConfig.toolChoice).toEqual({ auto: {} });
+    expect(body.toolConfig.tools[0].toolSpec.name).toBe("echo");
+    expect(response.toolCalls).toEqual([{ id: "echo_call", name: "echo", arguments: '{"value":"ok"}' }]);
   });
 });

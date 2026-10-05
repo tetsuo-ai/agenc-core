@@ -1,5 +1,6 @@
+import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import {
@@ -92,7 +93,7 @@ import { EventLog, type Event } from "../../src/session/event-log.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
 import { currentBuildId } from "../../src/session/durable-turns.js";
-import type { RolloutItem } from "../../src/session/rollout-item.js";
+import { parseRolloutLine, serializeRolloutItem, type RolloutItem } from "../../src/session/rollout-item.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
@@ -6186,6 +6187,48 @@ describe("AgenC delegate background-agent runner", () => {
     expect(argv).not.toContain("--allow-dangerously-skip-permissions");
   });
 
+  it.each([
+    { name: "fresh print", metadata: { source: "agenc.prompt", mode: "one-shot" }, expected: true },
+    { name: "Desktop", metadata: { source: "desktop", mode: "one-shot" }, expected: false },
+    { name: "interactive", metadata: { source: "agenc.prompt", mode: "tui" }, expected: false },
+    { name: "routine", metadata: { source: "agenc.prompt", mode: "one-shot", routineId: "routine", routineRunId: "tick" }, expected: false },
+    { name: "goal", metadata: { source: "agenc.prompt", mode: "one-shot", goalRun: true }, expected: false },
+  ])("isolates print durability selection for $name", async ({ metadata, expected }) => {
+    const { runner, bootstrap } = makeTopLevelRunner({ conversationId: "durability-policy-session" });
+    await runner.startAgent({ objective: "work", metadata,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }) });
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeOptions: expect.objectContaining({ relaxedOneShot: expected }),
+    }));
+  });
+
+  it("promotes a still-live print runtime before accepting a continuation", async () => {
+    const id = "live-print-continuation";
+    const { runner, control } = makeTopLevelRunner({ conversationId: id });
+    await runner.startAgent({ objective: "work", initialContent: [],
+      metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }) });
+    const promote = vi.spyOn(oneShotDurability, "promoteOneShotRun").mockImplementation(() => { throw new Error("checkpoint blocked"); });
+    try {
+      await expect(runner.submitAgentMessage(id, { sessionId: id, content: "continue", originalContent: "continue",
+        messageId: "continue", acceptedAt: "2026-10-03T00:00:00Z", streamId: "continue", ifBusy: "reject" }))
+        .rejects.toThrow("checkpoint blocked");
+      expect(promote).toHaveBeenCalledWith(id);
+      expect(control.sendInput).not.toHaveBeenCalled();
+    } finally { promote.mockRestore(); }
+  });
+
+  it("forces restored print runs back to full durability", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({ conversationId: "durability-restored-session" });
+    expect(await runner.restoreAgent({ agentId: "durability-restored-session", objective: "resume",
+      metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, relaxedOneShot: true }),
+    })).toBe(true);
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({ resumeConversation: true,
+      runtimeOptions: expect.objectContaining({ relaxedOneShot: false }),
+    }));
+  });
+
   it("forwards combined dangerous authority only through runtime options", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "dangerous-runtime-options-bootstrap-session",
@@ -6428,6 +6471,114 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({ objective: "work", cwd: process.cwd() });
     expect((await runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({ reasoningEffort });
     expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reasoningEffort });
+  });
+
+  it("persists an exact hidden managed model in initial runtime settings", async () => {
+    const agentId = "managed-deepseek-initial-settings";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "agenc";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "deepseek/deepseek-v4.1-flash";
+    h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "high";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({
+      provider: "agenc",
+      model: "deepseek/deepseek-v4.1-flash",
+      reasoningEffort: "high",
+    });
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toHaveLength(1);
+  });
+
+  it("updates response detail durably between turns, clears it, and combines it atomically with effort", async () => {
+    const agentId = "response-detail-update";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "openai";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "gpt-5";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const initialCount = recordedRuntimeSettingsEvents(h.rolloutItems).length;
+    for (const modelVerbosity of ["low", "medium", "high", null] as const) {
+      const result = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity });
+      expect(result).toMatchObject({ applied: true, modelVerbosity, runtimeSettingsEventId: expect.any(String) });
+      expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBe(modelVerbosity);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.modelVerbosity).toBe(modelVerbosity);
+      expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe(modelVerbosity ?? undefined);
+    }
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toHaveLength(initialCount + 4);
+    const combined = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low", reasoningEffort: "high" });
+    expect(combined).toMatchObject({ modelVerbosity: "low" });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({ modelVerbosity: "low", reasoningEffort: "high" });
+    const before = recordedRuntimeSettingsEvents(h.rolloutItems);
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" }))
+      .resolves.toMatchObject({ modelVerbosity: "low", runtimeSettingsEventId: combined.runtimeSettingsEventId });
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+    for (const extra of [{ modelVerbosity: "invalid" }, { modelVerbosity: "high", reload: true }, { modelVerbosity: null, profile: "fast" }, { modelVerbosity: "high", reasoningEffort: "invalid" }] as const) {
+      await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", ...extra })).rejects.toThrow();
+    }
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+    Object.assign(h.session, { activeTurn: h.activeTurn });
+    h.setActiveTurn("running-turn");
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "high" })).rejects.toThrow("between turns");
+  });
+
+  it("restores the configured verbosity when a session override is cleared", async () => {
+    const agentId = "response-detail-inherits-config";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.modelVerbosity = "high";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBeNull();
+    await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" });
+    expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe("low");
+    const cleared = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: null });
+    expect(cleared.modelVerbosity).toBeNull();
+    expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe("high");
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBeNull();
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.modelVerbosity).toBeNull();
+  });
+
+  it("recovers a persisted response detail override, exposes it on attach, and restores config on clear", async () => {
+    const agentId = "response-detail-persisted-recovery";
+    const root = mkdtempSync(join(tmpdir(), "agenc-detail-recovery-"));
+    const journalPath = join(root, "rollout.jsonl");
+    try {
+      const first = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+      first.sessionState.sessionConfiguration.modelVerbosity = "high";
+      await first.runner.startAgent({ objective: "work", deferInitialTurn: true });
+      await first.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" });
+      expect((await first.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBe("low");
+      const suspended = await first.runner.suspendIdleAgentForDaemonShutdown(agentId);
+      expect(suspended.disposition).toBe("suspended");
+      writeFileSync(journalPath, first.rolloutItems.map(item => serializeRolloutItem(item as RolloutItem)).join("\n") + "\n");
+
+      // Read the actual canonical journal bytes into a fresh runner generation.
+      const recoveredItems = readFileSync(journalPath, "utf8").trimEnd().split("\n")
+        .map(line => parseRolloutLine(line)).filter((item): item is RolloutItem => item !== null);
+      const persisted = recordedRuntimeSettingsEvents(recoveredItems).at(-1);
+      expect(persisted?.msg?.payload?.modelVerbosity).toBe("low");
+      const restored = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true,
+        rolloutItems: recoveredItems });
+      restored.sessionState.sessionConfiguration.modelVerbosity = "high";
+      await expect(restored.runner.restoreAgent({ agentId, objective: "work", resumeSuspendedRun: true,
+        suspendedResumeReason: "daemon_startup_restore",
+        runtimeSettings: persisted?.msg?.payload as unknown as RunRuntimeSettingsSnapshot }))
+        .resolves.toBe(true);
+      expect(restored.sessionState.sessionConfiguration.modelVerbosity).toBe("low");
+
+      const sessions = new AgenCDaemonSessionManager();
+      await sessions.restoreSession({ sessionId: "session_1", agentId, status: "waiting", cwd: process.cwd(),
+        createdAt: "2026-05-09T00:00:00.000Z", initialPrompt: "work",
+        metadata: { runtimeOptions: resolveAgentRuntimeOptions({}) } });
+      const manager = new AgenCDaemonAgentManager({ runner: restored.runner, sessionManager: sessions });
+      await manager.restoreAgent({ agentId, objective: "work", status: "idle", cwd: process.cwd(),
+        startedAt: "2026-05-09T00:00:00.000Z", lastActiveAt: "2026-05-09T00:00:00.000Z",
+        sessionIds: ["session_1"], runtimeAvailable: true });
+      const attach = () => manager.attachAgent({ agentId, clientId: "desktop" }, async () => async () => {});
+      expect((await attach()).runtimeSettings.modelVerbosity).toBe("low");
+      const cleared = await restored.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: null });
+      expect(cleared.modelVerbosity).toBeNull();
+      expect(restored.sessionState.sessionConfiguration.modelVerbosity).toBe("high");
+      expect((await attach()).runtimeSettings.modelVerbosity).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {
@@ -9094,6 +9245,7 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.submitAgentMessage("session-user-order", {
       sessionId: "session_1",
       content: "continue",
+      exactOutput: true,
       originalContent: "continue",
       messageId: "message_1",
       streamId: "stream_1",
@@ -9103,7 +9255,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-order",
       "continue",
-      expect.objectContaining({ displayUserMessage: "continue" }),
+      expect.objectContaining({ displayUserMessage: "continue", exactOutput: true }),
     );
     expect(emitted).toHaveLength(1);
   });
@@ -11463,7 +11615,8 @@ describe("AgenC delegate background-agent runner", () => {
     expect(partiallyKnown.contextBreakdown).toMatchObject({ windowTokens: 262_144, effectiveWindowTokens: 180_000 });
     expect(partiallyKnown.tokenUsage).toMatchObject({
       costUsd: 1.2345,
-      costKnown: false,
+      costKnown: true,
+      costEstimated: true,
     });
 
     hasUnknownModelCost.mockReturnValue(false);

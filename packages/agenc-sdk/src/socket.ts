@@ -19,11 +19,11 @@
  * launcher's in-process autostart path.
  */
 
-import { createHash } from "node:crypto";
+import { agenCDaemonLocalEndpoint } from "../lib/local-endpoint.mjs";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -123,17 +123,6 @@ export function resolveAgencHome(
   return canonicalizeAgencHomePath(configured ?? join(userHome, ".agenc"));
 }
 
-function daemonSocketPathFromHome(
-  daemonHome: string,
-  platform: NodeJS.Platform,
-): string {
-  if (platform !== "win32") return join(daemonHome, "daemon.sock");
-  const identity = createHash("sha256")
-    .update(win32.resolve(daemonHome).toLowerCase())
-    .digest("hex");
-  return `\\\\.\\pipe\\agenc-daemon-${identity}`;
-}
-
 /** Unix socket under the home, or a stable per-home named pipe on Windows. */
 export function resolveDaemonSocketPath(
   env: NodeJS.ProcessEnv = process.env,
@@ -141,7 +130,7 @@ export function resolveDaemonSocketPath(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const daemonHome = resolveAgencHome(env, userHome);
-  return daemonSocketPathFromHome(daemonHome, platform);
+  return agenCDaemonLocalEndpoint(daemonHome, platform);
 }
 
 /** Path of `daemon.cookie` under the AgenC home. */
@@ -436,7 +425,7 @@ export async function connect(
   const env = options.env ?? process.env;
   const daemonHome = resolveAgencHome(env, options.userHome);
   const socketPath =
-    options.socketPath ?? daemonSocketPathFromHome(daemonHome, process.platform);
+    options.socketPath ?? agenCDaemonLocalEndpoint(daemonHome, process.platform);
   const cookiePath =
     options.cookiePath ?? join(daemonHome, "daemon.cookie");
   const readyTimeoutMs =

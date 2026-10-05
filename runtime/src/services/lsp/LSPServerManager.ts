@@ -10,10 +10,7 @@ import { extname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { getAllLspServers } from "./config.js";
-import {
-  createLSPServerInstance,
-  type LSPServerInstance,
-} from "./LSPServerInstance.js";
+import type { LSPServerInstance } from "./LSPServerInstance.js";
 import type { LspServerConfigSource, ScopedLspServerConfig } from "./types.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { errorMessage } from "../../utils/errors.js";
@@ -56,17 +53,18 @@ export function createLSPServerManager(
   // happened to transition its public state to `stopped` before rejecting.
   // Keep that owner retryable until a later shutdown proves cleanup.
   const shutdownFailures = new Set<string>();
-  const instanceFactory =
-    options.instanceFactory ??
-    ((name: string, config: ScopedLspServerConfig) =>
-      createLSPServerInstance(name, config, {
+  const instanceFactory = options.instanceFactory;
+  const createDefaultInstance = async (name: string, config: ScopedLspServerConfig) => {
+    const { createLSPServerInstance } = await import("./LSPServerInstance.js");
+    return createLSPServerInstance(name, config, {
         ...(options.workspaceRoot !== undefined
           ? { cwd: options.workspaceRoot }
           : {}),
         ...(options.sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker: options.sandboxExecutionBroker }
           : {}),
-      }));
+      });
+  };
 
   function resolveFilePath(filePath: string): string {
     if (isAbsolute(filePath)) return resolve(filePath);
@@ -91,7 +89,9 @@ export function createLSPServerManager(
           );
         }
 
-        const instance = instanceFactory(serverName, config);
+        const instance = instanceFactory !== undefined
+          ? instanceFactory(serverName, config)
+          : await createDefaultInstance(serverName, config);
         instance.onRequest(
           "workspace/configuration",
           (params: { readonly items?: readonly unknown[] }) =>

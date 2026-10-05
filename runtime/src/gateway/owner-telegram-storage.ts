@@ -26,6 +26,8 @@ const identity = (value: unknown): value is string => typeof value === "string" 
 function validRecord(value: TelegramAgentRecord): boolean {
   return !!value && typeof value.agentId === "string" && /^[a-zA-Z0-9-]{1,64}$/u.test(value.agentId)
     && typeof value.name === "string" && value.name.length <= 100 && typeof value.instructions === "string" && value.instructions.length <= 16_000
+    && (value.provider === undefined || typeof value.provider === "string" && /^[a-z0-9-]{1,64}$/u.test(value.provider))
+    && (value.model === undefined || typeof value.model === "string" && value.model.length > 0 && value.model.length <= 256 && !/[\x00-\x1f\x7f]/u.test(value.model))
     && typeof value.workspacePath === "string" && (value.ownerUserId === null || identity(value.ownerUserId))
     && (value.telegramIdentityId === null || identity(value.telegramIdentityId))
     && (value.username === null || typeof value.username === "string" && /^[a-zA-Z0-9_]{1,64}$/u.test(value.username))

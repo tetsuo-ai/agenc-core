@@ -1,15 +1,12 @@
-import chokidar, { type FSWatcher } from "chokidar";
+import type { FSWatcher } from "chokidar";
+import { loadChokidar } from "../lazy-runtime-packages.js";
 import { stat } from "node:fs/promises";
 import * as platformPath from "node:path";
 
 import { getIsRemoteMode } from "../../bootstrap/state.js";
 import { registerCleanup } from "../cleanupRegistry.js";
 import { logForDebugging } from "../debug.js";
-import {
-  type ConfigChangeSource,
-  executeConfigChangeHooks,
-  hasBlockingResult,
-} from "../hooks.js";
+import type { ConfigChangeSource } from "../hooks.js";
 import { createSignal } from "../signal.js";
 import { type SettingSource } from "./constants.js";
 import { clearInternalWrites, consumeInternalWrite } from "./internalWrites.js";
@@ -95,7 +92,7 @@ export async function initialize(): Promise<void> {
   logForDebugging(
     `Watching canonical config/state files ${[...watchedSources.keys()].join(", ")}`,
   );
-  watcher = chokidar.watch(directories, {
+  watcher = loadChokidar().watch(directories, {
     persistent: true,
     ignoreInitial: true,
     depth: 1,
@@ -159,12 +156,14 @@ function handleChange(path: string): void {
     pendingDeletions.delete(path);
   }
   if (consumeInternalWrite(path, INTERNAL_WRITE_WINDOW_MS)) return;
-  void executeConfigChangeHooks(
-    settingSourceToConfigChangeSource(source),
-    path,
-  ).then((results) => {
-    if (!hasBlockingResult(results)) fanOut(source);
-  });
+  void import("../hooks.js").then(({ executeConfigChangeHooks, hasBlockingResult }) =>
+    executeConfigChangeHooks(
+      settingSourceToConfigChangeSource(source),
+      path,
+    ).then((results) => {
+      if (!hasBlockingResult(results)) fanOut(source);
+    }),
+  );
 }
 
 function handleAdd(path: string): void {
@@ -177,12 +176,14 @@ function handleDelete(path: string): void {
   const timer = setTimeout(
     (deletedPath: string, deletedSource: SettingSource) => {
       pendingDeletions.delete(deletedPath);
-      void executeConfigChangeHooks(
-        settingSourceToConfigChangeSource(deletedSource),
-        deletedPath,
-      ).then((results) => {
-        if (!hasBlockingResult(results)) fanOut(deletedSource);
-      });
+      void import("../hooks.js").then(({ executeConfigChangeHooks, hasBlockingResult }) =>
+        executeConfigChangeHooks(
+          settingSourceToConfigChangeSource(deletedSource),
+          deletedPath,
+        ).then((results) => {
+          if (!hasBlockingResult(results)) fanOut(deletedSource);
+        }),
+      );
     },
     testOverrides?.deletionGrace ?? DELETION_GRACE_MS,
     path,

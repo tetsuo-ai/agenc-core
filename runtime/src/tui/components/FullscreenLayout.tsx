@@ -604,7 +604,7 @@ function useSessionSpendLabel(): string {
     return () => clearInterval(interval);
   }, [hasUsageContext]);
   if (usage === null) return '—';
-  if (usage !== undefined) return `${formatUsdCost(usage.costUsd)}${usage.hasUnknownCost ? ' +?' : ''}`;
+  if (usage !== undefined) return `${formatUsdCost(usage.costUsd)}${usage.costEstimated ? ' est.' : ''}${usage.hasUnknownCost ? ' +?' : ''}`;
   return spend;
 }
 

@@ -137,6 +137,7 @@ function statusLineInput(session: Session, _presentation: SessionStatusLinePrese
     cost: {
       total_cost_usd: usage.costUsd,
       has_unknown_cost: usage.hasUnknownCost,
+      cost_estimated: usage.costEstimated ?? false,
       total_duration_ms: sidecar?.getTotalDurationMs() ?? 0,
       total_api_duration_ms: sidecar?.getTotalApiDurationMs() ?? 0,
       total_lines_added: sidecar?.getTotalLinesAdded() ?? 0,

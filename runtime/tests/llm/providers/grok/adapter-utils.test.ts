@@ -58,6 +58,48 @@ describe("grok adapter utils", () => {
     });
   });
 
+  it("keeps usage token counts readable while still redacting token credentials", () => {
+    const payload = cloneProviderTracePayload({
+      model: "grok-4.7",
+      max_output_tokens: 64_000,
+      usage: {
+        input_tokens: 55_500,
+        input_tokens_details: { cached_tokens: 47_872 },
+        output_tokens: 938,
+        output_tokens_details: { reasoning_tokens: 892 },
+        total_tokens: 56_438,
+        cost_in_usd_ticks: 152_388_000,
+        context_details: { input_tokens: 55_500, output_tokens: 938 },
+      },
+      auth: {
+        access_token: "access-secret",
+        refresh_tokens: ["refresh-secret"],
+        id_tokens: "id-secret",
+        session_token_details: "not-a-count",
+      },
+    });
+
+    expect(payload).toEqual({
+      model: "grok-4.7",
+      max_output_tokens: 64_000,
+      usage: {
+        input_tokens: 55_500,
+        input_tokens_details: { cached_tokens: 47_872 },
+        output_tokens: 938,
+        output_tokens_details: { reasoning_tokens: 892 },
+        total_tokens: 56_438,
+        cost_in_usd_ticks: 152_388_000,
+        context_details: { input_tokens: 55_500, output_tokens: 938 },
+      },
+      auth: {
+        access_token: "[REDACTED]",
+        refresh_tokens: "[REDACTED]",
+        id_tokens: "[REDACTED]",
+        session_token_details: "[REDACTED]",
+      },
+    });
+  });
+
   it("redacts provider error headers from iterable header collections", () => {
     const error = new Error("upstream failed") as Error & {
       headers: Headers;

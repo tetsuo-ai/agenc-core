@@ -35,6 +35,10 @@ import {
   type MessageContent,
   type RequestId,
   type RunCancelResult,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunEvidenceParams,
   type RunEvidenceResult,
   type RunReplayEvent,
@@ -73,9 +77,11 @@ function safeSdkRuntimeOptions(
   pluginStorageRoot: string,
   dangerouslyBypassApprovalsAndSandbox: boolean,
   deadline: { readonly deadlineAt?: number; readonly deadlineReserveMs?: number } = {},
+  lightMode?: boolean,
 ) {
   return Object.freeze({
     simpleMode: false,
+    ...(lightMode === true ? { lightMode: true } : {}),
     dangerouslyBypassApprovalsAndSandbox,
     stdinDataMode: false,
     remoteMode: false,
@@ -88,6 +94,8 @@ function safeSdkRuntimeOptions(
   });
 }
 const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 8;
+/** Daemon protocol 1.19 carries the session-owned Light profile. */
+const LIGHT_MODE_PROTOCOL_MINOR = 19;
 
 const DYNAMIC_CLIENT_CREDENTIAL_ENV_KEY = /^AGENC_CREDENTIAL_[A-Z0-9_]+$/u;
 
@@ -291,6 +299,8 @@ export interface AgencClientOptions {
 }
 
 export interface AgencCreateSessionParams extends SessionCreateParams {
+  /** Experimental, off by default: defer tool exposure in new sessions; requires daemon 1.19+. */
+  readonly lightMode?: boolean;
   /** Existing agents must be opened with attachAgent(), preserving their owning authority. */
   readonly agentId?: never;
   /** Exact plugin storage root captured by the embedding ingress. */
@@ -1050,8 +1060,12 @@ export class AgencClient {
       metadata,
       deadlineAt,
       deadlineReserveMs,
+      lightMode,
       ...sessionParams
     } = params;
+    if (lightMode !== undefined && typeof lightMode !== "boolean") {
+      throw new Error("AgencClient.createSession: lightMode must be boolean");
+    }
     if (
       bypassApprovals &&
       explicitPermissionMode !== undefined &&
@@ -1080,6 +1094,10 @@ export class AgencClient {
         : undefined,
     );
     const negotiatedVersion = this.#negotiatedClientProtocolVersion;
+    if (lightMode === true && negotiatedVersion !== undefined &&
+        (parseDaemonProtocolVersion(negotiatedVersion)?.minor ?? 0) < LIGHT_MODE_PROTOCOL_MINOR) {
+      throw new AgencCapabilityUnavailableError("Light mode", negotiatedVersion);
+    }
     const canAttachWithRuntimeAuthority =
       negotiatedVersion === undefined ||
       supportsAgentAttachRuntimeAuthority(negotiatedVersion);
@@ -1114,6 +1132,7 @@ export class AgencClient {
           ...(deadlineAt !== undefined ? { deadlineAt } : {}),
           ...(deadlineReserveMs !== undefined ? { deadlineReserveMs } : {}),
         },
+        lightMode,
       ),
     } as AgentCreateParams);
     try {
@@ -1241,6 +1260,22 @@ export class AgencClient {
    */
   startRun(params: RunStartParams): Promise<RunStartResult> {
     return this.request("run.start", params);
+  }
+
+  /** Request a pause after the current stage. The returned state may still be pending. */
+  async pauseRun(params: RunPauseParams): Promise<RunPauseResult> {
+    if (!this.#supportsMethod("run.pause")) {
+      throw new AgencCapabilityUnavailableError("run.pause", this.serverProtocolVersion);
+    }
+    return this.request("run.pause", params);
+  }
+
+  /** Resume the exact suspension without replenishing the run's limits. */
+  async resumeRun(params: RunResumeParams): Promise<RunResumeResult> {
+    if (!this.#supportsMethod("run.resume")) {
+      throw new AgencCapabilityUnavailableError("run.resume", this.serverProtocolVersion);
+    }
+    return this.request("run.resume", params);
   }
 
   /** List a bounded page of CSV unknown-outcome reviews. */
@@ -1972,6 +2007,12 @@ function assertValidAgentAttachRuntimeAuthority(
     );
   }
   const runtimeOptions = result.runtimeOptions;
+  if (runtimeOptions.lightMode !== undefined && typeof runtimeOptions.lightMode !== "boolean") {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.lightMode must be boolean",
+      response,
+    );
+  }
   for (const key of [
     "simpleMode",
     "stdinDataMode",

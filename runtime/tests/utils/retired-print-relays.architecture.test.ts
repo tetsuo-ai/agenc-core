@@ -67,7 +67,7 @@ describe("retired print relay architecture", () => {
       resolve(sourceRoot, "app-server/agent-cli.ts"),
       "utf8",
     );
-    const cli = readFileSync(resolve(sourceRoot, "bin/agenc-main.ts"), "utf8");
+    const cli = readFileSync(resolve(sourceRoot, "bin/daemon-one-shot-cli.ts"), "utf8");
 
     expect(sdkClient).toContain("onNotification(");
     expect(sdkClient).toContain("onSessionNotification(");
@@ -86,7 +86,7 @@ describe("retired print relay architecture", () => {
       "utf8",
     );
     const cliSource = readFileSync(
-      resolve(sourceRoot, "bin/agenc-main.ts"),
+      resolve(sourceRoot, "bin/daemon-one-shot-cli.ts"),
       "utf8",
     );
     const processSource = readFileSync(
@@ -107,6 +107,8 @@ describe("retired print relay architecture", () => {
     );
     expect(cliSource).toContain("installAgenCShutdownSignalHandlers");
     expect(cliSource).not.toContain("installInitSignalHandlers");
+    expect(readFileSync(resolve(sourceRoot, "bin/agenc-main.ts"), "utf8"))
+      .not.toContain("installInitSignalHandlers");
     expect(cliSource).toContain("registerProcessOutputErrorHandlers");
     expect(processSource).toContain(
       "export function registerProcessOutputErrorHandlers",

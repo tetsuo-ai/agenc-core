@@ -31,6 +31,27 @@ const TEST_TOOL: LLMTool = {
 };
 
 describe("responses-xai wire shim", () => {
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds prompt cache keys while preserving existing short keys: %s",
+    (promptCacheKey) => {
+      const build = (key: string) => buildXaiResponsesRequest({
+        model: "grok-4-fast",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { promptCacheKey: key },
+      }).prompt_cache_key;
+      const key = build(promptCacheKey);
+
+      expect(key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      expect(build(promptCacheKey)).toBe(key);
+      if (promptCacheKey.length <= 64) {
+        expect(key).toBe(promptCacheKey);
+      } else {
+        expect(build(`${promptCacheKey.slice(0, -1)}b`)).not.toBe(key);
+      }
+    },
+  );
+
   test("maps assistant tool calls and tool outputs to xAI Responses items", () => {
     const built = buildXaiResponsesInputItems([
       { role: "user", content: "run echo" },
@@ -54,7 +75,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         { role: "user", content: "run echo" },
         {
@@ -80,7 +100,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         { role: "user", content: "previous ask" },
         {
@@ -110,7 +129,6 @@ describe("responses-xai wire shim", () => {
 
     const built = buildXaiResponsesInputItems(messages);
 
-    expect(built.hasImages).toBe(true);
     expect(built.input).toEqual([
       {
         type: "function_call_output",
@@ -148,7 +166,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: true,
       input: [
         {
           role: "user",
@@ -183,7 +200,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         {
           role: "user",
@@ -215,7 +231,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         {
           role: "user",

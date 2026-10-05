@@ -1510,7 +1510,12 @@ describe("prepareTurnRuntimeInputs", () => {
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
-    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: nested, configStore: store }));
+    // Presentation identity is separate from the shell environment for paths.
+    // This fixture has no captured provider environment, so it uses the default.
+    expect(load).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cwd: nested, configStore: store }),
+      undefined,
+    );
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -2043,6 +2048,17 @@ describe("main() smoke", () => {
     });
   });
 
+  it.each([false, true])("print durability default and explicit full opt-out=%s", async (fullDurability) => {
+    await withOneShotTestEnvironment("agenc-one-shot-durability-", async ({ cwd, run }) => {
+      const daemon = installDaemonCliDepsForTest({ cwd });
+      expect(await run(() => oneShotCLI("work", [], { fullDurability }), 4000)).toBe(0);
+      expect(daemon.requests.find(request => request.method === "agent.create")?.params)
+        .toMatchObject({ runtimeOptions: { nonInteractive: true, relaxedOneShot: !fullDurability } });
+      expect(daemon.requests.find(request => request.method === "agent.attach")?.params)
+        .toMatchObject({ oneShotOutput: true });
+    });
+  });
+
   it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
     // The daemon path emits every assistant message twice: as streamed
     // deltas (event.message_chunk / agent_message_delta) and then as one
@@ -2134,7 +2150,7 @@ describe("main() smoke", () => {
         });
         expect(await run(() => oneShotCLI('/goal add clear() --verify "tests=npm test"'), 4000)).toBe(0);
         const create = daemon.requests.find((request) => request.method === "agent.create")?.params as Record<string, unknown>;
-        expect(create).toMatchObject({ deferInitialTurn: true });
+        expect(create).toMatchObject({ deferInitialTurn: true, runtimeOptions: { relaxedOneShot: false } });
         expect(create).not.toHaveProperty("initialContent");
         const methods = daemon.requests.map((request) => request.method);
         expect(methods.indexOf("session.goal")).toBeLessThan(methods.indexOf("message.stream"));
@@ -2765,7 +2781,7 @@ describe("main() smoke", () => {
         expect(daemon.requests.find((request) => request.method === "agent.create")).toBeUndefined();
         expect(daemon.startPromptAgent).not.toHaveBeenCalled();
         expect(daemon.resumePromptAgent).toHaveBeenCalledWith(
-          expect.objectContaining({ sessionId, rolloutPath, cwd }),
+          expect.objectContaining({ sessionId, rolloutPath, cwd, runtimeOptions: expect.objectContaining({ relaxedOneShot: false }) }),
         );
         expect(daemon.requests.find((request) => request.method === "agent.attach")?.params).toMatchObject({
           agentId: "agent_continue",
@@ -3454,7 +3470,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_json";
     const sessionId = "session_json";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3488,6 +3504,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const stdoutText = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("");
@@ -3549,7 +3570,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_jsonl";
     const sessionId = "session_jsonl";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3592,6 +3613,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const lines = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("")

@@ -378,3 +378,14 @@ describe("skillListingProducer", () => {
     ).not.toContain("hidden-local");
   });
 });
+
+
+test("Light defers the skill catalog until Skill is visible, without consuming its first emission", async () => {
+  const opts = makeOpts({ lightMode: true });
+  const tracking = getAttachmentTrackingState(opts.sessionKey);
+  expect(await skillListingProducer(opts, tracking)).toEqual([]);
+  const loaded = { ...opts, loadedTools: [{ type: "function" as const, function: { name: "Skill", description: "Load skills", parameters: {} } }] };
+  const listing = await skillListingProducer(loaded, tracking);
+  expect(listing.some(item => item.kind === "skill_listing")).toBe(true);
+  expect(await skillListingProducer({ ...loaded, messages: attachmentsToMessages(listing) }, tracking)).toEqual([]);
+});
