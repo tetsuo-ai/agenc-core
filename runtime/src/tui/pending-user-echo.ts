@@ -9,21 +9,26 @@ export type PendingUserEcho = {
   /** clientMessageId of the submission this echo stands in for. */
   readonly id: string;
   readonly message: unknown;
-  /** Transcript length when the prompt was sent. */
-  readonly afterIndex: number;
+  /** User text rows in the transcript when the prompt was sent. */
+  readonly userRowsBefore: number;
 };
 
-/** Whether a user text row arrived at or after `index`. */
-export function hasUserRowAfter(messages: readonly unknown[], index: number): boolean {
-  for (let i = messages.length - 1; i >= index; i -= 1) {
-    const message = messages[i] as
+/**
+ * User text rows in the transcript. Tool results are user rows too, but they
+ * carry block arrays, not text. Counting rather than indexing keeps the
+ * hand-over right when the transcript re-projects and rows move.
+ */
+export function countUserTextRows(messages: readonly unknown[]): number {
+  let count = 0;
+  for (const entry of messages) {
+    const message = entry as
       | { readonly type?: unknown; readonly message?: { readonly content?: unknown } }
       | undefined;
     if (message?.type === "user" && typeof message.message?.content === "string") {
-      return true;
+      count += 1;
     }
   }
-  return false;
+  return count;
 }
 
 /**
@@ -37,7 +42,7 @@ export function withPendingUserEcho<T>(
   echo: PendingUserEcho | null,
   submitting: boolean,
 ): readonly T[] {
-  if (echo === null || !submitting || hasUserRowAfter(messages, echo.afterIndex)) {
+  if (echo === null || !submitting || countUserTextRows(messages) > echo.userRowsBefore) {
     return messages;
   }
   return [...messages, echo.message as T];
