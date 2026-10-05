@@ -522,8 +522,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `project_doc_max_bytes` | Positive instruction-document byte ceiling. |
 | `experimental_realtime_start_instructions` | Realtime start instruction override. |
 | `experimental_realtime_ws_backend_prompt` | Realtime websocket backend prompt override. |
-| `max_output_tokens` | Positive global model-output limit. |
-| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. |
+| `max_output_tokens` | Positive global model-output limit. An explicit value makes max-output-tokens escalate skip. |
+| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. When true (or the catalog marks the model capped), a withheld `max_output_tokens` sample may escalate once to `min(64000, model upper limit)` before the 3 continuation retries. See [daemon.md](daemon.md#max-output-tokens-recovery). |
 | `max_turns` | Positive loop backstop. |
 | `max_budget_usd` | Positive shared cost cap for the session and its child agents. |
 | `autonomous_mode` | Boolean autonomous runtime mode. |

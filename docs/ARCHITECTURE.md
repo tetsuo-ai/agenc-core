@@ -6,7 +6,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, and [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon), and [max-output-tokens recovery](reference/daemon.md#max-output-tokens-recovery) |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, omitted-type object schemas, Landlock stdio failures |
@@ -111,7 +111,7 @@ Everything past the launcher lives in the single runtime workspace
 | `search/`                                                                | Persistent fuzzy file index used by `fs.fuzzy_search`                                                                                                                                                                                          |
 | `workspace/`                                                             | Verified file-mutation transactions (rollback boundary, no-effect evidence) and the per-tool-call operation lifetime that keeps shell descendants contained                                                                                    |
 | `contracts/`                                                             | Frozen run/admission/CSV/invocation types shared by daemon, SDK, and tests                                                                                                                                                                     |
-| `recovery/`                                                              | Crash/recovery helpers for in-flight work                                                                                                                                                                                                      |
+| `recovery/`                                                              | Stream/model fallback ladder, including [max-output-tokens escalate and continuation](#max-output-tokens-recovery). Do not confuse with journal quarantine in `state/`.                                                                         |
 | `onboarding/`                                                            | Guided `agenc onboard` wizard UI                                                                                                                                                                                                               |
 | `eval/`                                                                  | Diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`)                                                                                                                                                    |
 | `eval-contract/`                                                         | Immutable task/preregistration/evidence/score contract v1                                                                                                                                                                                      |
@@ -421,7 +421,7 @@ recovery condition, triggers are evaluated in a **fixed priority order**
 | ----- | --------------------------- | ---------------------------------------------------- |
 | 1     | `isWithheld413`             | Prompt-too-long → collapse / reactive recovery       |
 | 2     | `isWithheldMedia`           | Media-too-large or a provider-refused image → leave the images out and re-sample |
-| 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation         |
+| 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → [escalate, continuation, or exhaust](#max-output-tokens-recovery) |
 | 4     | `stopHookBlocking`          | Stop-hook inject + re-enter                          |
 | 5     | `streamingFallbackOccured`  | Streaming fallback tombstone + recreate executor     |
 | 6     | `FallbackTriggeredError`    | Model fallback swap                                  |
@@ -430,6 +430,28 @@ Related modules: `api-errors.ts` (match predicates), `image-rejection.ts`,
 `model-fallback.ts`, `max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
 `withhold-cascading.ts`. Do not reorder the trigger array without updating
 the I-10 tests that pin `I10_TRIGGER_ORDER`.
+
+### Max-output-tokens recovery
+
+`isWithheldMaxOutputTokens` matches `apiError: "max_output_tokens"` on the
+last assistant. `post-sample-recovery.ts` `onMaxOutputTokens` then calls
+`runMaxOutputTokensRecovery`:
+
+1. **Escalate** once when the effective budget is a capped default and the
+   operator did not set `max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS`.
+   Override becomes `min(64000, model upper limit)`
+   (`ESCALATED_MAX_OUTPUT_TOKENS`). Durable history is truncated to
+   `messagesAtSampleStart`, never copied from `messagesForQuery`.
+2. **Continuation** up to **3** times (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`).
+   Reasoning-only replies (no text, no tool calls, reasoning tokens
+   reported) ask for a next concrete step. Truncated tool arguments ask
+   for complete JSON. Ordinary truncated text uses the resume-from-here
+   line.
+3. **Exhausted** terminals the turn as `model_error`:
+   `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.`
+
+Operator runbook:
+[daemon.md](reference/daemon.md#max-output-tokens-recovery).
 
 A refused image is recorded for the session and replaced in every later
 request by a short note (`session/query-image-safety.ts`), so a replayed tool
