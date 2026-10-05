@@ -9,8 +9,12 @@ export type PendingUserEcho = {
   /** clientMessageId of the submission this echo stands in for. */
   readonly id: string;
   readonly message: unknown;
+  /** The text that was sent. */
+  readonly text: string;
   /** User text rows in the transcript when the prompt was sent. */
   readonly userRowsBefore: number;
+  /** Text of the newest user row when the prompt was sent. */
+  readonly lastUserTextBefore: string | null;
 };
 
 /**
@@ -21,14 +25,38 @@ export type PendingUserEcho = {
 export function countUserTextRows(messages: readonly unknown[]): number {
   let count = 0;
   for (const entry of messages) {
-    const message = entry as
-      | { readonly type?: unknown; readonly message?: { readonly content?: unknown } }
-      | undefined;
-    if (message?.type === "user" && typeof message.message?.content === "string") {
-      count += 1;
-    }
+    if (userText(entry) !== null) count += 1;
   }
   return count;
+}
+
+/** Text of the newest user text row, or null when there is none. */
+export function lastUserText(messages: readonly unknown[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = userText(messages[index]);
+    if (text !== null) return text;
+  }
+  return null;
+}
+
+function userText(entry: unknown): string | null {
+  const message = entry as
+    | { readonly type?: unknown; readonly message?: { readonly content?: unknown } }
+    | undefined;
+  return message?.type === "user" && typeof message.message?.content === "string"
+    ? message.message.content
+    : null;
+}
+
+/**
+ * True once the daemon's own row for the echoed prompt is in the transcript:
+ * there are more user rows than when it was sent, or the newest user row
+ * now reads the sent text. The second check covers a transcript that lost
+ * older rows meanwhile, which keeps the count from going up.
+ */
+function daemonRowLanded(messages: readonly unknown[], echo: PendingUserEcho): boolean {
+  if (countUserTextRows(messages) > echo.userRowsBefore) return true;
+  return echo.lastUserTextBefore !== echo.text && lastUserText(messages) === echo.text;
 }
 
 /**
@@ -42,7 +70,7 @@ export function withPendingUserEcho<T>(
   echo: PendingUserEcho | null,
   submitting: boolean,
 ): readonly T[] {
-  if (echo === null || !submitting || countUserTextRows(messages) > echo.userRowsBefore) {
+  if (echo === null || !submitting || daemonRowLanded(messages, echo)) {
     return messages;
   }
   return [...messages, echo.message as T];

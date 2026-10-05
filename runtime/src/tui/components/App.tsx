@@ -127,7 +127,7 @@ import type {
   McpSurfaceTool,
 } from "../../session/session.js";
 import { makeUserMessage, useSessionTranscript } from "../session-transcript.js";
-import { countUserTextRows, type PendingUserEcho, withPendingUserEcho } from "../pending-user-echo.js";
+import { countUserTextRows, lastUserText, type PendingUserEcho, withPendingUserEcho } from "../pending-user-echo.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
@@ -3491,7 +3491,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           setPendingEcho({
             id: clientMessageId,
             message: makeUserMessage(historyDisplay, `pending-echo:${clientMessageId}`),
+            text: historyDisplay,
             userRowsBefore: countUserTextRows(transcriptMessagesRef.current),
+            lastUserTextBefore: lastUserText(transcriptMessagesRef.current),
           });
         }
         // Snap the transcript to the bottom on every prompt submit. The

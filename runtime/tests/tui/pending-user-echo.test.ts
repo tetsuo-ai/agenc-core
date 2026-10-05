@@ -11,8 +11,14 @@ const assistant = { type: "assistant", message: { content: [{ type: "text", text
 const toolResult = { type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } };
 const done = { type: "system", subtype: "turn_duration", durationMs: 1000 };
 
-function echo(userRowsBefore: number): PendingUserEcho {
-  return { id: "client-1", message: makeUserMessage("build the cli", "pending-echo:client-1"), userRowsBefore };
+function echo(userRowsBefore: number, lastUserTextBefore: string | null = "earlier"): PendingUserEcho {
+  return {
+    id: "client-1",
+    message: makeUserMessage("build the cli", "pending-echo:client-1"),
+    text: "build the cli",
+    userRowsBefore,
+    lastUserTextBefore,
+  };
 }
 
 describe("pending user echo", () => {
@@ -43,6 +49,22 @@ describe("pending user echo", () => {
 
     expect(countUserTextRows(messages)).toBe(1);
     expect(withPendingUserEcho(messages, echo(1), true)).toHaveLength(5);
+  });
+
+  it("hands over when older rows left the transcript before the daemon row landed", () => {
+    // Two prompts were on screen when this one was sent; the transcript then
+    // dropped the oldest, so the count stays at two with the new row in.
+    const shrunk = [makeUserMessage("earlier"), assistant, makeUserMessage("build the cli")];
+
+    expect(withPendingUserEcho(shrunk, echo(2), true)).toBe(shrunk);
+  });
+
+  it("keeps the echo for a repeat of the previous prompt until the count moves", () => {
+    const before = [makeUserMessage("build the cli"), assistant];
+
+    expect(withPendingUserEcho(before, echo(1, "build the cli"), true)).toHaveLength(3);
+    const landed = [...before, makeUserMessage("build the cli")];
+    expect(withPendingUserEcho(landed, echo(1, "build the cli"), true)).toBe(landed);
   });
 
   it("drops the echo when the submission settles or fails", () => {
