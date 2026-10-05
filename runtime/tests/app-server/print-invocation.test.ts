@@ -158,7 +158,8 @@ describe("canonical/resident print byte and exit parity", () => {
     const run = f.invocation.run();
     await vi.waitFor(() => expect(f.call.mock.calls.some(([method]) => method === "agent.attach")).toBe(true));
     for (const event of replay) await f.invocation.event(event);
-    expect({ ...f.output(), ...await run }).toEqual({ kind: "exit", exitCode: expected.exitCode, stdout: expected.stdout, stderr: expected.stderr });
+    const result = await run;
+    expect({ ...f.output(), ...result }).toEqual({ kind: "exit", exitCode: expected.exitCode, stdout: expected.stdout, stderr: expected.stderr });
     expect(expected.exitCode).toBe(0);
     if (format !== "text") expect(Buffer.byteLength(expected.stdout)).toBeGreaterThan(2 * 1024 * 1024);
   });
@@ -171,7 +172,8 @@ describe("canonical/resident print byte and exit parity", () => {
     const run = f.invocation.run();
     await vi.waitFor(() => expect(f.call.mock.calls.some(([method]) => method === "agent.attach")).toBe(true));
     for (const event of replay) await f.invocation.event(event);
-    expect({ ...f.output(), ...await run }).toEqual({ kind: "exit", exitCode: 2, stdout: expected.stdout, stderr: expected.stderr });
+    const result = await run;
+    expect({ ...f.output(), ...result }).toEqual({ kind: "exit", exitCode: 2, stdout: expected.stdout, stderr: expected.stderr });
     expect(expected.exitCode).toBe(2);
   });
   it("preserves warning bytes and multiplicity without daemon-global stderr", async () => {
