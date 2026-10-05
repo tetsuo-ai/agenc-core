@@ -230,9 +230,6 @@ function buildSamplingRequestContract(
   );
   return {
     ...request,
-    ...(state.reasoningOnlyRecoveryPending === true
-      ? { reasoningOnlyRecovery: true as const }
-      : {}),
     ...(planModeHelpers.isPlanMode(samplingContext) && request.tools.length > 0
       ? { toolChoice: "required" as const }
       : {}),
