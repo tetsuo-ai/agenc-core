@@ -1340,6 +1340,10 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("replays MCP tool call events into resumed transcript state", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    // Keep writable temp authority separate from the protected home. The
+    // module-load temp fallback can be their shared parent in hermetic workers,
+    // which correctly emits a sandbox warning unrelated to MCP replay.
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-bootstrap-tmp-"));
     const conversationId = "conv-mcp-tool-call-replay";
 
     const providerMod = await import("../llm/provider.js");
@@ -1370,6 +1374,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1413,6 +1418,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1465,6 +1471,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
+      await rm(sessionTempRoot, { recursive: true, force: true });
     }
   });
 
@@ -4662,4 +4669,219 @@ describe("fresh startup diagnostic index policy", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("warm daemon auxiliary setup ceiling", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it("keeps canonical rollout and admission eager while auxiliary projection and sidecars wait for POST", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      await providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" });
+      expect(project).toHaveBeenCalledOnce();
+      expect(boot.sidecarManager.getSidecarNames()).toEqual(expect.arrayContaining(["file-history", "cost"]));
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+  it("drains RV pending cost load before shutdown and never publishes sidecars after closure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { CostSidecar } = await import("../session/cost.js");
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    let releaseLoad!: () => void;
+    let enteredLoad!: () => void;
+    const loadGate = new Promise<void>(resolve => { releaseLoad = resolve; });
+    const loadEntered = new Promise<void>(resolve => { enteredLoad = resolve; });
+    vi.spyOn(CostSidecar.prototype, "loadFromDisk").mockImplementation(async () => {
+      enteredLoad();
+      await loadGate;
+    });
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    const costStop = vi.spyOn(CostSidecar.prototype, "stop");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await loadEntered;
+      let shutdownSettled = false;
+      const closing = boot.shutdown().then(() => { shutdownSettled = true; });
+      expect(boot.session.isShuttingDown).toBe(true);
+      await Promise.resolve();
+      expect(shutdownSettled).toBe(false);
+      const startsAtShutdown = sidecarStart.mock.calls.length;
+      const activeAtShutdown = getActiveCostSidecar();
+      releaseLoad();
+      const outcome = await pending;
+      await closing;
+      cleanupManager = boot.sidecarManager;
+      const lateStarts = sidecarStart.mock.calls.length - startsAtShutdown;
+      expect(outcome).toBe("rejected");
+      expect(startsAtShutdown).toBe(0);
+      expect(activeAtShutdown).toBeNull();
+      expect(lateStarts).toBe(0);
+      expect(costStop).toHaveBeenCalledOnce();
+      expect(boot.session.services.costSidecar).toBeUndefined();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseLoad();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  it("closes deferred admission while POST is pending and discards its late response", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let releaseTransport!: () => void, enteredTransport!: () => void;
+    const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+    const transportEntered = new Promise<void>(resolve => { enteredTransport = resolve; });
+    const cancel = vi.fn();
+    let transportSignal: AbortSignal | null | undefined;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        transportSignal = init.signal;
+        enteredTransport();
+        await transportGate;
+        return new Response(new ReadableStream({ cancel }));
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await transportEntered;
+      await boot.shutdown();
+      expect(transportSignal?.aborted).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      releaseTransport();
+      expect(await pending).toBe("rejected");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseTransport();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
 });

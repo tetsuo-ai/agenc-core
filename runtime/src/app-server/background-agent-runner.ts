@@ -555,6 +555,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
+      // Scratch ceiling: only fresh one-shot Light sessions in the daemon.
+      deferAuxiliarySetupUntilRequest:
+        runtimeOptions?.lightMode === true && runtimeOptions.nonInteractive === true,
       // One process hosts every session: no exit hook per session and no cost
       // summary on the daemon's stdout.
       costSummaryOnExit: false,

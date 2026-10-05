@@ -1,3 +1,5 @@
+import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
+import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { readStartupCronTasks } from "../utils/cron-startup.js";
 import { VERSION } from "../version.js";
@@ -612,6 +614,8 @@ function createMemoryAutoSaveSidecar(): Sidecar {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
+  /** Scratch warm-daemon ceiling; canonical rollout and admission stay eager. */
+  readonly deferAuxiliarySetupUntilRequest?: boolean;
   readonly signal?: AbortSignal;
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
@@ -1226,6 +1230,11 @@ async function bootstrapLocalRuntimeSessionScoped(
     subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
+  const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
+    runtimeOptions.lightMode === true && runtimeOptions.nonInteractive === true &&
+    !resumeConversation && options.resumeRolloutPath === undefined && resolvedProvider === "deepseek"
+    ? createWarmSessionSetupCeiling(agencHome, conversationId) : undefined;
+
   const providerModel = modelSelection.model;
   return runWithStartupProviderSelection({
     provider: resolvedProvider,
@@ -1432,7 +1441,9 @@ async function bootstrapLocalRuntimeSessionScoped(
         // global fetch here makes providers unable to distinguish the normal
         // runtime path from an authority-boundary/custom transport. Qwen uses
         // that distinction to install its official-host DNS recovery path.
-        ...(options.fetchImpl !== undefined ? { fetchImpl } : {}),
+        ...(deferredSetup !== undefined && provider === "deepseek"
+          ? { fetchImpl: deferredSetup.wrap(options.fetchImpl ?? concurrentChatFetch()) }
+          : options.fetchImpl !== undefined ? { fetchImpl } : {}),
         sandboxExecutionBroker,
       },
     });
@@ -1721,6 +1732,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       sandboxExecutionBroker,
       executionAdmission,
       admissionRequired: true,
+      ...(deferredSetup !== undefined ? { deferThreadProjection: deferredSetup.register } : {}),
     });
 
   const shutdown = (reason: "session_shutdown" | "daemon_shutdown" = "session_shutdown"): Promise<void> => {
@@ -1729,6 +1741,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     // Close startup admission synchronously. The task body intentionally
     // begins on a microtask, and sidecar stop may await; neither may leave a
     // window where a late submit can activate MCP/cron/job startup.
+    const deferredSetupClosed = deferredSetup?.close();
     sessionForShutdown?.beginShutdown();
     let partialMcpDisposeTask: Promise<void> | undefined;
     if (sessionForShutdown === null) {
@@ -1744,6 +1757,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
       if (!shutdownPrepared) {
+        // A deferred callback can own allocated sidecars/watchers while it
+        // awaits I/O. Drain it before stopping them or closing their Session.
+        await deferredSetupClosed;
         shutdownPrepared = true;
         if (sessionForShutdown !== null) {
           clearCurrentRuntimeSession(sessionForShutdown);
@@ -1872,6 +1888,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       modelInfo,
       initialTranscriptEvents,
       enablePrewarm: false,
+      ...(deferredSetup !== undefined
+        ? { deferSkillsWatcherUntilRequest: deferredSetup.register } : {}),
       ...(options.deferSessionStartHooks === true
         ? { deferSessionStartHooks: true }
         : {}),
@@ -2099,6 +2117,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           });
         }
 
+        const initializeSidecars = async (): Promise<void> => {
+        s.abortController.signal.throwIfAborted();
         const projectDir = getProjectDir(
           workspaceRoot,
           sessionProjectRootMarkers,
@@ -2167,12 +2187,20 @@ async function bootstrapLocalRuntimeSessionScoped(
               at: Date.now(),
             }),
         });
+        // Register before the await so partial initialization is always owned
+        // by the ordinary shutdown cleanup, even if loading fails or closes.
+        sidecarManager.register(costSidecar);
         await costSidecar.loadFromDisk();
+        deferredSetup?.assertOpen();
+        s.abortController.signal.throwIfAborted();
         (s.services as { costSidecar?: CostSidecar }).costSidecar = costSidecar;
         clearActiveCostSidecar?.();
         clearActiveCostSidecar = bindActiveCostSidecar(costSidecar);
-        sidecarManager.register(costSidecar);
         sidecarManager.register(createMemoryAutoSaveSidecar());
+        if (deferredSetup !== undefined) await sidecarManager.start(s.eventLog);
+        };
+        if (deferredSetup !== undefined) deferredSetup.register(initializeSidecars);
+        else await initializeSidecars();
 
         ctxForReturn = buildTurnContext({
           conversationId,
@@ -2399,7 +2427,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       mcpManager,
       session,
       rolloutStore: rolloutStoreForReturn,
-      sidecarManager: sidecarManager!,
+      get sidecarManager() { return sidecarManager!; },
       ctx: ctxForReturn,
       authSubscriptionTier,
       memoryDir,
