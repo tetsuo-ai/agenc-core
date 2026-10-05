@@ -54,7 +54,7 @@ describe("ModelRegistry", () => {
       slug: "gpt-5.4",
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      supportedReasoningLevels: ["none", "low", "medium", "high", "xhigh"],
       serviceTiers: [
         {
           id: "priority",
@@ -259,7 +259,8 @@ describe("ModelRegistry", () => {
 
     expect(entry.cost.known).toBe(false);
     expect(entry.cost.matchedKey).toBeUndefined();
-    expect(entry.cost.entry.label).toBe("fallback");
+    expect(entry.cost.entry.label).toBe("conservative estimate");
+    expect(entry.cost.entry.costEstimated).toBe(true);
   });
 
   it("applies configured capability overrides through registry entries", () => {

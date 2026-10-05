@@ -10,7 +10,6 @@
  *     SDKs until a caller explicitly chooses that path.
  */
 
-import ProviderSdk from "@anthropic-ai/sdk";
 import type {
   BetaMessageParam,
   BetaToolUnion,
@@ -630,6 +629,7 @@ async function resolveAnthropicClient(
   if (!options.apiKey) {
     return null;
   }
+  const { default: ProviderSdk } = await import("@anthropic-ai/sdk");
   return new ProviderSdk({
     apiKey: options.apiKey,
     baseURL: options.baseURL,

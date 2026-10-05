@@ -7,6 +7,10 @@ import {
   isDangerousShellCommand,
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 // Frozen donor-contract snapshot from the PE-02 cited source files; kept
 // inline so these tests never import the read-only mirror at runtime.
@@ -112,6 +116,30 @@ describe("dangerous shell command detection", () => {
   ])("flags permuted recursive forced removal: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
+
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
+    "peels every shell input evaluator before the floor: %s",
+    (command, label) => {
+      expect(matchedDangerousShellCommandLabel(command)).toBe(label);
+    },
+  );
+
+  test.each(INERT_SHELL_SCRIPT_COMMANDS)(
+    "does not flag a peeled script that removes nothing: %s",
+    (command) => {
+      expect(isDangerousShellCommand(command)).toBe(false);
+    },
+  );
+
+  test.each([
+    "echo $(busybox --install echo)",
+    "echo $(busybox --list echo)",
+  ])(
+    "keeps the shell-construct ask when BusyBox runs no applet: %s",
+    (command) => {
+      expect(hasShellConstructRequiringAsk(command)).toBe(true);
+    },
+  );
 
   test.each([
     "echo ok\nrm -rf /",

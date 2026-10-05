@@ -39,11 +39,8 @@ import {
   GrepBoundaryError,
 } from "./ripgrep-protocol.js";
 import { readFileInRange } from "../../utils/readFileInRange.js";
-import {
-  bindWorkspaceDirectoryReadCapability,
-  type WorkspaceBoundReadCapability,
-  type WorkspaceBoundReadIdentity,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceBoundReadCapability, type WorkspaceBoundReadIdentity } from "../../workspace/file-mutation-transaction.js";
+import { bindWorkspaceDirectoryReadCapability } from "../../workspace/lazy-file-mutation.js";
 
 export const ORIENT_TOOL_NAME = "Orient";
 

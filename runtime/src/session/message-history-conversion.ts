@@ -3,6 +3,7 @@ import type {
   LLMMessage,
   ProviderReasoningReplay,
 } from "../llm/types.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 import {
@@ -110,7 +111,11 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.providerReasoningContent !== undefined &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning: {
             ...(message.providerReasoningProvenance !== undefined &&
@@ -219,7 +224,11 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.providerReasoning !== undefined &&
-    item.providerReasoning.content.length > 0
+    (item.providerReasoning.content.length > 0 ||
+      (item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0 &&
+        item.providerReasoning.version === 2 && isKnownEmptyProviderReasoning(
+          item.providerReasoning.content, item.providerReasoning,
+        )))
       ? {
           providerReasoningContent: item.providerReasoning.content,
           ...(item.providerReasoning.version === 2 &&
@@ -354,7 +363,7 @@ function currentIntegrity(
 }
 
 /**
- * Only canonical Grok ciphertext is exempt from text redaction.
+ * Only canonical provider ciphertext is exempt from text redaction.
  * True when durable persistence drops invalid Grok replay or other replay because secret
  * redaction would alter it.
  *
@@ -380,7 +389,10 @@ export function durableRedactionDropsProviderReplay(
     const metadata = redactSecretsInValue({ provider: providerReasoning.provider, model: providerReasoning.model });
     return metadata.provider !== providerReasoning.provider || metadata.model !== providerReasoning.model;
   }
-  const redacted = redactSecretsInValue(providerReasoning);
+  const redacted = redactDurableSecrets({
+    role: "assistant",
+    providerReasoning,
+  }, "response").providerReasoning;
   return (
     redacted?.content !== providerReasoning.content ||
     redacted.version !== providerReasoning.version ||

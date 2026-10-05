@@ -20,6 +20,19 @@ function image(bytes: number, label: string): LLMMessage {
   };
 }
 
+/** Indexes of the messages that still carry an image. */
+function keptIndexes(messages: readonly LLMMessage[]): number[] {
+  return messages.flatMap((message, index) =>
+    Array.isArray(message.content) && message.content.some((part) => part.type === "image_url") ? [index] : [],
+  );
+}
+
+/** One projection per request of a history that gains a 1000-byte screenshot each time. */
+function screenshotRequests(count: number, budget: number) {
+  const shots = Array.from({ length: count }, (_, index) => image(1000, String(index)));
+  return shots.map((_, index) => boundContextImageBytes(shots.slice(0, index + 1), budget));
+}
+
 describe("resolveContextImageBudgetBytes", () => {
   test("defaults, disables on 0, ignores malformed values", () => {
     expect(resolveContextImageBudgetBytes({})).toBe(DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES);
@@ -44,18 +57,18 @@ describe("boundContextImageBytes", () => {
     expect(bounded.omitted).toBe(0);
   });
 
-  test("keeps the newest images up to the full budget and replaces the rest", () => {
+  test("replaces the oldest images down to half the budget once the images exceed it", () => {
     const messages = [image(1000, "one"), image(1000, "two"), image(1000, "three"), image(1000, "four")];
     const bounded = boundContextImageBytes(messages, 3000);
-    expect(bounded.omitted).toBe(1);
-    expect(bounded.retainedBytes).toBe(3000);
+    expect(bounded.omitted).toBe(3);
+    expect(bounded.retainedBytes).toBe(1000);
     const texts = bounded.messages.map((message) =>
       (message.content as Array<{ type: string; text?: string }>).map((part) => part.type === "text" ? part.text : "IMG").join("|"),
     );
     expect(texts).toEqual([
       `one|${OMITTED_IMAGE_TEXT}`,
-      "two|IMG",
-      "three|IMG",
+      `two|${OMITTED_IMAGE_TEXT}`,
+      `three|${OMITTED_IMAGE_TEXT}`,
       "four|IMG",
     ]);
     // Untouched messages keep their identity; replaced ones are copies.
@@ -70,14 +83,12 @@ describe("boundContextImageBytes", () => {
     { sizes: [1000, 6000], budget: 6000, kept: [1], bytes: 6000 },
     { sizes: [1000, 7000], budget: 6000, kept: [], bytes: 0 },
     { sizes: [1000, 7000, 1000], budget: 6000, kept: [2], bytes: 1000 },
+    { sizes: [2000, 2000, 2000, 1000, 1000], budget: 6000, kept: [2, 3, 4], bytes: 4000 },
   ])("retains a contiguous newest suffix: $sizes with budget $budget", ({ sizes, budget, kept, bytes }) => {
     const messages = sizes.map((size, index) => image(size, String(index)));
     const original = structuredClone(messages);
     const bounded = boundContextImageBytes(messages, budget);
-    const actualKept = bounded.messages.flatMap((message, index) =>
-      Array.isArray(message.content) && message.content.some((part) => part.type === "image_url") ? [index] : [],
-    );
-    expect(actualKept).toEqual(kept);
+    expect(keptIndexes(bounded.messages)).toEqual(kept);
     expect(bounded.retainedBytes).toBe(bytes);
     expect(bounded.omitted).toBe(sizes.length - kept.length);
     expect(bounded.totalBytes).toBe(sizes.reduce((sum, size) => sum + size, 0));
@@ -90,12 +101,27 @@ describe("boundContextImageBytes", () => {
     expect(messages).toEqual(original);
   });
 
-  test("does not silently reserve half the budget when reprojecting durable history", () => {
-    const history = Array.from({ length: 7 }, (_, index) => image(1000, String(index)));
-    const first = boundContextImageBytes(history, 6000);
-    const second = boundContextImageBytes([...history, image(1000, "7")], 6000);
-    expect([first.retainedBytes, second.retainedBytes]).toEqual([6000, 6000]);
-    expect([first.omitted, second.omitted]).toEqual([1, 2]);
+  // Six 1000-byte screenshots fill a 6000-byte budget. The seventh drops
+  // the oldest four, down to half the budget; the next three fit, and the
+  // eleventh drops the next four.
+  test("repeats the previous request byte for byte until the next batch", () => {
+    const requests = screenshotRequests(12, 6000);
+    const repeated = requests.slice(1).map((request, index) => {
+      const previous = requests[index]!.messages;
+      return JSON.stringify(request.messages.slice(0, previous.length)) === JSON.stringify(previous);
+    });
+    expect(repeated).toEqual([true, true, true, true, true, false, true, true, true, false, true]);
+  });
+
+  test("drops the oldest images in one batch and fills the budget again before the next", () => {
+    const requests = screenshotRequests(12, 6000);
+    expect(requests.map(({ omitted }) => omitted)).toEqual([0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 8, 8]);
+    expect(requests.map(({ retainedBytes }) => retainedBytes))
+      .toEqual([1000, 2000, 3000, 4000, 5000, 6000, 3000, 4000, 5000, 6000, 3000, 4000]);
+    for (const { messages, omitted } of requests) {
+      expect(keptIndexes(messages))
+        .toEqual(Array.from({ length: messages.length - omitted }, (_, index) => omitted + index));
+    }
   });
 
   test("uses content order for multiple images in one message without dropping surrounding text", () => {

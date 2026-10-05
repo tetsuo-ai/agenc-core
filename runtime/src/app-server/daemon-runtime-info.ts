@@ -81,6 +81,8 @@ export interface DaemonRuntimeInfo {
    * falls back to an ephemeral one.
    */
   readonly webSocketUrl?: string;
+  /** The local endpoint actually bound; absent in older sidecars. */
+  readonly socketPath?: string;
 }
 
 const AGENC_DAEMON_RUNTIME_INFO_FILENAME = "daemon-runtime.json";
@@ -152,6 +154,9 @@ export function readDaemonRuntimeInfo(path: string): DaemonRuntimeInfo | null {
       ...(typeof parsed.processStart === "string" &&
       parsed.processStart.length > 0
         ? { processStart: parsed.processStart }
+        : {}),
+      ...(typeof parsed.socketPath === "string" && parsed.socketPath.length > 0
+        ? { socketPath: parsed.socketPath }
         : {}),
       runtimeVersion: parsed.runtimeVersion,
       commit: parsed.commit,

@@ -1,3 +1,4 @@
+import { agenCDaemonLocalEndpoint } from "../../../packages/agenc-sdk/lib/local-endpoint.mjs";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -8,7 +9,7 @@ if (!agencHome) throw new Error("AGENC_HOME is required");
 
 const cookiePath = path.join(agencHome, "daemon.cookie");
 const pidPath = path.join(agencHome, "daemon.pid");
-const socketPath = path.join(agencHome, "daemon.sock");
+const socketPath = agenCDaemonLocalEndpoint(agencHome);
 
 if (command !== "daemon") {
   process.exitCode = 2;

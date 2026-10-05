@@ -35,6 +35,7 @@ export interface AdmissionBudgetScope {
 }
 
 export interface RuntimeAdmissionRequest extends AdmissionRequest {
+  readonly costEstimated?: boolean;
   readonly workspaceId: string;
   readonly sessionId: string;
   /** Stable root-agent identity for cumulative calendar-window allocations. */
@@ -86,6 +87,7 @@ export interface AdmissionJournalEvent {
 export type AdmissionEventListener = (event: AdmissionJournalEvent) => void;
 
 export interface AdmissionUsageTotals {
+  readonly costEstimated?: boolean;
   readonly costUsd: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -123,6 +125,7 @@ export interface AdmissionLease extends AdmissionGrant {
 }
 
 export interface AdmissionUsage {
+  readonly costEstimated?: boolean;
   readonly inputTokens: number;
   readonly outputTokens: number;
   /** Null means the provider/model could not be priced after the fact. */

@@ -21,7 +21,7 @@
  * other repositories.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
@@ -331,6 +331,18 @@ export function resolveDaemonDefaultReviewerModel(
   return fallback !== undefined && fallback.length > 0 ? fallback : undefined;
 }
 
+/** Rebuild a recovered session from only its durable intake authority. */
+export function workflowSessionPolicyFromSpec(spec: WorkflowSpec): WorkflowRunSessionPolicy {
+  return {
+    permissionMode: spec.permissionMode,
+    ...(spec.lightMode !== undefined ? { lightMode: spec.lightMode } : {}),
+    ...(spec.unattendedAllow !== undefined ? { unattendedAllow: spec.unattendedAllow } : {}),
+    ...(spec.unattendedDeny !== undefined ? { unattendedDeny: spec.unattendedDeny } : {}),
+    ...(spec.model !== undefined ? { model: spec.model } : {}),
+    ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
+  };
+}
+
 export function createDaemonWorkflowController(options: {
   readonly approvalBroker?: LiveApprovalBroker;
   readonly agencHome: string;
@@ -433,17 +445,7 @@ export function createDaemonWorkflowController(options: {
   ): WorkflowRunSessionPolicy | undefined => {
     const spec = resolveRunSpec(runId);
     if (spec === undefined) return undefined;
-    return {
-      permissionMode: spec.permissionMode,
-      ...(spec.unattendedAllow !== undefined
-        ? { unattendedAllow: spec.unattendedAllow }
-        : {}),
-      ...(spec.unattendedDeny !== undefined
-        ? { unattendedDeny: spec.unattendedDeny }
-        : {}),
-      ...(spec.model !== undefined ? { model: spec.model } : {}),
-      ...(spec.provider !== undefined ? { provider: spec.provider } : {}),
-    };
+    return workflowSessionPolicyFromSpec(spec);
   };
   const seams =
     options.sessionSeams ??
@@ -510,6 +512,17 @@ export function createDaemonWorkflowController(options: {
       // database currently being resumed so the controller's enumeration
       // sees each project exactly once.
       for (const paths of candidatePaths()) {
+        if (paths.stateDbPath === primaryPaths.stateDbPath) {
+          // An absent primary project has never held a workflow. Existing
+          // directories, including partial state, keep the original recovery
+          // path; only absence can skip it, never an access or storage error.
+          try {
+            lstatSync(paths.projectDir);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw error;
+          }
+        }
         activeResumePaths = paths;
         try {
           // Same scope as run.start: resumed runs spawn sessions from daemon

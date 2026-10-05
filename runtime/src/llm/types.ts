@@ -59,6 +59,19 @@ export interface ProviderReasoningProvenance {
   readonly model: string;
 }
 
+/** An explicit empty GLM replay is different from unavailable reasoning. */
+export function isKnownEmptyProviderReasoning(
+  content: unknown,
+  provenance: unknown,
+): boolean {
+  return content === "" && isRecord(provenance) &&
+    typeof provenance.provider === "string" &&
+    ["zai", "zai-coding-plan"].includes(provenance.provider.trim().toLowerCase()) &&
+    typeof provenance.model === "string" &&
+    /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
+      .test(provenance.model.trim());
+}
+
 /** Legacy unbound durable replay state; readable but never safe to replay. */
 export interface ProviderReasoningReplayV1 {
   readonly version: 1;
@@ -285,6 +298,13 @@ export interface LLMUsage {
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * Anthropic sets this because `thinking_tokens` are a subset of inclusive
+   * `output_tokens`. The session budget then adds completion once. Providers
+   * that leave it unset still have reasoning added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   webSearchRequests?: number;
   /**
    * The wire this usage came from cannot report prompt-cache writes: it has
@@ -748,6 +768,8 @@ export interface LLMChatOptions {
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */
   readonly modelVerbosity?: LLMModelVerbosity;
+  /** Explicit session response detail, used only for prompt fallback routes. */
+  readonly responseDetailOverride?: LLMModelVerbosity;
   /** Provider-facing service-tier hint for APIs that expose it. */
   readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
@@ -815,10 +837,16 @@ export interface LLMStoredResponseDeleteResult {
  * Response from an LLM provider
  */
 export interface LLMResponse {
+  /** Non-executable identities only; argument bytes were cut off by the
+   * provider output limit. Used to report a retryable failure and guide repair. */
+  incompleteToolCalls?: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+
   content: string;
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */
   readonly toolCallRecovery?: {
+    /** Native calls rejected by provider validation, with no executable payload. */
+    readonly source?: "native";
     readonly reason: "invalid_arguments" | "not_advertised";
     readonly toolName: string;
     readonly message: string;
@@ -867,6 +895,8 @@ export interface LLMStreamChunk {
   content: string;
   done: boolean;
   toolCalls?: LLMToolCall[];
+  /** New non-whitespace output buffered for validation; carries no displayable text. */
+  bufferedContentProgress?: boolean;
   /**
    * When true, `content` is the full-so-far snapshot of the assistant
    * reply rather than an incremental delta. Downstream consumers MUST
@@ -1120,6 +1150,12 @@ function normalizeToolArguments(
   toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  // Handoffs carry exact task text and literal reference delimiters. Never
+  // repair a partial JSON string into an empty object or decode its contents.
+  if (toolName === "spawn_agent") {
+    try { return { value: JSON.parse(argumentsRaw) as unknown }; }
+    catch { return null; }
+  }
   const finalizeParsed = (value: unknown): { value: unknown } => {
     if (isRecord(value)) {
       return { value };
@@ -1232,7 +1268,7 @@ export function validateToolCallDetailed(
   }
 
   const normalizedArguments = JSON.stringify(
-    decodeHtmlEntitiesDeep(parsed) as Record<string, unknown>,
+    (name === "spawn_agent" ? parsed : decodeHtmlEntitiesDeep(parsed)) as Record<string, unknown>,
   );
 
   return {

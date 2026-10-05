@@ -543,7 +543,7 @@ export class StrictCanonicalJournalValidator {
     if (type === "session_meta")
       this.#validateSessionMeta(value.payload, facts);
     if (type === "event_msg") this.#validateEvent(value.payload, facts);
-    const item = parseRolloutLine(JSON.stringify(value));
+    const item = normalizeCanonicalRolloutValue(value);
     if (item === null || item.type === "unknown") {
       this.#fail(
         "schema_invalid",
@@ -1869,6 +1869,17 @@ export function validateCanonicalJournalText(
   options: StrictCanonicalJournalOptions = {},
 ): StrictCanonicalJournal {
   return validateCanonicalJournalBytes(Buffer.from(text, "utf8"), options);
+}
+
+/**
+ * The item the strict validator records for a JSON value it accepted. A
+ * caller that reuses an earlier validation of the same bytes derives its
+ * items through this same normalization.
+ */
+export function normalizeCanonicalRolloutValue(
+  value: unknown,
+): RolloutItem | null {
+  return parseRolloutLine(JSON.stringify(value));
 }
 
 function decodeCanonicalUtf8(

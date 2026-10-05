@@ -226,8 +226,11 @@ export function resolveProviderRuntimeRequest(params: {
       grokCapabilities: params.config.providers?.grok,
       env: params.environment,
     }),
+    // Grok continues a conversation with previous_response_id unless the
+    // config (or AGENC_XAI_INCREMENTAL) turns it off: with it, xAI served
+    // later requests from cache far more reliably (docs/reference/config.md).
     ...(params.provider === "grok" &&
-    params.config.providers?.grok?.incremental_continuation === true
+    params.config.providers?.grok?.incremental_continuation !== false
       ? { incrementalContinuation: true }
       : {}),
     ...(params.provider === "openrouter" &&

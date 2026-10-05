@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { LLMRateLimitError } from "../../src/llm/errors.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type {
   LLMMessage,
@@ -303,7 +304,7 @@ function reconciledStepIds(
 }
 
 describe("admitted model sample identity", () => {
-  test("admits each slow outage retry separately and preserves unknown charges", async () => {
+  test.each(["connection reset", "rate limit"] as const)("admits each slow %s retry separately and preserves unknown charges", async (failure) => {
     const timeline: string[] = [];
     let attempts = 0;
     const reserve = recovery.reserveRecoveryReentry;
@@ -314,6 +315,12 @@ describe("admitted model sample identity", () => {
       });
     try {
       await withAdmittedHarness(["recovered"], async ({ session, admission, ctx }) => {
+        const warnings: string[] = [];
+        session.eventLog.subscribe((event) => {
+          if (event.msg.type === "warning" && event.msg.payload.cause === "provider_rate_limited") {
+            warnings.push(event.msg.payload.message);
+          }
+        });
         const store = session.services.configStore!;
         const config = vi.spyOn(store, "current").mockReturnValue({
           ...store.current(), provider_outage_wait_ms: 100, provider_outage_retry_ms: 1,
@@ -331,6 +338,10 @@ describe("admitted model sample identity", () => {
           expect(dispatched).toHaveLength(4);
           expect(new Set(dispatched.map((event) => event.stepId)).size).toBe(4);
           expect(unknown).toHaveLength(3);
+          expect(unknown.map((event) => event.stepId)).toEqual(dispatched.slice(0, 3).map((event) => event.stepId));
+          expect(warnings).toEqual(failure === "rate limit"
+            ? Array(3).fill("The provider is limiting requests. Retrying in 1 s.")
+            : []);
           expect(reconciledStepIds(admission)).toEqual([dispatched[3]!.stepId]);
           expect(journal.filter((event) => event.event === "voided")).toHaveLength(0);
           for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
@@ -352,7 +363,11 @@ describe("admitted model sample identity", () => {
       }, () => {
         attempts += 1;
         timeline.push(`provider:${attempts}`);
-        if (attempts <= 3) throw Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+        if (attempts <= 3) {
+          throw failure === "rate limit"
+            ? new LLMRateLimitError("grok", 1)
+            : Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+        }
       });
     } finally {
       spent.mockRestore();

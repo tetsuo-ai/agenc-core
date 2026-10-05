@@ -1,4 +1,3 @@
-import { execa } from 'execa'
 import memoize from 'lodash-es/memoize.js'
 import { getSessionId } from '../bootstrap/state.js'
 import {
@@ -158,6 +157,7 @@ async function getEmailAsync(): Promise<string | undefined> {
  * Memoized so the subprocess only spawns once per process.
  */
 export const getGitEmail = memoize(async (): Promise<string | undefined> => {
+  const { execa } = await import('execa')
   const result = await execa('git config --get user.email', {
     shell: true,
     reject: false,

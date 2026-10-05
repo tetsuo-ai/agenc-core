@@ -11,7 +11,11 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { parseRolloutLine, type RolloutItem } from "../session/rollout-item.js";
-import { StateThreadRepository, type RolloutItemRow } from "./threads.js";
+import {
+  StateThreadRepository,
+  type CanonicalProjectionMarker,
+  type RolloutItemRow,
+} from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { validateCanonicalJournalText } from "./recovery-journal-contract.js";
 import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "./recovery-contract.js";
@@ -137,6 +141,16 @@ export function backfillPinnedRolloutContent(options: {
   readonly threads: StateThreadRepository;
   readonly mtimeMs: number;
   readonly validateCanonical: () => void;
+  /**
+   * Leave a canonical projection marker for these bytes. Pass it only when
+   * `validateCanonical` fsyncs the file with this identity: the marker is
+   * later read as proof that these exact bytes are durable.
+   */
+  readonly canonicalMarker?: {
+    readonly epoch: string;
+    readonly dev: string;
+    readonly ino: string;
+  };
 }): { readonly itemsIndexed: number } {
   const { rolloutPath, raw, threads } = options;
   const journal = validateCanonicalJournalText(raw, {
@@ -145,8 +159,8 @@ export function backfillPinnedRolloutContent(options: {
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
   let itemIndex = 0;
-  let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
-  let latestMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  let firstMeta: SessionMetaItem | undefined;
+  let latestMeta: SessionMetaItem | undefined;
   for (const record of journal.records) {
     const parsed = record.item;
     if (parsed.type === "session_meta") {
@@ -160,17 +174,25 @@ export function backfillPinnedRolloutContent(options: {
     );
     itemIndex += 1;
   }
-  const now = new Date(options.mtimeMs).toISOString();
+  const canonicalMarker =
+    options.canonicalMarker === undefined
+      ? undefined
+      : {
+          epoch: options.canonicalMarker.epoch,
+          size: journal.sourceByteLength,
+          mtimeMs: options.mtimeMs,
+          sha256: journal.sourceSha256,
+          dev: options.canonicalMarker.dev,
+          ino: options.canonicalMarker.ino,
+        };
   threads.commitRolloutProjection(() => {
-    mergeThreadFromMeta({
+    mergeCanonicalThread({
       threads,
       threadId,
       rolloutPath,
       archived: options.archived,
-      now,
-      createdAt: firstMeta?.payload.timestamp,
-      metaForUpdate: latestMeta?.payload,
-      metaForCreate: firstMeta?.payload,
+      mtimeMs: options.mtimeMs,
+      sessionMeta: { first: firstMeta, latest: latestMeta },
     });
     threads.replaceRolloutItems({
       threadId,
@@ -180,9 +202,152 @@ export function backfillPinnedRolloutContent(options: {
       size: journal.sourceByteLength,
       sha256: journal.sourceSha256,
       lineCount: journal.physicalLineCount + 1,
+      ...(canonicalMarker !== undefined ? { canonicalMarker } : {}),
     });
   }, options.validateCanonical);
   return { itemsIndexed: items.length };
+}
+
+type SessionMetaItem = Extract<RolloutItem, { type: "session_meta" }>;
+
+/** First and last `session_meta` records of a journal, as validated. */
+export interface CanonicalRolloutSessionMeta {
+  readonly first: SessionMetaItem | undefined;
+  readonly latest: SessionMetaItem | undefined;
+}
+
+/** The bytes and file a canonical source read observed under its lease. */
+export interface CanonicalRolloutSource {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly dev: string;
+  readonly ino: string;
+  /**
+   * sha256 of the UTF-8 text that was read, as the validator hashes it.
+   * Called only when every cheaper field already matches a marker.
+   */
+  sha256(): string;
+}
+
+/**
+ * True when a canonical projection marker proves these exact bytes, in this
+ * exact file, were fsynced before the marker committed under this build.
+ */
+export function canonicalProjectionCoversFile(options: {
+  readonly threads: StateThreadRepository;
+  readonly rolloutPath: string;
+  readonly epoch: string;
+  readonly source: CanonicalRolloutSource;
+}): boolean {
+  return (
+    compareCanonicalProjectionMarker(
+      options.threads.getCanonicalProjectionMarker(options.rolloutPath),
+      options.rolloutPath,
+      options.epoch,
+      options.source,
+    ) === "same_file"
+  );
+}
+
+/**
+ * Keep the existing projection of a source that canonical admission recovery
+ * already validated, projected and fsynced under this build, when its bytes
+ * and mtime are exactly the ones the marker names. Only the cheap thread
+ * metadata merge runs again, exactly as the full path runs it, because other
+ * writers may have changed the thread row since.
+ *
+ * When the same bytes now live in a different file (a restored copy, a new
+ * device number), the file is fsynced again before the marker moves to it.
+ *
+ * Returns false without writing anything when there is no exact match; the
+ * caller must then take the full {@link backfillPinnedRolloutContent} path.
+ */
+export function reuseCanonicalRolloutProjection(options: {
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly threads: StateThreadRepository;
+  readonly epoch: string;
+  readonly source: CanonicalRolloutSource;
+  /** Must come from the same bytes the source digest covers. */
+  readonly sessionMeta: CanonicalRolloutSessionMeta;
+  readonly syncSource: () => void;
+}): boolean {
+  const { rolloutPath, threads, source } = options;
+  const marker = threads.getCanonicalProjectionMarker(rolloutPath);
+  const match = compareCanonicalProjectionMarker(
+    marker,
+    rolloutPath,
+    options.epoch,
+    source,
+  );
+  if (match === "none" || marker === undefined) return false;
+  const sameFile = match === "same_file";
+  threads.commitRolloutProjection(
+    () => {
+      mergeCanonicalThread({
+        threads,
+        threadId: threadIdFromRolloutPath(rolloutPath),
+        rolloutPath,
+        archived: options.archived,
+        mtimeMs: source.mtimeMs,
+        sessionMeta: options.sessionMeta,
+      });
+      if (!sameFile) {
+        threads.updateCanonicalProjectionIdentity(rolloutPath, {
+          epoch: marker.epoch,
+          size: marker.size,
+          mtimeMs: marker.mtimeMs,
+          sha256: marker.sha256,
+          dev: source.dev,
+          ino: source.ino,
+        });
+      }
+    },
+    sameFile ? () => {} : options.syncSource,
+  );
+  return true;
+}
+
+function compareCanonicalProjectionMarker(
+  marker: (CanonicalProjectionMarker & { readonly threadId: string }) | undefined,
+  rolloutPath: string,
+  epoch: string,
+  source: CanonicalRolloutSource,
+): "none" | "same_bytes" | "same_file" {
+  if (
+    marker === undefined ||
+    marker.epoch !== epoch ||
+    marker.threadId !== threadIdFromRolloutPath(rolloutPath) ||
+    marker.size !== source.size ||
+    marker.mtimeMs !== source.mtimeMs ||
+    marker.sha256 !== source.sha256()
+  ) {
+    return "none";
+  }
+  return marker.dev === source.dev && marker.ino === source.ino
+    ? "same_file"
+    : "same_bytes";
+}
+
+function mergeCanonicalThread(args: {
+  readonly threads: StateThreadRepository;
+  readonly threadId: string;
+  readonly rolloutPath: string;
+  readonly archived?: boolean;
+  readonly mtimeMs: number;
+  readonly sessionMeta: CanonicalRolloutSessionMeta;
+}): void {
+  const { first, latest } = args.sessionMeta;
+  mergeThreadFromMeta({
+    threads: args.threads,
+    threadId: args.threadId,
+    rolloutPath: args.rolloutPath,
+    archived: args.archived,
+    now: new Date(args.mtimeMs).toISOString(),
+    createdAt: first?.payload.timestamp,
+    metaForUpdate: latest?.payload,
+    metaForCreate: first?.payload,
+  });
 }
 
 export interface BackfillPinnedRolloutFileResult {

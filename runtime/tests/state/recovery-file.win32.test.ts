@@ -1,10 +1,10 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { backfillPinnedRolloutFile } from "./backfill.js";
-import { RecoveryOperationalError } from "./recovery-contract.js";
 import { StateRecoveryIncidentRepository } from "./recovery-incidents.js";
 import { createRecoveryMutationAdapter } from "./recovery-mutations.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
@@ -22,58 +22,30 @@ afterEach(() => {
   }
 });
 
+// Windows has no descriptor filesystem, so the pinned directories are used
+// through their canonical paths once the retained descriptor proves the same
+// directory (offline-rollout.ts). Before that, recovery deferred every source
+// here, and every daemon start excluded every open chat for good.
 describe("descriptor-pinned recovery on Windows", () => {
-  it("defers typed and leaves the projection database unchanged", () => {
-    const root = mkdtempSync(join(tmpdir(), "agenc-recovery-win32-"));
-    roots.push(root);
-    const cwd = join(root, "repository");
-    mkdirSync(join(cwd, ".git"), { recursive: true });
-    const driver = openStateDatabases({ cwd, agencHome: join(root, "state") });
-    try {
-      const sessionId = "win32-recovery";
-      const sessionDirectory = join(driver.projectDir, "sessions", sessionId);
-      mkdirSync(sessionDirectory, { recursive: true });
-      const rolloutPath = join(
-        sessionDirectory,
-        `rollout-2026-08-01T00-00-00-000Z-${sessionId}.jsonl`,
-      );
-      writeFileSync(rolloutPath, event(), { mode: 0o600 });
+  it("projects a rollout through the identity-pinned directories", () => {
+    withRollout("win32-recovery", (driver, rolloutPath, sessionId) => {
+      backfillPinnedRolloutFile({
+        projectDir: driver.projectDir,
+        sessionId,
+        rolloutPath,
+        threads: new StateThreadRepository(driver),
+      });
 
-      expect(() =>
-        backfillPinnedRolloutFile({
-          projectDir: driver.projectDir,
-          sessionId,
-          rolloutPath,
-          threads: new StateThreadRepository(driver),
-        }),
-      ).toThrow(
-        expect.objectContaining<Partial<RecoveryOperationalError>>({
-          reasonCode: "recovery_lock_unavailable",
-          errorClass: "RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE",
-        }),
-      );
-      expect(projectedRows(driver)).toBe(0);
-    } finally {
-      driver.close();
-    }
+      expect(projectedRows(driver)).toBe(1);
+      expect(
+        new StateRecoveryIncidentRepository(driver).listDeferred().items,
+      ).toEqual([]);
+    });
   });
 
-  it("persists the unsupported platform deferral without resolving evidence", () => {
-    const root = mkdtempSync(join(tmpdir(), "agenc-recovery-win32-"));
-    roots.push(root);
-    const cwd = join(root, "repository");
-    mkdirSync(join(cwd, ".git"), { recursive: true });
-    const driver = openStateDatabases({ cwd, agencHome: join(root, "state") });
-    try {
-      const sessionId = "win32-evidence";
-      const sessionDirectory = join(driver.projectDir, "sessions", sessionId);
-      mkdirSync(sessionDirectory, { recursive: true });
-      const rolloutPath = join(
-        sessionDirectory,
-        `rollout-2026-08-01T00-00-00-000Z-${sessionId}.jsonl`,
-      );
+  it("repairs a stale quarantine on an operator rescan", () => {
+    withRollout("win32-evidence", (driver, rolloutPath) => {
       const raw = event();
-      writeFileSync(rolloutPath, raw, { mode: 0o600 });
       const repository = new StateRecoveryIncidentRepository(driver);
       const incident = repository.recordQuarantine({
         runId: "win32-run",
@@ -83,47 +55,57 @@ describe("descriptor-pinned recovery on Windows", () => {
         safeDetail: { message: "prior failure" },
         sourceSizeBytes: Buffer.byteLength(raw),
         sourceMtimeMs: 0,
-        sourceSha256: "0".repeat(64),
+        sourceSha256: createHash("sha256").update(raw).digest("hex"),
         detectedAtMs: 1,
       });
 
-      expect(() =>
-        createRecoveryMutationAdapter().rescan(
-          driver,
-          {
-            kind: "recovery-mutation",
-            collection: "quarantine",
-            action: "rescan",
-            id: incident.quarantineId,
-            confirmedSourceSha256: incident.sourceSha256,
-          },
-          {
-            actor: "win32-test",
-            operatedAt: "2026-08-01T00:00:00.000Z",
-          },
-        ),
-      ).toThrow(
-        expect.objectContaining<Partial<RecoveryOperationalError>>({
-          reasonCode: "recovery_lock_unavailable",
-          errorClass: "RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE",
-        }),
+      createRecoveryMutationAdapter().rescan(
+        driver,
+        {
+          kind: "recovery-mutation",
+          collection: "quarantine",
+          action: "rescan",
+          id: incident.quarantineId,
+          confirmedSourceSha256: incident.sourceSha256,
+        },
+        {
+          actor: "win32-test",
+          operatedAt: "2026-08-01T00:00:00.000Z",
+        },
       );
+
       expect(repository.getQuarantine(incident.quarantineId)?.state).toBe(
-        "active",
+        "repaired",
       );
-      expect(repository.listDeferred().items).toEqual([
-        expect.objectContaining({
-          reasonCode: "recovery_lock_unavailable",
-          errorClass: "RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE",
-          state: "active",
-        }),
-      ]);
-      expect(projectedRows(driver)).toBe(0);
-    } finally {
-      driver.close();
-    }
+      expect(repository.listDeferred().items).toEqual([]);
+      expect(projectedRows(driver)).toBe(1);
+    });
   });
 });
+
+/** A project state database with one session rollout holding event(). */
+function withRollout(
+  sessionId: string,
+  run: (driver: StateSqliteDriver, rolloutPath: string, sessionId: string) => void,
+): void {
+  const root = mkdtempSync(join(tmpdir(), "agenc-recovery-win32-"));
+  roots.push(root);
+  const cwd = join(root, "repository");
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  const driver = openStateDatabases({ cwd, agencHome: join(root, "state") });
+  try {
+    const sessionDirectory = join(driver.projectDir, "sessions", sessionId);
+    mkdirSync(sessionDirectory, { recursive: true });
+    const rolloutPath = join(
+      sessionDirectory,
+      `rollout-2026-08-01T00-00-00-000Z-${sessionId}.jsonl`,
+    );
+    writeFileSync(rolloutPath, event(), { mode: 0o600 });
+    run(driver, rolloutPath, sessionId);
+  } finally {
+    driver.close();
+  }
+}
 
 function projectedRows(driver: StateSqliteDriver): number {
   return (

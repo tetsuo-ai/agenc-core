@@ -46,6 +46,19 @@ function recoveredRun(commandEnvironment?: unknown): RecoveredAgentRun {
 }
 
 describe("daemon workflow authority", () => {
+  it.each(["running", "suspended"] as const)("leaves %s Goals to workflow recovery without restoring a conversation", async (status) => {
+    const ordinary = recoveredRun({ PATH: "/client/bin:/usr/bin" });
+    const run: RecoveredAgentRun = {
+      ...ordinary, status,
+      metadata: { ...ordinary.metadata, kind: "verified-change-workflow" },
+    };
+    const restoreAgent = vi.fn(async () => true);
+    await expect(restoreRecoveredAgentRuntime({ startAgent: vi.fn(), restoreAgent }, run))
+      .resolves.toEqual({ available: false });
+    expect(restoreAgent).not.toHaveBeenCalled();
+    expect(run.resumeSource?.close).toHaveBeenCalledOnce();
+  });
+
   it("persists only the explicit client PATH for command recovery", async () => {
     const startAgent = vi.fn(async () => ({
       agentId: "conv-path-authority",
@@ -76,7 +89,7 @@ describe("daemon workflow authority", () => {
   });
 
   it.each(["/client/bin:/usr/bin", ""])(
-    "restores the retained PATH authority %j without provider credentials",
+    "restores a supplied PATH or the daemon tool PATH for %j without provider credentials",
     async (retainedPath) => {
       let restoredEnvironment: NodeJS.ProcessEnv | undefined;
       const restoreAgent = vi.fn(async (params) => {
@@ -94,7 +107,7 @@ describe("daemon workflow authority", () => {
         restoreRecoveredAgentRuntime(runner, recoveredRun({ PATH: retainedPath })),
       ).resolves.toMatchObject({ available: true });
       expect(restoreAgent.mock.calls[0]?.[0].envOverrides).toEqual({ PATH: retainedPath });
-      expect(restoredEnvironment?.PATH).toBe(retainedPath || undefined);
+      expect(restoredEnvironment?.PATH).toBe(retainedPath || "/different-daemon/bin");
       expect(restoredEnvironment).not.toHaveProperty("XAI_API_KEY");
     },
   );

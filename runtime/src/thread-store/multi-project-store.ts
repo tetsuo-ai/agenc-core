@@ -10,10 +10,10 @@
  */
 
 import { Buffer } from "node:buffer";
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadId } from "../agents/registry.js";
-import { discoverStateDatabasePaths } from "../state/sqlite-driver.js";
+import { discoverStateDatabasePaths, resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import {
   FileThreadStore,
   type AppendThreadItemsParams,
@@ -50,7 +50,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   readonly #agencHome: string;
   readonly #primaryCwd: string;
   readonly #defaultModelProviderId?: string;
-  readonly #primary: FileThreadStore;
+  readonly #primaryProjectDir: string;
   readonly #byProjectDir = new Map<string, FileThreadStore>();
   readonly #knownProjectDirs = new Set<string>();
   #sortedProjectDirs: readonly string[] | undefined;
@@ -62,7 +62,15 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     this.#agencHome = opts.agencHome;
     this.#primaryCwd = opts.primaryCwd;
     this.#defaultModelProviderId = opts.defaultModelProviderId;
-    this.#primary = this.#openForCwd(opts.primaryCwd);
+    this.#primaryProjectDir = resolveStateDatabasePaths({
+      cwd: opts.primaryCwd,
+      agencHome: opts.agencHome,
+    }).projectDir;
+    // Existing projects retain eager legacy import and pending-unarchive
+    // recovery. A missing project has nothing to recover: open its database
+    // when the first write creates the project. Read-only discovery
+    // does not need to manufacture an empty primary database.
+    if (this.#primaryExists()) this.#openForProjectDir(this.#primaryProjectDir);
     // Pay the one-time project-directory discovery cost at daemon/store
     // construction. Steady-state session.list calls only stat the parent
     // directory and page the cached project order.
@@ -112,6 +120,23 @@ export class MultiProjectFileThreadStore implements ThreadStore {
 
   readThread(params: ReadThreadParams): StoredThread {
     return this.#withStoreHolding(params.threadId, (store) => store.readThread(params));
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    const store = verifiedProjectDir === undefined
+      ? this.#storeHolding(threadId)
+      : this.#openForProjectDir(verifiedProjectDir);
+    return store.readThreadLightMode(threadId, verifiedProjectDir);
+  }
+
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
+    const store = verifiedProjectDir === undefined
+      ? this.#storeHolding(threadId)
+      : this.#openForProjectDir(verifiedProjectDir);
+    return store.readThreadRuntimeOptions(threadId, verifiedProjectDir);
   }
 
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread {
@@ -203,6 +228,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     try {
       let count = 0;
       for (const projectDir of this.#boundedProjectDirs()) {
+        if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) continue;
         count += this.#openForProjectDir(projectDir).countThreads(params);
       }
       return count;
@@ -244,6 +270,12 @@ export class MultiProjectFileThreadStore implements ThreadStore {
       projectsVisited < pageSize
     ) {
       const projectDir = projectDirs[projectIndex]!;
+      if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) {
+        projectIndex += 1;
+        projectsVisited += 1;
+        threadCursor = undefined;
+        continue;
+      }
       const store = this.#openForProjectDir(projectDir);
       const page = store.listThreads({
         pageSize: pageSize - items.length,
@@ -324,7 +356,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   }
 
   #closeIdleProjectStores(): void {
-    const primaryDir = this.#primary.getProjectDir();
+    const primaryDir = this.#primaryProjectDir;
     for (const [projectDir, store] of this.#byProjectDir) {
       if (projectDir === primaryDir || store.hasLiveRecorders()) continue;
       store.close();
@@ -336,7 +368,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     if (cwd !== undefined && cwd.trim().length > 0) {
       return this.#openForCwd(cwd.trim());
     }
-    return this.#primary;
+    return this.#openForProjectDir(this.#primaryProjectDir);
   }
 
   #storeHolding(threadId: ThreadId): FileThreadStore {
@@ -359,7 +391,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   #allStores(): FileThreadStore[] {
     this.#assertOpen();
     this.#refreshDiscovered();
-    const primaryDir = this.#primary.getProjectDir();
+    const primaryDir = this.#primaryProjectDir;
     return [...this.#byProjectDir.values()].sort((a, b) => {
       if (a.getProjectDir() === primaryDir) return -1;
       if (b.getProjectDir() === primaryDir) return 1;
@@ -370,30 +402,33 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   #refreshDiscovered(): void {
     this.#refreshDiscoveredProjectDirs();
     for (const projectDir of this.#knownProjectDirs) {
+      if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) continue;
       this.#openForProjectDir(projectDir);
     }
-    // Always keep primary cwd project present.
-    this.#openForCwd(this.#primaryCwd);
+    // Existing primary state still participates in every discovery pass.
+    if (this.#primaryExists()) this.#openForCwd(this.#primaryCwd);
+  }
+
+  #primaryExists(): boolean {
+    if (this.#byProjectDir.has(this.#primaryProjectDir)) return true;
+    try {
+      lstatSync(this.#primaryProjectDir);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
   }
 
   #openForCwd(cwd: string): FileThreadStore {
     this.#assertOpen();
-    const store = new FileThreadStore({
+    // Resolve the same project identity before opening SQLite. Cache hits
+    // must not construct, migrate and immediately close a duplicate store.
+    const { projectDir } = resolveStateDatabasePaths({
       cwd,
       agencHome: this.#agencHome,
-      ...(this.#defaultModelProviderId !== undefined
-        ? { defaultModelProviderId: this.#defaultModelProviderId }
-        : {}),
     });
-    const projectDir = store.getProjectDir();
-    const existing = this.#byProjectDir.get(projectDir);
-    if (existing !== undefined) {
-      store.close();
-      return existing;
-    }
-    this.#byProjectDir.set(projectDir, store);
-    this.#rememberProjectDir(projectDir);
-    return store;
+    return this.#openForProjectDir(projectDir);
   }
 
   #openForProjectDir(projectDir: string): FileThreadStore {
@@ -417,6 +452,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   }
 
   #boundedProjectDirs(): readonly string[] {
+    this.#assertOpen();
     this.#refreshDiscoveredProjectDirs();
     this.#ensureProjectOrder();
     return this.#sortedProjectDirs!;
@@ -452,7 +488,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     ) {
       return;
     }
-    const primaryDir = this.#primary.getProjectDir();
+    const primaryDir = this.#primaryProjectDir;
     this.#rememberProjectDir(primaryDir);
     const sorted = [...this.#knownProjectDirs].sort((a, b) => {
       if (a === primaryDir) return -1;

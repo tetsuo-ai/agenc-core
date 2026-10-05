@@ -192,6 +192,7 @@ export function toAgentStatusJson(status: AgentStatus | AgentStatusJson): AgentS
 }
 
 export function formatSubagentNotification(params: {
+  readonly resultRef?: { readonly agent_id: string; readonly turn_id: string };
   readonly agentPath: string;
   readonly status: AgentStatus;
   readonly durableOutcomeRef?: {
@@ -200,6 +201,15 @@ export function formatSubagentNotification(params: {
     readonly turn_id: string;
     readonly task_id?: string;
     readonly rollout_path?: string;
+  };
+  readonly durableAdmissionRef?: {
+    readonly projection_id: string;
+    readonly agent_id: string;
+    readonly turn_id: string;
+    readonly task_id?: string;
+    readonly rollout_path?: string;
+    readonly event_id: string;
+    readonly spawn_edge_id?: string;
   };
   readonly receipt?: {
     readonly lifecycle: "turn";
@@ -232,17 +242,21 @@ export function formatSubagentNotification(params: {
 }): string {
   const payload = JSON.stringify({
     agent_path: params.agentPath,
+    ...(params.resultRef === undefined ? {} : { result_ref: params.resultRef }),
     status: toAgentStatusJson(params.status),
     ...(params.receipt !== undefined ? { receipt: params.receipt } : {}),
     ...(params.durableOutcomeRef !== undefined
       ? { durable_outcome_ref: params.durableOutcomeRef }
       : {}),
+    ...(params.durableAdmissionRef !== undefined
+      ? { durable_admission_ref: params.durableAdmissionRef }
+      : {}),
   })
-    // Keep model-controlled prose from terminating the outer framing. JSON
-    // Unicode escapes preserve the exact decoded value for real parsers.
-    .replaceAll("<", "\\u003c")
-    .replaceAll(">", "\\u003e")
-    .replaceAll("&", "\\u0026");
+    // Match the result-page transport: protect framing delimiters and
+    // Unicode from ordinary tool-result sanitization without changing the
+    // decoded inline answer (including ZWJ emoji and invisible characters).
+    .replace(/[<=>&\u007f-\uffff]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return `<subagent_notification>\n${payload}\n</subagent_notification>`;
 }
 

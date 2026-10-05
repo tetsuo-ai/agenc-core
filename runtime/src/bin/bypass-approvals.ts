@@ -86,18 +86,29 @@ export function resolveStartupSandboxBypass(
   return { dangerouslyBypassApprovalsAndSandbox: false };
 }
 
+/** One notice latch per caller: process entry or daemon print invocation. */
+export function createStartupSandboxBypassNoticeWriter() {
+  let noticeWritten = false;
+  return (
+    resolution: StartupSandboxBypass,
+    stderr: { write(chunk: string): unknown } = process.stderr,
+  ): void => {
+    if (resolution.notice === undefined || noticeWritten) return;
+    noticeWritten = true;
+    stderr.write(`${resolution.notice}\n`);
+  };
+}
+
 /** Write the notice, if any, exactly once per process. */
-let noticeWritten = false;
+let processNoticeWriter = createStartupSandboxBypassNoticeWriter();
 export function writeStartupSandboxBypassNotice(
   resolution: StartupSandboxBypass,
   stderr: { write(chunk: string): unknown } = process.stderr,
 ): void {
-  if (resolution.notice === undefined || noticeWritten) return;
-  noticeWritten = true;
-  stderr.write(`${resolution.notice}\n`);
+  processNoticeWriter(resolution, stderr);
 }
 
 /** Test-only reset for the once-per-process notice latch. */
 export function resetStartupSandboxBypassNoticeForTests(): void {
-  noticeWritten = false;
+  processNoticeWriter = createStartupSandboxBypassNoticeWriter();
 }

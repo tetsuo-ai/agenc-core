@@ -1,3 +1,4 @@
+export { hasInstructionsLoadedHook } from "./hooks/instructionsLoaded.js";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Hooks are user-defined shell commands that can be executed at various points
@@ -130,7 +131,7 @@ import {
   emitHookResponse,
   startHookProgressInterval,
 } from "./hooks/hookEvents.js";
-import { createAttachmentMessage } from "./attachments.js";
+import { createAttachmentMessage } from "./attachment-message.js";
 import { all } from "./generators.js";
 import {
   findToolByName,
@@ -3852,20 +3853,6 @@ export type InstructionsLoadReason =
 
 export type InstructionsMemoryType = "User" | "Project" | "Local" | "Managed";
 
-/**
- * Check if InstructionsLoaded hooks are configured (without executing them).
- * Callers should check this before invoking executeInstructionsLoadedHooks to avoid
- * building hook inputs for every instruction file when no hook is configured.
- *
- * Checks registered plugin and SDK callback hooks. Session-derived hooks
- * (structured output enforcement etc.) are internal and not checked.
- */
-export function hasInstructionsLoadedHook(): boolean {
-  if (shouldDisableAllHooksIncludingManaged()) return false;
-  const registeredHooks = getRegisteredHooks()?.["InstructionsLoaded"];
-  if (registeredHooks && registeredHooks.length > 0) return true;
-  return false;
-}
 
 /**
  * Execute InstructionsLoaded hooks when an instruction file (AGENC.md or

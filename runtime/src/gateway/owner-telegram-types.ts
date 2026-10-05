@@ -23,6 +23,7 @@ export interface OwnerTelegramCapabilities {
   readonly available: true;
   readonly contractVersion: 2;
   readonly multiAgent: true;
+  readonly providerSelection?: true;
   readonly accountLinking: "local-confirmation";
   readonly ownerOnly: true;
   readonly privateChatOnly: true;
@@ -31,17 +32,28 @@ export interface OwnerTelegramCapabilities {
   readonly commands: readonly ["new", "status", "cancel"];
 }
 export interface TelegramAgentCreateParams {
+  readonly provider?: string;
+  readonly model?: string;
   readonly name: string;
   readonly token: string;
   readonly workspacePath: string;
   readonly instructions?: string;
 }
 export interface TelegramAgentUpdateParams {
+  readonly provider?: string;
+  readonly model?: string;
   readonly agentId: string;
   readonly name?: string;
   readonly token?: string;
   readonly workspacePath?: string;
   readonly instructions?: string;
+}
+/** Ephemeral client snapshot. Never stored in agent metadata or returned in status. */
+export interface TelegramAgentStartParams {
+  readonly agentId: string;
+  /** Binds the snapshot to the saved provider; stale clients must refresh. */
+  readonly provider?: string;
+  readonly envOverrides?: Readonly<Record<string, string>>;
 }
 export interface TelegramAccountCandidate {
   readonly userId: string;
@@ -63,6 +75,8 @@ export interface TelegramAgentPairingResult {
   readonly expiresAt: string;
 }
 export interface TelegramAgentStatus {
+  readonly provider?: string;
+  readonly model?: string;
   readonly agentId: string;
   readonly name: string;
   readonly instructions: string;
@@ -87,6 +101,8 @@ export interface OwnerTelegramBinding {
 }
 /** Non-secret durable identity. Account-link challenges are memory-only. */
 export interface TelegramAgentRecord {
+  readonly provider?: string;
+  readonly model?: string;
   readonly agentId: string;
   readonly name: string;
   readonly instructions: string;

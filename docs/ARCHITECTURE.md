@@ -6,7 +6,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, and [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, omitted-type object schemas, Landlock stdio failures |
@@ -49,7 +49,11 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
    **background agents**, the **channel gateway**, **remote control**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
-   view onto daemon-owned sessions.
+   view onto daemon-owned sessions. A TUI that loses its daemon
+   connection mid-turn ends that turn locally when the daemon does not
+   answer within 10 s, and autostart after a hard kill waits until the
+   replacement socket accepts connections:
+   [daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 Everything past the launcher lives in the single runtime workspace
 (`@tetsuo-ai/runtime`). The launcher is intentionally tiny.
@@ -367,7 +371,7 @@ phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 | 2   | `streamModel`        | `phases/stream-model.ts`         | Admit one physical sample; stream the provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
 | 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
 | 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
-| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: hold the first tool-free final answer, inject a durable verification request, accept once each checked item has associated tool evidence, settle `partial` for evidenced unavailable checks, or `exhausted` at the round cap |
+| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: accept a tool-free final answer once each checked item has associated tool evidence after the last workspace change (the last file edit or a command the checklist does not name), the first answer only if it also cites a command that ran successfully since then; otherwise inject a durable verification request; at the round cap, or once an answer that ran no tool repeats the last request's verdict, settle `partial` for unavailable checks or `exhausted` |
 | 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
 | 6   | `commit`             | `phases/commit.ts`               | Terminal commit for the iteration; may re-enter via stop-hooks                                    |
 

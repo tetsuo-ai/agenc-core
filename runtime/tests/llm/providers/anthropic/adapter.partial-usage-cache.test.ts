@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import { AnthropicProvider } from "./adapter.js";
+import {
+  sseResponse,
+  sseResponseThenError,
+} from "./stream-test-helpers.js";
 
 /**
  * Regression coverage for the streaming usage gaps in the Anthropic adapter:
@@ -22,44 +26,6 @@ import { AnthropicProvider } from "./adapter.js";
  * authoritative.
  */
 
-/** An SSE response whose body emits `frames`, then errors the stream. */
-function sseResponseThenError(frames: string[], error: Error): Response {
-  const encoder = new TextEncoder();
-  let emitted = false;
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (!emitted) {
-        for (const frame of frames) {
-          controller.enqueue(encoder.encode(frame));
-        }
-        emitted = true;
-        return;
-      }
-      controller.error(error);
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
-function sseResponse(frames: string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const frame of frames) {
-        controller.enqueue(encoder.encode(frame));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
 const TEXT_DELTA =
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';
 
@@ -70,8 +36,9 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
     async () => {
       // message_start reports cache + reasoning + web-search usage. After a text
       // delta is forwarded, the transport errors -> a partial response surfaces.
+      // reasoning_output_tokens stays a subset of output_tokens (#2112 clamp).
       const MESSAGE_START =
-        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"reasoning_output_tokens":4,"server_tool_use":{"web_search_requests":2}}}}\n\n';
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"reasoning_output_tokens":2,"server_tool_use":{"web_search_requests":2}}}}\n\n';
 
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
         Promise.resolve(
@@ -103,7 +70,8 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
       // Cache / reasoning / web-search telemetry must survive the partial path.
       expect(response.usage.cachedInputTokens).toBe(7);
       expect(response.usage.cacheCreationInputTokens).toBe(5);
-      expect(response.usage.reasoningOutputTokens).toBe(4);
+      expect(response.usage.reasoningOutputTokens).toBe(2);
+      expect(response.usage.reasoningIncludedInCompletion).toBe(true);
       expect(response.usage.webSearchRequests).toBe(2);
     },
   );

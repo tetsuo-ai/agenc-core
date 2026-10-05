@@ -1346,13 +1346,7 @@ describe("provider parity", () => {
         model: entry.model,
       });
       const modelInfo = await manager.getModelInfo(
-        entry.provider === "qwen" ||
-          entry.provider === "qwen-token-plan" ||
-          entry.provider === "zai" ||
-          entry.provider === "zai-coding-plan" ||
-          entry.provider === "kimi"
-          ? `${entry.provider}:${entry.model}`
-          : entry.model,
+        `${entry.provider}:${entry.model}`,
       );
 
       expect(readProviderIdentity(provider)).toBe(entry.provider);

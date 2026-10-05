@@ -21,9 +21,26 @@ Related: [gateway](gateway.md) · [onboarding](onboarding.md) ·
 
 ## Prerequisites
 
-Remote pairing requires a **signed-in AgenC account on the computer**. If the
-TUI/CLI has no valid remote login session, `agenc remote on` and `/remote on`
-stop before creating a code, calling the backend, or opening the relay.
+Phone remote control is **off by default**. A paired phone gets full control of
+this computer's AgenC: it can start agents in any folder, run tools and change
+permission modes, and anyone who holds that phone's relay ticket gets the same.
+Turn it on for one run with `agenc remote on --full-control` (or
+`/remote on --full-control` in the TUI), or keep it on with
+`AGENC_REMOTE_FULL_CONTROL=1` in the environment. Without either, `agenc remote on`
+and `/remote on` refuse before reading a login, creating a code, calling the
+backend or opening the relay. `status` and `off` never need it. Each start
+prints a one-line warning that says what a paired phone can do.
+
+The bridge never forwards daemon administration for a phone: daemon lifecycle,
+account login and logout, project trust, plugin settings, session
+configuration and permission rules, hook toggles, MCP server registration,
+routine changes, remote-device management and the interactive shell are
+answered with `REMOTE_METHOD_DENIED` and stay host-local.
+
+Remote pairing also requires a **signed-in AgenC account on the computer**. If
+the TUI/CLI has no valid remote login session, `agenc remote on` and
+`/remote on` stop before creating a code, calling the backend, or opening the
+relay.
 
 That computer login is also the mobile sign-in authority. The Android app does
 not start Google OAuth and does not require a second hosted-account login. The
@@ -44,10 +61,14 @@ defaults to `https://id.agenc.ag` (`AGENC_BACKEND_URL`).
 ## CLI
 
 ```bash
-agenc remote on        # pair (first run shows code + QR) and keep the host reachable
-agenc remote status    # pair.json fields only; does not probe a live bridge
-agenc remote off       # revoke local bridges and remove pair.json
+agenc remote on --full-control   # pair (first run shows code + QR) and keep the host reachable
+agenc remote status              # pair.json fields only; does not probe a live bridge
+agenc remote off                 # revoke local bridges and remove pair.json
 ```
+
+`--full-control` (or `AGENC_REMOTE_FULL_CONTROL=1`) is the explicit opt-in
+described under Prerequisites; `agenc remote on` alone prints why it is off and
+how to turn it on.
 
 ## Device pairing flow
 
@@ -111,8 +132,10 @@ machine).
 
 Inside `agenc`:
 
-- `/remote on` — pairing code + QR on a persistent surface that auto-closes on
-  connect; starts the bridge. Reuses an existing pairing if already linked.
+- `/remote on --full-control`: pairing code + QR on a persistent surface that
+  auto-closes on connect; starts the bridge. Reuses an existing pairing if
+  already linked. Without the flag (or `AGENC_REMOTE_FULL_CONTROL=1`), `/remote on`
+  only explains that phone remote control is off.
 - `/remote status` — whether a phone is linked.
 - `/remote off` — revoke local bridges and delete `pair.json`. Bridges observe a
   shared stop marker before forwarding frames; pending reconnects cannot revive

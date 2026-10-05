@@ -23,6 +23,96 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
+  test("uses native verbosity only for verified direct models and keeps subscription instructions fixed", () => {
+    const build = (modelVerbosity?: "low" | "high", chatgptBackend = false) => buildOpenAIResponsesRequest({
+      model: "gpt-5", messages: [{ role: "user", content: "hello" }], tools: TEST_TOOLS,
+      chatgptBackend,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        modelVerbosity, ...(chatgptBackend ? { responseDetailOverride: modelVerbosity } : {}),
+        reasoningEffort: "high", toolChoice: "required", maxOutputTokens: 4096 },
+    });
+    const inherited = build();
+    const low = build("low");
+    const high = build("high");
+    expect(inherited).not.toHaveProperty("text");
+    expect(low.text).toEqual({ verbosity: "low" });
+    expect(high.text).toEqual({ verbosity: "high" });
+    for (const candidate of [low, high]) {
+      const { text: _detail, ...rest } = candidate;
+      expect(rest).toEqual(inherited);
+      expect(candidate.max_output_tokens).toBe(4096);
+    }
+    const subscriptionBase = build(undefined, true);
+    for (const level of ["low", "high"] as const) {
+      const subscription = build(level, true);
+      expect(subscription).not.toHaveProperty("text");
+      expect(subscription).not.toHaveProperty("max_output_tokens");
+      expect(subscription.instructions).toBe(subscriptionBase.instructions);
+      expect((subscription.input as unknown[]).slice(0, -1)).toEqual(subscriptionBase.input);
+      expect((subscription.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+        type: "message", role: "user",
+        content: [{ type: "input_text", text: expect.stringContaining("# Response Detail") }],
+      });
+      expect(JSON.stringify(subscription)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
+    }
+    expect(subscriptionBase.instructions).not.toContain("# Response Detail");
+    expect(JSON.stringify(subscriptionBase.input)).not.toContain("# Response Detail");
+  });
+
+  test("falls back for an unsupported or unknown direct OpenAI model and inherits configured subscription detail", () => {
+    const build = (model: string, chatgptBackend = false) => buildOpenAIResponsesRequest({
+      model, chatgptBackend, messages: [{ role: "user", content: "hello" }], tools: [],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        modelVerbosity: "high", responseDetailOverride: undefined, maxOutputTokens: 4096 },
+    });
+    for (const model of ["gpt-4o", "gpt-5-preview", "unlisted-openai-model"]) {
+      const request = build(model);
+      expect(request).not.toHaveProperty("text.verbosity");
+      expect(request.instructions).toBe("STATIC_HEAD");
+      expect((request.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+        role: "system", content: [{ text: expect.stringContaining("# Response Detail") }],
+      });
+      expect(request.max_output_tokens).toBe(4096);
+    }
+    const configured = build("gpt-5", true);
+    expect(configured).not.toHaveProperty("text.verbosity");
+    expect(configured.instructions).toBe("STATIC_HEAD\n\nDYNAMIC_TAIL");
+    expect((configured.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+      role: "user", content: [{ text: expect.stringContaining("Detailed: give thorough user-facing answers.") }],
+    });
+    expect(configured).not.toHaveProperty("max_output_tokens");
+  });
+
+  test("keeps the unset direct and subscription request bytes from the pre-detail builder", () => {
+    const build = (chatgptBackend: boolean) => JSON.stringify(buildOpenAIResponsesRequest({
+      model: "gpt-5", chatgptBackend, messages: [{ role: "user", content: "hello" }], tools: [],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        reasoningEffort: "high", maxOutputTokens: 4096 },
+    }));
+    expect(build(false)).toBe('{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"system","content":[{"type":"input_text","text":"DYNAMIC_TAIL"}]}],"stream":false,"store":false,"instructions":"STATIC_HEAD","max_output_tokens":4096,"reasoning":{"effort":"high"}}');
+    expect(build(true)).toBe('{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false,"store":false,"instructions":"STATIC_HEAD\\n\\nDYNAMIC_TAIL","include":["reasoning.encrypted_content"],"reasoning":{"effort":"high"}}');
+  });
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds prompt cache keys while preserving existing short keys: %s",
+    (promptCacheKey) => {
+      const build = (key: string) => buildOpenAIResponsesRequest({
+        model: "gpt-5",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { promptCacheKey: key },
+      }).prompt_cache_key;
+      const key = build(promptCacheKey);
+
+      expect(key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      expect(build(promptCacheKey)).toBe(key);
+      if (promptCacheKey.length <= 64) {
+        expect(key).toBe(promptCacheKey);
+      } else {
+        expect(build(`${promptCacheKey.slice(0, -1)}b`)).not.toBe(key);
+      }
+    },
+  );
+
   test("keeps request instructions in the Responses instructions field", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",
@@ -580,7 +670,7 @@ describe("buildOpenAIResponsesRequest", () => {
     // never the dotted internal name the provider never saw.
     expect(request.tool_choice).toEqual({
       type: "function",
-      function: { name: tools[0]!.name },
+      name: tools[0]!.name,
     });
   });
 });
@@ -679,6 +769,21 @@ describe("parseOpenAIResponsesResponse", () => {
     );
 
     expect(response.finishReason).toBe("length");
+  });
+
+  test.each([
+    ["max_output_tokens", "length"],
+    ["content_filter", "content_filter"],
+    ["error", "error"],
+  ])("never parses or executes incomplete function calls (%s)", (reason, finishReason) => {
+    const response = parseOpenAIResponsesResponse("gpt-5", {
+      status: "incomplete", incomplete_details: { reason },
+      output: [{ type: "function_call", call_id: "call_cut", name: "spawn_agent", arguments: '{"message":"cut' }],
+    }, request);
+    expect(response.finishReason).toBe(finishReason);
+    expect(response.toolCalls).toEqual([]);
+    expect(response.incompleteToolCalls).toEqual(reason === "max_output_tokens"
+      ? [{ id: "call_cut", name: "spawn_agent" }] : undefined);
   });
 
   test("records responses endpoint markers in request metrics", () => {

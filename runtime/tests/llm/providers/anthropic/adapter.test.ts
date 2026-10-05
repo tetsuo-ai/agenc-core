@@ -8,6 +8,8 @@ import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { loadProjectInstructions } from "../../../prompts/project-instructions.js";
 import { assembleSystemPrompt } from "../../../prompts/system-prompt.js";
 import { AnthropicProvider } from "./adapter.js";
+import { mkCtx, mkProvider, mkSession } from "../../../fixtures.js";
+import { stepLimitWrapup } from "../../../../src/session/step-limit-wrapup.js";
 
 function sseResponse(frames: string[]): Response {
   const encoder = new TextEncoder();
@@ -35,6 +37,49 @@ function useDeterministicFallbackTimers(): () => void {
 }
 
 describe("AnthropicProvider", () => {
+  test.each([
+    { model: "claude-sonnet-4.5", reasoningEffort: undefined },
+    { model: "claude-sonnet-4.5", reasoningEffort: "high" as const },
+    { model: "claude-opus-5-5", reasoningEffort: undefined },
+  ])("preserves tool history and disables tools in step-limit synthesis: %j", async ({ model, reasoningEffort }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: {
+        id: "msg_wrapup", type: "message", role: "assistant", model, content: [],
+        usage: { input_tokens: 3, output_tokens: 0 },
+      } })}\n\n`,
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Found a defect."}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]));
+    const provider = new AnthropicProvider({ apiKey: "anthropic-test", model, fetchImpl });
+    const { session } = mkSession({ provider: {
+      ...mkProvider(), name: provider.name, chatStream: provider.chatStream.bind(provider),
+    } });
+    const result = await stepLimitWrapup({
+      session, ctx: mkCtx({ reasoningEffort }), signal: new AbortController().signal,
+      fallback: "fallback trail",
+      request: {
+        input: [
+          { role: "user", content: "Review the file." },
+          { role: "assistant", content: "", toolCalls: [{ id: "read-1", name: "Read", arguments: "{}" }] },
+          { role: "tool", toolCallId: "read-1", toolName: "Read", content: "Missing validation." },
+          { role: "user", content: "Write the final answer now." },
+        ],
+        tools: [{ type: "function", function: { name: "Read", description: "Read a file", parameters: { type: "object" } } }],
+        baseInstructions: "", parallelToolCalls: true,
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.tools).toEqual([expect.objectContaining({ name: "Read", input_schema: { type: "object" } })]);
+    expect(body.tool_choice).toEqual({ type: "none" });
+    expect(body.messages[1].content).toContainEqual({ type: "tool_use", id: "read-1", name: "Read", input: {} });
+    expect(body.messages[2].content).toContainEqual(expect.objectContaining({ type: "tool_result", tool_use_id: "read-1", content: "Missing validation." }));
+    expect(result.text).toBe("Partial result: stopped at the step limit.\n\nFound a defect.");
+  });
+
   test("fast mode rides the priority tier: beta header, speed field, and a warning when served standard", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([

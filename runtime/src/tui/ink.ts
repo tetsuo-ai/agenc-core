@@ -1,10 +1,9 @@
 import { createElement, type ReactNode } from 'react'
 import { ThemeProvider } from './components/design-system/ThemeProvider.js'
-import inkRender, {
-  type Instance,
-  createRoot as inkCreateRoot,
-  type RenderOptions,
-  type Root,
+import type {
+  Instance,
+  RenderOptions,
+  Root,
 } from './ink/root.js'
 
 export type { RenderOptions, Instance, Root }
@@ -19,10 +18,12 @@ export async function render(
   node: ReactNode,
   options?: NodeJS.WriteStream | RenderOptions,
 ): Promise<Instance> {
+  const { default: inkRender } = await import('./ink/root.js')
   return inkRender(withTheme(node), options)
 }
 
 export async function createRoot(options?: RenderOptions): Promise<Root> {
+  const { createRoot: inkCreateRoot } = await import('./ink/root.js')
   const root = await inkCreateRoot(options)
   return {
     ...root,

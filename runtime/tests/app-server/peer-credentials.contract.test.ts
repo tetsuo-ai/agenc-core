@@ -36,6 +36,7 @@ describe("AgenC Unix peer credential native binding", () => {
     expect(
       loadAgenCNativePeerCredentialBinding({
         allowRuntimeNativeBuild: false,
+        bundledDirectory: path.join(tmpdir(), "agenc-missing-test-bundle"),
         platform: "linux",
       }),
     ).toEqual({

@@ -35,6 +35,7 @@ export function createTriggerTurnTaskTool(
       type: "object",
       properties: {
         target: { type: "string" },
+        exact_output: { type: "boolean", description: "Set true for an exact machine-readable answer, such as verbatim JSON, for this assignment only." },
         message: {
           type: "string",
           maxLength: MAX_INTER_AGENT_MESSAGE_CHARACTERS,
@@ -45,7 +46,7 @@ export function createTriggerTurnTaskTool(
     },
     execute: (args) => {
       const strict = strictArgs(args, {
-        allowed: new Set(["target", "message"]),
+        allowed: new Set(["target", "message", "exact_output"]),
         required: ["target", "message"],
       });
       if (strict) return Promise.resolve(confirmedNoAgentEffect(strict));

@@ -18,6 +18,81 @@ const LOCK_OPTIONS = Object.freeze({
   }),
 });
 
+/**
+ * proper-lockfile's synchronous API cannot retry. Without a wait here, a
+ * synchronous reader fails with ELOCKED ("Lock file is already being held")
+ * whenever another process holds the lock for its own read or atomic write,
+ * for example a daemon that is still shutting down or a CLI command. Such a
+ * holder releases within milliseconds, so the caller sleeps in short steps up
+ * to this budget, the same order as the asynchronous retry policy above.
+ */
+const SYNC_LOCK_WAIT_MS = 2_000;
+const SYNC_LOCK_FIRST_RETRY_MS = 5;
+const SYNC_LOCK_MAX_RETRY_MS = 100;
+
+/**
+ * Targets this process is acquiring or holding right now, with a count per
+ * target. A holder in this process can only release once the current
+ * synchronous call returns, so a synchronous caller that finds the lock held
+ * here fails at once, as before, instead of sleeping on its own event loop.
+ */
+const heldInThisProcess = new Map<string, number>();
+
+function noteHeldInThisProcess(target: string): () => void {
+  heldInThisProcess.set(target, (heldInThisProcess.get(target) ?? 0) + 1);
+  let noted = true;
+  return () => {
+    if (!noted) return;
+    noted = false;
+    const remaining = (heldInThisProcess.get(target) ?? 1) - 1;
+    if (remaining > 0) heldInThisProcess.set(target, remaining);
+    else heldInThisProcess.delete(target);
+  };
+}
+
+const SYNC_SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms: number): void {
+  Atomics.wait(SYNC_SLEEP_CELL, 0, 0, ms);
+}
+
+function isHeldLockError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as NodeJS.ErrnoException).code === "ELOCKED"
+  );
+}
+
+export interface ConfigAuthoritySyncLockOptions {
+  /** How long to wait for a holder in another process. Tests shorten it. */
+  readonly waitMs?: number;
+}
+
+/**
+ * Acquire one target synchronously. A holder in another process is waited
+ * for, up to the budget; a holder in this process, or a lock still held when
+ * the budget runs out, fails with the ELOCKED error proper-lockfile raised.
+ */
+function acquireConfigAuthorityLockSync(
+  target: string,
+  waitMs: number,
+): () => void {
+  const deadline = Date.now() + waitMs;
+  let retryMs = SYNC_LOCK_FIRST_RETRY_MS;
+  for (;;) {
+    try {
+      return lockfile.lockSync(target, syncOptions(target));
+    } catch (error) {
+      if (!isHeldLockError(error) || heldInThisProcess.has(target)) throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw error;
+      sleepSync(Math.min(retryMs, remaining));
+      retryMs = Math.min(retryMs * 2, SYNC_LOCK_MAX_RETRY_MS);
+    }
+  }
+}
+
 export interface ConfigAuthorityReleaseOutcome {
   readonly postOperationReleaseErrors: readonly Error[];
 }
@@ -130,10 +205,15 @@ export function withConfigAuthorityLockSync<T>(
 export function runWithConfigAuthorityLockSync<T>(
   path: string,
   operation: () => T,
+  options: ConfigAuthoritySyncLockOptions = {},
 ): ConfigAuthorityOperationOutcome<T> {
   const target = resolve(path);
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  const release = lockfile.lockSync(target, syncOptions(target));
+  const release = acquireConfigAuthorityLockSync(
+    target,
+    options.waitMs ?? SYNC_LOCK_WAIT_MS,
+  );
+  const forget = noteHeldInThisProcess(target);
   let value: T;
   let operationFailed = false;
   let operationError: unknown;
@@ -149,6 +229,8 @@ export function runWithConfigAuthorityLockSync<T>(
     release();
   } catch (error) {
     releaseErrors.push(asReleaseError(error));
+  } finally {
+    forget();
   }
   const postOperationReleaseErrors = frozenReleaseErrors(releaseErrors);
   if (operationFailed) {
@@ -181,7 +263,24 @@ export async function acquireConfigAuthorityLocks(
   try {
     for (const target of targets) {
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-      releases.push(await lockfile.lock(target, options(target)));
+      // Noted before the attempt: the lock directory can appear on disk before
+      // this await resumes, and a synchronous caller in this process must not
+      // sleep on it.
+      const forget = noteHeldInThisProcess(target);
+      let release: () => Promise<void>;
+      try {
+        release = await lockfile.lock(target, options(target));
+      } catch (error) {
+        forget();
+        throw error;
+      }
+      releases.push(async () => {
+        try {
+          await release();
+        } finally {
+          forget();
+        }
+      });
     }
   } catch (error) {
     const cleanup = await Promise.allSettled(

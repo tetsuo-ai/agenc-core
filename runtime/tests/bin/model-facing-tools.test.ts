@@ -152,6 +152,7 @@ function fakeSession(cwd = process.cwd()): Session {
   } as const;
   return {
     conversationId: "session-test",
+    abortController: new AbortController(),
     // The runtime's active-turn slot: tools read the live turn id off it,
     // and these fixtures run outside any turn.
     activeTurn: { unsafePeek: () => null },
@@ -240,6 +241,12 @@ function fakeSession(cwd = process.cwd()): Session {
     nextInternalSubId: () => "event-1",
     eventLog: { emit: (event: unknown) => event },
   } as unknown as Session;
+}
+
+/** A tool invocation must keep the same authenticated Session across reads. */
+function stableFakeSession(cwd = process.cwd()): () => Session {
+  const session = fakeSession(cwd);
+  return () => session;
 }
 
 function addSessionAgentDefinition(
@@ -582,7 +589,8 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({
-      required: ["message", "task_name"],
+      required: ["task_name"],
+      properties: { message_ref: { properties: { source: { enum: ["current_user_message"] } } } },
       additionalProperties: false,
     });
     expect(
@@ -860,7 +868,7 @@ describe("model-facing tools", () => {
       const session = fakeSession(root);
       const admission = kernel.bindClient({ cwd: root, scope: { runId: session.conversationId, sessionId: session.conversationId, autonomous: false }, budget: { runMaxCostUsd: 0.01 } });
       const eventLog = new EventLog();
-      Object.assign(session, { eventLog, emit: (event: Event) => eventLog.emit(event), rolloutStore: { assertToolAdmissionAllowed: vi.fn() } });
+      Object.assign(session, { eventLog, emit: (event: Event) => eventLog.emit(event), rolloutStore: { assertToolAdmissionAllowed: vi.fn(), listThreadSpawnDescendants: () => [] } });
       Object.assign(session.services, { executionAdmission: admission, admissionRequired: true });
       const registry = buildBootstrapToolRegistry({ workspaceRoot: root, agencHome: home, mcpManager: fakeMcpManager() as never, csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES, getSession: () => session, emitWarning: () => {} });
       let callSequence = 0;
@@ -1399,7 +1407,9 @@ describe("model-facing tools", () => {
       const observed = await Promise.race([
         nestedResults.then((value) => ({ kind: "completed" as const, value })),
         new Promise<{ readonly kind: "deadline" }>((resolve) => {
-          deadline = setTimeout(() => resolve({ kind: "deadline" }), 1_000);
+          // Keep the outer lease held throughout this deadlock check. Allow
+          // bounded CPU test runners time to finish the nested SQLite reads.
+          deadline = setTimeout(() => resolve({ kind: "deadline" }), 5_000);
         }),
       ]);
       expect(observed.kind).toBe("completed");
@@ -3225,7 +3235,7 @@ describe("model-facing tools", () => {
   it("rejects removed compatibility fields on strict agent tools", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -3270,7 +3280,7 @@ describe("model-facing tools", () => {
   it("rejects invalid strict spawn_agent arguments before delegation", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const spawnAgent = tools.find((tool) => tool.name === "spawn_agent")!;
 
@@ -4672,7 +4682,7 @@ describe("model-facing tools", () => {
   it("rejects empty v2 agent messages before dispatch", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -4694,7 +4704,7 @@ describe("model-facing tools", () => {
   it("enforces the inter-agent byte cap when execute is called directly", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const send = tools.find((tool) => tool.name === "send_message")!;
     const result = await send.execute({
@@ -4723,7 +4733,7 @@ describe("model-facing tools", () => {
   it("does not fall back to raw unresolved agent targets", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -4748,24 +4758,21 @@ describe("model-facing tools", () => {
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
       emitted.push(event);
     };
+    const targetLive = {
+      agentId: "agent-1",
+      agentPath: "/root/task_1",
+      nickname: "TaskOne",
+      role: { name: "runner" },
+      metadata: {
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "runner",
+      },
+    };
     const control = {
       registerSessionRoot: vi.fn(),
-      getLive: vi.fn((threadId: string) =>
-        threadId === "agent-1"
-          ? {
-              agentId: "agent-1",
-              agentPath: "/root/task_1",
-              nickname: "TaskOne",
-              role: { name: "runner" },
-              metadata: {
-                agentId: "agent-1",
-                agentPath: "/root/task_1",
-                agentNickname: "TaskOne",
-                agentRole: "runner",
-              },
-            }
-          : undefined,
-      ),
+      getLive: vi.fn((threadId: string) => threadId === "agent-1" ? targetLive : undefined),
       getAgentMetadata: vi.fn(() => ({
         agentId: "agent-1",
         agentPath: "/root/task_1",
@@ -4829,6 +4836,8 @@ describe("model-facing tools", () => {
     };
     sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
     const control = {
+      registerSessionRoot: vi.fn(),
+      drainRecoveredChildTaskUpdates: vi.fn(() => []),
       listAgents: vi.fn(() => []),
       getLive: vi.fn(() => undefined),
       resolveAgentReference: vi.fn(() => "agent-1"),
@@ -4896,6 +4905,8 @@ describe("model-facing tools", () => {
     ).waitForMailboxChange = waitForMailboxChange;
     _setAgentControlForTesting(session, {
       control: {
+        registerSessionRoot: vi.fn(),
+        drainRecoveredChildTaskUpdates: vi.fn(() => []),
         listAgents: vi.fn(() => []),
         getLive: vi.fn(() => undefined),
         resolveAgentReference: vi.fn(() => "agent-1"),
@@ -4947,6 +4958,8 @@ describe("model-facing tools", () => {
       drainPendingInputMessages;
     _setAgentControlForTesting(session, {
       control: {
+        registerSessionRoot: vi.fn(),
+        drainRecoveredChildTaskUpdates: vi.fn(() => []),
         listAgents: vi.fn(() => []),
         getLive: vi.fn(() => undefined),
         resolveAgentReference: vi.fn(() => "agent-1"),
@@ -5016,7 +5029,7 @@ describe("model-facing tools", () => {
   it("wait_agent rejects the removed target filter instead of draining unrelated receipts", async () => {
     const wait = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     }).find((tool) => tool.name === "wait_agent")!;
 
     expect(wait.isReadOnly).toBe(false);
@@ -5081,7 +5094,7 @@ describe("model-facing tools", () => {
   it("wait_agent rejects fractional timeout_ms values", async () => {
     const wait = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: () => fakeSession(),
+      getSession: stableFakeSession(),
     }).find((tool) => tool.name === "wait_agent")!;
 
     const result = await wait.execute({ timeout_ms: 10_000.5 });
@@ -5107,25 +5120,22 @@ describe("model-facing tools", () => {
       taskId: "assign-call-1",
       turnId: "assigned-turn-1",
     }));
+    const targetLive = {
+      agentId: "agent-1",
+      agentPath: "/root/task_1",
+      nickname: "TaskOne",
+      role: { name: "runner" },
+      status: { value: idleStatus },
+      metadata: {
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "runner",
+      },
+    };
     const control = {
       registerSessionRoot: vi.fn(),
-      getLive: vi.fn((threadId: string) =>
-        threadId === "agent-1"
-          ? {
-              agentId: "agent-1",
-              agentPath: "/root/task_1",
-              nickname: "TaskOne",
-              role: { name: "runner" },
-              status: { value: idleStatus },
-              metadata: {
-                agentId: "agent-1",
-                agentPath: "/root/task_1",
-                agentNickname: "TaskOne",
-                agentRole: "runner",
-              },
-            }
-          : undefined,
-      ),
+      getLive: vi.fn((threadId: string) => threadId === "agent-1" ? targetLive : undefined),
       getAgentMetadata: vi.fn(() => ({
         agentId: "agent-1",
         agentPath: "/root/task_1",
@@ -5159,6 +5169,7 @@ describe("model-facing tools", () => {
         turn_id: "assigned-turn-1",
       });
       expect(assignTask).toHaveBeenCalledWith("agent-1", {
+        exactOutput: false,
         author: "/root",
         recipient: "/root/task_1",
         content: "report now",
@@ -5372,6 +5383,9 @@ describe("model-facing tools", () => {
     expect(
       control.listAgents().some((agent) => agent.agentName === "/root"),
     ).toBe(false);
+    const revokeChildSession = bindLiveAgentSession(child, {
+      ...fakeSession(), conversationId: child.agentId,
+    } as Session);
     _setAgentControlForTesting(session, { control, registry });
     try {
       const sendMessage = createModelFacingTools({
@@ -5415,6 +5429,7 @@ describe("model-facing tools", () => {
         control.listAgents().some((agent) => agent.agentName === "/root"),
       ).toBe(true);
     } finally {
+      revokeChildSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -5437,6 +5452,9 @@ describe("model-facing tools", () => {
       threadId: "agent-worker",
       agentName: "worker",
     });
+    const revokeChildSession = bindLiveAgentSession(child, {
+      ...fakeSession(), conversationId: child.agentId,
+    } as Session);
     _setAgentControlForTesting(session, { control, registry });
     try {
       const assign = createModelFacingTools({
@@ -5461,6 +5479,7 @@ describe("model-facing tools", () => {
       });
       expect(mailboxSend).not.toHaveBeenCalled();
     } finally {
+      revokeChildSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -5494,7 +5513,7 @@ describe("model-facing tools", () => {
   it("rejects closing the root agent", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const close = tools.find((tool) => tool.name === "close_agent")!;
 

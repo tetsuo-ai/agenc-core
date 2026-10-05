@@ -218,6 +218,7 @@ Common session flags:
 --input-format <stream-json>
 --no-tui
 --bare
+--light
 -c, --continue
 -r, --resume <session-id>
 --profile <name>
@@ -228,6 +229,10 @@ Common session flags:
 --dangerously-bypass-approvals-and-sandbox
 --image <file|url|data-url>
 ```
+
+Light mode is experimental and off by default. Use `agenc --light` (or `agenc -p --light "your task"`) for a new session that starts with eight tools for reading, editing, writing, shell execution, polling, file/content search, and tool discovery. It reduces the tool descriptions sent initially; lower total token use, faster completion, and equivalent task performance are not guaranteed.
+
+Light keeps the standard system instructions and complete parameter documentation. Other enabled tools are discovered through `system.searchTools`; agent and skill catalogs appear when their tools are loaded. If policy disables discovery, the remaining permitted tools stay visible. Project instructions, memory, approvals, sandboxing, hooks, deadlines, and completion checks remain in effect. The mode belongs to the session, survives resume, and is inherited by child agents; changing the default affects new sessions only. Normal remains the default, and `--bare` retains its separate startup behavior.
 
 ### Daemon and agents
 

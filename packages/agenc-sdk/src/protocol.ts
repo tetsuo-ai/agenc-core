@@ -23,7 +23,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.30.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -80,6 +80,10 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "telegram.agents.pair.cancel",
   "initialize",
   "request.cancel",
+  "print.invoke",
+  "print.admit",
+  "print.ack",
+  "print.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -90,6 +94,8 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -160,6 +166,8 @@ export type AgencDaemonMethod = (typeof AGENC_SDK_DAEMON_METHODS)[number];
  * order. Mirror of `AGENC_DAEMON_NOTIFICATION_METHODS`.
  */
 export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
+  "print.admission",
+  "print.output",
   "routine.updated",
   "routine.session.prepare",
   "commandExec.outputDelta",
@@ -230,6 +238,11 @@ export type RunReplayParams = Wire.RunReplayParams;
 export type RunEvidenceParams = Wire.RunEvidenceParams;
 
 export type RunCancelParams = Wire.RunCancelParams;
+export type RunPauseParams = Wire.RunPauseParams;
+export type RunPauseResult = Wire.RunPauseResult;
+export type RunResumeParams = Wire.RunResumeParams;
+export type RunResumeResult = Wire.RunResumeResult;
+export type RunWorkflowControlState = Wire.RunWorkflowControlState;
 
 /** One required verification command for a verified-change workflow run. */
 export type RunStartVerificationCommand = Wire.RunStartVerificationCommand;
@@ -278,6 +291,9 @@ export type SessionResolveToolCallEvidenceParams =
 /** Operator attestation of an outcome, recorded by Core as the evidence. */
 export type SessionResolveToolCallAttestationParams =
   Wire.SessionResolveToolCallAttestationParams;
+
+/** Protocol 1.20: the exact recorded attempt a review settles. */
+export type SessionResolveToolCallAttempt = Wire.SessionResolveToolCallAttempt;
 
 export type SessionResolveToolCallParams = Wire.SessionResolveToolCallParams;
 

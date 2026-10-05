@@ -1,3 +1,4 @@
+import { agenCDaemonLocalEndpoint } from "../../../packages/agenc-sdk/lib/local-endpoint.mjs";
 /**
  * AgenC daemon JSON-RPC error-path gate.
  *
@@ -470,7 +471,7 @@ export async function runDaemonErrorGate({
       });
       activeGatePaths = {
         cookie: path.join(gateState.agencHome, "daemon.cookie"),
-        socket: path.join(gateState.agencHome, "daemon.sock"),
+        socket: agenCDaemonLocalEndpoint(gateState.agencHome),
       };
       removeSignalHandlers = installTuiGateSignalHandlers(() =>
         teardownTuiGateState(gateState, binAgenc));

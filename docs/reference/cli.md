@@ -48,6 +48,7 @@ From `formatCliHelpText()`:
 | `-h`, `--help` | Show top-level help |
 | `--version` | Print `agenc <version>` |
 | `-p`, `--print` | Headless one-shot print mode |
+| `--full-durability` | Keep per-write durable syncing in fresh one-shot print runs |
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--deadline <+seconds\|ISO-8601>` | Print mode: the instant the run must end by, as `+<seconds>` from now or an ISO 8601 time with a zone. See the print-mode notes. |
@@ -92,20 +93,30 @@ From `formatCliHelpText()`:
   re-verify, and the advice to escalate with the ask-user-question tool). The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
-  `<completion_gate>` verification request. Verification requires each
-  nonempty checked `- [x]` item to have an associated successful tool
-  result since the latest request (the tool name, arguments, or content
-  must share a distinctive token with the claim). Unchecked `- [ ]` items
+  `<completion_gate>` verification request, unless it already passes
+  verification and cites a command that ran successfully after the last
+  workspace change. Verification requires each nonempty checked `- [x]`
+  item to have an associated successful tool result after the last
+  workspace change (the last file edit or a command the checklist does not
+  name). The tool name, arguments, or content must share a distinctive
+  token with the claim; sentence punctuation is not part of a token. A
+  checked item without such a result and without a
+  failed check is quoted back apart from the other unmet items, with a
+  request to put the command run or file inspected on its line. Unchecked
+  `- [ ]` items
   and malformed checklist items prevent verification. An explicit `- [-]`
   unavailable claim is asked to show its observed limitation, and the gate
-  keeps asking until `completion_gate.max_rounds`, where the leftover
-  settles as `partial`. It is never settled early on a successful check
-  for some other item. Failed
+  keeps asking while the model runs tools, up to
+  `completion_gate.max_rounds`, where the leftover settles as `partial`. It
+  is never settled early on a successful check for some other item. Failed
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
   benchmark pass. After `completion_gate.max_rounds` (default 3), an
-  unmet answer still ends the turn with the existing exit code. Text-mode
+  unmet answer still ends the turn with the existing exit code. An answer
+  that ran no tool since the last request and draws that request's verdict
+  again (the same reason and items) settles the same way before the cap:
+  the same request again cannot change it. Text-mode
   `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
   structured output includes the event. `completion_gate.mode = "never"`
   in the config turns that off; see
@@ -411,6 +422,11 @@ policy and model rather than the daemon default. The CLI has no
 model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
+
+The `run.start` RPC and SDK `startRun` accept `lightMode: true` to run the
+Goal and its child sessions in Light mode. Omit it for standard mode. The
+frozen setting appears in `run.status.workflow.lightMode` and is inherited
+by a continuation unless that request supplies its own boolean value.
 
 Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
 Use `--permission-mode default` for normal per-tool approval checks. `run start`
@@ -892,6 +908,15 @@ project directory; they open SQLite even when the daemon cannot start.
 `createRecoveryMutationAdapter()`. Actor for mutations is `--actor`, else
 `AGENC_REVIEWER_ID`, else `USER`/`USERNAME`, else `local_operator`.
 
+Daemon startup releases two kinds of deferral itself once their retry time
+has passed, then rescans the run under the full strict validation:
+`source_not_quiescent` (a live writer still held the journal) and
+`recovery_lock_unavailable` with error class
+`RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE` (the runtime that looked could not pin
+the journal's directories, as every Windows build did before it could). A
+source that still cannot be read records a new block. Every other deferral
+stays until `recovery deferred retry` or `abandon`.
+
 Windows does not publish large artifacts without descriptor-relative paths
 (`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`). That is fail-closed, not a recovery
 CLI.
@@ -963,9 +988,14 @@ Service templates under `packaging/` invoke `agenc daemon start --foreground`.
 The Windows one-line installer writes a generated WinSW 2.12.0 file. Installing
 that service is a separate elevated step: `agenc-daemon.exe install` (no `/p`),
 then `sc.exe qc agenc-daemon`. `SERVICE_START_NAME` must be the installing
-user. The password is set outside the XML. Launcher autostart:
-`AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
-`AGENC_DAEMON_READY_TIMEOUT_MS`.
+user. The password is set outside the XML.
+Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
+`AGENC_DAEMON_READY_TIMEOUT_MS`. After a hard kill, readiness is the
+socket accepting a connection, not the leftover inode. Direct
+`agenc daemon start` keeps waiting while the startup log advances, up to
+`AGENC_DAEMON_START_MAX_WAIT_MS`. A TUI that loses its daemon mid-turn
+ends the turn locally when the daemon does not answer within 10 s. See
+[recovery after a disappeared daemon](daemon.md#recovery-after-a-disappeared-daemon).
 
 ---
 
@@ -1056,3 +1086,24 @@ its working directory.
 - Documentation map: [`../INDEX.md`](../INDEX.md)
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Product README: [`../../README.md`](../../README.md)
+
+### Print-mode durability
+
+Fresh, noninteractive one-shot print runs use buffered canonical appends and
+run-scoped SQLite `NORMAL` transactions by default on Linux and macOS. Other
+platforms keep full syncing until they support the durable directory-marker
+proof. A process crash ordinarily
+preserves page-cache bytes; a host crash or power loss can lose the unsynced
+suffix. Interactive, Desktop, routine, goal, child-agent, and resumed (`-c` or
+`--resume`) sessions keep full syncing. Use `agenc -p --full-durability "…"`
+to opt out for a fresh print run. Starting a goal or spawning an agent first
+promotes the current run to full durability.
+
+Before buffered work begins, AgenC durably marks its canonical history as
+incomplete. A clean close syncs the canonical file and SQLite WAL, then seals
+its exact length and hash. Continuing an incomplete run or a history that no
+longer matches its seal fails closed and preserves the evidence for review.
+This includes loss of complete JSONL rows: uncertain effects are never silently
+replayed as new work. A killed process can therefore require review even when
+its page-cache bytes survived. A verified clean run can be continued with full
+syncing.

@@ -280,6 +280,16 @@ export const AGENC_SONNET_5_CONFIG = {
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
+// Official Sonnet 5.5 platform IDs (2026-09-29). Preserve the existing
+// cross-provider tier mappings and defaults; only Claude identities change.
+export const AGENC_SONNET_5_5_CONFIG = {
+  ...AGENC_SONNET_5_CONFIG,
+  firstParty: 'claude-sonnet-5-5',
+  bedrock: 'anthropic.claude-sonnet-5-5',
+  vertex: 'claude-sonnet-5-5',
+  foundry: 'claude-sonnet-5-5',
+} as const satisfies ModelConfig
+
 // @[MODEL LAUNCH]: Register the new config here.
 export const ALL_MODEL_CONFIGS = {
   haiku35: AGENC_3_5_HAIKU_CONFIG,
@@ -298,6 +308,7 @@ export const ALL_MODEL_CONFIGS = {
   opus55: AGENC_OPUS_5_5_CONFIG,
   opus5: AGENC_OPUS_5_CONFIG,
   sonnet5: AGENC_SONNET_5_CONFIG,
+  sonnet55: AGENC_SONNET_5_5_CONFIG,
   fable51: AGENC_FABLE_5_1_CONFIG,
   fable5: AGENC_FABLE_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>

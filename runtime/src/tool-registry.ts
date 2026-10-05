@@ -23,6 +23,8 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
+import { lightPresentation } from "./tools/light-presentation.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -39,6 +41,10 @@ import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/coding.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
+import {
+  isRareDeferredTool,
+  rareToolPointer,
+} from "./tools/rare-tool-deferral.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { registerBuiltinTool } from "./tools/builtin-provenance.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
@@ -547,6 +553,11 @@ export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
 
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
+  /**
+   * FileRead numbers only the first line of a read, every tenth line and the
+   * last line (the session's `AGENC_SPARSE_LINE_NUMBERS`). Default: off.
+   */
+  readonly sparseLineNumbers?: boolean;
   /** Canonical state home used by the browser lifecycle. */
   readonly agencHome?: string;
   /** Already-layered canonical `[browser]` snapshot for this session. */
@@ -559,6 +570,8 @@ export interface BuildToolRegistryOptions {
   readonly getSession?: () => Session | null;
   /** Fail closed when direct dispatch has no live admission session. */
   readonly requireAdmission?: boolean;
+  /** Session-owned presentation profile; does not filter executable capabilities. */
+  readonly lightMode?: boolean;
   readonly allowBashDelete?: boolean;
   /**
    * T6 gap #119: observer that receives `exec_command_begin` /
@@ -633,6 +646,12 @@ export interface BuildToolRegistryOptions {
    */
   readonly extraTools?: ReadonlyArray<Tool>;
   /**
+   * Load rarely used built-in tools through system.searchTools instead of
+   * advertising them on every request. Off unless set; the bootstrap sets it
+   * from the session's `AGENC_DEFER_RARE_TOOLS`.
+   */
+  readonly deferRareTools?: boolean;
+  /**
    * Session-configured structured-output JSON schema. Consumed by the
    * bootstrap model-facing tool assembly (`bin/bootstrap-tool-registry.ts`):
    * when present, the StructuredOutput tool is registered schema-bound and
@@ -692,7 +711,10 @@ export function buildToolRegistry(
       buildRouter()
         .getSpecs()
         .filter((spec) => spec.unavailable !== true)
-        .map((spec) => catalogEntryForTool(spec.tool, spec)),
+        .map((spec) => catalogEntryForTool(
+          spec.tool,
+          isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
+        )),
     onDiscoverTools: markDiscovered,
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
@@ -700,14 +722,19 @@ export function buildToolRegistry(
   });
   const shellTools = [
     createExecCommandTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      ...(options.lightMode === true
+        ? { onSessionYielded: () => markDiscovered(["write_stdin"]) }
+        : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
     createWriteStdinTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -747,16 +774,22 @@ export function buildToolRegistry(
   } as const;
   const firstClassFileTools = [
     createFileReadTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
     }),
     createFileWriteTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
       onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
@@ -1130,11 +1163,26 @@ export function buildToolRegistry(
     return buildRouter().getSpecs();
   }
 
+  const deferRareTools = options.deferRareTools === true;
+  function isDeferredSpec(spec: ConfiguredToolSpec): boolean {
+    return spec.deferred === true ||
+      (deferRareTools && isRareDeferredTool(spec.tool.name));
+  }
+
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
-    return allSpecs().filter(
+    const specs = allSpecs().filter((spec) => spec.unavailable !== true);
+    // A restrictive policy may remove discovery itself. Keep its remaining
+    // capabilities callable instead of stranding them behind an absent tool.
+    if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
+      return specs;
+    }
+    return specs.filter(
       (spec) =>
-        spec.unavailable !== true &&
-        (spec.deferred !== true || discoveredToolNames.has(spec.tool.name)),
+        (options.lightMode === true
+          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
+            ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
+            (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
+          : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
     );
   }
 
@@ -1219,7 +1267,27 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      return visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const visible = visibleSpecs();
+      // The lean exec_command points at system.searchTools for its advanced fields, so it is lean
+      // only while that discovery tool is presented; otherwise the full schema is shown, as other
+      // capabilities fall back when discovery is unavailable.
+      const leanExec = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) &&
+        !discoveredToolNames.has("exec_command");
+      const tools = visible.map((spec) => {
+        const tool = toolToLLMTool(spec.tool);
+        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
+          ? lightPresentation(tool, { leanExec }) : tool;
+      });
+      if (!deferRareTools) return tools;
+      const pointer = rareToolPointer(new Set(
+        allSpecs()
+          .filter((spec) => spec.unavailable !== true && isRareDeferredTool(spec.tool.name))
+          .map((spec) => spec.tool.name),
+      ));
+      if (pointer === undefined) return tools;
+      return tools.map((tool) => tool.function.name === SYSTEM_SEARCH_TOOLS_NAME
+        ? { ...tool, function: { ...tool.function, description: `${tool.function.description ?? ""}\n\n${pointer}`.trim() } }
+        : tool);
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;

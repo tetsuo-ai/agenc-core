@@ -237,16 +237,20 @@ describe("canonical state publication recovery", () => {
     expect(existsSync(file)).toBe(false);
   });
 
-  test("retries a freshness lock failure without requiring another file event", async () => {
+  test("a freshness event takes no lock, and the next read waits out a held one", () => {
     const { directory, file } = fixture();
     const { repository, notify } = watchedRepository(directory);
     expect(repository.get()).toMatchObject(previousGlobal);
     terminatePublication(file, "publication");
-    const contention = Object.assign(new Error("injected stale writer lock"), { code: "ELOCKED" });
-    const acquire = vi.spyOn(lockfile, "lock").mockRejectedValueOnce(contention);
+    const acquireAsync = vi.spyOn(lockfile, "lock");
     notify();
-    await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(repository.get()).toMatchObject(replacementGlobal), { timeout: 200 });
+    expect(acquireAsync).not.toHaveBeenCalled();
+    const contention = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
+    const acquire = vi.spyOn(lockfile, "lockSync").mockImplementationOnce(() => {
+      throw contention;
+    });
+    expect(repository.get()).toMatchObject(replacementGlobal);
+    expect(acquire).toHaveBeenCalledTimes(2);
     expect(readdirSync(directory)).toEqual(["state.json"]);
   });
 

@@ -14,6 +14,7 @@ export const SWARM_ROUTING_POLICY_VERSION = "agenc.swarm.route.v2" as const;
 export type SwarmRoutingMode = "parallel" | "sequential" | "coordinate";
 export type SwarmDelegationEnforcement =
   | "none"
+  // Retained for older receipts; current routing emits "none".
   | "require_initial_spawn";
 export type SwarmIsolationRecommendation = "none" | "worktree";
 export type SwarmIntegrationRecommendation =
@@ -172,7 +173,7 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
     policyVersion: SWARM_ROUTING_POLICY_VERSION,
     inputFingerprint,
     mode: "parallel",
-    delegationEnforcement: "require_initial_spawn",
+    delegationEnforcement: "none",
     maxAgents,
     isolation: writes ? "worktree" : "none",
     integration: writes ? "verify_then_integrate" : "synthesize_results",

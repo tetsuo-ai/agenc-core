@@ -59,6 +59,7 @@ import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   FILE_TOOL_PATH_SCHEMA,
   FILE_TOOL_PATH_USAGE,
+  workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import {
@@ -67,12 +68,9 @@ import {
 } from "../effect-boundary.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 import { logForDebugging } from "../../utils/debug.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
@@ -230,6 +228,7 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
 }
 
 export interface FileWriteToolConfig extends WorkspaceFileMutationTestHooks {
+  readonly lightMode?: boolean;
   /**
    * Allowed path prefixes — all writes must canonicalize inside one
    * of these. When omitted, falls back to `process.cwd()` so the tool
@@ -598,8 +597,8 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         ...successResult(
           `${
             existed
-              ? `The file ${filePath} has been updated successfully.`
-              : `File created successfully at: ${filePath}`
+              ? `The file ${workspaceRelativeToolPath(filePath, allowedPaths[0], config.lightMode === true)} has been updated successfully.`
+              : `File created successfully at: ${workspaceRelativeToolPath(filePath, allowedPaths[0], config.lightMode === true)}`
           }${lspFeedback}`,
         ),
         metadata: buildFileMutationMetadata({

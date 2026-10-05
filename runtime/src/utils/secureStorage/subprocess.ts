@@ -1,5 +1,5 @@
-import { execaSync } from 'execa'
 import { dirname } from 'node:path'
+import { loadExeca } from '../loadExeca.js'
 
 export interface SecureStorageCommandOptions {
   readonly input?: string
@@ -53,6 +53,7 @@ export const runSecureStorageCommand: SecureStorageCommandRunner = (
   args,
   options,
 ) => {
+  const { execaSync } = loadExeca()
   // The helper's own directory outlives any caller cwd; a daemon whose
   // inherited working directory was deleted otherwise fails every spawn with
   // ENOENT (#2149).

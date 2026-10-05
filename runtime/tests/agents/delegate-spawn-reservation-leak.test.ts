@@ -64,6 +64,8 @@ function makeParentSession() {
     snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd: "/repo" },
     config: { cwd: "/repo" },
+    modelInfo: { slug: "fixture-model" },
+    providerService: { current: () => ({ provider: "deepseek", model: "fixture-model" }) },
   };
 }
 

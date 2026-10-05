@@ -73,6 +73,11 @@ export interface ModelMetadataResolverOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly onWarn?: (msg: string) => void;
+  /**
+   * Share downloads of the public catalogs (models.dev, the LiteLLM model
+   * map) with other resolvers. Without it, this resolver downloads its own.
+   */
+  readonly publicCatalogs?: PublicModelCatalogCache;
 }
 
 interface LookupParams {
@@ -98,11 +103,69 @@ interface FetchJsonOptions {
 
 type MetadataJson = object | string | number | boolean | null;
 
+/** How long later sessions reuse one download of a public model catalog. */
+const PUBLIC_CATALOG_REUSE_MS = 10 * 60_000;
+
+/**
+ * One download of each public model catalog (models.dev and the LiteLLM model
+ * map), shared by the resolvers given this cache. Every session builds its
+ * own resolver, so a daemon restoring 32 sessions at startup downloaded and
+ * parsed each catalog 32 times. Now concurrent lookups share one request, a
+ * successful download is reused for PUBLIC_CATALOG_REUSE_MS, and a failed one
+ * is not kept, so the next lookup tries again, as each session did before.
+ */
+export class PublicModelCatalogCache {
+  readonly #now: () => number;
+  readonly #reuseMs: number;
+  readonly #inFlight = new Map<string, Promise<MetadataJson | undefined>>();
+  readonly #downloaded = new Map<
+    string,
+    { readonly value: MetadataJson; readonly at: number }
+  >();
+
+  constructor(
+    options: { readonly now?: () => number; readonly reuseMs?: number } = {},
+  ) {
+    this.#now = options.now ?? Date.now;
+    this.#reuseMs = options.reuseMs ?? PUBLIC_CATALOG_REUSE_MS;
+  }
+
+  async get(
+    url: string,
+    download: () => Promise<MetadataJson | undefined>,
+  ): Promise<MetadataJson | undefined> {
+    const downloaded = this.#downloaded.get(url);
+    if (
+      downloaded !== undefined &&
+      this.#now() - downloaded.at < this.#reuseMs
+    ) {
+      return downloaded.value;
+    }
+    const pending = this.#inFlight.get(url);
+    if (pending !== undefined) return await pending;
+    const request = download();
+    this.#inFlight.set(url, request);
+    try {
+      const value = await request;
+      if (value !== undefined) {
+        this.#downloaded.set(url, { value, at: this.#now() });
+      }
+      return value;
+    } finally {
+      this.#inFlight.delete(url);
+    }
+  }
+}
+
+/** The process-wide cache sessions use when they fetch over the network. */
+export const SHARED_PUBLIC_MODEL_CATALOGS = new PublicModelCatalogCache();
+
 export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
+  private readonly publicCatalogs?: PublicModelCatalogCache;
   private readonly inFlightJson = new Map<
     string,
     Promise<MetadataJson | undefined>
@@ -115,6 +178,7 @@ export class ModelMetadataResolver {
     this.env = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
     this.onWarn = options.onWarn;
+    this.publicCatalogs = options.publicCatalogs;
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -200,11 +264,22 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    const builtIn = inferBuiltInMetadata(params.provider, params.model);
     // An explicit output cap overrides that field, not the model's remaining
     // metadata. Dropping its known context window makes session admission fail.
-    const mergedMetadata = source === "explicit_config"
-      ? { ...inferBuiltInMetadata(params.provider, params.model), ...metadata }
+    const sourced = source === "explicit_config"
+      ? { ...builtIn, ...metadata }
       : metadata;
+    // Any source can know a model's output limit and not its window: an
+    // explicit cap, or a models list that names the window in a field not read
+    // here. A session without a window fails every turn before sending it, so
+    // the built-in window stays, and a model nothing here knows plans against
+    // the conservative window, as it does when no source answers at all.
+    const knownContextWindow = sourced.contextWindow ?? builtIn?.contextWindow;
+    const mergedMetadata = {
+      ...sourced,
+      contextWindow: knownContextWindow ?? CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+    };
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
       mergedMetadata,
@@ -216,15 +291,14 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(mergedMetadata.contextWindow !== undefined
-        ? { contextWindow: mergedMetadata.contextWindow }
-        : {}),
+      contextWindow: mergedMetadata.contextWindow,
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
       maxOutputTokensExplicit: output.maxOutputTokensExplicit,
       maxOutputTokensCappedDefault: output.maxOutputTokensCappedDefault,
       source,
-      usedFallbackModelMetadata,
+      usedFallbackModelMetadata:
+        usedFallbackModelMetadata || knownContextWindow === undefined,
     };
   }
 
@@ -296,20 +370,38 @@ export class ModelMetadataResolver {
   private async resolveModelsDevMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(MODELS_DEV_API_URL);
+    const response = await this.fetchPublicCatalog(MODELS_DEV_API_URL);
     return metadataFromModelsDev(response, params.provider, params.model);
   }
 
   private async resolveLiteLlmMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(LITELLM_MODEL_MAP_URL);
+    const response = await this.fetchPublicCatalog(LITELLM_MODEL_MAP_URL);
     return metadataFromLiteLlm(response, params.provider, params.model);
+  }
+
+  /**
+   * A public catalog is requested without headers or a body, so every
+   * resolver's download of it is the same. With a shared cache this resolver
+   * takes the shared download, and still keeps what it read for its own
+   * lifetime, as it does for every other lookup.
+   */
+  private async fetchPublicCatalog(
+    url: string,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.publicCatalogs;
+    if (shared === undefined) return await this.fetchJson(url);
+    return await this.fetchJson(url, {}, () =>
+      shared.get(url, () => this.fetchJsonUncached(url, {})),
+    );
   }
 
   private async fetchJson(
     url: string,
     options: FetchJsonOptions = {},
+    download: () => Promise<MetadataJson | undefined> = () =>
+      this.fetchJsonUncached(url, options),
   ): Promise<MetadataJson | undefined> {
     if (!this.fetchImpl) return undefined;
     const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
@@ -318,7 +410,7 @@ export class ModelMetadataResolver {
     return await rememberSuccessfulLookup(
       { inFlight: this.inFlightJson, success: this.jsonCache },
       cacheKey,
-      () => this.fetchJsonUncached(url, options),
+      download,
       (value) => value !== undefined,
     );
   }
@@ -448,15 +540,40 @@ function shouldQueryLiveEndpoint(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const provider = normalizeMetadataProviderIdentity(params.provider);
-  const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
     provider === "ollama" ||
     provider === "ollama-cloud" ||
-    Boolean(providerConfig?.base_url?.trim()) ||
-    Boolean(envBaseUrl(provider, env))
+    hasCustomProviderBaseUrl(
+      provider,
+      providerBaseUrl(params.config, provider, env),
+    )
   );
+}
+
+function hasCustomProviderBaseUrl(
+  provider: string,
+  baseUrl: string | undefined,
+): boolean {
+  if (!baseUrl?.trim()) return false;
+  const defaultBaseUrl = defaultProviderBaseUrl(provider);
+  if (!defaultBaseUrl) return true;
+  try {
+    const configured = new URL(baseUrl.trim());
+    const official = new URL(defaultBaseUrl);
+    const path = (url: URL) => url.pathname.replace(/\/+$/, "") || "/";
+    return configured.protocol !== official.protocol ||
+      configured.hostname !== official.hostname ||
+      configured.port !== official.port ||
+      path(configured) !== path(official) ||
+      configured.username !== official.username ||
+      configured.password !== official.password ||
+      configured.search !== official.search ||
+      configured.hash !== official.hash;
+  } catch {
+    return true;
+  }
 }
 
 function shouldPreferLiveEndpointOverExplicit(
@@ -770,13 +887,15 @@ function metadataFromGenericRecord(
   const topProvider = asRecord(record.top_provider);
   return {
     // The served window is checked before the model's advertised maximum: a
-    // local server refuses anything past what it actually loaded.
+    // local server refuses anything past what it actually loaded. DeepSeek's
+    // /models names the advertised window `context_window`.
     ...(servedContextWindow(record) !== undefined
       ? { contextWindow: servedContextWindow(record) }
       : readPositiveInteger(
         record,
         "max_model_len",
         "context_length",
+        "context_window",
         "max_context_length",
         "max_input_tokens",
         "max_tokens",
@@ -786,6 +905,7 @@ function metadataFromGenericRecord(
             record,
             "max_model_len",
             "context_length",
+            "context_window",
             "max_context_length",
             "max_input_tokens",
             "max_tokens",
