@@ -561,6 +561,45 @@ type LinuxSubreaperBoundary = {
 };
 
 const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
+
+/**
+ * Allow an exited child's native cleanup proof to drain before verification.
+ * A complete subreaper proof ends the wait immediately; missing proof and
+ * other containment backends retain the bounded settlement window. Resolution
+ * is only a scheduling signal, never cleanup authority: callers must still
+ * run terminateProcessTreeAndReport and handle its failure.
+ */
+export function waitForContainedProcessSettlement(
+  child: ChildProcessWithoutNullStreams,
+): Promise<void> {
+  const boundary = linuxSubreaperBoundaries.get(child);
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      child.removeListener("close", onClose);
+      resolve();
+    };
+    const onClose = (): void => {
+      if (
+        boundary?.closed === true &&
+        boundary.ready &&
+        boundary.verified &&
+        boundary.protocolError === undefined
+      ) {
+        finish();
+      }
+    };
+    const timer = setTimeout(finish, 20);
+    timer.unref?.();
+    if (boundary !== undefined) {
+      // spawnContainedProcess registered its close listener first, so all
+      // status bytes and boundary flags are settled before this listener runs.
+      child.once("close", onClose);
+      onClose(); // Also handle a child that closed before subscription.
+    }
+  });
+}
+
 let compiledLinuxSubreaperBroker: string | undefined;
 let compiledLinuxSubreaperBrokerRoot: string | undefined;
 let compiledWindowsJobBroker: string | undefined;

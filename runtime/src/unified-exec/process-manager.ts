@@ -53,6 +53,7 @@ import {
   signalProcessTree,
   spawnContainedProcess,
   terminateProcessTreeAndReport,
+  waitForContainedProcessSettlement,
 } from "../utils/supervisedProcess.js";
 import {
   commandShellArgs,
@@ -1452,7 +1453,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ): void => {
       if (settlementStarted) return;
       settlementStarted = true;
-      setTimeout(() => {
+      void waitForContainedProcessSettlement(child).then(() => {
         void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
         }).then(
@@ -1483,7 +1484,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             });
           },
         );
-      }, 20).unref?.();
+      });
     };
     child.on("exit", (code, signal) => {
       settleContainedProcess({ exitCode: code, signal });
