@@ -443,7 +443,9 @@ describe("provider authority architecture", () => {
   });
 
   test("legacy API classification cannot select from credentials", () => {
-    const source = readFileSync(`${SRC}/utils/model/providers.ts`, "utf8");
+    const source = ["providers.ts", "provider-selection.ts"].map(
+      name => readFileSync(`${SRC}/utils/model/${name}`, "utf8"),
+    ).join("\n");
     expect(source).not.toMatch(/process\.env\.AGENC_PROVIDER/);
     expect(source).not.toMatch(/process\.env\.(?:XAI_API_KEY|MINIMAX_API_KEY)/);
     expect(source).toMatch(
@@ -452,10 +454,9 @@ describe("provider authority architecture", () => {
   });
 
   test("provider/model selection remains session-owned after startup", () => {
-    const providerSource = readFileSync(
-      `${SRC}/utils/model/providers.ts`,
-      "utf8",
-    );
+    const providerSource = ["providers.ts", "provider-selection.ts"].map(
+      name => readFileSync(`${SRC}/utils/model/${name}`, "utf8"),
+    ).join("\n");
     const selectionContextSource = readFileSync(
       `${SRC}/utils/model/provider-selection-context.ts`,
       "utf8",
@@ -563,7 +564,9 @@ describe("provider authority architecture", () => {
         .filter(
           (path) =>
             !path.endsWith("/utils/model/provider-selection-context.ts") &&
-            !path.endsWith("/utils/model/providers.ts"),
+            !path.endsWith("/utils/model/providers.ts") &&
+            !(rawBinding.source === "readStartupProviderSelectionSnapshot" &&
+              path.endsWith("/utils/model/provider-selection.ts")),
         )
         .filter((path) => rawBinding.test(readFileSync(path, "utf8")))
         .map((path) => relative(SRC, path));
