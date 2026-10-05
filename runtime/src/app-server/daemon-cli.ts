@@ -1355,6 +1355,7 @@ async function runAgenCDaemonForegroundLocked(
     }
     cleanup.register("daemon-owner-telegram", () => ownerTelegram?.close());
     const dispatcher: AgenCDaemonJsonRpcDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      printHome: authStartup.daemonHome,
       pluginSettings: new PluginSettingsService({
         home: authStartup.daemonHome,
         pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: authStartup.daemonHome }),
@@ -1428,6 +1429,7 @@ async function runAgenCDaemonForegroundLocked(
       const current = connections.get(connectionKey);
       if (current !== undefined) return current;
       const next = dispatcher.createConnection({
+        localUnix: connectionKey.startsWith("unix:"),
         sendNotification: async (message) => {
           await socketConnections.get(connectionKey)?.send(message);
         },

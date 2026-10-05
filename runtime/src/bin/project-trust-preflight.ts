@@ -51,7 +51,8 @@ export interface ProjectTrustPreflightOptions {
   readonly cwd?: string;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
-  readonly stderr?: NodeJS.WriteStream;
+  readonly stderr?: Pick<NodeJS.WriteStream, "write">;
+  readonly onWarn?: (message: string) => void;
   readonly useEnvWorkspace?: boolean;
   readonly allowPrompt?: boolean;
   readonly renderPrompt?: (opts: {
@@ -85,15 +86,22 @@ export async function runProjectTrustPreflightForTui(
     options.useEnvWorkspace === false
       ? (options.cwd ?? process.cwd())
       : (resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd());
+  // This preflight historically leaves constructor warnings silent, while
+  // reload warnings use console.warn. Preserve that timing with a scoped sink.
+  let constructed = false;
   const configStore = new ConfigStore({
     home: agencHome,
     env,
     cwd: rawWorkspace,
+    ...(options.onWarn !== undefined ? { onWarn: (message: string) => {
+      if (constructed) options.onWarn!(message);
+    } } : {}),
     ...startupConfigLayerOptions({
       cli: startupCliFlags,
       cwd: rawWorkspace,
     }),
   });
+  constructed = true;
   const config = await configStore.reload();
   const profileName = resolvedStartupProfileName(startupCliFlags, env);
   const startup = resolveCanonicalStartupSelection({
@@ -141,7 +149,7 @@ export async function runProjectTrustPreflightForTui(
       startupCliFlags.permissionMode === "bypassPermissions",
     stdin,
     stdout,
-    stderr,
+    stderr: stderr as NodeJS.WriteStream,
   });
   if (!accepted) {
     return { accepted: false, projectRoot, prompted: true };

@@ -1036,6 +1036,28 @@ describe("SandboxExecutionBroker", () => {
     ).toBe(helper);
   });
 
+  it("resolves caller helper selection and omission without daemon environment drift", () => {
+    const previous = process.env.AGENC_LINUX_SANDBOX_EXE;
+    process.env.AGENC_LINUX_SANDBOX_EXE = "/daemon/helper";
+    try {
+      const moduleUrl = pathToFileURL(join(tempRoot("helper-env-"), "module.js")).href;
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "/client/helper" }))
+        .toBe("/client/helper");
+      const bundled = resolveDefaultLinuxSandboxExecutable(moduleUrl, {});
+      expect(bundled).not.toBe("/daemon/helper");
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "" })).toBe(bundled);
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "  " })).toBe(bundled);
+      expect(probeSandboxExecutionStatus({
+        mode: "workspace_write", platform: "linux", cwd: tempRoot("helper-client-workspace-"),
+        env: { AGENC_LINUX_SANDBOX_EXE: "/missing-client/helper" },
+      })).toMatchObject({ kind: "unavailable", reason: "sandbox executable does not exist: /missing-client/helper" });
+      expect(process.env.AGENC_LINUX_SANDBOX_EXE).toBe("/daemon/helper");
+    } finally {
+      if (previous === undefined) delete process.env.AGENC_LINUX_SANDBOX_EXE;
+      else process.env.AGENC_LINUX_SANDBOX_EXE = previous;
+    }
+  });
+
   it("rejects a structurally spoofed broker carrier", () => {
     expect(
       readSandboxExecutionBroker({

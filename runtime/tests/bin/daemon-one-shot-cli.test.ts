@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ vi.mock("../../src/app-server/agent-cli.js", async importOriginal => ({
   defaultEnsureDaemonReady: () => mocks.ready,
   createConnectedAgenCJsonLineDaemonTuiClient: mocks.connect,
 }));
-import { oneShotCLI } from "../../src/bin/daemon-one-shot-cli.js";
+import { oneShotCLI, type OneShotInvocation, type AgenCDaemonCliDeps } from "../../src/bin/daemon-one-shot-cli.js";
 let home: string, workspace: string;
 const originalArgv = process.argv;
 let writes: string[];
@@ -73,4 +74,104 @@ it("loads continuation only for the existing resume selector and forwards its ex
     runtimeOptions: expect.objectContaining({ relaxedOneShot: false }),
   }));
   expect(mocks.connect).not.toHaveBeenCalled();
+});
+
+function invocationFixture(label: string, format = "text", autoComplete = true) {
+  const callerHome = join(home, label), callerCwd = join(callerHome, "repo");
+  mkdirSync(callerCwd, { recursive: true });
+  writeFileSync(join(callerHome, "config.toml"), `config_version = 2\nmodel = "model-${label}"\nmodel_provider = "deepseek"\n`);
+  const input = Object.assign(new PassThrough(), { isTTY: false });
+  const output = Object.assign(new PassThrough(), { isTTY: false });
+  const errors = Object.assign(new PassThrough(), { isTTY: false });
+  let stdout = "", stderr = "";
+  output.on("data", chunk => { stdout += chunk.toString(); });
+  errors.on("data", chunk => { stderr += chunk.toString(); });
+  const abort = new AbortController();
+  const context: OneShotInvocation = {
+    argv: ["node", "agenc", "-p", "--light", "--output-format", format, label],
+    env: { HOME: callerHome, AGENC_HOME: callerHome, PATH: `/caller/${label}`, AGENC_WORKSPACE: callerCwd },
+    cwd: callerCwd, clientId: `invocation-${label}`, signal: abort.signal,
+    // Non-TTY pipes have all the stream operations used by this print route.
+    stdin: input as unknown as NodeJS.ReadStream,
+    stdout: output as unknown as NodeJS.WriteStream,
+    stderr: errors as unknown as NodeJS.WriteStream,
+  };
+  let send: ((event: unknown) => void) | undefined;
+  let subscribed!: () => void;
+  const attached = new Promise<void>(resolve => { subscribed = resolve; });
+  const call = vi.fn(async (method: string) => {
+    if (method === "agent.create") return { agentId: label, sessionId: label };
+    if (method === "agent.attach") return { sessionIds: [label] };
+    return {};
+  });
+  const close = vi.fn(async () => {});
+  const complete = () => {
+    send?.({ method: "event.message_chunk", params: { sessionId: label, delta: `answer-${label}` } });
+    send?.({ method: "event.agent_status", params: { sessionId: label, status: "idle", runStatus: "completed" } });
+  };
+  const client = { request: call, close,
+    subscribeToConnectionState: () => () => {},
+    subscribeToSessionEvents: (_id: string, callback: (event: unknown) => void) => {
+      send = callback; subscribed(); if (autoComplete) queueMicrotask(complete);
+      return () => { send = undefined; };
+    },
+  };
+  const overrides = { createConnectedTuiClient: vi.fn(async () => client) } as unknown as Partial<AgenCDaemonCliDeps>;
+  const run = () => oneShotCLI(`  prompt-${label}\n`, [], undefined, undefined, overrides, context);
+  return { context, call, close, abort, attached, complete, run, overrides, output: () => ({ stdout, stderr }) };
+}
+
+it("keeps concurrent caller config, cwd, output and attachment identity isolated", async () => {
+  const a = invocationFixture("a"), b = invocationFixture("b");
+  const argv = process.argv, cwd = process.cwd(), env = { home: process.env.AGENC_HOME, path: process.env.PATH };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const listeners = signals.map(signal => process.listenerCount(signal));
+  mocks.ready.mockImplementation(async () => {
+    expect(process.argv).toBe(argv); expect(process.cwd()).toBe(cwd);
+    expect(process.env.AGENC_HOME).toBe(env.home); expect(process.env.PATH).toBe(env.path);
+    expect(signals.map(signal => process.listenerCount(signal))).toEqual(listeners);
+  });
+  expect(await Promise.all([a.run(), b.run()])).toEqual([0, 0]);
+  for (const [label, f] of [["a", a], ["b", b]] as const) {
+    expect(f.call).toHaveBeenCalledWith("agent.create", expect.objectContaining({
+      objective: `  prompt-${label}\n`, initialContent: `  prompt-${label}\n`, cwd: f.context.cwd,
+      model: `model-${label}`, envOverrides: expect.objectContaining({ PATH: `/caller/${label}` }),
+    }), expect.anything());
+    expect(f.call).toHaveBeenCalledWith("agent.attach", expect.objectContaining({ clientId: f.context.clientId }), expect.anything());
+    expect(f.output()).toEqual({ stdout: `answer-${label}\n`, stderr: "" });
+    expect(f.close).toHaveBeenCalledOnce();
+  }
+  expect(writes).toEqual([]);
+  expect(mocks.trust).toHaveBeenCalledWith(expect.objectContaining({ env: a.context.env, argv: a.context.argv, cwd: a.context.cwd, allowPrompt: false, markSessionTrusted: expect.any(Function), stderr: a.context.stderr }));
+});
+
+it.each(["json", "stream-json"])("formats %s into the invocation output only", async format => {
+  const f = invocationFixture("structured", format);
+  expect(await f.run()).toBe(0);
+  const lines = f.output().stdout.trim().split("\n").map(line => JSON.parse(line));
+  expect(lines.at(-1)).toMatchObject({ type: "result", exitCode: 0, agentId: "structured", finalMessage: "answer-structured" });
+  if (format === "json") expect(lines).toHaveLength(1);
+  else expect(lines.some(line => line.type === "event")).toBe(true);
+  expect(writes).toEqual([]); expect(f.output().stderr).toBe("");
+});
+
+it("cancels only the caller that disconnected, while the other invocation completes", async () => {
+  const a = invocationFixture("cancel", "text", false), b = invocationFixture("live", "text", false);
+  const first = a.run(), second = b.run();
+  await Promise.all([a.attached, b.attached]);
+  a.abort.abort({ reason: "signal", signal: "SIGINT", exitCode: 130 });
+  expect(await first).toBe(130);
+  expect(a.call).toHaveBeenCalledWith("agent.stop", { agentId: "cancel", reason: "one_shot_cancelled" });
+  expect(b.close).not.toHaveBeenCalled(); b.complete(); expect(await second).toBe(0);
+  expect(b.output().stdout).toBe("answer-live\n"); expect(writes).toEqual([]);
+});
+
+it("routes preparation errors to the invocation and refuses continuation before any session", async () => {
+  const f = invocationFixture("invalid", "invalid-format");
+  expect(await f.run()).toBe(1);
+  expect(f.output().stderr).toContain("unknown output format 'invalid-format'");
+  expect(f.call).not.toHaveBeenCalled(); expect(writes).toEqual([]);
+  expect(await oneShotCLI("next", [], {}, { kind: "latest" }, f.overrides, f.context)).toBe(1);
+  expect(f.output().stderr).toContain("invocation-scoped print cannot continue");
+  expect(mocks.continuation).not.toHaveBeenCalled();
 });

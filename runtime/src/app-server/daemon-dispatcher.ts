@@ -1,3 +1,4 @@
+import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
 import { promoteOneShotRun } from "../durability/one-shot-durability.js";
 import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
 /**
@@ -105,6 +106,7 @@ import {
 } from "./workspace-cwd.js";
 import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
+  AGENC_PRINT_INVOKE_CAPABILITY,
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
@@ -285,6 +287,7 @@ const THREAD_REALTIME_VOICES = [
 const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
+  "print.invoke": 30, "print.admit": 30, "print.ack": 30, "print.cancel": 30,
   "session.transcript.v2": 2,
   "session.artifact.read": 18,
   "session.mcp.status": 3,
@@ -318,6 +321,7 @@ export const COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC =
   "commandExec.start is disabled: daemon command execution has no session-bound run/step admission identity; use an ordinary admitted session tool until command execution admission is implemented";
 
 interface AgenCDaemonServerCapabilityInputs {
+  readonly printHome: string | undefined;
   readonly whisper: WhisperService | undefined;
   readonly agentManager: AgenCDaemonDispatcherOptions["agentManager"];
   readonly initializeAuthenticator: AgenCDaemonDispatcherOptions["initializeAuthenticator"];
@@ -351,6 +355,10 @@ function buildServerCapabilities(
     ...Object.fromEntries(OWNER_TELEGRAM_METHODS.map((method) => [method, inputs.ownerTelegram !== undefined && inputs.initializeAuthenticator !== undefined])) as Record<OwnerTelegramMethod, boolean>,
     initialize: true,
     "request.cancel": true,
+    "print.invoke": inputs.printHome !== undefined,
+    "print.admit": inputs.printHome !== undefined,
+    "print.ack": inputs.printHome !== undefined,
+    "print.cancel": inputs.printHome !== undefined,
     "audio.whisper.status": inputs.whisper !== undefined,
     "audio.whisper.install": inputs.whisper !== undefined,
     "audio.whisper.transcribe": inputs.whisper !== undefined,
@@ -507,6 +515,7 @@ function buildServerCapabilities(
   }
 
   return Object.freeze({
+    ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
@@ -525,6 +534,8 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
 }
 
 export interface AgenCDaemonDispatcherOptions {
+  /** Canonical daemon home enabling resident print on authenticated Unix connections. */
+  readonly printHome?: string;
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
     | "approveTool"
@@ -773,6 +784,9 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #pluginSettings: PluginSettingsService | undefined;
   readonly #startupRestores: AgenCDaemonStartupRestoreGate | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
+  readonly #printHome: string | undefined;
+  readonly #prints = new Map<AgenCDaemonJsonRpcConnection, PrintInvocation>();
+  #printsClosed = false;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -815,7 +829,9 @@ export class AgenCDaemonJsonRpcDispatcher {
         ? createAgenCDaemonAuthHandlers(options.authBackend)
         : undefined;
     this.#daemonControl = options.daemonControl;
+    this.#printHome = options.printHome;
     this.#serverCapabilities = buildServerCapabilities({
+      printHome: options.printHome,
       agentManager: this.#agentManager,
       authHandlers: this.#authHandlers,
       allowUnadmittedCommandExecStart: this.#allowUnadmittedCommandExecStart,
@@ -848,6 +864,9 @@ export class AgenCDaemonJsonRpcDispatcher {
   }
 
   async close(): Promise<void> {
+    this.#printsClosed = true;
+    await Promise.all([...this.#prints.values()].map(invocation => invocation.close()));
+    this.#prints.clear();
     for (const unsubscribe of this.#routineSubscriptions.values()) unsubscribe();
     this.#routineSubscriptions.clear();
     if (this.#ownsFuzzyFileSearch) await this.#fuzzyFileSearch.close?.();
@@ -861,6 +880,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
     return connection.runClose(async () => {
+      await this.#prints.get(connection)?.close();
+      this.#prints.delete(connection);
       this.#attachmentClients.delete(connection);
       this.#routineSubscriptions.get(connection)?.();
       this.#routineSubscriptions.delete(connection);
@@ -932,20 +953,28 @@ export class AgenCDaemonJsonRpcDispatcher {
           });
         }
         try {
+          const availableCapabilities = connection.localUnix ? this.#serverCapabilities : {
+            ...this.#serverCapabilities,
+            [AGENC_PRINT_INVOKE_CAPABILITY]: false,
+            [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
+              ...this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
+              "print.invoke": false, "print.admit": false, "print.ack": false, "print.cancel": false,
+            },
+          };
           const initializeParams = validateInitializeParams(connection.remoteAccess ? { protocol: params.protocol, capabilities: {} } : params);
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
-              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
+              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
+              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(availableCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
-              ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
+              ...(availableCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
                 ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
-              ...(this.#serverCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+              ...(availableCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
                 ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
-              ...(this.#serverCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+              ...(availableCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
                 ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
-            } : this.#serverCapabilities,
+            } : availableCapabilities,
           );
           if (!negotiated.supported) {
             return errorResponse(id, -32000, "Unsupported protocol version", {
@@ -1020,6 +1049,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         return methodNotImplementedResponse(id, method);
       }
 
+      if (method.startsWith("print.")) {
+        if (this.#printHome === undefined || !connection.localUnix || connection.remoteAccess !== undefined ||
+            connection.initializeState?.clientCapabilities[AGENC_PRINT_INVOKE_CAPABILITY] !== true ||
+            connection.rawSendNotification === undefined) return methodNotImplementedResponse(id, method);
+        return await this.#dispatchPrint(connection, id, method, params);
+      }
+
       if (method === "request.cancel") {
         return successResponse(
           id,
@@ -1092,6 +1128,52 @@ export class AgenCDaemonJsonRpcDispatcher {
         return (await agentManager.isLiveSessionToolCallExecuting?.(liveSessionId, toolCallId)) === true;
       },
     });
+  }
+
+  async #dispatchPrint(connection: AgenCDaemonJsonRpcConnection, id: RequestId, method: AgenCDaemonKnownMethod, params: JsonObject): Promise<AgenCDaemonResponse> {
+    if (method === "print.invoke") {
+      if (this.#printsClosed) throw invalidParams("daemon print service is closed");
+      if (connection.printUsed || connection.trackedClientIds.length > 0) throw invalidParams("print invocation requires a fresh connection");
+      const request = validatePrintInvokeParams(params);
+      connection.printUsed = true;
+      const invocation = new PrintInvocation({
+        home: this.#printHome!,
+        send: message => connection.rawSendNotification!(message),
+        request: async (nestedMethod, nestedParams, signal = INERT_ABORT_SIGNAL) => {
+          // Calls are local but keep canonical validators, restore gates,
+          // attachment ownership and this exact authenticated connection.
+          const allowed = ["agent.create", "agent.attach", "agent.stop", "session.snapshot", "session.goal", "session.cancelTurn", "tool.deny", "message.stream"];
+          if (!allowed.includes(nestedMethod)) throw invalidParams("unsupported resident print operation");
+          if (nestedMethod !== "agent.stop") { connection.assertOpen(); signal.throwIfAborted(); }
+          if (connection.initializeState?.serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY][nestedMethod] !== true) return methodNotImplementedResponse(id, nestedMethod);
+          try {
+            // Await the actual operation, including cancelled create cleanup;
+            // do not race and discard a late-created owned agent.
+            return await this.#dispatchKnownMethod(connection, `print-${request.invocationId}-${randomUUID()}`, nestedMethod, nestedParams, signal, { jsonrpc: "2.0", method: nestedMethod, params: nestedParams });
+          } catch (error) { return mapDispatchError(id, error); }
+        },
+      }, request);
+      this.#prints.set(connection, invocation);
+      connection.printEventSink = event => invocation.event(event);
+      try { return successResponse(id, await invocation.run()); }
+      finally { connection.printEventSink = undefined; this.#prints.delete(connection); }
+    }
+    const invocation = this.#prints.get(connection);
+    if (invocation === undefined || params.invocationId !== invocation.invocationId) throw invalidParams("unknown print invocation");
+    if (method === "print.admit") {
+      if (Object.keys(params).some(key => !["invocationId", "challenge"].includes(key)) || typeof params.challenge !== "string") throw invalidParams("invalid print admission");
+      invocation.admit(params.challenge);
+    } else if (method === "print.ack") {
+      if (Object.keys(params).some(key => !["invocationId", "sequence"].includes(key)) || !Number.isSafeInteger(params.sequence)) throw invalidParams("invalid print acknowledgment");
+      invocation.acknowledge(params.sequence as number);
+    } else if (method === "print.cancel") {
+      if (Object.keys(params).some(key => !["invocationId", "reason", "signal", "stream"].includes(key)) ||
+          !["signal", "broken_pipe"].includes(params.reason as string) ||
+          (params.reason === "signal" && !["SIGINT", "SIGTERM", "SIGHUP"].includes(params.signal as string)) ||
+          (params.stream !== undefined && params.stream !== "stdout" && params.stream !== "stderr")) throw invalidParams("invalid print cancellation");
+      invocation.cancel({ ...params, exitCode: params.reason === "broken_pipe" || params.signal === "SIGTERM" ? 0 : 130 });
+    } else return methodNotImplementedResponse(id, method);
+    return successResponse(id, { ok: true });
   }
 
   /**
@@ -2407,6 +2489,8 @@ export class AgenCDaemonJsonRpcDispatcher {
 }
 
 export interface AgenCDaemonJsonRpcConnectionOptions {
+  /** Set only by the authenticated Unix server; never read from wire params. */
+  readonly localUnix?: boolean;
   /** In-process browser authority. No JSON-RPC field can populate this. */
   readonly remoteAccess?: RemoteAccessBoundary;
   /** Remote peer identity used in the relay's outbound JSON envelope. */
@@ -2418,6 +2502,9 @@ export interface AgenCDaemonJsonRpcConnectionOptions {
 let nextConnectionId = 0;
 
 export class AgenCDaemonJsonRpcConnection {
+  readonly localUnix: boolean;
+  printUsed = false;
+  printEventSink: ((event: JsonObject) => Promise<void>) | undefined;
   readonly remoteAccess: RemoteAccessBoundary | undefined;
   readonly remoteCid: string | undefined;
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
@@ -2438,6 +2525,7 @@ export class AgenCDaemonJsonRpcConnection {
     options: AgenCDaemonJsonRpcConnectionOptions = {},
   ) {
     this.#dispatcher = dispatcher;
+    this.localUnix = options.localUnix === true;
     this.remoteAccess = options.remoteAccess;
     this.remoteCid = options.remoteCid;
     this.#sendNotification = options.sendNotification;
@@ -2503,6 +2591,10 @@ export class AgenCDaemonJsonRpcConnection {
 
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
+    return this.printEventSink ?? this.#sendNotification;
+  }
+
+  get rawSendNotification(): ((message: JsonObject) => void | Promise<void>) | undefined {
     return this.#sendNotification;
   }
 
@@ -2610,6 +2702,9 @@ export class AgenCDaemonJsonRpcConnection {
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     if (this.#closed) return mapDispatchError(requestIdFromMessage(message), new AgenCDaemonConnectionClosedError());
+    if (this.printUsed && !["print.invoke", "print.admit", "print.ack", "print.cancel", "health.ping"].includes(String(message.method))) {
+      return errorResponse(requestIdFromMessage(message), -32600, "print connection is reserved for its invocation");
+    }
     const admission = this.#limiter.tryStart(message);
     if (!admission.admitted) {
       return admission.response!;
@@ -2781,6 +2876,7 @@ function negotiateInitializeProtocol(
   const negotiatedCapabilities = capabilitiesChanged
     ? ({
         ...serverCapabilities,
+        ...(clientProtocol.minor < 30 ? { [AGENC_PRINT_INVOKE_CAPABILITY]: false } : {}),
         [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
       } satisfies AgenCDaemonServerCapabilities)
     : serverCapabilities;

@@ -77,6 +77,10 @@ const expectedMethods = [
   "telegram.agents.pair.cancel",
   "initialize",
   "request.cancel",
+  "print.invoke",
+  "print.admit",
+  "print.ack",
+  "print.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -153,6 +157,8 @@ const expectedMethods = [
 ] as const;
 
 const expectedNotifications = [
+  "print.admission",
+  "print.output",
   "routine.updated",
   "routine.session.prepare",
   "commandExec.outputDelta",
@@ -236,7 +242,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.29.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.30.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",

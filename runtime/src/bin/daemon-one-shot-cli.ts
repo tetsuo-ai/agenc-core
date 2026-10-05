@@ -3,6 +3,7 @@ import { resolveCliCwdForStartup } from "./cli-cwd.js";
 import { requireProjectTrustForTui } from "./project-trust-preflight.js";
 import { cliStartupErrorMessage } from "./cli-process-main.js";
 import { mkdirSync } from "node:fs";
+import { normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { APPROVAL_DENIED_ABORT_REASON, classifyTurnTerminal, type TurnTerminal } from "../contracts/turn-terminal.js";
 import { extractFlagValues, stripRoutingFlags, type OneShotContinueSession, type ResumeTUIArgs } from "./route.js";
@@ -20,7 +21,7 @@ import type { createAgenCDaemonOnlyTuiContext, findAgenCDaemonAgentBySessionId, 
 import type { AgentCreateParams, AgentStopParams, JsonObject, MessageContentBlock, MessageStreamResult, SessionGoalSetRequest } from "../app-server/protocol/index.js";
 import { USER_ADDRESSABLE_PERMISSION_MODES } from "../permissions/types.js";
 import { readRunDeadlineFlags, readStartupCliFlags, resolveCanonicalStartupSelection, resolvedStartupProfileName, startupConfigLayerOptions, type StartupCliFlags } from "./startup-selection.js";
-import { resolveStartupSandboxBypass, writeStartupSandboxBypassNotice } from "./bypass-approvals.js";
+import { createStartupSandboxBypassNoticeWriter, resolveStartupSandboxBypass, writeStartupSandboxBypassNotice } from "./bypass-approvals.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
@@ -55,14 +56,33 @@ export type AgenCDaemonCliDeps = {
   ) => Promise<number>;
 };
 
+/** Output belongs to one invocation, never the daemon process. */
+export interface OneShotIo {
+  readonly flush?: () => Promise<void>;
+  readonly stdout: Pick<NodeJS.WriteStream, "write">;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}
+
+/** @internal Canonical print execution with explicit caller state. */
+export interface OneShotInvocation extends OneShotIo {
+  readonly argv: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly clientId: string;
+  readonly stdin: NodeJS.ReadStream;
+  readonly stdout: NodeJS.WriteStream;
+  readonly stderr: NodeJS.WriteStream;
+  readonly signal: AbortSignal;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
 // ─────────────────────────────────────────────────────────────────────
 
-async function readStdin(signal: AbortSignal): Promise<string> {
-  if (process.stdin.isTTY) return "";
+async function readStdin(signal: AbortSignal, input: NodeJS.ReadStream): Promise<string> {
+  if (input.isTTY) return "";
   try {
-    return await readPromptStdin(process.stdin, signal);
+    return await readPromptStdin(input, signal);
   } catch (error) {
     if (signal.aborted) throw new InitAbortedError("stdin read aborted");
     throw error;
@@ -171,16 +191,15 @@ export function parseStreamJsonPrompt(input: string): string {
   return messages.join("\n\n");
 }
 
-async function resolveUserMessage(signal: AbortSignal): Promise<string> {
+async function resolveUserMessage(signal: AbortSignal, userArgv: readonly string[], input: NodeJS.ReadStream): Promise<string> {
   // Strip routing-level flags (--no-tui, --resume) before treating the
   // residue as the prompt; T12 routing peels these off upstream but
   // Non-router entry paths still call `resolveUserMessage` directly.
-  const userArgv = process.argv.slice(2);
   const argv = stripRoutingFlags(userArgv);
   if (argv.length > 0) {
     return argv.join(" ").trim();
   }
-  const piped = await readStdin(signal);
+  const piped = await readStdin(signal, input);
   if (piped) {
     return readOneShotInputFormat(userArgv) === "stream-json"
       ? parseStreamJsonPrompt(piped)
@@ -435,8 +454,8 @@ export function oneShotFinalMessageRemainder(
   return `\n${message}\n`;
 }
 
-function writeOneShotJsonLine(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+function writeOneShotJsonLine(value: unknown, io: OneShotIo): void {
+  io.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 function oneShotSnapshotFields(
@@ -772,6 +791,7 @@ export async function awaitDaemonOneShotRun(params: {
   readonly daemonClient: Awaited<
     ReturnType<AgenCDaemonCliDeps["createConnectedTuiClient"]>
   >;
+  readonly io?: OneShotIo;
   readonly sessionId: string;
   readonly agentId: string;
   readonly outputFormat: OneShotOutputFormat;
@@ -784,6 +804,7 @@ export async function awaitDaemonOneShotRun(params: {
   readonly deadlineAt?: number;
 }): Promise<DaemonOneShotRunOutcome> {
   const { daemonClient, sessionId, outputFormat } = params;
+  const io: OneShotIo = params.io ?? process;
   let unsubscribeEvents: (() => void) | null = null;
   let unsubscribeConnection: (() => void) | null = null;
   let cancelled = false;
@@ -869,9 +890,9 @@ export async function awaitDaemonOneShotRun(params: {
           ...(outputFormat === "json" ? { events: collectedEvents } : {}),
         };
         if (outputFormat === "json") {
-          process.stdout.write(`${JSON.stringify(jsonResult)}\n`);
+          io.stdout.write(`${JSON.stringify(jsonResult)}\n`);
         } else if (outputFormat === "stream-json") {
-          writeOneShotJsonLine(jsonResult);
+          writeOneShotJsonLine(jsonResult, io);
         }
       };
 
@@ -903,10 +924,10 @@ export async function awaitDaemonOneShotRun(params: {
           finalizing = false;
           if (outputFormat === "text") {
             if (printedAssistantOutput && lastPrintedChar !== "\n") {
-              process.stdout.write("\n");
+              io.stdout.write("\n");
               lastPrintedChar = "\n";
             }
-            process.stderr.write(
+            io.stderr.write(
               `${oneShotCompactRetryNotice(retriesUsed, continuation.maxRetries, finalStatus.message)}\n`,
             );
           }
@@ -916,30 +937,30 @@ export async function awaitDaemonOneShotRun(params: {
         const finalMessage =
           finalStatus.message ?? assistantOutput.trimEnd();
         if (outputFormat === "text" && printedAssistantOutput) {
-          if (lastPrintedChar !== "\n") process.stdout.write("\n");
+          if (lastPrintedChar !== "\n") io.stdout.write("\n");
         } else if (
           outputFormat === "text" &&
           finalStatus.code === 0 &&
           finalStatus.message !== undefined &&
           finalStatus.message.length > 0
         ) {
-          process.stdout.write(`${finalStatus.message}\n`);
+          io.stdout.write(`${finalStatus.message}\n`);
         }
         if (
           finalStatus.code !== 0 &&
           finalStatus.message !== undefined &&
           finalStatus.message.length > 0
         ) {
-          process.stderr.write(`${finalStatus.message}\n`);
+          io.stderr.write(`${finalStatus.message}\n`);
         }
         if (finalStatus.failureCode === "effect_review_required") {
-          process.stderr.write(`${ONE_SHOT_EFFECT_REVIEW_MARKER}\n`);
+          io.stderr.write(`${ONE_SHOT_EFFECT_REVIEW_MARKER}\n`);
         }
         if (finalStatus.failureCode === "empty_response") {
-          process.stderr.write(`${ONE_SHOT_EMPTY_RESPONSE_MARKER}\n`);
+          io.stderr.write(`${ONE_SHOT_EMPTY_RESPONSE_MARKER}\n`);
         }
         if (finalStatus.failureCode === "deadline_reached") {
-          process.stderr.write(`${ONE_SHOT_DEADLINE_MARKER}\n`);
+          io.stderr.write(`${ONE_SHOT_DEADLINE_MARKER}\n`);
         }
         // A tool-blocked giveup must NOT masquerade as a successful answer.
         // When the run auto-denied a permission request (no human to approve;
@@ -954,7 +975,7 @@ export async function awaitDaemonOneShotRun(params: {
           (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) ||
           finalStatus.approvalDenied === true
         ) {
-          process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
+          io.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
           await writeFinalResult({
             exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
             finalMessage,
@@ -1022,7 +1043,7 @@ export async function awaitDaemonOneShotRun(params: {
               sessionId,
               agentId: params.agentId,
               event,
-            });
+            }, io);
           }
           // Non-interactive one-shot has no human to answer a permission
           // request, so an unanswered "ask"/"pause" suspends the turn and the
@@ -1060,7 +1081,7 @@ export async function awaitDaemonOneShotRun(params: {
             if (text.length > 0) {
               assistantOutput += text;
               if (outputFormat === "text") {
-                process.stdout.write(text);
+                io.stdout.write(text);
               }
               printedAssistantOutput = true;
               lastPrintedChar = text.at(-1) ?? lastPrintedChar;
@@ -1072,7 +1093,7 @@ export async function awaitDaemonOneShotRun(params: {
             const warning = daemonOneShotCompletionWarning(event, sessionId, activeTurnId);
             if (warning !== null && !printedCompletionWarnings.has(warning.id)) {
               printedCompletionWarnings.add(warning.id);
-              process.stderr.write(`${warning.message}\n`);
+              io.stderr.write(`${warning.message}\n`);
             }
           }
           const finalStatus = daemonOneShotFinalStatus(event, activeTurnId);
@@ -1131,6 +1152,7 @@ export async function awaitDaemonOneShotRun(params: {
         dispatchTurn(startTurn, expectedTurnId);
       }
     });
+    await io.flush?.();
     return { code, cancelled };
   } finally {
     // Assigned inside the executor above; the narrowing to null is stale here.
@@ -1212,6 +1234,7 @@ export async function setPrintModeGoal(
   sessionId: string,
   goal: PrintModeGoalSet,
   signal: AbortSignal,
+  io: OneShotIo = process,
 ): Promise<boolean> {
   const result = await daemonClient.request(
     "session.goal",
@@ -1219,7 +1242,7 @@ export async function setPrintModeGoal(
     { signal },
   );
   if (!result.ok) {
-    process.stderr.write(`agenc: ${result.message ?? "the goal was refused"}\n`);
+    io.stderr.write(`agenc: ${result.message ?? "the goal was refused"}\n`);
   }
   return result.ok;
 }
@@ -1234,6 +1257,7 @@ export async function printModeGoalExitCode(
   sessionId: string,
   runCode: number,
   signal: AbortSignal,
+  io: OneShotIo = process,
 ): Promise<number> {
   if (runCode !== 0) return runCode;
   const { goal } = await daemonClient.request(
@@ -1242,11 +1266,11 @@ export async function printModeGoalExitCode(
     { signal },
   );
   if (goal === undefined) {
-    process.stderr.write("agenc: the goal's final state is unavailable\n");
+    io.stderr.write("agenc: the goal's final state is unavailable\n");
     return 1;
   }
   const reason = goal.pauseReason ?? goal.lastVerdict?.reason;
-  process.stderr.write(
+  io.stderr.write(
     `agenc: goal ${goal.status.replace("_", " ")} ${goal.rounds === 0 ? "on the first check" : `after ${goal.rounds} ${goal.rounds === 1 ? "round" : "rounds"}`}${reason !== undefined ? `: ${reason}` : ""}\n`,
   );
   return goal.status === "met" ? 0 : 1;
@@ -1254,6 +1278,8 @@ export async function printModeGoalExitCode(
 
 async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
+  readonly io?: OneShotIo;
+  readonly clientId?: string;
   readonly prompt: string;
   readonly env: NodeJS.ProcessEnv;
   readonly runtimeOptions: AgentRuntimeOptions;
@@ -1335,7 +1361,7 @@ async function runDaemonOneShotPrompt(params: {
       {
         agentId: started.agentId,
         oneShotOutput: true,
-        clientId: `agenc-one-shot-${process.pid}`,
+        clientId: params.clientId ?? `agenc-one-shot-${process.pid}`,
       },
       { signal: params.signal },
     );
@@ -1355,13 +1381,14 @@ async function runDaemonOneShotPrompt(params: {
     const goal = params.goal;
     if (
       goal !== undefined &&
-      !(await setPrintModeGoal(daemonClient, sessionId, goal, params.signal))
+      !(await setPrintModeGoal(daemonClient, sessionId, goal, params.signal, params.io))
     ) {
       return 1;
     }
 
     const run = await awaitDaemonOneShotRun({
       daemonClient,
+      ...(params.io !== undefined ? { io: params.io } : {}),
       sessionId,
       agentId: started.agentId,
       outputFormat,
@@ -1396,7 +1423,7 @@ async function runDaemonOneShotPrompt(params: {
     cancelled = run.cancelled;
     completed = !cancelled;
     return goal !== undefined && !cancelled
-      ? await printModeGoalExitCode(daemonClient, sessionId, run.code, params.signal)
+      ? await printModeGoalExitCode(daemonClient, sessionId, run.code, params.signal, params.io)
       : run.code;
   } catch (error) {
     if (params.signal.aborted) cancelled = true;
@@ -1452,39 +1479,57 @@ export async function oneShotCLI(
   startupImages: readonly string[] = [],
   parsedStartupCliFlags?: StartupCliFlags,
   continueSession?: OneShotContinueSession,
-  deps: AgenCDaemonCliDeps = DEFAULT_ONE_SHOT_DEPS,
+  overrides?: Partial<AgenCDaemonCliDeps>,
+  invocation?: OneShotInvocation,
 ): Promise<number> {
+  const deps = overrides === undefined ? DEFAULT_ONE_SHOT_DEPS : { ...DEFAULT_ONE_SHOT_DEPS, ...overrides };
+  // The daemon caller supplies one immutable snapshot; defaults preserve the
+  // existing process entry, including its signal and output-error handlers.
+  const argv = invocation === undefined ? process.argv : Object.freeze([...invocation.argv]);
+  const sessionEnv = invocation === undefined ? process.env : Object.freeze({ ...invocation.env });
+  const cwd = invocation === undefined ? () => process.cwd() : () => invocation.cwd;
+  const io: OneShotIo = invocation ?? process;
   const lifecycleAbort = new AbortController();
-  const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
+  const signal = invocation?.signal ?? lifecycleAbort.signal;
+  const shutdownSignal = invocation === undefined ? installAgenCShutdownSignalHandlers((event) => {
     lifecycleAbort.abort(event);
-  });
-  const outputErrors = registerProcessOutputErrorHandlers(({ stream }) => {
+  }) : undefined;
+  const outputErrors = invocation === undefined ? registerProcessOutputErrorHandlers(({ stream }) => {
     lifecycleAbort.abort({
       reason: "broken_pipe",
       stream,
       exitCode: 0,
     });
-  });
+  }) : undefined;
 
   const throwIfAborted = (step: string) => {
-    if (lifecycleAbort.signal.aborted) {
+    if (signal.aborted) {
       throw new InitAbortedError(
-        `${step}: ${oneShotAbortDescription(lifecycleAbort.signal)}`,
+        `${step}: ${oneShotAbortDescription(signal)}`,
       );
     }
   };
 
   try {
+    if (invocation !== undefined && continueSession !== undefined) {
+      throw new Error("An invocation-scoped print cannot continue a session");
+    }
     const startupCliFlags =
-      parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
-    const sessionEnv = process.env;
+      parsedStartupCliFlags ?? readStartupCliFlags(argv);
     const sandboxBypass = resolveStartupSandboxBypass(startupCliFlags, {
-      cwd: process.cwd(),
+      cwd: cwd(),
       env: sessionEnv,
     });
-    writeStartupSandboxBypassNotice(sandboxBypass);
-    const oneShotArgv = process.argv.slice(2);
+    if (invocation === undefined) writeStartupSandboxBypassNotice(sandboxBypass);
+    else createStartupSandboxBypassNoticeWriter()(sandboxBypass, io.stderr);
+    const oneShotArgv = argv.slice(2);
     const outputFormat = readOneShotOutputFormat(oneShotArgv);
+    // Resident print is a Unix ingress. Reconstruct the OS fallback that a
+    // fresh thin CLI captures at module load from this caller's environment,
+    // including absence/empty-value precedence. Never borrow daemon TMPDIR.
+    const platformTempRoot = invocation === undefined ? undefined : normalize(
+      sessionEnv.TMPDIR || sessionEnv.TMP || sessionEnv.TEMP || "/tmp",
+    );
     const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
     ...(startupCliFlags.lightMode === true ? { lightMode: true } : {}),
@@ -1497,9 +1542,9 @@ export async function oneShotCLI(
       relaxedOneShot: startupCliFlags.fullDurability !== true && continueSession === undefined,
       exactOutput: outputFormat !== "text",
       // `--deadline` (#2503): the instant this run must end by.
-      ...readRunDeadlineFlags(process.argv, Date.now()),
-    });
-    validateAgencHome();
+      ...readRunDeadlineFlags(argv, Date.now()),
+    }, platformTempRoot);
+    validateAgencHome(sessionEnv);
     throwIfAborted("validateAgencHome");
     const agencHome = resolveAgencHome(sessionEnv);
     readOneShotInputFormat(oneShotArgv);
@@ -1507,20 +1552,27 @@ export async function oneShotCLI(
     const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
-        : await resolveUserMessage(lifecycleAbort.signal);
+        : await resolveUserMessage(signal, oneShotArgv, invocation?.stdin ?? process.stdin);
     throwIfAborted("resolveUserMessage");
 
-    const cliCwd = resolveCliCwdForStartup(sessionEnv);
+    const cliCwd = resolveCliCwdForStartup(sessionEnv, { cwdFn: cwd });
     if (!cliCwd.ok) {
-      process.stderr.write(`agenc: ${cliCwd.message}\n`);
+      io.stderr.write(`agenc: ${cliCwd.message}\n`);
       return 1;
     }
     if (
       !(await requireProjectTrustForTui({
         env: sessionEnv,
-        argv: process.argv,
+        argv,
         startupCliFlags,
         cwd: cliCwd.cwd,
+        ...(invocation !== undefined ? {
+          stdin: invocation.stdin, stdout: invocation.stdout, stderr: invocation.stderr,
+          allowPrompt: false,
+          onWarn: (message: string) => io.stderr.write(`${message}\n`),
+          // Trust belongs to this request; never grant legacy daemon-global trust.
+          markSessionTrusted: async () => {},
+        } : {}),
       }))
     ) {
       return 1;
@@ -1537,7 +1589,7 @@ export async function oneShotCLI(
       env: sessionEnv,
       cwd: daemonCwd,
       ...startupLayers,
-      onWarn: (message) => process.stderr.write(`${message}\n`),
+      onWarn: (message) => io.stderr.write(`${message}\n`),
     });
     const config = await configStore.reload();
     const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
@@ -1548,7 +1600,7 @@ export async function oneShotCLI(
     const resolvedStartupImages =
       startupImages.length > 0
         ? startupImages
-        : extractFlagValues(process.argv.slice(2), "--image");
+        : extractFlagValues(argv.slice(2), "--image");
     const startupContent = startupContentFromInputs(
       resolvedUserMessage,
       resolvedStartupImages,
@@ -1586,7 +1638,7 @@ export async function oneShotCLI(
     const oneShotPermissionMode = startupPermissionMode(startupCliFlags);
     const printGoal = parsePrintModeGoal(resolvedUserMessage);
     if (printGoal.kind === "error") {
-      process.stderr.write(`agenc: ${printGoal.message}\n`);
+      io.stderr.write(`agenc: ${printGoal.message}\n`);
       return 2;
     }
     const goalOption = printGoal.kind === "set" ? { goal: printGoal } : {};
@@ -1623,11 +1675,13 @@ export async function oneShotCLI(
           ? { permissionMode: oneShotPermissionMode }
           : {}),
         ...goalOption,
-        signal: lifecycleAbort.signal,
+        signal: signal,
       });
     }
     return await runDaemonOneShotPrompt({
       deps,
+      io,
+      ...(invocation !== undefined ? { clientId: invocation.clientId } : {}),
       prompt: daemonPrompt,
       env: sessionEnv,
       runtimeOptions,
@@ -1649,35 +1703,36 @@ export async function oneShotCLI(
         ? { permissionMode: oneShotPermissionMode }
         : {}),
       ...goalOption,
-      signal: lifecycleAbort.signal,
+      signal: signal,
     });
   } catch (error) {
-    if (lifecycleAbort.signal.aborted) {
+    if (signal.aborted) {
       if (
         error instanceof InitAbortedError &&
-        !oneShotAbortedByBrokenPipe(lifecycleAbort.signal)
+        !oneShotAbortedByBrokenPipe(signal)
       ) {
-        process.stderr.write(`agenc: ${error.message}\n`);
+        io.stderr.write(`agenc: ${error.message}\n`);
       }
-      return oneShotAbortExitCode(lifecycleAbort.signal);
+      return oneShotAbortExitCode(signal);
     }
     if (error instanceof InitAbortedError) {
-      process.stderr.write(`agenc: ${error.message}\n`);
-      return oneShotAbortExitCode(lifecycleAbort.signal);
+      io.stderr.write(`agenc: ${error.message}\n`);
+      return oneShotAbortExitCode(signal);
     }
     const { SessionLockedError, SchemaMismatchError } = await import("../session/session-store.js");
     if (
       error instanceof SessionLockedError ||
       error instanceof SchemaMismatchError
     ) {
-      process.stderr.write(`agenc: ${error.message}\n`);
+      io.stderr.write(`agenc: ${error.message}\n`);
       return 1;
     }
-    process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
+    io.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
     return 1;
   } finally {
-    outputErrors.dispose();
-    shutdownSignal.dispose();
+    outputErrors?.dispose();
+    shutdownSignal?.dispose();
+    await io.flush?.();
   }
 }
 

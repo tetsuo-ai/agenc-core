@@ -312,6 +312,13 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
+Resident print (protocol 1.30, local Unix only): `print.invoke`, `print.admit`,
+`print.ack`, `print.cancel`. Negotiate `print.invoke.v1`; the second identity proof
+and one-use admission challenge precede session creation. `print.output` frames
+are acknowledged after client stdout/stderr writes complete. Disconnect cancels
+and joins this invocation. A `fallback` response guarantees no output or session.
+Never retry after admission may have arrived.
+
 | Method                                                                                                      | Purpose                                                                                                            |
 | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `initialize`                                                                                                | Handshake + capability advertisement                                                                               |

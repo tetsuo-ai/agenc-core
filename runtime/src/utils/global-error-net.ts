@@ -1,4 +1,3 @@
-import memoize from "lodash-es/memoize.js";
 import { logForDiagnosticsNoPII } from "./diagLogs.js";
 import { toError } from "./errors.js";
 import { logError } from "./log.js";
@@ -54,7 +53,7 @@ function persistCrashLocally(error: unknown): void {
  * promise rejections through the no-PII diagnostics channel AND the persisted
  * local error-log sink instead of letting an unhandled rejection vanish
  * silently or an uncaught exception crash the process with a raw stack.
- * Idempotent (memoized) — safe to call from multiple entrypoints; handlers
+ * Idempotent (process-scoped) — safe to call from multiple entrypoints; handlers
  * register once per process.
  *
  * Intentionally NON-exiting: a long-lived daemon / TUI should survive a stray
@@ -66,11 +65,21 @@ function persistCrashLocally(error: unknown): void {
  * behavior against a fake emitter without touching the real process (which
  * would swallow vitest's own rejection detection).
  */
-export const installGlobalErrorNet = memoize(
-  (proc: Pick<NodeJS.Process, "on"> = process): void => {
-    // Log uncaught exceptions for container observability.
-    // Error names (e.g., "TypeError") are not sensitive - safe to log.
-    proc.on("uncaughtException", (error) => {
+type ErrorNetProcess = Pick<NodeJS.Process, "on">;
+interface ErrorNetReporter {
+  exception(error: Error): void;
+  rejection(reason: unknown): void;
+}
+const registryKey = Symbol.for("agenc.globalErrorNetRegistry");
+const registryOwner = globalThis as typeof globalThis & {
+  [registryKey]?: WeakMap<ErrorNetProcess, ErrorNetReporter>;
+};
+const registeredNets = registryOwner[registryKey] ??= new WeakMap<ErrorNetProcess, ErrorNetReporter>();
+
+/** Shared across the standalone micro bundle and the ordinary fallback bundle. */
+export function installGlobalErrorNet(proc: ErrorNetProcess = process): void {
+    const reporter: ErrorNetReporter = { exception: error => {
+      // The same diagnostic and crash-sink semantics in either bundle.
       logForDiagnosticsNoPII("error", "uncaught_exception", {
         error_name: error?.name ?? "Error",
         error_message: String(error?.message ?? error).slice(0, 2000),
@@ -78,9 +87,7 @@ export const installGlobalErrorNet = memoize(
       // ALSO persist locally so the crash isn't lost when no container diag
       // file is set (the common local daemon/TUI case).
       persistCrashLocally(error);
-    });
-    // Log unhandled promise rejections for container observability.
-    proc.on("unhandledRejection", (reason) => {
+    }, rejection: reason => {
       const errorInfo =
         reason instanceof Error
           ? {
@@ -92,6 +99,13 @@ export const installGlobalErrorNet = memoize(
       logForDiagnosticsNoPII("error", "unhandled_rejection", errorInfo);
       // ALSO persist locally (see uncaughtException above).
       persistCrashLocally(reason);
-    });
-  },
-);
+    } };
+    if (registeredNets.has(proc)) {
+      // A fallback uses its normal module/context instances for future errors.
+      registeredNets.set(proc, reporter);
+      return;
+    }
+    registeredNets.set(proc, reporter);
+    proc.on("uncaughtException", error => registeredNets.get(proc)!.exception(error));
+    proc.on("unhandledRejection", reason => registeredNets.get(proc)!.rejection(reason));
+}

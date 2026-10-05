@@ -4,6 +4,7 @@ import type { AgenCDaemonAutostartOptions } from "../../src/app-server/daemon-au
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(), processMain: vi.fn(), trust: vi.fn(), enabled: vi.fn(),
   ensure: vi.fn(), cwd: vi.fn(), unavailable: vi.fn(), flush: vi.fn(), begin: vi.fn(), stop: vi.fn(),
+  scope: vi.fn(), identity: vi.fn(), closeScope: vi.fn(), scopeReady: vi.fn(), scopeConnect: vi.fn(),
 }));
 vi.mock("../../src/bin/compile-cache.js", () => ({ flushAgenCCompileCache: mocks.flush, beginProgressiveAgenCCompileCachePublication: mocks.begin }));
 vi.mock("../../src/bin/cli-runtime.js", () => ({ prepareCliRuntime: mocks.prepare }));
@@ -13,6 +14,7 @@ vi.mock("../../src/bin/cli-cwd.js", () => ({ resolveCliCwdForStartup: mocks.cwd,
 vi.mock("../../src/app-server/daemon-autostart.js", () => ({
   ensureAgenCDaemonAutostart: mocks.ensure, resolveAgenCDaemonAutostartEnabled: mocks.enabled,
 }));
+vi.mock("../../src/app-server/daemon-print-connection.js", () => ({ createDaemonPrintConnectionScope: mocks.scope }));
 vi.mock("../../src/bin/daemon-one-shot-cli.js", () => ({ oneShotCLI: (...args: unknown[]) => client.oneShotCLI(...args as []) }));
 vi.mock("../../src/bin/agenc-main.js", () => { throw new Error("client must be lazy"); });
 import { printMain, runPrintCliEntry } from "../../src/bin/print-cli-main.js";
@@ -41,6 +43,9 @@ beforeEach(() => {
   mocks.enabled.mockResolvedValue(true);
   mocks.cwd.mockReturnValue({ ok: true, cwd: "/workspace" });
   mocks.unavailable.mockReturnValue(1);
+  mocks.scope.mockReturnValue({ requestDaemonInstanceIdentity: mocks.identity,
+    ensureDaemonReady: mocks.scopeReady, createConnectedTuiClient: mocks.scopeConnect, close: mocks.closeScope });
+  mocks.identity.mockResolvedValue({}); mocks.closeScope.mockResolvedValue(undefined);
   mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
     options.onReadinessWaitStarted?.();
   });
@@ -336,4 +341,47 @@ describe("exploratory provisional route coordination", () => {
 it("the default print loader reaches the thin client without loading the full CLI dispatcher", async () => {
   expect(await printMain()).toBe(7);
   expect(client.oneShotCLI).toHaveBeenCalledWith("hello", [], expect.objectContaining({ lightMode: true }), undefined);
+});
+
+it("lends the route identity connection only to fresh native print and closes its scope", async () => {
+  mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
+    options.onReadinessWaitStarted?.();
+    await options.requestDaemonInstanceIdentity?.({ pid: 5200, pidPath: "/test/pid" });
+  });
+  expect(await printMain()).toBe(7);
+  expect(mocks.scope).toHaveBeenCalledOnce(); expect(mocks.identity).toHaveBeenCalledOnce();
+  expect(client.oneShotCLI).toHaveBeenCalledWith("hello", [], expect.anything(), undefined, {
+    ensureDaemonReady: mocks.scopeReady, createConnectedTuiClient: mocks.scopeConnect,
+  });
+  expect(mocks.closeScope).toHaveBeenCalledOnce();
+});
+
+it.each(["custom", "continue", "disabled", "provisional"])("does not retain a connection for %s", async mode => {
+  mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
+    expect(options.requestDaemonInstanceIdentity).toBeUndefined();
+    options.onReadinessWaitStarted?.();
+  });
+  if (mode === "continue") process.argv.splice(3, 0, "--continue");
+  if (mode === "disabled") mocks.enabled.mockResolvedValue(false);
+  const child = { finish: vi.fn(async () => {}), cancel: vi.fn(async () => {}) };
+  expect(await printMain(mode === "custom" ? load : undefined, mode === "provisional" ? async () => child : undefined)).toBe(7);
+  expect(mocks.scope).not.toHaveBeenCalled();
+});
+
+it("closes an unused connection when native print refuses configuration", async () => {
+  mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
+    await options.requestDaemonInstanceIdentity?.({ pid: 5200, pidPath: "/test/pid" });
+  });
+  client.oneShotCLI.mockResolvedValueOnce(1);
+  expect(await printMain()).toBe(1); expect(mocks.closeScope).toHaveBeenCalledOnce();
+});
+
+it("preserves canonical readiness error precedence and closes its partial allocation", async () => {
+  mocks.ensure.mockImplementation(async (options: AgenCDaemonAutostartOptions) => {
+    await options.requestDaemonInstanceIdentity?.({ pid: 5200, pidPath: "/test/pid" });
+    throw new Error("canonical identity refused");
+  });
+  expect(await printMain()).toBe(1); expect(mocks.closeScope).toHaveBeenCalledOnce();
+  expect(client.oneShotCLI).not.toHaveBeenCalled();
+  expect(process.stderr.write).toHaveBeenCalledWith("agenc: daemon autostart failed: canonical identity refused\n");
 });

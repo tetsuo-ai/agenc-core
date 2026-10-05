@@ -95,7 +95,13 @@ async function runBundle(config) {
     outbase: "src",
     outdir: distDir,
     platform: config.platform ?? "node",
-    plugins: config.esbuildPlugins ?? [],
+    plugins: [{
+      name: "micro-print-entry-boundary",
+      setup(build) {
+        build.onResolve({ filter: /^\.\/micro-print-entry\.js$/ }, args =>
+          args.importer.endsWith("/src/bin/agenc.ts") ? { path: args.path, external: true } : null);
+      },
+    }, ...(config.esbuildPlugins ?? [])],
     sourcemap: config.sourcemap ?? true,
     splitting: true,
     target: config.target ?? "es2022",
@@ -104,6 +110,16 @@ async function runBundle(config) {
 
   config.esbuildOptions?.(options);
   await build(options);
+  // No shared application chunks in the resident client graph. The ordinary
+  // entry remains available as a dynamic fallback before session admission.
+  const micro = await build({
+    ...options,
+    entryPoints: ["src/bin/micro-print-entry.ts"],
+    splitting: false,
+    metafile: true,
+    plugins: (config.esbuildPlugins ?? []).filter(plugin => plugin.name !== "agenc-runtime-assets"),
+  });
+  await writeFile(join(distDir, "micro-print-imports.json"), JSON.stringify(micro.metafile, null, 2) + "\n");
 }
 
 function runDeclarations() {

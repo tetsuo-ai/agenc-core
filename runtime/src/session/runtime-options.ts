@@ -286,6 +286,7 @@ function establishWritableDirectoryAuthority(value: string, key: string): string
 export function resolveSessionTempRootAtIngress(
   env: NodeJS.ProcessEnv,
   explicit?: string,
+  platformTempRoot: string = DEFAULT_SESSION_TEMP_ROOT,
 ): string {
   return explicit !== undefined
     ? establishWritableDirectoryAuthority(
@@ -295,7 +296,7 @@ export function resolveSessionTempRootAtIngress(
     : env.AGENC_TMPDIR !== undefined
       ? establishWritableDirectoryAuthority(env.AGENC_TMPDIR, "AGENC_TMPDIR")
       : establishWritableDirectoryAuthority(
-          DEFAULT_SESSION_TEMP_ROOT,
+          platformTempRoot,
           "platform temporary directory",
         );
 }
@@ -384,17 +385,23 @@ export function assertNoRetiredAgentRuntimeEnvironment(
   );
 }
 
-/** Parse and freeze the complete runtime authority at an ingress boundary. */
+/**
+ * Parse and freeze the complete runtime authority at an ingress boundary.
+ * An ingress serving another process supplies that process's captured platform
+ * temp fallback; ordinary local callers retain the module's startup authority.
+ */
 export function resolveAgentRuntimeOptions(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions> = {},
+  platformTempRoot: string = DEFAULT_SESSION_TEMP_ROOT,
 ): AgentRuntimeOptions {
-  return resolveAgentRuntimeOptionsAtIngress(env, overrides);
+  return resolveAgentRuntimeOptionsAtIngress(env, overrides, platformTempRoot);
 }
 
 function resolveAgentRuntimeOptionsAtIngress(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions>,
+  platformTempRoot: string,
 ): AgentRuntimeOptions {
   assertNoRetiredAgentRuntimeEnvironment(env);
   const parsedWrapper =
@@ -475,6 +482,7 @@ function resolveAgentRuntimeOptionsAtIngress(
     sessionTempRoot: resolveSessionTempRootAtIngress(
       env,
       overrides.sessionTempRoot,
+      platformTempRoot,
     ),
     pluginStorageRoot: resolvePluginStorageRootAtIngress(
       env,

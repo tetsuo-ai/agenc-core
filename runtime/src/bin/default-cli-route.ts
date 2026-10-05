@@ -9,7 +9,7 @@ import {
   type ResumeTUIArgs,
 } from "./route.js";
 import { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.js";
-import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled } from "../app-server/daemon-autostart.js";
+import { ensureAgenCDaemonAutostart, resolveAgenCDaemonAutostartEnabled, type AgenCDaemonAutostartOptions } from "../app-server/daemon-autostart.js";
 import type { ProvisionalDaemonStart } from "../app-server/daemon-provisional-start.js";
 import { resolveCliCwdForStartup, writeUnavailableCliCwd } from "./cli-cwd.js";
 
@@ -23,6 +23,8 @@ export interface DefaultCliRouteAdapters {
   /** Import-only work after ADMIT is sent, before its acknowledgment. */
   readonly onAdmissionWaitStarted?: () => void | Promise<void>;
   readonly prepareProvisionalDaemon?: () => Promise<ProvisionalDaemonStart | null>;
+  /** Invocation-owned identity transport, only for fresh print without a provisional child. */
+  readonly requestPrintDaemonIdentity?: AgenCDaemonAutostartOptions["requestDaemonInstanceIdentity"];
 }
 
 function isInteractiveTuiRoutePlan(
@@ -37,7 +39,7 @@ function isInteractiveTuiRoutePlan(
 
 export async function runDefaultCliRoute(
   argv: readonly string[],
-  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI, onReadinessWaitStarted, onAdmissionWaitStarted, prepareProvisionalDaemon }: DefaultCliRouteAdapters,
+  { bootTUIEntry, resumeTUIEntry, continueTUIEntry, oneShotCLI, onReadinessWaitStarted, onAdmissionWaitStarted, prepareProvisionalDaemon, requestPrintDaemonIdentity }: DefaultCliRouteAdapters,
 ): Promise<number> {
   const routePlan = classifyCLI({
     argv,
@@ -104,6 +106,9 @@ export async function runDefaultCliRoute(
           provisional = null;
         } else await ensureAgenCDaemonAutostart({
           io: { stdout: silentStdout, stderr: process.stderr },
+          ...(routePlan.kind === "oneShotCLI" && routePlan.continueSession === undefined && requestPrintDaemonIdentity !== undefined
+            ? { requestDaemonInstanceIdentity: requestPrintDaemonIdentity }
+            : {}),
           ...(routePlan.kind === "oneShotCLI" && onReadinessWaitStarted !== undefined
             ? { onReadinessWaitStarted }
             : {}),
