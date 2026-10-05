@@ -857,13 +857,21 @@ describe("exec_command tool", () => {
       });
     }
 
-    /** The live session: TUI bypass mode, approvals off, workspace_write sandbox. */
+    /**
+     * The live session: TUI bypass mode, approvals off, workspace_write
+     * sandbox. With the sandbox on, a command the fence allows still needs a
+     * platform sandbox to run: macOS always has one, Linux only with the
+     * helper, so the turn names one as the neighboring sandboxed tests do.
+     * Without it, Linux refuses the allowed commands with
+     * sandbox_required_unavailable before they reach the mock manager.
+     */
     function liveArgs(cmd: string, registry: ToolRegistry): Record<string, unknown> {
       return contextArgs({ cmd, workdir: root }, {
         mode: "bypassPermissions",
         approvalPolicy: "never",
         sandboxMode: "workspace_write",
         approvalResolved: false,
+        platformSandbox: true,
         registry,
       });
     }
