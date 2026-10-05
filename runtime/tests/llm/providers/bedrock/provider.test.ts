@@ -1180,6 +1180,36 @@ describe("providers/bedrock", () => {
     expect(response.content).toBe("Done.");
   });
 
+  it("closes a started reasoning block on contentBlockStop before messageStop", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockStart: { contentBlockIndex: 0, start: {} } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { contentBlockStop: { contentBlockIndex: 0 } },
+      { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "Done." } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    const chunks: unknown[] = [];
+    const response = await provider.chatStream([{ role: "user", content: "hello" }], chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingBlockStop: { index: 0 } });
+    expect(response.content).toBe("Done.");
+    expect(response.finishReason).toBe("stop");
+  });
+
+  it("rejects messageStop while a started reasoning block is still open", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockStart: { contentBlockIndex: 0, start: {} } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    await expect(provider.chatStream([{ role: "user", content: "hello" }], () => {})).rejects.toThrow(
+      /open content or tool block/i,
+    );
+  });
+
   it("streams ConverseStream text, tool input, final tool calls, and usage", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       eventStreamResponse([
