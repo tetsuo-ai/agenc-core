@@ -1,6 +1,6 @@
 import { assertNoObsoleteConfigEnvironment } from "./obsolete-environment.js";
 import { assertNoRetiredConfigDir } from "./home.js";
-import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
+import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options-ingress.js";
 
 export type RuntimeIngressEnvironment = Readonly<
   Record<string, string | undefined>

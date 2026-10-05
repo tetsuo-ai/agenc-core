@@ -1,4 +1,17 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  AgentRuntimeOptionsError,
+  assertNoRetiredAgentRuntimeEnvironment,
+} from "./runtime-options-ingress.js";
+export {
+  AgentRuntimeOptionsError,
+  RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS,
+  assertNoRetiredAgentRuntimeEnvironment,
+} from "./runtime-options-ingress.js";
+import { peekAgentRuntimeOptions } from "./runtime-options-context.js";
+export {
+  peekAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "./runtime-options-context.js";
 import {
   accessSync,
   chmodSync,
@@ -130,28 +143,6 @@ export function resolveCommandExecutionAuthority(
       ),
     ),
   });
-}
-
-export class AgentRuntimeOptionsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AgentRuntimeOptionsError";
-  }
-}
-
-const scopedRuntimeOptions = new AsyncLocalStorage<AgentRuntimeOptions>();
-
-/** Bind startup work and all async descendants to one immutable option set. */
-export function runWithAgentRuntimeOptions<T>(
-  options: AgentRuntimeOptions,
-  operation: () => T,
-): T {
-  return scopedRuntimeOptions.run(options, operation);
-}
-
-/** Read the session/startup binding without consulting process-global env. */
-export function peekAgentRuntimeOptions(): AgentRuntimeOptions | undefined {
-  return scopedRuntimeOptions.getStore();
 }
 
 /** Resolve the immutable runtime options owned by the active session/startup. */
@@ -364,25 +355,6 @@ function parseWrapper(value: string | undefined): readonly string[] | undefined 
     );
   }
   return Object.freeze(parsed as string[]);
-}
-
-export const RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS = Object.freeze({
-  AGENC_SIMPLE: "use --bare",
-  AGENC_BARE: "use --bare",
-} as const);
-
-/** Reject removed runtime-option aliases at every client/startup boundary. */
-export function assertNoRetiredAgentRuntimeEnvironment(
-  env: NodeJS.ProcessEnv,
-): void {
-  const present = Object.entries(RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS)
-    .filter(([key]) => env[key] !== undefined);
-  if (present.length === 0) return;
-  throw new AgentRuntimeOptionsError(
-    present
-      .map(([key, replacement]) => `${key} was removed; ${replacement}`)
-      .join("; "),
-  );
 }
 
 /**
