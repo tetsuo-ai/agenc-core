@@ -133,8 +133,6 @@ export interface ChatCompletionsCapabilityHints {
    */
   readonly thinkingConfig?: {
     readonly type: "enabled" | "adaptive";
-    /** This route supports the measured one-sample reasoning-only recovery override. */
-    readonly allowsRecoveryDisable?: true;
     readonly clearThinking?: boolean;
     readonly keep?: "all";
   };
@@ -469,7 +467,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
       toolChoicePolicy: "auto_only" as const,
       acceptsTemperature: false,
-      thinkingConfig: { type: "enabled" as const, allowsRecoveryDisable: true as const },
+      thinkingConfig: { type: "enabled" as const },
       replaysReasoningContent: true,
       reasoningContentField: "reasoning_content" as const,
       sharesPromptPrefixAcrossSessions: true,
