@@ -11,7 +11,12 @@ type ClientLoad = { readonly ok: true; readonly client: Client } |
 
 /** The same print route, with client imports overlapping canonical daemon readiness. */
 export async function printMain(
-  loadClient: () => Promise<Client> = () => import("./agenc-main.js"),
+  loadClient: () => Promise<Client> = async () => ({
+    oneShotCLI: (await import("./daemon-one-shot-cli.js")).oneShotCLI,
+    bootTUIEntry: async (...args) => (await import("./agenc-main.js")).bootTUIEntry(...args),
+    resumeTUIEntry: async (...args) => (await import("./agenc-main.js")).resumeTUIEntry(...args),
+    continueTUIEntry: async (...args) => (await import("./agenc-main.js")).continueTUIEntry(...args),
+  }),
   prepareProvisionalDaemon?: DefaultCliRouteAdapters["prepareProvisionalDaemon"],
 ): Promise<number> {
   const ingressExitCode = prepareCliRuntime();
