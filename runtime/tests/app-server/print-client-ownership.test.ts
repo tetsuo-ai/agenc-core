@@ -6,7 +6,7 @@ import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js
 
 const dispatchers: AgenCDaemonJsonRpcDispatcher[] = [];
 afterEach(async () => { for (const d of dispatchers.splice(0)) await d.close().catch(() => {}); });
-const rpc = (id: string, method: string, params: JsonObject = {}): JsonObject => ({ jsonrpc: "2.0", id, method, params });
+const rpc = (id: string, method: string, params: JsonObject = {}): JsonObject => ({ jsonrpc: "2.0", id, method, params: method === "agent.create" ? { cwd: process.cwd(), ...params } : params });
 const freshPrint = (): JsonObject => ({ objective: "test", runtimeOptions: { ...resolveAgentRuntimeOptions({}), nonInteractive: true }, metadata: { source: "agenc.prompt", mode: "one-shot" } });
 function fixture() {
   let next = 0;
