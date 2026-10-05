@@ -13,6 +13,7 @@ vi.mock("../../src/bin/cli-cwd.js", () => ({ resolveCliCwdForStartup: mocks.cwd,
 vi.mock("../../src/app-server/daemon-autostart.js", () => ({
   ensureAgenCDaemonAutostart: mocks.ensure, resolveAgenCDaemonAutostartEnabled: mocks.enabled,
 }));
+vi.mock("../../src/bin/daemon-one-shot-cli.js", () => ({ oneShotCLI: (...args: unknown[]) => client.oneShotCLI(...args as []) }));
 vi.mock("../../src/bin/agenc-main.js", () => { throw new Error("client must be lazy"); });
 import { printMain, runPrintCliEntry } from "../../src/bin/print-cli-main.js";
 
@@ -329,4 +330,10 @@ describe("exploratory provisional route coordination", () => {
     await printMain(load, prepare);
     expect(prepare).not.toHaveBeenCalled();
   });
+});
+
+
+it("the default print loader reaches the thin client without loading the full CLI dispatcher", async () => {
+  expect(await printMain()).toBe(7);
+  expect(client.oneShotCLI).toHaveBeenCalledWith("hello", [], expect.objectContaining({ lightMode: true }), undefined);
 });
