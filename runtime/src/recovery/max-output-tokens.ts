@@ -454,6 +454,7 @@ export function runMaxOutputTokensRecovery(
 
   // Step 1: escalate path — first attempt, override unset.
   if (overrideUnset && escalateAllowed) {
+    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     state.maxOutputTokensOverride =
       opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
     state.transition = { reason: "max_output_tokens_escalate" };
@@ -467,6 +468,7 @@ export function runMaxOutputTokensRecovery(
 
   // Step 2: continuation path — bump counter if under the cap.
   if (state.maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     discardExecutorForMaxOutputTokens(session, state, {
       appendCompletedHistory: true,
     });
