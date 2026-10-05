@@ -427,13 +427,22 @@ describe("installer and CLI WinSW generation", () => {
       "Packaging does not download WinSW; use the v2.12.0 binary",
     );
     expect(install).toContain("WinSW-x64.exe");
+    expect(install).toContain("`agenc-daemon.exe` next to the XML");
+    expect(install).not.toContain("next to the prefix");
     expect(install).not.toContain(
       "Running the\ndaemon as a Windows service uses WinSW with `packaging/windows/agenc-daemon.xml`",
     );
+    const example = readFileSync(join(REPO_ROOT, "packaging/windows/agenc-daemon.xml"), "utf8");
     expect(daemon).toContain("separate elevated step");
     expect(daemon).toContain("Services Log On tab");
     expect(daemon).toContain("error 1069");
     expect(daemon).not.toContain("does not show whether");
+    expect(daemon).not.toMatch(/installer only\s+places the CLI/u);
+    expect(cli).toContain("launcher-started daemon, not the Windows");
+    expect(cli).toContain("Services Log On");
+    expect(cli).toContain("error 1069");
+    expect(example).toContain("Services Log On");
+    expect(example).toContain("error 1069");
     expect(cli).toContain("Does not install or start the Windows service");
   });
 });

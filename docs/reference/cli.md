@@ -987,9 +987,13 @@ agenc daemon install-service
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
 The Windows one-line installer writes a generated WinSW 2.12.0 file. Installing
 that service is a separate elevated step: `agenc-daemon.exe install` (no `/p`),
-then `sc.exe qc agenc-daemon`. `SERVICE_START_NAME` must be the installing
-user. The password is set outside the XML.
-Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
+then set the account password in the Services Log On tab. `start` fails with
+error 1069 until that password is set. Then `sc.exe qc agenc-daemon`.
+`SERVICE_START_NAME` must be the installing user. The password is set outside
+the XML.
+
+The rest of this section is about the launcher-started daemon, not the Windows
+service. Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
 `AGENC_DAEMON_READY_TIMEOUT_MS`. After a hard kill, readiness is the
 socket accepting a connection, not the leftover inode. Direct
 `agenc daemon start` keeps waiting while the startup log advances, up to

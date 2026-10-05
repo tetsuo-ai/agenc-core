@@ -14,7 +14,8 @@
     sc.exe qc agenc-daemon
     agenc-daemon.exe start
   SERVICE_START_NAME must be the installing user. Set the password in the
-  Services Log On tab or with sc.exe config, not in this XML.
+  Services Log On tab or with sc.exe config, not in this XML. start fails
+  with error 1069 until that password is set.
 -->
 <service>
   <id>agenc-daemon</id>

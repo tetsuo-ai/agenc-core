@@ -189,11 +189,15 @@ iwr -useb https://get.agenc.ag/install.ps1 | iex
 
 Source: `scripts/install/install.ps1`. Same manifest/verify/extract contract;
 installs an `agenc.cmd` shim under `%LOCALAPPDATA%\agenc\bin` and writes a
-WinSW 2.12.0 definition with those absolute paths, the installing-user
-`<domain>` and `<user>`, and `AGENC_HOME` next to the prefix. The XML omits
+WinSW 2.12.0 definition, `agenc-daemon.xml` in the install prefix, with those
+absolute paths, the installing-user `<domain>` and `<user>`, and that user's
+`AGENC_HOME` (the user-profile known folder plus `.agenc`, which is
+`%USERPROFILE%\.agenc` unless `AGENC_HOME` is set). The XML omits
 `<password>`. Packaging does not download WinSW; use the v2.12.0 binary
-(`WinSW-x64.exe` from the v2.12.0 GitHub release). `install /p` does not
-install that XML account. That is not a service install.
+(`WinSW-x64.exe` from the v2.12.0 GitHub release), renamed to
+`agenc-daemon.exe` next to the XML: WinSW 2.x reads the XML with the same
+basename as the executable. `install /p` does not install that XML account.
+That is not a service install.
 
 `agenc daemon start` works without a Windows service. Installing, starting,
 stopping, or restarting the supervised service is a separate elevated WinSW
