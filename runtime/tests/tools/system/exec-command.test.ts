@@ -22,6 +22,9 @@ import {
   prepareReadOnlyInspectionInvocation,
 } from "../../permissions/readonly-inspection.js";
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
+import { buildFilteredRegistry, mergeRoleDisallowlist } from "../../agents/run-agent.js";
+import { BUILTIN_READONLY_DISALLOWLIST } from "../../agents/built-in-prompts.js";
+import { buildToolRegistry, type ToolRegistry } from "../../tool-registry.js";
 import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
@@ -144,6 +147,8 @@ describe("exec_command tool", () => {
       readonly added?: readonly string[];
       readonly approvalResolved?: boolean;
       readonly platformSandbox?: boolean;
+      /** The session's tool registry, read for the file tools a refusal names. */
+      readonly registry?: ToolRegistry;
     } = {},
   ): Record<string, unknown> {
     const args: Record<string, unknown> = { ...overrides };
@@ -175,7 +180,10 @@ describe("exec_command tool", () => {
                 },
               }
             : {}),
-          services: { runtimeOptions: { sessionTempRoot: root } },
+          services: {
+            runtimeOptions: { sessionTempRoot: root },
+            ...(options.registry !== undefined ? { registry: options.registry } : {}),
+          },
         },
         payload: { kind: "function", arguments: "{}" },
         turn: {
@@ -810,6 +818,176 @@ describe("exec_command tool", () => {
 
       const result = await tool.execute(
         permissionArgs(REFACTOR_CLEANUP, { mode: "default", approvalPolicy: "never" }),
+      );
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("the shell write fence in a bypassPermissions session with the sandbox on", () => {
+    /** Every name a refusal could send the model to. */
+    const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
+
+    function registryOf(names: readonly string[]): ToolRegistry {
+      const tools = names.map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: "object" } as const,
+        execute: async () => ({ content: "{}" }),
+      }));
+      return {
+        tools,
+        toLLMTools: () =>
+          tools.map((tool) => ({
+            type: "function" as const,
+            function: { name: tool.name, description: tool.name, parameters: { type: "object" } },
+          })),
+        dispatch: async () => ({ content: "{}" }),
+      } as unknown as ToolRegistry;
+    }
+
+    const PARENT_TOOLS = ["exec_command", "write_stdin", "FileRead", "Edit", "MultiEdit", "Write", "apply_patch"];
+
+    /** The registry a verification child gets: its role denies every file tool. */
+    function verificationRegistry(): ToolRegistry {
+      return buildFilteredRegistry(registryOf(PARENT_TOOLS), {
+        childConversationId: "verify-child",
+        disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
+      });
+    }
+
+    /**
+     * The live session: TUI bypass mode, approvals off, workspace_write
+     * sandbox. With the sandbox on, a command the fence allows still needs a
+     * platform sandbox to run: macOS always has one, Linux only with the
+     * helper, so the turn names one as the neighboring sandboxed tests do.
+     * Without it, Linux refuses the allowed commands with
+     * sandbox_required_unavailable before they reach the mock manager.
+     */
+    function liveArgs(cmd: string, registry: ToolRegistry): Record<string, unknown> {
+      return contextArgs({ cmd, workdir: root }, {
+        mode: "bypassPermissions",
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        approvalResolved: false,
+        platformSandbox: true,
+        registry,
+      });
+    }
+
+    test("a read-only subagent's refusal names no file tool it lacks", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const cmd = "echo hi > ./.vr-probe.txt";
+
+      // Preflight is where the live refusal came from (InputValidationError).
+      const preflight = tool.preflight?.(liveArgs(cmd, verificationRegistry()));
+      expect(preflight?.message).toContain("shell_workspace_file_write_disallowed");
+      expect(preflight?.message).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(preflight?.message).toContain("This session has no file editing tool");
+
+      const result = await tool.execute(liveArgs(cmd, verificationRegistry()));
+      expect(result.isError).toBe(true);
+      expect(result.content).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(result.content).toContain("tmp/, for example");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("an OpenAI Light session is pointed at its listed apply_patch", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const registry = buildToolRegistry({
+        workspaceRoot: root,
+        lightMode: true,
+        requireAdmission: false,
+        getSession: () => ({ services: { provider: { name: "openai" } } }) as never,
+      });
+
+      const result = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("use apply_patch instead.");
+      expect(result.content).not.toMatch(/\b(?:Edit|Write)\b/u);
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("the main session's refusal still names Edit and Write", async () => {
+      const { tool, execCommand } = mockManagerTool();
+
+      const result = await tool.execute(
+        liveArgs("echo hi > ./.vr-probe.txt", registryOf(PARENT_TOOLS)),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("use Edit or Write instead");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("still refuses a write target it cannot confirm, as the docs and the full-bypass tests define", async () => {
+      // bypassPermissions alone keeps every guard: the sandbox is still on.
+      // Only approvals bypassed AND no sandbox lift the unconfirmable-target
+      // refusal (see "runs a command with an unresolvable write target under
+      // the full bypass" above).
+      const { tool, execCommand } = mockManagerTool();
+      const cmd = 'echo hi > "$TMPDIR/vr-probe.txt"';
+
+      const sandboxed = await tool.execute(liveArgs(cmd, verificationRegistry()));
+      expect(sandboxed.isError).toBe(true);
+      expect(sandboxed.content).toContain("Unable to confirm workspace write targets");
+      expect(sandboxed.content).toContain("Name each file it writes with a literal path");
+      expect(sandboxed.content).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(execCommand).not.toHaveBeenCalled();
+
+      const fullBypass = await tool.execute(
+        contextArgs({ cmd, workdir: root }, {
+          mode: "bypassPermissions",
+          approvalPolicy: "never",
+          sandboxMode: "danger_full_access",
+          registry: verificationRegistry(),
+        }),
+      );
+      expect(fullBypass.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+
+    test("an allowed command never lists the session's tools", async () => {
+      // Per-command overhead: listing the tools runs only while a refusal is
+      // written, never on the path an allowed command takes.
+      const base = registryOf(PARENT_TOOLS);
+      const toLLMTools = vi.fn(() => base.toLLMTools());
+      const getUnavailableToolNames = vi.fn(() => new Set<string>());
+      const toolsRead = vi.fn(() => base.tools);
+      const registry = {
+        get tools() {
+          return toolsRead();
+        },
+        toLLMTools,
+        getUnavailableToolNames,
+        dispatch: base.dispatch,
+      } as unknown as ToolRegistry;
+      const { tool, execCommand } = mockManagerTool();
+      await mkdir(join(root, "tmp"), { recursive: true });
+
+      for (const cmd of ["echo hi > tmp/vr-probe.txt", "ls -la", "rm -f tmp/vr-probe.txt"]) {
+        expect(tool.preflight?.(liveArgs(cmd, registry))).toBeNull();
+        const result = await tool.execute(liveArgs(cmd, registry));
+        expect(result.isError).toBeUndefined();
+      }
+      expect(execCommand).toHaveBeenCalledTimes(3);
+      expect(toLLMTools).not.toHaveBeenCalled();
+      expect(getUnavailableToolNames).not.toHaveBeenCalled();
+      expect(toolsRead).not.toHaveBeenCalled();
+
+      const refused = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+      expect(refused.content).toContain("use Edit or Write instead");
+      expect(toLLMTools).toHaveBeenCalledTimes(1);
+    });
+
+    test("lets the way out it names through: a scratch file under the workspace's tmp", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      await mkdir(join(root, "tmp"), { recursive: true });
+
+      const result = await tool.execute(
+        liveArgs("echo hi > tmp/vr-probe.txt", verificationRegistry()),
       );
 
       expect(result.isError).toBeUndefined();

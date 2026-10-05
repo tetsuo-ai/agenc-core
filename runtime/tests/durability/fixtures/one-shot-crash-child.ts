@@ -1,3 +1,4 @@
+import { AgenCSessionSnapshotPolicy } from "../../../src/state/snapshot-policy.js";
 import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
 import { writeSessionSnapshotAtomically } from "../../../src/state/atomic-snapshot-writes.js";
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +30,18 @@ if (command === "crash") {
     sessionId: "snapshot-session", snapshotAt: meta.timestamp,
     conversationJson: '["snapshot"]', toolStateJson: '{}', mcpConnectionStateJson: '{}',
   }, { replayOnStartup: true, verifyExisting: true, oneShotRunId: "crash-run" });
+  if (boundary === "tool-index") {
+    const policy = new AgenCSessionSnapshotPolicy(snapshotDriver, { agencHome: home });
+    policy.trackSession("snapshot-session", "crash-run");
+    policy.recordSessionEvent("snapshot-session", { method: "event.tool_request", params: {
+      requestId: "index-call", toolName: "Bash", input: { command: "echo ok" }, recoveryCategory: "side-effecting",
+    } });
+    const row = snapshotDriver.prepareState<[], { status: string }>(
+      "SELECT status FROM in_flight_tool_calls WHERE tool_call_id = 'index-call'",
+    ).get();
+    if (row?.status !== "running") throw new Error("observer index missing before crash");
+    kill();
+  }
   snapshotDriver.close();
   if (boundary === "snapshot") kill();
   if (boundary === "pending-logs") {

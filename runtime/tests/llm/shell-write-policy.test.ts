@@ -403,6 +403,198 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
   });
 });
 
+describe("classifyShellWorkspaceWritePolicy names only the session's file tools", () => {
+  /** Every name a refusal could send the model to. */
+  const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
+
+  /** `listed` is the model's tool list; `unlisted` tools need system.searchTools. */
+  function classifyWithTools(
+    command: string,
+    listed: readonly string[],
+    allowWorkspaceDeletions = true,
+    unlisted: readonly string[] = [],
+  ) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions,
+      fileWriteTools: () => ({ listed, unlisted, loadWith: "system.searchTools" }),
+    });
+  }
+
+  it("names Edit and Write when the session has them, and nothing else", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", [
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "apply_patch",
+    ]);
+    expect(decision.message).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
+        "use Edit or Write instead. Blocked target(s): /repo/notes.txt",
+    );
+  });
+
+  it("names only the one the session has", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", ["Write"]);
+    expect(decision.message).toContain("use Write instead");
+    expect(decision.message).not.toMatch(/\bEdit\b/u);
+  });
+
+  it("falls back to MultiEdit or apply_patch when the session has neither Edit nor Write", () => {
+    expect(classifyWithTools("echo hi > notes.txt", ["apply_patch"]).message).toContain(
+      "use apply_patch instead",
+    );
+    expect(
+      classifyWithTools("echo hi > notes.txt", ["MultiEdit", "apply_patch"]).message,
+    ).toContain("use MultiEdit or apply_patch instead");
+  });
+
+  // An OpenAI Light session lists apply_patch and keeps Edit and Write behind
+  // system.searchTools; the refusal points at the listed one.
+  it("prefers the listed editing tool over Edit and Write the model has not loaded", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", ["apply_patch"], true, [
+      "Edit",
+      "Write",
+      "MultiEdit",
+    ]);
+    expect(decision.message).toContain("use apply_patch instead.");
+    expect(decision.message).not.toMatch(/\b(?:Edit|Write)\b/u);
+    expect(decision.message).not.toContain("system.searchTools");
+  });
+
+  it("names unlisted editing tools with the way to load them", () => {
+    expect(
+      classifyWithTools("echo hi > notes.txt", [], true, ["Edit", "Write"]).message,
+    ).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
+        "use Edit or Write instead. Their schemas are not loaded yet; " +
+        "system.searchTools with select:Edit,Write loads them. " +
+        "Blocked target(s): /repo/notes.txt",
+    );
+    expect(
+      classifyWithTools('echo hi > "$OUT"', [], true, ["Write"]).message,
+    ).toContain(
+      "use Write for workspace files. Its schema is not loaded yet; " +
+        "system.searchTools with select:Write loads it.",
+    );
+  });
+
+  it("never says apply_patch cannot delete files", () => {
+    const patchOnly = classifyWithTools(REFACTOR_CLEANUP, ["apply_patch"], false);
+    expect(patchOnly.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(patchOnly.message).not.toContain("cannot delete files");
+
+    const fallback = classifyWithTools(REFACTOR_CLEANUP, ["MultiEdit", "apply_patch"], false);
+    expect(fallback.message).toContain(" MultiEdit cannot delete files.");
+    expect(fallback.message).not.toContain("apply_patch cannot");
+  });
+
+  // The live verification subagent: its role denies every file tool, the fence
+  // said "use Edit or Write instead", and the model's Write call came back
+  // "No such tool available: Write".
+  it("names no file tool in a session without any, and says what it can do instead", () => {
+    const decision = classifyWithTools("echo hi > ./.vr-probe.txt", []);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).not.toMatch(FILE_TOOL_NAME_RE);
+    expect(decision.message).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage. " +
+        "This session has no file editing tool, so it cannot change these files: " +
+        "put scratch files under one of those directories (tmp/, for example) and " +
+        "describe any other change in your reply instead of making it. " +
+        "Blocked target(s): /repo/.vr-probe.txt",
+    );
+    // The way out it names is one the policy lets through.
+    expect(classifyWithTools("echo hi > tmp/vr-probe.txt", []).blocked).toBe(false);
+  });
+
+  it("words an unconfirmable target without naming a missing tool", () => {
+    const withTools = classifyWithTools('echo hi > "$TMPDIR/vr-probe.txt"', ["Edit", "Write"]);
+    expect(withTools.message).toBe(
+      "shell_workspace_file_write_disallowed: Unable to confirm workspace write targets " +
+        "for this shell command. Name each file it writes with a literal path, without " +
+        "variables or globs, and leave out command substitution; use Edit or Write for " +
+        "workspace files.",
+    );
+
+    const without = classifyWithTools('echo hi > "$TMPDIR/vr-probe.txt"', []);
+    expect(without.blocked).toBe(true);
+    expect(without.message).not.toMatch(FILE_TOOL_NAME_RE);
+    expect(without.message).toContain("Name each file it writes with a literal path");
+    expect(without.message).toContain("This session has no file editing tool");
+  });
+
+  it("drops the file tools from the approval message when the session has none", () => {
+    const withTools = classifyWithTools(REFACTOR_CLEANUP, ["Edit", "Write"], false);
+    expect(withTools.message).toContain("Edit and Write cannot delete files.");
+
+    const without = classifyWithTools(REFACTOR_CLEANUP, [], false);
+    expect(without.blocked).toBe(true);
+    expect(without.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(without.message).not.toMatch(FILE_TOOL_NAME_RE);
+  });
+
+  it("never lists the session's tools for a command it allows", () => {
+    for (const command of [
+      "echo hi > tmp/vr-probe.txt",
+      "ls -la src",
+      "npm test 2>&1 | tail -20",
+      REFACTOR_CLEANUP,
+    ]) {
+      const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command },
+        workspaceRoot: WORKSPACE_ROOT,
+        allowWorkspaceDeletions: true,
+        fileWriteTools,
+      });
+      expect(decision.blocked).toBe(false);
+      expect(fileWriteTools).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lists them at most once for a refusal with several messages", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: 'echo hi > notes.txt; rm src/a.js; echo "$(id)" > "$OUT"' },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: false,
+      fileWriteTools,
+    });
+    expect(decision.message).toContain("use Write instead.");
+    expect(decision.message).toContain("Write cannot delete files.");
+    expect(decision.message).toContain("use Write for workspace files.");
+    expect(fileWriteTools).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not list them for a refusal that names no tool", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: "rm -rf .git" },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      fileWriteTools,
+    });
+    expect(decision.blocked).toBe(true);
+    expect(fileWriteTools).not.toHaveBeenCalled();
+  });
+
+  it("keeps the refusal itself: the tools a session has never widen what a shell may write", () => {
+    for (const tools of [[], ["Edit", "Write"]]) {
+      const decision = classifyWithTools("cat > src/x.js <<'EOF'\nx\nEOF", tools);
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
+    }
+  });
+});
+
 describe("classifyShellWorkspaceWritePolicy for sed", () => {
   /**
    * The DeepSeek session this was reported from: the command only wrote
