@@ -24,19 +24,33 @@ describe("resident print delivery", () => {
     expect(() => output.acknowledge(2)).toThrow("invalid");
   });
 
-  it.each(["bytes", "frames"])("bounds retained %s while the reader is stalled", async limit => {
+  it.each(["bytes", "frames"])("backpressures large %s output without cancelling it", async limit => {
+    const frames: JsonObject[] = [];
     let aborted: Error | undefined;
-    const output = new PrintOutput("run", async () => {}, error => { aborted = error; });
-    if (limit === "bytes") output.write("stdout", "x".repeat(PRINT_OUTPUT_MAX_BYTES));
-    else for (let i = 0; i < PRINT_OUTPUT_MAX_FRAMES; i++) output.write("stdout", "x");
-    expect(output.pendingBytes).toBeLessThanOrEqual(PRINT_OUTPUT_MAX_BYTES);
-    expect(output.pendingFrames).toBeLessThanOrEqual(PRINT_OUTPUT_MAX_FRAMES);
-    const flush = output.flush();
-    output.write("stdout", "overflow");
-    await expect(flush).rejects.toThrow("delivery limit");
-    expect(aborted?.message).toContain("delivery limit");
-    for (let i = 0; i < 1000; i++) output.write("stdout", "ignored");
+    const output = new PrintOutput("run", message => { frames.push(message); }, error => { aborted = error; });
+    const value = "x".repeat(5 * PRINT_OUTPUT_MAX_BYTES) + "π🌍";
+    if (limit === "bytes") expect(output.write("stdout", value)).toBe(false);
+    else for (let i = 0; i < PRINT_OUTPUT_MAX_FRAMES + 10; i++) output.write("stdout", "x");
+    let flushed = false;
+    const flush = output.flush().then(() => { flushed = true; });
+    await tick();
+    expect(frames).toHaveLength(1);
+    expect(flushed).toBe(false);
+    expect(aborted).toBeUndefined();
+    let received = "";
+    for (let i = 0; !flushed; i++) {
+      expect(output.pendingFrames).toBe(1);
+      expect(output.inFlightBytes).toBeLessThanOrEqual(4 * 16_384);
+      expect(frames).toHaveLength(i + 1);
+      const p = frames[i]!.params as JsonObject;
+      received += p.data;
+      output.acknowledge(p.sequence as number);
+      await tick();
+    }
+    await flush;
+    expect(received).toBe(limit === "bytes" ? value : "x".repeat(PRINT_OUTPUT_MAX_FRAMES + 10));
     expect(output.pendingBytes).toBe(0); expect(output.pendingFrames).toBe(0);
+    expect(aborted).toBeUndefined();
   });
 
   it("preserves surrogate pairs across frame boundaries within the encoded limit", async () => {
@@ -49,6 +63,20 @@ describe("resident print delivery", () => {
     const value = "x".repeat(16_383) + "🌍" + "\0".repeat(20_000);
     output.write("stdout", value); await output.flush();
     expect(Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))).toEqual(Buffer.from(value));
+  });
+
+  it("releases a partially delivered large result on disconnect", async () => {
+    const frames: JsonObject[] = [];
+    const output = new PrintOutput("run", message => { frames.push(message); }, () => {});
+    output.write("stdout", "x".repeat(5 * PRINT_OUTPUT_MAX_BYTES));
+    const flushed = output.flush();
+    await tick(); output.acknowledge(1); await tick();
+    expect(frames).toHaveLength(2);
+    output.fail(new Error("connection closed"));
+    await expect(flushed).rejects.toThrow("connection closed");
+    expect(output.pendingBytes).toBe(0); expect(output.inFlightBytes).toBe(0);
+    await tick(); expect(frames).toHaveLength(2);
+    expect(output.write("stderr", "late")).toBe(false);
   });
 
   it("cancellation wakes a stalled write and rejects flush", async () => {
