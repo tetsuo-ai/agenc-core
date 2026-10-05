@@ -720,7 +720,7 @@ export function createDaemonTuiSession<
             cause: "daemon_delivery_failed",
             action: "session.cancelTurn",
             message:
-              "interrupt not acknowledged by the daemon (it may be unresponsive) — try ESC again, or restart the daemon",
+              "interrupt not acknowledged by the daemon (it may be unresponsive). Try ESC again, or restart the daemon",
           },
         });
       }

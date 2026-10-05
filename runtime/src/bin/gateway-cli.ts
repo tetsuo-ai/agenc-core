@@ -53,7 +53,7 @@ export type AgenCGatewayCliCommand =
 
 export function formatAgenCGatewayCliHelpText(): string {
   return [
-    "agenc gateway — inspect and operate the channel gateway",
+    "agenc gateway: inspect and operate the channel gateway",
     "",
     "Usage:",
     "  agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]",

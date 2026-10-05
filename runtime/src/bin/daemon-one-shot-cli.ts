@@ -207,7 +207,7 @@ async function resolveUserMessage(signal: AbortSignal, userArgv: readonly string
   }
   if (extractFlagValues(userArgv, "--image").length > 0) return "";
   throw new Error(
-    "no prompt provided — pass as argv (`agenc ...`) or pipe via stdin",
+    "no prompt provided: pass it as argv (`agenc ...`) or pipe it via stdin",
   );
 }
 
@@ -279,7 +279,7 @@ export function validateAgencHome(
 ): string {
   if (!(env.AGENC_HOME?.trim() || env.HOME?.trim())) {
     throw new Error(
-      "HOME unset and AGENC_HOME unset — set AGENC_HOME to a writable dir",
+      "HOME unset and AGENC_HOME unset: set AGENC_HOME to a writable dir",
     );
   }
   const home = resolveHomeContext(env, {
@@ -291,7 +291,7 @@ export function validateAgencHome(
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EROFS" || code === "EACCES") {
       throw new Error(
-        `AGENC_HOME (${home}) is not writable (${code}) — set AGENC_HOME to a writable dir`,
+        `AGENC_HOME (${home}) is not writable (${code}): set AGENC_HOME to a writable dir`,
       );
     }
     throw error;

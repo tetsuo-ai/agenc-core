@@ -298,7 +298,7 @@ export class DiscordChannelAdapter implements ChannelAdapter {
         this.#stopHeartbeat();
         this.#socket = null;
         if (!this.#running) return;
-        this.#log(`discord: gateway closed (${code ?? "?"}) — reconnecting`);
+        this.#log(`discord: gateway closed (${code ?? "?"}), reconnecting`);
         this.#setTimer(() => {
           if (!this.#running) return;
           void this.#connect().catch((error) => {
@@ -383,7 +383,7 @@ export class DiscordChannelAdapter implements ChannelAdapter {
       if (this.#socket === null) return;
       if (this.#awaitingAck) {
         // Zombied connection: the previous heartbeat was never ACKed.
-        this.#log("discord: heartbeat ACK missed — recycling connection");
+        this.#log("discord: heartbeat ACK missed, recycling connection");
         this.#socket.close();
         return;
       }

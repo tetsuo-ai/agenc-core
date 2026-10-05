@@ -1437,8 +1437,8 @@ export class MCPManager {
     if (enabledConfigs.length === 0) {
       this.logger.info(this.configs.some(config => config.enabled !== false)
         ? "No eager MCP servers to start" : "No MCP servers configured");
-      if (opts.requiredServers?.length) throw new Error(`MCP aggregate startup failure — required server(s) not ready: ${opts.requiredServers.join(", ")}`);
-      if (opts.requireOneReady) throw new Error("MCP aggregate startup failure — zero servers ready");
+      if (opts.requiredServers?.length) throw new Error(`MCP aggregate startup failure: required server(s) not ready: ${opts.requiredServers.join(", ")}`);
+      if (opts.requireOneReady) throw new Error("MCP aggregate startup failure: zero servers ready");
       return;
     }
 
@@ -1535,7 +1535,7 @@ export class MCPManager {
           .map((f) => `${f.name}: ${errMessage(f.reason)}`)
           .join("; ");
         throw new Error(
-          `MCP aggregate startup failure — required server(s) not ready: ${missing.join(", ")}${reason ? ` (${reason})` : ""}`,
+          `MCP aggregate startup failure: required server(s) not ready: ${missing.join(", ")}${reason ? ` (${reason})` : ""}`,
         );
       }
     } else if (opts.requireOneReady && successCount === 0) {
@@ -1543,7 +1543,7 @@ export class MCPManager {
         .map((f) => `${f.name}: ${errMessage(f.reason)}`)
         .join("; ");
       throw new Error(
-        `MCP aggregate startup failure — zero servers ready${detail ? ` (${detail})` : ""}`,
+        `MCP aggregate startup failure: zero servers ready${detail ? ` (${detail})` : ""}`,
       );
     }
   }

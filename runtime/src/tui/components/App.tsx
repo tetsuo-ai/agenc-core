@@ -3013,7 +3013,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       lastGateNotifiedRef.current = blocking;
       addNotification({
         key: "unknown-outcome-gate",
-        text: `Session blocked by an unknown tool outcome (${blocking}) — side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
+        text: `Session blocked by an unknown tool outcome (${blocking}). Side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
         priority: "immediate",
         timeoutMs: 15000,
       });

@@ -814,7 +814,7 @@ export class SessionLockedError extends Error {
     public readonly lockPath: string,
   ) {
     super(
-      `session locked by pid ${holderPid} (${lockPath}) — another AgenC process owns this session`,
+      `session locked by pid ${holderPid} (${lockPath}); another AgenC process owns this session`,
     );
     this.name = "SessionLockedError";
   }

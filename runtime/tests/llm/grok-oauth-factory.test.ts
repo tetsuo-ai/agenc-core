@@ -270,7 +270,7 @@ test('exhausted refresh reports a re-login hint instead of retrying', async () =
     previousError: Object.assign(new Error('401'), { status: 401 }),
   })
   expect(outcome.kind).toBe('exhausted')
-  expect(outcome.reason).toMatch(/run \/grok-login/)
+  expect(outcome.reason).toMatch(/run \/grok-login/i)
   expect(outcome.reason).toMatch(/expired/)
 })
 

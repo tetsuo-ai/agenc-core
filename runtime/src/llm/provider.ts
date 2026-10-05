@@ -481,7 +481,7 @@ function requireFactoryApiKey(
   const apiKey = resolveFactoryApiKey(opts, explicitApiKey);
   if (apiKey === undefined) {
     throw new Error(
-      `${provider} provider requires apiKey — pass apiKey or authBackend/sessionId in factory options`,
+      `${provider} provider requires apiKey: pass apiKey or authBackend/sessionId in factory options`,
     );
   }
   return apiKey;
@@ -1789,7 +1789,7 @@ export function createProvider(
                 return {
                   kind: "exhausted",
                   reason:
-                    "xAI OAuth session expired — run /grok-login to sign in again, " +
+                    "xAI OAuth session expired. Run /grok-login to sign in again, " +
                     "or set XAI_API_KEY to use API-key billing",
                 };
               }
@@ -1797,7 +1797,7 @@ export function createProvider(
                 kind: "exhausted",
                 reason:
                   "xAI OAuth token refresh temporarily failed (network or " +
-                  "provider error). Your sign-in is still valid; retrying — " +
+                  "provider error). Your sign-in is still valid; retrying, " +
                   "no /grok-login needed",
               };
             }

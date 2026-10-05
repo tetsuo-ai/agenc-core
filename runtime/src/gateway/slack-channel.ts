@@ -281,7 +281,7 @@ export class SlackChannelAdapter implements ChannelAdapter {
       onClose: (code) => {
         this.#socket = null;
         if (!this.#running) return;
-        this.#log(`slack: socket closed (${code ?? "?"}) — reconnecting`);
+        this.#log(`slack: socket closed (${code ?? "?"}), reconnecting`);
         this.#scheduleReconnect();
       },
     });

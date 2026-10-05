@@ -2160,7 +2160,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         // Honest pre-first-turn signal: there is genuinely no conversation to
         // compact, so we surface a clear message instead of faking success.
         throw new Error(
-          "Nothing to compact yet — no conversation has started. Send a message first.",
+          "Nothing to compact yet. No conversation has started. Send a message first.",
         );
       }
       const live = liveSession as TuiSessionShape;
@@ -3737,7 +3737,7 @@ export async function main(): Promise<number> {
         });
         if (audit.criticalCount > 0) {
           process.stderr.write(
-            `agenc: WARNING — ${formatSecurityAuditSummaryLine(audit)}\n`,
+            `agenc: WARNING. ${formatSecurityAuditSummaryLine(audit)}\n`,
           );
         }
       } catch {
@@ -3873,7 +3873,7 @@ export async function main(): Promise<number> {
     process.stderr.write(
       daemonStatus.running
         ? `agenc: daemon running (pid ${daemonStatus.pid})\n`
-        : "agenc: daemon not running — it starts automatically with the session\n",
+        : "agenc: daemon not running. It starts automatically with the session.\n",
     );
     // Onboarding is the moment defaults get set: surface the audit posture
     // up front (read-only; never blocks the wizard).
