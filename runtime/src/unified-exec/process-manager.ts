@@ -1,3 +1,4 @@
+import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
   type ChildProcess,
@@ -1405,14 +1406,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+    const probeHint = params.runtimeSandbox === undefined ? undefined
+      : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnContainedProcess(params.program, params.args, {
+      child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),
       });
     } catch (error) {
+      probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir
       // was removed after its check), the gate or broker did not start, or
@@ -1453,6 +1457,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ): void => {
       if (settlementStarted) return;
       settlementStarted = true;
+      if (state.exitCode !== 0 || spawnError !== undefined) probeHint?.invalidate();
       void waitForContainedProcessSettlement(child).then(() => {
         void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
@@ -1470,6 +1475,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           (error) => {
             const cleanupFailure =
               error instanceof Error ? error : new Error(String(error));
+            probeHint?.invalidate();
             entry.cleanupFailure = cleanupFailure;
             this.poisonSandboxAuthority(cleanupFailure);
             notifyData(
