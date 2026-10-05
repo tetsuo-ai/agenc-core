@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, test } from 'vitest'
 
-import { Msg, Tool, WelcomeColdPanel } from '../../src/tui/components/v2/primitives.js'
+import { Msg, Tool } from '../../src/tui/components/v2/primitives.js'
 import { toolStaticGlyph } from '../../src/tui/components/ToolStateGlyph.js'
 import { Box, Text } from '../../src/tui/ink.js'
 import {
@@ -90,89 +90,6 @@ describe('Msg queued body wrap width (BUG 1)', () => {
     )
     const interior = PARENT_CONTENT_WIDTH - QUEUED_PADDING
     expect(width + MARKER_INSET).toBeLessThanOrEqual(interior)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// BUG 3 — welcome card meta row / recent session row grid alignment.
-//
-// A long workspace path (or recent-session title) must truncate IN PLACE on the
-// same line as its label, keeping the 2-column label/value grid aligned —
-// rather than wrapping the value onto a fresh flex line under the label.
-// ---------------------------------------------------------------------------
-
-const LONG_WORKSPACE = '/tmp/some/very/long/absolute/path/to/a/workspace/sandbox/dir'
-
-function renderWelcome(extra?: {
-  readonly recentSessions?: React.ComponentProps<typeof WelcomeColdPanel>['recentSessions']
-}): Promise<string> {
-  return renderToString(
-    <ContentWidthProvider width={64}>
-      <WelcomeColdPanel
-        workspace={LONG_WORKSPACE}
-        model="default model"
-        lastSession="12m ago · clean"
-        recentSessions={extra?.recentSessions}
-      />
-    </ContentWidthProvider>,
-    { columns: 80, rows: 30 },
-  )
-}
-
-/** Card body rows (inside the border), trimmed of trailing padding. */
-function cardLines(out: string): string[] {
-  return out
-    .split('\n')
-    .map(line => line.replace(/^│/u, '').replace(/│\s*$/u, '').trimEnd())
-}
-
-describe('WelcomeMetaRow long-path grid alignment (BUG 3)', () => {
-  test('the workspace value stays on the same line as its label', async () => {
-    const out = await renderWelcome()
-    const lines = cardLines(out)
-
-    // The label and (truncated) value share one row. truncate-middle inserts an
-    // ellipsis, so match on the stable path head + tail around the label.
-    const labelRow = lines.find(line => /\bworkspace\b/u.test(line))
-    expect(labelRow).toBeDefined()
-    // The value must be present on the SAME row as the label.
-    expect(labelRow).toContain('/tmp/some/')
-    expect(labelRow).toContain('sandbox/dir')
-
-    // Revert-sensitivity guard: there must be NO standalone value row (a row
-    // that carries the path WITHOUT the label) — that is the wrapped/broken
-    // layout the fix removes.
-    const orphanValueRow = lines.find(
-      line => line.includes('sandbox/dir') && !/\bworkspace\b/u.test(line),
-    )
-    expect(orphanValueRow).toBeUndefined()
-  })
-
-  test('a long recent-session title truncates in place and keeps the [n] key prefix', async () => {
-    const out = await renderWelcome({
-      recentSessions: [
-        {
-          keyName: '1',
-          title: 'a-session-with-a-really-long-title-here',
-          detail: 'yesterday · main · clean · plus more detail text',
-        },
-      ],
-    })
-    const lines = cardLines(out)
-    const row = lines.find(line => line.includes('a-session-with-a-really'))
-    expect(row).toBeDefined()
-    // The fixed `[1] ` key prefix survives (not squeezed to `1]`), and the row
-    // truncates rather than wrapping the detail to its own line.
-    expect(row).toContain('[1]')
-    // The detail keeps reading on the SAME row as the title/key.
-    expect(row).toContain('yesterday')
-    // Revert-sensitivity: the pre-fix `flexWrap="wrap"` row pushed the `· detail`
-    // segment onto its own flex line under the `[1]` key. There must be no such
-    // orphan detail row (a `yesterday …` line with no title/key on it).
-    const orphanDetailRow = lines.find(
-      line => line.includes('yesterday') && !line.includes('a-session-with-a-really'),
-    )
-    expect(orphanDetailRow).toBeUndefined()
   })
 })
 

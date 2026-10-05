@@ -5,8 +5,6 @@ import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
 import {
   DEFAULT_MODEL_COSTS,
   computeUsdCostWithResolution,
-  formatTokenCount,
-  formatUsdCost,
   type ModelUsage,
 } from "../session/cost.js";
 import type { Event } from "../session/event-log.js";
@@ -1055,44 +1053,6 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     // A turn served in fast mode bills at the model's fast-mode rates.
     ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
   };
-}
-
-function formatTokenCountUpdate(payload: Record<string, unknown>): string {
-  const usage = usageFromTokenCountPayload(payload);
-  const cost = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
-  const modelLabel =
-    usage.model === "unknown"
-      ? null
-      : usage.provider
-        ? `${usage.provider}/${usage.model}`
-        : usage.model;
-  const details = [
-    `${formatTokenCount(usage.inputTokens)} in`,
-    `${formatTokenCount(usage.outputTokens)} out`,
-    `${formatTokenCount(usage.totalTokens)} total`,
-  ];
-  if (usage.cachedInputTokens > 0) {
-    details.push(`${formatTokenCount(usage.cachedInputTokens)} cache read`);
-  }
-  if (usage.cacheCreationInputTokens > 0) {
-    details.push(`${formatTokenCount(usage.cacheCreationInputTokens)} cache write`);
-  }
-  if (usage.reasoningOutputTokens > 0) {
-    details.push(`${formatTokenCount(usage.reasoningOutputTokens)} reasoning`);
-  }
-  if (usage.webSearchRequests > 0) {
-    details.push(`${formatTokenCount(usage.webSearchRequests)} web search`);
-  }
-  details.push(
-    cost.known
-      ? formatUsdCost(cost.costUsd)
-      : `${formatUsdCost(cost.costUsd)} est.`,
-  );
-  if (modelLabel !== null) {
-    details.push(modelLabel);
-  }
-
-  return `Token ledger update: ${details.join(" · ")}`;
 }
 
 function tokenCountCostUsd(event: SessionTranscriptEvent): number {
@@ -2617,7 +2577,8 @@ export function adaptTranscriptEvents(
           ),
           cache_read_input_tokens: nonNegativeInteger(payload.cachedInputTokens),
         };
-        out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info", nextUuid()));
+        // Usage feeds the status line spend and /cost; it is not a
+        // transcript row.
         break;
       case "protocol_claim":
       case "protocol_settle":

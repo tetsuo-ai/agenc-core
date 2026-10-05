@@ -38,9 +38,9 @@ observable.
 - Mounts `FullscreenLayout` (`components/FullscreenLayout.tsx`) with the
   transcript / composer / overlay / modal slots.
 
-`FullscreenLayout` owns the v2 top chrome and status bar (`BrandCells`,
-`TuiHeader`, `StatusBar` from `components/v2/primitives.tsx`). The header mode
-pill reads `toolPermissionContext.mode` from app state via
+`FullscreenLayout` owns the one status line under the prompt (folder, model,
+mode, branch, and spend once known). There is no top bar. The mode label reads
+`toolPermissionContext.mode` from app state via
 `useAppStateMaybeOutsideOfProvider` and falls back to `default` in static
 render/test harnesses that do not mount `AppStateProvider`. A v2
 `PlanModeBanner` renders above scrollback whenever the permission mode is

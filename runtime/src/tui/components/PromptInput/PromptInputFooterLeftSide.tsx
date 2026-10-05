@@ -179,7 +179,7 @@ export function PromptInputFooterLeftSide(t0) {
   const t4 = !suppressHint;
   let t5;
   if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== toolPermissionContext) {
-    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;
+    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} onOpenTasksDialog={onOpenTasksDialog} />;
     $[13] = isLoading;
     $[14] = mode;
     $[15] = onOpenTasksDialog;
@@ -212,7 +212,6 @@ type ModeIndicatorProps = {
   tasksSelected: boolean;
   teamsSelected: boolean;
   teammateFooterIndex?: number;
-  exitPending?: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
 };
 function ModeIndicator({
@@ -223,7 +222,6 @@ function ModeIndicator({
   tasksSelected,
   teamsSelected,
   teammateFooterIndex,
-  exitPending,
   onOpenTasksDialog
 }: ModeIndicatorProps): React.ReactNode {
   const {
@@ -293,7 +291,8 @@ function ModeIndicator({
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long task label doesn't push the mode
   // indicator off-screen.
-  const modePart = currentMode && currentModeChrome && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} bold={currentModeChrome.emphasize} key="mode">
+  // Fullscreen shows the mode once, in the status line under the prompt.
+  const modePart = !isFullscreen && currentMode && currentModeChrome && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} bold={currentModeChrome.emphasize} key="mode">
         {currentModeChrome.symbol}{currentModeChrome.symbol ? ' ' : ''}{currentModeChrome.label}
         {shouldShowModeHint && <Text dimColor>
             {' '}
@@ -349,15 +348,6 @@ function ModeIndicator({
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
   const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
-  // Suppress the cold-idle "? for shortcuts" hint while the exit warning is
-  // active — the active "Press X again to exit" text takes precedence and
-  // these two single-line hints must not stack.
-  if (parts.length === 0 && !tasksPart && !modePart && showHint && !exitPending) {
-    parts.push(<Text dimColor key="shortcuts-hint">
-        ? for shortcuts
-      </Text>);
-  }
-
   const copyOnSelect = settings.tui?.copyOnSelect ?? true;
   const selectionHintHasContent = hasSelection && (!copyOnSelect || isXtermJs());
 
@@ -387,8 +377,7 @@ function ModeIndicator({
   // In fullscreen the bottom section is flexShrink:0 — every row here
   // is a row stolen from the ScrollBox. This component must have a STABLE
   // height so the footer never grows/shrinks and shifts scroll content.
-  // Returning null when parts is empty (e.g. StatusLine on → suppressHint
-  // → showHint=false → no "? for shortcuts") would let a later-added
+  // Returning null when parts is empty (the idle footer) would let a later-added
   // part (e.g. the selection copy/native-select hints) grow the column
   // from 0→1 row. Always render 1 row in fullscreen; return a space when
   // empty so Yoga reserves the row without painting anything visible.

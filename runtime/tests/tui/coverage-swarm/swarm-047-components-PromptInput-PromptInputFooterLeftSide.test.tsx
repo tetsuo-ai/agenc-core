@@ -270,7 +270,9 @@ describe("PromptInputFooterLeftSide coverage swarm 047", () => {
     });
 
     const setHistoryQuery = vi.fn();
-    const toolPermissionContext = { mode: "default" } as never;
+    // A non-default mode keeps a visible footer part; the idle default
+    // footer is empty now that the shortcuts hint lives on the welcome.
+    const toolPermissionContext = { mode: "acceptEdits" } as never;
     const props: React.ComponentProps<typeof PromptInputFooterLeftSide> = {
       exitMessage: { show: false },
       historyFailedMatch: false,
@@ -292,7 +294,7 @@ describe("PromptInputFooterLeftSide coverage swarm 047", () => {
       root.render(<PromptInputFooterLeftSide {...props} />);
       await sleep();
 
-      expect(stripAnsi(output)).toContain("?forshortcuts");
+      expect(stripAnsi(output).replace(/\s+/gu, "")).toContain("acceptedits");
     } finally {
       root.unmount();
       stdin.end();

@@ -1475,7 +1475,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("replays token ledger events into resumed transcript state", async () => {
+  it("replays token usage events into resumed state without transcript rows", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const conversationId = "conv-token-ledger-replay";
@@ -1561,6 +1561,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       const transcript = adaptTranscriptEvents(
         initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
       );
+      // Usage feeds the status line spend and /cost, not the transcript.
       expect(
         transcript.messages.some(
           (message) =>
@@ -1568,7 +1569,8 @@ describe("bootstrapLocalRuntimeSession", () => {
             typeof message.content === "string" &&
             message.content.startsWith("Token ledger update:"),
         ),
-      ).toBe(true);
+      ).toBe(false);
+      expect(Number.isFinite(transcript.sessionCostUsd)).toBe(true);
     } finally {
       await resumedShutdown?.().catch(() => {
         /* best effort */

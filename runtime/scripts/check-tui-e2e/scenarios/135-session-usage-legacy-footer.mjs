@@ -70,7 +70,7 @@ export default async function (session) {
   await session.waitForPrompt({ timeout: 20_000 });
   await waitForFrameText(
     session,
-    /spend \$0\.00/u,
+    /\$0\.00/u,
     "canonical local-model cost in the alternate footer",
     15_000,
   );
