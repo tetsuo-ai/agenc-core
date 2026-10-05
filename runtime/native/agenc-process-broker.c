@@ -120,6 +120,7 @@ static int signal_direct_children(int signal_number);
 static void signal_root_directly(int signal_number);
 static bool reached_by_group_signal(pid_t pid, int signal_number);
 static int signal_owned_tree(int signal_number);
+static void record_descendant_termination(pid_t waited, int status);
 static int reap_nonblocking(bool *has_children);
 static int reap_until_blocked(int *root_status, bool *root_finished);
 static int force_cleanup_descendants(void);
@@ -136,6 +137,8 @@ static const char broker_residual_clean_status[] = "RC";
 
 static volatile sig_atomic_t requested_signal = AGENC_BROKER_NO_SIGNAL;
 static pid_t root_pid = AGENC_BROKER_INVALID_ROOT_PID;
+static bool v2_reporting = false;
+static bool v2_descendant_terminated = false;
 
 int main(int argc, char **argv) {
   sigset_t wait_mask;
@@ -198,6 +201,10 @@ static int complete_broker_cleanup(void) {
     report_errno("descendant cleanup failed");
     return AGENC_BROKER_FAILURE;
   }
+  /* AGB1 keeps its original conservative enumeration-based metadata. AGB2
+   * reports a termination only when waitpid confirms a signalled descendant.
+   * Reaping a naturally exited helper is cleanup, not a termination. */
+  if (v2_reporting) residual_observed = v2_descendant_terminated;
   if (publish_cleanup_status(residual_observed) != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_FAILURE;
   }
@@ -660,6 +667,15 @@ static int signal_owned_tree(int signal_number) {
   return result;
 }
 
+static void record_descendant_termination(pid_t waited, int status) {
+  /* Includes containment's kernel parent-death kill of the namespace helper.
+   * A successful kill() alone is insufficient: it also succeeds on zombies.
+   * The root's signal exit is already represented by the command exit status. */
+  if (v2_reporting && waited != root_pid && WIFSIGNALED(status)) {
+    v2_descendant_terminated = true;
+  }
+}
+
 static int reap_nonblocking(bool *has_children) {
   int status;
   pid_t waited;
@@ -668,6 +684,7 @@ static int reap_nonblocking(bool *has_children) {
   for (;;) {
     waited = waitpid(AGENC_BROKER_ANY_CHILD_PID, &status, WNOHANG);
     if (waited > AGENC_BROKER_NO_WAITED_PID) {
+      record_descendant_termination(waited, status);
       continue;
     }
     if (waited == AGENC_BROKER_NO_WAITED_PID) {
@@ -690,6 +707,7 @@ static int reap_until_blocked(int *root_status, bool *root_finished) {
     pid_t waited = waitpid(AGENC_BROKER_ANY_CHILD_PID, &status, WNOHANG);
 
     if (waited > AGENC_BROKER_NO_WAITED_PID) {
+      record_descendant_termination(waited, status);
       if (waited == root_pid) {
         *root_status = status;
         *root_finished = true;
@@ -1013,6 +1031,7 @@ static _Noreturn void run_v2_target_child(struct launch_payload *payload,
 static int launch_v2_supervised_target(sigset_t *wait_mask) {
   struct launch_payload payload = {0};
   int snapshot_fd = -1, result = -1;
+  v2_reporting = true;
   if (block_control_signals(wait_mask) != 0 || install_broker_handlers() != 0 ||
       enable_child_subreaper() != 0) return -1;
   if (read_v2_payload(&payload, &snapshot_fd) != 0 ||

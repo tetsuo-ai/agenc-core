@@ -124,6 +124,51 @@ class Faults(unittest.TestCase):
       else:self.assertNotIn(b'EXEC',out)
   finally:BROKER=original
 
+class ResidualReporting(unittest.TestCase):
+ @classmethod
+ def setUpClass(cls):
+  cls.fixture=D/'cleanup-reporting'
+  source=D/'cleanup-reporting.c'
+  source.write_text('#define main broker_main\n#include '+json.dumps(str(ROOT/'native/agenc-process-broker.c'))+'\n#undef main\n'+r'''
+int main(int argc, char **argv) {
+  if (argc != 3 || dup2(STDOUT_FILENO, 3) != 3) return 120;
+  v2_reporting = strcmp(argv[1], "v2") == 0;
+  int ready[2];
+  if (pipe(ready) != 0) return 121;
+  pid_t child = fork();
+  if (child < 0) return 122;
+  if (child == 0) {
+    close(3); close(ready[0]);
+    if (write(ready[1], "R", 1) != 1) _exit(123);
+    close(ready[1]);
+    if (strcmp(argv[2], "live") == 0) { for (;;) pause(); }
+    _exit(strcmp(argv[2], "zero") == 0 ? 0 : 7);
+  }
+  close(ready[1]);
+  char byte;
+  if (read(ready[0], &byte, 1) != 1) return 124;
+  close(ready[0]);
+  if (strcmp(argv[2], "live") != 0) {
+    siginfo_t info = {0};
+    if (waitid(P_PID, child, &info, WEXITED | WNOWAIT) != 0) return 125;
+    /* Deliberately leave an owned zombie. kill succeeds even though it did
+     * not cause this child's termination; wait status must remain natural. */
+    if (kill(child, SIGKILL) != 0) return 126;
+  }
+  if (complete_broker_cleanup() != 0) return 127;
+  int status;
+  if (waitpid(-1, &status, WNOHANG) != -1 || errno != ECHILD) return 128;
+  return 0;
+}
+''')
+  subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror','-o',str(cls.fixture),str(source)],check=True)
+ def test_v2_only_reports_signal_termination_legacy_keeps_enumeration(self):
+  for version in ['v2','legacy']:
+   for state in ['zero','nonzero','live']:
+    with self.subTest(version=version,state=state):
+     proof=subprocess.check_output([str(self.fixture),version,state],timeout=5)
+     self.assertEqual(proof,b'RC' if version=='legacy' or state=='live' else b'C')
+
 class Protocol(unittest.TestCase):
  def setUp(self):self.file=tempfile.TemporaryFile(dir=D)
  def tearDown(self):self.file.close()

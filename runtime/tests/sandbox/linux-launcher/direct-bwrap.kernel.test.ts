@@ -6,6 +6,16 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { prepareDirectBwrapPlan } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
 import { spawnContainedProcess, terminateProcessTreeAndReport, waitForContainedProcessSettlement } from "../../../src/utils/supervisedProcess.js";
 
+import { formatUnifiedExecToolContent, RESIDUAL_PROCESSES_NOTE } from "../../../src/tools/system/exec-result-format.js";
+
+function modelContent(result: Awaited<ReturnType<typeof run>>): string {
+  return formatUnifiedExecToolContent({ output: result.stdout, stdout: result.stdout, stderr: result.stderr,
+    exitCode: result.code, exit_code: result.code, durationMs: 1, wall_time_seconds: 0.001,
+    timedOut: false, truncated: false, original_token_count: 1,
+    ...(result.cleanup?.residualProcessesTerminated ? { residual_processes_terminated: true } : {}),
+  }, true);
+}
+
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
 const quote = (value: string): string => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 let root: string, cwd: string, temp: string;
@@ -78,12 +88,10 @@ for fd in range(3,32):
  except OSError: pass
 with open('allowed','w') as f:f.write('once')
 print(json.dumps({'denied':len(denied),'fds':fds,'env':os.environ.get('NODE_ENV')}))`;
-  // A direct bwrap namespace helper can still be exiting when the root exits.
-  // Preserve the broker's conservative R flag, including for a waitable zombie.
   const result = await run("python3 -c " + quote(code), direct);
   expect(result.code, result.stderr).toBe(0);
-  expect(result.cleanupError).toBeUndefined(); expect(result.proof).toMatch(/^SR?C$/);
-  expect(result.cleanup?.residualProcessesTerminated).toBe(result.proof.includes("R"));
+  expect(result.cleanupError).toBeUndefined(); expect(result.proof).toBe("SC");
+  expect(result.cleanup?.residualProcessesTerminated).toBe(false);
   expect(JSON.parse(result.stdout)).toEqual({ denied: 4, fds: [], env: "production" });
   expect(fs.readFileSync(outside, "utf8")).toBe("retained");
   expect(fs.readFileSync(path.join(cwd, "allowed"), "utf8")).toBe("once");
@@ -96,8 +104,8 @@ test.each(["disabled", "enabled"])("keeps socket policy equivalent to the launch
   const candidate = await run(command, true, { network });
   for (const result of [original, candidate]) {
     expect(result.code, result.stderr).toBe(0); expect(result.cleanupError).toBeUndefined();
-    expect(result.proof).toMatch(/^SR?C$/);
-  expect(result.cleanup?.residualProcessesTerminated).toBe(result.proof.includes("R"));
+    expect(result.proof).toBe("SC");
+  expect(result.cleanup?.residualProcessesTerminated).toBe(false);
     expect(result.stdout.trim()).toBe(network === "disabled" ? "blocked" : "allowed");
   }
 });
@@ -105,7 +113,9 @@ test.each(["disabled", "enabled"])("keeps socket policy equivalent to the launch
 test("preserves descendant cleanup proof and never replays a failed effect", async () => {
   const result = await run("printf X >> effects; (trap '' TERM; sleep 0.2; printf BAD >> leaked; sleep 60) >/dev/null 2>&1 & exit 7", true);
   expect(result.code, result.stderr).toBe(7); expect(result.cleanupError).toBeUndefined();
-  expect(result.proof).toMatch(/^SR?C$/);
+  expect(result.proof).toBe("SRC");
+  expect(result.cleanup?.residualProcessesTerminated).toBe(true);
+  expect(modelContent(result)).toContain(RESIDUAL_PROCESSES_NOTE);
   expect(fs.readFileSync(path.join(cwd, "effects"), "utf8")).toBe("X");
   await new Promise(resolve => setTimeout(resolve, 300));
   expect(fs.existsSync(path.join(cwd, "leaked"))).toBe(false);
@@ -124,4 +134,15 @@ test("settles an immediately aborted committed launch without replay", async () 
   // A command may start after handoff. Cancellation is not a no-effect proof.
   expect(result.code).not.toBe(0);
   if (result.cleanupError === undefined) expect(result.proof).toMatch(/^SR?C$/);
+});
+
+// Repeat to cover the namespace helper/root exit ordering in both routes.
+test.each([false, true])("keeps trivial results compact without a false residual note (direct=%s)", async direct => {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const result = await run("printf ordinary", direct);
+    expect(result.code, result.stderr).toBe(0); expect(result.cleanupError).toBeUndefined();
+    expect(result.proof).toBe("SC"); expect(result.cleanup?.residualProcessesTerminated).toBe(false);
+    expect(modelContent(result)).toBe("ordinary\n\n[exec exit_code=0]");
+    expect(modelContent(result)).not.toContain(RESIDUAL_PROCESSES_NOTE);
+  }
 });
