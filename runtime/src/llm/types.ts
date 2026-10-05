@@ -764,6 +764,8 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Disable thinking for one reasoning-only output-cap recovery sample, on supported routes only. */
+  readonly disableThinkingForRecovery?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */

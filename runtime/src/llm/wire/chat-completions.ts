@@ -734,8 +734,9 @@ export function buildChatCompletionsRequest(
     body.thinking = {
       // MiniMax-M3's switch has two positions: a low effort answers without
       // thinking, every other effort keeps the provider's adaptive default.
-      type:
-        thinkingConfig.type === "adaptive"
+      type: thinkingConfig.allowsRecoveryDisable === true && input.options?.disableThinkingForRecovery === true
+        ? "disabled"
+        : thinkingConfig.type === "adaptive"
           ? MINIMAX_THINKING_OFF_EFFORTS.has(input.options?.reasoningEffort ?? "")
             ? "disabled"
             : "adaptive"
