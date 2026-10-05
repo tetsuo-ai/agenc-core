@@ -407,17 +407,19 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
   /** Every name a refusal could send the model to. */
   const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
 
+  /** `listed` is the model's tool list; `unlisted` tools need system.searchTools. */
   function classifyWithTools(
     command: string,
-    fileWriteToolNames: readonly string[],
+    listed: readonly string[],
     allowWorkspaceDeletions = true,
+    unlisted: readonly string[] = [],
   ) {
     return classifyShellWorkspaceWritePolicy({
       toolName: "exec_command",
       args: { command },
       workspaceRoot: WORKSPACE_ROOT,
       allowWorkspaceDeletions,
-      fileWriteToolNames,
+      fileWriteTools: { listed, unlisted, loadWith: "system.searchTools" },
     });
   }
 
@@ -448,6 +450,47 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
     expect(
       classifyWithTools("echo hi > notes.txt", ["MultiEdit", "apply_patch"]).message,
     ).toContain("use MultiEdit or apply_patch instead");
+  });
+
+  // An OpenAI Light session lists apply_patch and keeps Edit and Write behind
+  // system.searchTools; the refusal points at the listed one.
+  it("prefers the listed editing tool over Edit and Write the model has not loaded", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", ["apply_patch"], true, [
+      "Edit",
+      "Write",
+      "MultiEdit",
+    ]);
+    expect(decision.message).toContain("use apply_patch instead.");
+    expect(decision.message).not.toMatch(/\b(?:Edit|Write)\b/u);
+    expect(decision.message).not.toContain("system.searchTools");
+  });
+
+  it("names unlisted editing tools with the way to load them", () => {
+    expect(
+      classifyWithTools("echo hi > notes.txt", [], true, ["Edit", "Write"]).message,
+    ).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
+        "use Edit or Write instead. Their schemas are not loaded yet; " +
+        "system.searchTools with select:Edit,Write loads them. " +
+        "Blocked target(s): /repo/notes.txt",
+    );
+    expect(
+      classifyWithTools('echo hi > "$OUT"', [], true, ["Write"]).message,
+    ).toContain(
+      "use Write for workspace files. Its schema is not loaded yet; " +
+        "system.searchTools with select:Write loads it.",
+    );
+  });
+
+  it("never says apply_patch cannot delete files", () => {
+    const patchOnly = classifyWithTools(REFACTOR_CLEANUP, ["apply_patch"], false);
+    expect(patchOnly.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(patchOnly.message).not.toContain("cannot delete files");
+
+    const fallback = classifyWithTools(REFACTOR_CLEANUP, ["MultiEdit", "apply_patch"], false);
+    expect(fallback.message).toContain(" MultiEdit cannot delete files.");
+    expect(fallback.message).not.toContain("apply_patch cannot");
   });
 
   // The live verification subagent: its role denies every file tool, the fence

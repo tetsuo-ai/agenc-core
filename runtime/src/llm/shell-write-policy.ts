@@ -126,6 +126,16 @@ export interface ShellWorkspaceWritePolicyDecision {
   readonly message?: string;
 }
 
+/** The editing tools of SHELL_FILE_WRITE_TOOL_NAMES a session has. */
+export interface ShellFileWriteTools {
+  /** In the model's tool list. */
+  readonly listed: readonly string[];
+  /** In the session but not in the list yet: their schemas are not loaded. */
+  readonly unlisted: readonly string[];
+  /** The listed tool that loads an unlisted one (system.searchTools), if any. */
+  readonly loadWith?: string;
+}
+
 export interface ShellWorkspaceWritePolicyInput {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
@@ -162,13 +172,13 @@ export interface ShellWorkspaceWritePolicyInput {
    */
   readonly bypassesApprovalsAndSandbox?: boolean;
   /**
-   * The tools of SHELL_FILE_WRITE_TOOL_NAMES the session can call. A refusal
-   * names only these as the way to change a workspace file; with none (a
-   * read-only subagent) it says the session cannot change those files and
-   * points at the generated directories. Absent when there is no session to
-   * ask, and then the refusal names Edit and Write.
+   * The editing tools the session has. A refusal names only these as the way
+   * to change a workspace file, preferring the ones in the model's tool list;
+   * with none (a read-only subagent) it says the session cannot change those
+   * files and points at the generated directories. Absent when there is no
+   * session to ask, and then the refusal names Edit and Write.
    */
-  readonly fileWriteToolNames?: readonly string[];
+  readonly fileWriteTools?: ShellFileWriteTools;
   /**
    * The host the command runs on; `process.platform` when absent. On macOS
    * and the BSDs `sed` may be BSD sed, which reads `-i` differently.
@@ -1054,18 +1064,33 @@ function classifyDeletionTarget(
     : { kind: "blocked", reason: "needs_approval" };
 }
 
-/**
- * The file tools a refusal names: Edit and Write when there is no session to
- * ask, otherwise whichever of them the session has, else MultiEdit or
- * apply_patch, else none.
- */
-function fileWriteToolsToName(
-  available: readonly string[] | undefined,
-): readonly string[] {
-  if (available === undefined) return PRIMARY_FILE_WRITE_TOOL_NAMES;
+/** The editing tools a refusal names, and the tool that loads them if they are not listed. */
+interface NamedFileWriteTools {
+  readonly names: readonly string[];
+  readonly loadWith?: string;
+}
+
+/** Whichever of Edit and Write are available, else MultiEdit or apply_patch. */
+function preferredFileWriteTools(available: readonly string[]): readonly string[] {
   const primary = PRIMARY_FILE_WRITE_TOOL_NAMES.filter((name) => available.includes(name));
   if (primary.length > 0) return primary;
   return FALLBACK_FILE_WRITE_TOOL_NAMES.filter((name) => available.includes(name));
+}
+
+/**
+ * The editing tools a refusal names: Edit and Write when there is no session
+ * to ask; otherwise the listed ones (an OpenAI Light session lists
+ * apply_patch, not Edit and Write); else the unlisted ones, with the tool that
+ * loads them; else none.
+ */
+function fileWriteToolsToName(tools: ShellFileWriteTools | undefined): NamedFileWriteTools {
+  if (tools === undefined) return { names: PRIMARY_FILE_WRITE_TOOL_NAMES };
+  const listed = preferredFileWriteTools(tools.listed);
+  if (listed.length > 0) return { names: listed };
+  const unlisted = preferredFileWriteTools(tools.unlisted);
+  return unlisted.length > 0 && tools.loadWith !== undefined
+    ? { names: unlisted, loadWith: tools.loadWith }
+    : { names: unlisted };
 }
 
 /** `Write`, `Edit or Write`, `MultiEdit and apply_patch`. */
@@ -1074,12 +1099,21 @@ function joinToolNames(names: readonly string[], conjunction: "and" | "or"): str
   return `${names.slice(0, -1).join(", ")} ${conjunction} ${names[names.length - 1]}`;
 }
 
+/** Use the named editing tools, and how to load them when they are not listed. */
+function useFileWriteTools(tools: NamedFileWriteTools, purpose: string): string {
+  const use = `; use ${joinToolNames(tools.names, "or")} ${purpose}.`;
+  if (tools.loadWith === undefined) return use;
+  const one = tools.names.length === 1;
+  return `${use} ${one ? "Its schema is" : "Their schemas are"} not loaded yet; ` +
+    `${tools.loadWith} with select:${tools.names.join(",")} loads ${one ? "it" : "them"}.`;
+}
+
 function buildPolicyMessage(
   blockedTargets: readonly string[],
-  fileWriteTools: readonly string[],
+  fileWriteTools: NamedFileWriteTools,
 ): string {
-  const instead = fileWriteTools.length > 0
-    ? `; use ${joinToolNames(fileWriteTools, "or")} instead.`
+  const instead = fileWriteTools.names.length > 0
+    ? useFileWriteTools(fileWriteTools, "instead")
     : ". This session has no file editing tool, so it cannot change these " +
       "files: put scratch files under one of those directories (tmp/, for " +
       "example) and describe any other change in your reply instead of making it.";
@@ -1106,8 +1140,10 @@ function buildProtectedWritePolicyMessage(blockedTargets: readonly string[]): st
 function buildDeletionPolicyMessage(
   reasons: ReadonlySet<DeletionBlockReason>,
   blockedDeletions: readonly string[],
-  fileWriteTools: readonly string[],
+  fileWriteTools: NamedFileWriteTools,
 ): string {
+  // apply_patch can remove a file; the others cannot.
+  const cannotDelete = fileWriteTools.names.filter((name) => name !== "apply_patch");
   const parts: string[] = [];
   if (reasons.has("needs_approval")) {
     parts.push(
@@ -1115,8 +1151,8 @@ function buildDeletionPolicyMessage(
         "workspace files with a shell command needs the user's approval in this " +
         "permission mode; ask the user to approve this exact command, or to " +
         "switch to acceptEdits or bypassPermissions, then run it again." +
-        (fileWriteTools.length > 0
-          ? ` ${joinToolNames(fileWriteTools, "and")} cannot delete files.`
+        (cannotDelete.length > 0
+          ? ` ${joinToolNames(cannotDelete, "and")} cannot delete files.`
           : ""),
     );
   }
@@ -1140,10 +1176,10 @@ function buildDeletionPolicyMessage(
 
 function buildIndeterminatePolicyMessage(
   observedTargets: readonly string[],
-  fileWriteTools: readonly string[],
+  fileWriteTools: NamedFileWriteTools,
 ): string {
-  const instead = fileWriteTools.length > 0
-    ? `; use ${joinToolNames(fileWriteTools, "or")} for workspace files.`
+  const instead = fileWriteTools.names.length > 0
+    ? useFileWriteTools(fileWriteTools, "for workspace files")
     : ". This session has no file editing tool, so keep scratch files under " +
       "the workspace's build, dist, logs, .cache, tmp, or coverage directory.";
   return (
@@ -1236,7 +1272,7 @@ export function classifyShellWorkspaceWritePolicy(
       blockedDeletions: [],
       message: buildIndeterminatePolicyMessage(
         [],
-        fileWriteToolsToName(params.fileWriteToolNames),
+        fileWriteToolsToName(params.fileWriteTools),
       ),
     };
   }
@@ -1315,7 +1351,7 @@ export function classifyShellWorkspaceWritePolicy(
   if (protectedTargets.length > 0) {
     messages.push(buildProtectedWritePolicyMessage(protectedTargets));
   }
-  const fileWriteTools = fileWriteToolsToName(params.fileWriteToolNames);
+  const fileWriteTools = fileWriteToolsToName(params.fileWriteTools);
   if (routedTargets.length > 0) {
     messages.push(buildPolicyMessage(routedTargets, fileWriteTools));
   }

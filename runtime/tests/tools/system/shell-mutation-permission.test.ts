@@ -6,7 +6,7 @@ import {
   shellAdditionalWriteRoots,
   shellBypassesApprovalsAndSandbox,
   shellDeletionProtectedRoots,
-  shellFileWriteToolNames,
+  shellFileWriteTools,
   shellWorkspaceMutationPermission,
 } from "src/tools/system/shell-mutation-permission.js";
 import type { ToolRuntimeAttemptContext } from "src/tools/runtimes/context.js";
@@ -23,7 +23,7 @@ import {
   mergeRoleDisallowlist,
 } from "src/agents/run-agent.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "src/agents/built-in-prompts.js";
-import type { ToolRegistry } from "src/tool-registry.js";
+import { buildToolRegistry, type ToolRegistry } from "src/tool-registry.js";
 
 describe("shell deletion protected roots", () => {
   afterEach(() => {
@@ -135,10 +135,12 @@ describe("shellAdditionalWriteRoots", () => {
   });
 });
 
-describe("shellFileWriteToolNames", () => {
+describe("shellFileWriteTools", () => {
+  /** A registry holding `names` that lists `listed` (all of them by default) to the model. */
   function registryOf(
     names: readonly string[],
     unavailable: readonly string[] = [],
+    listed: readonly string[] = names,
   ): ToolRegistry {
     const tools = names.map((name) => ({
       name,
@@ -149,10 +151,12 @@ describe("shellFileWriteToolNames", () => {
     return {
       tools,
       toLLMTools: () =>
-        tools.map((tool) => ({
-          type: "function" as const,
-          function: { name: tool.name, description: tool.name, parameters: { type: "object" } },
-        })),
+        tools
+          .filter((tool) => listed.includes(tool.name))
+          .map((tool) => ({
+            type: "function" as const,
+            function: { name: tool.name, description: tool.name, parameters: { type: "object" } },
+          })),
       getUnavailableToolNames: () => new Set(unavailable),
       dispatch: async () => ({ content: "{}" }),
     } as unknown as ToolRegistry;
@@ -180,18 +184,51 @@ describe("shellFileWriteToolNames", () => {
     ]);
   });
 
-  test("reads the file tools from the session's own registry", () => {
+  test("reads the editing tools from the session's own registry", () => {
     const context = contextWithRegistry(
       registryOf(["exec_command", "FileRead", "Write", "Edit", "apply_patch"]),
     );
-    expect(shellFileWriteToolNames(context)).toEqual(["Edit", "Write", "apply_patch"]);
+    expect(shellFileWriteTools(context)).toEqual({
+      listed: ["Edit", "Write", "apply_patch"],
+      unlisted: [],
+    });
   });
 
   test("leaves out a tool the registry keeps only for telemetry", () => {
     const context = contextWithRegistry(
       registryOf(["exec_command", "Edit", "Write"], ["Write"]),
     );
-    expect(shellFileWriteToolNames(context)).toEqual(["Edit"]);
+    expect(shellFileWriteTools(context)).toEqual({ listed: ["Edit"], unlisted: [] });
+  });
+
+  test("splits the tools the model was given from those system.searchTools loads", () => {
+    const context = contextWithRegistry(
+      registryOf(
+        ["system.searchTools", "exec_command", "Edit", "Write", "apply_patch"],
+        [],
+        ["system.searchTools", "exec_command", "apply_patch"],
+      ),
+    );
+    expect(shellFileWriteTools(context)).toEqual({
+      listed: ["apply_patch"],
+      unlisted: ["Edit", "Write"],
+      loadWith: "system.searchTools",
+    });
+  });
+
+  test("an OpenAI Light registry lists apply_patch and keeps Edit and Write loadable", () => {
+    // The production registry: Light sessions on the openai provider start
+    // with apply_patch (light-profile.ts), the shape a benchmark run sees.
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      lightMode: true,
+      requireAdmission: false,
+      getSession: () => ({ services: { provider: { name: "openai" } } }) as never,
+    });
+    const tools = shellFileWriteTools(contextWithRegistry(registry));
+    expect(tools?.listed).toEqual(["apply_patch"]);
+    expect(tools?.unlisted).toEqual(expect.arrayContaining(["Edit", "Write"]));
+    expect(tools?.loadWith).toBe("system.searchTools");
   });
 
   test("is empty for a read-only role's registry", () => {
@@ -213,18 +250,21 @@ describe("shellFileWriteToolNames", () => {
       disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
     });
     expect(child.tools.map((tool) => tool.name)).toContain("exec_command");
-    expect(shellFileWriteToolNames(contextWithRegistry(child))).toEqual([]);
+    expect(shellFileWriteTools(contextWithRegistry(child))).toEqual({ listed: [], unlisted: [] });
   });
 
   test("is undefined without a session registry, so the refusal keeps its defaults", () => {
-    expect(shellFileWriteToolNames(undefined)).toBeUndefined();
-    expect(shellFileWriteToolNames(contextWithRegistry(undefined))).toBeUndefined();
+    expect(shellFileWriteTools(undefined)).toBeUndefined();
+    expect(shellFileWriteTools(contextWithRegistry(undefined))).toBeUndefined();
   });
 
   test("reaches the shell tools through the permission they read from their args", () => {
     const args: Record<string, unknown> = { cmd: "echo hi > notes.txt" };
     attachToolRuntimeContext(args, contextWithRegistry(registryOf(["exec_command"])));
-    expect(shellWorkspaceMutationPermission(args).fileWriteToolNames).toEqual([]);
-    expect(shellWorkspaceMutationPermission({}).fileWriteToolNames).toBeUndefined();
+    expect(shellWorkspaceMutationPermission(args).fileWriteTools).toEqual({
+      listed: [],
+      unlisted: [],
+    });
+    expect(shellWorkspaceMutationPermission({}).fileWriteTools).toBeUndefined();
   });
 });

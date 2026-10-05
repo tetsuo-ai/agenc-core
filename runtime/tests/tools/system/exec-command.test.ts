@@ -24,7 +24,7 @@ import {
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
 import { buildFilteredRegistry, mergeRoleDisallowlist } from "../../agents/run-agent.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "../../agents/built-in-prompts.js";
-import type { ToolRegistry } from "../../tool-registry.js";
+import { buildToolRegistry, type ToolRegistry } from "../../tool-registry.js";
 import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
@@ -882,6 +882,23 @@ describe("exec_command tool", () => {
       expect(result.isError).toBe(true);
       expect(result.content).not.toMatch(FILE_TOOL_NAME_RE);
       expect(result.content).toContain("tmp/, for example");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("an OpenAI Light session is pointed at its listed apply_patch", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const registry = buildToolRegistry({
+        workspaceRoot: root,
+        lightMode: true,
+        requireAdmission: false,
+        getSession: () => ({ services: { provider: { name: "openai" } } }) as never,
+      });
+
+      const result = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("use apply_patch instead.");
+      expect(result.content).not.toMatch(/\b(?:Edit|Write)\b/u);
       expect(execCommand).not.toHaveBeenCalled();
     });
 

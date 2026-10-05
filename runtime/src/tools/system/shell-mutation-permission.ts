@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
-import { SHELL_FILE_WRITE_TOOL_NAMES } from "../../llm/shell-write-policy.js";
+import {
+  SHELL_FILE_WRITE_TOOL_NAMES,
+  type ShellFileWriteTools,
+} from "../../llm/shell-write-policy.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 
 import {
   readToolRuntimeContext,
@@ -33,8 +37,8 @@ export interface ShellWorkspaceMutationPermission {
   readonly additionalRoots: readonly string[];
   /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
   readonly bypassesApprovalsAndSandbox: boolean;
-  /** The file tools a refusal may name; absent without a session registry. */
-  readonly fileWriteToolNames?: readonly string[];
+  /** The editing tools a refusal may name; absent without a session registry. */
+  readonly fileWriteTools?: ShellFileWriteTools;
 }
 
 type SessionLike = {
@@ -44,6 +48,7 @@ type SessionLike = {
     readonly configStore?: { readonly homeContext?: { readonly path?: unknown } };
     readonly registry?: {
       readonly tools?: unknown;
+      readonly toLLMTools?: () => unknown;
       readonly getUnavailableToolNames?: () => ReadonlySet<string>;
     };
   };
@@ -140,29 +145,50 @@ export function shellWorkspaceDeletionsAllowed(
   return mode !== undefined && PROMPT_FREE_PERMISSION_MODES.has(mode);
 }
 
+/** The string `name` fields of a tool list, or of an LLM tool list's functions. */
+function namesOf(list: unknown, pick: (entry: Record<string, unknown>) => unknown): Set<string> {
+  const names = new Set<string>();
+  if (!Array.isArray(list)) return names;
+  for (const entry of list) {
+    const name = typeof entry === "object" && entry !== null
+      ? pick(entry as Record<string, unknown>)
+      : undefined;
+    if (typeof name === "string") names.add(name);
+  }
+  return names;
+}
+
 /**
- * The tools of SHELL_FILE_WRITE_TOOL_NAMES this session can call, read from
- * the session's own registry: a subagent's registry already lacks what its
- * role denies (the read-only roles have none of them). A refused shell write
- * names only these, so the model is never sent to a tool it cannot call.
- * Undefined when there is no session registry to read.
+ * The editing tools of SHELL_FILE_WRITE_TOOL_NAMES this session has, read
+ * from the session's own registry: a subagent's registry already lacks what
+ * its role denies (the read-only roles have none of them). Split by whether
+ * the model's tool list carries them: an OpenAI Light session lists
+ * apply_patch and keeps Edit and Write behind system.searchTools. A refused
+ * shell write names only these, so the model is never sent to a tool it
+ * cannot reach. Undefined when there is no session registry to read.
  */
-export function shellFileWriteToolNames(
+export function shellFileWriteTools(
   context: ToolRuntimeAttemptContext | undefined,
-): readonly string[] | undefined {
+): ShellFileWriteTools | undefined {
   const registry = sessionOf(context)?.services?.registry;
   if (registry === undefined || registry === null) return undefined;
   try {
     const tools = registry.tools;
     if (!Array.isArray(tools)) return undefined;
     const unavailable = registry.getUnavailableToolNames?.() ?? new Set<string>();
-    const names = new Set<string>();
-    for (const tool of tools as readonly { readonly name?: unknown }[]) {
-      if (typeof tool?.name === "string" && !unavailable.has(tool.name)) {
-        names.add(tool.name);
-      }
-    }
-    return SHELL_FILE_WRITE_TOOL_NAMES.filter((name) => names.has(name));
+    const present = namesOf(tools, (tool) => tool.name);
+    const listed = namesOf(
+      registry.toLLMTools?.(),
+      (tool) => (tool.function as { readonly name?: unknown } | undefined)?.name,
+    );
+    const usable = SHELL_FILE_WRITE_TOOL_NAMES.filter(
+      (name) => present.has(name) && !unavailable.has(name),
+    );
+    return {
+      listed: usable.filter((name) => listed.has(name)),
+      unlisted: usable.filter((name) => !listed.has(name)),
+      ...(listed.has(SYSTEM_SEARCH_TOOLS_NAME) ? { loadWith: SYSTEM_SEARCH_TOOLS_NAME } : {}),
+    };
   } catch {
     // A registry that cannot list its tools right now names the defaults.
     return undefined;
@@ -209,12 +235,12 @@ export function shellWorkspaceMutationPermission(
   args: Record<string, unknown>,
 ): ShellWorkspaceMutationPermission {
   const context = readToolRuntimeContext(args);
-  const fileWriteToolNames = shellFileWriteToolNames(context);
+  const fileWriteTools = shellFileWriteTools(context);
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
-    ...(fileWriteToolNames !== undefined ? { fileWriteToolNames } : {}),
+    ...(fileWriteTools !== undefined ? { fileWriteTools } : {}),
   };
 }
