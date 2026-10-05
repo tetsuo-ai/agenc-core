@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,7 +96,7 @@ describe("one-shot observer tool index transactions", () => {
     r.driver.state.exec("CREATE TRIGGER reject_index BEFORE INSERT ON in_flight_tool_calls BEGIN SELECT RAISE(ABORT, 'index failed'); END");
     expect(() => start(p)).toThrow("index failed"); expect(row(r.driver)).toBeUndefined();
     expect(r.driver.state.pragma("synchronous", { simple: true })).toBe(2);
-    expect(() => assertOneShotRecoverable(r.store.rolloutPath)).toThrow("no valid durable completion seal");
+    expect(JSON.parse(readFileSync(r.store.rolloutPath + ".durability.json", "utf8")).phase).toBe("active");
   });
   it("retains poison gates, observer flags, locked rows and orphan completion", () => {
     const r = setup(), p = policyFor(r.driver, r.home);
