@@ -167,27 +167,10 @@ describe('v2 primitives', () => {
   })
 
   it('renders the AURA cold-start welcome without chain hero state', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel
-        lastSession="12m ago · clean handoff"
-        recentSessions={[
-          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
-          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
-          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
-        ]}
-      />,
-      { columns: 120, rows: 24 },
-    )
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
     expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).not.toContain('a netrunner with hands on every file')
-    expect(output).toContain('workspace')
-    expect(output).toContain('model')
-    expect(output).toContain('last session')
-    expect(output).toContain('recent')
-    expect(output).toContain('[1] swap-program')
-    expect(output).toContain('[2] runtime coverage')
-    expect(output).toContain('[3] agent catalog')
     expect(output).not.toContain('STAKE')
     expect(output).not.toContain('18.40')
     expect(output).not.toContain('/claim')
@@ -259,54 +242,28 @@ describe('v2 primitives', () => {
     )
   })
 
-  it('fabricates no session data when the caller has none', async () => {
-    // The production caller (Messages.tsx) only passes `model` — with no real
-    // recent-session feed the card and the last-session row must not render.
+  it('fabricates no session data and repeats no status fact', async () => {
+    // The folder, model and mode live in the status line under the prompt,
+    // and there is no real recent-session feed, so none of them render here.
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
     expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
-    expect(output).toContain('workspace')
-    expect(output).toContain('model')
+    expect(output).not.toContain('workspace')
+    expect(output).not.toContain('model')
     expect(output).not.toContain('last session')
     expect(output).not.toContain('recent')
     expect(output).not.toContain('to resume')
-    expect(output).not.toContain('swap-program')
-    expect(output).not.toContain('12m ago')
   })
 
-  it('tells a new user how to start and that recent sessions resume', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel
-        recentSessions={[
-          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
-          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
-          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
-        ]}
-      />,
-      { columns: 120, rows: 24 },
-    )
+  it('tells a new user the keys in one line', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
-    // First-action guidance so the cold-start screen says HOW to begin.
-    expect(output).toContain('type a task and press')
-    expect(output).toContain('/ for commands')
-    expect(output).toContain('@ to attach')
-    expect(output).toContain('START HERE')
-    expect(output).toContain('COMMANDS')
-    expect(output).toContain('browse every action')
-    expect(output).toContain('ATTACH')
-    expect(output).toContain('add files to context')
-    expect(output).toContain('PERMISSIONS')
-    expect(output).toContain('choose how AgenC can act')
-    expect(output).toContain('TRANSCRIPT')
-    expect(output).toContain('inspect the full run')
-    expect(output).toContain('SHIFT+TAB')
-    expect(output).toContain('CTRL+O')
+    expect(output).toContain('/ commands')
+    expect(output).toContain('@ attach files')
+    expect(output).toContain('shift+tab change mode')
+    expect(output).toContain('? shortcuts')
+    expect(output).not.toContain('START HERE')
     expect(output).not.toContain('⇧')
-    // "? for shortcuts" moved out of this line: the composer footer already
-    // shows it, and the welcome screen was saying it twice.
-    expect(output).not.toContain('? for shortcuts')
-    // Resume affordance on the recent box so the [1]-[3] numbers read as shortcuts.
-    expect(output).toContain('press 1-3 to resume')
   })
 
   it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
@@ -315,38 +272,26 @@ describe('v2 primitives', () => {
     expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
     expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
     // The first segment always survives…
-    expect(output).toContain('type a task and press')
-    // …and narrower panes lose trailing segments whole: no mid-word ellipsis
-    // like "@ to atta…" (the literal regression this guards against).
-    expect(output).not.toMatch(/@ to att\S*…/)
+    expect(output).toContain('/ commands')
+    // …and narrower panes lose trailing segments whole, with no mid-word
+    // ellipsis.
+    expect(output).not.toContain('shift+tab')
+    expect(output).not.toContain('…')
   })
 
-  it('centers the compact mark above metadata and actions at 80 columns', async () => {
+  it('centers the compact mark above the name and the keys at 80 columns', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 80, rows: 30 })
     const lines = output.split(/\r?\n/u)
     const brandRowIndex = lines.findIndex(line =>
       line.includes(AGENC_LOGO_MARK_COMPACT_LINES[0]),
     )
-    const workspaceRowIndex = lines.findIndex(line => line.includes('workspace'))
-    const startRowIndex = lines.findIndex(line => line.includes('START HERE'))
+    const nameRowIndex = lines.findIndex(line => line.includes('agenc'))
+    const keysRowIndex = lines.findIndex(line => line.includes('/ commands'))
 
     expect(brandRowIndex).toBeGreaterThanOrEqual(0)
     expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_COMPACT_LINES[0])).toBeGreaterThan(20)
-    expect(lines[brandRowIndex]).not.toContain('workspace')
-    expect(workspaceRowIndex).toBeGreaterThan(brandRowIndex)
-    expect(startRowIndex).toBeGreaterThan(workspaceRowIndex)
-  })
-
-  it('omits the resume affordance when there are no recent sessions', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel recentSessions={[]} />,
-      { columns: 120, rows: 24 },
-    )
-
-    expect(output).not.toContain('recent')
-    expect(output).not.toContain('to resume')
-    // Guidance still helps a brand-new user with no history.
-    expect(output).toContain('type a task and press')
+    expect(nameRowIndex).toBeGreaterThan(brandRowIndex)
+    expect(keysRowIndex).toBeGreaterThan(nameRowIndex)
   })
 
   it('uses AURA lifecycle glyphs for plan rows', async () => {

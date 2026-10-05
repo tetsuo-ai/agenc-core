@@ -6,10 +6,8 @@ import {
   calculateFullscreenLayoutBudget,
   calculateModalViewport,
   FullscreenLayout,
-  DesignTopChrome,
-  formatDesignBottomChromeLabels,
-  isNoColorEnv,
   shouldShowFileTreeGutter,
+  statusLineSegments,
 } from "./FullscreenLayout.js";
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { Box, Text } from "../ink.js";
@@ -41,21 +39,14 @@ describe("FullscreenLayout modal viewport", () => {
   });
 
   test.each([
-    [0, { showTopChrome: false, showScrollable: false, showBottomChrome: false, bottomMaxHeight: 1 }],
-    [1, { showTopChrome: false, showScrollable: false, showBottomChrome: false, bottomMaxHeight: 1 }],
-    [3, { showTopChrome: false, showScrollable: true, showBottomChrome: false, bottomMaxHeight: 2 }],
-    [5, { showTopChrome: false, showScrollable: true, showBottomChrome: true, bottomMaxHeight: 2 }],
-    [8, { showTopChrome: true, showScrollable: true, showBottomChrome: true, bottomMaxHeight: 2 }],
-    [24, { showTopChrome: true, showScrollable: true, showBottomChrome: true, bottomMaxHeight: 10 }],
+    [0, { showScrollable: false, showBottomChrome: false, bottomMaxHeight: 1 }],
+    [1, { showScrollable: false, showBottomChrome: false, bottomMaxHeight: 1 }],
+    [3, { showScrollable: true, showBottomChrome: false, bottomMaxHeight: 2 }],
+    [5, { showScrollable: true, showBottomChrome: true, bottomMaxHeight: 2 }],
+    [8, { showScrollable: true, showBottomChrome: true, bottomMaxHeight: 4 }],
+    [24, { showScrollable: true, showBottomChrome: true, bottomMaxHeight: 12 }],
   ])("keeps a positive bottom slot budget at terminal height %i", (rows, expected) => {
     expect(calculateFullscreenLayoutBudget(rows)).toEqual(expected);
-  });
-
-  test("detects no-color terminal modes", () => {
-    expect(isNoColorEnv({ NO_COLOR: "1" })).toBe(true);
-    expect(isNoColorEnv({ FORCE_COLOR: "0" })).toBe(true);
-    expect(isNoColorEnv({ TERM: "dumb" })).toBe(true);
-    expect(isNoColorEnv({ TERM: "xterm-256color" })).toBe(false);
   });
 
   test("sizes and gates the optional file-tree gutter for wide fullscreen sessions", () => {
@@ -84,78 +75,6 @@ describe("FullscreenLayout modal viewport", () => {
     );
 
     expect(output).not.toContain("FILES");
-  });
-
-  test("renders v2 top chrome without fake error and warning labels", async () => {
-    const output = await renderToString(
-      <DesignTopChrome columns={100} noColor={true} />,
-      100,
-    );
-
-    expect(output).toContain("agenc");
-    expect(output).toContain("agenc · orchestrator");
-    expect(output).toContain("mode · default");
-    expect(output).toContain("task");
-    expect(output).not.toContain("ERR");
-    expect(output).not.toContain("WARN");
-    expect(output).not.toContain("ERR WARN OK");
-    expect(output).not.toContain("TASK SYSTEMIC");
-  });
-
-  test("keeps the v2 header wordmark aligned to the design grid", async () => {
-    const output = await renderToString(
-      <DesignTopChrome columns={148} noColor={true} />,
-      148,
-    );
-    const header =
-      output.split(/\r?\n/u).find(line => line.includes("agenc")) ?? "";
-
-    expect(header.indexOf("▮")).toBe(2);
-    expect(header.indexOf("agenc")).toBe(4);
-  });
-
-  test("renders the header mode pill from AppState permission mode", async () => {
-    const state = getDefaultAppState();
-    const output = await renderToString(
-      <AppStateProvider
-        initialState={{
-          ...state,
-          toolPermissionContext: {
-            ...state.toolPermissionContext,
-            mode: "plan",
-          },
-        }}
-      >
-        <DesignTopChrome columns={100} noColor={false} />
-      </AppStateProvider>,
-      100,
-    );
-
-    expect(output).toContain("mode · plan");
-  });
-
-  test("keeps joined emoji intact when truncating the active task ID", async () => {
-    const state = getDefaultAppState();
-    const taskId = "👩‍💻abcdefghijklmnop✈️";
-    const output = await renderToString(
-      <AppStateProvider
-        initialState={{
-          ...state,
-          tasks: {
-            [taskId]: {
-              id: taskId,
-              type: "local_agent",
-              status: "running",
-            },
-          } as typeof state.tasks,
-        }}
-      >
-        <DesignTopChrome columns={100} noColor={true} />
-      </AppStateProvider>,
-      100,
-    );
-
-    expect(output).toContain("👩‍💻abcdefg…klmnop✈️");
   });
 
   test.each([
@@ -193,43 +112,42 @@ describe("FullscreenLayout modal viewport", () => {
     },
   );
 
-  test("formats bottom chrome with user-facing mode labels", () => {
+  test("shows each status fact once with plain mode labels", () => {
     expect(
-      formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions", "main · abc1234", "$0.04"),
+      statusLineSegments(100, "~/project", "grok-4-fast", "bypassPermissions", "main", "$0.04"),
     ).toEqual({
-      left: "● YOLO · grok-4-fast · main · abc1234",
-      right: "spend $0.04",
+      folder: "~/project",
+      model: "grok-4-fast",
+      mode: "bypass mode",
+      branch: "main",
+      spend: "$0.04",
     });
-
     expect(
-      formatDesignBottomChromeLabels(60, "grok-4-fast", "acceptEdits", "main · abc1234", "$0.00"),
-    ).toEqual({
-      left: "● accept edits on · grok-4-fast · main · abc1234",
-      right: "spend $0.00",
-    });
+      statusLineSegments(100, "~/project", "grok-4-fast", "acceptEdits", "main", "$0.00").mode,
+    ).toBe("accept edits");
+    expect(
+      statusLineSegments(100, "~/project", "grok-4-fast", "plan", "main", "$0.00").mode,
+    ).toBe("plan mode");
   });
 
-  test("omits the git segment of the bottom chrome until the probe resolves", () => {
+  test("drops the folder, then the branch, on narrow terminals", () => {
     expect(
-      formatDesignBottomChromeLabels(100, "grok-4-fast", "default", null, "$0.00"),
-    ).toEqual({
-      left: "● default on · grok-4-fast",
-      right: "spend $0.00",
-    });
+      statusLineSegments(72, "~/project", "grok-4-fast", "default", "main", "$0.00"),
+    ).toMatchObject({ folder: null, branch: "main" });
+    expect(
+      statusLineSegments(60, "~/project", "grok-4-fast", "default", "main", "$0.00"),
+    ).toMatchObject({ folder: null, branch: null, model: "grok-4-fast" });
   });
 
-  test("truncates wide git labels by terminal display width", () => {
+  test("hides the branch outside git and the spend until usage arrives", () => {
     expect(
-      formatDesignBottomChromeLabels(
-        60,
-        "grok-4-fast",
-        "default",
-        "界界界界界界界界界界",
-        "$0.00",
-      ),
+      statusLineSegments(100, "~/project", "grok-4-fast", "default", null, ""),
     ).toEqual({
-      left: "● default on · grok-4-fast · 界界界界…界界界界",
-      right: "spend $0.00",
+      folder: "~/project",
+      model: "grok-4-fast",
+      mode: "default mode",
+      branch: null,
+      spend: null,
     });
   });
 
@@ -257,17 +175,18 @@ describe("FullscreenLayout modal viewport", () => {
     );
 
     const lines = output.split(/\r?\n/u);
-    expect(output).toContain("agenc");
-    expect(output).toContain("agenc · orchestrator");
-    expect(output).toContain("mode · default");
-    expect(output).toContain("● default on");
-    expect(output).toContain("spend $0.00");
+    // One status line under the prompt and no top bar.
+    expect(output).toContain("default mode");
+    expect(output).toContain("$0.00");
+    expect(output).not.toContain("orchestrator");
+    expect(output).not.toContain("spend");
+    expect(output).not.toContain("—");
     // No fabricated chrome: no real ctx%/stake feed exists at this point in
     // the tree, so those segments must stay hidden rather than show fake data.
     expect(output).not.toContain("ctx 0%");
     expect(output).not.toContain("12.4K");
     expect(output).not.toContain("◆");
-    expect(output).toMatch(/[░▒▓]/u);
+    expect(output).not.toMatch(/[░▒▓]/u);
     expect(output).not.toContain("undefined");
     expect(output).not.toContain("NaN");
     for (const line of lines) {

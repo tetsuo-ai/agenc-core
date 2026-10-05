@@ -76,6 +76,9 @@ export type Theme = {
   muted3: string
   line: string
   lineSoft: string
+  /** Fill behind the prompt input. It replaces the prompt border, so it must
+   *  stay visible against the terminal's own background. */
+  promptBackground: string
   briefLabelWorker: string
   planModeWash: string
 
@@ -182,7 +185,8 @@ const lightTheme: Theme = {
   // TUI V2 colors
   clawd_body: 'rgb(215,119,87)',
   clawd_background: 'rgb(0,0,0)',
-  surfaceBackground: 'rgb(0,0,0)',
+  // The prompt area sits on the terminal's own light background.
+  surfaceBackground: 'rgb(255,255,255)',
   userMessageBackground: 'rgb(240, 240, 240)', // Slightly darker grey for optimal contrast
   userMessageBackgroundHover: 'rgb(252, 252, 252)', // ≥250 to quantize distinct from base at 256-color level
   messageActionsBackground: 'rgb(232, 236, 244)', // cool gray — darker than userMsg 240 (visible on white), slight blue toward `suggestion`
@@ -197,6 +201,7 @@ const lightTheme: Theme = {
   muted3: 'rgb(190,190,190)',
   line: 'rgb(210,210,210)',
   lineSoft: 'rgb(235,235,235)',
+  promptBackground: 'rgb(238,238,238)',
   briefLabelWorker: 'rgb(234,88,12)',
   planModeWash: 'rgb(235,248,248)',
 
@@ -274,7 +279,8 @@ const lightAnsiTheme: Theme = {
   // TUI V2 colors
   clawd_body: 'ansi:redBright',
   clawd_background: 'ansi:black',
-  surfaceBackground: 'ansi:black',
+  // The prompt area sits on the terminal's own light background.
+  surfaceBackground: 'ansi:whiteBright',
   userMessageBackground: 'ansi:white',
   userMessageBackgroundHover: 'ansi:whiteBright',
   messageActionsBackground: 'ansi:white',
@@ -289,6 +295,7 @@ const lightAnsiTheme: Theme = {
   muted3: 'ansi:blackBright',
   line: 'ansi:white',
   lineSoft: 'ansi:white',
+  promptBackground: 'ansi:white',
   briefLabelWorker: 'ansi:redBright',
   planModeWash: 'ansi:whiteBright',
 
@@ -380,6 +387,7 @@ const darkAnsiTheme: Theme = {
   muted3: 'ansi:blackBright',
   line: 'ansi:blackBright',
   lineSoft: 'ansi:black',
+  promptBackground: 'ansi:blackBright',
   briefLabelWorker: 'ansi:redBright',
   planModeWash: 'ansi:black',
 
@@ -456,7 +464,8 @@ const lightDaltonizedTheme: Theme = {
   // TUI V2 colors
   clawd_body: 'rgb(215,119,87)',
   clawd_background: 'rgb(0,0,0)',
-  surfaceBackground: 'rgb(0,0,0)',
+  // The prompt area sits on the terminal's own light background.
+  surfaceBackground: 'rgb(255,255,255)',
   userMessageBackground: 'rgb(220, 220, 220)', // Slightly darker grey for optimal contrast
   userMessageBackgroundHover: 'rgb(232, 232, 232)', // ≥230 to quantize distinct from base at 256-color level
   messageActionsBackground: 'rgb(210, 216, 226)', // cool gray — darker than userMsg 220, slight blue
@@ -471,6 +480,7 @@ const lightDaltonizedTheme: Theme = {
   muted3: 'rgb(185,185,185)',
   line: 'rgb(205,205,205)',
   lineSoft: 'rgb(232,232,232)',
+  promptBackground: 'rgb(236,236,236)',
   briefLabelWorker: 'rgb(255,128,0)',
   planModeWash: 'rgb(240,246,250)',
 
@@ -562,6 +572,7 @@ const chromaticDarkTheme: Theme = {
   muted3: 'rgb(64,64,70)',
   line: 'rgb(52,53,57)',
   lineSoft: 'rgb(34,35,39)',
+  promptBackground: 'rgb(34,35,39)',
   briefLabelWorker: 'rgb(255,151,72)',
   planModeWash: 'rgb(46,26,22)',
 
@@ -618,6 +629,7 @@ const monochromeToneOverrides: Partial<Theme> = {
   muted3: 'rgb(68,68,68)',
   line: 'rgb(48,48,48)',
   lineSoft: 'rgb(34,34,34)',
+  promptBackground: 'rgb(34,34,34)',
 }
 
 const darkTheme = Object.fromEntries(
@@ -697,6 +709,7 @@ const darkDaltonizedTheme: Theme = {
   muted3: 'rgb(64,64,70)',
   line: 'rgb(52,53,57)',
   lineSoft: 'rgb(34,35,39)',
+  promptBackground: 'rgb(34,35,39)',
   briefLabelWorker: 'rgb(255,178,102)',
   planModeWash: 'rgb(45,39,29)',
 

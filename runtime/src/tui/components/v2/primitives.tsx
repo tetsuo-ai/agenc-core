@@ -747,27 +747,10 @@ export function ChatBody({
   )
 }
 
-type WelcomeRecentSession = {
-  readonly keyName: string
-  readonly title: string
-  readonly detail: string
-}
-
-function defaultWorkspaceLabel(): string {
-  const cwd = process.cwd()
-  const home = process.env.HOME
-  return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
-}
-
-// The centered welcome hero and its optional recent-session card share one
-// responsive measure. MIN keeps the action grid useful; MAX stops the quiet
-// metadata/tips block from stretching across a 200-column transcript.
-const WELCOME_HERO_MIN_WIDTH = 46
-const WELCOME_HERO_MAX_WIDTH = 64
 // The transcript surface (ActiveWorkSurface) adds paddingX={1} around the
 // welcome panel, so reserve 2 columns from the reported content width to avoid
 // overflowing the pane.
-const WELCOME_HERO_INSET = 2
+const WELCOME_INSET = 2
 
 function useWelcomeAvailableWidth(): number {
   const contentWidth = useContentWidth()
@@ -778,18 +761,7 @@ function useWelcomeAvailableWidth(): number {
   // Clamp the fallback to the physical terminal so the brand row switches to
   // its stacked compact form before Yoga starts wrapping the logo itself.
   const available = contentWidth ?? Math.min(frameColumns, terminalColumns)
-  return Math.max(1, available - WELCOME_HERO_INSET)
-}
-
-function useWelcomeHeroWidth(): number {
-  const usable = useWelcomeAvailableWidth()
-  const capped = Math.min(
-    WELCOME_HERO_MAX_WIDTH,
-    Math.max(WELCOME_HERO_MIN_WIDTH, usable),
-  )
-  // Never exceed the usable width — on a very narrow pane the cap floor would
-  // otherwise overflow.
-  return Math.min(capped, usable)
+  return Math.max(1, available - WELCOME_INSET)
 }
 
 // Portable fallback for terminals without a graphics protocol. These Braille
@@ -946,146 +918,58 @@ function AgencLogoMark({ compact = false }: { readonly compact?: boolean }): Rea
   )
 }
 
-const WELCOME_TIPS = [
-  { keyName: '/', action: 'COMMANDS', detail: 'browse every action' },
-  { keyName: '@', action: 'ATTACH', detail: 'add files to context' },
-  {
-    keyName: 'SHIFT+TAB',
-    action: 'PERMISSIONS',
-    detail: 'choose how AgenC can act',
-  },
-  { keyName: 'CTRL+O', action: 'TRANSCRIPT', detail: 'inspect the full run' },
+// One line of keys for the cold start. Each fact appears once on the screen:
+// the folder, model and mode live in the status line under the prompt, so the
+// welcome carries only the name, the version and these keys. Segments are
+// ordered by teaching value and whole segments drop on narrow panes instead of
+// ellipsizing mid-word.
+const WELCOME_HINT_SEGMENTS = [
+  { keyName: '/', label: 'commands' },
+  { keyName: '@', label: 'attach files' },
+  { keyName: 'shift+tab', label: 'change mode' },
+  { keyName: '?', label: 'shortcuts' },
 ] as const
+type WelcomeHintSegment = (typeof WELCOME_HINT_SEGMENTS)[number]
+const WELCOME_HINT_GAP = '   '
 
-const WELCOME_TIP_KEY_CONTENT_WIDTH = 10
-const WELCOME_TIP_KEY_WIDTH = WELCOME_TIP_KEY_CONTENT_WIDTH + 2
-
-function WelcomeTips(): React.ReactNode {
-  return (
-    <Box flexDirection="column">
-      <ThemedText color="text" bold>
-        START HERE
-      </ThemedText>
-      {WELCOME_TIPS.map(tip => (
-        <Box key={tip.keyName} flexDirection="row">
-          <Box width={WELCOME_TIP_KEY_WIDTH} flexShrink={0} marginRight={2}>
-            <ThemedText color="text" inverse bold>
-              {` ${tip.keyName.padEnd(WELCOME_TIP_KEY_CONTENT_WIDTH)} `}
-            </ThemedText>
-          </Box>
-          <Box width={13} flexShrink={0} marginRight={2}>
-            <ThemedText color="text" bold>
-              {tip.action}
-            </ThemedText>
-          </Box>
-          <Box minWidth={0} flexShrink={1}>
-            <ThemedText color="inactive" wrap="truncate-end">
-              {tip.detail}
-            </ThemedText>
-          </Box>
-        </Box>
-      ))}
-    </Box>
-  )
+function welcomeHintWidth(segment: WelcomeHintSegment): number {
+  return stringWidth(`${segment.keyName} ${segment.label}`)
 }
 
-// The welcome hint line drops WHOLE segments when the pane is narrow instead
-// of ellipsizing mid-word ("@ to atta…" taught nothing). Segments are ordered
-// by teaching value; the first ones survive narrow panes. "? for shortcuts" is
-// deliberately absent — the composer footer already shows it, and the welcome
-// screen was saying it twice.
-const WELCOME_HINT_SEGMENTS = [
-  'type a task and press ↵',
-  '/ for commands',
-  '@ to attach',
-] as const
-const WELCOME_HINT_SEPARATOR = '  ·  '
-
-export function fitHintSegments(
-  segments: readonly string[],
+function fitHintSegments(
+  segments: readonly WelcomeHintSegment[],
   available: number,
-  separator: string = WELCOME_HINT_SEPARATOR,
-): string {
-  let line = ''
+): readonly WelcomeHintSegment[] {
+  const fitted: WelcomeHintSegment[] = []
+  let width = 0
   for (const segment of segments) {
-    const candidate = line === '' ? segment : `${line}${separator}${segment}`
-    if (stringWidth(candidate) > available) break
-    line = candidate
+    const next =
+      width + (fitted.length > 0 ? WELCOME_HINT_GAP.length : 0) + welcomeHintWidth(segment)
+    if (next > available) break
+    fitted.push(segment)
+    width = next
   }
-  // Never render an empty row: fall back to the single most valuable segment
-  // and let the Text truncate it (only reachable on absurdly narrow panes).
-  return line === '' ? (segments[0] ?? '') : line
+  // Never render an empty row: keep the most valuable segment and let the
+  // Text truncate it (only reachable on absurdly narrow panes).
+  return fitted.length > 0 ? fitted : segments.slice(0, 1)
 }
 
 function WelcomeHintLine(): React.ReactNode {
   const available = useWelcomeAvailableWidth()
   return (
-    <ThemedText color="inactive" wrap="truncate-end">
-      {fitHintSegments(WELCOME_HINT_SEGMENTS, available)}
-    </ThemedText>
-  )
-}
-
-function WelcomeMetaLine({
-  workspace,
-  model,
-  lastSession,
-}: {
-  readonly workspace: string
-  readonly model: string
-  readonly lastSession?: string
-}): React.ReactNode {
-  return (
-    <Box flexDirection="column" alignItems="center">
-      <Box flexDirection="row" justifyContent="center" width="100%">
-        <Box flexShrink={0}>
-          <ThemedText color="inactive">workspace </ThemedText>
-        </Box>
-        <Box flexShrink={1} minWidth={0}>
-          <ThemedText color="text" wrap="truncate-middle">
-            {workspace}
-          </ThemedText>
-        </Box>
-        <Box flexShrink={0}>
-          <ThemedText color="inactive">  ·  model </ThemedText>
-        </Box>
-        <Box flexShrink={0}>
-          <ThemedText color="text" wrap="truncate-end">
-            {model}
-          </ThemedText>
-        </Box>
-      </Box>
-      <Box flexDirection="row" justifyContent="center" width="100%">
-        <ThemedText color="inactive">agenc core </ThemedText>
-        <ThemedText color="text" bold>
-          {VERSION}
+    <Box flexDirection="row">
+      {fitHintSegments(WELCOME_HINT_SEGMENTS, available).map((segment, index) => (
+        <ThemedText key={segment.keyName} wrap="truncate-end">
+          {index > 0 ? WELCOME_HINT_GAP : ''}
+          <ThemedText color="inactive">{segment.keyName}</ThemedText>
+          <ThemedText color="text2">{` ${segment.label}`}</ThemedText>
         </ThemedText>
-      </Box>
-      {lastSession !== undefined ? (
-        <Box flexDirection="row" justifyContent="center" width="100%">
-          <ThemedText color="inactive">last session </ThemedText>
-          <ThemedText color="text2" wrap="truncate-end">
-            {lastSession}
-          </ThemedText>
-        </Box>
-      ) : null}
+      ))}
     </Box>
   )
 }
 
-export function WelcomeColdPanel({
-  workspace = defaultWorkspaceLabel(),
-  model = 'default model',
-  lastSession,
-  recentSessions = [],
-}: {
-  readonly workspace?: string
-  readonly model?: string
-  readonly lastSession?: string
-  readonly recentSessions?: readonly WelcomeRecentSession[]
-}): React.ReactNode {
-  const visibleSessions = recentSessions.slice(0, 3)
-  const heroWidth = useWelcomeHeroWidth()
+export function WelcomeColdPanel(): React.ReactNode {
   const availableWidth = useWelcomeAvailableWidth()
   const { rows: terminalRows } = useTerminalSize()
   const compactLogo = availableWidth < 96 || terminalRows < 20
@@ -1096,73 +980,16 @@ export function WelcomeColdPanel({
       flexDirection="column"
       width={availableWidth}
       alignItems="center"
+      gap={1}
     >
-      <Box flexDirection="column" gap={1} width={heroWidth}>
-        <Box flexDirection="row" justifyContent="center" width={heroWidth}>
-          <AgencLogoMark compact={compactLogo} />
-        </Box>
-
-        <WelcomeMetaLine
-          workspace={workspace}
-          model={model}
-          lastSession={lastSession}
-        />
-
-        <WelcomeTips />
-
-        {/* The recent card renders only with real session data — a fabricated
-            resume list (or a "press 1-3" affordance over fake sessions) is
-            worse than no card at all. */}
-        {visibleSessions.length > 0 ? (
-          <Box flexDirection="column">
-            <Box flexDirection="row" flexWrap="wrap">
-              <ThemedText color="muted3">recent</ThemedText>
-              <ThemedText color="inactive">
-                {`  ·  press ${
-                  visibleSessions.length > 1
-                    ? `1-${visibleSessions.length}`
-                    : '1'
-                } to resume`}
-              </ThemedText>
-            </Box>
-            <ThemedBox
-              flexDirection="column"
-              width={heroWidth}
-              borderStyle="single"
-              // The resume list is the most likely next action on a cold start,
-              // so it carries the one accent border on this screen.
-              borderColor="agenc"
-              paddingX={1}
-              paddingY={1}
-            >
-              {visibleSessions.map(session => (
-                // No `flexWrap="wrap"`: a long title/detail must truncate in
-                // place rather than wrap the detail onto its own flex line.
-                <Box key={session.keyName} flexDirection="row">
-                  {/* The `[n] ` key prefix is fixed and must not be squeezed
-                      when the flexing title/detail cell shrinks. */}
-                  <Box flexShrink={0} flexDirection="row">
-                    <ThemedText color="muted3">[</ThemedText>
-                    <ThemedText color="agenc">{session.keyName}</ThemedText>
-                    <ThemedText color="muted3">] </ThemedText>
-                  </Box>
-                  <Box flexShrink={1} minWidth={0} flexDirection="row">
-                    <ThemedText color="text" wrap="truncate-end">
-                      {session.title}
-                    </ThemedText>
-                    <ThemedText color="muted3" wrap="truncate-end">
-                      {' · '}
-                      {session.detail}
-                    </ThemedText>
-                  </Box>
-                </Box>
-              ))}
-            </ThemedBox>
-          </Box>
-        ) : null}
-
-        {showHint ? <WelcomeHintLine /> : null}
+      <AgencLogoMark compact={compactLogo} />
+      <Box flexDirection="row">
+        <ThemedText color="text" bold>
+          agenc
+        </ThemedText>
+        <ThemedText color="inactive">{` ${VERSION}`}</ThemedText>
       </Box>
+      {showHint ? <WelcomeHintLine /> : null}
     </Box>
   )
 }

@@ -104,14 +104,7 @@ describe('v2 primitives coverage swarm row 065', () => {
         <BrandCells columns={1} rows={1} />
         <ModePill mode={'unknown-mode' as PermissionMode} />
         <ModeSwitcher currentMode="acceptEdits" spacious={true} />
-        <WelcomeColdPanel
-          workspace="/tmp/agenc"
-          model="row065"
-          lastSession="coverage"
-          recentSessions={[
-            { keyName: '1', title: 'runtime coverage', detail: 'row065' },
-          ]}
-        />
+        <WelcomeColdPanel />
         <TaskInFlightCard
           taskId="#65"
           title="cover v2 primitives"
@@ -180,8 +173,7 @@ describe('v2 primitives coverage swarm row 065', () => {
     expect(output).toContain('mode · default')
     expect(output).toContain('current · acceptEdits')
     expect(output).toContain('row065')
-    expect(output).toContain('/tmp/agenc')
-    expect(output).toContain('coverage')
+    expect(output).toContain('/ commands')
     expect(output).toContain('#65')
     expect(output).toContain('CHECKPOINTED PLAN')
     expect(output).toContain('NOTICE')

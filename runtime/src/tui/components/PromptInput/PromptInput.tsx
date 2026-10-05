@@ -3485,15 +3485,16 @@ function PromptInput({
           </Text>
         </>
       ) : (
+        // Borderless input: a filled band one row taller than the text, so
+        // the prompt reads as its own surface without a frame around it.
         <Box
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          borderColor="text"
-          borderStyle="single"
-          width="100%"
-          paddingX={1}
-          backgroundColor="surfaceBackground"
+          marginX={1}
+          paddingX={2}
+          paddingY={1}
+          backgroundColor="promptBackground"
           opaque
         >
           <PromptInputModeIndicator
