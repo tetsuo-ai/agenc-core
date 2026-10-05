@@ -69,6 +69,10 @@ test("a successful recovery tool call restores configured effort for the next no
   const ctx = mkCtx({ reasoningEffort: "high" });
   await drain(runTurn(session, { ...ctx, config: { ...ctx.config, model: "deepseek-flash", model_provider: "deepseek", max_output_tokens: 8192 }, modelInfo: { ...ctx.modelInfo, maxOutputTokens: 8192, maxOutputTokensExplicit: true, supportedReasoningLevels: ["low", "high", "max"] } }, "Read fixture and finish."));
   expect([0, 1, 2].map(i => bodyAt(fetchImpl, i).thinking)).toEqual([{ type: "enabled" }, { type: "disabled" }, { type: "enabled" }]);
+  const assistants = (bodyAt(fetchImpl, 2).messages as Array<Record<string, unknown>>)
+    .filter(message => message.role === "assistant");
+  expect(assistants).toHaveLength(1);
+  expect(assistants[0]).toHaveProperty("reasoning_content", "");
   expect(execute).toHaveBeenCalledTimes(1);
   expect(fetchImpl).toHaveBeenCalledTimes(3);
   expect([0, 1, 2].map(i => bodyAt(fetchImpl, i).reasoning_effort)).toEqual(["high", "high", "high"]);
