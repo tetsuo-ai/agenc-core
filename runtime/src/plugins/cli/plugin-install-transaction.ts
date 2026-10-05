@@ -546,11 +546,11 @@ async function recoverParsedRecord(
   }
   try {
     await hold.release();
-  } catch (cleanup) {
+  } catch (cleanupError) {
     if (failure !== undefined) throw failure;
     return {
       recovered: result?.recovered === true,
-      issue: directoryLockCleanupIssue(parsed, recordPath, cleanup),
+      issue: directoryLockCleanupIssue(parsed, recordPath, cleanupError),
     };
   }
   if (failure !== undefined) throw failure;
@@ -1467,56 +1467,68 @@ async function validateTrustedRecoveryRoot(
 }
 
 async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
+  const names = await readableOpsNames(opsDir);
+  if (names === undefined) return;
+  await removeDeadLeaseArtifacts(opsDir, names);
+  await removeStaleReclaimMarkers(opsDir, names);
+}
+
+async function readableOpsNames(opsDir: string): Promise<readonly string[] | undefined> {
   let opsInfo: Awaited<ReturnType<typeof lstat>>;
   try {
     opsInfo = await lstat(opsDir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-  if (opsInfo.isSymbolicLink() || !opsInfo.isDirectory()) return;
-  let names: string[];
+  if (opsInfo.isSymbolicLink() || !opsInfo.isDirectory()) return undefined;
   try {
-    names = await readdir(opsDir);
+    return await readdir(opsDir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+async function removeDeadLeaseArtifacts(opsDir: string, names: readonly string[]): Promise<void> {
   for (const name of names) {
     const pid = leaseArtifactPid(name);
     if (pid === undefined || pidIsLive(pid)) continue;
-    const path = join(opsDir, name);
-    let info: Awaited<ReturnType<typeof lstat>>;
-    try {
-      info = await lstat(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    if (info.isSymbolicLink() || !info.isFile()) continue;
-    await rm(path);
+    if (!await isPlainLeaseFile(join(opsDir, name))) continue;
+    await rm(join(opsDir, name));
   }
+}
+
+async function removeStaleReclaimMarkers(opsDir: string, names: readonly string[]): Promise<void> {
   for (const name of names) {
-    const marker = RECLAIM_MARKER_NAME.exec(name);
-    const leaseName = marker?.[1];
-    const markerNonce = marker?.[2];
-    if (leaseName === undefined || markerNonce === undefined) continue;
-    if (!LEASE_ARTIFACT_UUID.test(markerNonce)) continue;
+    const marker = reclaimMarker(name);
+    if (marker === undefined) continue;
     const path = join(opsDir, name);
-    let info: Awaited<ReturnType<typeof lstat>>;
-    try {
-      info = await lstat(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    if (info.isSymbolicLink() || !info.isFile()) continue;
-    const holder = parseLease(await readLeaseText(path));
-    if (leaseHolderIsLive(holder)) continue;
-    const currentNonce = leaseNonce(await readLeaseText(join(opsDir, leaseName)));
-    if (currentNonce === undefined) continue;
+    if (!await isPlainLeaseFile(path)) continue;
+    if (leaseHolderIsLive(parseLease(await readLeaseText(path)))) continue;
+    if (leaseNonce(await readLeaseText(join(opsDir, marker.leaseName))) === undefined) continue;
     await rm(path);
   }
+}
+
+function reclaimMarker(name: string): { readonly leaseName: string } | undefined {
+  const marker = RECLAIM_MARKER_NAME.exec(name);
+  const leaseName = marker?.[1];
+  const markerNonce = marker?.[2];
+  if (leaseName === undefined || markerNonce === undefined) return undefined;
+  if (!LEASE_ARTIFACT_UUID.test(markerNonce)) return undefined;
+  return { leaseName };
+}
+
+async function isPlainLeaseFile(path: string): Promise<boolean> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  return !info.isSymbolicLink() && info.isFile();
 }
 
 function leaseNonce(text: string | undefined): string | undefined {

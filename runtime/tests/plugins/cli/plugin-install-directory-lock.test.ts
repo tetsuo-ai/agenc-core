@@ -58,6 +58,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 import {
   pluginInstallDirectoryLockDirectory,
+  setPluginInstallDirectoryLockBeforeGuardRemoveHook,
+  setPluginInstallDirectoryLockBeforeLockRemoveHook,
   setPluginInstallDirectoryLockGuardStaleMs,
   setPluginInstallDirectoryLockPublishHook,
   setPluginInstallDirectoryLockReclaimHook,
@@ -704,6 +706,224 @@ describe("plugin install directory lock reclaim", () => {
     }
   });
 });
+
+describe("plugin install directory lock gaps", () => {
+  it("admits one holder when two reclaimers race for the same dead reclaim guard", async () => {
+    const world = await plantStaleLock();
+    const guardPath = `${world.lockPath}.reclaim`;
+    await writeFile(guardPath, deadOwnerText(), { mode: 0o600 });
+    const firstGuard = gate();
+    const releaseFirstGuard = gate();
+    const secondGuard = gate();
+    const releaseSecondGuard = gate();
+    const firstLock = gate();
+    const releaseFirstLock = gate();
+    const secondLock = gate();
+    const releaseSecondLock = gate();
+    const secondWaiting = gate();
+    const releaseWait = gate();
+    const aIn = gate();
+    const bIn = gate();
+    const releaseBody = gate();
+    let holdWaits = true;
+    let pauseFirstLock = false;
+    let inside = 0;
+    let maxInside = 0;
+    const occupy = async (entered: () => void, hold: Promise<void>): Promise<void> => {
+      inside += 1;
+      maxInside = Math.max(maxInside, inside);
+      entered();
+      await hold;
+      inside -= 1;
+    };
+    setPluginInstallDirectoryLockGuardStaleMs(0);
+    let guardLeader = false;
+    setPluginInstallDirectoryLockBeforeGuardRemoveHook(async () => {
+      if (!guardLeader) {
+        guardLeader = true;
+        firstGuard.resolve();
+        await releaseFirstGuard.promise;
+        return;
+      }
+      secondGuard.resolve();
+      await releaseSecondGuard.promise;
+    });
+    let lockLeader = false;
+    setPluginInstallDirectoryLockBeforeLockRemoveHook(async () => {
+      if (!lockLeader) {
+        lockLeader = true;
+        firstLock.resolve();
+        if (pauseFirstLock) await releaseFirstLock.promise;
+        return;
+      }
+      secondLock.resolve();
+      await releaseSecondLock.promise;
+    });
+    const a = withPluginInstallDirectoryLock(
+      world.destination,
+      () => occupy(aIn.resolve, releaseBody.promise),
+    );
+    let b: Promise<void> = Promise.resolve();
+    try {
+      await within(firstGuard.promise, 2_000, "first reclaimer at guard removal");
+      setPluginInstallDirectoryLockWaitHook(async () => {
+        secondWaiting.resolve();
+        if (holdWaits) await releaseWait.promise;
+      });
+      b = withPluginInstallDirectoryLock(
+        world.destination,
+        () => occupy(bIn.resolve, releaseBody.promise),
+      );
+      const status = await within(Promise.race([
+        secondGuard.promise.then(() => "hook" as const),
+        secondWaiting.promise.then(() => "wait" as const),
+        bIn.promise.then(() => "entered" as const),
+      ]), 2_000, "second reclaimer reached the guard hook or the wait hook");
+      expect(status).not.toBe("entered");
+      if (status === "hook") {
+        pauseFirstLock = true;
+        releaseFirstGuard.resolve();
+        await within(firstLock.promise, 2_000, "first reclaimer at lock removal");
+        releaseSecondGuard.resolve();
+        await within(secondLock.promise, 2_000, "second reclaimer at lock removal");
+        releaseFirstLock.resolve();
+        await within(aIn.promise, 2_000, "first body");
+        releaseSecondLock.resolve();
+        await within(bIn.promise, 2_000, "second body");
+        expect(maxInside).toBe(1);
+        releaseBody.resolve();
+        await Promise.all([a, b]);
+      }
+      expect(status).toBe("wait");
+      expect(bIn.settled).toBe(false);
+      expect(maxInside).toBe(0);
+      releaseFirstGuard.resolve();
+      await within(aIn.promise, 2_000, "winner entered");
+      expect(bIn.settled).toBe(false);
+      expect(inside).toBe(1);
+      expect(maxInside).toBe(1);
+      releaseBody.resolve();
+      await within(a, 2_000, "winner finished");
+      holdWaits = false;
+      releaseWait.resolve();
+      await within(bIn.promise, 2_000, "loser entered after the winner");
+      await b;
+      expect(maxInside).toBe(1);
+      expect(inside).toBe(0);
+    } finally {
+      holdWaits = false;
+      pauseFirstLock = false;
+      releaseWait.resolve();
+      releaseFirstGuard.resolve();
+      releaseSecondGuard.resolve();
+      releaseFirstLock.resolve();
+      releaseSecondLock.resolve();
+      releaseBody.resolve();
+      setPluginInstallDirectoryLockBeforeGuardRemoveHook(undefined);
+      setPluginInstallDirectoryLockBeforeLockRemoveHook(undefined);
+      setPluginInstallDirectoryLockWaitHook(undefined);
+      setPluginInstallDirectoryLockGuardStaleMs(undefined);
+      await Promise.allSettled([a, b]);
+      await rm(world.root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not remove a live reclaim guard that replaced the dead one after inspection", async () => {
+    const world = await plantStaleLock();
+    const guardPath = `${world.lockPath}.reclaim`;
+    await writeFile(guardPath, deadOwnerText(), { mode: 0o600 });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const liveText = `${JSON.stringify({ pid: child.pid, nonce: randomUUID(), acquiredAtMs: Date.now() })}\n`;
+    try {
+      expect(child.pid).toEqual(expect.any(Number));
+      setPluginInstallDirectoryLockGuardStaleMs(0);
+      setPluginInstallDirectoryLockBeforeGuardRemoveHook(async () => {
+        await rm(guardPath);
+        await writeFile(guardPath, liveText, { mode: 0o600 });
+      });
+      const hold = await tryPluginInstallDirectoryLock(world.destination);
+      await hold?.release();
+      expect(hold).toBeUndefined();
+      expect(await readFile(guardPath, "utf8")).toBe(liveText);
+      expect(await readFile(world.lockPath, "utf8")).toBe(world.text);
+      expect((await readdir(dirname(world.lockPath))).filter((name) => name.includes(".claim-"))).toEqual([]);
+    } finally {
+      child.kill();
+      setPluginInstallDirectoryLockBeforeGuardRemoveHook(undefined);
+      setPluginInstallDirectoryLockGuardStaleMs(undefined);
+      await rm(world.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports try-lock busy while a young removal key is still inside the stale bound", async () => {
+    const world = await plantStaleLock();
+    const keyPath = `${world.lockPath}.reclaim-${"ab".repeat(32)}`;
+    const youngKey = `${JSON.stringify({
+      pid: exitedPid(),
+      nonce: randomUUID(),
+      acquiredAtMs: Date.now(),
+    })}\n`;
+    await writeFile(keyPath, youngKey, { mode: 0o600 });
+    try {
+      const hold = await within(
+        tryPluginInstallDirectoryLock(world.destination),
+        2_000,
+        "try-lock beside a young removal key",
+      );
+      expect(hold).toBeUndefined();
+      expect(await readFile(world.lockPath, "utf8")).toBe(world.text);
+      expect(await readFile(keyPath, "utf8")).toContain("\"pid\":");
+      await expect(lstat(`${world.lockPath}.reclaim`)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(world.root, { recursive: true, force: true });
+    }
+  });
+});
+
+function deadOwnerText(): string {
+  return `${JSON.stringify({
+    pid: exitedPid(),
+    nonce: randomUUID(),
+    acquiredAtMs: Date.now() - 10_000,
+  })}\n`;
+}
+
+function gate(): { promise: Promise<void>; resolve: () => void; settled: boolean } {
+  let settled = false;
+  let resolveGate: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    resolveGate = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+  });
+  return {
+    promise,
+    resolve: () => {
+      resolveGate();
+    },
+    get settled() {
+      return settled;
+    },
+  };
+}
+
+async function within<T>(promise: Promise<T>, ms: number, label = "operation"): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${ms}ms`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 function makeFifo(path: string): void {
   const result = spawnSync("mkfifo", [path], { stdio: "pipe" });
