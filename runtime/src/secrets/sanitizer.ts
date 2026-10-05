@@ -659,8 +659,46 @@ export function redactSecretsInValue<T>(value: T): T {
 }
 
 
-function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
-  if (typeof value === "string") return redactSecrets(value);
+/**
+ * Exact-string reuse for one caller-owned operation or turn. Only strings
+ * unchanged by the fixed sanitizer rules are retained, never recognized secret
+ * inputs. Objects and sensitive keys are traversed afresh on every call.
+ */
+export function createMemoizedSecretRedactor(): typeof redactSecretsInValue {
+  const clean = new Set<string>();
+  const maxCodeUnits = 131_072;
+  const maxEntries = 256;
+  let codeUnits = 0;
+  const redactString = (input: string): string => {
+    if (clean.has(input)) {
+      clean.delete(input);
+      clean.add(input);
+      return input;
+    }
+    const output = redactSecrets(input);
+    if (output !== input || input.length < 32 || input.length > 32_768) {
+      return output;
+    }
+    while (clean.size >= maxEntries || codeUnits + input.length > maxCodeUnits) {
+      const oldest = clean.values().next().value;
+      if (oldest === undefined) break;
+      clean.delete(oldest);
+      codeUnits -= oldest.length;
+    }
+    clean.add(input);
+    codeUnits += input.length;
+    return output;
+  };
+  return <T>(value: T): T =>
+    redactValue(value, new WeakMap<object, unknown>(), redactString) as T;
+}
+
+function redactValue(
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+  redactString: (input: string) => string = redactSecrets,
+): unknown {
+  if (typeof value === "string") return redactString(value);
   if (value === null || typeof value !== "object") return value;
 
   const existing = seen.get(value);
@@ -670,7 +708,7 @@ function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
     const output: unknown[] = [];
     seen.set(value, output);
     for (const item of value) {
-      output.push(redactValue(item, seen));
+      output.push(redactValue(item, seen, redactString));
     }
     return output;
   }
@@ -682,7 +720,7 @@ function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
       output[key] = REDACTED_SECRET;
       continue;
     }
-    output[key] = redactValue(nested, seen);
+    output[key] = redactValue(nested, seen, redactString);
   }
   return output;
 }

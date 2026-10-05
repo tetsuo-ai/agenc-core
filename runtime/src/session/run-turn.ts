@@ -164,7 +164,7 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
-  llmMessageToCheckpointResponseItem,
+  createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
 import {
@@ -2437,6 +2437,7 @@ async function* runTurnKernelInner(
   // rollout) — only the cursor + content hash + the resumable TurnState
   // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
   const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
+  const projectCheckpointMessage = createCheckpointResponseItemProjector();
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
@@ -2473,7 +2474,7 @@ async function* runTurnKernelInner(
     const durablePrefix = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => llmMessageToCheckpointResponseItem(message));
+      .map((message) => projectCheckpointMessage(message));
     for (const message of durablePrefix) requireSealedToolResult(message);
     const prefixHash = computeCheckpointPrefixHashV3(
       durablePrefix,
