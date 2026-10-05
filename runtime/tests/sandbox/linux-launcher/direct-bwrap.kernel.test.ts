@@ -78,9 +78,12 @@ for fd in range(3,32):
  except OSError: pass
 with open('allowed','w') as f:f.write('once')
 print(json.dumps({'denied':len(denied),'fds':fds,'env':os.environ.get('NODE_ENV')}))`;
+  // A direct bwrap namespace helper can still be exiting when the root exits.
+  // Preserve the broker's conservative R flag, including for a waitable zombie.
   const result = await run("python3 -c " + quote(code), direct);
   expect(result.code, result.stderr).toBe(0);
-  expect(result.cleanupError).toBeUndefined(); expect(result.proof).toBe("SC");
+  expect(result.cleanupError).toBeUndefined(); expect(result.proof).toMatch(/^SR?C$/);
+  expect(result.cleanup?.residualProcessesTerminated).toBe(result.proof.includes("R"));
   expect(JSON.parse(result.stdout)).toEqual({ denied: 4, fds: [], env: "production" });
   expect(fs.readFileSync(outside, "utf8")).toBe("retained");
   expect(fs.readFileSync(path.join(cwd, "allowed"), "utf8")).toBe("once");
@@ -93,7 +96,8 @@ test.each(["disabled", "enabled"])("keeps socket policy equivalent to the launch
   const candidate = await run(command, true, { network });
   for (const result of [original, candidate]) {
     expect(result.code, result.stderr).toBe(0); expect(result.cleanupError).toBeUndefined();
-    expect(result.proof).toBe("SC");
+    expect(result.proof).toMatch(/^SR?C$/);
+  expect(result.cleanup?.residualProcessesTerminated).toBe(result.proof.includes("R"));
     expect(result.stdout.trim()).toBe(network === "disabled" ? "blocked" : "allowed");
   }
 });

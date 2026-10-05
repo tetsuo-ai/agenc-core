@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", async importOriginal => {
   const original = await importOriginal<typeof import("node:child_process")>();
-  return { ...original, spawn: vi.fn(original.spawn) };
+  return { ...original, spawn: vi.fn(original.spawn), execFileSync: vi.fn(original.execFileSync) };
 });
 vi.mock("../../src/utils/direct-bwrap-handoff.js", () => ({ consumeDirectBwrapPlan: vi.fn() }));
 const { consumeDirectBwrapPlan } = await import("../../src/utils/direct-bwrap-handoff.js");
@@ -107,6 +107,30 @@ describe.runIf(process.platform === "linux")("direct broker ownership at the pub
     expect((s.end.mock.calls[0]![0] as Buffer).subarray(0, 4).toString()).toBe("AGB1");
     expect(s.handoff.dispose).toHaveBeenCalledTimes(1);
     s.child.emit("close");
+  });
+
+  it("withholds every byte if the executable identity changes after spawn", () => {
+    const s = setup(); s.handoff.isCurrent.mockReturnValueOnce(true).mockReturnValue(false);
+    expect(s.run()).toBe(s.child);
+    expect(s.end).not.toHaveBeenCalled(); expect(s.nativeKill).toHaveBeenCalledWith("SIGKILL");
+    expect(s.spawn).toHaveBeenCalledTimes(1); expect(s.handoff.dispose).toHaveBeenCalledTimes(1);
+    s.child.emit("close");
+  });
+
+  it("keeps unsupported native protocols on AGB1 without preparing a descriptor", () => {
+    const s = setup();
+    const actual = cp.execFileSync;
+    const probe = vi.mocked(cp.execFileSync);
+    const implementation = probe.getMockImplementation()!;
+    probe.mockImplementation(((program: string, args: string[], options: unknown) => {
+      if (args?.[0] === "--describe-protocol") return "unsupported\n";
+      return Reflect.apply(implementation, cp, [program, args, options]);
+    }) as typeof actual);
+    try {
+      s.run(); expect(s.prepare).not.toHaveBeenCalled();
+      expect(s.spawn.mock.calls[0]![1]).toEqual([]);
+      expect((s.end.mock.calls[0]![0] as Buffer).subarray(0, 4).toString()).toBe("AGB1");
+    } finally { probe.mockImplementation(implementation); s.child.emit("close"); }
   });
 
   it("does not retry a native spawn exception", () => {
