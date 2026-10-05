@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyShellWorkspaceWritePolicy,
@@ -1031,6 +1031,19 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     expect(decision.message).toContain("may not write protected paths");
   });
 
+  it("judges sed -i after a cd on the file in that directory", () => {
+    // Read in the tool call's directory, app.ts did not exist and the edit passed.
+    const decision = classifyIn("cd src && sed -i 's/a/b/' app.ts");
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, "src/app.ts")]);
+  });
+
+  it("counts sed -i on a file it cannot check after a cd the line does not spell out", () => {
+    const decision = classifyIn('cd "$DIR" && sed -i \'s/a/b/\' app.ts');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
   it("edits a word the readings dispute only when it is a file", () => {
     // GNU edits .env, .bak and tmp/one.txt as files; BSD takes each as the
     // backup suffix. Only .bak does not exist.
@@ -1075,5 +1088,176 @@ describe("classifyShellWorkspaceWritePolicy with added directories", () => {
     const decision = classifyWithAdded("rm /srv/agenc-elsewhere/file.txt", true);
     expect(decision.blocked).toBe(true);
     expect(decision.message).toContain("only inside the workspace");
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
+  beforeEach(() => {
+    vi.stubEnv("CDPATH", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function classifyBypassed(command: string) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+  }
+
+  it("resolves a copy where cd && moved the shell", () => {
+    // Refused live as a write to /repo/full.
+    const decision = classify("cd tmp/scratch && cp -R game full");
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual(["/repo/tmp/scratch/full"]);
+
+    const absolute = classify("cd /repo/tmp/vr-verify && cp -R /repo/game full");
+    expect(absolute.blocked).toBe(false);
+    expect(absolute.observedTargets).toEqual(["/repo/tmp/vr-verify/full"]);
+  });
+
+  it("refuses a workspace write that climbs out of the directory cd moved to", () => {
+    // Read in the tool call's directory, this was /src/a.js, outside the workspace.
+    const decision = classify("cd tmp && echo x > ../src/a.js");
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.js"]);
+  });
+
+  it.each(['cd "$DIR"', "cd -", "cd ~/scratch", "pushd +1", "popd", "cd", "$CD tmp"])(
+    "makes a write after %s indeterminate",
+    (change) => {
+      const decision = classify(`HOME=/x; ${change} && echo x > a.js`);
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+    },
+  );
+
+  it("leaves a command that writes nothing after an unknown directory alone", () => {
+    for (const command of ['cd "$DIR" && npm test', "pushd build && make && popd", "cd - && ls"]) {
+      const decision = classify(command);
+      expect(decision.indeterminate, command).toBe(false);
+      expect(decision.blocked, command).toBe(false);
+    }
+  });
+
+  it("ends a subshell's cd with the subshell", () => {
+    const decision = classify("(cd tmp && echo x > a.txt) && echo y > b.txt");
+    expect(decision.observedTargets).toEqual(["/repo/tmp/a.txt", "/repo/b.txt"]);
+    expect(decision.blockedTargets).toEqual(["/repo/b.txt"]);
+    expect(classify("(cd tmp && echo x > a.txt)").blocked).toBe(false);
+  });
+
+  it("follows pushd, and popd to a directory the line does not name", () => {
+    const pushed = classify("pushd tmp && echo x > a.txt && popd");
+    expect(pushed.blocked).toBe(false);
+    expect(pushed.observedTargets).toEqual(["/repo/tmp/a.txt"]);
+
+    const popped = classify("pushd tmp && popd && echo x > a.txt");
+    expect(popped.indeterminate).toBe(true);
+    expect(popped.blocked).toBe(true);
+    expect(popped.observedTargets).toEqual(["/repo/tmp/a.txt", "/repo/a.txt"]);
+  });
+
+  it.each([
+    ["cd tmp; echo x > a.js", ["/repo/tmp/a.js", "/repo/a.js"]],
+    ["cd tmp || echo x > a.js", ["/repo/a.js"]],
+    ["cd tmp & echo x > a.js", ["/repo/a.js"]],
+    ["cd tmp | echo x > a.js", ["/repo/a.js"]],
+    // zsh runs a pipeline's last command in this shell.
+    ["true | cd tmp; echo x > a.js", ["/repo/a.js", "/repo/tmp/a.js"]],
+    ["cd tmp && true || echo x > a.js", ["/repo/a.js", "/repo/tmp/a.js"]],
+  ])("reads a command after a cd that may not have happened where it may run: %s", (command, targets) => {
+    const decision = classify(command);
+    expect(decision.observedTargets).toEqual(targets);
+    expect(decision.blockedTargets).toEqual(["/repo/a.js"]);
+    expect(decision.indeterminate).toBe(false);
+  });
+
+  it("does not let a cd inside a substitution leak into the command", () => {
+    const decision = classifyBypassed("cd tmp && echo `cd ../src` > a.js");
+    expect(decision.observedTargets).toEqual(["/repo/tmp/a.js"]);
+    expect(decision.blocked).toBe(false);
+    expect(classify("cd tmp && echo `cd ../src` > a.js").blocked).toBe(true);
+  });
+
+  it("follows cd inside a wrapped shell command", () => {
+    expect(classify("bash -c 'cd tmp && echo x > a.txt'").blocked).toBe(false);
+    expect(classify("bash -c 'cd tmp && echo x > ../a.txt'").blockedTargets).toEqual(["/repo/a.txt"]);
+  });
+
+  it("refuses a write after a cd under a compound command, also where the line starts", () => {
+    const decision = classify("cd tmp && if true; then cd ../src; fi; echo x > a.js");
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.js", "/repo/a.js"]);
+    expect(classify("if [ -d build ]; then cd build && make; fi").blocked).toBe(false);
+  });
+
+  it("keeps the line's old reading in play where the full bypass lifts indeterminate targets", () => {
+    // $DIR may be the workspace root: a.md there is a content write.
+    const unknown = classifyBypassed('cd tmp && cd "$DIR" && echo x > notes.md');
+    expect(unknown.indeterminate).toBe(true);
+    expect(unknown.blocked).toBe(true);
+    expect(unknown.blockedTargets).toEqual(["/repo/notes.md"]);
+
+    const sourced = classifyBypassed("cd tmp && source env.sh && echo x > notes.md");
+    expect(sourced.blockedTargets).toEqual(["/repo/notes.md"]);
+
+    const compound = classifyBypassed(
+      "cd tmp && for i in 1 2; do echo x > a.js; cd ../src; done",
+    );
+    expect(compound.blocked).toBe(true);
+    expect(compound.blockedTargets).toContain("/repo/a.js");
+
+    // As before: indeterminate, run, nothing in the workspace named.
+    expect(classifyBypassed('cd "$DIR" && echo x > tmp/a.txt').blocked).toBe(false);
+  });
+
+  it.each([
+    "trap 'cd ../src' DEBUG; cd tmp && echo x > a.js",
+    "shopt -s cdable_vars; cd tmp && echo x > a.js",
+    "enable -n cd; cd tmp && echo x > a.js",
+  ])("does not follow cd in a line that changes how the shell behaves: %s", (command) => {
+    const decision = classify(command);
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/a.js"]);
+  });
+
+  it("does not follow a relative cd that CDPATH may send elsewhere", () => {
+    expect(classify("CDPATH=src cd tmp && echo x > a.txt").indeterminate).toBe(true);
+    vi.stubEnv("CDPATH", "/srv/projects");
+    expect(classify("cd tmp && echo x > a.txt").indeterminate).toBe(true);
+    const dotted = classify("cd ./tmp && echo x > a.txt");
+    expect(dotted.indeterminate).toBe(false);
+    expect(dotted.blocked).toBe(false);
+  });
+
+  it("removes and backs up the file in the directory cd moved to", () => {
+    const decision = classify("cd src && rm a.js", true);
+    expect(decision.blocked).toBe(false);
+    expect(decision.deletionTargets).toEqual(["/repo/src/a.js"]);
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "cd src && rm a.js" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.js"]);
+    expect(classify('cd "$DIR" && rm a.js', true).blocked).toBe(true);
+  });
+
+  it("reads a line without cd as it always did", () => {
+    expect(classify("echo x > tmp/a.txt; rm -f build/x; touch src/b.js").observedTargets).toEqual([
+      "/repo/tmp/a.txt",
+      "/repo/src/b.js",
+      "/repo/build/x",
+    ]);
   });
 });
