@@ -1086,6 +1086,7 @@ export class AgenCSessionSnapshotPolicy {
         timed("session_snapshot_write", () =>
           writeSessionSnapshotAtomically(this.#driver, pending.record, {
             updateRunLastSnapshotAt: true, replayOnStartup: true, verifyExisting: true,
+            oneShotRunId: state.agentId,
           }),
         );
         state.pendingWrite = undefined;

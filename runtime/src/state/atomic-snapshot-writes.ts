@@ -28,6 +28,8 @@ export interface SessionSnapshotWriteRecord {
 }
 
 export interface SessionSnapshotAtomicWriteOptions {
+  /** Cached owner hint; the active writer and persisted session link are rechecked. */
+  readonly oneShotRunId?: string;
   readonly updateRunLastSnapshotAt?: boolean;
   readonly replayOnStartup?: boolean;
   readonly verifyExisting?: boolean;
@@ -59,9 +61,7 @@ export function writeSessionSnapshotAtomically(
   if (options.verifyExisting && driver.state.inTransaction) {
     throw new Error("retryable snapshot writes require their own transaction");
   }
-  const runId = driver.prepareState<[string], { agent_id: string }>(
-    "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
-  ).get(record.sessionId)?.agent_id;
+  const runId = options.oneShotRunId;
   // This is an auxiliary snapshot of an explicitly active relaxed print run.
   // Its canonical active marker already refuses recovery after a crash, and
   // the existing close/promote seal checkpoints this same project's SQLite
@@ -70,6 +70,9 @@ export function writeSessionSnapshotAtomically(
   // Existing staged retries, foreign owners/scopes and full/resumed sessions
   // retain the original durable staging path.
   if (runId !== undefined && driver.isRelaxedOneShotRun(runId) &&
+      driver.prepareState<[string], { agent_id: string }>(
+        "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+      ).get(record.sessionId)?.agent_id === runId &&
       !existsSync(pendingSnapshotPath(driver.projectDir, record))) {
     const pending = describeSessionSnapshotWrite(driver.projectDir, record, options);
     withOneShotWriteScope(driver.projectDir, runId, () => driver.transaction(() => {

@@ -23,12 +23,12 @@ if (command === "crash") {
   writeFileSync(pathRecord, store.rolloutPath);
   const kill = () => { process.kill(process.pid, "SIGKILL"); throw new Error("SIGKILL returned"); };
   if (boundary === "opened") kill();
-  const snapshotDriver = openStateDatabases({ cwd, agencHome: home });
+  const snapshotDriver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
   snapshotDriver.prepareState("INSERT INTO session_agent_links(session_id, agent_id) VALUES (?, ?)").run("snapshot-session", "crash-run");
   writeSessionSnapshotAtomically(snapshotDriver, {
     sessionId: "snapshot-session", snapshotAt: meta.timestamp,
     conversationJson: '["snapshot"]', toolStateJson: '{}', mcpConnectionStateJson: '{}',
-  }, { replayOnStartup: true, verifyExisting: true });
+  }, { replayOnStartup: true, verifyExisting: true, oneShotRunId: "crash-run" });
   snapshotDriver.close();
   if (boundary === "snapshot") kill();
   if (boundary === "pending-logs") {
