@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UnifiedExecRuntimeSandbox, UnifiedExecSandboxManager } from "../../src/unified-exec/types.js";
 import { prepareReadOnlyInspectionInvocation } from "../../src/permissions/readonly-inspection.js";
 
+vi.mock("node:child_process", async original => ({
+  ...await original<typeof import("node:child_process")>(), spawn: vi.fn(),
+}));
 vi.mock("../../src/utils/supervisedProcess.js", async original => ({
   ...await original<typeof import("../../src/utils/supervisedProcess.js")>(),
   spawnContainedProcess: vi.fn(() => { throw new Error("route captured"); }),
@@ -54,7 +57,7 @@ describe.runIf(process.platform === "linux")("direct bwrap route exclusions", ()
 
   it("keeps detached dispatch outside the containment/direct path", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root, sandboxManager });
-    const spawn = vi.spyOn(cp, "spawn").mockImplementation(() => { throw new Error("detached route captured"); });
+    const spawn = vi.mocked(cp.spawn).mockImplementation(() => { throw new Error("detached route captured"); });
     await expect(manager.startDetachedProcess({ cmd: "pwd" })).rejects.toThrow("detached route captured");
     expect(spawn).toHaveBeenCalledTimes(1); expect(spawn.mock.calls[0]![2]).toMatchObject({ detached: true });
     expect(spawnContainedProcess).not.toHaveBeenCalled();
