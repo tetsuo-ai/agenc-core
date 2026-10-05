@@ -1167,7 +1167,9 @@ export class AgenCDaemonJsonRpcDispatcher {
         await this.#agentManager.stopAgent({ agentId: result.agentId, reason: "one_shot_cancelled" });
       }, () => {}).finally(() => {
         owners.delete(owner);
-        if (owners.size === 0) this.#printAgents.delete(connection);
+        if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
       }),
     };
     owners.add(owner);
@@ -1184,7 +1186,9 @@ export class AgenCDaemonJsonRpcDispatcher {
       return result;
     } catch (error) {
       owners.delete(owner);
-      if (owners.size === 0) this.#printAgents.delete(connection);
+      if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
       throw error;
     }
   }
