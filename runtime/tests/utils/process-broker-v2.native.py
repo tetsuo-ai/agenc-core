@@ -103,8 +103,8 @@ class Faults(unittest.TestCase):
    ('seal-failure','fcntl(fd, F_ADD_SEALS, seals)','(errno = EPERM, -1)',False),
    ('read-failure',read,'ssize_t n = (errno = EIO, -1);',False),
    ('short-eintr',read,'static unsigned reads; ssize_t n; if (++reads == 1) { errno = EINTR; n = -1; } else n = pread(5, verified + offset, 1, (off_t)offset);',True),
-   ('mutation-during-read',read,'if (offset == 1 && pwrite(5, "abcdefgh", 8, 0) != 8) goto failure; ssize_t n = pread(5, verified + offset, 1, (off_t)offset);',False),
-   ('mutation-after-compare',snapshot,'if (pwrite(5, "abcdefgh", 8, 0) != 8) goto failure; '+snapshot,True),
+   ('mutation-during-read',read,'if (offset == 1 && pwrite(5, "abcdefgh", 8, 0) != 8) { goto failure; } ssize_t n = pread(5, verified + offset, 1, (off_t)offset);',False),
+   ('mutation-after-compare',snapshot,'if (pwrite(5, "abcdefgh", 8, 0) != 8) { goto failure; } '+snapshot,True),
    ('fork-failure','root_pid = fork();\n  if (root_pid == 0) run_v2_target_child','root_pid = -1; errno = EAGAIN;\n  if (root_pid == 0) run_v2_target_child',False),
   ]
   try:
