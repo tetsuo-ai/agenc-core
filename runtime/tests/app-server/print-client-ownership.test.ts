@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgenCDaemonJsonRpcDispatcher, type AgenCDaemonDispatcherOptions } from "../../src/app-server/daemon-dispatcher.js";
 import type { JsonObject } from "../../src/app-server/protocol/index.js";
 
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+
 const dispatchers: AgenCDaemonJsonRpcDispatcher[] = [];
 afterEach(async () => { for (const d of dispatchers.splice(0)) await d.close().catch(() => {}); });
 const rpc = (id: string, method: string, params: JsonObject = {}): JsonObject => ({ jsonrpc: "2.0", id, method, params });
-const freshPrint = (): JsonObject => ({ objective: "test", runtimeOptions: { nonInteractive: true }, metadata: { source: "agenc.prompt", mode: "one-shot" } });
+const freshPrint = (): JsonObject => ({ objective: "test", runtimeOptions: { ...resolveAgentRuntimeOptions({}), nonInteractive: true }, metadata: { source: "agenc.prompt", mode: "one-shot" } });
 function fixture() {
   let next = 0;
   const manager = {
@@ -67,10 +69,10 @@ describe("ordinary print connection ownership", () => {
     expect(h.manager.stopAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-1", reason: "one_shot_complete" });
   });
   it.each([
-    { objective: "interactive", runtimeOptions: { nonInteractive: false }, metadata: { source: "agenc.prompt", mode: "one-shot" } },
-    { objective: "detached", runtimeOptions: { nonInteractive: true } },
-    { objective: "other", runtimeOptions: { nonInteractive: true }, metadata: { source: "other", mode: "one-shot" } },
-    { ...freshPrint(), resumeSessionId: "existing" },
+    { objective: "interactive", runtimeOptions: { ...resolveAgentRuntimeOptions({}), nonInteractive: false }, metadata: { source: "agenc.prompt", mode: "one-shot" } },
+    { objective: "detached", runtimeOptions: { ...resolveAgentRuntimeOptions({}), nonInteractive: true } },
+    { objective: "other", runtimeOptions: { ...resolveAgentRuntimeOptions({}), nonInteractive: true }, metadata: { source: "other", mode: "one-shot" } },
+    { ...freshPrint(), resumeSessionId: "existing", resumeRolloutPath: "/tmp/rollout.jsonl", resumeSourceProof: { dev: "1", ino: "2", size: "3", sha256: "a".repeat(64), cwdDev: "1", cwdIno: "4" } },
   ])("keeps interactive, detached and resumed lifetimes unchanged: %j", async params => {
     const h = fixture(), c = await h.connect();
     expect(await c.dispatch(rpc("create", "agent.create", params))).toHaveProperty("result");
