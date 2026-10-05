@@ -139,6 +139,7 @@ export const HOSTED_FND_TEST_INCLUDE = Object.freeze([
 export const KERNEL_TEST_INCLUDE = Object.freeze([
   "tests/sandbox/landlock-seccomp.kernel.test.ts",
   "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+  "tests/sandbox/linux-launcher/direct-bwrap.kernel.test.ts",
   "tests/sandbox/readonly-delegation.kernel.test.ts",
 ]);
 

@@ -10,8 +10,8 @@ vi.mock("node:child_process", async importOriginal => {
   const original = await importOriginal<typeof import("node:child_process")>();
   return { ...original, spawn: vi.fn(original.spawn) };
 });
-vi.mock("../../src/sandbox/linux-launcher/direct-bwrap.js", () => ({ consumeDirectBwrapPlan: vi.fn() }));
-const { consumeDirectBwrapPlan } = await import("../../src/sandbox/linux-launcher/direct-bwrap.js");
+vi.mock("../../src/utils/direct-bwrap-handoff.js", () => ({ consumeDirectBwrapPlan: vi.fn() }));
+const { consumeDirectBwrapPlan } = await import("../../src/utils/direct-bwrap-handoff.js");
 const { spawnContainedProcess } = await import("../../src/utils/supervisedProcess.js");
 
 const scratch: string[] = [];

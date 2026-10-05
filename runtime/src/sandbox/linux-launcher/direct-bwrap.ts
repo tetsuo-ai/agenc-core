@@ -13,23 +13,8 @@ import { preferredBubblewrapLauncher } from "./launcher.js";
 import { createProcMountProbeArgs, runProcMountProbe } from "./proc-probe.js";
 import { capabilityDigest } from "./capability-hint.js";
 
-const brand = Symbol("prepared direct bubblewrap");
-export interface PreparedDirectBwrap { readonly [brand]: true }
-export interface DirectBwrapHandoff {
-  readonly payload: Buffer;
-  readonly sourceFd: number | undefined;
-  readonly isCurrent: () => boolean;
-  readonly dispose: () => void;
-}
-const prepared = new WeakMap<PreparedDirectBwrap, DirectBwrapHandoff>();
-
-/** Neither a serialized tool request nor a structurally similar object is a plan. */
-export function consumeDirectBwrapPlan(plan: PreparedDirectBwrap): DirectBwrapHandoff {
-  const handoff = prepared.get(plan);
-  if (handoff === undefined) throw new Error("invalid or consumed direct bubblewrap plan");
-  prepared.delete(plan);
-  return handoff;
-}
+import { registerDirectBwrapPlan, type PreparedDirectBwrap } from "../../utils/direct-bwrap-handoff.js";
+export { consumeDirectBwrapPlan, type PreparedDirectBwrap } from "../../utils/direct-bwrap-handoff.js";
 
 function fileIdentity(file: string): string {
   const stat = fs.statSync(file, { bigint: true });
@@ -166,9 +151,8 @@ export function prepareDirectBwrapPlan(input: {
       env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }, ownerPid: process.pid,
       ...(seccomp === undefined ? {} : { seccomp }) });
     const ownedSource = source;
-    const plan: PreparedDirectBwrap = Object.freeze({ [brand]: true as const });
-    prepared.set(plan, Object.freeze({ payload, sourceFd: source?.fd, isCurrent,
-      dispose: () => ownedSource?.dispose() }));
+    const plan = registerDirectBwrapPlan({ payload, sourceFd: source?.fd, isCurrent,
+      dispose: () => ownedSource?.dispose() });
     source = undefined;
     return plan;
   } catch {

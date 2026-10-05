@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -16,6 +16,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   rmdirSync,
   statSync,
@@ -27,8 +29,7 @@ import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
 import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
-import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "../sandbox/linux-launcher/direct-bwrap.js";
-import { bubblewrapCapabilityContext } from "../sandbox/linux-launcher/capability-hint.js";
+import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
 import { isSignalablePid } from "./child-signal.js";
 
 import {
@@ -832,7 +833,20 @@ export function spawnContainedProcess(
 const directBrokerCapabilities = new Set<string>();
 function directBrokerContext(broker: string, cwd: string): string | undefined {
   if (!isTrustedLinuxSubreaperBroker(broker)) return undefined;
-  return bubblewrapCapabilityContext(broker, cwd, trustedPosixBootstrapEnvironment());
+  try {
+    const binary = statSync(broker, { bigint: true });
+    const directory = statSync(cwd, { bigint: true });
+    const context = {
+      program: realpathSync(broker),
+      binary: [binary.dev, binary.ino, binary.size, binary.mode, binary.uid,
+        binary.gid, binary.mtimeNs, binary.ctimeNs].map(String),
+      cwd: [realpathSync(cwd), String(directory.dev), String(directory.ino)],
+      uid: process.getuid?.(), gid: process.getgid?.(), groups: process.getgroups?.(),
+      namespaces: ["user", "mnt", "net", "pid"].map(name => readlinkSync(`/proc/self/ns/${name}`)),
+      mounts: readFileSync("/proc/self/mountinfo", "utf8"),
+    };
+    return createHash("sha256").update(JSON.stringify(context)).digest("hex");
+  } catch { return undefined; }
 }
 function describeDirectBroker(broker: string, cwd: string): string | undefined {
   const context = directBrokerContext(broker, cwd);
