@@ -3031,11 +3031,126 @@ function clampEventForStorage(
 }
 
 /**
+ * Per-token stream deltas that fold into the stored delta right before them.
+ * The adapter only ever concatenates their `delta` text, so one stored event
+ * per run of deltas projects exactly like the run itself. Without folding, a
+ * max-effort turn (tens of thousands of reasoning deltas) pushed the whole
+ * conversation out of the `MAX_TRANSCRIPT_EVENTS` window: the transcript
+ * collapsed to its last few rows and the screen went blank above the working
+ * line.
+ */
+const FOLDABLE_DELTA_TYPES: ReadonlySet<string> = new Set([
+  "agent_message_delta",
+  "assistant_thinking_delta",
+]);
+
+/** Dedup keys of the deltas folded into a stored event, oldest first. */
+const foldedDeltaKeys = new WeakMap<object, readonly string[]>();
+
+/** Every dedup key a stored event stands for: its own and any folded ones. */
+function storedEventKeys(event: SessionTranscriptEvent): readonly string[] {
+  const folded = foldedDeltaKeys.get(event);
+  return folded === undefined ? [eventKey(event)] : [...folded, eventKey(event)];
+}
+
+function hasStableEventKey(event: SessionTranscriptEvent): boolean {
+  return (
+    ("seq" in event && typeof event.seq === "number") ||
+    ("id" in event && typeof event.id === "string")
+  );
+}
+
+/** The payload object a delta's text lives in, for either event shape. */
+function deltaPayload(
+  event: SessionTranscriptEvent,
+): Record<string, unknown> | null {
+  const record = event as Record<string, unknown>;
+  const msg = record.msg;
+  const payload =
+    msg && typeof msg === "object" && !Array.isArray(msg)
+      ? (msg as Record<string, unknown>).payload
+      : record.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const result = payload as Record<string, unknown>;
+  return typeof result.delta === "string" ? result : null;
+}
+
+/** True when two delta payloads differ only in their text. */
+function sameDeltaStream(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const fields = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const field of fields) {
+    if (field === "delta" || left[field] === right[field]) continue;
+    if (
+      typeof left[field] !== "object" ||
+      typeof right[field] !== "object" ||
+      JSON.stringify(left[field]) !== JSON.stringify(right[field])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Fold `next` into `previous` when both are deltas of the same stream: the
+ * result is `next` (keeping its `seq`/`id`, so ordering and dedup hold) with
+ * the two texts joined. Returns null when they do not fold. Keyless events
+ * never fold, because their dedup key is their content.
+ */
+function foldStreamDelta(
+  previous: SessionTranscriptEvent | undefined,
+  next: SessionTranscriptEvent,
+): SessionTranscriptEvent | null {
+  if (previous === undefined) return null;
+  const type = unwrap(next).type;
+  if (!FOLDABLE_DELTA_TYPES.has(type) || unwrap(previous).type !== type) {
+    return null;
+  }
+  if (!hasStableEventKey(previous) || !hasStableEventKey(next)) return null;
+  if (("msg" in previous) !== ("msg" in next)) return null;
+  const before = deltaPayload(previous);
+  const after = deltaPayload(next);
+  if (before === null || after === null || !sameDeltaStream(before, after)) {
+    return null;
+  }
+  const payload = {
+    ...after,
+    delta: `${before.delta as string}${after.delta as string}`,
+  };
+  const record = next as Record<string, unknown>;
+  const folded = (
+    "msg" in next
+      ? { ...record, msg: { ...(record.msg as Record<string, unknown>), payload } }
+      : { ...record, payload }
+  ) as SessionTranscriptEvent;
+  foldedDeltaKeys.set(folded, [
+    ...storedEventKeys(previous),
+    ...(foldedDeltaKeys.get(next) ?? []),
+  ]);
+  return folded;
+}
+
+/** Append one event to the store, folding a stream delta into the one before it. */
+function pushStoredEvent(
+  events: SessionTranscriptEvent[],
+  event: SessionTranscriptEvent,
+): void {
+  const folded = foldStreamDelta(events.at(-1), event);
+  if (folded === null) events.push(event);
+  else events[events.length - 1] = folded;
+}
+
+/**
  * Ring-buffer the events array in place: if it grew past
  * `MAX_TRANSCRIPT_EVENTS`, drop the oldest events and remove their dedup keys
- * from `keys`. Visually safe — the renderer is virtualized to ~300 rows, so the
- * dropped events are off-screen, and their full content remains in scrollback
- * and the on-disk transcript. Bounds both event count and total retained bytes.
+ * (folded ones included) from `keys`. Stream deltas fold into one event per
+ * run, so the window holds structural events: tool calls, results and turn
+ * boundaries. Bounds both event count and total retained bytes.
  */
 function evictOldestEvents(
   events: SessionTranscriptEvent[],
@@ -3045,7 +3160,7 @@ function evictOldestEvents(
   const dropCount = events.length - MAX_TRANSCRIPT_EVENTS;
   const dropped = events.splice(0, dropCount);
   for (const event of dropped) {
-    keys.delete(eventKey(event));
+    for (const key of storedEventKeys(event)) keys.delete(key);
   }
 }
 
@@ -3070,10 +3185,10 @@ function buildTranscriptState(
       continue;
     }
     if (keys.has(key)) continue;
-    keys.add(key);
+    for (const storedKey of storedEventKeys(event)) keys.add(storedKey);
     sessionCostUsd += tokenCountCostUsd(event);
     sessionUsage = latestSessionUsage(sessionUsage, event);
-    events.push(clampEventForStorage(event));
+    pushStoredEvent(events, clampEventForStorage(event));
     maxSeq = maxEventSeq(maxSeq, event);
   }
 
@@ -3110,7 +3225,8 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       // first invoke made the second invoke see the key as already-present and
       // drop the event from the committed render. The clone is O(n) in the Set
       // size, but ring-buffer eviction bounds that Set alongside the events array.
-      const events = [...state.events, clampEventForStorage(action.event)];
+      const events = [...state.events];
+      pushStoredEvent(events, clampEventForStorage(action.event));
       const keys = new Set(state.keys);
       keys.add(key);
       evictOldestEvents(events, keys);
@@ -3144,14 +3260,18 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         const knownKeys = new Set(state.keys);
         let addedCostUsd = 0;
         let sessionUsage = state.sessionUsage;
+        const fresh: SessionTranscriptEvent[] = [];
         for (const event of action.events) {
           const key = eventKey(event);
           if (knownKeys.has(key)) continue;
           knownKeys.add(key);
+          fresh.push(event);
           addedCostUsd += tokenCountCostUsd(event);
           sessionUsage = latestSessionUsage(sessionUsage, event);
         }
-        const rebuilt = buildTranscriptState([...state.events, ...action.events]);
+        // Known events stay out of the rebuild: a replayed delta sorts ahead
+        // of the stored event it was folded into, and would be added twice.
+        const rebuilt = buildTranscriptState([...state.events, ...fresh]);
         return {
           ...rebuilt,
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
@@ -3174,7 +3294,8 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
       if (pending.length === 0) return state;
-      const events = [...state.events, ...pending];
+      const events = [...state.events];
+      for (const event of pending) pushStoredEvent(events, event);
       evictOldestEvents(events, keys);
       return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
     }
