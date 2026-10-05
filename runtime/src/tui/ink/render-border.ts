@@ -80,6 +80,7 @@ const renderBorder = (
   y: number,
   node: DOMNode,
   output: Output,
+  inheritedBackgroundColor?: Color,
 ): void => {
   if (node.style.borderStyle) {
     const width = Math.floor(node.yogaNode!.getComputedWidth())
@@ -102,7 +103,8 @@ const renderBorder = (
     // background SGR the terminal's profile background leaks through behind
     // the line glyph, producing a full-cell gray/purple halo around an
     // otherwise white border.
-    const borderBackgroundColor = node.style.backgroundColor
+    const borderBackgroundColor =
+      node.style.backgroundColor ?? inheritedBackgroundColor
 
     const dimTopBorderColor =
       node.style.borderTopDimColor ?? node.style.borderDimColor

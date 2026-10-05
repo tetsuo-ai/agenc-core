@@ -2,6 +2,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type PropsWithChildren, useContext, useInsertionEffect } from 'react';
 import { getInkInstance } from '../instances.js';
+import { setDefaultTextColor } from '../render-node-to-output.js';
 import { DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../termio/dec.js';
 import { TerminalWriteContext } from '../useTerminalNotification.js';
 import Box from './Box.js';
@@ -9,6 +10,13 @@ import { TerminalSizeContext } from './TerminalSizeContext.js';
 type Props = PropsWithChildren<{
   /** Enable SGR mouse tracking (wheel + click/drag). Default true. */
   mouseTracking?: boolean;
+  /**
+   * Paint the whole viewport with this color so the screen never depends on
+   * the terminal's own default background. Unset keeps the terminal default.
+   */
+  backgroundColor?: string;
+  /** Text color for text that sets none, paired with backgroundColor. */
+  foregroundColor?: string;
 }>;
 
 /**
@@ -32,11 +40,19 @@ type Props = PropsWithChildren<{
  * screen if the component's own unmount doesn't run.
  */
 export function AlternateScreen(t0) {
-  const $ = _c(7);
+  const $ = _c(8);
   const {
     children,
-    mouseTracking: t1
+    mouseTracking: t1,
+    backgroundColor,
+    foregroundColor
   } = t0;
+  // Set before Ink's output pass for this commit, and cleared on unmount so
+  // main-screen rendering keeps the terminal's own text color.
+  useInsertionEffect(() => {
+    setDefaultTextColor(foregroundColor);
+    return () => setDefaultTextColor(undefined);
+  }, [foregroundColor]);
   const mouseTracking = t1 === undefined ? true : t1;
   const size = useContext(TerminalSizeContext);
   const writeRaw = useContext(TerminalWriteContext);
@@ -68,10 +84,11 @@ export function AlternateScreen(t0) {
   useInsertionEffect(t2, t3);
   const t4 = size?.rows ?? 24;
   let t5;
-  if ($[4] !== children || $[5] !== t4) {
-    t5 = <Box flexDirection="column" height={t4} width="100%" flexShrink={0}>{children}</Box>;
+  if ($[4] !== children || $[5] !== t4 || $[7] !== backgroundColor) {
+    t5 = <Box flexDirection="column" height={t4} width="100%" flexShrink={0} backgroundColor={backgroundColor || undefined}>{children}</Box>;
     $[4] = children;
     $[5] = t4;
+    $[7] = backgroundColor;
     $[6] = t5;
   } else {
     t5 = $[6];

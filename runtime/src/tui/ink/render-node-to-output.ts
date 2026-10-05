@@ -33,6 +33,16 @@ function isXtermJsHost(): boolean {
 // O(rows×cols).
 let layoutShifted = false
 
+// The app's own text color for text that sets none, so text never falls
+// back to the terminal's default foreground on an app-painted background.
+// Set by AlternateScreen for the session; undefined keeps the terminal
+// default (main-screen rendering and tests).
+let defaultTextColor: Color | undefined
+
+export function setDefaultTextColor(color: Color | undefined): void {
+  defaultTextColor = color || undefined
+}
+
 export function resetLayoutShifted(): void {
   layoutShifted = false
 }
@@ -571,8 +581,13 @@ function renderNodeToOutput(
     } else if (node.nodeName === 'ink-text') {
       const segments = squashTextNodesToSegments(
         node,
-        inheritedBackgroundColor
-          ? { backgroundColor: inheritedBackgroundColor }
+        inheritedBackgroundColor || defaultTextColor
+          ? {
+              ...(defaultTextColor ? { color: defaultTextColor } : {}),
+              ...(inheritedBackgroundColor
+                ? { backgroundColor: inheritedBackgroundColor }
+                : {}),
+            }
           : undefined,
       )
 
@@ -1231,8 +1246,11 @@ function renderNodeToOutput(
           const innerHeight = Math.floor(height) - borderTop - borderBottom
           if (innerWidth > 0 && innerHeight > 0) {
             const spaces = ' '.repeat(innerWidth)
-            const fillLine = ownBackgroundColor
-              ? applyTextStyles(spaces, { backgroundColor: ownBackgroundColor })
+            // An opaque box with no color of its own takes the inherited
+            // background, so it never punches a hole to the terminal's.
+            const fillColor = ownBackgroundColor ?? inheritedBackgroundColor
+            const fillLine = fillColor
+              ? applyTextStyles(spaces, { backgroundColor: fillColor })
               : spaces
             const fill = Array(innerHeight).fill(fillLine).join('\n')
             output.write(x + borderLeft, y + borderTop, fill)
@@ -1264,7 +1282,7 @@ function renderNodeToOutput(
       // Render border AFTER children to ensure it's not overwritten by child
       // clearing operations. When a child shrinks, it clears its old area,
       // which may overlap with where the parent's border now is.
-      renderBorder(x, y, node, output)
+      renderBorder(x, y, node, output, boxBackgroundColor)
     } else if (node.nodeName === 'ink-root') {
       renderChildren(
         node,

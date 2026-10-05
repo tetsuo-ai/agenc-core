@@ -95,7 +95,9 @@ import {
   useApp,
   useTerminalFocus,
   useTerminalTitle,
+  useTheme,
 } from "../ink.js";
+import { getTheme } from "../../utils/theme.js";
 import {
   clearPendingResumeSessionId,
   setPendingResumeSessionId,
@@ -2181,6 +2183,7 @@ export function getTuiProviderEnvironment(
 
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
+  const [themeName] = useTheme();
   const settings = useSettings();
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
@@ -4925,7 +4928,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   if (fullscreen) {
     return (
       <FullscreenModeProvider enabled={fullscreen}>
-        <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
+        {/* The app paints its own background so the screen reads the same on
+            any terminal; shaded surfaces sit on top of it. */}
+        <AlternateScreen
+          mouseTracking={isMouseTrackingEnabled()}
+          backgroundColor={getTheme(themeName).surfaceBackground}
+          foregroundColor={getTheme(themeName).text}
+        >
           {body}
         </AlternateScreen>
       </FullscreenModeProvider>
