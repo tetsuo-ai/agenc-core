@@ -7,6 +7,7 @@ import type { TurnState } from "../session/turn-state.js";
 import {
   MAX_OUTPUT_TOKENS_ESCALATED,
   MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
+  RETRY_REASONING_ONLY_CONTENT,
   runMaxOutputTokensRecovery,
 } from "./max-output-tokens.js";
 
@@ -153,6 +154,53 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test("reasoning-only retries ask for an action without raising an explicit ceiling", () => {
+    const session = mkSession(new EventLog());
+    const state = mkState({
+      messages: [{ role: "user", content: "Fix the parser" }],
+      assistantMessages: [{ uuid: "capped", role: "assistant", text: "", toolCalls: [], apiError: "max_output_tokens" }],
+      lastResponseUsage: { promptTokens: 10, completionTokens: 8192, totalTokens: 8202, reasoningOutputTokens: 8192 },
+    });
+    for (let retry = 0; retry < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT; retry++) {
+      const before = JSON.stringify(state.messages);
+      expect(runMaxOutputTokensRecovery({ session, state, escalateAllowed: false })).toEqual({ kind: "continuation" });
+      expect(JSON.stringify(state.messages)).not.toBe(before);
+      expect(state.messages.at(-1)).toEqual({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
+      expect(state.maxOutputTokensOverride).toBeUndefined();
+      expect(state.maxOutputTokensRecoveryCount).toBe(retry + 1);
+    }
+    const history = [...state.messages];
+    expect(runMaxOutputTokensRecovery({ session, state, escalateAllowed: false }).kind).toBe("exhausted");
+    expect(state.messages).toEqual(history);
+  });
+
+  test("permitted default-budget escalation also changes a reasoning-only request", () => {
+    const state = mkState({
+      messages: [{ role: "user", content: "Fix the parser" }], messagesAtSampleStart: 1,
+      assistantMessages: [{ uuid: "capped", role: "assistant", text: "", toolCalls: [], apiError: "max_output_tokens" }],
+      lastResponseUsage: { promptTokens: 10, completionTokens: 8192, totalTokens: 8202, reasoningOutputTokens: 8192 },
+    });
+    expect(runMaxOutputTokensRecovery({ session: mkSession(new EventLog()), state }).kind).toBe("escalate");
+    expect(state.maxOutputTokensOverride).toBe(MAX_OUTPUT_TOKENS_ESCALATED);
+    expect(state.messages.at(-1)?.content).toBe(RETRY_REASONING_ONLY_CONTENT);
+  });
+
+  test.each([
+    { text: "partial answer", reasoning: 8190, tools: [] },
+    { text: "", reasoning: undefined, tools: [] },
+    { text: "", reasoning: 0, tools: [] },
+    { text: "", reasoning: 8192, tools: ["Write"] },
+  ])("ordinary prose, unknown reasoning and truncated tools retain their recovery ($text/$reasoning/$tools)", ({ text, reasoning, tools }) => {
+    const state = mkState({
+      assistantMessages: [{ uuid: "capped", role: "assistant", text, toolCalls: [], apiError: "max_output_tokens" }],
+      truncatedToolCallNames: tools,
+      lastResponseUsage: { promptTokens: 10, completionTokens: 8192, totalTokens: 8202, reasoningOutputTokens: reasoning },
+    });
+    runMaxOutputTokensRecovery({ session: mkSession(new EventLog()), state, escalateAllowed: false });
+    expect(state.messages.at(-1)?.content).not.toBe(RETRY_REASONING_ONLY_CONTENT);
+    expect(state.messages.at(-1)?.content).toContain(tools.length ? "complete valid JSON" : "Pick up at the next token");
+  });
+
   test.each([
     ["Write"],
     ["mcp__files__write"],

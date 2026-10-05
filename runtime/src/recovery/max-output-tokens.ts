@@ -55,6 +55,11 @@ const RETRY_REFERENCED_HANDOFF_CONTENT =
 const RESUME_META_CONTENT =
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
 
+export const RETRY_REASONING_ONLY_CONTENT =
+  "The previous response exhausted its output budget on reasoning without returning an answer or a tool call. " +
+  "Choose the next concrete step now: make one short, complete call to an available tool, or give a concise final answer if the task is complete. " +
+  "Do not restart the analysis. Stay within the task's scope and current tool permissions.";
+
 export type MaxOutputTokensOutcome =
   | { readonly kind: "escalate" }
   | { readonly kind: "continuation" }
@@ -432,6 +437,14 @@ export function runMaxOutputTokensRecovery(
   const { session, state } = opts;
   const overrideUnset = state.maxOutputTokensOverride === undefined;
   const truncatedTools = (state.truncatedToolCallNames?.length ?? 0) > 0;
+  // There is no visible answer to continue in a reasoning-only response.
+  // Repeating the generic continuation can spend each retry reasoning again.
+  const reasoningOnly = !truncatedTools &&
+    (state.lastResponseUsage?.reasoningOutputTokens ?? 0) > 0 &&
+    state.assistantMessages.length > 0 &&
+    state.assistantMessages.every((message) =>
+      message.apiError === "max_output_tokens" &&
+      !message.text?.trim() && message.toolCalls.length === 0);
   // Only the calling session's active human input can back message_ref.
   // Child sessions and autonomous turns still need inline-message recovery.
   const canReferenceMessage = (session.currentRootHumanTurn?.()?.text?.trim().length ?? 0) > 0;
@@ -446,6 +459,9 @@ export function runMaxOutputTokensRecovery(
     state.transition = { reason: "max_output_tokens_escalate" };
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);
+    if (reasoningOnly) {
+      state.messages.push({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
+    }
     return { kind: "escalate" };
   }
 
@@ -459,7 +475,7 @@ export function runMaxOutputTokensRecovery(
       content: truncatedTools
         ? RETRY_TRUNCATED_TOOL_CONTENT + (canReferenceMessage && state.truncatedToolCallNames!.includes("spawn_agent")
           ? RETRY_REFERENCED_HANDOFF_CONTENT : "")
-        : RESUME_META_CONTENT,
+        : reasoningOnly ? RETRY_REASONING_ONLY_CONTENT : RESUME_META_CONTENT,
     };
     state.messages.push(metaMessage);
     state.maxOutputTokensRecoveryCount += 1;
