@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -16,6 +16,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   rmdirSync,
   statSync,
@@ -26,6 +28,8 @@ import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
+import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
+import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
 import { isSignalablePid } from "./child-signal.js";
 
 import {
@@ -93,6 +97,12 @@ export interface SupervisedProcessOptions {
   readonly settleBackstopMs?: number;
   /** Select the Linux containment backend explicitly for deterministic tests. */
   readonly linuxContainment?: "auto" | "subreaper";
+  /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
+  readonly directBwrap?: {
+    readonly prepare: () => PreparedDirectBwrap | undefined;
+    readonly validateAdmission: () => void;
+    readonly signal: AbortSignal;
+  };
   /**
    * Test-only settlement that replaces real process cleanup. Production
    * callers must omit this; prepared-spawn authority tests use it to enter
@@ -638,6 +648,12 @@ export interface ContainedProcessSpawnOptions {
   readonly argv0?: string;
   /** Select the deterministic Linux subreaper boundary even when cgroup v2 is available. */
   readonly linuxContainment?: "auto" | "subreaper";
+  /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
+  readonly directBwrap?: {
+    readonly prepare: () => PreparedDirectBwrap | undefined;
+    readonly validateAdmission: () => void;
+    readonly signal: AbortSignal;
+  };
 }
 
 /** What `terminateProcessTreeAndWait` found when it went to stop a tree. */
@@ -729,6 +745,29 @@ export function spawnContainedProcess(
       ? createPrivateLinuxCgroup()
       : null;
   if (process.platform === "linux" && cgroupPath === null) {
+    if (options.directBwrap !== undefined) {
+      const brokerPath = resolveLinuxSubreaperBroker();
+      const brokerContext = describeDirectBroker(brokerPath, options.cwd);
+      if (brokerContext !== undefined) {
+        const plan = options.directBwrap.prepare();
+        if (plan !== undefined) {
+          const handoff = consumeDirectBwrapPlan(plan);
+          let dispatched = false;
+          try {
+            if (handoff.isCurrent() && directBrokerContext(brokerPath, options.cwd) === brokerContext) {
+              options.directBwrap.validateAdmission();
+              options.directBwrap.signal.throwIfAborted();
+              dispatched = true;
+              return spawnLinuxSubreaperContainedProcess(program, args, options, {
+                ...handoff, brokerPath, brokerContext,
+              });
+            }
+          } finally {
+            if (!dispatched) handoff.dispose();
+          }
+        }
+      }
+    }
     return spawnLinuxSubreaperContainedProcess(program, args, options);
   }
 
@@ -791,24 +830,70 @@ export function spawnContainedProcess(
  * subreaper before it starts the command. Orphaned descendants are therefore
  * reparented to that unique broker and cannot escape its forced cleanup.
  */
+const directBrokerCapabilities = new Set<string>();
+function directBrokerContext(broker: string, cwd: string): string | undefined {
+  if (!isTrustedLinuxSubreaperBroker(broker)) return undefined;
+  try {
+    const binary = statSync(broker, { bigint: true });
+    const directory = statSync(cwd, { bigint: true });
+    const context = {
+      program: realpathSync(broker),
+      binary: [binary.dev, binary.ino, binary.size, binary.mode, binary.uid,
+        binary.gid, binary.mtimeNs, binary.ctimeNs].map(String),
+      cwd: [realpathSync(cwd), String(directory.dev), String(directory.ino)],
+      uid: process.getuid?.(), gid: process.getgid?.(), groups: process.getgroups?.(),
+      namespaces: ["user", "mnt", "net", "pid"].map(name => readlinkSync(`/proc/self/ns/${name}`)),
+      mounts: readFileSync("/proc/self/mountinfo", "utf8"),
+    };
+    return createHash("sha256").update(JSON.stringify(context)).digest("hex");
+  } catch { return undefined; }
+}
+function describeDirectBroker(broker: string, cwd: string): string | undefined {
+  const context = directBrokerContext(broker, cwd);
+  if (context === undefined) return undefined;
+  if (directBrokerCapabilities.has(context)) return context;
+  try {
+    const description = execFileSync(broker, ["--describe-protocol"], {
+      cwd, env: trustedPosixBootstrapEnvironment(), encoding: "utf8",
+      timeout: 3_000, maxBuffer: 256, killSignal: "SIGKILL",
+    });
+    if (description !== PROCESS_BROKER_V2_CAPABILITY + "\n" ||
+        directBrokerContext(broker, cwd) !== context) return undefined;
+    if (directBrokerCapabilities.size >= 64) directBrokerCapabilities.clear();
+    directBrokerCapabilities.add(context);
+    return context;
+  } catch { return undefined; }
+}
+
 function spawnLinuxSubreaperContainedProcess(
   program: string,
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
+  direct?: DirectBwrapHandoff & { readonly brokerPath: string; readonly brokerContext: string },
 ): ChildProcessWithoutNullStreams {
-  const brokerPath = resolveLinuxSubreaperBroker();
-  const payload = serializeProcessBrokerPayload(program, args, options);
-  const child = spawn(
+  const brokerPath = direct?.brokerPath ?? resolveLinuxSubreaperBroker();
+  const payload = direct?.payload ?? serializeProcessBrokerPayload(program, args, options);
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(
     brokerPath,
-    [],
+    direct === undefined ? [] : ["--bootstrap-v2"],
     {
       cwd: options.cwd,
       env: trustedPosixBootstrapEnvironment(),
-      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+      stdio: direct?.sourceFd === undefined
+        ? ["pipe", "pipe", "pipe", "pipe", "pipe"]
+        : ["pipe", "pipe", "pipe", "pipe", "pipe", direct.sourceFd],
       detached: true,
       windowsHide: true,
     },
   ) as ChildProcessWithoutNullStreams;
+  } catch (error) {
+    direct?.dispose();
+    throw error;
+  }
+  let disposalError: Error | undefined;
+  try { direct?.dispose(); } catch (error) { disposalError = toError(error); }
   if (child.pid === undefined || child.pid <= 1) {
     child.on("error", () => {});
     safeKill(child, "SIGKILL");
@@ -830,6 +915,14 @@ function spawnLinuxSubreaperContainedProcess(
   }
   const readableStatus = status as Readable;
   const nativeKill = child.kill.bind(child);
+  const bootstrap = child.stdio[4] as Writable | null;
+  let handoffCommitted = false;
+  let frameWithheld = false;
+  const withholdFrame = (): boolean => {
+    frameWithheld = true;
+    bootstrap?.destroy();
+    return nativeKill("SIGKILL");
+  };
   const boundary: LinuxSubreaperBoundary = {
     status: readableStatus,
     nativeKill,
@@ -845,6 +938,9 @@ function spawnLinuxSubreaperContainedProcess(
     const translated = normalizeLinuxSubreaperControlSignal(signal);
     if (translated === 0) {
       return nativeKill(0);
+    }
+    if (direct !== undefined && !handoffCommitted && linuxSubreaperControlSignalPriority(translated) > 0) {
+      return withholdFrame();
     }
     if (
       !boundary.ready &&
@@ -885,7 +981,6 @@ function spawnLinuxSubreaperContainedProcess(
     boundary.processClosed = true;
     boundary.closed = boundary.statusClosed;
   });
-  const bootstrap = child.stdio[4] as Writable | null;
   if (bootstrap === null || typeof bootstrap?.end !== "function") {
     nativeKill("SIGKILL");
     throw new Error("Linux process containment broker bootstrap FD is unavailable");
@@ -898,7 +993,31 @@ function spawnLinuxSubreaperContainedProcess(
     if (code === "EPIPE" || code === "ECONNRESET") return;
     boundary.protocolError ??= toError(error);
   });
-  bootstrap.end(payload);
+  if (direct === undefined) {
+    bootstrap.end(payload);
+    return child;
+  }
+  const admission = options.directBwrap!;
+  const cancel = (): void => { child.kill("SIGTERM"); };
+  admission.signal.addEventListener("abort", cancel, { once: true });
+  child.once("close", () => admission.signal.removeEventListener("abort", cancel));
+  try {
+    if (disposalError !== undefined) throw disposalError;
+    admission.validateAdmission();
+    admission.signal.throwIfAborted();
+    if (!direct.isCurrent() || directBrokerContext(brokerPath, options.cwd) !== direct.brokerContext) {
+      throw new Error("direct sandbox identity changed before handoff");
+    }
+    if (frameWithheld) throw new Error("direct sandbox handoff was cancelled");
+    // Publication is irreversible even if end() buffers, partially writes or
+    // throws. Keep the owned child/proof listeners on every committed failure.
+    handoffCommitted = true;
+    bootstrap.end(payload);
+  } catch (error) {
+    boundary.protocolError ??= toError(error);
+    if (!handoffCommitted) withholdFrame();
+    else bootstrap.destroy(toError(error));
+  }
   return child;
 }
 
