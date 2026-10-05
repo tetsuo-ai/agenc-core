@@ -121,7 +121,6 @@ import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
-import { useOnboardingStarterTurn } from "../../onboarding/useOnboardingStarterTurn.js";
 import type {
   McpSurfaceServer,
   McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
@@ -3965,22 +3964,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.initialUserMessages,
     notifyInitialSubmitError,
   );
-  const submitOnboardingStarter = useCallback(
-    () => submit(
-      "Introduce yourself in a sentence, then take a quick look at the current directory and suggest one useful thing you could help with here.",
-      { automatic: true },
-    ),
-    [submit],
-  );
-  useOnboardingStarterTurn({
-    active: onboarding.active,
-    connectionReady: onboarding.state.connection?.ok === true,
-    hasInitialPrompt:
-      (props.initialPrompt?.length ?? 0) > 0 ||
-      (props.initialUserMessages?.length ?? 0) > 0,
-    submit: submitOnboardingStarter,
-    onError: logError,
-  });
   useEffect(() => {
     if (queueDrainActiveRef.current) return;
     if (effectiveInputBusy) return;

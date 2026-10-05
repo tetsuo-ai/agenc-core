@@ -43,6 +43,9 @@ import {
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import {
+  canonicalProviderApiKeyEnvVar,
+  missingProviderCredentialEnvironmentLabel,
+  resolveProviderApiKeyEnvironment,
   type ProviderCredentialProvenance,
 } from "../llm/registry/provider-ingress.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
@@ -61,7 +64,7 @@ import {
   resolveGeminiCredentialPlan,
   type GeminiCredentialPlan,
 } from "../utils/geminiAuth.js";
-import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
+import { maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
   maybeTruncateInput,
   type PastedContent,
@@ -86,9 +89,10 @@ import {
   getTerminalBackground,
   isTerminalBackgroundDetected,
 } from "../utils/terminalBackground.js";
-import type { ThemeSetting } from "../utils/theme.js";
+import { getTheme, type ThemeName, type ThemeSetting } from "../utils/theme.js";
+import { applyTextStyles } from "../tui/ink/colorize.js";
+import type { Color } from "../tui/ink/styles.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
-import { WelcomeV2 } from "./WelcomeV2.js";
 import {
   verifyApiKey,
   verifyPreparedProviderConnection,
@@ -103,13 +107,10 @@ import {
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type FirstRunOnboardingStepId =
-  | "preflight"
   | "theme"
   | "provider"
-  | "connection-test"
   | "model-access"
-  | "security"
-  | "terminal-setup";
+  | "ready";
 
 export type ProviderConnectionStatus =
   | "ready"
@@ -164,7 +165,13 @@ export interface FirstRunOnboardingState {
   readonly connection: ProviderConnectionCheck | null;
   readonly pastedContents: readonly PastedContent[];
   readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
-  readonly modelAccessInput: "menu" | "api-key";
+  /**
+   * What the model-access card shows: the option menu, the paste field, or
+   * the result of the readiness check (`connection`) with its follow-ups.
+   */
+  readonly modelAccessInput: "menu" | "api-key" | "result";
+  /** Whether a failed result may offer "Paste a key" (set with the result). */
+  readonly canPasteKey: boolean;
   readonly authPrompt: OnboardingAuthPrompt | null;
   readonly error: string | null;
   readonly isCheckingConnection: boolean;
@@ -413,24 +420,18 @@ export interface UseFirstRunOnboardingResult {
 }
 
 const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze([
-  "preflight",
   "theme",
   "provider",
   "model-access",
-  "connection-test",
-  "security",
-  "terminal-setup",
+  "ready",
 ]);
 
 const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
   Object.freeze({
-    preflight: "Preflight",
     theme: "Theme",
     provider: "Provider",
-    "connection-test": "Connection check",
     "model-access": "Model access",
-    security: "Security",
-    "terminal-setup": "Terminal setup",
+    ready: "Ready",
   });
 
 const THEME_CHOICES: readonly ThemeSetting[] = TUI_THEME_SETTINGS;
@@ -518,7 +519,7 @@ export function createInitialFirstRunOnboardingState(
       ? context.config.model
       : providerDefaultModel(provider, context);
   return {
-    currentStepId: "preflight",
+    currentStepId: "theme",
     completedStepIds: [],
     selectedTheme:
       wizardThemeToSetting(context.config.tui?.theme ?? "dark") ??
@@ -529,6 +530,7 @@ export function createInitialFirstRunOnboardingState(
     pastedContents: [],
     pendingApiKeyApproval: null,
     modelAccessInput: "menu",
+    canPasteKey: false,
     authPrompt: null,
     error: null,
     isCheckingConnection: false,
@@ -591,20 +593,42 @@ function withCompletedStep(
   };
 }
 
-function withCompletedSteps(
-  state: FirstRunOnboardingState,
-  ids: readonly FirstRunOnboardingStepId[],
-  next: FirstRunOnboardingStepId | null,
-): FirstRunOnboardingState {
-  const completed = new Set(state.completedStepIds);
-  for (const id of ids) completed.add(id);
-  return {
-    ...state,
-    completedStepIds: [...completed],
-    ...(next !== null ? { currentStepId: next } : {}),
-    highlightedChoice: null,
-    error: null,
-  };
+/** The model-access options, in the order the menu numbers them. */
+type ModelAccessOptionId = "key" | "account" | "xai" | "later";
+
+/**
+ * What the model-access menu lists for a provider. The key option is the
+ * provider's own credential (an API key, a local runtime, AWS credentials);
+ * a hosted-only provider has none. X / xAI sign-in only applies to Grok.
+ */
+function modelAccessOptionIds(
+  provider: BuiltInProviderSlug,
+): readonly ModelAccessOptionId[] {
+  const access = providerOnboardingInfo(provider).access;
+  return [
+    ...(access === "managed" ? [] : ["key" as const]),
+    "account",
+    ...(provider === "grok" ? ["xai" as const] : []),
+    "later",
+  ];
+}
+
+const MODEL_ACCESS_OPTION_COMMANDS: Readonly<Record<ModelAccessOptionId, string>> = {
+  key: "key",
+  account: "account",
+  xai: "xai",
+  later: "later",
+};
+
+/** Follow-ups offered when the readiness check did not pass. */
+type ModelAccessFollowUpId = "paste" | "again" | "continue";
+
+function modelAccessFollowUpIds(
+  state: Pick<FirstRunOnboardingState, "canPasteKey">,
+): readonly ModelAccessFollowUpId[] {
+  return state.canPasteKey
+    ? ["paste", "again", "continue"]
+    : ["again", "continue"];
 }
 
 /** Number of numbered choices the current step lists, 0 when it lists none. */
@@ -617,11 +641,16 @@ export function firstRunOnboardingChoiceCount(
     case "provider":
       return providerChoices().length;
     case "model-access":
-      return state.pendingApiKeyApproval === null &&
-          state.authPrompt === null &&
-          state.modelAccessInput === "menu"
-        ? 4
-        : 0;
+      if (state.pendingApiKeyApproval !== null || state.authPrompt !== null) {
+        return 0;
+      }
+      if (state.modelAccessInput === "menu") {
+        return modelAccessOptionIds(state.selectedProvider).length;
+      }
+      if (state.modelAccessInput === "result" && state.connection?.ok !== true) {
+        return modelAccessFollowUpIds(state).length;
+      }
+      return 0;
     default:
       return 0;
   }
@@ -630,7 +659,7 @@ export function firstRunOnboardingChoiceCount(
 /**
  * The 1-based choice Enter confirms on a step with a list: the arrow-key
  * selection when the user moved, otherwise the step's own default (the
- * current theme or provider; "Configure later" on the model-access menu).
+ * current theme or provider; the first option on the model-access lists).
  */
 export function firstRunOnboardingHighlightedChoice(
   state: FirstRunOnboardingState,
@@ -645,7 +674,7 @@ export function firstRunOnboardingHighlightedChoice(
     case "provider":
       return Math.max(1, providerChoices().indexOf(state.selectedProvider) + 1);
     default:
-      return count;
+      return 1;
   }
 }
 
@@ -659,15 +688,6 @@ export function moveFirstRunOnboardingHighlight(
   const current = firstRunOnboardingHighlightedChoice(state) ?? 1;
   const next = ((current - 1 + delta + count) % count) + 1;
   return { ...state, highlightedChoice: next, error: null };
-}
-
-function choiceLine(
-  state: FirstRunOnboardingState,
-  index: number,
-  text: string,
-): string {
-  const highlighted = firstRunOnboardingHighlightedChoice(state) === index + 1;
-  return `${highlighted ? "❯" : " "} ${index + 1}. ${text}`;
 }
 
 function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
@@ -703,12 +723,6 @@ function parseProvider(
   return byName?.id ?? null;
 }
 
-function invalidCommandError(raw: string, expected: string): string | null {
-  return raw.trim().toLowerCase() === expected
-    ? null
-    : `Press Enter to continue, or type ${expected}.`;
-}
-
 function normalizeApiKeyEntry(raw: string): string {
   const trimmed = raw.trim();
   const assignment = trimmed.match(/^[A-Z0-9_]+_API_KEY\s*=\s*(.+)$/u);
@@ -733,8 +747,6 @@ function lowerCommand(raw: string): string {
 
 function isConfigureLaterCommand(command: string): boolean {
   return (
-    command === "" ||
-    command === "4" ||
     command === "later" ||
     command === "next" ||
     command === "skip"
@@ -743,7 +755,6 @@ function isConfigureLaterCommand(command: string): boolean {
 
 function isAgenCAccountLoginCommand(command: string): boolean {
   return (
-    command === "1" ||
     command === "account" ||
     command === "agenc" ||
     command === "agenc-login" ||
@@ -753,7 +764,6 @@ function isAgenCAccountLoginCommand(command: string): boolean {
 
 function isGrokOauthLoginCommand(command: string): boolean {
   return (
-    command === "2" ||
     command === "grok-login" ||
     command === "x" ||
     command === "xai" ||
@@ -763,7 +773,8 @@ function isGrokOauthLoginCommand(command: string): boolean {
 
 function isApiKeyEntryCommand(command: string): boolean {
   return (
-    command === "3" ||
+    command === "test" ||
+    command === "check" ||
     command === "api" ||
     command === "api-key" ||
     command === "key"
@@ -778,6 +789,134 @@ function modelAccessSkipError(
     `${connection.credentialLabel ?? "A provider credential"} is required before continuing ` +
     `with ${connection.provider}. Paste a BYOK key or choose another provider.`
   );
+}
+
+/** Shorter input outside the paste field is treated as a typo, not a key. */
+const MIN_PASTED_KEY_LENGTH = 16;
+
+/** Map menu input (a number, or Enter for the first option) to an option. */
+function resolveModelAccessOption(
+  state: FirstRunOnboardingState,
+  raw: string,
+): ModelAccessOptionId | undefined {
+  const ids = modelAccessOptionIds(state.selectedProvider);
+  const input = lowerCommand(raw);
+  if (input === "") return ids[0];
+  const index = Number(input);
+  return Number.isInteger(index) && index >= 1 && index <= ids.length
+    ? ids[index - 1]
+    : undefined;
+}
+
+/** Whether a pasted one-field key can configure this provider. */
+function acceptsPastedKey(
+  provider: BuiltInProviderSlug,
+  context: FirstRunOnboardingContext,
+): boolean {
+  if (providerOnboardingInfo(provider).access !== "api-key") return false;
+  if (provider !== "gemini") return true;
+  const plan = resolveOnboardingGeminiCredentialPlan(context);
+  return plan.kind !== "none" ||
+    (plan.expected !== "access-token" && plan.expected !== "adc");
+}
+
+/** Show a readiness result on the model-access card. */
+function withModelAccessResult(
+  state: FirstRunOnboardingState,
+  connection: ProviderConnectionCheck,
+  canPasteKey = false,
+): FirstRunOnboardingState {
+  return {
+    ...state,
+    connection,
+    canPasteKey,
+    modelAccessInput: "result",
+    authPrompt: null,
+    highlightedChoice: null,
+    error: null,
+  };
+}
+
+const FOLLOW_UP_ALIASES: Readonly<Record<string, ModelAccessFollowUpId>> = {
+  paste: "paste",
+  key: "paste",
+  back: "again",
+  again: "again",
+  choose: "again",
+  continue: "continue",
+  later: "continue",
+  skip: "continue",
+  next: "continue",
+};
+
+/**
+ * Input on a shown readiness result. Returns null when the input is neither
+ * a follow-up nor Enter, so a provider that takes pasted keys can treat it
+ * as a replacement key.
+ */
+function submitModelAccessResult(
+  state: FirstRunOnboardingState,
+  raw: string,
+): FirstRunOnboardingSubmitResult | null {
+  const input = lowerCommand(raw);
+  if (state.connection?.ok === true) {
+    if (input === "back" || input === "again") {
+      return {
+        state: { ...state, modelAccessInput: "menu", highlightedChoice: null, error: null },
+        completed: false,
+      };
+    }
+    if (input === "" || input === "next" || input === "continue") {
+      return {
+        state: withCompletedStep(state, "model-access", "ready"),
+        completed: false,
+      };
+    }
+    return {
+      state: { ...state, error: "Press Enter to continue, or type back to choose again." },
+      completed: false,
+    };
+  }
+  const ids = modelAccessFollowUpIds(state);
+  const index = Number(input);
+  const choice = input === ""
+    ? ids[0]
+    : Number.isInteger(index) && index >= 1 && index <= ids.length
+      ? ids[index - 1]
+      : FOLLOW_UP_ALIASES[input];
+  if (choice === undefined || !ids.includes(choice)) {
+    if (ids.includes("paste")) return null;
+    return {
+      state: { ...state, error: `Choose 1 to ${ids.length}.` },
+      completed: false,
+    };
+  }
+  if (choice === "paste") {
+    return {
+      state: { ...state, modelAccessInput: "api-key", highlightedChoice: null, error: null },
+      completed: false,
+    };
+  }
+  if (choice === "again") {
+    return {
+      state: {
+        ...state,
+        connection: null,
+        modelAccessInput: "menu",
+        highlightedChoice: null,
+        error: null,
+      },
+      completed: false,
+    };
+  }
+  const skipError = modelAccessSkipError(state.connection);
+  if (skipError !== null) {
+    return { state: { ...state, error: skipError }, completed: false };
+  }
+  return {
+    state: withCompletedStep(state, "model-access", "ready"),
+    completed: false,
+  };
 }
 
 function normalizeOnboardingCommand(raw: string): string {
@@ -795,19 +934,15 @@ function defaultOnboardingCommand(
 ): string {
   if (raw.trim() !== "") return raw;
   switch (state.currentStepId) {
-    case "preflight":
-    case "connection-test":
-    case "security":
-      return "next";
-    case "terminal-setup":
+    case "ready":
       return "done";
     case "theme":
     case "provider":
       return raw;
     case "model-access":
-      // Empty input intentionally means "continue without saving" on the
-      // ordinary credential step. Never choose for the user once a verified
-      // key is awaiting the explicit yes/no persistence decision.
+      // Empty input picks the highlighted option, or continues from a shown
+      // result. Never choose for the user once a verified key is awaiting the
+      // explicit yes/no persistence decision.
       return state.pendingApiKeyApproval === null ? raw : "";
   }
 }
@@ -829,7 +964,7 @@ function onboardingSlashCommandError(raw: string): string | null {
 
 function apiKeyVerificationErrorMessage(error: string | undefined): string {
   const base = error?.trim() || "API key verification failed.";
-  return `${base} Press Enter to continue without saving, or paste a replacement key.`;
+  return `${base} Paste another key, or press Enter to set up later.`;
 }
 
 function verifiedApiKeyConnection(
@@ -1524,20 +1659,6 @@ export async function submitFirstRunOnboardingInput(
   }
 
   switch (state.currentStepId) {
-    case "preflight":
-      {
-        const error = invalidCommandError(raw, "next");
-        if (error !== null) {
-          return {
-            state: { ...state, error },
-            completed: false,
-          };
-        }
-      }
-      return {
-        state: withCompletedStep(state, "preflight", "theme"),
-        completed: false,
-      };
     case "theme": {
       const theme = parseTheme(raw, state.selectedTheme);
       if (theme === null) {
@@ -1587,31 +1708,6 @@ export async function submitFirstRunOnboardingInput(
         completed: false,
       };
     }
-    case "connection-test": {
-      const command = raw.trim().toLowerCase();
-      if (command !== "next" && command !== "test") {
-        return {
-          state: {
-            ...state,
-            error: "Press Enter to run the connection check, or type test.",
-          },
-          completed: false,
-        };
-      }
-      const connection = await checkOnboardingProviderConnection(
-        context,
-        state.selectedProvider,
-        state.selectedModel,
-      );
-      return {
-        state: withCompletedStep(
-          { ...state, connection },
-          "connection-test",
-          "security",
-        ),
-        completed: false,
-      };
-    }
     case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         const answer = approvalAnswer(lowerCommand(raw));
@@ -1626,11 +1722,13 @@ export async function submitFirstRunOnboardingInput(
         }
         if (answer === "no") {
           return {
-            state: withCompletedStep(
-              { ...state, pendingApiKeyApproval: null },
-              "model-access",
-              "connection-test",
-            ),
+            state: {
+              ...state,
+              pendingApiKeyApproval: null,
+              modelAccessInput: "menu",
+              highlightedChoice: null,
+              error: "The key was not saved. Choose an option, or paste a different key.",
+            },
             completed: false,
           };
         }
@@ -1668,23 +1766,43 @@ export async function submitFirstRunOnboardingInput(
           };
         }
         return {
-          state: withCompletedSteps(
-            {
-              ...state,
-              pendingApiKeyApproval: null,
-              connection: verifiedApiKeyConnection(
-                state.selectedProvider,
-                state.selectedModel,
-              ),
-            },
-            ["model-access", "connection-test"],
-            "security",
+          state: withModelAccessResult(
+            { ...state, pendingApiKeyApproval: null },
+            verifiedApiKeyConnection(
+              state.selectedProvider,
+              state.selectedModel,
+            ),
           ),
           completed: false,
         };
       }
+      if (state.modelAccessInput === "result") {
+        const followUp = submitModelAccessResult(state, raw);
+        if (followUp !== null) return followUp;
+      }
       {
-        const command = lowerCommand(raw);
+        const option = state.modelAccessInput === "menu"
+          ? resolveModelAccessOption(state, raw)
+          : undefined;
+        // In the paste field, Enter alone means set up later, as the footer says.
+        const command = option !== undefined
+          ? MODEL_ACCESS_OPTION_COMMANDS[option]
+          : state.modelAccessInput === "api-key" && lowerCommand(raw) === ""
+            ? "later"
+            : lowerCommand(raw);
+        if (
+          isGrokOauthLoginCommand(command) &&
+          state.selectedProvider !== "grok"
+        ) {
+          return {
+            state: {
+              ...state,
+              error:
+                "X / xAI sign-in is for Grok. Pick grok in the provider step to use it.",
+            },
+            completed: false,
+          };
+        }
         if (isAgenCAccountLoginCommand(command)) {
           const runLogin =
             context.runAgenCAccountLogin ??
@@ -1741,21 +1859,17 @@ export async function submitFirstRunOnboardingInput(
               ? `Signed in to AgenC as ${result.accountLabel}. Free hosted model access is ready.`
               : `Signed in to AgenC as ${result.accountLabel}. Hosted model access for the ${result.subscriptionTier} plan is ready.`;
           return {
-            state: withCompletedSteps(
+            state: withModelAccessResult(
               {
                 ...state,
                 selectedProvider: hostedProvider,
                 selectedModel: hostedModel,
-                connection: authenticatedConnection(
-                  hostedProvider,
-                  hostedModel,
-                  accessDetail,
-                ),
-                modelAccessInput: "menu",
-                authPrompt: null,
               },
-              ["model-access", "connection-test"],
-              "security",
+              authenticatedConnection(
+                hostedProvider,
+                hostedModel,
+                accessDetail,
+              ),
             ),
             completed: false,
           };
@@ -1778,88 +1892,57 @@ export async function submitFirstRunOnboardingInput(
           const provider: BuiltInProviderSlug = "grok";
           const model = providerDefaultModel(provider, context);
           return {
-            state: withCompletedSteps(
-              {
-                ...state,
-                selectedProvider: provider,
-                selectedModel: model,
-                connection: authenticatedConnection(
-                  provider,
-                  model,
-                  `Signed in to X / xAI as ${result.accountLabel}. Grok subscription access is ready.`,
-                ),
-                modelAccessInput: "menu",
-                authPrompt: null,
-              },
-              ["model-access", "connection-test"],
-              "security",
+            state: withModelAccessResult(
+              { ...state, selectedProvider: provider, selectedModel: model },
+              authenticatedConnection(
+                provider,
+                model,
+                `Signed in to X / xAI as ${result.accountLabel}. Grok subscription access is ready.`,
+              ),
             ),
             completed: false,
           };
         }
         if (isApiKeyEntryCommand(command)) {
-          const access = providerOnboardingInfo(state.selectedProvider).access;
-          if (state.selectedProvider === "gemini") {
-            const plan = resolveOnboardingGeminiCredentialPlan(context);
-            if (plan.kind !== "none") {
-              return {
-                state: withCompletedStep(
-                  {
-                    ...state,
-                    modelAccessInput: "menu",
-                    authPrompt: null,
-                    error: null,
-                  },
-                  "model-access",
-                  "connection-test",
-                ),
-                completed: false,
-              };
-            }
-            if (plan.expected === "access-token" || plan.expected === "adc") {
-              return {
-                state: {
-                  ...state,
-                  modelAccessInput: "menu",
-                  authPrompt: null,
-                  error:
-                    `Set ${geminiCredentialLabel(plan)}. A pasted API key ` +
-                    `cannot override GEMINI_AUTH_MODE=${plan.mode}.`,
-                },
-                completed: false,
-              };
-            }
-          }
-          if (access === "environment") {
+          // Check what is already configured first: a key in the environment
+          // or in secure storage, a local runtime, a forced Gemini plan, AWS
+          // credentials. Only a missing pasteable key opens the paste field.
+          const connection = await checkOnboardingProviderConnection(
+            context,
+            state.selectedProvider,
+            state.selectedModel,
+          );
+          if (
+            !connection.ok &&
+            connection.status === "credentials-required" &&
+            acceptsPastedKey(state.selectedProvider, context)
+          ) {
             return {
               state: {
                 ...state,
-                modelAccessInput: "menu",
+                connection,
+                modelAccessInput: "api-key",
                 authPrompt: null,
-                error:
-                  `Amazon Bedrock uses AWS SigV4 credentials. Set ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "the required AWS credential fields"}; one-field API-key storage is not supported.`,
+                error: null,
               },
               completed: false,
             };
           }
-          if (access !== "api-key") {
-            return {
-              state: withCompletedStep(
-                {
-                  ...state,
-                  modelAccessInput: "menu",
-                  authPrompt: null,
-                },
-                "model-access",
-                "connection-test",
-              ),
-              completed: false,
-            };
-          }
+          return {
+            state: withModelAccessResult(
+              state,
+              connection,
+              acceptsPastedKey(state.selectedProvider, context),
+            ),
+            completed: false,
+          };
+        }
+        if (command === "back" && state.modelAccessInput === "menu") {
           return {
             state: {
               ...state,
-              modelAccessInput: "api-key",
+              currentStepId: "provider",
+              highlightedChoice: null,
               authPrompt: null,
               error: null,
             },
@@ -1889,11 +1972,12 @@ export async function submitFirstRunOnboardingInput(
             state: withCompletedStep(
               {
                 ...state,
+                connection: null,
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
               "model-access",
-              "connection-test",
+              "ready",
             ),
             completed: false,
           };
@@ -1934,12 +2018,27 @@ export async function submitFirstRunOnboardingInput(
           }
         }
         const apiKey = normalizeApiKeyEntry(raw);
+        if (
+          state.modelAccessInput !== "api-key" &&
+          apiKey.length < MIN_PASTED_KEY_LENGTH
+        ) {
+          // Outside the paste field, a short word is a mistyped choice, not a
+          // key: never send it to the provider.
+          const count = firstRunOnboardingChoiceCount(state);
+          return {
+            state: {
+              ...state,
+              error: `Choose 1 to ${count}, or paste a key.`,
+            },
+            completed: false,
+          };
+        }
         if (apiKey.length === 0 || /\s/.test(apiKey)) {
           return {
             state: {
               ...state,
               error:
-                "Press Enter to continue without saving, or paste a single API key without whitespace.",
+                "Paste a single key without spaces, or press Enter to set up later.",
             },
             completed: false,
           };
@@ -1988,35 +2087,21 @@ export async function submitFirstRunOnboardingInput(
           completed: false,
         };
       }
-    case "security":
-      {
-        const error = invalidCommandError(raw, "next");
-        if (error !== null) {
-          return {
-            state: { ...state, error },
-            completed: false,
-          };
-        }
-      }
-      return {
-        state: withCompletedStep(state, "security", "terminal-setup"),
-        completed: false,
-      };
-    case "terminal-setup":
+    case "ready":
       {
         const command = raw.trim().toLowerCase();
-        if (command !== "done") {
+        if (command !== "done" && command !== "next") {
           return {
             state: {
               ...state,
-              error: "Press Enter to finish onboarding, or type done.",
+              error: "Press Enter to start AgenC.",
             },
             completed: false,
           };
         }
       }
       return {
-        state: withCompletedStep(state, "terminal-setup", null),
+        state: withCompletedStep(state, "ready", null),
         completed: true,
       };
   }
@@ -2172,92 +2257,454 @@ export function useFirstRunOnboardingController(
   };
 }
 
-function credentialInstructionForConnection(
-  connection: ProviderConnectionCheck | null,
-): string {
-  if (connection === null) {
-    return "Paste an API key to verify it, or press Enter to continue without saving.";
-  }
-  if (connection.status === "ready") {
-    if (
-      connection.credentialProvenance?.kind === "environment" &&
-      connection.credentialProvenance.fields.some(
-        (field) => field.role === "accessKeyId",
-      )
-    ) {
-      return "AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.";
+/** One row of a setup card. */
+type OnboardingCardRow =
+  | {
+      readonly kind: "choice";
+      readonly label: string;
+      readonly note: string;
+      readonly selected: boolean;
     }
-    const source = providerConnectionCredentialProvenanceLabel(
-      connection.credentialProvenance,
-    );
-    if (source !== undefined) {
-      return `${source} is present and verified. Press Enter to continue, or paste a replacement key.`;
-    }
-    return "Provider credential is verified. Press Enter to continue, or paste a replacement key.";
-  }
-  if (connection.credentialLabel === undefined) {
-    return "Paste an API key to verify it, or press Enter to continue.";
-  }
-  if (connection.canSkip === false) {
-    return `Paste ${connection.credentialLabel} to verify it before continuing.`;
-  }
-  if (
-    connection.status === "auth-failed" ||
-    connection.status === "provider-unreachable"
-  ) {
-    const source = providerConnectionCredentialProvenanceLabel(
-      connection.credentialProvenance,
-    ) ?? connection.credentialLabel;
-    return `${source} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
-  }
-  return `Paste ${connection.credentialLabel} to verify it, or press Enter to add it later.`;
+  | { readonly kind: "more"; readonly text: string }
+  | { readonly kind: "kv"; readonly label: string; readonly value: string }
+  | { readonly kind: "status"; readonly ok: boolean; readonly text: string }
+  | { readonly kind: "text"; readonly text: string; readonly strong?: boolean }
+  | { readonly kind: "gap" };
+
+/** What a setup card shows: one question, its rows, and an optional hint. */
+interface OnboardingCardView {
+  readonly lead: string;
+  readonly rows: readonly OnboardingCardRow[];
+  readonly hint?: string;
 }
 
-function modelAccessInstructionForProvider(
+const THEME_NOTES: Readonly<Record<ThemeSetting, string>> = {
+  auto: "matches your terminal background",
+  dark: "for dark terminals",
+  light: "for light terminals",
+  "light-daltonized": "color-blind friendly, light",
+  "dark-daltonized": "color-blind friendly, dark",
+  "light-ansi": "your terminal's 16 colors, light",
+  "dark-ansi": "your terminal's 16 colors, dark",
+};
+
+/** Providers visible at once; the rest collapse into "n more" rows. */
+const PROVIDER_WINDOW = 8;
+
+const PERMISSION_MODE_NOTES: Readonly<Record<string, string>> = {
+  default: "asks before tools that need it",
+  acceptEdits: "accepts file edits on its own",
+  plan: "read-only, plans before acting",
+  auto: "approves allowlisted tools",
+  bypassPermissions: "approvals off",
+};
+
+const SANDBOX_MODE_NOTES: Readonly<Record<string, string>> = {
+  "workspace-write": "limits writes to this workspace",
+  "read-only": "no file writes",
+  "danger-full-access": "no sandbox",
+};
+
+function onboardingEnvironment(
+  context: FirstRunOnboardingContext,
+): NodeJS.ProcessEnv {
+  return context.env ?? process.env;
+}
+
+function themeTip(): string {
+  // Only give a direction when the background was measured: an unmeasured
+  // value is a guessed `dark`, and advising from it is the inverted advice
+  // M-ONB-2 removed.
+  if (isTerminalBackgroundDetected()) {
+    const background = getTerminalBackground();
+    return `Tip: your terminal looks ${background}, so "${background}" or "auto" will read best.`;
+  }
+  return 'Tip: pick "light" on a light terminal and "dark" on a dark one.';
+}
+
+function choiceRows(
+  state: FirstRunOnboardingState,
+  entries: ReadonlyArray<{ readonly label: string; readonly note: string }>,
+  offset = 0,
+): OnboardingCardRow[] {
+  const highlighted = firstRunOnboardingHighlightedChoice(state);
+  return entries.map((entry, index) => ({
+    kind: "choice",
+    label: entry.label,
+    note: entry.note,
+    selected: highlighted === offset + index + 1,
+  }));
+}
+
+function providerNote(
   provider: BuiltInProviderSlug,
-  geminiPlan?: GeminiCredentialPlan,
+  detected: ReadonlySet<BuiltInProviderSlug>,
+  env: NodeJS.ProcessEnv,
 ): string {
-  if (provider === "gemini" && geminiPlan !== undefined) {
-    if (geminiPlan.kind !== "none") {
-      return `${geminiCredentialLabel(geminiPlan)} is configured. Press Enter to use it, or type back to choose another access method.`;
-    }
-    if (geminiPlan.expected === "access-token" || geminiPlan.expected === "adc") {
-      return `Set ${geminiCredentialLabel(geminiPlan)}, then press Enter to continue. A pasted API key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`;
-    }
-    return `Paste ${geminiCredentialLabel(geminiPlan)} to verify it, or press Enter to add it later.`;
-  }
-  const credentialLabel = providerApiKeyEnvironmentLabel(provider);
-  const onboarding = providerOnboardingInfo(provider);
-  if (onboarding.access === "managed") {
-    return "This provider requires AgenC account auth. Choose the account sign-in option to continue.";
-  }
-  if (onboarding.access !== "api-key") {
-    if (onboarding.access === "environment") {
-      return `Set ${providerCredentialEnvironmentLabel(provider) ?? "the required provider credential fields"} in the environment, then press Enter to continue.`;
-    }
-    return "This provider can continue without a BYOK API key. Press Enter to continue.";
-  }
-  if (credentialLabel === undefined) {
-    return "Paste an API key to verify it, or press Enter to add it later.";
-  }
-  return `Paste ${credentialLabel} to verify it, or press Enter to add it later.`;
+  if (detected.has(provider)) return "running on this machine, no key needed";
+  const match = resolveProviderApiKeyEnvironment(provider, env);
+  return match !== undefined ? `${match.envVar} is set` : "";
 }
 
-function securityLinesForContext(
+function providerCardView(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): OnboardingCardView {
+  const choices = providerChoices();
+  const detected = new Set(state.detectedLocalProviders);
+  const env = onboardingEnvironment(context);
+  const highlighted = (firstRunOnboardingHighlightedChoice(state) ?? 1) - 1;
+  // Keep the highlight inside a fixed window so a long list never scrolls the
+  // card off a short terminal or hides the row Enter would pick.
+  const start = Math.min(
+    Math.max(0, highlighted - Math.floor(PROVIDER_WINDOW / 2)),
+    Math.max(0, choices.length - PROVIDER_WINDOW),
+  );
+  const end = Math.min(choices.length, start + PROVIDER_WINDOW);
+  const rows: OnboardingCardRow[] = [];
+  if (start > 0) rows.push({ kind: "more", text: `↑ ${start} more` });
+  rows.push(
+    ...choiceRows(
+      state,
+      choices.slice(start, end).map((provider) => ({
+        label: provider,
+        note: providerNote(provider, detected, env),
+      })),
+      start,
+    ),
+  );
+  if (end < choices.length) {
+    rows.push({ kind: "more", text: `↓ ${choices.length - end} more` });
+  }
+  const firstDetected = [...detected][0];
+  return {
+    lead: "Which model provider should AgenC use?",
+    rows,
+    hint: firstDetected !== undefined
+      ? `${firstDetected} is running on this machine. Pick it to start without a key.`
+      : "Or type a provider name and press Enter.",
+  };
+}
+
+function keyOptionEntry(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): { readonly label: string; readonly note: string } {
+  const provider = state.selectedProvider;
+  const env = onboardingEnvironment(context);
+  const access = providerOnboardingInfo(provider).access;
+  if (access === "local") {
+    // The question above already names the provider; keep the label short
+    // so the notes column stays readable.
+    return {
+      label: "This machine",
+      note: "no key needed, check it is running",
+    };
+  }
+  if (access === "environment") {
+    const missing = missingProviderCredentialEnvironmentLabel(provider, env);
+    return {
+      label: "AWS credentials",
+      note: missing === undefined
+        ? "set in your environment, check them now"
+        : `set ${missing} first`,
+    };
+  }
+  if (provider === "gemini") {
+    const plan = resolveOnboardingGeminiCredentialPlan(context);
+    const label = geminiCredentialLabel(plan);
+    if (plan.kind !== "none") return { label, note: "configured, check it now" };
+    if (plan.expected === "access-token" || plan.expected === "adc") {
+      return { label, note: `set ${label} first` };
+    }
+    return { label, note: "paste a key next" };
+  }
+  // Name the variable that is actually set, else the canonical one; a list
+  // of aliases ("XAI_API_KEY or GROK_API_KEY") crowds out the notes.
+  const match = resolveProviderApiKeyEnvironment(provider, env);
+  return {
+    label: match?.envVar ??
+      canonicalProviderApiKeyEnvVar(provider) ??
+      providerApiKeyEnvironmentLabel(provider) ??
+      "API key",
+    note: match !== undefined
+      ? "set in your environment, check it now"
+      : "paste a key next",
+  };
+}
+
+function modelAccessMenuEntries(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): Array<{ readonly label: string; readonly note: string }> {
+  return modelAccessOptionIds(state.selectedProvider).map((id) => {
+    switch (id) {
+      case "key":
+        return keyOptionEntry(state, context);
+      case "account":
+        return {
+          label: "AgenC account",
+          note: "sign in for hosted models, free plan",
+        };
+      case "xai":
+        return {
+          label: "X / xAI account",
+          note: "sign in to use Grok with your subscription",
+        };
+      case "later":
+        return { label: "Set up later", note: "AgenC can't answer until you do" };
+    }
+  });
+}
+
+function credentialName(connection: ProviderConnectionCheck): string {
+  const provenance = connection.credentialProvenance;
+  if (provenance?.kind === "environment") {
+    return provenance.fields.map((field) => field.envVar).join(" + ");
+  }
+  return connection.credentialLabel ?? "the provider credential";
+}
+
+function providerAccessKind(provider: string): BuiltInProviderOnboardingInfo["access"] | undefined {
+  const slug = resolveBuiltInProviderSlug(provider);
+  return slug === undefined ? undefined : providerOnboardingInfo(slug).access;
+}
+
+/** What a passed readiness check means, in one plain sentence. */
+function modelAccessSuccessText(connection: ProviderConnectionCheck): string {
+  const provenance = connection.credentialProvenance;
+  if (provenance?.kind === "verified-input") {
+    return `${connection.provider} accepted the key, and it is saved.`;
+  }
+  if (provenance?.kind === "oauth") {
+    return `${connection.provider} answered. Your xAI sign-in works.`;
+  }
+  if (provenance?.kind === "environment") {
+    if (provenance.fields.some((field) => field.role === "accessKeyId")) {
+      return "AWS credentials are set. AgenC checks them on the first request.";
+    }
+    return `${connection.provider} answered. ${credentialName(connection)} works.`;
+  }
+  if (connection.status === "ready" && providerAccessKind(connection.provider) === "local") {
+    return `${connection.provider} is running and ${connection.model} is available.`;
+  }
+  return connection.detail;
+}
+
+/** Why a readiness check did not pass, in one plain sentence. */
+function modelAccessFailureText(connection: ProviderConnectionCheck): string {
+  if (connection.status === "credentials-required" && connection.credentialLabel !== undefined) {
+    return `No ${connection.credentialLabel} is set, so ${connection.provider} can't answer.`;
+  }
+  if (connection.status === "auth-failed" && connection.credentialProvenance !== undefined) {
+    return `${connection.provider} rejected ${credentialName(connection)}.`;
+  }
+  return connection.detail;
+}
+
+const FOLLOW_UP_LABELS: Readonly<Record<ModelAccessFollowUpId, string>> = {
+  paste: "Paste a key",
+  again: "Choose again",
+  continue: "Continue without a model",
+};
+
+function modelAccessCardView(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): OnboardingCardView {
+  const lead = `How should AgenC reach ${state.selectedProvider} / ${state.selectedModel}?`;
+  const approval = state.pendingApiKeyApproval;
+  if (approval !== null) {
+    return {
+      lead: "Save this key?",
+      rows: [
+        { kind: "kv", label: "Provider", value: approval.provider },
+        { kind: "kv", label: "Key", value: approval.maskedTail },
+        {
+          kind: "kv",
+          label: "Check",
+          value: approval.verificationStatus === "valid"
+            ? `accepted by ${approval.provider}`
+            : approval.verificationStatus,
+        },
+        ...(approval.pastePreview !== undefined
+          ? [{ kind: "text", text: approval.pastePreview } as const]
+          : []),
+        ...(approval.verificationError !== undefined
+          ? [{ kind: "text", text: approval.verificationError } as const]
+          : []),
+      ],
+      hint: "Type yes to save it, or no to continue without saving it.",
+    };
+  }
+  if (state.authPrompt !== null) {
+    return {
+      lead: state.authPrompt.heading,
+      rows: [
+        { kind: "text", text: state.authPrompt.detail },
+        { kind: "gap" },
+        ...(state.authPrompt.userCode !== undefined
+          ? [{ kind: "kv", label: "Code", value: state.authPrompt.userCode } as const]
+          : []),
+        { kind: "kv", label: "URL", value: state.authPrompt.url },
+      ],
+      hint: "Finish sign-in in your browser. AgenC continues on its own.",
+    };
+  }
+  if (state.isCheckingConnection) {
+    return {
+      lead,
+      rows: [{ kind: "text", text: `Checking ${state.selectedProvider}...` }],
+    };
+  }
+  if (state.modelAccessInput === "api-key") {
+    const label = keyOptionEntry(state, context).label;
+    return {
+      lead: `Paste your ${label}.`,
+      rows: state.connection?.status === "credentials-required"
+        ? [{ kind: "text", text: `No ${label} is set yet.` }]
+        : [],
+      hint: "AgenC checks a key before you choose to save it.",
+    };
+  }
+  const connection = state.connection;
+  if (state.modelAccessInput === "result" && connection !== null) {
+    if (connection.ok) {
+      return {
+        lead,
+        rows: [{ kind: "status", ok: true, text: modelAccessSuccessText(connection) }],
+      };
+    }
+    const followUps = modelAccessFollowUpIds(state);
+    return {
+      lead,
+      rows: [
+        { kind: "status", ok: false, text: modelAccessFailureText(connection) },
+        { kind: "gap" },
+        ...choiceRows(
+          state,
+          followUps.map((id) => ({ label: FOLLOW_UP_LABELS[id], note: "" })),
+        ),
+      ],
+      ...(followUps.includes("paste")
+        ? { hint: "You can also paste a key here." }
+        : {}),
+    };
+  }
+  return {
+    lead,
+    rows: choiceRows(state, modelAccessMenuEntries(state, context)),
+    ...(acceptsPastedKey(state.selectedProvider, context)
+      ? { hint: "You can also paste a key here." }
+      : {}),
+  };
+}
+
+function accessSummary(state: FirstRunOnboardingState): string {
+  const connection = state.connection;
+  if (connection === null) return "not set up yet";
+  if (!connection.ok) return "not working yet";
+  const provenance = connection.credentialProvenance;
+  if (provenance?.kind === "verified-input") return "pasted key, saved";
+  if (provenance?.kind === "oauth") return "xAI sign-in";
+  if (provenance?.kind === "environment") return `${credentialName(connection)}, checked`;
+  if (providerAccessKind(connection.provider) === "local") return "local, no key needed";
+  if (connection.detail.startsWith("Signed in to AgenC")) return "AgenC account";
+  return "ready";
+}
+
+function withNote(value: string, notes: Readonly<Record<string, string>>): string {
+  const note = notes[value];
+  return note === undefined ? value : `${value}, ${note}`;
+}
+
+function readyCardView(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): OnboardingCardView {
+  const permissionMode = context.permissionMode ?? "default";
+  const sandboxMode = context.sandboxMode ?? "workspace-write";
+  const bypass = permissionMode === "bypassPermissions";
+  return {
+    lead: "AgenC is set up for this machine.",
+    rows: [
+      { kind: "kv", label: "Theme", value: state.selectedTheme },
+      {
+        kind: "kv",
+        label: "Model",
+        value: `${state.selectedProvider} / ${state.selectedModel}`,
+      },
+      { kind: "kv", label: "Access", value: accessSummary(state) },
+      { kind: "kv", label: "Mode", value: withNote(permissionMode, PERMISSION_MODE_NOTES) },
+      // Under a bypass flag the configured sandbox may not be the one in
+      // effect (the dangerous flag turns it off), and this card cannot see
+      // the daemon's live policy, so it states only what is certain.
+      ...(bypass
+        ? []
+        : [{ kind: "kv", label: "Sandbox", value: withNote(sandboxMode, SANDBOX_MODE_NOTES) } as const]),
+      { kind: "kv", label: "Workspace", value: context.cwd ?? process.cwd() },
+      ...(bypass
+        ? [
+            { kind: "gap" } as const,
+            { kind: "text", text: "Approvals are off for this run.", strong: true } as const,
+          ]
+        : []),
+    ],
+    hint: "Change these later with /config, /model and Shift+Tab.",
+  };
+}
+
+/** The card for the current step. */
+function onboardingCardView(
+  state: FirstRunOnboardingState,
+  context: FirstRunOnboardingContext,
+): OnboardingCardView {
+  switch (state.currentStepId) {
+    case "theme":
+      return {
+        lead: "How should AgenC look in this terminal?",
+        rows: choiceRows(
+          state,
+          THEME_CHOICES.map((theme) => ({
+            label: theme,
+            note: theme === state.selectedTheme
+              ? `${THEME_NOTES[theme]} (current)`
+              : THEME_NOTES[theme],
+          })),
+        ),
+        hint: themeTip(),
+      };
+    case "provider":
+      return providerCardView(state, context);
+    case "model-access":
+      return modelAccessCardView(state, context);
+    case "ready":
+      return readyCardView(state, context);
+  }
+}
+
+/** The card as plain lines, for tests and plain-text renderers. */
+export function detailLinesForStep(
+  state: FirstRunOnboardingState,
   context: FirstRunOnboardingContext,
 ): readonly string[] {
-  if (context.permissionMode === "bypassPermissions") {
-    return [
-      "Permission mode: bypassPermissions (--dangerously-bypass-approvals-and-sandbox skips tool approval prompts).",
-      "Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox disables workspace sandboxing for this session).",
-      "Press Enter to continue with --dangerously-bypass-approvals-and-sandbox, or restart without --dangerously-bypass-approvals-and-sandbox for prompts and sandboxing.",
-    ];
-  }
-  return [
-    `Permission mode: ${context.permissionMode ?? "default"}`,
-    `Sandbox: ${context.sandboxMode ?? "workspace-write"}`,
-    "Press Enter to keep these defaults.",
-  ];
+  const view = onboardingCardView(state, context);
+  const rows = view.rows.flatMap((row): string[] => {
+    switch (row.kind) {
+      case "choice":
+        return [`${row.selected ? "›" : " "} ${row.label}${row.note === "" ? "" : `  ${row.note}`}`];
+      case "more":
+      case "text":
+        return [row.text];
+      case "kv":
+        return [`${row.label}: ${row.value}`];
+      case "status":
+        return [`${row.ok ? "✓" : "✗"} ${row.text}`];
+      case "gap":
+        return [];
+    }
+  });
+  return [view.lead, ...rows, ...(view.hint !== undefined ? [view.hint] : [])];
 }
 
 export interface FirstRunOnboardingInputPresentation {
@@ -2266,218 +2713,59 @@ export interface FirstRunOnboardingInputPresentation {
   readonly allowEmptySubmit: boolean;
 }
 
+const CHOOSE_FOOTER = "↑↓ choose · Enter confirm · /exit leave setup";
+
 export function firstRunOnboardingInputPresentation(
   state: FirstRunOnboardingState,
 ): FirstRunOnboardingInputPresentation {
-  const standardFooter =
-    "Enter confirms the highlighted choice · ↑/↓ or a number changes it · /exit leaves setup";
   switch (state.currentStepId) {
-    case "preflight":
-      return {
-        placeholder: "Press Enter to start setup",
-        footerHint: standardFooter,
-        allowEmptySubmit: true,
-      };
     case "theme":
       return {
-        placeholder: `Press Enter to keep ${state.selectedTheme}, use ↑/↓, or type 1–${THEME_CHOICES.length}`,
-        footerHint: standardFooter,
+        placeholder: `Enter keeps ${state.selectedTheme}`,
+        footerHint: CHOOSE_FOOTER,
         allowEmptySubmit: true,
       };
     case "provider":
       return {
-        placeholder: `Press Enter to keep ${state.selectedProvider}, use ↑/↓, or type a provider number`,
-        footerHint: standardFooter,
+        placeholder: `Enter keeps ${state.selectedProvider}, or type a provider name`,
+        footerHint: CHOOSE_FOOTER,
         allowEmptySubmit: true,
       };
     case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         return {
-          placeholder: "Type yes to save this key, or no to discard it",
-          footerHint:
-            "Saving a verified key always requires an explicit yes · /exit leaves setup",
+          placeholder: "Type yes to save this key, or no",
+          footerHint: "Saving a key always needs an explicit yes · /exit leave setup",
           allowEmptySubmit: false,
         };
       }
       if (state.modelAccessInput === "api-key") {
-        const credentialLabel =
-          providerApiKeyEnvironmentLabel(state.selectedProvider) ?? "API key";
         return {
-          placeholder: `Paste ${credentialLabel}, type back, or press Enter to configure later`,
-          footerHint:
-            "Keys are verified before an explicit save confirmation · /exit leaves setup",
+          placeholder: `Paste ${canonicalProviderApiKeyEnvVar(state.selectedProvider) ?? providerApiKeyEnvironmentLabel(state.selectedProvider) ?? "an API key"}`,
+          footerHint: "back choose again · Enter set up later · /exit leave setup",
+          allowEmptySubmit: true,
+        };
+      }
+      if (state.modelAccessInput === "result" && state.connection?.ok === true) {
+        return {
+          placeholder: "Enter continues",
+          footerHint: "Enter continue · back choose again · /exit leave setup",
           allowEmptySubmit: true,
         };
       }
       return {
-        placeholder: "Use ↑/↓ or choose 1–4, or paste a provider API key directly",
-        footerHint:
-          "Enter chooses the highlighted option · /exit leaves setup",
+        placeholder: providerOnboardingInfo(state.selectedProvider).access === "api-key"
+          ? "Choose an option, or paste a key"
+          : "Choose an option",
+        footerHint: CHOOSE_FOOTER,
         allowEmptySubmit: true,
       };
-    case "connection-test":
+    case "ready":
       return {
-        placeholder: `Press Enter to test ${state.selectedProvider}`,
-        footerHint: standardFooter,
+        placeholder: "Enter starts AgenC",
+        footerHint: "Enter start AgenC · /exit leave setup",
         allowEmptySubmit: true,
       };
-    case "security":
-      return {
-        placeholder: "Press Enter to keep these security defaults",
-        footerHint: standardFooter,
-        allowEmptySubmit: true,
-      };
-    case "terminal-setup":
-      return {
-        placeholder: "Press Enter to finish onboarding",
-        footerHint: standardFooter,
-        allowEmptySubmit: true,
-      };
-  }
-}
-
-export function detailLinesForStep(
-  state: FirstRunOnboardingState,
-  context: FirstRunOnboardingContext,
-): readonly string[] {
-  switch (state.currentStepId) {
-    case "preflight":
-      return [
-        `Workspace: ${context.cwd ?? process.cwd()}`,
-        `AgenC home: ${context.agencHome ?? "not configured"}`,
-        ...(context.permissionMode === "bypassPermissions"
-          ? ["--dangerously-bypass-approvals-and-sandbox is active: tool approvals and workspace sandboxing are bypassed for this session."]
-          : []),
-        "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
-        "Press Enter to continue (or type next).",
-      ];
-    case "theme": {
-      // The TUI colours text but does NOT repaint the terminal's own
-      // background, so a light theme on a dark terminal (or vice versa) reads
-      // as grey-on-black. The terminal background is already detected for the
-      // 'auto' mode (COLORFGBG seed + OSC 11 watcher) — surface it here so the
-      // user picks with that context instead of discovering the mismatch.
-      const terminalBackground = getTerminalBackground();
-      // Only give a directional recommendation when the background was actually
-      // measured. Most terminals don't export $COLORFGBG, so an unmeasured value
-      // is a guessed `dark` — asserting "your terminal looks dark" there is the
-      // exact inverted advice this tip was added to prevent (M-ONB-2).
-      const themeTip = isTerminalBackgroundDetected()
-        ? `Tip: your terminal background looks ${terminalBackground} — ${
-            terminalBackground === "light" ? '"light" or "auto"' : '"dark" or "auto"'
-          } will read best here.`
-        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "auto"; if dark, "dark" or "auto".`;
-      return [
-        ...THEME_CHOICES.map((theme, index) =>
-          choiceLine(state, index, `${theme}${theme === state.selectedTheme ? " (current)" : ""}`)
-        ),
-        themeTip,
-        "Use ↑/↓ and press Enter, or type a number or theme name.",
-      ];
-    }
-    case "provider": {
-      const detected = new Set(state.detectedLocalProviders);
-      return [
-        ...providerChoices().map((provider, index) =>
-          choiceLine(state, index, `${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`)
-        ),
-        ...(detected.size > 0
-          ? [
-              `Tip: ${[...detected][0]} is already running on this machine — pick it for a zero-key start.`,
-            ]
-          : []),
-        "Use ↑/↓ and press Enter, or type a number or provider slug.",
-      ];
-    }
-    case "connection-test":
-      return state.isCheckingConnection
-        ? ["Checking provider readiness..."]
-        : [
-            `Provider: ${state.selectedProvider}`,
-            `Model: ${state.selectedModel}`,
-            "Press Enter to run the connection check (or type test).",
-          ];
-    case "model-access": {
-      const geminiPlan = state.selectedProvider === "gemini"
-        ? resolveOnboardingGeminiCredentialPlan(context)
-        : undefined;
-      if (state.pendingApiKeyApproval !== null) {
-        return [];
-      }
-      if (state.authPrompt !== null) {
-        return [
-          state.authPrompt.heading,
-          state.authPrompt.detail,
-          ...(state.authPrompt.userCode !== undefined
-            ? [`Code: ${state.authPrompt.userCode}`]
-            : []),
-          `URL: ${state.authPrompt.url}`,
-          "Finish sign-in in your browser; AgenC will continue automatically.",
-        ];
-      }
-      if (state.modelAccessInput === "menu") {
-        const credentialLabel =
-          providerApiKeyEnvironmentLabel(state.selectedProvider);
-        const billingProvider =
-          state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
-        const onboarding = providerOnboardingInfo(state.selectedProvider);
-        const providerAccess = state.selectedProvider === "gemini" &&
-            geminiPlan !== undefined
-          ? geminiPlan.kind === "none"
-            ? geminiPlan.expected === "access-token" || geminiPlan.expected === "adc"
-              ? `Use Gemini with ${geminiCredentialLabel(geminiPlan)}. A one-field BYOK key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`
-              : `Use Gemini with ${geminiCredentialLabel(geminiPlan)}.`
-            : `Use Gemini with configured ${geminiCredentialLabel(geminiPlan)}.`
-          : onboarding.access === "managed"
-          ? `Use ${state.selectedProvider} through AgenC account auth.`
-          : onboarding.access === "api-key"
-            ? `Use ${credentialLabel ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
-            : onboarding.access === "environment"
-              ? `Use ${state.selectedProvider} with ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "its required environment credentials"} — one-field API-key storage is not supported.`
-            : `Use ${state.selectedProvider} directly — no account sign-in or provider API key required.`;
-        return [
-          `Provider: ${state.selectedProvider}`,
-          `Model: ${state.selectedModel}`,
-          choiceLine(state, 0, "Sign in or create an AgenC account — use hosted models; free accounts get the free-model catalog."),
-          choiceLine(state, 1, "Sign in with X / xAI — use Grok through an eligible X or xAI subscription."),
-          choiceLine(state, 2, providerAccess),
-          choiceLine(state, 3, "Configure later — continue without signing in or saving a key."),
-          ...(geminiPlan?.kind === "none" &&
-            (geminiPlan.expected === "access-token" ||
-              geminiPlan.expected === "adc")
-            ? ["Use ↑/↓ and press Enter, or type a number. Configure the forced Gemini credential source before testing."]
-            : ["Use ↑/↓ and press Enter, or type a number. You can also paste a provider API key directly."]),
-        ];
-      }
-      const connection = state.connection;
-      if (connection === null) {
-        return [
-          `Provider: ${state.selectedProvider}`,
-          modelAccessInstructionForProvider(state.selectedProvider, geminiPlan),
-          "Type back to choose a different access method.",
-        ];
-      }
-      return [
-        connection.detail,
-        credentialInstructionForConnection(connection),
-        "Type back to choose a different access method.",
-        ...(state.pastedContents.length > 0
-          ? [`Captured ${state.pastedContents.length} large paste privately.`]
-          : []),
-      ];
-    }
-    case "security":
-      return [
-        ...(state.connection?.ok === true
-          ? [`Model access: ${state.connection.detail}`]
-          : []),
-        ...securityLinesForContext(context),
-      ];
-    case "terminal-setup":
-      return [
-        `Terminal: ${context.terminalName ?? "terminal"}`,
-        "Press Enter to finish onboarding (or type done).",
-      ];
   }
 }
 
@@ -2488,100 +2776,89 @@ export interface OnboardingProps {
   readonly context: FirstRunOnboardingContext;
 }
 
-/**
- * A detail line classified for layout. A terminal can't change font size, so
- * hierarchy + tidy distribution come from colour, weight, column alignment and
- * grouping (a blank line between the data/choices and the action hints).
- */
-type OnboardingDetailEntry =
-  | { readonly kind: "choice"; readonly num: string; readonly text: string; readonly current: boolean }
-  | { readonly kind: "kv"; readonly label: string; readonly value: string }
-  | { readonly kind: "hint"; readonly text: string }
-  | { readonly kind: "plain"; readonly text: string };
+/** Narrowest and widest the setup card gets. */
+const MIN_CARD_WIDTH = 44;
+const MAX_CARD_WIDTH = 76;
+const MIN_LABEL_WIDTH = 12;
 
-function classifyOnboardingDetail(line: string): OnboardingDetailEntry {
-  const choice = /^(\d+)\.\s+(.*)$/u.exec(line);
-  if (choice) {
-    return {
-      kind: "choice",
-      num: choice[1] ?? "",
-      text: choice[2] ?? "",
-      current: /\(current\)\s*$/u.test(line),
-    };
-  }
-  if (
-    /^(Choose |Finish |Onboarding input only|Or type |Press Enter|Tip:|Type )/u.test(
-      line,
-    )
-  ) {
-    return { kind: "hint", text: line };
-  }
-  const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);
-  if (kv) {
-    return { kind: "kv", label: kv[1] ?? "", value: kv[2] ?? "" };
-  }
-  return { kind: "plain", text: line };
+/**
+ * The top border of a setup card: the step title in bold on the left, the
+ * step counter muted on the right, border line between them. Built as one
+ * string because the border renderer embeds a single text.
+ */
+function setupCardBorderTitle(
+  title: string,
+  counter: string,
+  cardWidth: number,
+  themeName: ThemeName,
+): string {
+  const theme = getTheme(themeName);
+  const left = ` ${title} `;
+  const right = ` ${counter} `;
+  // Corners and one border cell on each side of the embedded text.
+  const fill = Math.max(1, cardWidth - 4 - left.length - right.length);
+  return (
+    applyTextStyles(left, { bold: true, color: theme.text as Color }) +
+    applyTextStyles("─".repeat(fill), { color: theme.subtle as Color }) +
+    applyTextStyles(right, { color: theme.inactive as Color })
+  );
 }
 
-function OnboardingDetailRow({
-  entry,
+function SetupCardRow({
+  row,
   labelWidth,
 }: {
-  readonly entry: OnboardingDetailEntry;
+  readonly row: OnboardingCardRow;
   readonly labelWidth: number;
 }): React.ReactElement {
-  switch (entry.kind) {
+  switch (row.kind) {
     case "choice":
       return (
         <Box flexDirection="row">
-          <ThemedText color="agenc" bold>
-            {entry.current ? "▸ " : "  "}
-          </ThemedText>
-          <ThemedText color="agenc" bold>
-            {entry.num}.{" "}
-          </ThemedText>
-          <ThemedText color={entry.current ? "text" : "text2"} bold={entry.current}>
-            {entry.text}
+          <Box width={labelWidth + 2} flexShrink={0}>
+            <ThemedText
+              color={row.selected ? "text" : "text2"}
+              bold={row.selected}
+              wrap="truncate-end"
+            >
+              {`${row.selected ? "›" : " "} ${row.label}`}
+            </ThemedText>
+          </Box>
+          <ThemedText color={row.selected ? "text2" : "inactive"} wrap="truncate-end">
+            {row.note}
           </ThemedText>
         </Box>
       );
+    case "more":
+      return <ThemedText color="inactive">{`  ${row.text}`}</ThemedText>;
     case "kv":
-      // Two aligned columns (label padded to the widest label), like the cold
-      // welcome panel — values line up instead of hanging off ragged labels.
       return (
         <Box flexDirection="row">
-          <ThemedText color="inactive">{`${entry.label.padEnd(labelWidth)}   `}</ThemedText>
-          <ThemedText color="text" wrap="truncate-middle">
-            {entry.value}
+          <Box width={labelWidth} flexShrink={0}>
+            <ThemedText color="text" bold>
+              {row.label}
+            </ThemedText>
+          </Box>
+          <ThemedText color="text2" wrap="truncate-middle">
+            {row.value}
           </ThemedText>
         </Box>
       );
-    case "hint":
-      return <ThemedText color="inactive">{entry.text}</ThemedText>;
-    default:
-      return <ThemedText color="text2">{entry.text}</ThemedText>;
+    case "status":
+      return (
+        <ThemedText color="text" bold>
+          {`${row.ok ? "✓" : "✗"} ${row.text}`}
+        </ThemedText>
+      );
+    case "text":
+      return (
+        <ThemedText color={row.strong ? "text" : "text2"} bold={row.strong === true}>
+          {row.text}
+        </ThemedText>
+      );
+    case "gap":
+      return <Box height={1} />;
   }
-}
-
-function renderOnboardingDetail(lines: readonly string[]): React.ReactNode[] {
-  const entries = lines.map(classifyOnboardingDetail);
-  const labelWidth = entries.reduce(
-    (max, entry) => (entry.kind === "kv" ? Math.max(max, entry.label.length) : max),
-    0,
-  );
-  const nodes: React.ReactNode[] = [];
-  entries.forEach((entry, index) => {
-    const previous = entries[index - 1];
-    // A blank line before the first hint after any content splits the action
-    // instructions ("Press Enter…") from the data/choices above them.
-    if (entry.kind === "hint" && previous !== undefined && previous.kind !== "hint") {
-      nodes.push(<Box key={`gap-${index}`} height={1} />);
-    }
-    nodes.push(
-      <OnboardingDetailRow key={lines[index]} entry={entry} labelWidth={labelWidth} />,
-    );
-  });
-  return nodes;
 }
 
 export function Onboarding({
@@ -2596,7 +2873,7 @@ export function Onboarding({
   // dark and the choice silently evaporated. The seed value on mount is
   // deliberately NOT applied: re-running the wizard must not overwrite the
   // user's configured theme until they actually change the selection.
-  const [, setThemeSetting] = useTheme();
+  const [themeName, setThemeSetting] = useTheme();
   const appliedThemeRef = useRef<string | null>(null);
   useEffect(() => {
     const mapped = wizardThemeToSetting(state.selectedTheme);
@@ -2615,80 +2892,63 @@ export function Onboarding({
     terminalSize && Number.isFinite(terminalSize.columns)
       ? terminalSize.columns
       : 80;
-  // Cap at 84 so the longest preflight hint ("Onboarding input only. Use
-  // /exit, Ctrl-C twice, or Ctrl-D twice to leave.") fits on one line on a
-  // normal-width terminal instead of wrapping with a ragged hanging indent.
-  const cardWidth = Math.max(40, Math.min(84, columns - 2));
-  const detailLines = detailLinesForStep(state, context);
-  const showApproval =
-    state.currentStepId === "model-access" &&
-    state.pendingApiKeyApproval !== null;
+  const cardWidth = Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, columns - 2));
+  const view = onboardingCardView(state, context);
+  const stepNumber = Math.max(1, steps.findIndex((step) => step.id === currentStep.id) + 1);
+  const borderTitle = setupCardBorderTitle(
+    currentStep.title,
+    `${stepNumber} of ${steps.length}`,
+    cardWidth,
+    themeName,
+  );
+  const labelWidth = Math.max(
+    MIN_LABEL_WIDTH,
+    ...view.rows.map((row) =>
+      row.kind === "choice" || row.kind === "kv" ? row.label.length + 2 : 0
+    ),
+  );
 
+  // Terminals can't change font size, so hierarchy comes from weight and ink:
+  // the step title sits in the border in bold, the question is full ink, the
+  // highlighted choice is bold, values and notes are a step down, and hints
+  // and the step counter are muted. Same card language as the trust prompt.
   return (
     <Box flexDirection="column" width="100%" paddingX={1}>
-      <WelcomeV2
-        provider={state.selectedProvider}
-        model={state.selectedModel}
-      />
-
-      {/* The active step is a single accent card (same language as the trust
-          dialog): purple border, the step title as a bright heading, and the
-          detail lines rendered with real hierarchy. */}
+      <ThemedText color="text" bold>
+        agenc.
+      </ThemedText>
+      <ThemedText color="inactive">
+        Set up once, then start working. Change anything later with /config.
+      </ThemedText>
       <ThemedBox
         flexDirection="column"
         width={cardWidth}
         borderStyle="round"
-        borderColor="agenc"
+        borderColor="subtle"
+        borderText={{ content: borderTitle, position: "top", align: "start", offset: 1 }}
         paddingX={2}
         paddingY={1}
         marginTop={1}
       >
-        <ThemedText color="agenc" bold>
-          {currentStep.title}
-        </ThemedText>
-        <Box height={1} />
-        {showApproval && state.pendingApiKeyApproval !== null ? (
-          <ApproveApiKey
-            provider={state.pendingApiKeyApproval.provider}
-            maskedTail={state.pendingApiKeyApproval.maskedTail}
-            status={state.pendingApiKeyApproval.verificationStatus}
-            error={state.pendingApiKeyApproval.verificationError}
-            pastePreview={state.pendingApiKeyApproval.pastePreview}
-          />
-        ) : (
-          renderOnboardingDetail(detailLines)
-        )}
+        <ThemedText color="text">{view.lead}</ThemedText>
+        {view.rows.length > 0 ? (
+          <Box flexDirection="column" marginTop={1}>
+            {view.rows.map((row, index) => (
+              <SetupCardRow key={`${row.kind}-${index}`} row={row} labelWidth={labelWidth} />
+            ))}
+          </Box>
+        ) : null}
+        {view.hint !== undefined ? (
+          <Box marginTop={1}>
+            <ThemedText color="inactive">{view.hint}</ThemedText>
+          </Box>
+        ) : null}
         {state.error !== null ? (
           <Box marginTop={1}>
             <ThemedText color="warning">{state.error}</ThemedText>
           </Box>
         ) : null}
       </ThemedBox>
-
-      {/* Progress rail: done = green ✓, current = purple ▸ (bright title),
-          pending = dim ·. Replaces the flat [x]/[>]/[ ] ASCII markers. */}
-      <Box flexDirection="column" marginTop={1}>
-        {steps.map((step) => {
-          const isCurrent = step.id === currentStep.id;
-          const marker = step.isComplete ? "✓" : isCurrent ? "▸" : "·";
-          const markerColor = step.isComplete
-            ? "success"
-            : isCurrent
-              ? "agenc"
-              : "muted3";
-          const titleColor = isCurrent ? "text" : step.isComplete ? "text2" : "inactive";
-          return (
-            <Box key={step.id} flexDirection="row">
-              <ThemedText color={markerColor} bold={isCurrent}>
-                {marker}{" "}
-              </ThemedText>
-              <ThemedText color={titleColor} bold={isCurrent}>
-                {step.title}
-              </ThemedText>
-            </Box>
-          );
-        })}
-      </Box>
     </Box>
   );
 }
