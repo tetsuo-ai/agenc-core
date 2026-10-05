@@ -213,6 +213,12 @@ export class StateSqliteDriver {
       .prepare<Params, Row>(sql);
   }
 
+  /** A shared connection may use only the named live writer's policy. */
+  isRelaxedOneShotRun(runId: string): boolean {
+    return (this.durabilityRunId === undefined || this.durabilityRunId === runId) &&
+      relaxedOneShotTransaction(this.projectDir, runId);
+  }
+
   transaction<T>(fn: () => T): T {
     return this.withTransactionDurability(this.state, () => this.state.transaction(fn)());
   }

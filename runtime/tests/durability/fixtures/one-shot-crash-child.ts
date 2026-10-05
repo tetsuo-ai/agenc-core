@@ -1,3 +1,5 @@
+import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
+import { writeSessionSnapshotAtomically } from "../../../src/state/atomic-snapshot-writes.js";
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ErrorLogSidecar } from "../../../src/session/error-log.js";
@@ -21,6 +23,14 @@ if (command === "crash") {
   writeFileSync(pathRecord, store.rolloutPath);
   const kill = () => { process.kill(process.pid, "SIGKILL"); throw new Error("SIGKILL returned"); };
   if (boundary === "opened") kill();
+  const snapshotDriver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+  snapshotDriver.prepareState("INSERT INTO session_agent_links(session_id, agent_id) VALUES (?, ?)").run("snapshot-session", "crash-run");
+  writeSessionSnapshotAtomically(snapshotDriver, {
+    sessionId: "snapshot-session", snapshotAt: meta.timestamp,
+    conversationJson: '["snapshot"]', toolStateJson: '{}', mcpConnectionStateJson: '{}',
+  }, { replayOnStartup: true, verifyExisting: true, oneShotRunId: "crash-run" });
+  snapshotDriver.close();
+  if (boundary === "snapshot") kill();
   if (boundary === "pending-logs") {
     const projectDir = dirname(dirname(dirname(store.rolloutPath)));
     const sidecar = new ErrorLogSidecar({ projectDir, sessionId: "crash-run", deferStartupIndex: true });
