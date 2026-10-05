@@ -18,6 +18,11 @@ int main(int argc,char **argv){
  (void)argc;(void)argv;
  const char *wait = getenv("FIXTURE_WAIT_PATH");
  if(wait) for(int i=0;access(wait,F_OK)!=0 && i<5000;i++) usleep(1000);
+ const char *effect = getenv("FIXTURE_EFFECT_PATH");
+ if(effect) {
+  int marker=open(effect,O_WRONLY|O_CREAT|O_APPEND,0600);
+  if(marker<0 || write(marker,"X",1)!=1 || close(marker)!=0) return 3;
+ }
  puts("EXEC");
  for(int fd=3;fd<32;fd++) if(fcntl(fd,F_GETFD)>=0){
    printf("FD=%d SEALS=%d OFFSET=%ld\n",fd,fcntl(fd,F_GET_SEALS),(long)lseek(fd,0,SEEK_CUR));

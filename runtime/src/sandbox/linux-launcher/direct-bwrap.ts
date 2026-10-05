@@ -166,7 +166,7 @@ export function prepareDirectBwrapPlan(input: {
       env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }, ownerPid: process.pid,
       ...(seccomp === undefined ? {} : { seccomp }) });
     const ownedSource = source;
-    const plan: PreparedDirectBwrap = Object.freeze({ [brand]: true });
+    const plan: PreparedDirectBwrap = Object.freeze({ [brand]: true as const });
     prepared.set(plan, Object.freeze({ payload, sourceFd: source?.fd, isCurrent,
       dispose: () => ownedSource?.dispose() }));
     source = undefined;

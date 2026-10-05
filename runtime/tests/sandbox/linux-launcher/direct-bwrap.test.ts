@@ -77,6 +77,22 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
     } finally { handoff.dispose(); }
   });
 
+  it("finishes partial BPF writes and closes/unlinks preparation failures", () => {
+    const f = fixture();
+    const write = fs.writeSync;
+    const partial = vi.spyOn(fs, "writeSync").mockImplementation(((fd: number, bytes: Uint8Array,
+      offset: number, length: number, position: number) => write(fd, bytes, offset, Math.min(8, length), position)) as typeof fs.writeSync);
+    const handoff = consumeDirectBwrapPlan(prepareDirectBwrapPlan(f)!);
+    try { expect(fs.readFileSync(handoff.sourceFd!)).toEqual(decode(handoff.payload).bpf); }
+    finally { handoff.dispose(); partial.mockRestore(); }
+    const count = fs.readdirSync("/proc/self/fd").length;
+    const failed = vi.spyOn(fs, "writeSync").mockImplementation(() => { throw new Error("fixture write failure"); });
+    expect(prepareDirectBwrapPlan(f)).toBeUndefined();
+    failed.mockRestore();
+    expect(fs.readdirSync(f.temp)).toEqual([]);
+    expect(fs.readdirSync("/proc/self/fd")).toHaveLength(count);
+  });
+
   it("rejects custom helpers, runtimes, scripts and unsupported launcher routes", () => {
     const f = fixture();
     const custom = path.join(root, "agenc-linux-sandbox"); fs.copyFileSync(f.args[0]!, custom);
