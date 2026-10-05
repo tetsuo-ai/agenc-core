@@ -30,6 +30,7 @@ function fakeChild(): ChildProcessWithoutNullStreams {
 
 function fakeBroker() {
   const child = fakeChild();
+  const nativeKill = child.kill;
   vi.mocked(spawn).mockReturnValueOnce(child);
   spawnContainedProcess(process.execPath, ["-e", "0"], {
     cwd: process.cwd(),
@@ -37,7 +38,7 @@ function fakeBroker() {
     linuxContainment: "subreaper",
   });
   const status = child.stdio[3] as PassThrough;
-  return { child, status };
+  return { child, status, nativeKill };
 }
 
 afterEach(() => {
@@ -72,7 +73,7 @@ describe.runIf(process.platform === "linux")("native settlement notification", (
   });
 
   it.each(["", "S", "C", "SCX", "SCC"])("keeps invalid proof %j fail-closed after fallback", async (proof) => {
-    const { child, status } = fakeBroker();
+    const { child, status, nativeKill } = fakeBroker();
     vi.useFakeTimers();
     const settled = vi.fn();
     const waiting = waitForContainedProcessSettlement(child).then(settled);
@@ -85,7 +86,7 @@ describe.runIf(process.platform === "linux")("native settlement notification", (
     await waiting;
     expect(settled).toHaveBeenCalledTimes(1);
     await expect(terminateProcessTreeAndReport(child)).rejects.toThrow(/cleanup could not be verified/u);
-    expect(child.kill).not.toHaveBeenCalled();
+    expect(nativeKill).not.toHaveBeenCalled();
   });
 
   it("bounds absent proof and removes the listener before a late close", async () => {
