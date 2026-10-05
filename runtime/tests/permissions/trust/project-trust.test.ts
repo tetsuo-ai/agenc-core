@@ -17,6 +17,9 @@ import { isPathTrusted } from "../../../src/utils/config.js";
 import {
   __resetProjectTrustForTesting,
   approveProjectMcpServerSync,
+  projectConfigDigestSync,
+  resolveProjectTrustKindSync,
+  trustProjectAutomatically,
   getProjectMcpServerApprovalStatusSync,
   hasSecurityAcknowledgementSync,
   isProjectTrustedSync,
@@ -386,3 +389,127 @@ describe("project trust store", () => {
     }
   });
 });
+
+describe("automatic project trust", () => {
+  let home = "";
+  let repo = "";
+
+  beforeEach(() => {
+    home = mkTmp();
+    repo = mkTmp();
+    mkdirSync(join(repo, ".git"));
+  });
+
+  afterEach(() => {
+    for (const dir of [home, repo]) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function grant(): Promise<{ readonly persisted: boolean }> {
+    const configDigest = projectConfigDigestSync(repo);
+    if (configDigest === null) throw new Error("expected a digest");
+    return trustProjectAutomatically({ agencHome: home, projectRoot: repo, configDigest });
+  }
+
+  test("trusts the root while its repository config files are unchanged", async () => {
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe("none");
+    await expect(grant()).resolves.toMatchObject({ persisted: true });
+
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe(
+      "automatic",
+    );
+    expect(isProjectTrustedSync({ agencHome: home, cwd: repo })).toBe(true);
+    // Automatic grants live in their own list, so an older binary that only
+    // reads trustedProjects sees this root as untrusted and fails closed.
+    const file = JSON.parse(readFileSyncUtf8(trustedProjectsPath({ agencHome: home })));
+    expect(file.trustedProjects).toEqual([]);
+    expect(file.autoTrustedProjects).toHaveLength(1);
+    expect(file.autoTrustedProjects[0].configDigest).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  test("lapses as soon as the repo adds or changes AgenC config", async () => {
+    await grant();
+    mkdirSync(join(repo, ".agenc"));
+    writeFileSync(
+      join(repo, ".agenc", "config.toml"),
+      'config_version = 2\n[[hooks.Stop]]\nhooks = [{ type = "command", command = "./x.sh" }]\n',
+    );
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe("none");
+    expect(isProjectTrustedSync({ agencHome: home, projectRoot: repo })).toBe(false);
+
+    await grant();
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe(
+      "automatic",
+    );
+    writeFileSync(join(repo, ".agenc", "config.local.toml"), "config_version = 2\n");
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe("none");
+  });
+
+  test("the fingerprint covers file bytes, not just presence", () => {
+    mkdirSync(join(repo, ".agenc"));
+    writeFileSync(join(repo, ".agenc", "config.toml"), "config_version = 2\n");
+    const first = projectConfigDigestSync(repo);
+    writeFileSync(join(repo, ".agenc", "config.toml"), "config_version = 2 \n");
+    expect(projectConfigDigestSync(repo)).not.toBe(first);
+    expect(first).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  test("an unreadable config file yields no fingerprint", () => {
+    // A directory where the file should be cannot be read as a file.
+    mkdirSync(join(repo, ".agenc", "config.toml"), { recursive: true });
+    expect(projectConfigDigestSync(repo)).toBeNull();
+  });
+
+  test("explicit trust wins over and replaces an automatic grant", async () => {
+    await grant();
+    await trustProject({ agencHome: home, projectRoot: repo });
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe(
+      "explicit",
+    );
+    const file = JSON.parse(readFileSyncUtf8(trustedProjectsPath({ agencHome: home })));
+    expect(file.autoTrustedProjects).toBeUndefined();
+    await expect(grant()).resolves.toMatchObject({ persisted: false });
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe(
+      "explicit",
+    );
+  });
+
+  test("other ledger writes keep automatic grants", async () => {
+    await grant();
+    await recordSecurityAcknowledgement("auto-mode-permission-prompt", {
+      agencHome: home,
+    });
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe(
+      "automatic",
+    );
+  });
+
+  test("an automatic grant covers its own root only", async () => {
+    await grant();
+    const nested = join(repo, "packages", "app");
+    mkdirSync(join(nested, ".git"), { recursive: true });
+    expect(resolveProjectTrustKindSync({ agencHome: home, cwd: nested })).toBe("none");
+  });
+
+  test("malformed automatic entries are ignored", () => {
+    writeFileSync(
+      trustedProjectsPath({ agencHome: home }),
+      JSON.stringify({
+        version: 1,
+        trustedProjects: [],
+        autoTrustedProjects: [
+          { path: repo, trustedAt: "2026-10-05T00:00:00.000Z", configDigest: "nope" },
+        ],
+      }),
+    );
+    expect(resolveProjectTrustKindSync({ agencHome: home, projectRoot: repo })).toBe("none");
+  });
+
+  test("refuses to record a grant without a sha256 digest", async () => {
+    await expect(
+      trustProjectAutomatically({ agencHome: home, projectRoot: repo, configDigest: "x" }),
+    ).rejects.toThrow(/sha256/u);
+  });
+});
+

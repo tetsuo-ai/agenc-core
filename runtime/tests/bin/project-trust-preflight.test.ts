@@ -15,8 +15,31 @@ import {
   getSessionTrustAccepted,
   setSessionTrustAccepted,
 } from "../bootstrap/state.js";
-import { YOLO_TRUST_COPY } from "../permissions/trust/TrustDialog.js";
-import { trustProjectSync } from "../permissions/trust/project-trust.js";
+import {
+  resolveProjectTrustKindSync,
+  trustProjectSync,
+  trustedProjectsPath,
+} from "../permissions/trust/project-trust.js";
+
+/**
+ * Give a workspace a repository hook, so trusting it turns something on and
+ * the preflight must ask (or refuse when it cannot ask).
+ */
+async function shipRepoHook(workspace: string): Promise<void> {
+  await mkdir(join(workspace, ".agenc"), { recursive: true });
+  await writeFile(
+    join(workspace, ".agenc", "config.toml"),
+    'config_version = 2\n[[hooks.Stop]]\nhooks = [{ type = "command", command = "./notify.sh" }]\n',
+    "utf8",
+  );
+}
+
+function refusalWithHooks(workspace: string): string {
+  return (
+    `agenc: project is not trusted: ${workspace}\n` +
+    "agenc: trusting it turns on hooks; run agenc there in a terminal to review them\n"
+  );
+}
 
 function makeEnv(home: string, workspace: string): NodeJS.ProcessEnv {
   return {
@@ -158,6 +181,7 @@ describe("project trust preflight", () => {
     const stdio = makeNonTtyStdio();
 
     try {
+      await shipRepoHook(workspace);
       const result = await runProjectTrustPreflightForTui({
         env: makeEnv(home, workspace),
         argv: ["node", "agenc"],
@@ -172,9 +196,7 @@ describe("project trust preflight", () => {
         projectRoot: workspace,
         prompted: false,
       });
-      expect(stdio.stderrText()).toBe(
-        `agenc: project is not trusted: ${workspace}\n`,
-      );
+      expect(stdio.stderrText()).toBe(refusalWithHooks(workspace));
     } finally {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
@@ -266,6 +288,7 @@ describe("project trust preflight", () => {
 
     try {
       trustProjectSync({ agencHome: home, projectRoot: envWorkspace, env });
+      await shipRepoHook(attachWorkspace);
 
       const result = await runProjectTrustPreflightForTui({
         env,
@@ -282,9 +305,7 @@ describe("project trust preflight", () => {
         projectRoot: attachWorkspace,
         prompted: false,
       });
-      expect(stdio.stderrText()).toBe(
-        `agenc: project is not trusted: ${attachWorkspace}\n`,
-      );
+      expect(stdio.stderrText()).toBe(refusalWithHooks(attachWorkspace));
     } finally {
       await rm(home, { recursive: true, force: true });
       await rm(envWorkspace, { recursive: true, force: true });
@@ -348,6 +369,7 @@ describe("project trust preflight", () => {
     const markSessionTrusted = vi.fn(async () => undefined);
 
     try {
+      await shipRepoHook(workspace);
       await expect(
         runProjectTrustPreflightForTui({
           env,
@@ -365,7 +387,13 @@ describe("project trust preflight", () => {
         prompted: true,
       });
       expect(renderPrompt).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceRoot: workspace }),
+        expect.objectContaining({
+          workspaceRoot: workspace,
+          review: {
+            repoItems: [{ label: "Hooks", values: ["./notify.sh when a turn ends"] }],
+            userItems: [],
+          },
+        }),
       );
       expect(markSessionTrusted).toHaveBeenCalledTimes(1);
       expect(stdio.stderrText()).toBe("");
@@ -420,6 +448,7 @@ describe("project trust preflight", () => {
         expect.objectContaining({
           workspaceRoot: workspace,
           bypassPermissionsRequested: true,
+          bypassSandboxRequested: true,
         }),
       );
     } finally {
@@ -428,10 +457,52 @@ describe("project trust preflight", () => {
     }
   });
 
-  it("explains both approval bypass and sandbox bypass in --dangerously-bypass-approvals-and-sandbox trust copy", () => {
-    expect(YOLO_TRUST_COPY).toContain("skips tool approval prompts");
-    expect(YOLO_TRUST_COPY).toContain("danger-full-access sandbox mode");
-    expect(YOLO_TRUST_COPY).toContain("project trust still requires confirmation");
+  it("asks even for an automatically trusted folder when approvals are bypassed", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    const env = makeEnv(home, workspace);
+    const stdio = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+
+    try {
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toMatchObject({ accepted: true, prompted: false, automatic: true });
+      expect(renderPrompt).not.toHaveBeenCalled();
+
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc", "--bypass-approvals"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toEqual({ accepted: true, projectRoot: workspace, prompted: true });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassPermissionsRequested: true,
+          bypassSandboxRequested: false,
+        }),
+      );
+      // Confirming under a bypass flag records an explicit grant.
+      expect(
+        resolveProjectTrustKindSync({ agencHome: home, env, projectRoot: workspace }),
+      ).toBe("explicit");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("prompts for interactive agent start trust before daemon readiness", async () => {
@@ -442,6 +513,7 @@ describe("project trust preflight", () => {
     const renderPrompt = vi.fn(async () => false);
 
     try {
+      await shipRepoHook(workspace);
       await expect(
         runProjectTrustPreflightForTui({
           env,
@@ -477,6 +549,7 @@ describe("project trust preflight", () => {
     const previousTrust = getSessionTrustAccepted();
 
     try {
+      await shipRepoHook(workspace);
       setSessionTrustAccepted(false);
       expect(getSessionTrustAccepted()).toBe(false);
 
@@ -502,6 +575,206 @@ describe("project trust preflight", () => {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+describe("automatic project trust in the preflight", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function withFolders(
+    run: (ctx: { readonly home: string; readonly workspace: string }) => Promise<void>,
+  ): Promise<void> {
+    const home = await mkdtemp(join(tmpdir(), "agenc-auto-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-auto-trust-ws-"));
+    try {
+      await run({ home, workspace });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }
+
+  it("starts without a card when trust has nothing to turn on, and records it as automatic", async () => {
+    await withFolders(async ({ home, workspace }) => {
+      const env = makeEnv(home, workspace);
+      const stdio = makeTtyStdio();
+      const renderPrompt = vi.fn(async () => true);
+      const markSessionTrusted = vi.fn(async () => undefined);
+      const run = () =>
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+          markSessionTrusted,
+        });
+
+      await expect(run()).resolves.toEqual({
+        accepted: true,
+        projectRoot: workspace,
+        prompted: false,
+        automatic: true,
+      });
+      expect(renderPrompt).not.toHaveBeenCalled();
+      expect(markSessionTrusted).toHaveBeenCalledTimes(1);
+      expect(
+        resolveProjectTrustKindSync({ agencHome: home, env, projectRoot: workspace }),
+      ).toBe("automatic");
+      const ledger = JSON.parse(
+        await readFile(trustedProjectsPath({ agencHome: home }), "utf8"),
+      );
+      expect(ledger.trustedProjects).toEqual([]);
+
+      // The next launch finds the automatic grant still valid.
+      await expect(run()).resolves.toEqual({
+        accepted: true,
+        projectRoot: workspace,
+        prompted: false,
+      });
+      expect(renderPrompt).not.toHaveBeenCalled();
+      expect(stdio.stderrText()).toBe("");
+    });
+  });
+
+  it("lets a headless run start in a folder with nothing to review", async () => {
+    await withFolders(async ({ home, workspace }) => {
+      const stdio = makeNonTtyStdio();
+      await expect(
+        runProjectTrustPreflightForTui({
+          env: makeEnv(home, workspace),
+          argv: ["node", "agenc", "-p", "hello"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          allowPrompt: false,
+        }),
+      ).resolves.toMatchObject({ accepted: true, prompted: false, automatic: true });
+      expect(stdio.stderrText()).toBe("");
+    });
+  });
+
+  it("asks again once a repo that was trusted automatically adds a hook", async () => {
+    await withFolders(async ({ home, workspace }) => {
+      const env = makeEnv(home, workspace);
+      const tty = makeTtyStdio();
+      const renderPrompt = vi.fn(async () => false);
+      const options = {
+        env,
+        argv: ["node", "agenc"],
+        cwd: workspace,
+        stdin: tty.stdin,
+        stdout: tty.stdout,
+        stderr: tty.stderr,
+        renderPrompt,
+      };
+      await expect(runProjectTrustPreflightForTui(options)).resolves.toMatchObject({
+        automatic: true,
+      });
+
+      await shipRepoHook(workspace);
+      expect(
+        resolveProjectTrustKindSync({ agencHome: home, env, projectRoot: workspace }),
+      ).toBe("none");
+      await expect(runProjectTrustPreflightForTui(options)).resolves.toEqual({
+        accepted: false,
+        projectRoot: workspace,
+        prompted: true,
+      });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          review: {
+            repoItems: [{ label: "Hooks", values: ["./notify.sh when a turn ends"] }],
+            userItems: [],
+          },
+        }),
+      );
+
+      const headless = makeNonTtyStdio();
+      await expect(
+        runProjectTrustPreflightForTui({
+          ...options,
+          stdin: headless.stdin,
+          stdout: headless.stdout,
+          stderr: headless.stderr,
+        }),
+      ).resolves.toMatchObject({ accepted: false, prompted: false });
+      expect(headless.stderrText()).toBe(refusalWithHooks(workspace));
+    });
+  });
+
+  it("asks when the user's own hooks would start running in the folder", async () => {
+    await withFolders(async ({ home, workspace }) => {
+      await writeFile(
+        join(home, "config.toml"),
+        'config_version = 2\n[statusLine]\ntype = "command"\ncommand = "~/bin/status.sh"\n',
+        "utf8",
+      );
+      const stdio = makeTtyStdio();
+      const renderPrompt = vi.fn(async () => true);
+      await expect(
+        runProjectTrustPreflightForTui({
+          env: makeEnv(home, workspace),
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toEqual({ accepted: true, projectRoot: workspace, prompted: true });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          review: {
+            repoItems: [],
+            userItems: [{ label: "Status line", values: ["~/bin/status.sh"] }],
+          },
+        }),
+      );
+    });
+  });
+
+  it("never trusts the home folder automatically", async () => {
+    await withFolders(async ({ home, workspace }) => {
+      const env = { ...makeEnv(home, workspace), HOME: workspace };
+      const tty = makeTtyStdio();
+      const renderPrompt = vi.fn(async () => false);
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: tty.stdin,
+          stdout: tty.stdout,
+          stderr: tty.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toMatchObject({ accepted: false, prompted: true });
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({ location: "home" }),
+      );
+
+      const headless = makeNonTtyStdio();
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc"],
+          cwd: workspace,
+          stdin: headless.stdin,
+          stdout: headless.stdout,
+          stderr: headless.stderr,
+        }),
+      ).resolves.toMatchObject({ accepted: false, prompted: false });
+      expect(headless.stderrText()).toBe(
+        `agenc: project is not trusted: ${workspace}\n` +
+          "agenc: it is your home folder; run agenc there in a terminal to confirm\n",
+      );
+    });
   });
 });
 
@@ -552,6 +825,7 @@ describe("resolveAttachTargetTrustRoot", () => {
     const workspace = await mkdtemp(join(tmpdir(), "agenc-attach-flags-ws-"));
     const configPath = join(workspace, "operator.toml");
     await writeFile(configPath, "config_version = 2\n", "utf8");
+    await shipRepoHook(workspace);
     const request = vi.fn(async (method: string) => {
       if (method === "agent.list") {
         return { agents: [{ agentId: "agent-1", cwd: workspace }] };
@@ -588,9 +862,7 @@ describe("resolveAttachTargetTrustRoot", () => {
       expect(request).toHaveBeenCalledTimes(1);
       expect(request).toHaveBeenCalledWith("agent.list", { limit: 100 });
       expect(close).toHaveBeenCalledTimes(1);
-      expect(stderr.text()).toBe(
-        `agenc: project is not trusted: ${workspace}\n`,
-      );
+      expect(stderr.text()).toBe(refusalWithHooks(workspace));
     } finally {
       stderr.restore();
       for (const restore of restoreFns.reverse()) restore();
@@ -610,6 +882,7 @@ describe("main project trust routing", () => {
       ["node", "agenc", "--no-tui", "run", "tools"],
       { stdinTTY: false, stdoutTTY: false },
       async ({ workspace }) => {
+        await shipRepoHook(workspace);
         const providerMod = await import("../llm/provider.js");
         const createProviderSpy = vi.spyOn(providerMod, "createProvider");
         const startMcpSpy = vi.spyOn(
@@ -621,9 +894,7 @@ describe("main project trust routing", () => {
           await expect(oneShotCLI("run tools")).resolves.toBe(1);
           expect(createProviderSpy).not.toHaveBeenCalled();
           expect(startMcpSpy).not.toHaveBeenCalled();
-          expect(stderr.text()).toBe(
-            `agenc: project is not trusted: ${workspace}\n`,
-          );
+          expect(stderr.text()).toBe(refusalWithHooks(workspace));
         } finally {
           stderr.restore();
           createProviderSpy.mockRestore();
@@ -656,12 +927,11 @@ describe("main project trust routing", () => {
       ["node", "agenc", "run", "tools"],
       { stdinTTY: false, stdoutTTY: false },
       async ({ workspace }) => {
+        await shipRepoHook(workspace);
         const stderr = captureStderr();
         try {
           await expect(main()).resolves.toBe(1);
-          expect(stderr.text()).toBe(
-            `agenc: project is not trusted: ${workspace}\n`,
-          );
+          expect(stderr.text()).toBe(refusalWithHooks(workspace));
         } finally {
           stderr.restore();
         }
@@ -674,6 +944,7 @@ describe("main project trust routing", () => {
       ["node", "agenc", "agent", "start", "do", "work"],
       { stdinTTY: false, stdoutTTY: false },
       async ({ workspace }) => {
+        await shipRepoHook(workspace);
         const stderr = captureStderr();
         try {
           await expect(main()).resolves.toBe(1);
@@ -710,6 +981,7 @@ describe("main project trust routing", () => {
         projectRoot: envWorkspace,
         env: process.env,
       });
+      await shipRepoHook(agentCwd);
       process.chdir(agentCwd);
 
       await expect(main()).resolves.toBe(1);
