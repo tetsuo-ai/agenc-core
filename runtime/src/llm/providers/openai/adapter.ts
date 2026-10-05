@@ -1,3 +1,4 @@
+import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } from "../../registry/openai-current-models.js";
 /**
  * OpenAI provider adapter.
  *
@@ -7,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -33,6 +35,7 @@ import {
   mapLLMError,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
+import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -52,16 +55,20 @@ import {
   type ChatCompletionsRequestMetadata,
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
+import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
+  assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   normalizeFinishReason,
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
 import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
 import {
   buildOpenAIResponsesRequest,
+  extractOpenAIReasoningReplay,
   parseOpenAIResponsesResponse,
 } from "../../wire/responses-openai.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
@@ -82,6 +89,8 @@ import {
   providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
 } from "../../registry/provider-info.js";
+import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
+import { isEnvTruthy } from "../../../utils/envBoolean.js";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
@@ -476,6 +485,21 @@ function isAbortLikeError(error: unknown): boolean {
   return errorCode(error) === "ABORT_ERR" || errorName(error) === "AbortError";
 }
 
+/**
+ * The shared-prefix layout for providers that share cached prefixes across
+ * sessions (native DeepSeek) follows the session's `AGENC_SHARED_PREFIX_TAIL`,
+ * read from the environment the session captured at ingress, so a client can
+ * turn it off per session. Without a session or startup scope there is no such
+ * environment, and the layout stays on.
+ */
+function sessionSharedPrefixTail(): boolean {
+  try {
+    return sharedPrefixTailEnabled(getSelectedProviderEnvironment());
+  } catch {
+    return true;
+  }
+}
+
 function isTransportFailure(error: unknown): boolean {
   if (isAbortLikeError(error)) return false;
 
@@ -502,6 +526,22 @@ function isTransportFailure(error: unknown): boolean {
   return /(?:fetch failed|network|socket|connect econn|getaddrinfo|timed out|timeout)/i.test(
     message,
   );
+}
+
+/**
+ * Encrypted reasoning replay on the Responses API is opt-in
+ * (`AGENC_OPENAI_REASONING_REPLAY=1`), read from the environment the session
+ * captured at ingress. Without a session or startup scope there is no such
+ * environment, and replay stays off.
+ */
+function openAiReasoningReplayEnabled(): boolean {
+  try {
+    return isEnvTruthy(
+      getSelectedProviderEnvironment().AGENC_OPENAI_REASONING_REPLAY,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
@@ -858,6 +898,12 @@ export class OpenAIProvider implements LLMProvider {
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
+    // Qwen's older open-source thinking deployments and Omni routes require
+    // SSE. Preserve the public chat() contract by buffering our existing
+    // stream parser, including tool arguments, reasoning provenance and usage.
+    if (this.name === "qwen" && resolveQwenCurrentModel(model)?.bufferedChat === true) {
+      return this.chatStream(messages, () => {}, options);
+    }
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
@@ -875,6 +921,7 @@ export class OpenAIProvider implements LLMProvider {
           const session = this.client.createTurnSession({
             wireApi: "responses",
           });
+          const reasoningReplay = this.reasoningReplayOptions();
           const request = buildOpenAIResponsesRequest({
             model,
             messages,
@@ -883,6 +930,7 @@ export class OpenAIProvider implements LLMProvider {
             store: this.config.store,
             maxOutputTokens: this.resolveRequestMaxTokens(options),
             ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
+            ...reasoningReplay,
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
@@ -908,6 +956,7 @@ export class OpenAIProvider implements LLMProvider {
               options,
               store: this.config.store,
               maxOutputTokens: this.resolveRequestMaxTokens(options),
+              ...reasoningReplay,
             },
           );
         }
@@ -952,7 +1001,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: requestTools,
           options,
           maxTokens: this.resolveRequestMaxTokens(options),
-          maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+          maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
@@ -989,6 +1038,14 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    // o1-pro and o3-pro expose Responses without SSE. Keep the public stream
+    // contract while making exactly one ordinary, cancellable JSON request.
+    if (this.name === "openai" && openAiModelRequiresBufferedResponse(options?.model?.trim() || this.config.model)) {
+      const response = await this.chat(messages, options);
+      onChunk({ content: response.content, done: true,
+        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}) });
+      return response;
+    }
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
@@ -1050,6 +1107,7 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
   ): boolean {
     if (this.config.useResponsesApi !== false) return true;
+    if (this.name === "openai" && openAiModelRequiresResponses(model)) return true;
     return (
       this.name === "openai" &&
       tools.length > 0 &&
@@ -1072,12 +1130,19 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile() {
+  async getExecutionProfile(options?: LLMChatOptions) {
+    const model = options?.model?.trim() || this.config.model;
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    // An answer-only cap plus an independent thinking budget can produce more
+    // billable output than the single reservation. Keep uncapped sessions
+    // usable, but do not promise a total ceiling to hard-budget admission.
+    const separateThinkingLimit = qwenModel !== undefined &&
+      !qwenModel.totalOutputCap && qwenModel.thinking !== "none";
     return {
       provider: this.name,
-      model: this.config.model,
+      model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit,
       // Only the chat-completions path applies this buffer
       // (`fitRequestWithinContextWindow`). The Responses path does not, so it
       // must not inherit it.
@@ -1154,7 +1219,9 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
-  private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
+  private resolveChatCompletionsMaxTokenField(model: string): ChatCompletionsMaxTokenField {
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    if (qwenModel !== undefined && !qwenModel.totalOutputCap) return "max_tokens";
     if (
       this.name === "meta" ||
       this.name === "cerebras" ||
@@ -1325,11 +1392,23 @@ export class OpenAIProvider implements LLMProvider {
       tools: args.tools,
       options: args.options,
       maxTokens: this.resolveRequestMaxTokens(args.options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(args.model),
       providerCapabilityHints,
+      sharedPrefixTail: sessionSharedPrefixTail(),
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
+    }
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(args.model) : undefined;
+    if (qwenModel?.model.startsWith("qwen") && !qwenModel.totalOutputCap &&
+      qwenModel.thinking !== "none" && request.enable_thinking !== false &&
+      request.thinking_budget === undefined && typeof request.max_tokens === "number") {
+      // These older Qwen routes cap the answer separately from reasoning.
+      // Bound both parts when Core supplies an output reservation.
+      request.thinking_budget = request.max_tokens;
+    }
+    if (typeof request.prompt_cache_key === "string") {
+      request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
     }
     let metadata = collectChatCompletionsRequestMetadata(request);
     const accountedInputTokens = normalizePositiveInteger(
@@ -1355,6 +1434,17 @@ export class OpenAIProvider implements LLMProvider {
    */
   private isChatGptBackend(): boolean {
     return this.config.chatgptBackend === true;
+  }
+
+  /**
+   * Encrypted reasoning replay for OpenAI itself, platform API and ChatGPT
+   * subscription alike. Other providers served by this adapter keep their
+   * current Responses wire.
+   */
+  private reasoningReplayOptions(): { readonly reasoningReplayProvider?: string } {
+    return this.name === "openai" && openAiReasoningReplayEnabled()
+      ? { reasoningReplayProvider: this.name }
+      : {};
   }
 
   private managedRequestHeaders(
@@ -1404,6 +1494,7 @@ export class OpenAIProvider implements LLMProvider {
       store: this.config.store,
       maxOutputTokens: this.resolveRequestMaxTokens(options),
       ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
+      ...this.reasoningReplayOptions(),
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,
@@ -1460,6 +1551,9 @@ export class OpenAIProvider implements LLMProvider {
         string,
         { id: string; name: string; arguments: string }
       >();
+      const streamedFunctionItems: Record<string, unknown>[] = [];
+      const bufferedFunctionSnapshots = new Map<string, string>();
+      const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
       for await (const event of this.readSseEvents(response)) {
@@ -1480,67 +1574,26 @@ export class OpenAIProvider implements LLMProvider {
             event.data.item && typeof event.data.item === "object"
               ? (event.data.item as Record<string, unknown>)
               : undefined;
+          if (
+            item?.type === "reasoning" &&
+            requestOptions.reasoningReplayProvider !== undefined
+          ) {
+            streamedReasoningItems.push(item);
+          }
           if (item?.type === "function_call") {
-            let toolCall: LLMToolCall;
-            try {
-              toolCall = validateProviderToolCallOrThrow(
-                this.name,
-                {
-                  id: String(item.call_id ?? item.id ?? "").trim(),
-                  // Streaming-path decode (mirrors the non-streaming
-                  // path in `parseOpenAIResponsesResponse`). Without
-                  // this, mid-stream `onChunk(toolCalls)` carries the
-                  // wire-form `mcp__server__tool` straight into the
-                  // dispatcher, which keys on the dotted internal form
-                  // and reports a silent dispatch miss.
-                  name: decodeMcpToolNameFromWire(
-                    String(item.name ?? "").trim(),
-                    requestOptions.tools.map((tool) => tool.function.name),
-                  ),
-                  arguments: String(item.arguments ?? "{}"),
-                },
-                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-              );
-            } catch (validationError) {
-              // A single malformed function_call must not discard output
-              // already forwarded to the consumer. When nothing has been
-              // emitted yet, rethrow so the outer fallback/retry path can
-              // act; otherwise surface a partial response (mirrors the
-              // Anthropic adapter's partial-recovery and the in-stream
-              // `response.failed` branch below).
-              if (
-                streamedContent.length === 0 &&
-                streamedToolCalls.size === 0
-              ) {
-                throw validationError;
-              }
-              const partialError =
-                validationError instanceof Error
-                  ? validationError
-                  : new LLMProviderError(
-                    this.name,
-                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-                  );
-              const recoveredToolCalls = Array.from(streamedToolCalls.values());
-              onChunk({
-                content: "",
-                done: true,
-                ...(recoveredToolCalls.length > 0
-                  ? { toolCalls: recoveredToolCalls }
-                  : {}),
-              });
-              return {
-                content: streamedContent,
-                toolCalls: recoveredToolCalls,
-                usage: coerceUsage({}),
-                model,
-                finishReason: "error",
-                error: partialError,
-                partial: true,
-              };
+            // A done item can still belong to an output-limited response.
+            // Wait for the terminal status before validating or publishing it.
+            streamedFunctionItems.push(item);
+            const id = String(item.call_id ?? item.id ?? "").trim();
+            const name = String(item.name ?? "").trim();
+            const args = String(item.arguments ?? "");
+            const snapshot = JSON.stringify([name, args]);
+            if ((id || name || args.trim()) && bufferedFunctionSnapshots.get(id) !== snapshot) {
+              bufferedFunctionSnapshots.set(id, snapshot);
+              // Only signal new buffered output. Replayed items cannot reset
+              // the watchdog, and unvalidated tool text stays inside the adapter.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
             }
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
           continue;
         }
@@ -1612,10 +1665,84 @@ export class OpenAIProvider implements LLMProvider {
         );
       }
 
+      if (completedResponse.status === "completed" || completedResponse.status === undefined) {
+        for (const item of streamedFunctionItems) {
+          let toolCall: LLMToolCall;
+          try {
+            toolCall = validateProviderToolCallOrThrow(
+              this.name,
+              {
+                id: String(item.call_id ?? item.id ?? "").trim(),
+                // Streaming-path decode (mirrors the non-streaming
+                // path in `parseOpenAIResponsesResponse`). Without
+                // this, mid-stream `onChunk(toolCalls)` carries the
+                // wire-form `mcp__server__tool` straight into the
+                // dispatcher, which keys on the dotted internal form
+                // and reports a silent dispatch miss.
+                name: decodeMcpToolNameFromWire(
+                  String(item.name ?? "").trim(),
+                  requestOptions.tools.map((tool) => tool.function.name),
+                ),
+                arguments: String(item.arguments ?? "{}"),
+              },
+              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+            );
+          } catch (validationError) {
+            // A single malformed function_call must not discard output
+            // already forwarded to the consumer. When nothing has been
+            // emitted yet, rethrow so the outer fallback/retry path can
+            // act; otherwise surface a partial response (mirrors the
+            // Anthropic adapter's partial-recovery and the in-stream
+            // `response.failed` branch below).
+            if (
+              streamedContent.length === 0 &&
+              streamedToolCalls.size === 0
+            ) {
+              throw validationError;
+            }
+            const partialError =
+              validationError instanceof Error
+                ? validationError
+                : new LLMProviderError(
+                  this.name,
+                  OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                );
+            const recoveredToolCalls = Array.from(streamedToolCalls.values());
+            onChunk({
+              content: "",
+              done: true,
+              ...(recoveredToolCalls.length > 0
+                ? { toolCalls: recoveredToolCalls }
+                : {}),
+            });
+            return {
+              content: streamedContent,
+              toolCalls: recoveredToolCalls,
+              usage: coerceUsage({}),
+              model,
+              finishReason: "error",
+              error: partialError,
+              partial: true,
+            };
+          }
+          streamedToolCalls.set(toolCall.id, toolCall);
+          onChunk({ content: "", done: false, toolCalls: [toolCall] });
+        }
+      }
+      const terminalOutput = Array.isArray(completedResponse.output)
+        ? completedResponse.output as Record<string, unknown>[] : [];
+      // Some Responses backends omit streamed items in the terminal payload.
+      // Preserve their identities for recovery as well as completed calls.
+      const responseWithStreamedCalls = {
+        ...completedResponse,
+        output: terminalOutput.some(item => item.type === "function_call")
+          ? terminalOutput : [...terminalOutput, ...streamedFunctionItems],
+      };
+
       const parsed = withStreamingMetrics(
         parseOpenAIResponsesResponse(
           model,
-          completedResponse,
+          responseWithStreamedCalls,
           requestOptions,
         ),
       );
@@ -1625,6 +1752,11 @@ export class OpenAIProvider implements LLMProvider {
           : Array.from(streamedToolCalls.values());
       const finalResponse: LLMResponse = {
         ...parsed,
+        // The ChatGPT backend completes with an empty `output`, so its
+        // reasoning comes from the items streamed before completion.
+        ...(parsed.providerReasoningContent === undefined
+          ? extractOpenAIReasoningReplay(streamedReasoningItems, requestOptions)
+          : {}),
         content: parsed.content.length > 0 ? parsed.content : streamedContent,
         toolCalls,
         finishReason:
@@ -1660,7 +1792,7 @@ export class OpenAIProvider implements LLMProvider {
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       maxTokens: this.resolveRequestMaxTokens(options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(requestModel),
       providerCapabilityHints: streamCapabilityHints,
       toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
@@ -1740,6 +1872,8 @@ export class OpenAIProvider implements LLMProvider {
       // `reasoning`. Preserve either as an explicit hidden thinking channel;
       // neither may become canonical assistant content.
       let reasoningContent = "";
+      let discardedReasoningContent = false;
+      let conflictingReasoningModel = false;
       // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
       // chain-of-thought in `delta.content` behind think markers; the
       // filter reroutes those spans to the same hidden channel so the
@@ -1800,6 +1934,11 @@ export class OpenAIProvider implements LLMProvider {
           throw streamError;
         }
 
+        if (chunk.model !== undefined &&
+            (typeof chunk.model !== "string" ||
+              chunk.model.trim().toLowerCase() !== requestModel.trim().toLowerCase())) {
+          conflictingReasoningModel = true;
+        }
         if (typeof chunk.model === "string" && chunk.model.length > 0) {
           model = chunk.model;
         }
@@ -1834,8 +1973,11 @@ export class OpenAIProvider implements LLMProvider {
             choice.delta && typeof choice.delta === "object"
               ? (choice.delta as Record<string, unknown>)
               : {};
-          if (typeof delta.content === "string" && delta.content.length > 0) {
-            const split = thinkFilter.push(delta.content);
+          const contentDelta = typeof delta.content === "string" ? delta.content
+            : streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? assistantTextFromContentBlocks(delta.content) : "";
+          if (contentDelta.length > 0) {
+            const split = thinkFilter.push(contentDelta);
             if (split.text.length > 0) {
               content += split.text;
               onChunk({ content: split.text, done: false });
@@ -1864,7 +2006,13 @@ export class OpenAIProvider implements LLMProvider {
               : delta.reasoning_content;
           const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
           const reasoningDelta = primaryReasoningDelta ??
-            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined) ??
+            (streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? thinkingTextFromContentBlocks(delta.content) : undefined);
+          if (reasoningDelta !== undefined && reasoningDelta !== null &&
+              typeof reasoningDelta !== "string") {
+            discardedReasoningContent = true;
+          }
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({
@@ -1895,10 +2043,13 @@ export class OpenAIProvider implements LLMProvider {
               name: "",
               arguments: "",
             };
+            let bufferedToolProgress = false;
             if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
+              bufferedToolProgress ||= existing.id !== toolCall.id;
               existing.id = toolCall.id;
             }
             if (typeof fn.name === "string" && fn.name.length > 0) {
+              bufferedToolProgress ||= existing.name !== fn.name;
               existing.name = fn.name;
             }
             if (fn.arguments !== undefined && fn.arguments !== null) {
@@ -1907,9 +2058,15 @@ export class OpenAIProvider implements LLMProvider {
               );
               if (argumentDelta.length > 0) {
                 existing.arguments += argumentDelta;
+                bufferedToolProgress ||= argumentDelta.trim().length > 0;
               }
             }
             toolCallAccumulator.set(index, existing);
+            if (bufferedToolProgress) {
+              // Keep slow tool generation alive without exposing an executable
+              // call before the complete stream has passed validation.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
+            }
           }
 
           if (typeof choice.finish_reason === "string") {
@@ -2046,14 +2203,30 @@ export class OpenAIProvider implements LLMProvider {
 
       const includeToolCalls =
         finishReason === "stop" || finishReason === "tool_calls";
+      let toolCallRecovery: LLMResponse["toolCallRecovery"];
       const toolCalls = includeToolCalls
-        ? Array.from(toolCallAccumulator.values()).map((toolCall) =>
-          validateProviderToolCallOrThrow(
+        ? Array.from(toolCallAccumulator.values()).flatMap((toolCall) => {
+          const validation = validateToolCallDetailed(toolCall);
+          // Admit correction only for a solitary, advertised native call.
+          // A conversational preamble does not make its arguments valid.
+          // Never expose the rejected arguments as an executable tool call.
+          if (validation.failure?.code === "invalid_json" &&
+              toolCallAccumulator.size === 1 && finishReason === "tool_calls" &&
+              toolCall.name.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(toolCall.name) &&
+              requestOptions.tools.some(tool => tool.function.name === toolCall.name)) {
+            toolCallRecovery = { source: "native", reason: "invalid_arguments",
+              toolName: toolCall.name, message: "Tool call arguments are not valid JSON." };
+            return [];
+          }
+          return [validateProviderToolCallOrThrow(
             this.name,
             toolCall,
             OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
-          ))
-        : [];
+          )];
+        })
+        // The wire parser retains only identities at length, never arguments
+        // or executable calls. Recovery must know a handoff was interrupted.
+        : finishReason === "length" ? Array.from(toolCallAccumulator.values()) : [];
       const parsed = withStreamingMetrics(
         parseChatCompletionsResponse(
           requestModel,
@@ -2110,6 +2283,7 @@ export class OpenAIProvider implements LLMProvider {
               : {}),
           },
           requestOptions,
+          { discardedReasoningContent, conflictingReasoningModel },
         ),
       );
       onChunk({
@@ -2121,6 +2295,7 @@ export class OpenAIProvider implements LLMProvider {
       });
       return {
         ...parsed,
+        ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
         ...(reasoningContent.length > 0
           ? {
             thinking: Object.freeze([

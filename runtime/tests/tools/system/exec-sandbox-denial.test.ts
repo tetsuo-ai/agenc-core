@@ -5,6 +5,7 @@ import {
   sandboxEscalationAvailable,
   SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE,
   SANDBOX_BIND_DENIED_NO_ESCALATION,
+  worktreeWriteDenialNotice,
 } from "../../../src/tools/system/exec-sandbox-denial.js";
 
 // The body the live incident produced 21 times (session conv-mtjdmlfc,
@@ -83,5 +84,28 @@ describe("sandboxEscalationAvailable", () => {
     for (const policy of ["on_request", "on_failure", "untrusted", "granular"]) {
       expect(sandboxEscalationAvailable(policy)).toBe(true);
     }
+  });
+});
+
+// A worktree child's commands write inside its worktree only, escalated or
+// not. The model's next move after a refused write is an escalated retry.
+describe("worktreeWriteDenialNotice", () => {
+  const worktree = "/repo/.agenc-worktrees/m5-run";
+
+  test("names the worktree and says an escalated retry fails the same way", () => {
+    for (const output of [
+      "sh: ../../src/a.js: Operation not permitted",
+      "touch: cannot touch '/repo/src/a.js': Read-only file system",
+      "Error: EPERM: operation not permitted, open '/repo/src/a.js'",
+    ]) {
+      const notice = worktreeWriteDenialNotice({ output, exitCode: 1, worktree });
+      expect(notice, output).toContain(`This agent works in its own git worktree (${worktree})`);
+      expect(notice, output).toContain("with or without sandbox_permissions");
+    }
+  });
+
+  test("says nothing for a success or for another failure", () => {
+    expect(worktreeWriteDenialNotice({ output: "Operation not permitted", exitCode: 0, worktree })).toBeNull();
+    expect(worktreeWriteDenialNotice({ output: "npm error Missing script: test", exitCode: 1, worktree })).toBeNull();
   });
 });

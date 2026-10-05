@@ -18,7 +18,7 @@
 
 import type { CompactionLadderTier } from "../services/compact/ladder.js";
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
-import type { CompletionGatePlan } from "../phases/completion-gate.js";
+import type { CompletionGatePlan, CompletionGateRequest } from "../phases/completion-gate.js";
 import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../conversation/token-budget.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
@@ -389,6 +389,8 @@ export interface TurnState {
   /** Consecutive max-output-tokens recovery attempts. Cap at
    *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
    *  up. AgenC query.ts:1273. */
+  /** Names only: incomplete argument bytes never become executable history. */
+  truncatedToolCallNames?: readonly string[];
   maxOutputTokensRecoveryCount: number;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
@@ -430,6 +432,11 @@ export interface TurnState {
   completionGateRound: number;
   /** `completedToolResults.length` when the last gate prompt was injected. */
   completionGateToolLedgerMark: number;
+  /**
+   * The verdict the last gate prompt was built from. Runtime-only like the
+   * ledger mark: a resumed turn has none, so it is asked once more.
+   */
+  completionGateLastRequest: CompletionGateRequest | undefined;
   /** Latched once a final answer was accepted (verified, exhausted or skipped). */
   completionGateSettled: boolean;
   /**
@@ -601,6 +608,7 @@ export function buildInitialTurnState(
     completionGate: undefined,
     completionGateRound: 0,
     completionGateToolLedgerMark: 0,
+    completionGateLastRequest: undefined,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
     goalGateToolLedgerMark: 0,

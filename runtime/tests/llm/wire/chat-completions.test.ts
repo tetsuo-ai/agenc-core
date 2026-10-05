@@ -7,6 +7,34 @@ import {
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 describe("buildChatCompletionsRequest", () => {
+  test("keeps Chat Completions controls and static head unchanged across response detail levels", () => {
+    const build = (modelVerbosity?: "low" | "medium" | "high") => buildChatCompletionsRequest({
+      model: "qwen-local", messages: [{ role: "user", content: "hello" }],
+      tools: [{ type: "function", function: { name: "echo", description: "Echo", parameters: { type: "object" } } }],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required", maxOutputTokens: 4096 },
+    });
+    const inherited = build();
+    for (const level of ["low", "medium", "high"] as const) {
+      const candidate = build(level);
+      expect(candidate.tools).toEqual(inherited.tools);
+      expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+      expect(candidate.max_tokens).toEqual(inherited.max_tokens);
+      expect((candidate.messages as Array<{ content: string }>)[0]?.content.split("<!-- dynamic-boundary -->")[0])
+        .toBe((inherited.messages as Array<{ content: string }>)[0]?.content.split("<!-- dynamic-boundary -->")[0]);
+      expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
+    }
+    expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
+  });
+  test("keeps unset request bytes from the pre-detail builder", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local", messages: [{ role: "user", content: "hello" }], tools: [],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        maxOutputTokens: 4096 },
+    });
+    expect(JSON.stringify(request)).toBe('{"model":"qwen-local","stream":false,"messages":[{"role":"system","content":"STATIC_HEAD\\n\\n<!-- dynamic-boundary -->\\n\\nDYNAMIC_TAIL"},{"role":"user","content":"hello"}],"max_tokens":4096}');
+    expect(request.max_tokens).toBe(4096);
+  });
   test("serializes request instructions as the first system message only", () => {
     const request = buildChatCompletionsRequest({
       model: "qwen-local",

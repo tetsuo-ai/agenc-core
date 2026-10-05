@@ -1,3 +1,4 @@
+import { OPENAI_CURRENT_MODEL_CATALOG } from "../../../src/llm/registry/openai-current-models.js";
 import { describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../../config/schema.js";
@@ -35,6 +36,7 @@ const EXTENDED_REASONING_MODEL_IDS = Object.freeze([
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gpt-6-sol",
   "gpt-6-luna",
 ]);
@@ -149,8 +151,9 @@ describe("LLM registry", () => {
     expect(entries.map((entry) => entry.model)).toEqual([
       ...EXTENDED_REASONING_MODEL_IDS,
       ...DONOR_MODEL_IDS,
+      ...OPENAI_CURRENT_MODEL_CATALOG.map(entry => entry.model),
     ]);
-    for (const entry of entries) {
+    for (const entry of entries.filter(entry => !OPENAI_CURRENT_MODEL_CATALOG.some(current => current.model === entry.model))) {
       // gpt-5 predates the xhigh tier and keeps minimal as its floor
       // (Responses API, probed 2026-09-11); every later generation runs
       // low..xhigh, the 5.6 line and GPT-6 add max, and GPT-6 Sol and Luna
@@ -159,7 +162,7 @@ describe("LLM registry", () => {
         entry.model === "gpt-5"
           ? ["minimal", "low", "medium", "high"]
           : [
-              ...(entry.model === "gpt-6-sol" || entry.model === "gpt-6-luna" ? ["none"] : []),
+              ...(["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"].includes(entry.model) ? ["none"] : []),
               "low",
               "medium",
               "high",
@@ -172,7 +175,7 @@ describe("LLM registry", () => {
       expect(entry.supportsReasoningSummaries).toBe(true);
     }
     expect(entries.find((entry) => entry.model === "gpt-5.4")).toMatchObject({
-      maxContextWindow: 1_000_000,
+      maxContextWindow: 1_050_000,
       defaultReasoningLevel: "xhigh",
       additionalSpeedTiers: ["fast"],
     });

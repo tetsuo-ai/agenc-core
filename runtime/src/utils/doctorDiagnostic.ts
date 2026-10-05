@@ -1010,7 +1010,7 @@ export async function getSandboxDoctorStatus(opts?: {
 export function buildSandboxWarning(
   status: SandboxExecutionStatus,
 ): { issue: string; fix: string } | null {
-  if (status.kind !== 'unavailable') return null
+  if (status.kind !== 'unavailable' || status.landlockPolicyRefusal !== undefined) return null
   return {
     issue: `[sandbox_required_unavailable] ${status.reason ?? 'required platform sandbox is unavailable'}`,
     fix: status.remediation ??
@@ -1018,19 +1018,20 @@ export function buildSandboxWarning(
   }
 }
 
-/**
- * Ready-via-Landlock-fallback is degraded readiness: the fallback cannot
- * express sandbox policies that protect .git/.agenc inside writable project
- * roots, so shell in git projects and MCP stdio servers are refused
- * per-spawn even though the probe reports ready. Surface that loudly with
- * the cause-correct bubblewrap remedy computed at probe time.
- */
+/** Surface fallback limitations and the precise workspace policy refusal. */
 export function buildLandlockFallbackWarning(
   status: SandboxExecutionStatus,
 ): { issue: string; fix: string } | null {
-  if (status.kind !== 'ready' || status.landlockFallback === undefined) {
+  if (status.mode !== 'workspace_write' || status.landlockFallback === undefined) {
     return null
   }
+  if (status.landlockPolicyRefusal !== undefined) {
+    return {
+      issue: `[sandbox_policy_unexpressible] ${status.reason}`,
+      fix: status.remediation ?? status.landlockFallback.remediation,
+    }
+  }
+  if (status.kind !== 'ready') return null
   return {
     issue:
       `[sandbox_landlock_fallback] bubblewrap is unusable (${status.landlockFallback.reason}); ` +

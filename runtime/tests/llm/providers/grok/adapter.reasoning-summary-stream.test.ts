@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { LLMStreamTruncatedError } from "../../errors.js";
 import type { LLMStreamChunk } from "../../types.js";
 import { GrokProvider } from "./adapter.js";
+import { StreamProgressError, StreamProgressTracker } from "../../../../src/llm/stream-progress.js";
 
 function buildXaiResponse(id: string, text: string): Record<string, unknown> {
   return {
@@ -52,6 +53,35 @@ function streamFromEvents(
 }
 
 describe("Grok adapter forwards reasoning_summary_text deltas", () => {
+  test.each(["response.reasoning_summary_text.delta", "response.reasoning_text.delta"])("%s respects a progress abort and closes its iterator", async eventType => {
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4.7" });
+    const controller = new AbortController();
+    const transportController = new AbortController();
+    const closed = vi.fn();
+    const stream = {
+      controller: transportController,
+      async *[Symbol.asyncIterator]() {
+        try {
+          for (;;) yield { type: eventType, delta: "Let me know if you want to tweak anything! ", summary_index: 0 };
+        } finally { closed(); }
+      },
+    };
+    const create = vi.fn(() => withResponse(stream));
+    (provider as any).client = { responses: { create } };
+    const tracker = new StreamProgressTracker();
+    let chunks = 0;
+    await expect(provider.chatStream([{ role: "user", content: "answer" }], chunk => {
+      chunks++;
+      if (tracker.observe(chunk, false).loop) {
+        controller.abort(new StreamProgressError("grok", "stream_loop"));
+      }
+    }, { signal: controller.signal, singleWireAttempt: true })).rejects.toThrow();
+    expect(chunks).toBeLessThan(186);
+    expect(create).toHaveBeenCalledOnce();
+    expect(closed).toHaveBeenCalledOnce();
+    expect(transportController.signal.aborted).toBe(true);
+  });
+
   test("response.reasoning_summary_text.delta becomes a reasoningSummaryDelta chunk", async () => {
     const provider = new GrokProvider({
       apiKey: "xai-test",

@@ -96,6 +96,41 @@ export function execSandboxDenialNotice(params: {
 }
 
 /**
+ * Signatures of "the OS refused this write": the sandbox's EPERM on macOS,
+ * a read-only mount under bubblewrap.
+ */
+const WRITE_DENIED_SIGNATURES: readonly RegExp[] = [
+  /operation not permitted/iu,
+  /read-only file system/iu,
+  /\bE(?:PERM|ROFS)\b/u,
+];
+
+/**
+ * The notice for a worktree child's command that failed on a refused write,
+ * or null. Its commands change files only inside the worktree and the temp
+ * folder, escalated or not, so the retry the model would try next (with
+ * sandbox_permissions) fails the same way. The text depends only on the
+ * worktree, so the repeated-failure guard still sees one failure.
+ */
+export function worktreeWriteDenialNotice(params: {
+  readonly output: string;
+  readonly exitCode: number | null;
+  readonly worktree: string;
+}): string | null {
+  if (params.exitCode === 0) return null;
+  if (!WRITE_DENIED_SIGNATURES.some((pattern) => pattern.test(params.output))) {
+    return null;
+  }
+  return (
+    `[sandbox] This agent works in its own git worktree (${params.worktree}). ` +
+    "Its commands change files only inside the worktree and in $TMPDIR: the OS " +
+    "sandbox refuses every other write, with or without sandbox_permissions, so " +
+    "escalating or retrying fails the same way. Work inside the worktree, and " +
+    "point a tool that writes elsewhere (a package cache, for example) at $TMPDIR."
+  );
+}
+
+/**
  * Approval policies under which asking a human to lift the sandbox can still
  * produce an answer. `never` cannot: the policy states that nobody is there.
  */

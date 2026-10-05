@@ -1,9 +1,9 @@
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createConnection, createServer, type Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
@@ -18,6 +18,7 @@ import {
 } from "./transport/unix-socket.js";
 import { compileAndLoadAgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
 import { AGENC_STDIO_DEFAULT_MAX_LINE_BYTES } from "./transport/stdio.js";
+import { resolveDaemonSocketPath } from "../../../packages/agenc-sdk/src/socket.js";
 
 const itUnix = process.platform === "win32" ? it.skip : it;
 const itLinuxNative =
@@ -65,6 +66,51 @@ function hasNativePeerCredentialBuildInputs(): boolean {
 }
 
 describe("AgenC Unix socket transport", () => {
+  itUnix("binds a private fallback, agrees with the client, and removes stale and closed sockets", async () => {
+    const dir = await tempDir();
+    const daemonHome = join(dir, "long-home-".repeat(14));
+    expect(Buffer.byteLength(join(daemonHome, "daemon.sock"))).toBeGreaterThanOrEqual(110);
+    const socketPath = agenCDaemonLocalEndpoint(daemonHome);
+    const clientPath = resolveDaemonSocketPath({ AGENC_HOME: daemonHome });
+    expect(clientPath).toBe(socketPath);
+    const directory = await lstat(dirname(socketPath));
+    expect(directory.isSymbolicLink()).toBe(false);
+    expect(directory.uid).toBe(process.getuid!());
+    expect(directory.mode & 0o777).toBe(0o700);
+
+    // process.exit leaves a real socket inode behind, as an unclean daemon exit does.
+    const stale = spawn(process.execPath, ["-e", `
+      require("node:net").createServer().listen(process.argv[1], () => process.exit(0));
+    `, socketPath], { stdio: "ignore" });
+    expect((await once(stale, "exit"))[0]).toBe(0);
+    expect((await lstat(socketPath)).isSocket()).toBe(true);
+    await prepareAgenCUnixSocketPath(clientPath);
+    expect(existsSync(socketPath)).toBe(false);
+
+    const server = new AgenCUnixSocketServer({
+      socketPath: agenCDaemonLocalEndpoint(daemonHome),
+      onMessage: async (_message, connection) => {
+        await connection.send({ jsonrpc: JSON_RPC_VERSION, id: 1, result: { ok: true } });
+      },
+    });
+    let client: Socket | undefined;
+    try {
+      expect(await server.listen()).toBe(clientPath);
+      expect((await lstat(socketPath)).mode & 0o777).toBe(0o600);
+      client = createConnection(clientPath);
+      await once(client, "connect");
+      const response = nextChunk(client);
+      client.write('{"jsonrpc":"2.0","id":1,"method":"health.check","params":{}}\n');
+      expect(JSON.parse(await response).result).toEqual({ ok: true });
+    } finally {
+      client?.destroy();
+      await server.close();
+      // Only the socket for this unique test home is removed; the shared directory stays.
+      expect(existsSync(socketPath)).toBe(false);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uses the AgenC daemon socket under the configured home", () => {
     expect(defaultAgenCDaemonSocketPath("/home/test")).toBe(
       "/home/test/.agenc/daemon.sock",
@@ -95,7 +141,9 @@ describe("AgenC Unix socket transport", () => {
   });
 
   itUnix("rejects a non-socket file at the daemon socket path", async () => {
-    const dir = await tempDir();
+    // A short root keeps this path under the macOS socket limit, so the
+    // non-socket check runs instead of the path length check.
+    const dir = await mkdtemp("/tmp/agenc-us-");
     const socketPath = join(dir, ".agenc", "daemon.sock");
     await writeFile(socketPath, "not a socket", { flag: "w" }).catch(
       async () => {

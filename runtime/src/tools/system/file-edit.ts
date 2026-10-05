@@ -55,17 +55,15 @@ import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   FILE_TOOL_PATH_SCHEMA,
   FILE_TOOL_PATH_USAGE,
+  workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -122,13 +120,19 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
   return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
 }
 
+function linePrefixUsage(sparse: boolean): string {
+  return sparse
+    ? "FileRead output puts a N→ line-number prefix on the first line, every tenth line and the last line; it is not part of the file. Match the file content exactly, with its indentation, and never include a prefix in old_string or new_string."
+    : "When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.";
+}
+
 // Verbatim from AgenC FileEditTool/prompt.ts:20-27.
-const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
+const fileEditDescription = (sparse: boolean): string => `Performs exact string replacements in files.
 
 Usage:
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
 - ${FILE_TOOL_PATH_USAGE}
-- When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- ${linePrefixUsage(sparse)}
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
@@ -265,8 +269,11 @@ function preserveQuoteStyle(
 // ── tool config / errors ──────────────────────────────────────────────
 
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
+  readonly lightMode?: boolean;
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
+  /** FileRead numbers only some lines (the session's `AGENC_SPARSE_LINE_NUMBERS`). */
+  readonly sparseLineNumbers?: boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -824,7 +831,7 @@ function multiEditSuccessText(
 export function createFileEditTool(config: FileEditToolConfig): Tool {
   return {
     name: FILE_EDIT_TOOL_NAME,
-    description: FILE_EDIT_DESCRIPTION,
+    description: fileEditDescription(config.sparseLineNumbers === true),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -891,6 +898,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         return preMutationErrorResult(validated.error, FILE_EDIT_TOOL_NAME);
       }
       const { file_path, old_string, new_string, replace_all } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       // Verbatim from AgenC FileEditTool.ts:148-156.
       if (old_string === new_string) {
@@ -991,7 +999,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1104,7 +1112,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `${successText(file_path, false)}${lspFeedback}`,
+          content: `${successText(displayPath, false)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1152,7 +1160,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${successText(file_path, replace_all)}${lspFeedback}`,
+        content: `${successText(displayPath, replace_all)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
@@ -1259,6 +1267,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
       const { file_path, edits } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       const firstEdit = edits[0];
       if (firstEdit === undefined) {
@@ -1357,7 +1366,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1465,7 +1474,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}`,
+          content: `${multiEditSuccessText(displayPath, 1, 1)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1543,7 +1552,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}`,
+        content: `${multiEditSuccessText(displayPath, edits.length, replacements)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",

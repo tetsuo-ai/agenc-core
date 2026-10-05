@@ -1,40 +1,39 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type { LLMMessage } from "../../../src/llm/types.js";
 import { compactConversation } from "../../../src/services/compact/compact.js";
 import { EMERGENCY_COMPACTION_FOCUS } from "../../../src/services/compact/ladder.js";
 import {
   createRuntimeEmergencySummarizer,
   truncateUtf8,
 } from "../../../src/services/compact/emergency-summarizer.js";
+import {
+  buildCompactionMapReducePlan,
+  structuredReductionMessages,
+} from "../../../src/services/compact/plan.js";
 import { conservativeOutputTokenEstimate } from "../../../src/services/compact/transaction-limits.js";
+import type { RuntimeMessage } from "../../../src/services/compact/types.js";
 import { reduceAll } from "../../../src/session/event-log-reducer.js";
+import { compactionPlanOptions, toolExchange } from "../../helpers/compaction-plan-fixture.js";
 import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-const source = [
-  { role: "user" as const, content: `Please migrate the parity scorer. ${"context ".repeat(300)}` },
-  { role: "assistant" as const, content: "I'll read the scorer first.", toolCalls: [{ id: "call-1", name: "FileRead", arguments: JSON.stringify({ file_path: "/app/scorer.py" }) }] },
-  { role: "tool" as const, toolCallId: "call-1", toolName: "FileRead", content: `def score(): ...${"# body\n".repeat(400)}` },
-  { role: "assistant" as const, content: "Now writing the dense grid.", toolCalls: [{ id: "call-2", name: "Write", arguments: JSON.stringify({ file_path: "/app/grid.py", content: "x".repeat(500) }) }] },
-  { role: "tool" as const, toolCallId: "call-2", toolName: "Write", content: "File created successfully at: /app/grid.py" },
-  { role: "assistant" as const, content: "Grid written; verifying parity next." },
+const source: RuntimeMessage[] = [
+  { role: "user", content: `Please migrate the parity scorer. ${"context ".repeat(300)}` },
+  ...toolExchange([{ id: "call-1", name: "FileRead", arguments: JSON.stringify({ file_path: "/app/scorer.py" }), result: `def score(): ...${"# body\n".repeat(400)}` }], "I'll read the scorer first."),
+  ...toolExchange([
+    { id: "call-2", name: "Write", arguments: JSON.stringify({ file_path: "/app/grid.py", content: "x".repeat(500) }), result: "File created successfully at: /app/grid.py" },
+    { id: "call-3", name: "MultiEdit", arguments: JSON.stringify({ file_path: "/app/scorer.py", edits: [{ old_string: "a".repeat(100), new_string: "b".repeat(100) }] }), result: "Applied 1 edit to /app/scorer.py" },
+    { id: "call-4", name: "exec_command", arguments: "pytest -q", result: "3 passed" },
+    { id: "call-5", name: "exec_command", arguments: JSON.stringify(["pytest", "-q"]), result: "3 passed" },
+    { id: "call-6", name: "TaskList", result: "no tasks" },
+  ], "Now writing the dense grid."),
+  { role: "assistant", content: "Grid written; verifying parity next." },
 ];
 
-function transcriptPayload() {
-  return {
-    role: "user" as const,
-    content: JSON.stringify({
-      version: 1,
-      kind: "untrusted_compaction_transcript",
-      coverage_priority: "",
-      allowed_source_ref_ids: ["ref-1"],
-      units: [{ unit_id: "u1", messages: source.map((message) => ({
-        role: message.role, content: message.content,
-        ...("toolCalls" in message ? { tool_calls: message.toolCalls } : {}),
-        ...("toolCallId" in message ? { tool_call_id: message.toolCallId, tool_name: message.toolName } : {}),
-      })) }],
-    }),
-  };
+/** The transcript the planner sends the summarizer for `source`. */
+function transcriptPayload(): LLMMessage {
+  return buildCompactionMapReducePlan(source, compactionPlanOptions(source)).chunks[0]!.messages[0]!;
 }
 
 describe("runtime emergency summarizer", () => {
@@ -44,10 +43,12 @@ describe("runtime emergency summarizer", () => {
       { narrative: string; facts: unknown[]; open_actions: unknown[] };
     expect(body.facts).toEqual([]);
     expect(body.open_actions).toEqual([]);
-    expect(body.narrative).toContain("Runtime emergency compaction: the model summarizer could not reduce this context; 6 messages and 2 tool calls (FileRead×1, Write×1) were dropped.");
+    expect(body.narrative).toContain("Runtime emergency compaction: the model summarizer could not reduce this context; 10 messages and 6 tool calls (exec_command×2, FileRead×1, Write×1, MultiEdit×1, TaskList×1) were dropped.");
     expect(body.narrative).toContain("Original request:\nPlease migrate the parity scorer.");
     expect(body.narrative).toContain("Latest assistant text:\nGrid written; verifying parity next.");
-    expect(body.narrative).toContain("Latest tool calls:\nWrite(");
+    // The transcript sends parsed arguments with sorted keys. The target path
+    // still leads, ahead of the long content or edits cut at the byte bound.
+    expect(body.narrative).toMatch(/\nLatest tool calls:\nWrite\(\{"file_path":"\/app\/grid\.py","content":"x{100,} \[…\]\)\nMultiEdit\(\{"file_path":"\/app\/scorer\.py","edits":\[\{"new_string":"b{100}","old_string":"a+ \[…\]\)\nexec_command\(pytest -q\)\nexec_command\(\["pytest","-q"\]\)\nTaskList$/u);
     expect(body.narrative).not.toContain("def score()");
 
     const tiny = summarize({ stage: "map", messages: [transcriptPayload()], allowedSourceRefIds: ["ref-1"], maxOutputTokens: 64 });
@@ -58,12 +59,13 @@ describe("runtime emergency summarizer", () => {
   test("reduce stage merges children: earliest request, latest state, summed counts", () => {
     const summarize = createRuntimeEmergencySummarizer();
     const child = (request: string, latest: string, messages: number) => ({
-      ref_id: `s-${messages}`, sha256: "a".repeat(64),
+      ref_id: `s-${messages}`,
       body: { narrative: `Runtime emergency compaction: the model summarizer could not reduce this context; ${messages} messages and 1 tool calls (Read×1) were dropped. Re-read files before relying on earlier contents.\n\nOriginal request:\n${request}\n\nLatest assistant text:\n${latest}`, facts: [], open_actions: [] },
     });
-    const reduced = JSON.parse(summarize({ stage: "reduce", allowedSourceRefIds: ["s-4", "s-2"], maxOutputTokens: 4_096, messages: [{
-      role: "user", content: JSON.stringify({ kind: "untrusted_compaction_summaries", stage: "reduce", summaries: [child("first ask", "state one", 4), child("second ask", "state two", 2)] }),
-    }] })) as { narrative: string };
+    const reduced = JSON.parse(summarize({ stage: "reduce", allowedSourceRefIds: ["s-4", "s-2"], maxOutputTokens: 4_096, messages: structuredReductionMessages({
+      children: [child("first ask", "state one", 4), child("second ask", "state two", 2)],
+      stage: "reduce",
+    }) })) as { narrative: string };
     expect(reduced.narrative).toContain("6 messages and 2 tool calls (Read×2) were dropped");
     expect(reduced.narrative).toContain("Original request:\nfirst ask");
     expect(reduced.narrative).toContain("Latest assistant text:\nstate two");
@@ -112,6 +114,15 @@ describe("runtime emergency summarizer", () => {
       // does not expose.
       expect(history[0]).toMatchObject({ role: "developer", content: expect.stringContaining("agenc_compaction_boundary_v1") });
       expect(history[1]).toMatchObject({ role: "user", content: expect.stringContaining("Runtime emergency compaction") });
+      // The emergency tier renders the same model-facing projection.
+      expect(JSON.parse(String(history[1]?.content))).toEqual({
+        facts: [],
+        kind: "agenc_compaction_context_v2",
+        narrative: committed.payload.summary.body.narrative,
+        open_actions: [],
+        trust: "untrusted_historical_data",
+        version: 2,
+      });
       expect(JSON.stringify(history)).not.toContain("Working message 3");
     } finally {
       harness.close();

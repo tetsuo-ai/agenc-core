@@ -372,7 +372,10 @@ async function readCommandPath(
   ].filter((entry): entry is PluginMarkdownCommand => entry !== null);
 }
 
-async function collectCommandMarkdownFiles(root: string, pluginRoot: string): Promise<readonly string[]> {
+async function collectCommandMarkdownFiles(
+  root: string,
+  pluginRoot: string,
+): Promise<readonly string[]> {
   const files = await collectMarkdownFiles(root, pluginRoot);
   const skillDirs = new Set(
     files
@@ -398,7 +401,7 @@ async function readFileAsCommand(
 ): Promise<PluginMarkdownCommand | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, plugin.root);
   if (!file) return null;
   return {
     plugin,
@@ -458,7 +461,7 @@ async function loadSkillEntriesFromPath(
         const baseDir = skillsPath.toLowerCase().endsWith(".md")
           ? dirname(skillsPath)
           : skillsPath;
-        const file = await readMarkdownFile(filePath, baseDir);
+        const file = await readMarkdownFile(filePath, baseDir, plugin.root);
         return file
           ? {
               plugin,

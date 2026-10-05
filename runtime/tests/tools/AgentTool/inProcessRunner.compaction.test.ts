@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfigStore } from '../../../src/config/store.js'
 import type { ProviderEnvironment } from '../../../src/llm/provider-options.js'
+import type { LLMChatOptions } from '../../../src/llm/types.js'
 import { SessionProviderService } from '../../../src/session/provider-service.js'
 import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
@@ -13,6 +14,7 @@ const capture = vi.hoisted(() => ({
   rolloutStores: [] as Array<{ sessionId: string; [key: string]: unknown }>,
   failNextRun: false,
   lifecycleAbort: undefined as AbortController | undefined,
+  onFirstRun: undefined as (() => void) | undefined,
 }))
 
 vi.mock('../../../src/session/rollout-store.js', async importOriginal => {
@@ -43,6 +45,7 @@ vi.mock('../../../src/tools/AgentTool/runAgent.js', () => ({
       }
 
       if (capture.calls.length === 1) {
+        capture.onFirstRun?.()
         yield {
           type: 'assistant',
           message: {
@@ -121,6 +124,7 @@ afterEach(() => {
   capture.rolloutStores.length = 0
   capture.failNextRun = false
   capture.lifecycleAbort = undefined
+  capture.onFirstRun = undefined
 })
 
 function createAppState(taskId: string, pendingUserMessages: string[]) {
@@ -218,10 +222,19 @@ describe('in-process teammate canonical rollout ownership', () => {
       parentScopeId: rootAdmission.scope.sessionId,
     })
     Object.assign(parent.services, { executionAdmission: parentAdmission })
+    // The configured effort is the default medium. The parent session runs
+    // at high, and the user lowers it while the teammate works.
+    const parentConfiguration = (reasoningEffort: string) => ({
+      cwd: parentCwd,
+      collaborationMode: { model: 'grok-4.5', reasoningEffort },
+    })
     Object.assign(parent, {
-      sessionConfiguration: { cwd: parentCwd },
+      sessionConfiguration: parentConfiguration('high'),
       config: { cwd: parentCwd },
     })
+    capture.onFirstRun = () => {
+      Object.assign(parent, { sessionConfiguration: parentConfiguration('low') })
+    }
     const parentJournalBefore = structuredClone(harness.store.readAll())
 
     const abortController = new AbortController()
@@ -299,6 +312,12 @@ describe('in-process teammate canonical rollout ownership', () => {
       expect(committed.payload.summary.body.tool_pairs).toContainEqual(
         expect.objectContaining({ tool_call_id: 'teammate-tool-1' }),
       )
+      // The teammate's own requests send the parent session's current
+      // effort, and so does its compaction.
+      expect(
+        (harness.provider.chat.mock.calls as [unknown, LLMChatOptions][])
+          .map(([, options]) => options.reasoningEffort),
+      ).toEqual(['low'])
 
       reopened = new RolloutStore({
         cwd: parentCwd,

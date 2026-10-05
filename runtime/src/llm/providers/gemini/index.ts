@@ -5,6 +5,7 @@
  */
 
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -16,6 +17,7 @@ import {
   LLMProviderError,
   LLMStreamTruncatedError,
   mapLLMError,
+  markLLMPreGenerationRejection,
 } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
@@ -54,6 +56,10 @@ import {
   geminiEndpointFor,
   type GeminiEndpointPlan,
 } from "./endpoint-plan.js";
+import {
+  requestUsageFromGemini,
+  type GeminiUsageDiagnosticSink,
+} from "./usage.js";
 
 export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL"> {
   readonly credentialPlan: GeminiCredentialPlan;
@@ -71,7 +77,12 @@ const GEMINI_INVALID_FUNCTION_CALL_MESSAGE =
 type GeminiPart = Record<string, unknown>;
 type GeminiThinkingBlock = NonNullable<LLMResponse["thinking"]>[number];
 
-interface GeminiParsedResponse {
+type GeminiReasoningReplay = Pick<
+  LLMResponse,
+  "providerReasoningContent" | "providerReasoningProvenance"
+>;
+
+interface GeminiParsedResponse extends GeminiReasoningReplay {
   readonly content: string;
   readonly toolCalls: readonly LLMToolCall[];
   readonly usage: LLMUsage;
@@ -154,17 +165,6 @@ function finiteInteger(value: unknown): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requestUsageFromGemini(usage: unknown): LLMUsage {
-  const record = isRecord(usage) ? usage : {};
-  return coerceUsage({
-    promptTokens: record.promptTokenCount,
-    completionTokens: record.candidatesTokenCount,
-    totalTokens: record.totalTokenCount,
-    cachedInputTokens: record.cachedContentTokenCount,
-    reasoningOutputTokens: record.thoughtsTokenCount,
-  });
 }
 
 function geminiFinishReason(
@@ -482,7 +482,60 @@ function geminiFunctionCallPart(toolCall: LLMToolCall): GeminiPart {
   };
 }
 
-function buildGeminiContents(messages: readonly LLMMessage[]): {
+function geminiThoughtSignature(part: GeminiPart): string | undefined {
+  const signature = part.thoughtSignature ?? part.thought_signature;
+  return typeof signature === "string" && signature.length > 0
+    ? signature
+    : undefined;
+}
+
+function geminiReasoningReplay(
+  parts: readonly GeminiPart[],
+  model: string,
+): GeminiReasoningReplay {
+  if (!parts.some((part) => geminiThoughtSignature(part) !== undefined)) return {};
+  return {
+    providerReasoningContent: JSON.stringify(parts.map((part) => {
+      const { thought_signature: _signature, ...rest } = part;
+      const signature = geminiThoughtSignature(part);
+      return { ...rest, ...(signature !== undefined ? { thoughtSignature: signature } : {}) };
+    })),
+    providerReasoningProvenance: {
+      provider: "gemini",
+      model: canonicalGeminiModelName(model).toLowerCase(),
+    },
+  };
+}
+
+function geminiReplayParts(message: LLMMessage, model: string): GeminiPart[] | undefined {
+  if (
+    message.role !== "assistant" || !message.providerReasoningContent ||
+    message.providerReasoningProvenance?.provider !== "gemini" ||
+    canonicalGeminiModelName(message.providerReasoningProvenance.model).toLowerCase() !==
+      canonicalGeminiModelName(model).toLowerCase()
+  ) return undefined;
+  try {
+    const parts: unknown = JSON.parse(message.providerReasoningContent);
+    if (!Array.isArray(parts) || parts.length === 0 || !parts.every(isRecord)) return undefined;
+    const text = parts.filter((part) => part.thought !== true && typeof part.text === "string")
+      .map((part) => part.text).join("");
+    const calls = parts.filter((part) => isRecord(part.functionCall));
+    const toolCalls = message.toolCalls ?? [];
+    // History edits must not resurrect removed text or tool calls from replay state.
+    if (text !== messageTextContent(message.content) || calls.length !== toolCalls.length) return undefined;
+    if (!calls.every((part, index) => {
+      const call = part.functionCall as Record<string, unknown>;
+      const toolCall = toolCalls[index]!;
+      return call.name === toolCall.name &&
+        JSON.stringify(call.args ?? {}) === JSON.stringify(parseJsonObjectText(toolCall.arguments) ?? {});
+    })) return undefined;
+    return parts;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
   readonly contents: readonly Record<string, unknown>[];
   readonly systemInstruction?: Record<string, unknown>;
 } {
@@ -522,11 +575,12 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
       continue;
     }
 
-    const parts = [...geminiPartsFromContent(message.content)];
+    const replayParts = geminiReplayParts(message, model);
+    const parts = replayParts ?? [...geminiPartsFromContent(message.content)];
     if (message.role === "assistant" && message.toolCalls) {
       for (const toolCall of message.toolCalls) {
         toolCallNames.set(toolCall.id, toolCall.name);
-        parts.push(geminiFunctionCallPart(toolCall));
+        if (!replayParts) parts.push(geminiFunctionCallPart(toolCall));
       }
     }
     if (parts.length === 0) continue;
@@ -2751,7 +2805,7 @@ function buildGeminiRequest(args: {
       ? [{ role: "system" as const, content: args.options.systemPrompt }]
       : []),
     ...projectGeminiHistoryToolNames(args.messages),
-  ]);
+  ], args.model);
   const schemaCapabilities = geminiResponseJsonSchemaCapabilities(
     args.config.endpointPlan,
     args.model,
@@ -2787,14 +2841,21 @@ function validateGeminiToolCall(raw: unknown): LLMToolCall {
   );
 }
 
+// Gemini 3 names each functionCall part with its own id ("call_1081714");
+// older models send none. A position-based id restarts at 0 in every
+// response, so the second tool round of a turn repeated the first round's id
+// and the session's tool-pair check rejected the turn.
+function geminiToolCallId(wireId: unknown): string {
+  return nonEmptyString(wireId) ?? `gemini_call_${randomUUID()}`;
+}
+
 function toolCallFromGeminiFunctionCall(
   functionCall: Record<string, unknown>,
-  index: number,
   names: ReadonlyMap<string, string>,
 ): LLMToolCall {
   const wireName = String(functionCall.name ?? "");
   return validateGeminiToolCall({
-    id: `gemini_call_${index}`,
+    id: geminiToolCallId(functionCall.id),
     name: names.get(wireName) ?? wireName,
     arguments: JSON.stringify(
       isRecord(functionCall.args) ? functionCall.args : {},
@@ -2824,8 +2885,9 @@ function parseGeminiResponse(
   model: string,
   response: Record<string, unknown>,
   names: ReadonlyMap<string, string>,
+  emitDiagnostic?: GeminiUsageDiagnosticSink,
 ): GeminiParsedResponse {
-  const usage = requestUsageFromGemini(response.usageMetadata);
+  const usage = requestUsageFromGemini(response.usageMetadata, emitDiagnostic);
   const promptBlock = readGeminiPromptBlock(response);
   if (promptBlock) {
     assertGeminiPromptBlockAllowed(promptBlock);
@@ -2846,7 +2908,7 @@ function parseGeminiResponse(
   const toolCalls: LLMToolCall[] = [];
   const thinking: GeminiThinkingBlock[] = [];
 
-  for (const [index, part] of parts.entries()) {
+  for (const part of parts) {
     if (part.thought === true) {
       const text = typeof part.text === "string" ? part.text : "";
       const signature =
@@ -2867,7 +2929,7 @@ function parseGeminiResponse(
       continue;
     }
     if (isRecord(part.functionCall)) {
-      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, index, names));
+      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, names));
     }
   }
 
@@ -2877,6 +2939,7 @@ function parseGeminiResponse(
     toolCalls,
     usage,
     model,
+    ...geminiReasoningReplay(parts, model),
     ...(thinking.length > 0 ? { thinking } : {}),
     finishReason: geminiFinishReason(candidate.finishReason, toolCalls),
   };
@@ -2932,17 +2995,28 @@ function withMetrics(
     usage: parsed.usage,
     model: parsed.model,
     requestMetrics: metrics,
+    ...(parsed.providerReasoningContent !== undefined ? {
+      providerReasoningContent: parsed.providerReasoningContent,
+      providerReasoningProvenance: parsed.providerReasoningProvenance,
+    } : {}),
     ...(parsed.thinking ? { thinking: parsed.thinking } : {}),
     finishReason: parsed.finishReason,
   };
 }
 
-function mapProviderError(error: unknown): never {
+function mapProviderError(error: unknown, singleAttemptPending = false): never {
   if (isFallbackTriggeredError(error)) {
     throw error;
   }
   if (error instanceof ProviderHttpError) {
-    throw mapLLMError("gemini", error, 0);
+    const mapped = mapLLMError("gemini", error, 0);
+    // Only an initial quota/payment rejection proves no generation occurred.
+    // A network/5xx failure or a status raised after accepting a response can
+    // hide billed work. Without singleWireAttempt an earlier retry can too.
+    if (singleAttemptPending && (error.status === 402 || error.status === 429)) {
+      markLLMPreGenerationRejection(mapped, "gemini");
+    }
+    throw mapped;
   }
   if (error instanceof LLMProviderError) {
     throw error;
@@ -3060,12 +3134,19 @@ class GeminiStreamState {
   sawTerminal = false;
   readonly toolCalls: LLMToolCall[] = [];
   readonly thinking: GeminiThinkingBlock[] = [];
+  private readonly parts: GeminiPart[] = [];
   private thinkingOpen = new Set<number>();
+  private readonly emitDiagnostic?: GeminiUsageDiagnosticSink;
   private promptBlocked = false;
   private sawCandidate = false;
 
-  constructor(model: string, private readonly names: ReadonlyMap<string, string>) {
+  constructor(
+    model: string,
+    private readonly names: ReadonlyMap<string, string>,
+    emitDiagnostic?: GeminiUsageDiagnosticSink,
+  ) {
     this.model = model;
+    this.emitDiagnostic = emitDiagnostic;
   }
 
   consumeResponse(
@@ -3073,7 +3154,10 @@ class GeminiStreamState {
     onChunk: StreamProgressCallback,
   ): void {
     if (response.usageMetadata) {
-      this.usage = requestUsageFromGemini(response.usageMetadata);
+      this.usage = requestUsageFromGemini(
+        response.usageMetadata,
+        this.emitDiagnostic,
+      );
     }
     const promptBlock = readGeminiPromptBlock(response);
     if (promptBlock) {
@@ -3089,6 +3173,7 @@ class GeminiStreamState {
     }
     const candidate = readFirstCandidate(response);
     const parts = readCandidateParts(response);
+    this.parts.push(...parts);
     for (const [index, part] of parts.entries()) {
       this.consumePart(part, index, onChunk);
     }
@@ -3128,6 +3213,7 @@ class GeminiStreamState {
       toolCalls: this.toolCalls,
       usage: this.usage,
       model: this.model,
+      ...geminiReasoningReplay(this.parts, this.model),
       ...(this.thinking.length > 0 ? { thinking: this.thinking } : {}),
       finishReason: this.finishReason ?? "stop",
     };
@@ -3176,7 +3262,6 @@ class GeminiStreamState {
     if (isRecord(part.functionCall)) {
       const toolCall = toolCallFromGeminiFunctionCall(
         part.functionCall,
-        this.toolCalls.length,
         this.names,
       );
       this.toolCalls.push(toolCall);
@@ -3336,6 +3421,7 @@ export class GeminiProvider implements LLMProvider {
     });
     const metrics = requestMetrics({ messages, tools, body, stream: false });
 
+    let singleAttemptPending = options?.singleWireAttempt === true;
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestJson<Record<string, unknown>>({
@@ -3352,9 +3438,18 @@ export class GeminiProvider implements LLMProvider {
           : undefined,
         singleWireAttempt: options?.singleWireAttempt,
       });
-      return withMetrics(parseGeminiResponse(model, response.data, toolNames), metrics);
+      singleAttemptPending = false;
+      return withMetrics(
+        parseGeminiResponse(
+          model,
+          response.data,
+          toolNames,
+          this.config.emitDiagnostic,
+        ),
+        metrics,
+      );
     } catch (error) {
-      mapProviderError(error);
+      mapProviderError(error, singleAttemptPending);
     }
   }
 
@@ -3377,6 +3472,7 @@ export class GeminiProvider implements LLMProvider {
     });
     const metrics = requestMetrics({ messages, tools, body, stream: true });
 
+    let singleAttemptPending = options?.singleWireAttempt === true;
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestStream({
@@ -3396,7 +3492,12 @@ export class GeminiProvider implements LLMProvider {
         singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
-      const state = new GeminiStreamState(model, toolNames);
+      singleAttemptPending = false;
+      const state = new GeminiStreamState(
+        model,
+        toolNames,
+        this.config.emitDiagnostic,
+      );
       for await (const event of readGeminiSseEvents(response)) {
         state.consumeResponse(event.data, onChunk);
       }
@@ -3405,7 +3506,7 @@ export class GeminiProvider implements LLMProvider {
         requestMetrics: metrics,
       };
     } catch (error) {
-      mapProviderError(error);
+      mapProviderError(error, singleAttemptPending);
     }
   }
 

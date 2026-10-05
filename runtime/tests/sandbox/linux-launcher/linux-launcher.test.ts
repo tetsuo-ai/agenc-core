@@ -37,6 +37,7 @@ import {
   rewriteProxyEnvValue,
 } from "./proxy-routing.js";
 import {
+  isNativeElfExecutable,
   isProcMountFailure,
   runCommandWithSupervision,
   runLinuxSandboxMain,
@@ -48,6 +49,23 @@ import {
 } from "../engine/index.js";
 
 const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
+
+// Records its argv and whether the seccomp FD arrived, then runs the command
+// after `--` the way bubblewrap would.
+const FAKE_BWRAP_SOURCE = [
+  "#!/usr/bin/env node",
+  "const cp = require('node:child_process');",
+  "const fs = require('node:fs');",
+  "const argv = process.argv.slice(2);",
+  "let fd3Open = false;",
+  "try { fs.fstatSync(3); fd3Open = true; } catch {}",
+  "fs.writeFileSync(process.env.AGENC_FAKE_BWRAP_CAPTURE, JSON.stringify({ argv, fd3Open }, null, 2));",
+  "const separator = argv.indexOf('--');",
+  "const command = separator === -1 ? [] : argv.slice(separator + 1);",
+  "if (command.length === 0) process.exit(97);",
+  "const child = cp.spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: process.env, cwd: process.cwd() });",
+  "process.exit(child.status ?? 1);",
+].join("\n") + "\n";
 
 describe("Linux sandbox launcher", () => {
   it("parses browser CDP stdio transport before the command separator", () => {
@@ -394,6 +412,86 @@ describe("Linux sandbox launcher", () => {
       "--",
       "/bin/true",
     ]);
+  });
+
+  it("passes --chdir to the physical command cwd when bubblewrap execs the command itself", () => {
+    const root = fs.realpathSync(withTempDir("agenc-linux-launcher-chdir-"));
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "alias");
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias);
+    const options = {
+      mountProc: true,
+      networkMode: "isolated" as const,
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      seccompFd: SECCOMP_STDIN_FD,
+    };
+    for (const policy of [
+      unrestrictedFileSystemPolicy(),
+      restrictedFileSystemPolicy([{ path: { kind: "path", path: workspace }, access: "write" }]),
+    ]) {
+      const inner = createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, options).args;
+      const direct = createBwrapCommandArgs(
+        ["/bin/true"],
+        policy,
+        workspace,
+        workspace,
+        { ...options, chdirToCommandCwd: true },
+      ).args;
+      expect(inner).not.toContain("--chdir");
+      expect(sliceAfter(direct, "--chdir")[0]).toBe(workspace);
+      expect(direct.indexOf("--chdir")).toBeLessThan(direct.indexOf("--"));
+      expect(direct.filter((arg) => arg !== "--chdir" && arg !== workspace)).toEqual(
+        inner.filter((arg) => arg !== workspace),
+      );
+    }
+    // A symlinked cwd: bubblewrap starts in getcwd(), the physical path.
+    const viaAlias = createBwrapCommandArgs(
+      ["/bin/true"],
+      unrestrictedFileSystemPolicy(),
+      alias,
+      alias,
+      { ...options, chdirToCommandCwd: true },
+    ).args;
+    expect(sliceAfter(viaAlias, "--chdir")[0]).toBe(workspace);
+  });
+
+  it("recognizes only native ELF programs as directly executable", () => {
+    const dir = withTempDir("agenc-linux-launcher-elf-");
+    const header = (wordSize: number, encoding: number, machine: number): Buffer => {
+      const bytes = Buffer.alloc(64);
+      bytes.writeUInt32BE(0x7f454c46, 0);
+      bytes[4] = wordSize;
+      bytes[5] = encoding;
+      if (encoding === 1) bytes.writeUInt16LE(machine, 18);
+      else bytes.writeUInt16BE(machine, 18);
+      return bytes;
+    };
+    const write = (name: string, content: Buffer | string): string => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, content);
+      return file;
+    };
+    expect(isNativeElfExecutable(write("x64", header(2, 1, 62)), "x64")).toBe(true);
+    expect(isNativeElfExecutable(write("arm64", header(2, 1, 183)), "arm64")).toBe(true);
+    expect(isNativeElfExecutable(write("s390x", header(2, 2, 22)), "s390x")).toBe(true);
+    expect(isNativeElfExecutable(write("other-machine", header(2, 1, 183)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("x32", header(1, 1, 62)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("bad-encoding", header(2, 3, 62)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("script", "#!/bin/sh\necho hi\n"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("no-shebang", "echo hi\n"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("short", Buffer.from([0x7f, 0x45, 0x4c, 0x46])), "x64")).toBe(false);
+    expect(isNativeElfExecutable(path.join(dir, "missing"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(dir, "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("unknown-arch", header(2, 1, 62)), "mips")).toBe(false);
+    // Never blocks or reads a FIFO or a device, also through a symlink.
+    const fifo = path.join(dir, "fifo");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    fs.chmodSync(fifo, 0o755);
+    fs.symlinkSync(fifo, path.join(dir, "fifo-link"));
+    expect(isNativeElfExecutable(fifo, "x64")).toBe(false);
+    expect(isNativeElfExecutable(path.join(dir, "fifo-link"), "x64")).toBe(false);
+    expect(isNativeElfExecutable("/dev/null", "x64")).toBe(false);
   });
 
   it("skips bubblewrap only for full disk write with full network", () => {
@@ -1287,46 +1385,33 @@ describe("Linux sandbox launcher", () => {
     },
   );
 
-  it("runs bubblewrap through a real subprocess and passes the seccomp FD", async () => {
+  it("lets bubblewrap exec an absolute command directly, with the seccomp FD", async () => {
     const root = withTempDir("agenc-linux-launcher-run-");
     const bin = path.join(root, "bin");
     const workspace = path.join(root, "workspace");
     fs.mkdirSync(bin);
     fs.mkdirSync(workspace);
     const capture = path.join(root, "capture.json");
-    const innerCapture = path.join(root, "inner-capture.json");
+    const commandCapture = path.join(root, "command-capture.json");
     const fakeBwrap = path.join(bin, "bwrap");
-    writeExecutable(
-      fakeBwrap,
-      [
-        "#!/usr/bin/env node",
-        "const cp = require('node:child_process');",
-        "const fs = require('node:fs');",
-        "const argv = process.argv.slice(2);",
-        "let fd3Open = false;",
-        "try { fs.fstatSync(3); fd3Open = true; } catch {}",
-        "fs.writeFileSync(process.env.AGENC_FAKE_BWRAP_CAPTURE, JSON.stringify({ argv, fd3Open }, null, 2));",
-        "const separator = argv.indexOf('--');",
-        "const command = separator === -1 ? [] : argv.slice(separator + 1);",
-        "if (command.length === 0) process.exit(97);",
-        "const child = cp.spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: process.env, cwd: process.cwd() });",
-        "process.exit(child.status ?? 1);",
-      ].join("\n") + "\n",
-    );
-    const inner = path.join(workspace, "inner.js");
+    writeExecutable(fakeBwrap, FAKE_BWRAP_SOURCE);
+    const command = path.join(workspace, "command.js");
     fs.writeFileSync(
-      inner,
+      command,
       [
         "const fs = require('node:fs');",
-        "fs.writeFileSync(process.env.AGENC_INNER_CAPTURE, JSON.stringify({",
+        "fs.writeFileSync(process.env.AGENC_COMMAND_CAPTURE, JSON.stringify({",
         "  argv: process.argv.slice(2),",
         "  active: process.env.AGENC_LINUX_SANDBOX_ACTIVE,",
         "}, null, 2));",
         "process.exit(0);",
       ].join("\n") + "\n",
     );
+    const launcherStage = path.join(root, "launcher-stage.js");
+    fs.writeFileSync(launcherStage, "process.exit(91);\n");
     const profile = workspaceWriteProfile(workspace, "disabled");
 
+    const checked: string[] = [];
     const exitCode = await runLinuxSandboxMain([
       "--sandbox-policy-cwd",
       workspace,
@@ -1337,16 +1422,23 @@ describe("Linux sandbox launcher", () => {
       "--session-temp-root",
       root,
       "--",
-      "/bin/true",
+      process.execPath,
+      command,
+      "arg",
     ], {
       env: {
         ...process.env,
+        PWD: root,
         PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         AGENC_FAKE_BWRAP_CAPTURE: capture,
-        AGENC_INNER_CAPTURE: innerCapture,
+        AGENC_COMMAND_CAPTURE: commandCapture,
       },
-      selfCommand: [process.execPath, inner],
+      selfCommand: [process.execPath, launcherStage],
       preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: true }),
+      isNativeExecutable: (file) => {
+        checked.push(file);
+        return true;
+      },
     });
 
     expect(exitCode).toBe(0);
@@ -1360,19 +1452,96 @@ describe("Linux sandbox launcher", () => {
     expect(recorded.argv).toContain("--unshare-net");
     expect(recorded.argv).toContain("--seccomp");
     expect(recorded.argv).toContain(String(SECCOMP_STDIN_FD));
-    expect(recorded.argv).toContain("--argv0");
-    expect(recorded.argv).toContain("agenc-linux-sandbox");
-    expect(recorded.argv).toContain("--apply-seccomp-then-exec");
-    expect(recorded.argv).toContain("/bin/true");
+    expect(recorded.argv).not.toContain("--argv0");
+    expect(recorded.argv).not.toContain("--apply-seccomp-then-exec");
+    expect(checked).toEqual([process.execPath]);
+    expect(recorded.argv[recorded.argv.indexOf("--chdir") + 1]).toBe(
+      fs.realpathSync.native(workspace),
+    );
+    expect(recorded.argv.slice(recorded.argv.indexOf("--") + 1)).toEqual([
+      process.execPath,
+      command,
+      "arg",
+    ]);
+    const ran = JSON.parse(fs.readFileSync(commandCapture, "utf8")) as {
+      argv: string[];
+      active: string | undefined;
+    };
+    expect(ran.active).toBe("1");
+    expect(ran.argv).toEqual(["arg"]);
+  });
+
+  it.each([
+    { label: "a bare program name", flags: [], network: "disabled", command: "true", proxy: false, native: true },
+    { label: "a program that is not a native ELF", flags: [], network: "disabled", command: "/bin/true", proxy: false, native: false },
+    { label: "browser CDP pipes", flags: ["--browser-cdp-over-stdio"], network: "enabled", command: "/bin/true", proxy: false, native: true },
+    { label: "a managed proxy", flags: ["--allow-network-for-proxy"], network: "enabled", command: "/bin/true", proxy: true, native: true },
+  ] as const)("keeps the inner launcher stage for $label", async ({ flags, network, command, proxy, native }) => {
+    const root = withTempDir("agenc-linux-launcher-inner-");
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(workspace);
+    const capture = path.join(root, "capture.json");
+    const innerCapture = path.join(root, "inner-capture.json");
+    const fakeBwrap = path.join(bin, "bwrap");
+    writeExecutable(fakeBwrap, FAKE_BWRAP_SOURCE);
+    const inner = path.join(root, "inner.js");
+    fs.writeFileSync(
+      inner,
+      [
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.env.AGENC_INNER_CAPTURE, JSON.stringify({",
+        "  argv: process.argv.slice(2),",
+        "  active: process.env.AGENC_LINUX_SANDBOX_ACTIVE,",
+        "}, null, 2));",
+        "process.exit(0);",
+      ].join("\n") + "\n",
+    );
+
+    const exitCode = await runLinuxSandboxMain([
+      ...flags,
+      "--sandbox-policy-cwd",
+      workspace,
+      "--command-cwd",
+      workspace,
+      "--permission-profile",
+      JSON.stringify(workspaceWriteProfile(workspace, network)),
+      "--session-temp-root",
+      os.tmpdir(),
+      "--",
+      command,
+    ], {
+      env: {
+        ...process.env,
+        PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
+        AGENC_FAKE_BWRAP_CAPTURE: capture,
+        AGENC_INNER_CAPTURE: innerCapture,
+        ...(proxy ? { HTTP_PROXY: "http://127.0.0.1:3128" } : {}),
+      },
+      selfCommand: [process.execPath, inner],
+      preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: true }),
+      isNativeExecutable: () => native,
+    });
+
+    expect(exitCode).toBe(0);
+    const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as {
+      argv: string[];
+    };
+    expect(recorded.argv[recorded.argv.indexOf("--argv0") + 1]).toBe("agenc-linux-sandbox");
+    expect(recorded.argv.slice(recorded.argv.indexOf("--") + 1).slice(0, 3)).toEqual([
+      process.execPath,
+      inner,
+      "--apply-seccomp-then-exec",
+    ]);
     const innerRecorded = JSON.parse(fs.readFileSync(innerCapture, "utf8")) as {
       argv: string[];
       active: string | undefined;
     };
     expect(innerRecorded.active).toBe("1");
     expect(innerRecorded.argv).toContain("--apply-seccomp-then-exec");
-    expect(innerRecorded.argv.slice(innerRecorded.argv.indexOf("--") + 1)).toEqual([
-      "/bin/true",
-    ]);
+    for (const flag of flags) expect(innerRecorded.argv).toContain(flag);
+    expect(innerRecorded.argv.slice(innerRecorded.argv.indexOf("--") + 1)).toEqual([command]);
   });
 
   it("ships the launcher as an executable package binary", () => {
@@ -1404,6 +1573,104 @@ describe("Linux sandbox launcher", () => {
 
     expect(code).not.toBe(0);
     expect(errors.join("\n")).toContain("enabled-network profile");
+  });
+
+  it.each([
+    { label: "PWD unset", pwd: undefined },
+    { label: "PWD naming the alias", pwd: "alias" },
+  ] as const)("starts a directly executed command in the physical cwd, as bubblewrap would ($label)", async ({ pwd }) => {
+    const root = fs.realpathSync(withTempDir("agenc-linux-launcher-alias-"));
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "alias");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias);
+    const capture = path.join(root, "capture.json");
+    writeExecutable(path.join(bin, "bwrap"), FAKE_BWRAP_SOURCE);
+    const { PWD: _pwd, ...baseEnv } = process.env;
+    const exitCode = await runLinuxSandboxMain([
+      "--sandbox-policy-cwd", alias,
+      "--command-cwd", alias,
+      "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "disabled" }),
+      "--session-temp-root", root,
+      "--", process.execPath, "-e", "process.exit(0)",
+    ], {
+      env: {
+        ...baseEnv,
+        ...(pwd === undefined ? {} : { PWD: alias }),
+        AGENC_FAKE_BWRAP_CAPTURE: capture,
+      },
+      selfCommand: [process.execPath, path.join(root, "launcher-stage.js")],
+      preferredLauncher: () => ({ program: path.join(bin, "bwrap"), supportsArgv0: true }),
+      isNativeExecutable: () => true,
+    });
+
+    expect(exitCode).toBe(0);
+    const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as { argv: string[] };
+    expect(recorded.argv).not.toContain("--apply-seccomp-then-exec");
+    expect(recorded.argv[recorded.argv.indexOf("--chdir") + 1]).toBe(workspace);
+  });
+
+  it("resets SIGPIPE and SIGXFSZ to their defaults at the inner stage's exec", async () => {
+    const signals = ["SIGPIPE", "SIGXFSZ"] as const;
+    const before = new Map(signals.map((signal) => [signal, process.listeners(signal)]));
+    const previousCwd = process.cwd();
+    let atExec: number[] | undefined;
+    const execve = vi.spyOn(process, "execve").mockImplementation(((): never => {
+      atExec = signals.map((signal) => process.listenerCount(signal) - before.get(signal)!.length);
+      throw new Error("captured exec");
+    }) as typeof process.execve);
+    try {
+      await runLinuxSandboxMain([
+        "--sandbox-policy-cwd", previousCwd,
+        "--command-cwd", previousCwd,
+        "--session-temp-root", os.tmpdir(),
+        "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "enabled" }),
+        "--apply-seccomp-then-exec",
+        "--", process.execPath, "--version",
+      ], { env: { AGENC_LINUX_SANDBOX_ACTIVE: "1" } });
+      // A caught signal resets to SIG_DFL across execve; an ignored one (Node's
+      // default for both) would stay ignored in the command.
+      expect(atExec).toEqual([1, 1]);
+    } finally {
+      execve.mockRestore();
+      process.chdir(previousCwd);
+      for (const signal of signals) {
+        for (const listener of process.listeners(signal)) {
+          if (!before.get(signal)!.includes(listener)) process.removeListener(signal, listener);
+        }
+      }
+    }
+  });
+
+  it.each([false, true])("restores user NODE_ENV at the launcher exec boundary (inner=%s)", async inner => {
+    const key = Symbol.for("agenc.originalRuntimeEnvironment");
+    const saved = Object.getOwnPropertyDescriptor(globalThis, key);
+    const previousCwd = process.cwd();
+    let environment: Readonly<Record<string, string>> | undefined;
+    Object.defineProperty(globalThis, key, { value: { NODE_ENV: undefined }, configurable: true });
+    const execve = vi.spyOn(process, "execve").mockImplementation(((_file, _args, env): never => {
+      environment = env;
+      throw new Error("captured exec");
+    }) as typeof process.execve);
+    try {
+      await runLinuxSandboxMain([
+        "--sandbox-policy-cwd", previousCwd,
+        "--command-cwd", previousCwd,
+        "--session-temp-root", os.tmpdir(),
+        "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "enabled" }),
+        ...(inner ? ["--apply-seccomp-then-exec"] : []),
+        "--", process.execPath, "--version",
+      ], { env: { NODE_ENV: "production", AGENC_LINUX_SANDBOX_ACTIVE: "1" } });
+      expect(execve).toHaveBeenCalledOnce();
+      expect(environment).not.toHaveProperty("NODE_ENV");
+    } finally {
+      execve.mockRestore();
+      process.chdir(previousCwd);
+      Reflect.deleteProperty(globalThis, key);
+      if (saved) Object.defineProperty(globalThis, key, saved);
+    }
   });
 
   it("supervises a direct child process exit", async () => {

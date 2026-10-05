@@ -43,7 +43,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { resolve, dirname, basename, join } from "node:path";
+import { resolve, dirname, basename, join, isAbsolute } from "node:path";
 // Imported from the defining module rather than the `memory/index.js` barrel.
 // The barrel re-exports the recall pipeline, which reaches `utils/ide.ts` and
 // `utils/envDynamic.ts`; that module calls `stat` at import time on Linux, so
@@ -1250,7 +1250,7 @@ async function validatePath(
     return [null, preEffectErrorResult(`${paramName} must be a non-empty string`)];
   }
   const result = await safePath(
-    input,
+    sessionRelativePath(input),
     args ? resolveToolAllowedPaths(allowedPaths, args) : allowedPaths,
   );
   if (result.safe) return [result.resolved, null];
@@ -1273,6 +1273,20 @@ async function validatePath(
     }
   }
   return [null, preEffectErrorResult(`Access denied: ${result.reason}`)];
+}
+
+/**
+ * A relative path names a place in the session's working directory, not in
+ * the daemon process's: a sub-agent's `system.stat` of "." was refused as
+ * outside the allowed directories. Home paths, and paths with a traversal
+ * segment (which safePath refuses before resolving), pass through unchanged.
+ */
+function sessionRelativePath(input: string): string {
+  if (isAbsolute(input) || input === "~" || input.startsWith("~/") ||
+    input.startsWith("~\\") || hasTraversalSegment(input)) {
+    return input;
+  }
+  return resolve(resolveSessionWorkspaceRoot(), input);
 }
 
 /**

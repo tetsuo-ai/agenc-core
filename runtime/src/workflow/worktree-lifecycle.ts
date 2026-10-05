@@ -15,6 +15,10 @@
  *   BEFORE any cleanup: `cleanupAfterEvidence` demands the branded proof
  *   token minted only by the finalize step's sealed evidence ledger, making
  *   cleanup-before-evidence a compile error, not a code-review catch.
+ * - A cancelled run's worktree goes only after its cancelled terminal is
+ *   durable: `discardCancelledWorktree` demands the branded proof the
+ *   controller mints from that terminal, so no run can resume into a
+ *   worktree that is gone.
  */
 
 import { createHash } from "node:crypto";
@@ -24,6 +28,7 @@ import type {
   RunArtifactPointer,
   RunStepIdentity,
   WorkflowSpec,
+  WorkflowContinuation,
 } from "../contracts/run-contracts.js";
 import {
   getOrCreateWorktree,
@@ -68,6 +73,24 @@ export function mintSealedEvidenceProof(input: {
     runId: input.runId,
     sealDigest: input.sealDigest,
   } as SealedEvidenceProof;
+}
+
+/**
+ * Proof that the run ended cancelled and that terminal is durable. Only the
+ * controller mints this, after reading the recorded terminal;
+ * `discardCancelledWorktree` requires it.
+ */
+declare const cancelledRunProofBrand: unique symbol;
+export interface CancelledRunProof {
+  readonly runId: string;
+  readonly [cancelledRunProofBrand]: true;
+}
+
+/** Minted exclusively by the controller once the cancelled terminal is recorded. */
+export function mintCancelledRunProof(input: {
+  readonly runId: string;
+}): CancelledRunProof {
+  return { runId: input.runId } as CancelledRunProof;
 }
 
 export interface BaseState {
@@ -138,15 +161,35 @@ export async function captureBaseState(
  * `getOrCreateWorktree` fast-resumes an existing worktree.
  */
 export async function provisionWorkflowWorktree(
-  spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit">,
+  spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit" | "continuationOf">,
   broker: SandboxExecutionBrokerLike,
 ): Promise<WorktreeHandle> {
   return getOrCreateWorktree({
     gitRoot: spec.repoPath,
     slug: workflowWorktreeSlug(spec.runId),
-    base: spec.baseCommit,
+    base: spec.continuationOf?.sourceHeadCommit ?? spec.baseCommit,
     sandboxExecutionBroker: broker,
   });
+}
+
+/** Pin a completed delivered ref to its recorded commit, tree, and full patch. */
+export async function validateContinuationSnapshot(input: {
+  readonly repoPath: string;
+  readonly source: WorkflowContinuation;
+  readonly broker: SandboxExecutionBrokerLike;
+}): Promise<void> {
+  const { source, repoPath, broker } = input;
+  const ref = workflowRunRef(source.sourceRunId);
+  const head = await runGit(["rev-parse", "--verify", `${ref}^{commit}`], repoPath, broker);
+  if (head.code !== 0 || head.stdout.trim() !== source.sourceHeadCommit) {
+    throw new WorkflowGitError("continue", "The source Goal delivered ref is missing or no longer matches its verified result.");
+  }
+  const tree = await runGit(["rev-parse", "--verify", `${source.sourceHeadCommit}^{tree}`], repoPath, broker);
+  const diff = await runGit(["diff", "--full-index", "--no-color", "--no-ext-diff", `${source.sourceBaseCommit}..${source.sourceHeadCommit}`], repoPath, broker);
+  if (tree.code !== 0 || tree.stdout.trim() !== source.sourceTreeHash || diff.code !== 0
+    || `sha256:${sha256Hex(diff.stdout)}` !== source.sourcePatchDigest) {
+    throw new WorkflowGitError("continue", "The source Goal files no longer match its verified snapshot and patch.");
+  }
 }
 
 export interface ExportedPatchArtifacts {
@@ -345,13 +388,6 @@ export async function checkBaseMovement(opts: {
 }
 
 /**
- * Remove the workflow worktree. Only callable with the sealed-evidence
- * proof (minted by finalize) — patch and artifacts are provably exported
- * and sealed before any cleanup. Failures are surfaced to `warn`, never
- * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
- * sealed run would mask success.
- */
-/**
  * Where a finished run's snapshot commit stays reachable: one ref per run,
  * outside refs/heads so it never clutters branch listings.
  */
@@ -359,6 +395,13 @@ export function workflowRunRef(runId: string): string {
   return `refs/agenc/runs/${runId}`;
 }
 
+/**
+ * Remove the workflow worktree. Only callable with the sealed-evidence
+ * proof (minted by finalize): patch and artifacts are provably exported
+ * and sealed before any cleanup. Failures are surfaced to `warn`, never
+ * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
+ * sealed run would mask success.
+ */
 export async function cleanupAfterEvidence(opts: {
   readonly proof: SealedEvidenceProof;
   readonly handle: WorktreeHandle;
@@ -389,6 +432,36 @@ export async function cleanupAfterEvidence(opts: {
     );
     return;
   }
+  await removeRunWorktree(
+    opts,
+    `after sealed evidence (${opts.proof.sealDigest})`,
+  );
+}
+
+/**
+ * Remove the worktree and branch of a run that ended cancelled, as a
+ * completed run's are removed. Nothing was delivered, so nothing is pinned:
+ * what the run exported already sits in its evidence ledger, outside the
+ * repository, and stays there. The user's checkout is never touched.
+ * Failures are surfaced to `warn`, never thrown.
+ */
+export async function discardCancelledWorktree(opts: {
+  readonly proof: CancelledRunProof;
+  readonly handle: WorktreeHandle;
+  readonly broker: SandboxExecutionBrokerLike;
+  readonly warn: (message: string) => void;
+}): Promise<void> {
+  await removeRunWorktree(opts, `after cancellation of ${opts.proof.runId}`);
+}
+
+async function removeRunWorktree(
+  opts: {
+    readonly handle: WorktreeHandle;
+    readonly broker: SandboxExecutionBrokerLike;
+    readonly warn: (message: string) => void;
+  },
+  when: string,
+): Promise<void> {
   try {
     await removeAgentWorktree({
       gitRoot: opts.handle.gitRoot,
@@ -398,7 +471,7 @@ export async function cleanupAfterEvidence(opts: {
     });
   } catch (error) {
     opts.warn(
-      `workflow worktree cleanup failed after sealed evidence (${opts.proof.sealDigest}): ` +
+      `workflow worktree cleanup failed ${when}: ` +
         `${error instanceof Error ? error.message : String(error)}`,
     );
   }

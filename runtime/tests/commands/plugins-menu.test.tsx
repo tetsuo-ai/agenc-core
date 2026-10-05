@@ -19,8 +19,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPluginMenuActions,
   pluginsCommand,
-  PluginsMenuView,
 } from "./plugins.js";
+import { PluginsMenuView } from "./plugins-menu.js";
 import type { SlashCommandContext } from "./types.js";
 import { parseToml } from "../config/loader.js";
 import { ConfigStore } from "../config/store.js";

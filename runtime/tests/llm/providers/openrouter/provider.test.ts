@@ -100,6 +100,39 @@ describe("OpenRouterProvider", () => {
     expect(openRouterExtraBody({})).toBeUndefined();
   });
 
+  test("sends no routing block on the managed AgenC gateway, which pins zero data retention itself", async () => {
+    // The gateway's request schema is strict: an unreviewed `provider` field
+    // made every managed DeepSeek request fail as a 503 "provider_unavailable".
+    const model = "deepseek/deepseek-v4.1-flash";
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_managed",
+          model,
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+
+    await new OpenRouterProvider({
+      apiKey: "managed-test",
+      model,
+      baseURL: "https://id.agenc.ag/v1/auth/openrouter/v1",
+      fetchImpl,
+      managedRequestId: true,
+      zeroDataRetention: true,
+    }).chat([{ role: "user", content: "hello" }]);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.model).toBe(model);
+    expect(body).not.toHaveProperty("provider");
+    expect(
+      openRouterExtraBody({ zeroDataRetention: true, managedRequestId: true }),
+    ).toBeUndefined();
+  });
+
   test.each(
     BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter.filter(
       (model) => model !== BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter,

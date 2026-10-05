@@ -89,13 +89,8 @@ import {
   type RipgrepOutputRecord,
   type RipgrepWireParser,
 } from "./ripgrep-protocol.js";
-import {
-  bindWorkspaceDirectoryReadCapability,
-  workspaceBoundReadOnlyCwd,
-  bindWorkspaceFileReadCapability,
-  type WorkspaceBoundReadCapability,
-  type WorkspaceBoundReadIdentity,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceBoundReadCapability, type WorkspaceBoundReadIdentity } from "../../workspace/file-mutation-transaction.js";
+import { bindWorkspaceDirectoryReadCapability, bindWorkspaceFileReadCapability } from "../../workspace/lazy-file-mutation.js";
 
 export const GREP_TOOL_NAME = "Grep";
 
@@ -483,14 +478,15 @@ function isExecutableUnavailable(error: unknown): boolean {
 
 const BOUND_RIPGREP_COMMAND_CWD = ".";
 
-function prepareBoundRipgrepCommand(params: {
+async function prepareBoundRipgrepCommand(params: {
   readonly readCapability?: WorkspaceBoundReadCapability;
   readonly toolArgs: Record<string, unknown>;
   readonly fallbackCwd: string;
   readonly program: string;
   readonly args: readonly string[];
   readonly env: Record<string, string>;
-}): SandboxSpawnCommand | SandboxPreparedSpawn {
+}): Promise<SandboxSpawnCommand | SandboxPreparedSpawn> {
+  const { workspaceBoundReadOnlyCwd } = await import("../../workspace/file-mutation-transaction.js");
   const command = applyReadOnlyRuntimeSandboxToSpawn({
     toolArgs: params.toolArgs,
     fallbackCwd: params.fallbackCwd,
@@ -548,7 +544,7 @@ async function isRipgrepAvailable(
   if (ripgrepPath === undefined) return false;
   if (readCapability !== undefined) {
     const probeArgs = ["--no-config", "--no-follow", "--version"];
-    const command = prepareBoundRipgrepCommand({
+    const command = await prepareBoundRipgrepCommand({
       readCapability,
       toolArgs,
       fallbackCwd: cwd,
@@ -1801,7 +1797,7 @@ async function runRipgrepCollectRecords(params: {
   }
 
   if (params.readCapability !== undefined) {
-    const command = prepareBoundRipgrepCommand({
+    const command = await prepareBoundRipgrepCommand({
         readCapability: params.readCapability,
       toolArgs: params.toolArgs,
       fallbackCwd: params.cwd,

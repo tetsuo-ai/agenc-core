@@ -68,7 +68,7 @@ describe('Gemini credential authority', () => {
     const agentSource = source('agents/run-agent.ts')
     const compatSource = source('session/turn-compat.ts')
     const endpointSource = source('llm/providers/gemini/endpoint-plan.ts')
-    const menuSource = source('commands/provider-menu.tsx')
+    const menuSource = source('commands/provider-menu-snapshot.ts')
     const discoverySource = source('llm/discovery/provider-discovery.ts')
     const verificationSource = source('onboarding/useApiKeyVerification.ts')
 

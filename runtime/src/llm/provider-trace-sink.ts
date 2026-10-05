@@ -10,13 +10,15 @@
  * `<AGENC_HOME>/agent-logs/<conversationId>/llm-<seq>.jsonl`: the request
  * params minus message bodies (model, `prompt_cache_key`,
  * `previous_response_id`, `reasoning`, `parallel_tool_calls`,
- * `max_output_tokens`, counts for input items and tools), the provider
- * usage, the stream event count and the elapsed milliseconds.
+ * `max_output_tokens`, counts for input items and tools), the response id
+ * and usage, the stream event count and the elapsed milliseconds.
  *
  * With `AGENC_PROVIDER_TRACE_BODIES=1` as well, each request also lands in
  * full as `llm-<seq>.request.json` (secrets redacted): the whole prompt, so
  * two consecutive requests can be diffed byte for byte when the digests say
- * the cached prefix changed. `scripts/eval/prefix-diff.mjs` reads them.
+ * the cached prefix changed. `scripts/eval/prefix-diff.mjs` reads them, and
+ * links a request that sends `previous_response_id` to the request whose
+ * response line recorded that id.
  *
  * Diagnostics only: a write failure disables the sink for the session and
  * never reaches the turn.

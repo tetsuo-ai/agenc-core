@@ -120,11 +120,11 @@ const isTurnFailureTime: Validator<number> = (value): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 const isRunSuspensionReason: Validator<RunSuspensionReason> = (
   value,
-): value is RunSuspensionReason => value === "daemon_shutdown_idle";
+): value is RunSuspensionReason => value === "daemon_shutdown_idle" || value === "workflow_user_pause";
 const isRunResumeReason: Validator<RunResumeReason> = (
   value,
 ): value is RunResumeReason =>
-  value === "daemon_startup_restore" || value === "explicit_continue";
+  value === "daemon_startup_restore" || value === "explicit_continue" || value === "workflow_user_resume";
 const isRunRuntimePermissionMode: Validator<RunRuntimePermissionMode> = (
   value,
 ): value is RunRuntimePermissionMode =>
@@ -156,6 +156,7 @@ const isRunRuntimeSettingsChangeReason: Validator<
   value === "compensating_rollback";
 const isBoolean: Validator<boolean> = (value): value is boolean =>
   typeof value === "boolean";
+const isTrue: Validator<true> = (value): value is true => value === true;
 const isNumber: Validator<number> = (value): value is number =>
   typeof value === "number" && Number.isFinite(value);
 const isInteger: Validator<number> = (value): value is number =>
@@ -484,7 +485,7 @@ type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
 const isChildTerminalOutcome = objectShape(
   {
     provider: isString, model: isString,
-    reason: oneOf("completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
+    reason: oneOf("step_limit", "no_progress", "model_loop", "completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
     retryable: isBoolean,
     dispatch: oneOf("not_sent", "sent", "unknown"),
     completedWork: isString, unfinishedWork: isString,
@@ -805,6 +806,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       cachedInputTokens: isNumber,
       cacheCreationInputTokens: isNumber,
       reasoningOutputTokens: isNumber,
+      reasoningIncludedInCompletion: isTrue,
       webSearchRequests: isNumber,
       model: isString,
       provider: isString,
@@ -961,6 +963,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       postCompactTokens: isNumber,
     },
   ),
+  subagent_task_admitted: objectShape({
+    agentId: isString, agentPath: isString, turnId: isString, taskId: isString,
+    author: isString, taskText: isString, acceptedAt: isNumber, provider: isString, model: isString,
+  }),
   subagent_turn_outcome: objectShape(
     {
       agentId: isString,

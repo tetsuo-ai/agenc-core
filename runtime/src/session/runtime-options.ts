@@ -1,4 +1,17 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  AgentRuntimeOptionsError,
+  assertNoRetiredAgentRuntimeEnvironment,
+} from "./runtime-options-ingress.js";
+export {
+  AgentRuntimeOptionsError,
+  RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS,
+  assertNoRetiredAgentRuntimeEnvironment,
+} from "./runtime-options-ingress.js";
+import { peekAgentRuntimeOptions } from "./runtime-options-context.js";
+export {
+  peekAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "./runtime-options-context.js";
 import {
   accessSync,
   chmodSync,
@@ -30,6 +43,8 @@ import { normalizeExactAbsolutePath } from "../utils/path-authority.js";
 export interface AgentRuntimeOptions {
   readonly [key: string]: boolean | string | number | readonly string[] | undefined;
   readonly simpleMode: boolean;
+  /** Deferred tool exposure; preserves canonical instructions, schemas and execution policy. */
+  readonly lightMode?: boolean;
   /**
    * Immutable startup authority selected only by
    * `--dangerously-bypass-approvals-and-sandbox`.
@@ -44,6 +59,10 @@ export interface AgentRuntimeOptions {
    * are hidden from the model instead of being offered and then auto-denied.
    */
   readonly nonInteractive: boolean;
+  /** Caller explicitly requests machine-readable / exact output. */
+  readonly exactOutput?: boolean;
+  /** Fresh print-run request only; the daemon rechecks eligibility. */
+  readonly relaxedOneShot?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -124,28 +143,6 @@ export function resolveCommandExecutionAuthority(
       ),
     ),
   });
-}
-
-export class AgentRuntimeOptionsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AgentRuntimeOptionsError";
-  }
-}
-
-const scopedRuntimeOptions = new AsyncLocalStorage<AgentRuntimeOptions>();
-
-/** Bind startup work and all async descendants to one immutable option set. */
-export function runWithAgentRuntimeOptions<T>(
-  options: AgentRuntimeOptions,
-  operation: () => T,
-): T {
-  return scopedRuntimeOptions.run(options, operation);
-}
-
-/** Read the session/startup binding without consulting process-global env. */
-export function peekAgentRuntimeOptions(): AgentRuntimeOptions | undefined {
-  return scopedRuntimeOptions.getStore();
 }
 
 /** Resolve the immutable runtime options owned by the active session/startup. */
@@ -280,6 +277,7 @@ function establishWritableDirectoryAuthority(value: string, key: string): string
 export function resolveSessionTempRootAtIngress(
   env: NodeJS.ProcessEnv,
   explicit?: string,
+  platformTempRoot: string = DEFAULT_SESSION_TEMP_ROOT,
 ): string {
   return explicit !== undefined
     ? establishWritableDirectoryAuthority(
@@ -289,7 +287,7 @@ export function resolveSessionTempRootAtIngress(
     : env.AGENC_TMPDIR !== undefined
       ? establishWritableDirectoryAuthority(env.AGENC_TMPDIR, "AGENC_TMPDIR")
       : establishWritableDirectoryAuthority(
-          DEFAULT_SESSION_TEMP_ROOT,
+          platformTempRoot,
           "platform temporary directory",
         );
 }
@@ -359,36 +357,23 @@ function parseWrapper(value: string | undefined): readonly string[] | undefined 
   return Object.freeze(parsed as string[]);
 }
 
-export const RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS = Object.freeze({
-  AGENC_SIMPLE: "use --bare",
-  AGENC_BARE: "use --bare",
-} as const);
-
-/** Reject removed runtime-option aliases at every client/startup boundary. */
-export function assertNoRetiredAgentRuntimeEnvironment(
-  env: NodeJS.ProcessEnv,
-): void {
-  const present = Object.entries(RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS)
-    .filter(([key]) => env[key] !== undefined);
-  if (present.length === 0) return;
-  throw new AgentRuntimeOptionsError(
-    present
-      .map(([key, replacement]) => `${key} was removed; ${replacement}`)
-      .join("; "),
-  );
-}
-
-/** Parse and freeze the complete runtime authority at an ingress boundary. */
+/**
+ * Parse and freeze the complete runtime authority at an ingress boundary.
+ * An ingress serving another process supplies that process's captured platform
+ * temp fallback; ordinary local callers retain the module's startup authority.
+ */
 export function resolveAgentRuntimeOptions(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions> = {},
+  platformTempRoot: string = DEFAULT_SESSION_TEMP_ROOT,
 ): AgentRuntimeOptions {
-  return resolveAgentRuntimeOptionsAtIngress(env, overrides);
+  return resolveAgentRuntimeOptionsAtIngress(env, overrides, platformTempRoot);
 }
 
 function resolveAgentRuntimeOptionsAtIngress(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions>,
+  platformTempRoot: string,
 ): AgentRuntimeOptions {
   assertNoRetiredAgentRuntimeEnvironment(env);
   const parsedWrapper =
@@ -397,9 +382,12 @@ function resolveAgentRuntimeOptionsAtIngress(
       : undefined;
   const resolved: AgentRuntimeOptions = {
     simpleMode: overrides.simpleMode ?? false,
+    ...(overrides.lightMode !== undefined ? { lightMode: overrides.lightMode } : {}),
     dangerouslyBypassApprovalsAndSandbox:
       overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     nonInteractive: overrides.nonInteractive ?? false,
+    ...(overrides.exactOutput !== undefined ? { exactOutput: overrides.exactOutput } : {}),
+    ...(overrides.relaxedOneShot !== undefined ? { relaxedOneShot: overrides.relaxedOneShot } : {}),
     stdinDataMode:
       overrides.stdinDataMode ??
       parseBoolean(env, "AGENC_USE_DATA_STDIN", false),
@@ -466,6 +454,7 @@ function resolveAgentRuntimeOptionsAtIngress(
     sessionTempRoot: resolveSessionTempRootAtIngress(
       env,
       overrides.sessionTempRoot,
+      platformTempRoot,
     ),
     pluginStorageRoot: resolvePluginStorageRootAtIngress(
       env,
@@ -592,8 +581,11 @@ export function validateAgentRuntimeOptions(
   const input = value as Record<string, unknown>;
   const allowed = new Set([
     "simpleMode",
+    "lightMode",
     "dangerouslyBypassApprovalsAndSandbox",
     "nonInteractive",
+    "exactOutput",
+    "relaxedOneShot",
     "stdinDataMode",
     "remoteMode",
     "remoteMemoryRoot",
@@ -626,6 +618,9 @@ export function validateAgentRuntimeOptions(
       "runtimeOptions.simpleMode is required and must be boolean",
     );
   }
+  if (input.lightMode !== undefined && typeof input.lightMode !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.lightMode must be boolean");
+  }
   if (
     input.dangerouslyBypassApprovalsAndSandbox !== undefined &&
     typeof input.dangerouslyBypassApprovalsAndSandbox !== "boolean"
@@ -650,6 +645,12 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.nonInteractive must be boolean",
     );
+  }
+  if (input.relaxedOneShot !== undefined && typeof input.relaxedOneShot !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.relaxedOneShot must be boolean");
+  }
+  if (input.exactOutput !== undefined && typeof input.exactOutput !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.exactOutput must be boolean");
   }
   if (typeof input.stdinDataMode !== "boolean") {
     throw new AgentRuntimeOptionsError(

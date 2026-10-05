@@ -65,6 +65,7 @@ describe("provider authority architecture", () => {
     expect(providerOptions).toMatch(/resolveProviderBaseURLEnvironment/u);
 
     const providerCredentialConsumers = [
+      "commands/provider-menu-snapshot.ts",
       "commands/provider-menu.tsx",
       "llm/discovery/provider-discovery.ts",
       "llm/provider-options.ts",
@@ -107,8 +108,8 @@ describe("provider authority architecture", () => {
       "utf8",
     );
     for (const path of [
-      "commands/model-menu.tsx",
-      "commands/provider-menu.tsx",
+      "commands/model-menu-snapshot.ts",
+      "commands/provider-menu-snapshot.ts",
     ]) {
       const menu = readFileSync(`${SRC}/${path}`, "utf8");
       expect(menu, path).toMatch(/createProviderCommandAccessOverlay/u);
@@ -226,7 +227,7 @@ describe("provider authority architecture", () => {
     }
 
     const providerMenu = readFileSync(
-      `${SRC}/commands/provider-menu.tsx`,
+      `${SRC}/commands/provider-menu-snapshot.ts`,
       "utf8",
     );
     expect(providerMenu).toMatch(/createProviderCommandAccessOverlay/u);
@@ -318,7 +319,7 @@ describe("provider authority architecture", () => {
       "utf8",
     );
     const providerMenu = readFileSync(
-      `${SRC}/commands/provider-menu.tsx`,
+      `${SRC}/commands/provider-menu-snapshot.ts`,
       "utf8",
     );
     const providersDoc = readFileSync(
@@ -421,7 +422,7 @@ describe("provider authority architecture", () => {
       .filter(
         ({ name, source }) =>
           source.includes("AGENC_XAI_API_KEY") &&
-          name !== "config/env.ts" &&
+          name !== "config/obsolete-environment.ts" &&
           name !== "utils/secretEnv.ts",
       )
       .map(({ name }) => name);
@@ -442,7 +443,9 @@ describe("provider authority architecture", () => {
   });
 
   test("legacy API classification cannot select from credentials", () => {
-    const source = readFileSync(`${SRC}/utils/model/providers.ts`, "utf8");
+    const source = ["providers.ts", "provider-selection.ts"].map(
+      name => readFileSync(`${SRC}/utils/model/${name}`, "utf8"),
+    ).join("\n");
     expect(source).not.toMatch(/process\.env\.AGENC_PROVIDER/);
     expect(source).not.toMatch(/process\.env\.(?:XAI_API_KEY|MINIMAX_API_KEY)/);
     expect(source).toMatch(
@@ -451,10 +454,9 @@ describe("provider authority architecture", () => {
   });
 
   test("provider/model selection remains session-owned after startup", () => {
-    const providerSource = readFileSync(
-      `${SRC}/utils/model/providers.ts`,
-      "utf8",
-    );
+    const providerSource = ["providers.ts", "provider-selection.ts"].map(
+      name => readFileSync(`${SRC}/utils/model/${name}`, "utf8"),
+    ).join("\n");
     const selectionContextSource = readFileSync(
       `${SRC}/utils/model/provider-selection-context.ts`,
       "utf8",
@@ -520,14 +522,14 @@ describe("provider authority architecture", () => {
       /\b(?:OPENAI_MODEL|OPENAI_COMPATIBLE_MODEL|ANTHROPIC_MODEL|OLLAMA_MODEL|LMSTUDIO_MODEL|OPENROUTER_MODEL|GROQ_MODEL|DEEPSEEK_MODEL|GEMINI_MODEL|MISTRAL_MODEL|NVIDIA_MODEL|MINIMAX_MODEL|GITHUB_MODEL|AWS_BEDROCK_MODEL|ANTHROPIC_DEFAULT_(?:HAIKU|OPUS|SONNET)_MODEL|ANTHROPIC_SMALL_FAST_MODEL|ANTHROPIC_CUSTOM_MODEL_OPTION|AGENC_SUBAGENT_MODEL|AGENC_AUTO_MODE_MODEL)\b/u;
     const retiredSelectorOffenders = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/.test(path))
-      .filter((path) => !path.endsWith("/config/env.ts"))
+      .filter((path) => !path.endsWith("/config/obsolete-environment.ts"))
       .filter((path) => retiredModelSelector.test(readFileSync(path, "utf8")))
       .map((path) => relative(SRC, path));
     expect(retiredSelectorOffenders).toEqual([]);
 
-    const envSource = readFileSync(`${SRC}/config/env.ts`, "utf8");
-    expect(envSource).toMatch(/OPENAI_MODEL: "AGENC_MODEL/u);
-    expect(envSource).toMatch(/AWS_BEDROCK_MODEL: "AGENC_MODEL/u);
+    const rejectionSource = readFileSync(`${SRC}/config/obsolete-environment.ts`, "utf8");
+    expect(rejectionSource).toMatch(/OPENAI_MODEL: "AGENC_MODEL/u);
+    expect(rejectionSource).toMatch(/AWS_BEDROCK_MODEL: "AGENC_MODEL/u);
   });
 
   test("the test-only ambient provider binding cannot enter production code", () => {
@@ -562,7 +564,9 @@ describe("provider authority architecture", () => {
         .filter(
           (path) =>
             !path.endsWith("/utils/model/provider-selection-context.ts") &&
-            !path.endsWith("/utils/model/providers.ts"),
+            !path.endsWith("/utils/model/providers.ts") &&
+            !(rawBinding.source === "readStartupProviderSelectionSnapshot" &&
+              path.endsWith("/utils/model/provider-selection.ts")),
         )
         .filter((path) => rawBinding.test(readFileSync(path, "utf8")))
         .map((path) => relative(SRC, path));

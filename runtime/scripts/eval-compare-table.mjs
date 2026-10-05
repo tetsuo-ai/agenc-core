@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// Print a markdown comparison of the compare-agents.sh reports in a directory.
+// Print a markdown comparison of the compare-agents.sh reports in a directory:
+//   eval-compare-table.mjs <run> [tag] [effort]
+// compare-agents.sh passes the reasoning effort it gave every agent, and the
+// section headings state it.
 import { readFileSync, existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +24,8 @@ if (!existsSync(dir)) {
   process.exit(2);
 }
 const tag = rawTag === "" ? "" : `-${rawTag}`;
+const effort = process.argv[4];
+const heading = (title) => (effort ? `${title} (reasoning effort ${effort})` : title);
 const agents = ["agenc", "hermes", "opencode"];
 const load = (name) => (existsSync(join(dir, name)) ? JSON.parse(readFileSync(join(dir, name), "utf8")) : null);
 const seconds = (ms) => `${Math.round((ms ?? 0) / 1000)} s`;
@@ -33,7 +38,7 @@ const taskCell = (task) => {
 
 const commands = agents.map((a) => [a, load(`${a}${tag}-commands.json`)]).filter(([, r]) => r);
 if (commands.length > 0) {
-  console.log("## Command tasks\n");
+  console.log(`## ${heading("Command tasks")}\n`);
   console.log("| agent | passed | total wall | per task |\n| --- | --- | --- | --- |");
   for (const [, r] of commands) {
     const tasks = r.tasks.filter((t) => t.id !== "asteroid-drift-15");
@@ -50,7 +55,7 @@ if (commands.length > 0) {
 }
 const sessions = agents.map((a) => [a, load(`${a}${tag}-session.json`)]).filter(([, r]) => r);
 if (sessions.length > 0) {
-  console.log("\n## Session task\n");
+  console.log(`\n## ${heading("Session task")}\n`);
   console.log("| agent | status | wall | verifiers passed | steps recorded |\n| --- | --- | --- | --- | --- |");
   for (const [, r] of sessions) {
     const s = r.tasks.find((t) => t.id === "asteroid-drift-15");

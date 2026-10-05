@@ -33,6 +33,7 @@ function importFirst(relativePath: string): { status: number | null; stderr: str
 describe("sandbox engine import order", () => {
   test.each([
     "sandbox/engine/index.ts",
+    "sandbox/engine/policy.ts",
     "sandbox/linux-launcher/config.ts",
     "sandbox/engine/bound-readonly-profile.ts",
   ])("a fresh process can import %s first", (entry) => {

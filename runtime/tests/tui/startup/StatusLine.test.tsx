@@ -202,6 +202,7 @@ describe('StatusLine daemon rendering', () => {
   test.each([
     [{ costUsd: 0, hasUnknownCost: false }, 0, false],
     [{ costUsd: 1.25, hasUnknownCost: true }, 1.25, true],
+    [{ costUsd: 2.5, hasUnknownCost: false, costEstimated: true }, 2.5, false],
     [null, 0, true],
   ] as const)('passes scoped cost and unknown pricing for %j', async (usage, costUsd, unknown) => {
     const { stdout, stdin } = createTestStreams()
@@ -219,7 +220,7 @@ describe('StatusLine daemon rendering', () => {
       )
       await sleep(25)
       expect(mocks.executeStatusLineCommand).toHaveBeenCalledWith(
-        expect.objectContaining({ cost: expect.objectContaining({ total_cost_usd: costUsd, has_unknown_cost: unknown }) }),
+        expect.objectContaining({ cost: expect.objectContaining({ total_cost_usd: costUsd, has_unknown_cost: unknown, cost_estimated: usage !== null && "costEstimated" in usage ? usage.costEstimated : false }) }),
         expect.any(AbortSignal), undefined, true,
       )
       expect(mocks.getTotalCost).not.toHaveBeenCalled()

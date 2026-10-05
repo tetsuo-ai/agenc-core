@@ -211,15 +211,20 @@ class RoutineStore {
       throw new RoutineError("ROUTINE_STORAGE_UNAVAILABLE", "Routine storage is invalid or unavailable; existing data was preserved.");
     } finally { if (fd !== undefined) closeSync(fd); }
   }
-  write(document: Document): void {
-    const temp = join(this.root, `.routines-${randomUUID()}.tmp`);
-    let fd: number | undefined;
+  validateWriteTarget(): void {
     try {
       this.assertRoot();
       try {
         const stat = lstatSync(this.path);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("invalid storage target");
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    } catch { throw new RoutineError("ROUTINE_STORAGE_UNAVAILABLE", "Routine state could not be saved."); }
+  }
+  write(document: Document): void {
+    const temp = join(this.root, `.routines-${randomUUID()}.tmp`);
+    let fd: number | undefined;
+    try {
+      this.validateWriteTarget();
       const serialized = JSON.stringify(document);
       if (Buffer.byteLength(serialized) > MAX_STORE_BYTES) throw new Error("storage too large");
       fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -302,7 +307,7 @@ export class RoutineService {
         entry.runs = entry.runs.map((run) => ACTIVE.has(run.status) ? { ...run, status: "interrupted", finishedAt: now.toISOString(), error: "Daemon stopped before this run finished. It was not restarted automatically." } : run);
         entry.routine = { ...entry.routine, nextRunAt: nextRun(entry.routine, now), lastRun: entry.runs[0] ?? null };
       }
-    });
+    }, this.#entries.length > 0);
     this.#started = true; this.#arm();
   }
   onUpdated(listener: (event: RoutineUpdatedEvent) => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }
@@ -432,9 +437,15 @@ export class RoutineService {
   #guard(entry: Entry, expected: unknown): void {
     if (expected !== undefined && text(expected, "expectedUpdatedAt", 64) !== entry.routine.updatedAt) throw new RoutineError("ROUTINE_CONFLICT", "Routine changed; refresh it before saving.");
   }
-  #commit(operation: () => void): void {
+  #commit(operation: () => void, persist = true): void {
     const previous = structuredClone(this.#entries);
-    try { operation(); this.#store.write({ version: 1, entries: this.#entries }); }
+    try {
+      operation();
+      // An empty startup has no interrupted run or schedule to publish, but
+      // still rechecks storage identity before the service becomes ready.
+      if (persist) this.#store.write({ version: 1, entries: this.#entries });
+      else this.#store.validateWriteTarget();
+    }
     catch (error) { this.#entries = previous; this.#healthy = false; if (this.#timer) clearTimeout(this.#timer); for (const run of this.#active.values()) run.controller.abort(); throw error; }
   }
   #emit(id: string, reason: RoutineUpdatedEvent["reason"]): void { for (const listener of this.#listeners) { try { listener({ id, reason }); } catch { /* UI observers do not own persisted state. */ } } }

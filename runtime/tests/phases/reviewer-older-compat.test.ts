@@ -2,7 +2,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
 
 const settings = vi.hoisted(() => ({

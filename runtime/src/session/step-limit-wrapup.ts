@@ -1,0 +1,130 @@
+import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
+import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import { buildProviderOptions, type StreamModelRequestContract } from "../phases/stream-model.js";
+import type { Session } from "./session.js";
+import { usageToTokenCountEvent } from "./event-log.js";
+import type { TurnContext } from "./turn-context.js";
+import { sanitizeModelOutput, stripCitations, stripProposedPlanBlocks } from "../llm/stream-parser.js";
+import { isPlanMode } from "./plan-mode.js";
+
+// A live deepseek-flash child sent response headers after about 13 s and was
+// still streaming its reasoning when a 30 s bound cut the answer off. Leave
+// room for reasoning plus the answer.
+export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 120_000;
+export const STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS = 16_384;
+/** Workflow handoffs reject large payloads; the wrap-up is a summary. */
+export const STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES = 32_768;
+export const STEP_LIMIT_WRAPUP_INSTRUCTION =
+  "You have reached the step limit. Stop investigating. Write the final answer now from what you found, " +
+  "including findings and conclusions. Say what you could not check. Tools are unavailable. " +
+  "Keep it concise: about 500 words at most.";
+
+function boundedText(text: string, bytes: number): string {
+  return Buffer.from(text).subarray(0, bytes).toString("utf8");
+}
+
+/** Retain a small recent activity trail independently of context compaction. */
+export class StepLimitTrail {
+  private readonly entries: string[] = [];
+  record(call: LLMToolCall): void {
+    this.entries.push(`${boundedText(call.name, 80)} ${boundedText(call.arguments.replace(/\s+/g, " "), 160)}`);
+    if (this.entries.length > 12) this.entries.shift();
+  }
+  fallback(lastText: string): string {
+    return [
+      "Partial result: stopped at the step limit. Final-answer synthesis was unavailable.",
+      boundedText(lastText.trim(), 4_000) || "No assistant findings were recorded.",
+      "Recent tool activity (arguments abbreviated):",
+      ...this.entries.map((entry) => `- ${entry}`),
+      "Unchecked work: the task is incomplete; tool activity alone does not establish findings.",
+    ].join("\n");
+  }
+}
+
+export function stepLimitReminder(completed: number, limit: number): LLMMessage | undefined {
+  if (!Number.isFinite(limit) || completed < 1 || completed >= limit) return undefined;
+  const remaining = limit - completed;
+  if (completed !== Math.ceil(limit * 0.75) && remaining !== 2) return undefined;
+  return {
+    role: "user",
+    content: `Step budget: ${remaining} of ${limit} investigation steps remain. Prioritize your findings and finish your answer; state anything you could not check.`,
+    runtimeOnly: { excludeFromDurableHistory: true },
+  };
+}
+
+/** One admitted wire attempt. No tool executor, retry ladder, or compaction. */
+export async function stepLimitWrapup(args: {
+  session: Session;
+  ctx: TurnContext;
+  request: StreamModelRequestContract;
+  signal: AbortSignal;
+  fallback: string;
+}): Promise<{ text: string; usage?: LLMUsage }> {
+  const { session, ctx, signal, fallback } = args;
+  const controller = new AbortController();
+  const onAbort = (): void => controller.abort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  const timer = setTimeout(() => controller.abort(new Error("step-limit wrap-up timed out")), STEP_LIMIT_WRAPUP_TIMEOUT_MS);
+  let rejectAbort: (() => void) | undefined;
+  try {
+    if (controller.signal.aborted) return { text: fallback };
+    const request: StreamModelRequestContract = {
+      ...args.request,
+      // Ollama ignores toolChoice and its text-tool protocol advertises every
+      // attached tool, so withhold the catalog there; its history projection
+      // needs no definitions. Elsewhere tool history still requires them,
+      // even when new calls are disabled.
+      ...(session.services.provider.name === "ollama" ? { tools: [] } : {}),
+      toolChoice: "none",
+      parallelToolCalls: false,
+      // Reasoning models count thinking against this budget: a live
+      // deepseek-flash child spent a 4,096-token cap on reasoning and returned
+      // an empty answer. 16,384 leaves room for reasoning plus the answer
+      // while keeping the admission reservation well below a full turn's.
+      maxOutputTokens: Math.min(args.request.maxOutputTokens ?? STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS,
+        STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS),
+    };
+    const messages = [...request.input];
+    const options = {
+      ...buildProviderOptions(request, ctx, controller.signal, session),
+      singleWireAttempt: true,
+      timeoutMs: STEP_LIMIT_WRAPUP_TIMEOUT_MS,
+    };
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectAbort, { once: true });
+    });
+    const response = await Promise.race([runAdmittedModelCall({
+      session, provider: session.services.provider, messages, options,
+      stepId: `${ctx.subId}:step-limit-wrapup`,
+      sessionId: session.conversationId,
+      model: session.config?.model ?? ctx.config.model,
+      providerName: session.services.provider.name,
+      signal: controller.signal,
+      invoke: (admitted) => session.services.provider.chatStream(messages, () => {}, admitted),
+    }), aborted]);
+    if (response.usage) {
+      const event = usageToTokenCountEvent(response.usage);
+      if (event.type === "token_count") {
+        session.emit({ id: session.nextInternalSubId(), msg: {
+          ...event, payload: { ...event.payload,
+            ...(response.usage.speed === "fast" ? { speed: "fast" as const } : {}),
+            model: response.model, provider: session.services.provider.name },
+        } });
+      }
+    }
+    const citationsStripped = stripCitations(response.content ?? "").visibleText;
+    const visibleText = isPlanMode(ctx) ? stripProposedPlanBlocks(citationsStripped) : citationsStripped;
+    const text = response.error || response.toolCalls?.length
+      ? "" : sanitizeModelOutput(visibleText, { strict: true }).text.trim();
+    return { text: text ? boundedText(`Partial result: stopped at the step limit.\n\n${text}`, STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES) : fallback,
+      ...(response.usage ? { usage: response.usage } : {}) };
+  } catch {
+    return { text: fallback };
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    if (rejectAbort) controller.signal.removeEventListener("abort", rejectAbort);
+  }
+}

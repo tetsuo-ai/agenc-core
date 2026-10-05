@@ -460,6 +460,8 @@ interface ShellWriteEnvironment {
   /** `sed` may be BSD sed on this host (macOS and the BSDs). */
   readonly bsdSed: boolean;
   readonly workspaceRoot: string;
+  /** Resolve each command against the directory a `cd` earlier in the line moved to. */
+  readonly followDirectoryChanges?: boolean;
 }
 
 /** Hosts whose `sed` is BSD sed unless GNU sed comes first on the PATH. */
@@ -799,12 +801,94 @@ function collectSegmentCommandWriteTargets(
   });
 }
 
+/** The shell builtins that change the directory the rest of a line runs in. */
+const DIRECTORY_CHANGE_COMMANDS = new Set(["cd", "pushd", "popd"]);
+
+/**
+ * Where a `cd`, `pushd` or `popd` segment leaves the shell: undefined for
+ * any other segment, null when the command line does not say (`cd "$DIR"`,
+ * `cd -`, `popd`).
+ */
+function directoryAfterSegment(
+  segment: readonly ShellToken[],
+  cwd: string,
+): string | null | undefined {
+  const words = stripRedirections(segment);
+  let index = 0;
+  while (index < words.length && ENV_ASSIGNMENT_RE.test(words[index]?.value ?? "")) {
+    index += 1;
+  }
+  const command = words[index];
+  if (command === undefined || !DIRECTORY_CHANGE_COMMANDS.has(command.value)) {
+    return undefined;
+  }
+  if (command.requiresExpansion || command.value === "popd") return null;
+  let operands = words.slice(index + 1);
+  while (operands.length > 0 && /^-[LPe@]+$/u.test(operands[0]!.value)) {
+    operands = operands.slice(1);
+  }
+  if (operands[0]?.value === "--") operands = operands.slice(1);
+  const operand = operands[0];
+  if (operand === undefined) return command.value === "cd" ? homedir() : null;
+  if (
+    operand.requiresExpansion ||
+    operand.value.length === 0 ||
+    /^[-+]\d*$/u.test(operand.value)
+  ) {
+    return null;
+  }
+  return resolvePath(cwd, operand.value);
+}
+
+/**
+ * The targets of a command line whose later commands run where an earlier
+ * `cd` or `pushd` moved the shell. A subshell's change ends with the
+ * subshell. A change the line does not spell out keeps the last known
+ * directory and marks the result indeterminate.
+ */
+function collectTargetsFollowingDirectoryChanges(
+  parsed: ReturnType<typeof lexShellCommand>,
+  cwd: string,
+  environment: ShellWriteEnvironment,
+): ShellWriteTargetCollection {
+  const collection = emptyTargetCollection();
+  collection.indeterminate ||= parsed.malformed || parsed.hasCommandSubstitution;
+  const subshells: string[] = [];
+  let current = cwd;
+  let segment: ShellToken[] = [];
+  const flushSegment = (): void => {
+    mergeTargetCollections(collection, collectRedirectionTargets(segment, current));
+    mergeTargetCollections(
+      collection,
+      collectSegmentCommandWriteTargets(segment, current, environment),
+    );
+    const next = directoryAfterSegment(segment, current);
+    if (next === null) collection.indeterminate = true;
+    else if (next !== undefined) current = next;
+    segment = [];
+  };
+  for (const token of parsed.tokens) {
+    if (isShellCommandSeparator(token)) {
+      flushSegment();
+      if (token.value === "(") subshells.push(current);
+      if (token.value === ")") current = subshells.pop() ?? current;
+      continue;
+    }
+    segment.push(token);
+  }
+  flushSegment();
+  return collection;
+}
+
 function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
   environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const parsed = lexShellCommand(commandLine);
+  if (environment.followDirectoryChanges === true) {
+    return collectTargetsFollowingDirectoryChanges(parsed, cwd, environment);
+  }
   const collection = collectRedirectionTargets(parsed.tokens, cwd);
   collection.indeterminate ||= parsed.malformed || parsed.hasCommandSubstitution;
   let segment: ShellToken[] = [];
@@ -830,7 +914,7 @@ function collectShellCommandWriteTargets(
  * The system temp directory (`os.tmpdir()` honours TMPDIR) plus `/tmp` and
  * its macOS target, where shell scratch files live (`cat > /tmp/x.js`).
  */
-function shellTempRoots(): readonly string[] {
+export function shellTempRoots(): readonly string[] {
   const roots = new Set<string>();
   for (const candidate of [tmpdir(), "/tmp", "/private/tmp"]) {
     if (candidate.trim().length > 0) {
@@ -1017,6 +1101,62 @@ function buildIndeterminatePolicyMessage(
   );
 }
 
+/** The targets of a shell tool call: a command line, or a program and its argument vector. */
+function collectToolCallWriteTargets(
+  args: Record<string, unknown>,
+  environment: ShellWriteEnvironment,
+): ShellWriteTargetCollection {
+  const cwd = resolveWorkingDirectory(environment.workspaceRoot, args.cwd);
+  if (Array.isArray(args.args)) {
+    return collectDirectCommandWriteTargets({
+      command: typeof args.command === "string" ? args.command : "",
+      args: args.args.filter((value): value is string => typeof value === "string"),
+      cwd,
+      environment,
+    });
+  }
+  if (typeof args.command === "string") {
+    return collectShellCommandWriteTargets(args.command, cwd, environment);
+  }
+  return emptyTargetCollection();
+}
+
+export interface ShellMutationTargets {
+  /** Every path the command writes, removes, or moves a file from or onto. */
+  readonly targets: readonly string[];
+  /** Some target could not be read from the command (`> "$OUT"`, `cd "$DIR"`). */
+  readonly indeterminate: boolean;
+}
+
+/**
+ * Every path a shell tool call changes, as far as the command line shows it,
+ * with each command resolved in the directory it runs in: `args.cwd`
+ * (relative to `workspaceRoot`) and any `cd` earlier in the line. What a
+ * program does on its own (`node -e`, `git -C`) is not visible here.
+ */
+export function collectShellMutationTargets(params: {
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly workspaceRoot: string;
+  readonly platform?: NodeJS.Platform;
+}): ShellMutationTargets {
+  if (!SHELL_WORKSPACE_WRITE_TOOL_NAMES.has(params.toolName)) {
+    return { targets: [], indeterminate: false };
+  }
+  const collected = collectToolCallWriteTargets(params.args, {
+    bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
+    workspaceRoot: params.workspaceRoot,
+    followDirectoryChanges: true,
+  });
+  const targets = [...collected.targets];
+  for (const target of collected.deletions) pushUnique(targets, target);
+  for (const move of collected.moves) {
+    for (const source of move.sources) pushUnique(targets, source);
+    pushUnique(targets, move.destination);
+  }
+  return { targets, indeterminate: collected.indeterminate };
+}
+
 export function classifyShellWorkspaceWritePolicy(
   params: ShellWorkspaceWritePolicyInput,
 ): ShellWorkspaceWritePolicyDecision {
@@ -1043,23 +1183,10 @@ export function classifyShellWorkspaceWritePolicy(
   }
 
   const workspaceRoot = params.workspaceRoot;
-  const cwd = resolveWorkingDirectory(workspaceRoot, params.args.cwd);
-  const environment: ShellWriteEnvironment = {
+  const collected = collectToolCallWriteTargets(params.args, {
     bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
     workspaceRoot,
-  };
-  let collected: ShellWriteTargetCollection = emptyTargetCollection();
-  if (Array.isArray(params.args.args)) {
-    collected = collectDirectCommandWriteTargets({
-      command:
-        typeof params.args.command === "string" ? params.args.command : "",
-      args: params.args.args.filter((value): value is string => typeof value === "string"),
-      cwd,
-      environment,
-    });
-  } else if (typeof params.args.command === "string") {
-    collected = collectShellCommandWriteTargets(params.args.command, cwd, environment);
-  }
+  });
 
   // A move keeps workspace content in the workspace when every source is a
   // workspace path; then its destination is a rename, not a content write.

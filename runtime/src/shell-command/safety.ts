@@ -629,6 +629,17 @@ function isDangerousPowerShellScript(script: string): boolean {
   });
 }
 
+/**
+ * A PowerShell script that force-deletes (`Remove-Item -Force`, `rm -fo`,
+ * `del -Force`, ...). The removal floor applies this to PowerShell scripts on
+ * every platform: pwsh on macOS and Linux deletes just as it does on Windows.
+ */
+export function isPowerShellForcedDeleteScript(script: string): boolean {
+  return splitShellFragments(script).some((fragment) =>
+    containsPowerShellForcedDelete(splitCommandWords(fragment)),
+  );
+}
+
 function splitShellFragments(script: string): readonly string[] {
   const fragments: string[] = [];
   let start = 0;

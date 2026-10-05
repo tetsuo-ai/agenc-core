@@ -334,10 +334,10 @@ export function copyPlanForResume(
   target: PlanFileContext,
   opts: { readonly messages?: readonly unknown[] } = {},
 ): string | null {
-  const sourcePath = getPlanFilePath(source);
-  const targetPath = getPlanFilePath(target);
-  mkdirSync(dirname(targetPath), { recursive: true });
-  if (existsSync(sourcePath)) {
+  const sourcePath = getExistingPlanFilePath(source);
+  if (sourcePath !== null && existsSync(sourcePath)) {
+    const targetPath = getPlanFilePath(target);
+    mkdirSync(dirname(targetPath), { recursive: true });
     if (sourcePath === targetPath) return targetPath;
     copyFileSync(sourcePath, targetPath);
     return targetPath;
@@ -346,6 +346,8 @@ export function copyPlanForResume(
     ? recoverPlanFromMessages(opts.messages)
     : null;
   if (recovered === null) return null;
+  const targetPath = getPlanFilePath(target);
+  mkdirSync(dirname(targetPath), { recursive: true });
   writeFileSync(targetPath, recovered, "utf8");
   return targetPath;
 }

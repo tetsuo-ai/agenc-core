@@ -51,6 +51,7 @@ import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnT
 import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
+  anthropicSupportsBetweenToolsThinking,
 } from "../../../utils/model/anthropicThinkingControl.js";
 import { bedrockConverseEffortLevels } from "../../registry/model-catalog.js";
 import {
@@ -507,11 +508,15 @@ function claudeConverseContract(
   const effort = anthropicEffort(options?.reasoningEffort);
   const sendEffort =
     effort !== undefined && bedrockConverseEffortLevels(identity).includes(effort);
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(identity);
+  const thinking = betweenToolsThinking && options?.reasoningEffort === "none"
+    ? { thinking: { type: "between_tools" } }
+    : {};
   return {
     dropSampling: !anthropicAcceptsSamplingParameters(identity),
-    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity),
-    ...(sendEffort
-      ? { additionalModelRequestFields: { output_config: { effort } } }
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity) || betweenToolsThinking,
+    ...(sendEffort || Object.keys(thinking).length > 0
+      ? { additionalModelRequestFields: { ...thinking, ...(sendEffort ? { output_config: { effort } } : {}) } }
       : {}),
   };
 }
@@ -858,6 +863,7 @@ async function parseStreamResponse(params: {
   let sawMessageStop = false;
   const openStartedBlocks = new Set<number>();
   const toolBlocks = new Map<number, BedrockStreamToolBlock>();
+  const reasoningBlocks = new Set<number>();
   const toolCalls: LLMToolCall[] = [];
 
   for await (const rawEvent of bedrockEventStreamPayloads(params.body)) {
@@ -911,6 +917,11 @@ async function parseStreamResponse(params: {
     if (deltaEvent !== null) {
       const index = numericField(deltaEvent, "contentBlockIndex") ?? -1;
       const delta = isRecord(deltaEvent.delta) ? deltaEvent.delta : {};
+      const reasoning = isRecord(delta.reasoningContent) ? delta.reasoningContent : null;
+      if (index >= 0 && typeof reasoning?.text === "string" && reasoning.text.length > 0) {
+        reasoningBlocks.add(index);
+        params.onChunk({ content: "", done: false, thinkingDelta: { delta: reasoning.text, index } });
+      }
       if (typeof delta.text === "string" && delta.text.length > 0) {
         content += delta.text;
         params.onChunk({ content: delta.text, done: false });
@@ -942,6 +953,9 @@ async function parseStreamResponse(params: {
       const index = numericField(stopEvent, "contentBlockIndex") ?? -1;
       if (index >= 0) {
         openStartedBlocks.delete(index);
+      }
+      if (reasoningBlocks.delete(index)) {
+        params.onChunk({ content: "", done: false, thinkingBlockStop: { index } });
       }
       const block = toolBlocks.get(index);
       if (block !== undefined) {

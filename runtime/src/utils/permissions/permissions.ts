@@ -1,6 +1,6 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
-import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIUserAbortError } from '@anthropic-ai/sdk/core/error'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   getToolNameForPermissionCheck,
@@ -68,7 +68,6 @@ import {
   clearClassifierChecking,
   setClassifierChecking,
 } from '../classifierApprovals.js'
-import { executePermissionRequestHooks } from '../hooks.js'
 import {
   AUTO_REJECT_MESSAGE,
   buildClassifierUnavailableMessage,
@@ -390,6 +389,7 @@ async function runPermissionRequestHooksForHeadlessAgent(
   suggestions: PermissionUpdate[] | undefined,
 ): Promise<PermissionDecision | null> {
   try {
+    const { executePermissionRequestHooks } = await import('../hooks.js')
     for await (const hookResult of executePermissionRequestHooks(
       tool.name,
       toolUseID,

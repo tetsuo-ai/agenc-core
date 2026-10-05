@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdir,
+  chmod,
   lstat,
   mkdtemp,
   readFile,
@@ -9,7 +10,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import * as oneShotDurability from "../durability/one-shot-durability.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { StateSqliteReader } from "../state/sqlite-driver.js";
 
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import { readStartupCliFlags } from "../bin/startup-selection.js";
@@ -987,6 +992,90 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("recovers old child work when bootstrap mounts its rollout after control construction", async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "agenc-child-recovery-home-")));
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "agenc-child-recovery-ws-")));
+    const conversationId = "conv-bootstrap-child-recovery";
+    const createProviderSpy = await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const env = { ...process.env, AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home };
+    const { ensureAgentControl } = await import("./delegate-tool.js");
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    let childStore: RolloutStore | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({ apiKey: "test-key", conversationId,
+        resumeConversation: false, env, fetchImpl: offlineFetchFixture() });
+      firstShutdown = first.shutdown;
+      const firstControl = ensureAgentControl(first.session).control;
+      const completed = await firstControl.spawn({ parentPath: "/root", agentName: "completed",
+        initialTask: { taskId: "completed-task", text: "Review code", provider: "grok", model: "test-model" } });
+      const admitted = completed.metadata.initialTaskAdmission!;
+      childStore = new RolloutStore({ cwd: workspace, sessionId: completed.agentId, agencHome: home,
+        agencVersion: "0.2.0", sessionTempRoot: home, autoStartScheduler: false });
+      childStore.open({ sessionId: completed.agentId, timestamp: new Date().toISOString(),
+        cwd: workspace, originator: "bootstrap-recovery-test", agencVersion: "0.2.0",
+        model: admitted.model, modelProvider: admitted.provider });
+      childStore.append({ id: "completed-receipt", eventId: "completed-receipt", seq: 1,
+        msg: { type: "subagent_turn_outcome", payload: { agentId: completed.agentId,
+          agentPath: completed.agentPath, taskId: admitted.taskId, turnId: admitted.turnId,
+          outcome: "completed", toolCallCount: 0, message: "Original review result" } } }, { durable: true });
+      childStore.close();
+      childStore = null;
+      await firstControl.shutdown(completed.agentId, "fixture_completed");
+      const pending = await firstControl.spawn({ parentPath: "/root", agentName: "pending",
+        initialTask: { taskId: "pending-task", text: "Accepted before restart", provider: "grok", model: "test-model" } });
+      await firstControl.shutdown(pending.agentId, "fixture_restart");
+      expect(firstControl.drainRecoveredChildTaskUpdates(conversationId)).toEqual([]);
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({ apiKey: "test-key", conversationId,
+        env, fetchImpl: offlineFetchFixture() });
+      resumedShutdown = resumed.shutdown;
+      const control = ensureAgentControl(resumed.session).control;
+      // A newly created child must not make the deferred snapshot forget the
+      // old children or treat current-generation results as lost projections.
+      const fresh = await control.spawn({ parentPath: "/root", agentName: "fresh",
+        initialTask: { text: "New task", provider: "grok", model: "test-model" } });
+      await control.shutdown(fresh.agentId, "fixture_closed");
+      const list = resumed.registry.tools.find((tool) => tool.name === "list_agents")!;
+      const listing = JSON.parse((await list.execute({})).content);
+      expect(listing.agents.map((agent: { agent_name: string }) => agent.agent_name).sort())
+        .toEqual(["/root", completed.agentPath, pending.agentPath].sort());
+      const wait = resumed.registry.tools.find((tool) => tool.name === "wait_agent")!;
+      const waited = JSON.parse((await wait.execute({})).content);
+      expect(waited.timed_out).toBe(false);
+      expect(waited.updates).toHaveLength(2);
+      const updates = waited.updates.map((update: { content: string }) => JSON.parse(update.content.split("\n")[1]!));
+      expect(updates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agent_path: completed.agentPath,
+          receipt: expect.objectContaining({ message: "Original review result", task_id: admitted.taskId, turn_id: admitted.turnId }),
+          durable_outcome_ref: expect.objectContaining({ agent_id: completed.agentId, task_id: admitted.taskId, turn_id: admitted.turnId }),
+        }),
+        expect.objectContaining({ agent_path: pending.agentPath,
+          status: expect.objectContaining({ terminal: expect.objectContaining({
+            reason: "resume_blocked", unfinishedWork: "Accepted before restart", dispatch: "unknown",
+          }) }),
+          durable_admission_ref: expect.objectContaining({ agent_id: pending.agentId, task_id: "pending-task" }),
+        }),
+      ]));
+      expect(updates.find((update: { agent_path: string }) => update.agent_path === pending.agentPath)).not.toHaveProperty("receipt");
+      expect(control.drainRecoveredChildTaskUpdates(conversationId)).toEqual([]);
+      expect(control.getLive(completed.agentId)).toBeUndefined();
+      expect(control.getLive(pending.agentId)).toBeUndefined();
+      for (const result of createProviderSpy.mock.results) {
+        if (result.type === "return") expect(result.value.chat).not.toHaveBeenCalled();
+      }
+    } finally {
+      childStore?.close();
+      await resumedShutdown?.();
+      await firstShutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("mounts and seeds a resumed rollout before replaying detached admission evidence", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -1251,6 +1340,10 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("replays MCP tool call events into resumed transcript state", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    // Keep writable temp authority separate from the protected home. The
+    // module-load temp fallback can be their shared parent in hermetic workers,
+    // which correctly emits a sandbox warning unrelated to MCP replay.
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-bootstrap-tmp-"));
     const conversationId = "conv-mcp-tool-call-replay";
 
     const providerMod = await import("../llm/provider.js");
@@ -1281,6 +1374,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1324,6 +1418,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1376,6 +1471,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
+      await rm(sessionTempRoot, { recursive: true, force: true });
     }
   });
 
@@ -4521,4 +4617,271 @@ required = true
       await rm(workspace, { recursive: true, force: true });
     }
   });
+});
+
+
+describe("fresh startup diagnostic index policy", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it.each([
+    { name: "eligible print", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: true },
+    { name: "unsupported full fallback", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: false, supported: false },
+    { name: "full opt-out", relaxedOneShot: false, nonInteractive: true, routineRun: false, buffered: false },
+    { name: "interactive", relaxedOneShot: true, nonInteractive: false, routineRun: false, buffered: false },
+    { name: "routine", relaxedOneShot: true, nonInteractive: true, routineRun: true, buffered: false },
+  ])("keeps the real cron warning immediate for $name", async selection => {
+    if (selection.supported === false) vi.spyOn(oneShotDurability, "supportsRelaxedOneShot").mockReturnValue(false);
+    const home = await mkdtemp(join(tmpdir(), "bootstrap-log-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bootstrap-log-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    await chmod(workspace, 0o775);
+    trustWorkspaceForTest(home, workspace);
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { relaxedOneShot: selection.relaxedOneShot,
+          nonInteractive: selection.nonInteractive, routineRun: selection.routineRun }), fetchImpl: offlineFetchFixture() });
+      shutdown = boot.shutdown;
+      const projectDir = dirname(dirname(dirname(boot.rolloutStore.rolloutPath)));
+      const paths = { projectDir, stateDbPath: join(projectDir, "agenc-state_1.sqlite"), logsDbPath: join(projectDir, "agenc-logs_1.sqlite") };
+      boot.rolloutStore.flushDurable();
+      const warnings = boot.rolloutStore.readAll().flatMap(item => item.type === "event_msg" &&
+        item.payload.msg.type === "warning" && item.payload.msg.payload.cause === "cron_storage_unavailable" ? [item.payload.msg.payload] : []);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.message).toContain("Durable scheduled tasks could not be restored");
+      if (selection.supported === false) {
+        expect(oneShotDurability.relaxedOneShotTransaction(projectDir, boot.session.conversationId)).toBe(false);
+        expect(existsSync(`${boot.rolloutStore.rolloutPath}.durability.json`)).toBe(false);
+      }
+      expect(existsSync(paths.logsDbPath)).toBe(!selection.buffered);
+      boot.session.services.flushStartupLogIndex?.();
+      const reader = new StateSqliteReader(paths);
+      try {
+        expect(reader.prepareLogs("SELECT message FROM logs WHERE event_type = 'cron_storage_unavailable'").all())
+          .toEqual([{ message: warnings[0]!.message }]);
+      } finally { reader.close(); }
+    } finally {
+      await shutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("warm daemon auxiliary setup ceiling", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it("keeps canonical rollout and admission eager while auxiliary projection and sidecars wait for POST", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      await providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" });
+      expect(project).toHaveBeenCalledOnce();
+      expect(boot.sidecarManager.getSidecarNames()).toEqual(expect.arrayContaining(["file-history", "cost"]));
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+  it("drains RV pending cost load before shutdown and never publishes sidecars after closure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { CostSidecar } = await import("../session/cost.js");
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    let releaseLoad!: () => void;
+    let enteredLoad!: () => void;
+    const loadGate = new Promise<void>(resolve => { releaseLoad = resolve; });
+    const loadEntered = new Promise<void>(resolve => { enteredLoad = resolve; });
+    vi.spyOn(CostSidecar.prototype, "loadFromDisk").mockImplementation(async () => {
+      enteredLoad();
+      await loadGate;
+    });
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    const costStop = vi.spyOn(CostSidecar.prototype, "stop");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await loadEntered;
+      let shutdownSettled = false;
+      const closing = boot.shutdown().then(() => { shutdownSettled = true; });
+      expect(boot.session.isShuttingDown).toBe(true);
+      await Promise.resolve();
+      expect(shutdownSettled).toBe(false);
+      const startsAtShutdown = sidecarStart.mock.calls.length;
+      const activeAtShutdown = getActiveCostSidecar();
+      releaseLoad();
+      const outcome = await pending;
+      await closing;
+      cleanupManager = boot.sidecarManager;
+      const lateStarts = sidecarStart.mock.calls.length - startsAtShutdown;
+      expect(outcome).toBe("rejected");
+      expect(startsAtShutdown).toBe(0);
+      expect(activeAtShutdown).toBeNull();
+      expect(lateStarts).toBe(0);
+      expect(costStop).toHaveBeenCalledOnce();
+      expect(boot.session.services.costSidecar).toBeUndefined();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseLoad();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  it("closes deferred admission while POST is pending and discards its late response", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let releaseTransport!: () => void, enteredTransport!: () => void;
+    const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+    const transportEntered = new Promise<void>(resolve => { enteredTransport = resolve; });
+    const cancel = vi.fn();
+    let transportSignal: AbortSignal | null | undefined;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        transportSignal = init.signal;
+        enteredTransport();
+        await transportGate;
+        return new Response(new ReadableStream({ cancel }));
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await transportEntered;
+      await boot.shutdown();
+      expect(transportSignal?.aborted).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      releaseTransport();
+      expect(await pending).toBe("rejected");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseTransport();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
 });

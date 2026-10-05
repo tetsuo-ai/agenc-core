@@ -17,13 +17,14 @@ test.each(["file read", "command"] as const)(
       ? { toolName: "exec_command", arguments: JSON.stringify({ cmd: "pwd" }), content: "/workspace", metadata: { exitCode: 0 } }
       : {}));
     await completionGate(f.state, f.context, f.session);
-    // With freshness enforced, an unrelated pwd leaves the README claim without
-    // an associated success since the latest request, so that item is itself
-    // unmet and the gate says so. A fresh README read keeps it verified and the
-    // pytest leftover is what remains unproven. Either way nothing settles.
+    // An unrelated pwd is a command the checklist does not name, so it is the
+    // last change: the README read before it is stale and nothing succeeded
+    // since, and the gate asks for verification. A fresh README read keeps the
+    // item verified and the pytest leftover is what remains unproven. Either
+    // way nothing settles.
     expect(f.last()).toMatchObject({
       outcome: "injected",
-      reason: kind === "command" ? "unmet_items" : "unavailable_unproven",
+      reason: kind === "command" ? "no_verification" : "unavailable_unproven",
     });
     expect(f.state.completionGateSettled).toBe(false);
   },
@@ -39,6 +40,7 @@ test("an old passing pytest result cannot verify changed code after only an unre
     syntheticResult("subsequent-edit", {
       toolName: "FileWrite", arguments: JSON.stringify({ file_path: "app/main.py" }),
       content: "source updated",
+      metadata: { ui: { kind: "file_mutation", filePath: "app/main.py", operation: "write", additions: 1, removals: 1 } },
     }),
   ];
   f.state.completionGateToolLedgerMark = 2;

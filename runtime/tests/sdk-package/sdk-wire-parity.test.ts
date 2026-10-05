@@ -12,6 +12,25 @@ const generatedPath = resolve(
 );
 
 describe("SDK wire parity compiler", () => {
+  it("exposes nested estimated-cost flags in both generated transcript types", () => {
+    const result = checkSdkWireParity({
+      consumerSource: `
+import type { SessionTranscriptV2Event as WireEvent } from "../packages/agenc-sdk/src/protocol-wire.generated.js";
+import type { SessionTranscriptV2Event as TranscriptEvent } from "../packages/agenc-sdk/src/transcript-v2.generated.js";
+type WireModel = NonNullable<WireEvent["payload"]["models"]>[number];
+type WireAgent = NonNullable<WireEvent["payload"]["agents"]>[number];
+type TranscriptModel = NonNullable<TranscriptEvent["payload"]["models"]>[number];
+type TranscriptAgent = NonNullable<TranscriptEvent["payload"]["agents"]>[number];
+type WireModelEstimate = RequireTrue<Equal<WireModel["costEstimated"], boolean | undefined>>;
+type WireAgentEstimate = RequireTrue<Equal<WireAgent["costEstimated"], boolean | undefined>>;
+type TranscriptModelEstimate = RequireTrue<Equal<TranscriptModel["costEstimated"], boolean | undefined>>;
+type TranscriptAgentEstimate = RequireTrue<Equal<TranscriptAgent["costEstimated"], boolean | undefined>>;
+`,
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.matches).toBe(true);
+  });
+
   it("includes projected run terminals in the generated status event type", async () => {
     const generated = await readFile(generatedPath, "utf8");
     const status = generated.split("export interface EventAgentStatusParams")[1]?.split("export interface EventSessionEventParams")[0];

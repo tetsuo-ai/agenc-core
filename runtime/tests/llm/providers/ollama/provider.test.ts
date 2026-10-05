@@ -501,6 +501,7 @@ describe("providers/ollama entrypoint", () => {
     ]);
     expect(chunks).toEqual([
       { content: "ok", done: false },
+      { content: "", done: false },
       { content: "", done: true },
     ]);
   });

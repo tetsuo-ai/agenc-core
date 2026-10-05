@@ -4,6 +4,7 @@
  * @module
  */
 
+import { normalizePromptCacheKey } from "../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -24,7 +25,6 @@ import {
   normalizeFinishReason,
   normalizeToolCallsStrict,
   openAiServedSpeed,
-  parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
   readDocumentPayload,
@@ -34,11 +34,13 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toOpenAIResponsesTools } from "./tools.js";
+import { getResponseDetailSection, withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
+import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -53,6 +55,124 @@ export interface OpenAIResponsesRequestOptions {
    * encrypted reasoning carried in the request to survive across turns.
    */
   readonly chatgptBackend?: boolean;
+  /**
+   * Provider that encrypted reasoning is kept for and replayed to (opt-in,
+   * `AGENC_OPENAI_REASONING_REPLAY`). Each reasoning output item of a
+   * response is kept with the assistant message it preceded, and a later
+   * request to the same provider and `model` sends it back. Stateless
+   * requests only: a stored response keeps its reasoning server side.
+   */
+  readonly reasoningReplayProvider?: string;
+}
+
+// A type alias rather than an interface so an item is a plain wire record.
+type ReplayableReasoningItem = {
+  readonly type: "reasoning";
+  readonly id: string;
+  readonly summary: ReadonlyArray<{
+    readonly type: "summary_text";
+    readonly text: string;
+  }>;
+  readonly encrypted_content: string;
+};
+
+function reasoningReplayProvider(
+  request: OpenAIResponsesRequestOptions,
+): string | undefined {
+  return request.store === true ? undefined : request.reasoningReplayProvider;
+}
+
+/**
+ * What a stateless request needs to hand a reasoning item back: its id, its
+ * summary and the encrypted reasoning. An item without encrypted content
+ * cannot be replayed without storage, and nothing else the item carried
+ * (status, plaintext content) is kept.
+ */
+function toReplayableReasoningItem(
+  item: unknown,
+): ReplayableReasoningItem | undefined {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    return undefined;
+  }
+  const record = item as Record<string, unknown>;
+  if (
+    record.type !== "reasoning" ||
+    typeof record.id !== "string" ||
+    record.id.length === 0 ||
+    typeof record.encrypted_content !== "string" ||
+    record.encrypted_content.length === 0
+  ) {
+    return undefined;
+  }
+  const summary = Array.isArray(record.summary)
+    ? record.summary.flatMap((part: unknown) => {
+      const entry =
+        part !== null && typeof part === "object"
+          ? (part as Record<string, unknown>)
+          : undefined;
+      return entry?.type === "summary_text" && typeof entry.text === "string"
+        ? [{ type: "summary_text" as const, text: entry.text }]
+        : [];
+    })
+    : [];
+  return {
+    type: "reasoning",
+    id: record.id,
+    summary,
+    encrypted_content: record.encrypted_content,
+  };
+}
+
+/**
+ * Keep the encrypted reasoning items of one Responses call for replay,
+ * bound to the provider and request model that produced them.
+ */
+export function extractOpenAIReasoningReplay(
+  output: unknown,
+  request: OpenAIResponsesRequestOptions,
+): Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> {
+  const provider = reasoningReplayProvider(request);
+  if (provider === undefined || !Array.isArray(output)) return {};
+  const items = output.flatMap((item) => toReplayableReasoningItem(item) ?? []);
+  return items.length === 0
+    ? {}
+    : {
+      providerReasoningContent: JSON.stringify(items),
+      providerReasoningProvenance: { provider, model: request.model },
+    };
+}
+
+/**
+ * The reasoning items to replay for one assistant message. Only the provider
+ * and model that produced them get them back, compared the way durable
+ * history normalizes them; a replay without provenance, or one that no
+ * longer parses as reasoning items, is dropped whole.
+ */
+function replayedReasoningItems(
+  message: LLMMessage,
+  provider: string,
+  model: string,
+): ReplayableReasoningItem[] {
+  const source = message.providerReasoningProvenance;
+  if (
+    !message.providerReasoningContent ||
+    source === undefined ||
+    source.provider.trim().toLowerCase() !== provider.trim().toLowerCase() ||
+    source.model.trim().toLowerCase() !== model.trim().toLowerCase()
+  ) {
+    return [];
+  }
+  let stored: unknown;
+  try {
+    stored = JSON.parse(message.providerReasoningContent);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(stored) || stored.length === 0) return [];
+  const items = stored.map(toReplayableReasoningItem);
+  return items.every((item): item is ReplayableReasoningItem => item !== undefined)
+    ? items
+    : [];
 }
 
 function positiveInteger(value: number | undefined): number | undefined {
@@ -203,10 +323,6 @@ function resolveResponsesFinishReason(
   response: Record<string, unknown>,
   toolCalls: readonly LLMToolCall[],
 ): LLMResponse["finishReason"] {
-  if (toolCalls.length > 0) {
-    return "tool_calls";
-  }
-
   const status = String(response.status ?? "");
   if (status === "incomplete") {
     const details =
@@ -221,9 +337,7 @@ function resolveResponsesFinishReason(
     if (reason.includes("content_filter") || reason.includes("refusal")) {
       return "content_filter";
     }
-    if (reason.includes("error")) {
-      return "error";
-    }
+    return "error";
   }
 
   if (
@@ -234,37 +348,51 @@ function resolveResponsesFinishReason(
     return "error";
   }
 
-  return normalizeFinishReason(status);
+  return toolCalls.length > 0 ? "tool_calls" : normalizeFinishReason(status);
 }
 
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
+  const catalogEntry = resolveRegisteredModelCatalogEntry({ provider: "openai", model: input.model });
+  const nativeVerbosity = input.chatgptBackend !== true &&
+    catalogEntry?.model.toLowerCase() === input.model.trim().toLowerCase() &&
+    catalogEntry.supportsVerbosity;
+  const fallbackVerbosity = !nativeVerbosity ? input.options?.modelVerbosity : undefined;
   // Prefix-cache split: only the cross-turn-stable head of the system
   // prompt goes into `instructions` (part of the cached prefix); the
   // volatile tail is appended as the LAST input item below so the
   // request prefix stays byte-identical across turns.
-  const { staticPrefix: staticSystemPrompt, dynamicSuffix: dynamicSystemPrompt } =
-    splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
+  const {
+    staticPrefix: staticSystemPrompt,
+    sessionSuffix: sessionSystemPrompt,
+    dynamicSuffix: dynamicSystemPrompt,
+  } = splitSystemPromptOnDynamicBoundary(
+    input.chatgptBackend !== true && fallbackVerbosity !== undefined
+      ? withResponseDetailSystemPrompt(input.options?.systemPrompt, fallbackVerbosity)
+      : input.options?.systemPrompt,
+  );
   const instructions = [
     staticSystemPrompt,
+    // Fixed for the session, so it stays in the cached instructions.
+    sessionSystemPrompt,
     ...messages
       .filter((message) =>
         message.role === "system" || message.role === "developer"
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
-    // The ChatGPT subscription backend rejects system-role input items
-    // outright ("System messages are not allowed"), so the volatile tail
-    // folds into instructions there: a colder prefix cache beats a turn
-    // that cannot run at all. Platform keys keep the split below.
+    // The ChatGPT subscription backend rejects system-role input items.
+    // Its existing volatile prompt tail stays in instructions; response
+    // detail is appended separately as an accepted user input item below.
     ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
       ? [dynamicSystemPrompt]
       : []),
   ]
     .filter((text): text is string => typeof text === "string" && text.length > 0)
     .join("\n\n");
+  const replayProvider = reasoningReplayProvider(input);
   const responseInput: Array<Record<string, unknown>> = [];
 
   for (const message of messages) {
@@ -272,6 +400,16 @@ export function buildOpenAIResponsesRequest(
 
     if (message.role === "assistant") {
       const content = toResponsesMessageParts(message.content, "assistant");
+      const toolCalls = message.toolCalls ?? [];
+      // A reasoning item goes back right before the output it led to: the
+      // turn's function calls, or its text when it called none. A message
+      // with neither has nothing to follow it, so it replays none.
+      const reasoning =
+        replayProvider !== undefined &&
+          (toolCalls.length > 0 || content.length > 0)
+          ? replayedReasoningItems(message, replayProvider, input.model)
+          : [];
+      if (toolCalls.length === 0) responseInput.push(...reasoning);
       if (content.length > 0) {
         responseInput.push({
           type: "message",
@@ -279,7 +417,8 @@ export function buildOpenAIResponsesRequest(
           content,
         });
       }
-      for (const toolCall of message.toolCalls ?? []) {
+      if (toolCalls.length > 0) responseInput.push(...reasoning);
+      for (const toolCall of toolCalls) {
         const normalizedId = normalizeFunctionCallId(toolCall.id);
         responseInput.push({
           type: "function_call",
@@ -328,6 +467,13 @@ export function buildOpenAIResponsesRequest(
       content: [{ type: "input_text", text: dynamicSystemPrompt }],
     });
   }
+  if (input.chatgptBackend === true && fallbackVerbosity !== undefined) {
+    responseInput.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: getResponseDetailSection(fallbackVerbosity) }],
+    });
+  }
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -342,13 +488,19 @@ export function buildOpenAIResponsesRequest(
   const tools = toOpenAIResponsesTools(input.tools);
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
-    body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
+    // Responses uses a flat named choice; Chat Completions nests function.name.
+    // https://developers.openai.com/api/docs/guides/function-calling#tool-choice
+    const choice = input.options.toolChoice;
+    body.tool_choice = typeof choice === "string" ? choice : {
+      type: "function",
+      name: encodeMcpToolNameForWire(choice.name),
+    };
   }
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
   if (input.options?.promptCacheKey) {
-    body.prompt_cache_key = input.options.promptCacheKey;
+    body.prompt_cache_key = normalizePromptCacheKey(input.options.promptCacheKey);
   }
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
@@ -365,7 +517,11 @@ export function buildOpenAIResponsesRequest(
   if (maxOutputTokens !== undefined && input.chatgptBackend !== true) {
     body.max_output_tokens = maxOutputTokens;
   }
-  if (input.options?.includeEncryptedReasoning || input.chatgptBackend === true) {
+  if (
+    input.options?.includeEncryptedReasoning ||
+    input.chatgptBackend === true ||
+    replayProvider !== undefined
+  ) {
     body.include = ["reasoning.encrypted_content"];
   }
   if (input.options?.reasoningEffort !== undefined) {
@@ -387,7 +543,7 @@ export function buildOpenAIResponsesRequest(
       summary: input.options.reasoningSummary,
     };
   }
-  if (input.options?.modelVerbosity !== undefined) {
+  if (nativeVerbosity && input.options?.modelVerbosity !== undefined) {
     body.text = {
       ...(body.text && typeof body.text === "object"
         ? (body.text as Record<string, unknown>)
@@ -417,23 +573,29 @@ export function parseOpenAIResponsesResponse(
   const output = Array.isArray(response.output)
     ? (response.output as Array<Record<string, unknown>>)
     : [];
-  const toolCalls = normalizeToolCallsStrict(
-    output
-      .filter((item) => item.type === "function_call")
-      .map(
-        (item): LLMToolCall => ({
-          id: String(item.call_id ?? item.id ?? ""),
-          // Decode the strict-regex wire name back to the
-          // internal-registry form before dispatch.
-          name: decodeMcpToolNameFromWire(
-            String(item.name ?? ""),
-            request.tools.map((tool) => tool.function.name),
-          ),
-          arguments: String(item.arguments ?? "{}"),
-        }),
-      ),
+  const functionCalls = output.filter((item) => item.type === "function_call");
+  const initialFinishReason = resolveResponsesFinishReason(response, []);
+  const acceptsToolCalls = initialFinishReason === "stop" || initialFinishReason === "tool_calls";
+  // Output limits can cut off even a done item's JSON. Keep only identities
+  // for the turn's bounded recovery; never repair or execute partial calls.
+  const incompleteToolCalls = initialFinishReason === "length"
+    ? functionCalls.flatMap((item, index) => {
+      const name = decodeMcpToolNameFromWire(String(item.name ?? "").trim(),
+        request.tools.map((tool) => tool.function.name));
+      if (!name || name.length > 256) return [];
+      const id = String(item.call_id ?? item.id ?? "").trim() || `incomplete-${index}`;
+      return [{ id, name }];
+    }) : [];
+  const toolCalls = acceptsToolCalls ? normalizeToolCallsStrict(
+    functionCalls.map((item): LLMToolCall => ({
+      id: String(item.call_id ?? item.id ?? ""),
+      // Decode the strict-regex wire name before dispatch.
+      name: decodeMcpToolNameFromWire(String(item.name ?? ""),
+        request.tools.map((tool) => tool.function.name)),
+      arguments: String(item.arguments ?? "{}"),
+    })),
     "OpenAI Responses response emitted invalid function_call",
-  );
+  ) : [];
 
   const content = output
     .filter((item) => item.type === "message")
@@ -484,6 +646,8 @@ export function parseOpenAIResponsesResponse(
   return {
     content,
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
+    ...extractOpenAIReasoningReplay(output, request),
     usage: coerceUsage({
       promptTokens: usageRecord.input_tokens,
       completionTokens: usageRecord.output_tokens,

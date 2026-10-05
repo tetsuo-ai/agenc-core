@@ -17,14 +17,17 @@
  * @module
  */
 
-import { normalize } from "node:path";
+import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
+import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
   SESSION_TOOL_CATALOG_SCOPE_ARG,
 } from "../tools/system/coding-common.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { unavailableToolResult } from "../tools/router.js";
 import {
@@ -70,11 +73,15 @@ import {
   READ_ONLY_DELEGATION_PROMPT,
   type ReadOnlyDelegationConstraint,
 } from "./readonly-delegation.js";
+import { worktreeWriteRefusal } from "./worktree-write-confinement.js";
 import {
   attachReadOnlyInspectionInvocation,
   inspectReadOnlyCommand,
   prepareReadOnlyInspectionInvocation,
 } from "../permissions/readonly-inspection.js";
+import { worktreeShellWriteRefusal } from "./worktree-shell-confinement.js";
+import type { WorktreeWriteConfinement } from "../sandbox/worktree-confinement.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   toRuntimeTools,
@@ -115,7 +122,7 @@ import {
   type TurnContext,
 } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, type ChildExecutionPlan } from "./cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, currentChildProvider, type ChildExecutionPlan } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -167,6 +174,8 @@ import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
+import { CompletedTaskResults } from "./completed-task-results.js";
+
 const inspectionBrokers = new WeakMap<Session, Map<string, SandboxExecutionBrokerLike>>();
 
 // ─────────────────────────────────────────────────────────────────────
@@ -178,6 +187,7 @@ export interface RunAgentParams {
   readonly parent: Session;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly worktree?: WorktreeHandle;
   /** Tool allowlist — filters the parent's catalog. Default: all. */
   readonly toolAllowlist?: ReadonlyArray<string>;
@@ -222,8 +232,11 @@ export interface RunAgentParams {
    * same live agent instead of getting AGENT_NOT_FOUND.
    */
   readonly keepAlive?: boolean;
+  /** Unattended assignments on a reusable worker also need a terminal summary. */
+  readonly summarizeAtStepLimit?: boolean;
   /** Correlation id for the initial task. Follow-up assignments replace it. */
   readonly taskId?: string;
+  readonly initialTurnId?: string;
   /** Exact commit captured at the start of this worktree-backed run. */
   readonly worktreeBaseCommit?: string;
   /** Internal cleanup evidence, including receipts that cannot be persisted. */
@@ -1051,16 +1064,17 @@ function truncateReceiptField(value: string): string {
 function projectTaskReceiptForParent(
   receipt: TaskTurnReceipt,
 ): TaskTurnReceipt {
+  const { message, ...rest } = receipt;
   return {
-    ...receipt,
+    ...rest,
     ...(receipt.terminal !== undefined ? { terminal: {
       ...receipt.terminal,
       completedWork: truncateReceiptField(receipt.terminal.completedWork),
       unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
     } } : {}),
-    ...(receipt.message !== undefined
-      ? { message: truncateReceiptField(receipt.message) }
-      : {}),
+    // Larger final answers use result_ref; never publish broken JSON.
+    ...(message !== undefined && Buffer.byteLength(message, "utf8") <= MAX_PARENT_RECEIPT_FIELD_BYTES
+      ? { message } : {}),
     ...(receipt.reason !== undefined
       ? { reason: truncateReceiptField(receipt.reason) }
       : {}),
@@ -1242,6 +1256,8 @@ function sendSubagentNotificationToParent(params: {
       : undefined;
   const content = formatSubagentNotification({
     agentPath: params.live.agentPath,
+    ...(params.receipt?.outcome === "completed" && params.receipt.message !== undefined
+      ? { resultRef: { agent_id: params.live.agentId, turn_id: params.receipt.turnId } } : {}),
     status:
       projectedReceipt === undefined
         ? params.live.status.value
@@ -2244,6 +2260,8 @@ export function buildFilteredRegistry(
   opts: {
     readonly allowlist?: ReadonlyArray<string>;
     readonly childConversationId: string;
+    /** Snapshot visibility and keep capability discovery owned by this child. */
+    readonly lightMode?: boolean;
     readonly executionConstraint?: ReadOnlyDelegationConstraint;
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
@@ -2276,9 +2294,60 @@ export function buildFilteredRegistry(
     (allowed === null || allowed.has(name));
   const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
   const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
+  const discoveredToolNames = new Set<string>();
+  const initialTools = opts.lightMode === true
+    ? new Map(base.toLLMTools().filter(tool => isEligible(tool.function.name))
+        .map(tool => [tool.function.name as string, tool]))
+    : undefined;
+  if (initialTools !== undefined && !eligibleTools.some(tool => tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
+    // Explicit tool policies can remove discovery. Keep permitted tools usable
+    // without adding the forbidden search capability back into the session.
+    for (const tool of eligibleTools) initialTools.set(tool.name, {
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+    });
+  }
+  const discoverToolNames = (names: readonly string[]): void => {
+    for (const name of names) {
+      if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
+    }
+  };
+  const localSearch = opts.lightMode === true ? createToolSearchTool({
+    allowedPaths: [],
+    persistenceRootDir: "",
+    getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      metadata: {
+        family: tool.metadata?.family ?? tool.name.split(".")[0] ?? "tool",
+        source: tool.metadata?.source ?? "builtin",
+        hiddenByDefault: tool.metadata?.hiddenByDefault ?? false,
+        mutating: tool.metadata?.mutating ?? tool.requiresApproval === true,
+        deferred: !initialTools?.has(tool.name),
+        ...(tool.metadata?.keywords !== undefined ? { keywords: tool.metadata.keywords } : {}),
+        ...(tool.metadata?.preferredProfiles !== undefined ? { preferredProfiles: tool.metadata.preferredProfiles } : {}),
+      },
+    })),
+    onDiscoverTools: discoverToolNames,
+  }) : undefined;
+  const searchTools = localSearch === undefined ? undefined
+    : async (args: Record<string, unknown>) => {
+      Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+        value: Object.freeze([...advertisedNames()]),
+        enumerable: false,
+        configurable: true,
+      });
+      return localSearch.execute(args);
+    };
   const wrappedTools = eligibleTools
     .map((tool) => {
-      const wrapped = wrapToolForChild(tool, { ...opts, toolCatalogScope });
+      const wrapped = wrapToolForChild(tool, {
+        ...opts,
+        toolCatalogScope,
+        onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
+        ...(searchTools !== undefined ? { searchTools } : {}),
+      });
       const sessionSurface = (wrapped as Tool & {
         readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
       })[SESSION_BOUND_TOOL_SURFACE];
@@ -2314,10 +2383,26 @@ export function buildFilteredRegistry(
         parameters: tool.inputSchema,
       },
     }));
-  const advertisedLLMTools = () => {
+  // Light children keep the parent's visible set from spawn time plus what
+  // their own search discovered; other children follow the parent's registry.
+  const visibleLLMTools = () => {
+    if (initialTools !== undefined) {
+      return fallbackAdvertisedTools().flatMap(tool => {
+        const name = tool.function.name;
+        if (discoveredToolNames.has(name)) return [tool];
+        const initial = initialTools.get(name);
+        return initial === undefined ? [] : [initial];
+      });
+    }
     const advertised = base.toLLMTools();
-    const visible = (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+    const visible = advertised.length === 0 ? fallbackAdvertisedTools() : advertised;
+    const names = new Set(visible.map(tool => tool.function.name));
+    return [...visible, ...fallbackAdvertisedTools().filter(tool =>
+      discoveredToolNames.has(tool.function.name) && !names.has(tool.function.name))]
       .filter((tool) => isEligible(tool.function.name as string));
+  };
+  const advertisedLLMTools = () => {
+    const visible = visibleLLMTools();
     const session = opts.getSession?.();
     if (session === undefined || session === null) return visible;
     return visible.map((tool) => {
@@ -2336,6 +2421,9 @@ export function buildFilteredRegistry(
 
   return {
     get tools() {
+      // Retain eligible implementations for nested discovery and execution;
+      // schemas and dispatch remain gated by this child's advertised names.
+      if (opts.lightMode === true) return wrappedTools;
       const names = advertisedNames();
       return wrappedTools.filter((tool) => names.has(tool.name));
     },
@@ -2345,6 +2433,10 @@ export function buildFilteredRegistry(
     getUnavailableToolNames() {
       return unavailable;
     },
+    ...(opts.lightMode === true ? {
+      getDiscoveredToolNames: () => discoveredToolNames,
+      discoverToolNames,
+    } : {}),
     async dispatch(toolCall): Promise<ToolDispatchResult> {
       if (unavailable.has(toolCall.name)) {
         return unavailableToolResult(toolCall.name);
@@ -2405,6 +2497,7 @@ export function buildFilteredRegistry(
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
           toolCatalogScope,
+          onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2726,7 +2819,32 @@ export function injectChildToolArgs(
   // Source tool closures may belong to the root registry, so fill defaults
   // from the current Session rather than retaining an ancestor wrapper.
   const executionCwd = opts.worktree?.path ?? childSession?.sessionConfiguration.cwd;
-  return withChildToolDefaultCwd(injectedArgs, toolName, executionCwd);
+  return withChildToolDefaultCwd(
+    withChildShellDirectory(injectedArgs, toolName, executionCwd),
+    toolName,
+    executionCwd,
+  );
+}
+
+/**
+ * A shell tool is the parent's and resolved a relative directory against the
+ * parent's workspace root: `workdir: "src"` ran a worktree child's command in
+ * the checkout's src. The directory is the child's.
+ */
+function withChildShellDirectory(
+  args: Record<string, unknown>,
+  toolName: string,
+  executionCwd: string | undefined,
+): Record<string, unknown> {
+  const field = CHILD_SHELL_TOOLS.has(toolName) ? WORKTREE_CWD_FIELD_BY_TOOL[toolName] : undefined;
+  const value = field === undefined ? undefined : args[field];
+  if (
+    field === undefined || executionCwd === undefined || typeof value !== "string" ||
+    value.trim().length === 0 || isAbsolute(value)
+  ) {
+    return args;
+  }
+  return { ...args, [field]: resolvePath(executionCwd, value) };
 }
 
 /** Path normalization only: permission review must not receive new authority. */
@@ -2764,6 +2882,9 @@ function withChildToolDefaultCwd(
 }
 
 const CHILD_FILE_CWD_TOOLS = new Set(["FileRead", "Write", "Edit", "MultiEdit"]);
+
+/** The shell tools: a worktree child's commands change files inside its worktree only. */
+const CHILD_SHELL_TOOLS = new Set(["exec_command", "write_stdin", "system.bash"]);
 
 /** Tools pinned to the child's worktree, and the argument that carries it. */
 export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
@@ -2824,10 +2945,15 @@ function wrapToolForChild(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly searchTools?: Tool["execute"];
+    readonly onExecSessionYielded?: () => void;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
-  const source = inherited?.source ?? tool;
+  const original = inherited?.source ?? tool;
+  const source = opts.searchTools !== undefined && original.name === SYSTEM_SEARCH_TOOLS_NAME
+    ? inheritBuiltinToolProvenance(original, { ...original, execute: opts.searchTools })
+    : original;
   const parentPolicy = inherited?.policy;
   const currentPolicy = opts.childToolPolicy;
   const policy: ChildToolPolicy | undefined = parentPolicy === undefined
@@ -2840,8 +2966,23 @@ function wrapToolForChild(
         : parentPolicy(candidate, currentDecision.updatedInput ?? input);
     };
   const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
+  const confinedShell = CHILD_SHELL_TOOLS.has(source.name) &&
+    childWorktreeConfinement(opts) !== undefined;
   const wrapped = inheritBuiltinToolProvenance(source, {
     ...source,
+    // Before any approval is asked for and before each attempt: a worktree
+    // child's command that would change files outside its worktree is a
+    // recoverable input error, never a permission denial (a workflow child's
+    // denied approval ends the whole Goal run as policy_denied).
+    ...(confinedShell ? {
+      preflight(args: Readonly<Record<string, unknown>>) {
+        const refusal = childWorktreeShellRefusal(source.name, args, opts);
+        if (refusal !== undefined) {
+          return { code: "worktree_write_confinement", message: refusal };
+        }
+        return source.preflight?.(args) ?? null;
+      },
+    } : {}),
     ...(policy !== undefined || (source.checkPermissions !== undefined && CHILD_FILE_CWD_TOOLS.has(source.name)) ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -2884,9 +3025,8 @@ function wrapToolForChild(
     } : {}),
     async execute(args) {
       const prepared = await prepareChildToolCall(source, args, executionOpts);
-      return "result" in prepared
-        ? prepared.result
-        : source.execute(prepared.args);
+      if ("result" in prepared) return prepared.result;
+      return source.execute(prepared.args);
     },
   });
   childToolBindings.set(wrapped, { source, ...(policy !== undefined ? { policy } : {}) });
@@ -2976,6 +3116,42 @@ function attachChildToolSearchScope(
   }
 }
 
+/** The worktree a child's commands write in: its own, or the one its caller works in. */
+function childWorktreeConfinement(opts: {
+  readonly worktree?: WorktreeHandle;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}): WorktreeWriteConfinement | undefined {
+  if (opts.worktree !== undefined) {
+    return { worktree: opts.worktree.path, checkout: opts.worktree.gitRoot };
+  }
+  return opts.sandboxExecutionBroker?.worktreeConfinement;
+}
+
+/**
+ * Why a worktree child's shell call may not run: it would change files
+ * outside the worktree. The temp folder is the one its commands get as
+ * TMPDIR, picked the way runtimeSandboxForExec picks it.
+ */
+function childWorktreeShellRefusal(
+  toolName: string,
+  args: Readonly<Record<string, unknown>>,
+  opts: {
+    readonly worktree?: WorktreeHandle;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    readonly getSession?: () => Session | null | undefined;
+  },
+): string | undefined {
+  if (!CHILD_SHELL_TOOLS.has(toolName)) return undefined;
+  const confinement = childWorktreeConfinement(opts);
+  if (confinement === undefined) return undefined;
+  const session = opts.getSession?.();
+  const routine = routineRunOptions(session);
+  const tempRoot = routine !== undefined
+    ? routine.scratchRoot ?? confinement.worktree
+    : session?.services.runtimeOptions?.sessionTempRoot;
+  return worktreeShellWriteRefusal(toolName, args, confinement, tempRoot);
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -2986,6 +3162,7 @@ async function prepareChildToolCall(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly onExecSessionYielded?: () => void;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -3014,11 +3191,25 @@ async function prepareChildToolCall(
       return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
     }
   }
+  // A worktree child writes inside its worktree only. Refused here, as a tool
+  // error the model reads and recovers from: a deny at the permission check
+  // would end a whole Goal run (a workflow child's denied approval is
+  // WorkflowApprovalFailure, policy_denied).
+  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
+  if (outsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  }
   const childArgs = widenChildFilesystemRoots(
     tool.name,
     injectChildToolArgs(policyResult.args, tool.name, opts),
     childSession,
   );
+  // Checked again on the arguments that run, with the child's directory in
+  // place. The sandbox confines what a command line does not show.
+  const shellOutsideWorktree = childWorktreeShellRefusal(tool.name, childArgs, opts);
+  if (shellOutsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: shellOutsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  }
   // Policy replacement and signed child-argument copies omit non-enumerable
   // fields. Preserve the authenticated per-attempt grant, not model-provided
   // private keys, so the execution sink does not fall back to the base sandbox.
@@ -3070,6 +3261,11 @@ async function prepareChildToolCall(
     const runtimeSandbox = broker.runtimeSandbox("child_agent");
     if (runtimeSandbox === undefined) throw new Error("Read-only inspection requires platform isolation");
     attachReadOnlyInspectionInvocation(childArgs, prepareReadOnlyInspectionInvocation(inspected.invocation, runtimeSandbox));
+  }
+  if (tool.name === "exec_command" && opts.onExecSessionYielded !== undefined) {
+    // Both admitted registry dispatch and direct tool execution use this final
+    // argument object. Bind after every policy rewrite and authority injection.
+    bindExecSessionDiscovery(childArgs, opts.onExecSessionYielded);
   }
   return { args: childArgs };
 }
@@ -3323,9 +3519,19 @@ function prepareChildSessionAuthority(
       ...(params.providerSelection !== undefined ? { crossProvider: true } : {}),
     },
   );
+  // A worktree child's commands write inside its worktree only; its
+  // descendants inherit that through their own forks.
   const sandboxExecutionBroker =
     params.parent.services.sandboxExecutionBroker?.forkForCwd(
       sessionConfiguration.cwd,
+      params.worktree !== undefined
+        ? {
+            worktreeConfinement: {
+              worktree: params.worktree.path,
+              checkout: params.worktree.gitRoot,
+            },
+          }
+        : {},
     );
   return {
     sessionConfiguration,
@@ -3349,6 +3555,7 @@ function buildChildSession(
   }
   let childSession: ChildSession | undefined;
   const registry = buildFilteredRegistry(params.parent.services.registry, {
+    lightMode: params.parent.services.runtimeOptions.lightMode === true,
     ...(params.live.metadata.executionConstraint !== undefined ? { executionConstraint: params.live.metadata.executionConstraint } : {}),
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
@@ -3546,17 +3753,18 @@ export async function* runAgent(
 ): AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void> {
   const startedAt = Date.now();
   let revokeLiveSession: (() => void) | undefined;
-  let turnId: string = crypto.randomUUID();
+  let turnId: string = params.initialTurnId ?? crypto.randomUUID();
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
   let ownedPreparedProvider: LLMProvider | null = null;
   let unsubscribeCrossPolicy: (() => void) | null = null;
+  let crossPolicyWasRevoked = false;
   let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let currentTaskId = params.taskId;
+  let currentTaskId: string | undefined = params.taskId ?? turnId;
   let currentTaskText = params.taskPrompt;
   let currentTurnReceiptCommitted = false;
   let currentCommittedReceipt: TaskTurnReceipt | undefined;
@@ -3569,6 +3777,18 @@ export async function* runAgent(
   let parentProjectionError: Error | undefined;
   let parentProjectionTurnId: string | undefined;
   let pendingPreconstructionReceipt: TaskTurnReceipt | undefined;
+  const knownWorkerCost = (): number | undefined => {
+    const summary = parent.services.executionAdmission?.getUsageSummary?.();
+    if (summary === undefined) return undefined;
+    const usage = summary.agents.find((agent) => agent.runId === live.agentId);
+    return usage?.hasUnknownCost ? undefined : usage?.costUsd ?? 0;
+  };
+  let taskStartingCost = knownWorkerCost();
+  const knownTaskCost = (): number | undefined => {
+    const current = knownWorkerCost();
+    return taskStartingCost === undefined || current === undefined || current < taskStartingCost
+      ? undefined : current - taskStartingCost;
+  };
   let pendingWorkerTerminal:
     | {
         readonly status: "completed";
@@ -3682,23 +3902,22 @@ export async function* runAgent(
       parent.services.provider.name;
     const model = params.plan?.destination.model ?? params.model ??
       live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
-    const cost = parent.services.executionAdmission?.getUsageSummary?.().agents
-      .find((agent) => agent.runId === live.agentId);
+    const costUsd = receipt.outcome === "nack" ? 0 : knownTaskCost();
+    const terminal = receipt.terminal ?? childTerminalOutcome({
+      provider, model,
+      ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
+        receipt.outcome === "completed" ? { reason: "completed" as const } :
+          receipt.outcome === "interrupted" || receipt.outcome === "nack"
+            ? { reason: crossPolicyWasRevoked ? "policy_revoked" as const : "parent_cancelled" as const }
+            : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
+      ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
+      dispatch: receipt.outcome === "completed" ? "sent" : receipt.outcome === "nack" || childSession === null ? "not_sent" : "unknown",
+      completedWork: receipt.message ?? latestChildProgress,
+      unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
+    });
     let receiptToCommit: TaskTurnReceipt = {
       ...receipt,
-      terminal: receipt.terminal ?? childTerminalOutcome({
-        provider, model,
-        ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
-          receipt.outcome === "completed" ? { reason: "completed" as const } :
-            receipt.outcome === "interrupted" || receipt.outcome === "nack"
-              ? { reason: "parent_cancelled" as const }
-              : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
-        ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
-        dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
-        completedWork: receipt.message ?? latestChildProgress,
-        unfinishedWork: receipt.outcome === "completed" ? "" : currentTaskText,
-        ...(cost !== undefined && !cost.hasUnknownCost ? { costUsd: cost.costUsd } : {}),
-      }),
+      terminal: { ...terminal, ...(costUsd !== undefined ? { costUsd } : {}) },
     };
     if (params.worktree !== undefined) {
       let evidence: WorktreeTurnEvidence;
@@ -3792,6 +4011,9 @@ export async function* runAgent(
     currentTurnReceiptCommitted = true;
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
+    if (receiptToCommit.outcome === "completed" && receiptToCommit.message !== undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(receiptToCommit.turnId, receiptToCommit.message);
+    }
     live.lastTaskReceipt = {
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
@@ -3853,10 +4075,6 @@ export async function* runAgent(
         dispatch: childSession === null ? "not_sent" : childDispatchCertainty(opts.error),
         completedWork: latestChildProgress,
         unfinishedWork: currentTaskText,
-        ...(parent.services.executionAdmission?.getUsageSummary?.().agents
-          .find((agent) => agent.runId === live.agentId && !agent.hasUnknownCost)?.costUsd !== undefined
-          ? { costUsd: parent.services.executionAdmission.getUsageSummary!().agents
-            .find((agent) => agent.runId === live.agentId)!.costUsd } : {}),
       }),
       toolCallCount: currentTurnToolCallCount,
     });
@@ -4064,6 +4282,7 @@ export async function* runAgent(
         (params.plan?.route.provider === "agenc" &&
          !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider));
       const stopForPolicy = (): void => {
+        crossPolicyWasRevoked = true;
         live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
       };
       // Also when a daemon reload refreshes only the [agents] section.
@@ -4207,6 +4426,18 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
+    if (childSession.rolloutStore !== null) {
+      const destination = params.plan?.destination ?? currentChildProvider(childSession);
+      childSession.emit({ id: childSession.nextInternalSubId(), msg: {
+        type: "subagent_task_admitted", payload: live.metadata.initialTaskAdmission?.turnId === turnId
+          ? live.metadata.initialTaskAdmission : {
+          agentId: live.agentId, agentPath: live.agentPath, turnId,
+          taskId: currentTaskId ?? turnId, author: parentAgentPathFor(live.agentPath),
+          taskText: currentTaskText, acceptedAt: startedAt,
+          provider: destination.provider, model: destination.model,
+        },
+      } }, { durable: true });
+    }
     await refreshChildBaseInstructions(parent, childSession, params.plan?.destination);
     revokeLiveSession = bindLiveAgentSession(live, childSession);
     const {
@@ -4227,8 +4458,10 @@ export async function* runAgent(
         totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0);
     });
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
+    let exactOutput = params.exactOutput;
     let firstTurn = true;
     let assistantText = "";
+    let stoppedAtStepLimit = false;
     let toolCallCount = 0;
     const processChildMailbox = async (
       pending: DrainedChildMailbox,
@@ -4288,8 +4521,10 @@ export async function* runAgent(
         live.metadata.executionPlan?.task.text ??
         (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
+      exactOutput = live.assignment?.exactOutput ?? false;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
+      taskStartingCost = knownWorkerCost();
       latestChildProgress = "";
       currentCommittedReceipt = undefined;
       currentTurnToolCallCount = 0;
@@ -4343,6 +4578,11 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        exactOutput,
+        ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
+          ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
+            ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
+        } } : {}),
         ctx: (() => {
           activeTurnContext =
             params.maxTurns !== undefined
@@ -4523,6 +4763,8 @@ export async function* runAgent(
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
+        stopReason === "max_turns" ? "step_limit" :
+        stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
         stopReason === "compact_failed" ? "context_insufficient" :
@@ -4532,7 +4774,7 @@ export async function* runAgent(
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
       // bricked the whole session after one capped turn. One-shot agents
-      // keep failing the run — there is nobody left to continue them.
+      // return a partial result after step-limit synthesis.
       let turnFailureMessage: string | undefined;
       if (stopReason === "error" || boundedStop) {
         let message: string;
@@ -4565,7 +4807,9 @@ export async function* runAgent(
         }
         turnFailureMessage = message;
       }
-      if (stopReason === "error" || (boundedStop && !params.keepAlive)) {
+      stoppedAtStepLimit = stopReason === "max_turns" && (!params.keepAlive || params.summarizeAtStepLimit === true);
+      if (stoppedAtStepLimit) turnFailureMessage = undefined;
+      if (stopReason === "error" || (boundedStop && !params.keepAlive && !stoppedAtStepLimit)) {
         const message = turnFailureMessage ?? "subagent turn failed";
         const result = await finishErroredRun({
           message,
@@ -4642,7 +4886,7 @@ export async function* runAgent(
         const completedTaskId = currentTaskId;
         const receipt: TaskTurnReceipt = {
           ...taskCorrelation(),
-          outcome: boundedStop ? "errored" : "completed",
+          outcome: boundedStop && !stoppedAtStepLimit ? "errored" : "completed",
           ...(turnFailureMessage !== undefined ? { reason: turnFailureMessage } : {}),
           ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
           ...(boundedStop ? { terminalRetryable: false } : {}),
@@ -4833,6 +5077,7 @@ export async function* runAgent(
       const receiptCommitted = await commitTaskReceipt({
         ...taskCorrelation(),
         outcome: "completed",
+        ...(stoppedAtStepLimit ? { terminalReason: "step_limit" as const, terminalRetryable: false } : {}),
         ...(assistantText ? { message: assistantText } : {}),
         toolCallCount: currentTurnToolCallCount,
       });
@@ -4934,6 +5179,8 @@ export async function* runAgent(
     if (acceptedNotStarted !== undefined && childSession !== null) {
       turnId = acceptedNotStarted.turnId;
       currentTaskId = acceptedNotStarted.taskId;
+      currentTaskText = acceptedNotStarted.taskText;
+      latestChildProgress = "";
       currentTurnReceiptCommitted = false;
       currentTurnToolCallCount = 0;
       const nackCommitted = await commitTaskReceipt({
