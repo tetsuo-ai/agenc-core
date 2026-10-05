@@ -130,7 +130,11 @@ test("GPT-family Light sessions start with apply_patch instead of Edit and Write
   const names = providerRegistry("openai").toLLMTools().map(t => t.function.name).sort();
   expect(names).toEqual(["FileRead", "apply_patch", "exec_command", "system.searchTools"]);
   const shell = providerRegistry("openai").toLLMTools().find(t => t.function.name === "exec_command")!;
-  // No field is hidden: the exec_command presentation is the same as for other providers.
+  // Editing must refer to this session's available catalog, which starts with
+  // apply_patch and has not discovered the Edit/Write aliases.
+  expect(shell.function.description).toContain("use a listed editing tool for source changes");
+  expect(shell.function.description).not.toContain("require Edit/Write");
+  // The shell retains the same execution contract across providers.
   expect(shell).toEqual(providerRegistry("deepseek").toLLMTools().find(t => t.function.name === "exec_command"));
 });
 
