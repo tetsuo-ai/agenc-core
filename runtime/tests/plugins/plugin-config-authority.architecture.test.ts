@@ -150,6 +150,28 @@ describe("plugin config authority architecture", () => {
       /(?:serializeConfigToml|parseToml|writeTextAtomic|MANAGED_CONFIG_|managedMarker|removeManagedBlock|renderManagedPluginBlock)/u,
     );
     expect(operations).not.toMatch(/entry\.(?:source|version|required|options)\b/u);
+    const forbidden = /(?:serializeConfigToml|parseToml|writeTextAtomic|MANAGED_CONFIG_|managedMarker|removeManagedBlock|renderManagedPluginBlock)/u;
+    const rollback = source("plugins/plugin-config-rollback.ts");
+    expect(rollback).not.toMatch(forbidden);
+    const roots = [
+      resolve(sourceRoot, "plugins"),
+      resolve(sourceRoot, "utils/plugins"),
+    ];
+    const callers = roots.flatMap(sourceFiles)
+      .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"))
+      .filter((path) => /mutateCanonical(?:UserConfig|PluginTransaction)Sync\(/u.test(source(path)))
+      .sort();
+    expect(callers).toEqual([
+      "plugins/cli/pluginOperations.ts",
+      "plugins/plugin-config-transaction.ts",
+      "utils/plugins/pluginOptionsStorage.ts",
+    ]);
+    expect(operations.match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(2);
+    expect(rollback).toContain("finishPluginConfigRollback(");
+    const transaction = source("plugins/plugin-config-transaction.ts");
+    expect(transaction).not.toMatch(forbidden);
+    expect(transaction.match(/mutateCanonicalPluginTransactionSync\(/gu)).toHaveLength(6);
+    expect(source("utils/plugins/pluginOptionsStorage.ts").match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(2);
   });
 
   test("canonical TOML serialization has only sanctioned production callers", () => {

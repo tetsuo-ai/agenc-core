@@ -530,7 +530,10 @@ describe("interactive /plugins menu", () => {
         async () => (await readPluginConfigEntry(agencHome, "gamma@team"))?.enabled === true,
         "gamma enabled in config.toml",
       );
-      expect(onChanged).toHaveBeenCalled();
+      // The transactional install publishes config.toml before it commits, and
+      // the menu reports the change only when the install operation resolves.
+      await waitFor(() => onChanged.mock.calls.length > 0, "menu reported the change on disk");
+      expect(onChanged).toHaveBeenCalledOnce();
     } finally {
       await harness.cleanup();
     }
