@@ -58,7 +58,9 @@ describe("unified exec authenticated command outcome", () => {
   it("keeps invalid cleanup proof fatal to subsequent authority admission", async () => {
     const manager = managerFixture();
     vi.mocked(terminateProcessTreeAndReport).mockRejectedValue(new Error("invalid outer cleanup proof"));
-    await expect(manager.execCommand({ cmd: "touch effect", yield_time_ms: 1000 })).rejects.toThrow(/cleanup/);
+    const result = await manager.execCommand({ cmd: "touch effect", yield_time_ms: 1000 });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("could not verify descendant process cleanup");
     expect(() => manager.beginSandboxAuthorityQuiesce()).toThrow(/cleanup/);
     await expect(manager.execCommand({ cmd: "true" })).rejects.toThrow();
     expect(spawnContainedProcess).toHaveBeenCalledTimes(1);

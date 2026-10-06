@@ -1209,10 +1209,11 @@ describe("exec_command tool", () => {
     });
 
     test.each(["aborted", "unavailable"] as const)("keeps %s effects unresolved and never classifies them as no-effect", async command_outcome => {
-      const { tool } = mockManagerTool({ execCommand: vi.fn(async () => ({
+      const { tool, execCommand } = mockManagerTool({ execCommand: vi.fn(async () => ({
         ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome,
       })) });
-      const result = await tool.execute(fullAccessArgs({ cmd: "touch file" }));
+      const result = await tool.execute(fullAccessArgs({ cmd: "printf partial" }));
+      expect(execCommand).toHaveBeenCalledTimes(1);
       expect(result.isError).toBe(true);
       expect(result.effectDisposition?.disposition).toBe("remains_unknown");
       expect(result.metadata).toMatchObject({ commandOutcome: command_outcome });
