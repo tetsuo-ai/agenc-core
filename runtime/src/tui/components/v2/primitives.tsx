@@ -1871,6 +1871,7 @@ export function MenuModal<T>({
   columnGap = 1,
   modalMinHeight,
   rowMinHeight = 1,
+  closeHint,
 }: {
   readonly title: string
   readonly count?: string
@@ -1890,6 +1891,8 @@ export function MenuModal<T>({
   readonly columnGap?: number
   readonly modalMinHeight?: number
   readonly rowMinHeight?: number
+  /** What Esc does, top right. Defaults to the popup's "esc to close". */
+  readonly closeHint?: string
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
   const resolvedListWidth = preview
@@ -1925,6 +1928,7 @@ export function MenuModal<T>({
   return (
     <Popup
       title={popupTitle}
+      {...(closeHint === undefined ? {} : { headerRight: closeHint })}
       status={popupStatus || undefined}
       footer={footer}
       bodyPaddingX={paddingX}

@@ -66,7 +66,8 @@ describe("provider authority architecture", () => {
 
     const providerCredentialConsumers = [
       "commands/provider-menu-snapshot.ts",
-      "commands/provider-menu.tsx",
+      "commands/providers-hub-snapshot.ts",
+      "commands/providers-hub.tsx",
       "llm/discovery/provider-discovery.ts",
       "llm/provider-options.ts",
       "onboarding/Onboarding.tsx",
