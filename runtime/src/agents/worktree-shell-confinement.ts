@@ -109,6 +109,7 @@ export function worktreeShellWriteRefusal(
   if (outside.length === 0) return undefined;
   return `This agent works in its own git worktree (${confinement.worktree}); ` +
     `this command would change ${outside.join(", ")}, outside it, and was not run. ` +
-    "Work inside the worktree and put scratch files in $TMPDIR: the files outside it " +
-    "belong to the checkout the worktree isolates, or to the rest of the machine, and must not change.";
+    "Work inside the worktree and put scratch files in $TMPDIR by its literal path, the one " +
+    "`echo \"$TMPDIR\"` prints (a write target that names a variable is refused): the files outside " +
+    "the worktree belong to the checkout it isolates, or to the rest of the machine, and must not change.";
 }

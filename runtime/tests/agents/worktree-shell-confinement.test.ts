@@ -56,6 +56,14 @@ describe("worktreeShellWriteRefusal", () => {
     expect(refused).toContain("was not run");
   });
 
+  it("points scratch files at the literal temp path, not a variable target", () => {
+    // The shell write guard refuses `> "$TMPDIR/x"` as an unconfirmable
+    // target, so the advice must name the literal path `echo "$TMPDIR"` prints.
+    const refused = refusal("exec_command", { cmd: "rm ../../src/a.js" });
+    expect(refused).toContain('in $TMPDIR by its literal path, the one `echo "$TMPDIR"` prints');
+    expect(refused).toContain("a write target that names a variable is refused");
+  });
+
   it("allows changes inside the worktree, relative or absolute", () => {
     for (const cmd of [
       "rm src/a.js",
