@@ -697,6 +697,16 @@ function mapOpenAIStreamError(args: {
       return new LLMStreamRetryDeniedError(args.providerName, message, "partial_output");
     }
     if (status === undefined) return new LLMServerError(args.providerName, 503, message);
+    if (status >= 400 && status < 500 && status !== 429) {
+      const failure = mapOpenAIHttpFailureToError({
+        providerName: args.providerName, message, status, body: args.errorBody,
+      });
+      // Preserve specific auth/context/billing types. An ordinary client error
+      // must also stay terminal even when its prose resembles a socket failure.
+      return failure.constructor === LLMProviderError
+        ? new LLMStreamRetryDeniedError(args.providerName, message, "provider_status", status)
+        : failure;
+    }
     // A numeric status keeps the established auth/context/4xx mapping below.
   }
   if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
@@ -1050,7 +1060,9 @@ export class OpenAIProvider implements LLMProvider {
         );
       }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
-      if (error instanceof LLMStreamRetryDeniedError) throw error;
+      // Structured provider failures are already classified; their prose is
+      // not evidence of a second, transport-level failure.
+      if (error instanceof LLMProviderError || error instanceof LLMServerError) throw error;
       if (isFallbackTriggeredError(error)) {
         throw error;
       }

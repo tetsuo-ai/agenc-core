@@ -43,6 +43,12 @@ describe("Responses structured overload failures", () => {
     expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
   });
 
+  test("keeps the typed overload classification despite network-like provider prose", async () => {
+    const { error } = await failure([failed({ ...overload, message: "socket hang up" })]);
+    expect(error).toBeInstanceOf(LLMServerError);
+    expect(error).toMatchObject({ statusCode: 503 });
+  });
+
   test("honors an HTTP no-retry header on a statusless overload", async () => {
     const { error } = await failure([failed(overload)], true, { "x-retry-metadata": "NO_MORE_RETRY" });
     expect(error).toMatchObject({ reason: "provider_directive" });
@@ -78,8 +84,8 @@ describe("Responses structured overload failures", () => {
     terminal(error);
   });
 
-  test.each([400, 401, 403, 404, 422])("explicit status %s takes precedence over overload synthesis", async status => {
-    const { error } = await failure([failed({ ...overload, status })]);
+  test.each([400, 401, 403, 404, 422])("explicit status %s takes precedence over overload synthesis and network prose", async status => {
+    const { error } = await failure([failed({ ...overload, message: "socket hang up", status })]);
     expect(error).not.toBeInstanceOf(LLMServerError);
     expect(error).toBeInstanceOf(status === 401 || status === 403 ? LLMAuthenticationError : LLMProviderError);
     terminal(error);

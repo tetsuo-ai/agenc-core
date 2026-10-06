@@ -165,9 +165,10 @@ export class LLMStreamRetryDeniedError extends LLMProviderError {
   constructor(
     providerName: string,
     message: string,
-    public readonly reason: "provider_directive" | "partial_output",
+    public readonly reason: "provider_directive" | "partial_output" | "provider_status",
+    statusCode?: number,
   ) {
-    super(providerName, message);
+    super(providerName, message, statusCode);
     this.name = "LLMStreamRetryDeniedError";
   }
 }
