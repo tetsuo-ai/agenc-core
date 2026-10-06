@@ -54,26 +54,29 @@ function withVolumes(
   }
 }
 
+// The paths sit under /vol, which exists on neither Linux nor macOS. On macOS
+// /home is a symlink to /System/Volumes/Data/home, and the working-directory
+// check resolves it, so a /home cwd reads as outside itself there.
 const SENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "sensitive"],
-  ["/home/u/proj", "insensitive"],
+  ["/vol/u", "sensitive"],
+  ["/vol/u/proj", "insensitive"],
 ];
 const INSENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "insensitive"],
-  ["/home/u/proj", "insensitive"],
+  ["/vol/u", "insensitive"],
+  ["/vol/u/proj", "insensitive"],
 ];
 const SENSITIVE_LEAF: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "insensitive"],
-  ["/home/u/proj", "insensitive"],
-  ["/home/u/proj/private", "sensitive"],
+  ["/vol/u", "insensitive"],
+  ["/vol/u/proj", "insensitive"],
+  ["/vol/u/proj/private", "sensitive"],
 ];
 const PRO_STAR = {
-  rule: "/home/u/Pro*/a.txt",
-  candidate: "/home/u/proj/a.txt",
+  rule: "/vol/u/Pro*/a.txt",
+  candidate: "/vol/u/proj/a.txt",
 } as const;
 const PRIVATE_GLOB = {
-  rule: "/home/u/*/Private/*.txt",
-  candidate: "/home/u/proj/PRIVATE/a.txt",
+  rule: "/vol/u/*/Private/*.txt",
+  candidate: "/vol/u/proj/PRIVATE/a.txt",
 } as const;
 
 function foldCase(
@@ -108,7 +111,7 @@ function writePermission(
     toolName: "Write",
     input: { file_path: candidate },
     path: candidate,
-    cwd: "/home/u",
+    cwd: "/vol/u",
     context,
     operationType: "write",
   });
@@ -205,18 +208,18 @@ describe("pathForComparison inherits only the probed volume", () => {
   test("an allow wildcard does not widen across a case-sensitive directory", () => {
     const mixed = new Map<string, PathCaseSemantics>([
       ["/home", "insensitive"],
-      ["/home/u", "insensitive"],
-      ["/home/u/proj", "sensitive"],
-      ["/home/u/proj/private", "insensitive"],
+      ["/vol/u", "insensitive"],
+      ["/vol/u/proj", "sensitive"],
+      ["/vol/u/proj/private", "insensitive"],
     ]);
     withVolumes(mixed, () => {
       expect(
-        matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
+        matchPathRuleContent("/vol/u/*/Private/*.txt", "/vol/u/proj/private/a.txt", undefined, "narrow"),
       ).toBe(false);
       expect(
         matchPathRuleContent(
-          "/home/u/*/Private/*.txt",
-          "/home/u/proj/private/a.txt",
+          "/vol/u/*/Private/*.txt",
+          "/vol/u/proj/private/a.txt",
           undefined,
           "wide",
         ),
@@ -225,13 +228,13 @@ describe("pathForComparison inherits only the probed volume", () => {
     withVolumes(
       new Map<string, PathCaseSemantics>([
         ["/home", "insensitive"],
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-        ["/home/u/proj/private", "insensitive"],
+        ["/vol/u", "insensitive"],
+        ["/vol/u/proj", "insensitive"],
+        ["/vol/u/proj/private", "insensitive"],
       ]),
       () => {
         expect(
-          matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
+          matchPathRuleContent("/vol/u/*/Private/*.txt", "/vol/u/proj/private/a.txt", undefined, "narrow"),
         ).toBe(true);
       },
     );
@@ -324,18 +327,18 @@ describe("pathForComparison inherits only the probed volume", () => {
   test("a read-only none glob uses the wide fold", () => {
     withVolumes(new Map<string, PathCaseSemantics>(SENSITIVE_LEAF), () => {
       const session = {
-        sessionConfiguration: { cwd: "/home/u" },
+        sessionConfiguration: { cwd: "/vol/u" },
         permissionModeRegistry: { current: () => createEmptyToolPermissionContext() },
         services: {
           sandboxExecutionBroker: {
-            cwd: "/home/u",
+            cwd: "/vol/u",
             sessionTempRoot: "/tmp/agenc-readonly",
             executionAuthority: () => ({
               permissionProfile: {
                 fileSystem: {
                   kind: "restricted",
                   entries: [
-                    { path: { kind: "path", path: "/home/u" }, access: "read" },
+                    { path: { kind: "path", path: "/vol/u" }, access: "read" },
                     { path: { kind: "glob", pattern: PRIVATE_GLOB.rule }, access: "none" },
                   ],
                 },
@@ -345,7 +348,7 @@ describe("pathForComparison inherits only the probed volume", () => {
         },
       } as Session;
       expect(readOnlyDelegationPathAllowed(session, PRIVATE_GLOB.candidate)).toBe(false);
-      expect(readOnlyDelegationPathAllowed(session, "/home/u/proj/notes.txt")).toBe(true);
+      expect(readOnlyDelegationPathAllowed(session, "/vol/u/proj/notes.txt")).toBe(true);
     });
   });
 
