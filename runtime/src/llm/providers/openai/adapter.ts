@@ -28,6 +28,7 @@ import {
   LLMProviderError,
   LLMFundsError,
   LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
   LLMRateLimitError,
@@ -635,12 +636,28 @@ function mapOpenAINetworkFailureToError(args: {
   );
 }
 
+function forbidsStreamRetry(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const record = body as Record<string, unknown>;
+  const headers = record.headers;
+  return (headers !== null && typeof headers === "object" &&
+    Object.entries(headers).some(([name, value]) =>
+      name.toLowerCase() === "x-retry-metadata" && value === "NO_MORE_RETRY")) ||
+    (record.error !== null && typeof record.error === "object" &&
+      forbidsStreamRetry(record.error));
+}
+
 function mapOpenAIStreamError(args: {
   readonly providerName: string;
   readonly errorBody: unknown;
   readonly fallbackMessage: string;
+  readonly responsesAttempt?: {
+    readonly hasOutput: boolean;
+    readonly retryDenied: boolean;
+    readonly status?: number;
+  };
 }): Error {
-  const status = inferErrorStatus(args.errorBody);
+  const status = inferErrorStatus(args.errorBody) ?? args.responsesAttempt?.status;
   const message =
     typeof (args.errorBody as { message?: unknown })?.message === "string"
       ? String((args.errorBody as { message: string }).message)
@@ -667,6 +684,30 @@ function mapOpenAIStreamError(args: {
     const retryAfterMs = readRetryAfterMs(args.errorBody);
     if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
     return error;
+  }
+  // HTTP 200 can carry a statusless overload in Responses SSE. Only this
+  // structured code, before any output, enters the existing reconnect ladder.
+  // The earlier `error` event can carry a directive omitted by response.failed.
+  if (args.providerName === "openai" && args.responsesAttempt !== undefined &&
+    readNestedProviderCode(args.errorBody) === "server_is_overloaded") {
+    if (args.responsesAttempt.retryDenied || forbidsStreamRetry(args.errorBody)) {
+      return new LLMStreamRetryDeniedError(args.providerName, message, "provider_directive");
+    }
+    if (args.responsesAttempt.hasOutput) {
+      return new LLMStreamRetryDeniedError(args.providerName, message, "partial_output");
+    }
+    if (status === undefined) return new LLMServerError(args.providerName, 503, message);
+    if (status >= 400 && status < 500 && status !== 429) {
+      const failure = mapOpenAIHttpFailureToError({
+        providerName: args.providerName, message, status, body: args.errorBody,
+      });
+      // Preserve specific auth/context/billing types. An ordinary client error
+      // must also stay terminal even when its prose resembles a socket failure.
+      return failure.constructor === LLMProviderError
+        ? new LLMStreamRetryDeniedError(args.providerName, message, "provider_status", status)
+        : failure;
+    }
+    // A numeric status keeps the established auth/context/4xx mapping below.
   }
   if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
     return new LLMRateLimitError(
@@ -1019,6 +1060,10 @@ export class OpenAIProvider implements LLMProvider {
         );
       }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
+      // Structured provider failures are already classified; their prose is
+      // not evidence of a second, transport-level failure.
+      if (error instanceof LLMProviderError || error instanceof LLMServerError ||
+        error instanceof LLMAuthenticationError) throw error;
       if (isFallbackTriggeredError(error)) {
         throw error;
       }
@@ -1505,9 +1550,38 @@ export class OpenAIProvider implements LLMProvider {
       const bufferedFunctionSnapshots = new Map<string, string>();
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
+      let hasResponseOutput = false;
+      let retryDenied = response.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
+      let overloadEvent: Record<string, unknown> | undefined;
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
+        const responseSnapshot = event.data.response;
+        const snapshotOutput = responseSnapshot && typeof responseSnapshot === "object"
+          ? (responseSnapshot as Record<string, unknown>).output : undefined;
+        // Failed responses can contain output only in their snapshot, without
+        // any earlier deltas. Treat every nonempty output snapshot as partial.
+        hasResponseOutput ||= eventType.startsWith("response.output_") ||
+          eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+          (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
+        if (eventType === "error" && this.name === "openai") {
+          retryDenied ||= forbidsStreamRetry(event.data);
+          if (readNestedProviderCode(event.data) === "server_is_overloaded") {
+            overloadEvent = event.data;
+            const status = inferErrorStatus(event.data);
+            const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;
+            // Do not let a subsequent transport drop turn a forbidden retry
+            // into a generic truncation/network recovery.
+            if (retryDenied || hasResponseOutput || terminalClientStatus) {
+              throw mapOpenAIStreamError({
+                providerName: this.name,
+                errorBody: event.data,
+                fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+                responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+              });
+            }
+          }
+        }
 
         if (eventType === "response.output_text.delta") {
           const delta =
@@ -1583,8 +1657,13 @@ export class OpenAIProvider implements LLMProvider {
             providerName: this.name,
             errorBody,
             fallbackMessage: message,
+            responsesAttempt: {
+              hasOutput: hasResponseOutput, retryDenied,
+              status: inferErrorStatus(overloadEvent),
+            },
           });
-          if (!isProviderFundsFailure(this.name, streamError) &&
+          if (!(streamError instanceof LLMStreamRetryDeniedError) &&
+            !isProviderFundsFailure(this.name, streamError) &&
             streamedContent.length === 0 && streamedToolCalls.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(errorBody, message),
@@ -1609,6 +1688,14 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       if (!completedResponse) {
+        if (overloadEvent !== undefined) {
+          throw mapOpenAIStreamError({
+            providerName: this.name,
+            errorBody: overloadEvent,
+            fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+            responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+          });
+        }
         throw new LLMStreamTruncatedError(
           this.name,
           "Stream closed without a response.completed payload",
