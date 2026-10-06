@@ -1057,7 +1057,11 @@ durable session id, and by its daemon session id, wherever the id appears in
 the params. A request that waits moves a restore that has not started to the
 front of the queue, so it waits for about one restore plus the ones already
 running. `agent.create` with the `resumeSessionId` of a session still
-restoring waits the same way and never rebuilds it a second time.
+restoring waits the same way and never rebuilds it a second time. When that
+session comes back with a live runtime, the create fails with the error data
+code `CANONICAL_SESSION_ALREADY_ACTIVE`, and the client attaches to the
+restored agent instead. `agenc --continue` and `agenc --resume`, headless or
+in the TUI, do this, so they work right after a daemon restart.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
 `session.list`, `agent.list`, and every request that names no session still
