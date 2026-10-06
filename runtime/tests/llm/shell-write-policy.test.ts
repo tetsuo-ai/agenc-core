@@ -1269,3 +1269,112 @@ describe("classifyShellWorkspaceWritePolicy with added directories", () => {
     expect(decision.message).toContain("only inside the workspace");
   });
 });
+
+describe("classifyShellWorkspaceWritePolicy for sh -c", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+  const BYPASS = MODES[2];
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "darwin",
+      ...mode,
+    });
+  }
+
+  it.each([
+    // Read alone, the code would name no target: the quotes are the outer
+    // shell's until $X expands into them, and X="'; rm -rf .git; '" removes .git.
+    "bash -c \"echo '$X'\"",
+    "sh -c \"echo '$X'\"",
+    "zsh -c \"echo '$X'\"",
+    "dash -c \"echo '$X'\"",
+    "ksh -c \"echo '$X'\"",
+    "/bin/sh -c \"echo '$X'\"",
+    "bash -lc \"echo '$X'\"",
+    "bash -ic \"echo '$X'\"",
+    "bash --command \"echo '$X'\"",
+    "env bash -c \"echo '$X'\"",
+    "bash -c \"echo '${X}'\"",
+    'bash -c "echo $HOME"',
+    "bash -c 'echo hi'*",
+    // A word before the code could expand into an option that moves it.
+    "bash \"$OPTS\" -c 'echo hi'",
+    "bash $OPTS -c 'echo hi'",
+  ])("gives %s the verdict of bash -c \"$CMD\"", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(decision, JSON.stringify(mode)).toEqual(classifyIn('bash -c "$CMD"', mode));
+    }
+  });
+
+  it("refuses code the shell still expands unless approvals and the sandbox are bypassed", () => {
+    const command = "bash -c \"echo '$X'\"";
+    for (const allowWorkspaceDeletions of [false, true]) {
+      const decision = classify(command, allowWorkspaceDeletions);
+      expect(decision.blocked).toBe(true);
+      expect(decision.message).toContain("Unable to confirm workspace write targets");
+    }
+    const bypassed = classifyIn(command, BYPASS);
+    expect(bypassed.blocked).toBe(false);
+    expect(bypassed.indeterminate).toBe(true);
+  });
+
+  it("still judges the targets the literal code names", () => {
+    const removal = classifyIn("bash -c \"rm -rf .git; echo '$X'\"", BYPASS);
+    expect(removal.indeterminate).toBe(true);
+    expect(removal.blocked).toBe(true);
+    expect(removal.blockedDeletions).toEqual(["/repo/.git"]);
+
+    const write = classify("sh -c \"touch src/a.ts; echo '$X'\"", true);
+    expect(write.indeterminate).toBe(true);
+    expect(write.blockedTargets).toEqual(["/repo/src/a.ts"]);
+  });
+
+  it.each([
+    "bash -c 'echo hi'",
+    'bash -c "echo hi"',
+    // The inner shell expands $X without reading its value as code.
+    "bash -c 'echo \"$X\"'",
+    'bash -c "echo \\"\\$X\\""',
+    // Words after the code are its $0 and positional parameters.
+    "bash -c 'echo hi' \"$X\"",
+    "bash -c 'echo \"$1\"' _ \"$X\"",
+  ])("allows literal code that writes nothing: %s", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.observedTargets, JSON.stringify(mode)).toEqual([]);
+    }
+  });
+
+  it("reads an argument vector's code as sh receives it", () => {
+    // No shell runs before sh, so the single quotes are sh's.
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "system.bash",
+      args: { command: "bash", args: ["-c", "echo '$X'"] },
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blocked).toBe(false);
+  });
+
+  it("backs up the workspace file literal code removes", () => {
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "bash -c 'rm src/a.ts'" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.ts"]);
+  });
+});

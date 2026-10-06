@@ -334,17 +334,42 @@ function stripRedirections(tokens: readonly ShellToken[]): ShellToken[] {
   return output;
 }
 
-function extractWrappedShellCommand(args: readonly string[]): string | undefined {
+/** The index of the code `sh -c CODE` runs; undefined when there is no `-c` or no code. */
+function findWrappedShellCommand(args: readonly string[]): number | undefined {
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
     if (token === "-c" || token === "-lc" || token === "-ic" || token === "--command") {
       const command = args[i + 1];
       return typeof command === "string" && command.trim().length > 0
-        ? command
+        ? i + 1
         : undefined;
     }
   }
   return undefined;
+}
+
+/**
+ * `sh -c CODE [name [arg]...]` runs CODE, so it writes what CODE writes. The
+ * outer shell expands CODE before sh reads it, so the quotes CODE shows are
+ * not the ones sh sees (`sh -c "echo '$X'"`). A code word the shell still
+ * expands, or an expanding word before it that could become an option, leaves
+ * the code unknown; the targets its literal text names are still judged.
+ */
+function collectWrappedShellWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly codeIndex: number;
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const collection = collectShellCommandWriteTargets(
+    params.args[params.codeIndex]!,
+    params.cwd,
+    params.environment,
+  );
+  collection.indeterminate ||=
+    params.argsRequiringExpansion?.slice(0, params.codeIndex + 1).includes(true) === true;
+  return collection;
 }
 
 function hasWrapperScriptOperand(args: readonly string[]): boolean {
@@ -711,9 +736,9 @@ function collectDirectCommandWriteTargets(params: {
     return collectEnvCommandWriteTargets(params);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
-    const nestedCommand = extractWrappedShellCommand(params.args);
-    return nestedCommand
-      ? collectShellCommandWriteTargets(nestedCommand, params.cwd, params.environment)
+    const codeIndex = findWrappedShellCommand(params.args);
+    return codeIndex !== undefined
+      ? collectWrappedShellWriteTargets({ ...params, codeIndex })
       : hasWrapperScriptOperand(params.args)
         ? emptyTargetCollection()
         : indeterminateTargetCollection();

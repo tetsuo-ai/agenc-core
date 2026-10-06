@@ -49,6 +49,14 @@ describe("collectShellMutationTargets", () => {
     expect(targets("cd sub && rm a").indeterminate).toBe(false);
   });
 
+  it("marks sh -c code the shell still expands as indeterminate", () => {
+    expect(targets("bash -c \"rm a; echo '$X'\"")).toEqual({
+      targets: [join(ROOT, "a")],
+      indeterminate: true,
+    });
+    expect(targets("bash -c 'rm a; echo \"$X\"'").indeterminate).toBe(false);
+  });
+
   it("reads an argument vector in its working directory", () => {
     expect(collectShellMutationTargets({
       toolName: "system.bash",
