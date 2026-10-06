@@ -51,6 +51,9 @@ declare module "@smithy/core" {
 declare module "audio-capture-napi" {
   import type { Buffer } from "node:buffer";
 
+  // Capture-only surface. There is no native playback / output API, so
+  // realtime voice still requires an external `play` (SoX) or `aplay`
+  // (ALSA) backend even when isNativeAudioAvailable() is true.
   export function isNativeAudioAvailable(): boolean;
   export function isNativeRecordingActive(): boolean;
   export function stopNativeRecording(): void;
