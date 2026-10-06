@@ -121,6 +121,10 @@ describe("sandboxEscalationAvailable", () => {
     expect(sandboxEscalationAvailable("never", workspaceWrite(
       sessionIn("bypassPermissions", { sandboxExecutionBroker: { worktreeConfinement: { worktree: "/w", checkout: "/c" } } }),
     ))).toBe(false);
+    // A read-only delegation child refuses require_escalated outright.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { readOnlyDelegation: { deniedRules: [] } }),
+    ))).toBe(false);
     // A Light print run's prompt tells the model not to escalate.
     expect(sandboxEscalationAvailable("never", workspaceWrite(
       sessionIn("bypassPermissions", { runtimeOptions: { lightMode: true, nonInteractive: true } }),

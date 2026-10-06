@@ -14,6 +14,7 @@ import type { SandboxPolicy } from "../../src/session/turn-context.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { buildSamplingRequestContract } from "../../src/session/run-turn-sampling-request.js";
 import { buildInitialTurnState } from "../../src/session/turn-state.js";
+import { getSessionPermissionInstructions } from "../../src/session/permission-instructions.js";
 import { mkCtx, mkSession } from "../fixtures.js";
 
 const MODES = [
@@ -119,7 +120,7 @@ describe("Light permission section", () => {
     const light = getPermissionsSection(
       createEmptyToolPermissionContext({ mode: "bypassPermissions" }),
       { sandboxPolicy: "workspace_write", networkSandboxPolicy: { enabled: false } },
-      { light: true, worktreeConfined: true },
+      { light: true, escalationConfined: true },
     )!;
     expect(light).toContain("do not provide sandbox_permissions; such commands are rejected");
     expect(light).not.toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
@@ -152,6 +153,22 @@ describe("Light permission section", () => {
         getPermissionsSection(createEmptyToolPermissionContext({ mode }), { sandboxPolicy: "workspace_write", networkSandboxPolicy: { enabled: false } }),
       );
       expect(section(mode, "workspace_write", false, false)).toContain(`# Permission Mode: ${mode}`);
+    }
+  });
+
+  // The per-request path reads the same confinement as the system prompt.
+  test("deferred per-request instructions keep the never text for a confined bypass child", () => {
+    const bypass = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
+    const context = { ...mkCtx({ sandboxPolicy: { value: "workspace_write" } } as never), permissionInstructionsDeferred: true };
+    for (const [services, offered] of [
+      [{}, true],
+      [{ sandboxExecutionBroker: { worktreeConfinement: { worktree: "/w", checkout: "/c" } } }, false],
+      [{ readOnlyDelegation: { deniedRules: [] } }, false],
+    ] as const) {
+      const session = { services: { runtimeOptions: { lightMode: true }, ...services } } as never;
+      const text = getSessionPermissionInstructions(session, context, bypass);
+      expect(text.includes(LIGHT_APPROVAL_BYPASS_ESCALATION)).toBe(offered);
+      expect(text.includes("do not provide sandbox_permissions; such commands are rejected")).toBe(!offered);
     }
   });
 

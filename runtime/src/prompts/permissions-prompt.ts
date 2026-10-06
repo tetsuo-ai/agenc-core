@@ -309,8 +309,8 @@ export function getPermissionsSection(
   options: {
     readonly light?: boolean;
     readonly lightPrint?: boolean;
-    /** A worktree child: an escalated command stays inside its worktree. */
-    readonly worktreeConfined?: boolean;
+    /** A child whose escalated command stays confined (sandbox/escalation/confinement.ts). */
+    readonly escalationConfined?: boolean;
   } = {},
 ): string | null {
   if (ctx === null) return null;
@@ -337,7 +337,7 @@ export function getPermissionsSection(
   if (options.light === true) {
     return options.lightPrint === true && unattendedPolicyForContext(ctx).noApprover !== true
       ? lightPrintPermissionsSection(ctx, authority)
-      : lightPermissionsSection(ctx, authority, options.worktreeConfined === true);
+      : lightPermissionsSection(ctx, authority, options.escalationConfined === true);
   }
 
   const sandboxText = renderSandbox(
@@ -346,7 +346,7 @@ export function getPermissionsSection(
   );
   // Approval text constants keep their trailing `\n` from the upstream
   // file. Strip it so the outer joiner controls spacing.
-  const approvalText = (bypassGrantsEscalation(ctx, authority, options.worktreeConfined === true)
+  const approvalText = (bypassGrantsEscalation(ctx, authority, options.escalationConfined === true)
     ? APPROVAL_POLICY_BYPASS_ESCALATION
     : binding.approvalText).replace(/\n+$/, "");
 
@@ -416,19 +416,19 @@ export const LIGHT_APPROVAL_BYPASS_ESCALATION =
 /**
  * Where the bypass escalation text applies. The same sessions get escalation
  * advice from exec_command's sandbox notices (tools/system/exec-sandbox-denial.ts).
- * A scheduled routine never leaves its sandbox; a worktree child's escalated
- * command stays confined to its worktree; danger-full-access and an external
+ * A scheduled routine never leaves its sandbox; a worktree or read-only
+ * delegation child stays confined; danger-full-access and an external
  * sandbox leave nothing to lift; and a read-only sandbox is a choice to change
  * nothing, which this text would undercut.
  */
 function bypassGrantsEscalation(
   ctx: ToolPermissionContext,
   authority: PermissionPromptExecutionAuthority,
-  worktreeConfined: boolean,
+  escalationConfined: boolean,
 ): boolean {
   return ctx.mode === "bypassPermissions" &&
     unattendedPolicyForContext(ctx).noApprover !== true &&
-    !worktreeConfined &&
+    !escalationConfined &&
     authority.sandboxPolicy === "workspace_write";
 }
 
@@ -472,10 +472,10 @@ function lightPrintPermissionsSection(
 function lightPermissionsSection(
   ctx: ToolPermissionContext,
   authority: PermissionPromptExecutionAuthority,
-  worktreeConfined: boolean,
+  escalationConfined: boolean,
 ): string | null {
   const binding = MODE_BINDINGS[ctx.mode];
-  const approvalText = bypassGrantsEscalation(ctx, authority, worktreeConfined)
+  const approvalText = bypassGrantsEscalation(ctx, authority, escalationConfined)
     ? LIGHT_APPROVAL_BYPASS_ESCALATION
     : LIGHT_APPROVAL_TEXT[ctx.mode];
   if (binding === undefined || approvalText === undefined) return null;

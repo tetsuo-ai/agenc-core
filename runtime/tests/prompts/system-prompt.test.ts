@@ -1246,6 +1246,30 @@ describe("assembleSystemPrompt", () => {
     ).toBe(true);
   });
 
+  // A worktree child's escalated command stays in its worktree and a
+  // read-only delegation child refuses require_escalated, so a bypass child
+  // keeps the never text even in a workspace-write sandbox.
+  test("bypass is offered escalation unless the session's escalation stays confined", async () => {
+    const { createEmptyToolPermissionContext } = await import(
+      "../permissions/types.js"
+    );
+    const render = async (services: Record<string, unknown>) => (await assembleSystemPrompt({
+      session: { services } as unknown as Session,
+      ctx: fakeCtx(),
+      permissionContext: createEmptyToolPermissionContext({ mode: "bypassPermissions" }),
+      simpleMode: false,
+    })).text;
+    expect(await render({})).toContain("a request to leave the sandbox is granted without asking");
+    for (const confined of [
+      { sandboxExecutionBroker: { worktreeConfinement: { worktree: "/w", checkout: "/c" } } },
+      { readOnlyDelegation: { deniedRules: [] } },
+    ]) {
+      const text = await render(confined);
+      expect(text).toContain("commands will be rejected");
+      expect(text).not.toContain("a request to leave the sandbox is granted without asking");
+    }
+  });
+
   test("autonomous work section requires explicit autonomous mode", async () => {
     const { createEmptyToolPermissionContext } = await import(
       "../permissions/types.js"

@@ -197,7 +197,7 @@ describe("getPermissionsSection", () => {
   });
 
   test("a bypass worktree child keeps the never text: its escalation stays in the worktree", () => {
-    const out = getPermissionsSection(ctxForMode("bypassPermissions"), WORKSPACE_AUTHORITY, { worktreeConfined: true })!;
+    const out = getPermissionsSection(ctxForMode("bypassPermissions"), WORKSPACE_AUTHORITY, { escalationConfined: true })!;
     expect(out).toContain(APPROVAL_POLICY_NEVER.replace(/\n+$/, ""));
     expect(out).not.toContain(APPROVAL_POLICY_BYPASS_ESCALATION.replace(/\n+$/, ""));
   });

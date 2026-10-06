@@ -84,6 +84,7 @@ import {
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
 import { isLightPrintRun } from "./light-print.js";
+import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -1273,7 +1274,7 @@ export async function assembleSystemPrompt(
             }, {
               light,
               lightPrint,
-              worktreeConfined: session.services?.sandboxExecutionBroker?.worktreeConfinement !== undefined,
+              escalationConfined: escalationStaysConfined(session),
             }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),

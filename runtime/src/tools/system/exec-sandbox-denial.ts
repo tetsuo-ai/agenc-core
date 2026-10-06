@@ -21,6 +21,7 @@
  */
 
 import { isLightPrintRun } from "../../prompts/light-print.js";
+import { escalationStaysConfined } from "../../sandbox/escalation/confinement.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
 import { asRecord } from "../../utils/record.js";
 
@@ -155,22 +156,20 @@ export function sandboxEscalationAvailable(
  * granted without asking. It reads the mode the way the orchestrator does
  * (tools/orchestrator.ts), which grants the request in that mode, and leaves
  * out the sessions where the grant would not help or the prompt says
- * otherwise: a scheduled routine never leaves its sandbox; a worktree child's
- * escalated command stays confined to its worktree (exec-command.ts,
- * sandboxedAttempt); a Light print run's prompt tells the model not to
- * escalate.
+ * otherwise: a scheduled routine never leaves its sandbox; a worktree or
+ * read-only delegation child stays confined (escalationStaysConfined); a
+ * Light print run's prompt tells the model not to escalate.
  */
 export function bypassGrantsSandboxEscalation(session: unknown): boolean {
   if (routineRunOptions(session) !== undefined) return false;
+  if (escalationStaysConfined(session)) return false;
   const record = session as {
     readonly permissionModeRegistry?: { readonly current?: () => unknown };
     readonly services?: {
       readonly runtimeOptions?: Parameters<typeof isLightPrintRun>[0];
       readonly providerEnvironment?: Parameters<typeof isLightPrintRun>[1];
-      readonly sandboxExecutionBroker?: { readonly worktreeConfinement?: unknown };
     };
   } | null | undefined;
-  if (record?.services?.sandboxExecutionBroker?.worktreeConfinement !== undefined) return false;
   if (isLightPrintRun(record?.services?.runtimeOptions, record?.services?.providerEnvironment)) {
     return false;
   }
