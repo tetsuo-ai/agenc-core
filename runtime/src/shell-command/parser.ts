@@ -12,6 +12,8 @@
 
 import path from "node:path";
 
+import { readShellWrapperCode } from "../utils/shell/wrapper-options.js";
+
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 
 /**
@@ -732,6 +734,37 @@ export function parseShellWrapperSubcommandsForPermission(
     return null;
   }
   return tree.parsed.commands.map((command) => shlexJoin(command));
+}
+
+/**
+ * Every text a shell wrapper's argv may run as code, read the way that shell
+ * reads its options: `bash -ec CODE` and `bash -c -e CODE` run CODE, ksh93
+ * may run `ksh CODE` as code, and where the options leave the code unknown
+ * every later word is returned. Null when argv does not start with a shell
+ * this reads; empty when the shell runs a script or reads stdin.
+ */
+export function extractShellWrapperScripts(
+  command: readonly string[],
+): readonly string[] | null {
+  const shell = command[0];
+  if (shell === undefined) return null;
+  return readShellWrapperCode(basenameNoExt(shell).toLowerCase(), command.slice(1)) ?? null;
+}
+
+/**
+ * The commands a shell wrapper's code runs, for Bash deny and ask rules,
+ * whatever the wrapper's options (`bash -ec 'rm foo'`, `dash -c 'rm foo'`).
+ * Every text that could be the code is read; one that is not a word-only
+ * script gives no commands.
+ */
+export function shellWrapperCodeSubcommandsForPermission(
+  commandText: string,
+): readonly string[] {
+  const argv = parseShellCommand(commandText);
+  const scripts = argv === null ? null : extractShellWrapperScripts(argv);
+  if (scripts === null) return [];
+  return scripts.flatMap((script) =>
+    (parseWordOnlyShellSequence(script) ?? []).map((command) => shlexJoin(command)));
 }
 
 /**

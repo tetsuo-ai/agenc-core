@@ -1,5 +1,6 @@
 import {
   extractBashCommand,
+  extractShellWrapperScripts,
   parseShellCommand,
   parseWordOnlyShellSequence,
   stripLeadingSafeEnvVars,
@@ -164,15 +165,19 @@ export function commandMightBeDangerous(
   }
   if (isDangerousToCallWithExec(stripped)) return true;
 
-  const bash = extractBashCommand(stripped);
-  if (bash !== null) {
-    const commands = parseWordOnlyShellSequence(bash.script);
-    return (
-      commands !== null &&
-      commands.some((subcommand) =>
-        commandMightBeDangerous(subcommand, depth + 1),
-      )
-    );
+  // Every text the wrapper may run as code, whatever its options
+  // (`bash -c -e CODE`), so none of them hides a dangerous command.
+  const scripts = extractShellWrapperScripts(stripped);
+  if (scripts !== null) {
+    return scripts.some((script) => {
+      const commands = parseWordOnlyShellSequence(script);
+      return (
+        commands !== null &&
+        commands.some((subcommand) =>
+          commandMightBeDangerous(subcommand, depth + 1),
+        )
+      );
+    });
   }
 
   return false;
