@@ -10,6 +10,7 @@ import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { registerProviderFundsDisplayNames } from "../funds.js";
 
 export const GEMINI_DEVELOPER_NATIVE_BASE_URL =
   "https://generativelanguage.googleapis.com/v1beta";
@@ -854,3 +855,9 @@ export function resolveBuiltInProviderSlug(
     ? (normalized as BuiltInProviderSlug)
     : undefined;
 }
+
+// funds.ts imports nothing so the catalog can load first; give it the display
+// names it uses for billing refusals.
+registerProviderFundsDisplayNames(
+  (provider) => listBuiltInProviderInfo().find((info) => info.id === provider)?.name,
+);
