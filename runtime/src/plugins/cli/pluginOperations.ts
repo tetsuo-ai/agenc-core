@@ -1,3 +1,4 @@
+import { preparePluginConfigTransaction, publishPluginConfigTransaction } from "../plugin-config-transaction.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
@@ -12,12 +13,7 @@ import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
 import { ConfigStore } from "../../config/store.js";
-import { mutateCanonicalUserConfigSync, readCanonicalUserConfigSnapshotSync } from "../../config/update-sync.js";
-import {
-  parsePluginConfigRollbackSnapshot,
-  writePluginConfigRollback,
-  type PluginConfigRollbackSnapshot,
-} from "../plugin-config-rollback.js";
+import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
@@ -671,11 +667,11 @@ export async function installPluginOp(
           );
         }
       },
-      publishConfig: async () => {
-        await writePluginConfigEntry(pluginId, { enabled: true }, input);
+      configTargetPath: pluginConfigPath(input),
+      publishConfig: async context => {
+        publishPluginConfigTransaction(context.configTargetPath!, pluginId, context.operationId);
       },
-      readPluginConfig: () => Promise.resolve(readPluginConfigCapture(pluginId, input)),
-      restorePluginConfig: (_pluginId, previous) => restorePluginConfigSnapshot(pluginId, previous, input),
+      readPluginConfig: context => Promise.resolve(preparePluginConfigTransaction(context.configTargetPath!, pluginId, context.operationId)),
     });
     const installed = await createPluginFromPath(destination, {
       source: scope,
@@ -1302,38 +1298,6 @@ export function __isPathInsideForTesting(
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
-function readPluginConfigCapture(
-  pluginId: string,
-  options: PluginOperationOptions,
-): { readonly snapshot: PluginConfigRollbackSnapshot; readonly configTargetPath: string } {
-  const snap = readCanonicalUserConfigSnapshotSync(pluginConfigPath(options));
-  const plugins = isRecord(snap.raw.plugins) ? snap.raw.plugins : undefined;
-  const entries = plugins !== undefined && isRecord(plugins.plugins) ? plugins.plugins : undefined;
-  const entryPresent = entries !== undefined && Object.hasOwn(entries, pluginId);
-  const pluginsEnabledPresent = plugins !== undefined && Object.hasOwn(plugins, "enabled");
-  return {
-    configTargetPath: snap.targetPath,
-    snapshot: {
-      entryPresent,
-      ...(entryPresent ? { entry: entries?.[pluginId] } : {}),
-      pluginsEnabledPresent,
-      ...(pluginsEnabledPresent ? { pluginsEnabled: plugins?.enabled } : {}),
-    },
-  };
-}
-
-async function restorePluginConfigSnapshot(
-  pluginId: string,
-  previous: unknown,
-  options: PluginOperationOptions,
-): Promise<void> {
-  const snapshot = parsePluginConfigRollbackSnapshot(previous);
-  if (snapshot === undefined) {
-    throw new Error("plugin config snapshot is not a rollback record");
-  }
-  writePluginConfigRollback(pluginConfigPath(options), pluginId, snapshot);
-}
-
 async function assertInstallSourceOutsideDestination(
   source: string,
   destination: string,
@@ -1371,7 +1335,7 @@ async function writePluginConfigEntry(
       writable: true,
     });
     if (entry.enabled !== false) plugins.enabled = true;
-  });
+  }, { global: entry.enabled !== false, entries: [pluginId] });
   return path;
 }
 
@@ -1389,6 +1353,6 @@ async function removePluginConfigEntry(
     if (Object.keys(raw.plugins.plugins).length === 0) {
       delete raw.plugins.plugins;
     }
-  });
+  }, { entries: [pluginId] });
   return removed;
 }

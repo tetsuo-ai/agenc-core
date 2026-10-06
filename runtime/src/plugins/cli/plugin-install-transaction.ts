@@ -1,3 +1,7 @@
+import {
+  reservePluginConfigRollback, finishPluginConfigRollback,
+  finalizePluginConfigTransaction, forgetPluginConfigTransaction,
+} from "../plugin-config-transaction.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, open, readFile, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
@@ -67,9 +71,11 @@ export interface PluginInstallOperationRecord {
   readonly previousPluginConfig?: unknown;
   /** Canonical user config file the snapshot was read from. */
   readonly configTargetPath?: string;
+  readonly configOwnershipVersion?: 1;
 }
 
 export interface PluginInstallTransactionContext {
+  readonly configTargetPath?: string;
   readonly operationId: string;
   readonly kind: PluginInstallTransactionKind;
   readonly pluginId: string;
@@ -102,6 +108,8 @@ export interface PluginInstallTransactionHooks {
   ) => Promise<void>;
   /** Runs after publishConfig and before the config-published record is written. */
   readonly afterPublishConfig?: () => Promise<void>;
+  /** Test seam: committed config finalized, operation record still retained. */
+  readonly afterFinalizeConfig?: () => Promise<void>;
   /** Runs at the start of in-process rollback, while the lease is still held. */
   readonly beforeRollback?: () => Promise<void>;
 }
@@ -204,8 +212,9 @@ export async function runPluginInstallTransaction(input: {
   readonly copyDirectory: (source: string, destination: string) => Promise<void>;
   readonly writeStageMetadata: (stagePath: string) => Promise<void>;
   readonly validateStage: (stagePath: string) => Promise<void>;
-  readonly publishConfig: () => Promise<void>;
-  readonly readPluginConfig?: () => Promise<unknown>;
+  readonly configTargetPath?: string;
+  readonly publishConfig: (context: PluginInstallTransactionContext) => Promise<void>;
+  readonly readPluginConfig?: (context: PluginInstallTransactionContext) => Promise<unknown>;
   readonly restorePluginConfig?: (pluginId: string, previous: unknown) => Promise<void>;
   readonly hooks?: PluginInstallTransactionHooks;
 }): Promise<void> {
@@ -270,10 +279,17 @@ async function runLockedPluginInstallTransaction(
     destination,
     stagePath,
     ...(backupPath === undefined ? {} : { backupPath }),
+    ...(input.configTargetPath === undefined ? {} : {
+      configTargetPath: await canonicalConfigPath(input.configTargetPath),
+      configOwnershipVersion: 1 as const,
+    }),
     phase: "record-created",
     createdAt: (input.now ?? (() => new Date()))().toISOString(),
   };
 
+  if (input.configTargetPath !== undefined && record.configTargetPath === undefined) {
+    throw new Error("plugin config target could not be resolved");
+  }
   const leasePath = pluginInstallLeasePath(recordPath);
   const state = { record };
   const nonce = await writeInstallLease(leasePath);
@@ -287,7 +303,7 @@ async function runLockedPluginInstallTransaction(
     // write succeeds so a failure here can still restore version 1.
     state.record = await persistPhase(recordPath, state.record, { phase: "committed" });
     await invokeAfterPhase(input.hooks, state.record, recordPath);
-    await cleanupCommittedInstall(state.record, recordPath, backupPath);
+    await cleanupCommittedInstall(state.record, recordPath, backupPath, input.hooks);
   } catch (error) {
     await rethrowAfterRollback(error, state, recordPath, input);
   } finally {
@@ -374,7 +390,7 @@ async function publishTransactionConfig(
   state: TransactionState,
   recordPath: string,
 ): Promise<void> {
-  const captured = splitPluginConfigSnapshot(await input.readPluginConfig?.());
+  const captured = splitPluginConfigSnapshot(await input.readPluginConfig?.(transactionContext(state.record, recordPath)));
   state.record = await persistPhase(recordPath, state.record, {
     phase: "destination-replaced",
     ...(captured.previousPluginConfig === undefined
@@ -385,7 +401,7 @@ async function publishTransactionConfig(
       : { configTargetPath: captured.configTargetPath }),
   });
   await input.hooks?.beforePublishConfig?.(transactionContext(state.record, recordPath));
-  await input.publishConfig();
+  await input.publishConfig(transactionContext(state.record, recordPath));
   await input.hooks?.afterPublishConfig?.();
   state.record = await persistPhase(recordPath, state.record, {
     phase: "config-published",
@@ -604,7 +620,7 @@ async function recoverHeldParsedRecord(
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
   const decision = await configRestoreDecision(parsed, options);
-  if (decision === "defer") {
+  if (decision === "defer" || (decision === "skip" && parsed.configOwnershipVersion === 1)) {
     return { recovered: false, issue: unrestoredConfigIssue(parsed, true) };
   }
   const reportUnrestored = decision === "skip";
@@ -625,7 +641,7 @@ function unrestoredConfigIssue(
   record: PluginInstallOperationRecord,
   reportUnrestoredConfig: boolean,
 ): PluginInstallRecoveryIssue | undefined {
-  if (!reportUnrestoredConfig || record.previousPluginConfig === undefined) return undefined;
+  if (!reportUnrestoredConfig || (record.previousPluginConfig === undefined && record.configOwnershipVersion !== 1)) return undefined;
   return {
     operationId: record.operationId,
     pluginId: record.pluginId,
@@ -645,6 +661,17 @@ async function recoverRecord(
   restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
   hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
+  if (record.configOwnershipVersion === 1) {
+    const target = ownedConfigTarget(record);
+    if (record.phase === "committed") {
+      finalizePluginConfigTransaction(target, record.pluginId, record.operationId, record.previousPluginConfig);
+    } else {
+      reservePluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig);
+    }
+  } else if (record.previousPluginConfig !== undefined
+    && record.phase !== "record-created" && record.phase !== "stage-ready") {
+    throw new Error("legacy plugin config snapshot has no ownership proof; preserve payload and operation record for manual recovery");
+  }
   switch (record.phase) {
     case "record-created":
       return recoverBeforeStageReady(record, recordPath);
@@ -695,7 +722,7 @@ async function recoverBeforeStageReady(
       },
     };
   }
-  await removeOperationRecord(recordPath);
+  await removeOperationRecord(recordPath, record);
   return {};
 }
 
@@ -723,7 +750,7 @@ async function recoverStageReady(
     record.stageIdentity,
   );
   if (!removed.ok) return identityIssue(record, recordPath, removed);
-  await removeOperationRecord(recordPath);
+  await removeOperationRecord(recordPath, record);
   return {};
 }
 
@@ -786,12 +813,11 @@ async function cleanupRestoredPlugin(
       record.stageIdentity,
     );
     if (!stageRemoved.ok) {
-      await removeOperationRecord(recordPath);
       return identityIssue(record, recordPath, stageRemoved);
     }
   }
   await restoreRecordedPluginConfig(record, restorePluginConfig);
-  await removeOperationRecord(recordPath);
+  await removeOperationRecord(recordPath, record);
   return {};
 }
 
@@ -836,7 +862,7 @@ async function recoverDestinationReplaced(
     );
     if (!stageRemoved.ok) return identityIssue(record, recordPath, stageRemoved);
     await restoreRecordedPluginConfig(record, restorePluginConfig);
-    await removeOperationRecord(recordPath);
+    await removeOperationRecord(recordPath, record);
     return {};
   }
   if (record.backupPath === undefined || record.backupIdentity === undefined) {
@@ -913,14 +939,20 @@ async function cleanupCommittedInstall(
   record: PluginInstallOperationRecord,
   recordPath: string,
   backupPath: string | undefined,
+  hooks?: PluginInstallTransactionHooks,
 ): Promise<void> {
   try {
+    if (record.configOwnershipVersion === 1) {
+      finalizePluginConfigTransaction(ownedConfigTarget(record), record.pluginId, record.operationId, record.previousPluginConfig);
+    }
+    await hooks?.afterFinalizeConfig?.();
     if (backupPath !== undefined) {
       const removed = await removeMatchingDirectory(backupPath, record.backupIdentity);
       if (!removed.ok) return;
     }
-    await removeOperationRecord(recordPath);
-  } catch {
+    await removeOperationRecord(recordPath, record);
+  } catch (error) {
+    if (error instanceof PluginInstallTransactionSimulatedCrash) throw error;
     // The committed record is already durable. Leaving it in place lets the
     // next recovery pass retry backup cleanup or report an identity mismatch.
   }
@@ -944,7 +976,7 @@ async function recoverCommitted(
     );
     if (!removed.ok) return identityIssue(record, recordPath, removed);
   }
-  await removeOperationRecord(recordPath);
+  await removeOperationRecord(recordPath, record);
   return {};
 }
 
@@ -984,7 +1016,7 @@ async function rollbackInProcess(
       await rm(record.stagePath, { recursive: true, force: true });
       await syncDirectory(dirname(record.stagePath));
     }
-    await removeOperationRecord(recordPath);
+    await removeOperationRecord(recordPath, record);
     return;
   }
   const result = await recoverRecord(record, recordPath, restorePluginConfig, undefined);
@@ -1026,6 +1058,7 @@ function transactionContext(
     ...(record.backupPath === undefined ? {} : { backupPath: record.backupPath }),
     recordPath,
     phase: record.phase,
+    ...(record.configTargetPath === undefined ? {} : { configTargetPath: record.configTargetPath }),
   };
 }
 
@@ -1071,7 +1104,8 @@ function operationRecordShapeIsValid(raw: Record<string, unknown>): boolean {
     typeof raw.destination === "string" &&
     typeof raw.stagePath === "string" &&
     typeof raw.createdAt === "string" &&
-    (raw.backupPath === undefined || typeof raw.backupPath === "string");
+    (raw.backupPath === undefined || typeof raw.backupPath === "string") &&
+    (raw.configOwnershipVersion === undefined || (raw.configOwnershipVersion === 1 && typeof raw.configTargetPath === "string"));
 }
 
 function parsedRecordIdentities(
@@ -1121,6 +1155,7 @@ function assembleOperationRecord(
       ? { previousPluginConfig: raw.previousPluginConfig }
       : {}),
     ...(typeof raw.configTargetPath === "string" ? { configTargetPath: raw.configTargetPath } : {}),
+    ...(raw.configOwnershipVersion === 1 ? { configOwnershipVersion: 1 as const } : {}),
   };
 }
 
@@ -1315,8 +1350,22 @@ function preservedRecordPaths(
   ];
 }
 
-async function removeOperationRecord(recordPath: string): Promise<void> {
+function ownedConfigTarget(record: PluginInstallOperationRecord): string {
+  if (record.configTargetPath === undefined) throw new Error("plugin config ownership target is missing");
+  return record.configTargetPath;
+}
+
+async function removeOperationRecord(recordPath: string, record: PluginInstallOperationRecord): Promise<void> {
+  if (record.configOwnershipVersion === 1) {
+    const target = ownedConfigTarget(record);
+    if (record.phase === "committed") finalizePluginConfigTransaction(target, record.pluginId, record.operationId, record.previousPluginConfig);
+    else finishPluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig);
+  }
   await rm(recordPath, { force: true });
+  await syncDirectory(dirname(recordPath));
+  if (record.configOwnershipVersion === 1) {
+    forgetPluginConfigTransaction(ownedConfigTarget(record), record.pluginId, record.operationId);
+  }
   await removeEmptyOpsDirectory(dirname(recordPath));
 }
 
@@ -1598,7 +1647,7 @@ async function configRestoreDecision(
   record: PluginInstallOperationRecord,
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<"apply" | "skip" | "defer"> {
-  if (record.previousPluginConfig === undefined) return "apply";
+  if (record.previousPluginConfig === undefined && record.configOwnershipVersion !== 1) return "apply";
   if (options.reportUnrestoredConfig === true) return "skip";
   if (record.configTargetPath === undefined) return "defer";
   if (options.userConfigPath === undefined) return "skip";
@@ -1793,6 +1842,7 @@ async function restoreRecordedPluginConfig(
   record: PluginInstallOperationRecord,
   restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
 ): Promise<void> {
+  if (record.configOwnershipVersion === 1) return; // Atomic restoration and receipt precede record deletion.
   if (restorePluginConfig === undefined || record.previousPluginConfig === undefined) return;
   await restorePluginConfig(record.pluginId, record.previousPluginConfig);
 }

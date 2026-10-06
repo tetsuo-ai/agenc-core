@@ -1,5 +1,7 @@
 import { validatePluginsConfig } from "../config/schema.js";
-import { mutateCanonicalUserConfigSync } from "../config/update-sync.js";
+import {
+  parseOwnedPluginConfigSnapshot, reservePluginConfigRollback, finishPluginConfigRollback,
+} from "./plugin-config-transaction.js";
 import { isRecord } from "../utils/record.js";
 
 export interface PluginConfigRollbackSnapshot {
@@ -15,6 +17,8 @@ export function parsePluginConfigRollbackSnapshot(
   if (!isRecord(value)) return undefined;
   if (typeof value.entryPresent !== "boolean") return undefined;
   if (typeof value.pluginsEnabledPresent !== "boolean") return undefined;
+  const owned = parseOwnedPluginConfigSnapshot(value);
+  if (owned !== undefined) return owned;
   return {
     entryPresent: value.entryPresent,
     ...(value.entryPresent ? { entry: value.entry } : {}),
@@ -46,23 +50,10 @@ export function writePluginConfigRollback(
   pluginId: string,
   snapshot: PluginConfigRollbackSnapshot,
 ): void {
-  mutateCanonicalUserConfigSync(configPath, (raw) => {
-    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
-    if (!isRecord(raw.plugins)) raw.plugins = plugins;
-    const pluginEntries = isRecord(plugins.plugins) ? plugins.plugins : {};
-    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
-    if (!snapshot.entryPresent) delete pluginEntries[pluginId];
-    else {
-      Object.defineProperty(pluginEntries, pluginId, {
-        value: snapshot.entry,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-    if (snapshot.pluginsEnabledPresent) plugins.enabled = snapshot.pluginsEnabled;
-    else delete plugins.enabled;
-    if (Object.keys(pluginEntries).length === 0) delete plugins.plugins;
-    if (Object.keys(plugins).length === 0) delete raw.plugins;
-  });
+  const owned = parseOwnedPluginConfigSnapshot(snapshot);
+  if (owned === undefined) {
+    throw new Error("legacy plugin config snapshot has no ownership proof; preserve the config and operation record for manual recovery");
+  }
+  reservePluginConfigRollback(configPath, pluginId, owned.token, owned);
+  finishPluginConfigRollback(configPath, pluginId, owned.token, owned);
 }

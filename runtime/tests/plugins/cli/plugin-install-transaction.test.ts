@@ -1,3 +1,4 @@
+import { applyCanonicalConfigPatchSync } from "../../../src/config/update-sync.js";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -365,6 +366,7 @@ async function tamperManifest(pluginRoot: string, version: string): Promise<void
 async function recoverLocal(world: TxnWorld) {
   return recoverPluginInstallTransactions({
     installRoots: [world.pluginStorageRoot],
+    userConfigPath: join(world.agencHome, "config.toml"),
   });
 }
 
@@ -560,22 +562,20 @@ describe("plugin install transaction", () => {
       waited = true;
     });
     try {
-      const outcome = await withPluginInstallDirectoryLock(installed.destination, async () => {
-        const listed = await listInstalledPlugins(installed.authority);
-        const updated = await updatePluginOp({
-          ...installed.authority,
-          pluginId: "demo",
-          source,
-        });
-        return { listed, updated };
+      const listed = await withPluginInstallDirectoryLock(installed.destination, async () => {
+        const result = await listInstalledPlugins(installed.authority);
+        await expect(updatePluginOp({ ...installed.authority, pluginId: "demo", source }))
+          .rejects.toThrow(/already owns this plugin/u);
+        return result;
       });
       expect(waited).toBe(false);
-      expect(outcome.listed.errors.some((error) => error.includes("busy install directory"))).toBe(true);
-      expect(outcome.updated.plugin.version).toBe("3.0.0");
-      expect(await readPluginVersion(installed.destination)).toBe("3.0.0");
+      expect(listed.errors.some((error) => error.includes("busy install directory"))).toBe(true);
+      expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
       expect(await readdir(ops)).toContain(oldRecord);
       const later = await recoverLikeDaemon(installed);
-      expect(later.recovered).toBe(0);
+      expect(later.recovered).toBe(1);
+      const updated = await updatePluginOp({ ...installed.authority, pluginId: "demo", source });
+      expect(updated.plugin.version).toBe("3.0.0");
       expect(await readPluginVersion(installed.destination)).toBe("3.0.0");
     } finally {
       setPluginInstallDirectoryLockWaitHook(undefined);
@@ -858,6 +858,7 @@ describe("plugin install transaction", () => {
     const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
     await expect(recoverPluginInstallTransactions({
       installRoots: [installed.pluginStorageRoot],
+      userConfigPath: join(installed.agencHome, "config.toml"),
       hooks: {
         afterRollbackDestinationRemoved: async () => {
           throw new PluginInstallTransactionSimulatedCrash("rollback-restore-intended");
@@ -1251,7 +1252,7 @@ describe("plugin install transaction", () => {
     await expect(lstat(`${recordPath}.lease`)).resolves.toMatchObject({});
   });
 
-  it("treats two spellings of a missing config file as the same target", async () => {
+  it("preserves ownership evidence when an aliased config disappears after publication", async () => {
     const world = await createWorld();
     const realHome = join(world.root, "real-home");
     await mkdir(realHome, { recursive: true });
@@ -1277,10 +1278,9 @@ describe("plugin install transaction", () => {
       config: { plugins: { enabled: true } },
       userConfigPath: join(linkedHome, "config.toml"),
     });
-    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
-    const restored = await readFile(join(realHome, "config.toml"), "utf8");
-    expect(restored).toContain("\"enabled\" = false");
-    expect(restored).not.toContain("fresh");
+    expect(loaded.errors.some(issue => issue.type === "install-recovery" && /ownership is ambiguous/u.test(issue.message))).toBe(true);
+    await expect(access(join(realHome, "config.toml"))).rejects.toThrow();
+    expect((await storageNames(world)).some(name => name.startsWith("fresh"))).toBe(true);
   });
 
   it("does not restore user config when the workspace plugin root cannot be resolved", async () => {
@@ -1397,10 +1397,6 @@ describe("plugin install transaction", () => {
       "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true\n\"path\" = \"/plugin/extra\"",
     ));
     await expect(updateDemo(installed, {
-      beforePublishConfig: async () => {
-        const current = await readFile(configPath, "utf8");
-        await writeFile(configPath, current.replace("\"path\" = \"/plugin/extra\"\n", ""));
-      },
       afterPublishConfig: async () => {
         throw new Error("publish failed");
       },
@@ -1434,15 +1430,11 @@ describe("plugin install transaction", () => {
       "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true\n\"path\" = \"/plugin/crash-keep\"",
     ));
     await expect(updateDemo(installed, {
-      beforePublishConfig: async () => {
-        const current = await readFile(configPath, "utf8");
-        await writeFile(configPath, current.replace("\"path\" = \"/plugin/crash-keep\"\n", ""));
-      },
       afterPublishConfig: async () => {
         throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
       },
     })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
-    expect(await readFile(configPath, "utf8")).not.toContain("/plugin/crash-keep");
+    expect(await readFile(configPath, "utf8")).toContain("/plugin/crash-keep");
     const loaded = await loadPlugins({
       pluginStorageRoot: installed.pluginStorageRoot,
       workspaceRoot: installed.workspaceRoot,
@@ -1741,7 +1733,7 @@ describe("plugin install transaction", () => {
     expect(await pathExists(recordPath)).toBe(true);
   });
 
-  it("keeps plugin id and destination on a recovery throw after the record parses", async () => {
+  it("keeps plugin id, destination and legacy evidence when config ownership cannot be proven", async () => {
     const world = await createWorld();
     const destination = join(world.pluginStorageRoot, "fresh");
     await mkdir(destination, { recursive: true });
@@ -1773,7 +1765,7 @@ describe("plugin install transaction", () => {
     expect(recovered.issues).toEqual([expect.objectContaining({
       pluginId: "fresh",
       destination,
-      message: "restore blew up",
+      message: expect.stringContaining("legacy plugin config snapshot has no ownership proof"),
     })]);
   });
 
@@ -2113,3 +2105,88 @@ it.each(["afterPublishConfig", "config-published"] as const)(
     }
   },
 );
+
+
+it("preserves payload, backup and operation evidence when a pending entry was externally edited", async () => {
+  const installed = await installDemoV1();
+  const configPath = join(installed.agencHome, "config.toml");
+  await expect(updateDemo(installed, {
+    afterPublishConfig: async () => {
+      const text = await readFile(configPath, "utf8");
+      await writeFile(configPath, text.replace('["plugins"."plugins"."demo"]\n"enabled" = true', '["plugins"."plugins"."demo"]\n"enabled" = false'));
+      throw new PluginInstallTransactionSimulatedCrash("config-published");
+    },
+  })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+  const before = await readFile(configPath, "utf8");
+  const result = await recoverLikeDaemon(installed);
+  expect(result.recovered).toBe(0);
+  expect(result.issues.some(issue => /ownership is ambiguous/u.test(issue.message))).toBe(true);
+  expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+  expect(await readPluginVersion(await requireStorageChild(installed, ".bak-"))).toBe("1.0.0");
+  expect((await readdir(join(installed.pluginStorageRoot, ".plugin-install-ops"))).some(name => name.endsWith(".json"))).toBe(true);
+  expect(await readFile(configPath, "utf8")).toBe(before);
+});
+
+it("fences a cooperative edit at the boundary before destructive payload recovery", async () => {
+  const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+  const configPath = join(installed.agencHome, "config.toml");
+  let attempted = false;
+  const result = await recoverLikeDaemon(installed, {
+    beforeRemoveMatchedDirectory: async path => {
+      if (path !== installed.destination) return;
+      attempted = true;
+      applyCanonicalConfigPatchSync(configPath, { plugins: { plugins: { demo: { enabled: false } } } }, "user");
+    },
+  });
+  expect(attempted).toBe(true);
+  expect(result.recovered).toBe(0);
+  expect(result.issues.some(issue => /reserved for install recovery/u.test(issue.message))).toBe(true);
+  expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+  expect(await readPluginVersion(await requireStorageChild(installed, ".bak-"))).toBe("1.0.0");
+  expect((await recoverLikeDaemon(installed)).recovered).toBe(1);
+  expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+});
+
+it("does not re-enable plugins after committed finalization and a later disable", async () => {
+  const world = await createWorld();
+  const configPath = join(world.agencHome, "config.toml");
+  let destination = "";
+  await expect(installFresh(world, "fresh", {
+    afterPhase: async (phase, context) => { if (phase === "committed") destination = context.destination; },
+    afterFinalizeConfig: async () => {
+      applyCanonicalConfigPatchSync(configPath, { plugins: { enabled: false } }, "user");
+      throw new PluginInstallTransactionSimulatedCrash("committed");
+    },
+  })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+  expect((await recoverLikeDaemon(world)).recovered).toBe(1);
+  expect(await readPluginVersion(destination)).toBe("1.0.0");
+  const config = parseToml(await readFile(configPath, "utf8")) as ParsedPluginsConfig;
+  expect(config.plugins?.enabled).toBe(false);
+  expect((await recoverLikeDaemon(world)).recovered).toBe(0);
+});
+
+it.each(["alpha-first", "beta-first"] as const)("rolls back two failed publications in %s order", async order => {
+  const world = await createWorld();
+  const configPath = join(world.agencHome, "config.toml");
+  await writeFile(configPath, "config_version = 2\n[plugins]\nenabled = false\n");
+  const alpha = await writePlugin(world.root, "alpha", "1.0.0");
+  const beta = await writePlugin(world.root, "beta", "1.0.0");
+  await expect(installPluginOp({ ...world.authority, source: alpha, installTransactionHooks: {
+    afterPublishConfig: async () => {
+      await expect(installPluginOp({ ...world.authority, source: beta, installTransactionHooks: {
+        afterPublishConfig: async () => {
+          if (order === "alpha-first") throw new PluginInstallTransactionSimulatedCrash("config-published");
+          throw new Error("beta fails");
+        },
+      } })).rejects.toThrow();
+      throw new Error("alpha fails");
+    },
+  } })).rejects.toThrow("alpha fails");
+  const result = await recoverLikeDaemon(world);
+  expect(result.issues).toEqual([]);
+  const config = parseToml(await readFile(configPath, "utf8")) as ParsedPluginsConfig;
+  expect(config.plugins?.enabled).toBe(false);
+  expect(config.plugins?.plugins?.alpha).toBeUndefined();
+  expect(config.plugins?.plugins?.beta).toBeUndefined();
+  expect((await listInstalledPlugins(world.authority)).plugins).toEqual([]);
+});

@@ -159,15 +159,18 @@ describe("plugin config authority architecture", () => {
     ];
     const callers = roots.flatMap(sourceFiles)
       .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"))
-      .filter((path) => /mutateCanonicalUserConfigSync\(/u.test(source(path)))
+      .filter((path) => /mutateCanonical(?:UserConfig|PluginTransaction)Sync\(/u.test(source(path)))
       .sort();
     expect(callers).toEqual([
       "plugins/cli/pluginOperations.ts",
-      "plugins/plugin-config-rollback.ts",
+      "plugins/plugin-config-transaction.ts",
       "utils/plugins/pluginOptionsStorage.ts",
     ]);
     expect(operations.match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(2);
-    expect(rollback.match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(1);
+    expect(rollback).toContain("finishPluginConfigRollback(");
+    const transaction = source("plugins/plugin-config-transaction.ts");
+    expect(transaction).not.toMatch(forbidden);
+    expect(transaction.match(/mutateCanonicalPluginTransactionSync\(/gu)).toHaveLength(6);
     expect(source("utils/plugins/pluginOptionsStorage.ts").match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(2);
   });
 
