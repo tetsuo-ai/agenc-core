@@ -160,6 +160,18 @@ export class LLMProviderError extends RuntimeError {
   }
 }
 
+/** An in-stream failure explicitly forbids resampling this attempt. */
+export class LLMStreamRetryDeniedError extends LLMProviderError {
+  constructor(
+    providerName: string,
+    message: string,
+    public readonly reason: "provider_directive" | "partial_output",
+  ) {
+    super(providerName, message);
+    this.name = "LLMStreamRetryDeniedError";
+  }
+}
+
 /** Billing/quota exhaustion is terminal for this child and provider. */
 export class LLMFundsError extends LLMProviderError {
   constructor(providerName: string, statusCode?: number, message = "provider credits or billing quota exhausted") {
