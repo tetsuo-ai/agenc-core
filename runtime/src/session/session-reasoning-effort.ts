@@ -13,10 +13,37 @@ import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-mo
 import type { LLMChatOptions } from "../llm/types.js";
 import { getInitialEffortSetting } from "../utils/effort.js";
 import { anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
+import type { AgenCConfig } from "../config/schema.js";
+import { reasoningEffortAcceptedByModel } from "./reasoning-effort-for-model.js";
 import type { Session } from "./session.js";
 import type { ReasoningEffort, TurnContext } from "./turn-context.js";
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
+
+/**
+ * The configured `reasoning_effort` for a turn that carries none, when the
+ * model accepts it. Another model runs at its own default: when a model
+ * switch drops a level the new model rejects, the same level must not come
+ * back from settings, which `/effort <level>` also writes. Outside Gemini,
+ * the top tier keeps the alias handling below (settings spell it max).
+ */
+function configuredReasoningEffort(selection: {
+  readonly provider: string;
+  readonly model: string;
+  readonly config?: AgenCConfig;
+}): ReasoningEffort | undefined {
+  const configured = getInitialEffortSetting();
+  if (configured === undefined) return undefined;
+  const accepts = (reasoningEffort: string): boolean =>
+    reasoningEffortAcceptedByModel({ ...selection, reasoningEffort });
+  if (accepts(configured)) return configured;
+  const topTier = configured === "max" || configured === "xhigh";
+  return topTier &&
+    selection.provider !== "gemini" &&
+    (accepts("max") || accepts("xhigh") || accepts("high"))
+    ? configured
+    : undefined;
+}
 
 /** Only the native DeepSeek route has a measured, supported recovery switch. */
 export function supportsThinkingOffRecovery(provider: string, model: string): boolean {
@@ -27,11 +54,16 @@ function resolveGeminiSessionReasoningEffort(
   turnEffort: ReasoningEffort | undefined,
   model: string,
   effortSource: string | undefined,
+  config: AgenCConfig | undefined,
 ): WireReasoningEffort | undefined {
   if (turnEffort !== undefined) return resolveGeminiReasoningEffort(model, turnEffort);
   const configuredEffort = effortSource === "default"
     ? undefined
-    : getInitialEffortSetting();
+    : configuredReasoningEffort({
+        provider: "gemini",
+        model,
+        ...(config !== undefined ? { config } : {}),
+      });
   return resolveGeminiReasoningEffort(model, configuredEffort);
 }
 
@@ -59,6 +91,7 @@ export function resolveSessionReasoningEffort(
     readonly provider: string;
     readonly model: string;
     readonly effortSource?: string;
+    readonly config?: AgenCConfig;
   },
 ): WireReasoningEffort | undefined {
   if (selection?.provider === "gemini") {
@@ -66,9 +99,13 @@ export function resolveSessionReasoningEffort(
       turnEffort,
       selection.model,
       selection.effortSource,
+      selection.config,
     );
   }
-  const requested = turnEffort ?? getInitialEffortSetting();
+  const requested = turnEffort ??
+    (selection === undefined
+      ? getInitialEffortSetting()
+      : configuredReasoningEffort(selection));
   if (requested === undefined) return undefined;
   // Hosted providers can expose an effort contract absent from ModelInfo.
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
@@ -127,6 +164,7 @@ export function resolveMainLoopReasoningEffort(
       model: session.config?.model ?? turn.modelInfo.slug,
       effortSource: session.services.configStore
         ?.provenance?.("reasoning_effort")?.scope,
+      config: session.services.configStore?.current(),
     },
   );
 }

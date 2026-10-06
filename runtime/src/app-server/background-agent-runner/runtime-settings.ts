@@ -43,6 +43,7 @@ import {
 } from "../../permissions/unattended-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
+import { reasoningEffortForModel } from "../../session/reasoning-effort-for-model.js";
 import { isRecord } from "../../utils/record.js";
 import {
   RUN_RUNTIME_MODEL_VERBOSITIES,
@@ -613,6 +614,30 @@ function captureRuntimeSettings(
     serviceTier,
     hooksDisabled: session.services?.hooksRuntime?.isDisabled() === true,
   });
+}
+
+/**
+ * The effort a run carries once a staged model switch applies: the same level
+ * when the new model accepts it, otherwise none, so the new model runs at its
+ * own default. Session.publishPreparedProviderSwitch applies the same rule.
+ */
+function reasoningEffortForStagedModel(
+  config: AgenCConfig,
+  selection: { readonly provider: string; readonly model: string },
+  reasoningEffort: RunRuntimeSettingsSnapshot["reasoningEffort"],
+): {
+  readonly reasoningEffort: RunRuntimeSettingsSnapshot["reasoningEffort"];
+  readonly dropped?: string;
+} {
+  const effort = reasoningEffortForModel({
+    provider: selection.provider,
+    model: selection.model,
+    reasoningEffort: reasoningEffort ?? undefined,
+    config,
+  });
+  return effort.dropped === undefined
+    ? { reasoningEffort }
+    : { reasoningEffort: null, dropped: effort.dropped };
 }
 
 function normalizeRuntimeSetting<const T extends readonly string[]>(
@@ -1505,6 +1530,7 @@ export {
   prepareMcpAuthorityRefresh,
   captureRuntimeSettings,
   normalizeRuntimeSetting,
+  reasoningEffortForStagedModel,
   installRuntimeSettingsPreCommit,
   withRuntimeSettingsMutation,
   ensureInitialRuntimeSettings,

@@ -103,6 +103,10 @@ import {
   type ProviderBinding,
 } from "./provider-service.js";
 import { resolveProviderModelSelection } from "./provider-model-selection.js";
+import {
+  droppedReasoningEffortNotice,
+  reasoningEffortForModel,
+} from "./reasoning-effort-for-model.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
@@ -3268,6 +3272,7 @@ export class Session {
     const providerService = this.providerService;
     let snapshot: ProviderSwitchPublicationSnapshot | undefined;
     let committedBinding: ProviderBinding | undefined;
+    let droppedReasoningEffort: string | undefined;
     try {
       await this.state.with((state) => {
         if (this.pendingProviderSwitch !== pending) {
@@ -3286,13 +3291,31 @@ export class Session {
             state,
           );
         snapshot = publicationSnapshot;
+        // The effort moves with the model only when the new model accepts it;
+        // otherwise the new model runs at its own default.
+        const {
+          reasoningEffort: previousReasoningEffort,
+          ...collaborationMode
+        } = publicationSnapshot.sessionConfiguration.collaborationMode;
+        const effort = reasoningEffortForModel({
+          provider: prepared.provider.binding.provider,
+          model: prepared.provider.binding.model,
+          reasoningEffort: previousReasoningEffort,
+          config: (
+            this.services as Partial<SessionServices>
+          ).configStore?.current(),
+        });
+        droppedReasoningEffort = effort.dropped;
         committedBinding = providerService.commit(prepared.provider);
         state.sessionConfiguration = {
           ...publicationSnapshot.sessionConfiguration,
           provider: { slug: prepared.provider.binding.provider },
           collaborationMode: {
-            ...publicationSnapshot.sessionConfiguration.collaborationMode,
+            ...collaborationMode,
             model: prepared.provider.binding.model,
+            ...(effort.reasoningEffort !== undefined
+              ? { reasoningEffort: effort.reasoningEffort }
+              : {}),
           },
           baseInstructions: prepared.baseInstructions,
           permissionInstructionsDeferred: true,
@@ -3359,6 +3382,10 @@ export class Session {
             cause: "provider_switched",
             message: `provider ${snapshot.binding.provider} -> ${prepared.provider.binding.provider}; model ${snapshot.binding.model} -> ${prepared.provider.binding.model}; previous_response_id reset${
               pending.profile ? `; profile ${pending.profile}` : ""
+            }${
+              droppedReasoningEffort !== undefined
+                ? `; ${droppedReasoningEffortNotice(prepared.provider.binding.model, droppedReasoningEffort)}`
+                : ""
             }`,
           },
         },

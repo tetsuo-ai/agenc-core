@@ -123,8 +123,41 @@ describe("Gemini session reasoning effort", () => {
 
   test.each(["max", "xhigh"] as const)("never folds unsupported %s to high", (effort) => {
     expect(() => resolveSessionReasoningEffort(effort, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
+    // A configured default is a default only for a model that takes it:
+    // this one runs at its own default, with no level sent.
     settingsEffort.current = effort;
-    expect(() => resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toBeUndefined();
+  });
+
+  test("does not bring back a configured level that a model switch dropped", () => {
+    // `/effort medium` on gemini-3.5-flash saves medium as the default; after
+    // a switch to Gemma, which only has minimal and high, the session has no
+    // effort, and the saved medium must not fail every request.
+    settingsEffort.current = "medium";
+    const gemma = { provider: "gemini", model: "gemma-4-31b-it" };
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, gemma)).toBeUndefined();
+    settingsEffort.current = "high";
+    expect(resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, gemma)).toBe("high");
+  });
+});
+
+describe("configured reasoning effort fallback", () => {
+  beforeEach(() => { settingsEffort.current = undefined; });
+
+  test.each([
+    ["deepseek", "deepseek-v4-flash", "medium", undefined],
+    ["deepseek", "deepseek-v4-flash", "high", "high"],
+    ["grok", "grok-4", "high", undefined],
+    ["anthropic", "claude-haiku-4-5", "low", undefined],
+    ["openai", "gpt-6-sol", "medium", "medium"],
+    // The top tier keeps its alias handling where the model has a top tier
+    // or high: settings spell it max.
+    ["grok", "grok-4.6", "max", "xhigh"],
+    ["openai", "gpt-5", "max", "high"],
+  ] as const)("%s/%s applies a configured %s as %s", (provider, model, configured, wire) => {
+    settingsEffort.current = configured;
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    expect(resolveSessionReasoningEffort(undefined, levels, { provider, model })).toBe(wire);
   });
 });
 

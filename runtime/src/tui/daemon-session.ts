@@ -320,8 +320,8 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   applyDaemonConfig?(params: {
     profile?: string;
     reload?: boolean;
-    /** Apply only this effort to the idle session. */
-    reasoningEffort?: string;
+    /** Apply only this effort to the idle session; null clears it. */
+    reasoningEffort?: string | null;
   }): Promise<SessionApplyConfigResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   executeShellCommand?(

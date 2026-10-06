@@ -52,6 +52,7 @@ import {
   type ManagedFeatures,
   type ModelInfo,
   type NetworkProxy,
+  type ReasoningEffort,
   type SessionConfiguration,
   type SessionForTurn,
 } from "./turn-context.js";
@@ -97,6 +98,7 @@ import {
   runWithAgentRuntimeOptions,
 } from "./runtime-options.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
+import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import {
   clearSessionReadState,
   recordSessionRead,
@@ -947,6 +949,85 @@ describe("Session rollout persistence suspension", () => {
       ["event:1", 1],
       [undefined, undefined],
       ["event:2", 2],
+    ]);
+  });
+});
+
+describe("reasoning effort when a model switch takes effect", () => {
+  function geminiSession(reasoningEffort: ReasoningEffort) {
+    return buildSession({
+      services: {
+        provider: createProvider("gemini", {
+          model: "gemini-3.5-flash",
+          extra: {
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: "saved-key",
+                source: "saved-byok",
+              },
+              endpointPlan: createGeminiEndpointPlan(),
+            },
+          },
+        }),
+        configStore: { current: () => ({}) } as unknown as ConfigStore,
+      },
+      sessionConfiguration: {
+        ...mkSessionConfiguration("gemini-3.5-flash"),
+        provider: { slug: "gemini" },
+        collaborationMode: { model: "gemini-3.5-flash", reasoningEffort },
+      } as unknown as SessionConfiguration,
+      readSavedApiKey: async (provider) =>
+        provider === "gemini" ? "saved-key" : undefined,
+    });
+  }
+
+  function switchWarnings(emit: ReturnType<typeof vi.spyOn>): string[] {
+    return emit.mock.calls.flatMap(([event]: unknown[]) => {
+      const msg = (event as { msg?: { type?: string; payload?: { cause?: string; message?: string } } }).msg;
+      return msg?.type === "warning" && msg.payload?.cause === "provider_switched"
+        ? [msg.payload.message ?? ""]
+        : [];
+    });
+  }
+
+  it("drops a level the new model rejects, so the next request sends none", async () => {
+    // What /effort default pinned on gemini-3.5-flash; Gemma has only
+    // minimal and high, and Gemini refused every request at medium.
+    const session = geminiSession("medium");
+    const emit = vi.spyOn(session, "emit");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    await expect(consumePendingProviderSwitch(session)).resolves.toMatchObject({
+      applied: true,
+      model: "gemma-4-31b-it",
+    });
+
+    expect(session.sessionConfiguration.collaborationMode).toEqual({
+      model: "gemma-4-31b-it",
+    });
+    const turn = session.newDefaultTurn();
+    expect(turn.reasoningEffort).toBeUndefined();
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
+    expect(switchWarnings(emit)).toEqual([
+      expect.stringContaining(
+        "gemma-4-31b-it does not support medium reasoning effort, so the session now uses its default effort.",
+      ),
+    ]);
+  });
+
+  it("keeps a level the new model accepts for the next request", async () => {
+    const session = geminiSession("high");
+    const emit = vi.spyOn(session, "emit");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    await consumePendingProviderSwitch(session);
+
+    const turn = session.newDefaultTurn();
+    expect(turn.reasoningEffort).toBe("high");
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBe("high");
+    expect(switchWarnings(emit)).toEqual([
+      expect.not.stringContaining("reasoning effort"),
     ]);
   });
 });
