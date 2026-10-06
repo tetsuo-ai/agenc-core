@@ -1,6 +1,5 @@
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
-import { execa } from 'execa'
 import { basename, extname, isAbsolute, join } from 'path'
 import { resolveSessionTempRoot } from '../session/runtime-options.js'
 import {
@@ -19,10 +18,9 @@ import {
 } from './imageResizer.js'
 import { logError } from './log.js'
 
-// Native NSPasteboard reader. GrowthBook gate tengu_collage_kaleidoscope is
-// a kill switch (default on). Falls through to osascript when off.
-// The gate string is inlined at each callsite INSIDE the feature() condition
-// — module-scope helpers are NOT tree-shaken (see docs/feature-gating.md).
+// Native NSPasteboard reader behind feature('NATIVE_CLIPBOARD_IMAGE'). Falls
+// through to osascript when off. The feature() call is inlined at each
+// callsite — module-scope helpers are NOT tree-shaken (see docs/feature-gating.md).
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32'
 
@@ -207,6 +205,7 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
   const { commands, screenshotPath } = getClipboardCommands()
   try {
     // Check if clipboard has image
+    const { execa } = await import('execa')
     const checkResult = await execa(commands.checkImage, {
       shell: true,
       reject: false,
@@ -267,6 +266,7 @@ export async function getImagePathFromClipboard(): Promise<string | null> {
 
   try {
     // Try to get text from clipboard
+    const { execa } = await import('execa')
     const result = await execa(commands.getPath, {
       shell: true,
       reject: false,

@@ -58,6 +58,48 @@ describe("grok adapter utils", () => {
     });
   });
 
+  it("keeps usage token counts readable while still redacting token credentials", () => {
+    const payload = cloneProviderTracePayload({
+      model: "grok-4.7",
+      max_output_tokens: 64_000,
+      usage: {
+        input_tokens: 55_500,
+        input_tokens_details: { cached_tokens: 47_872 },
+        output_tokens: 938,
+        output_tokens_details: { reasoning_tokens: 892 },
+        total_tokens: 56_438,
+        cost_in_usd_ticks: 152_388_000,
+        context_details: { input_tokens: 55_500, output_tokens: 938 },
+      },
+      auth: {
+        access_token: "access-secret",
+        refresh_tokens: ["refresh-secret"],
+        id_tokens: "id-secret",
+        session_token_details: "not-a-count",
+      },
+    });
+
+    expect(payload).toEqual({
+      model: "grok-4.7",
+      max_output_tokens: 64_000,
+      usage: {
+        input_tokens: 55_500,
+        input_tokens_details: { cached_tokens: 47_872 },
+        output_tokens: 938,
+        output_tokens_details: { reasoning_tokens: 892 },
+        total_tokens: 56_438,
+        cost_in_usd_ticks: 152_388_000,
+        context_details: { input_tokens: 55_500, output_tokens: 938 },
+      },
+      auth: {
+        access_token: "[REDACTED]",
+        refresh_tokens: "[REDACTED]",
+        id_tokens: "[REDACTED]",
+        session_token_details: "[REDACTED]",
+      },
+    });
+  });
+
   it("redacts provider error headers from iterable header collections", () => {
     const error = new Error("upstream failed") as Error & {
       headers: Headers;
@@ -254,5 +296,50 @@ describe("grok adapter utils", () => {
     expect(firstField.description).toBeUndefined();
     // required array preserved.
     expect(params.required).toEqual(["field_0"]);
+  });
+
+  it("keeps enums and other schema arrays longer than 64 entries", () => {
+    // An array cap silently removed choices the tool accepts: the model could
+    // not pick an enum value past the 64th, and a long required list lost
+    // fields.
+    const values = Array.from({ length: 80 }, (_, index) => `v${String(index).padStart(2, "0")}`);
+    const required = Array.from({ length: 70 }, (_, index) => `field_${index}`);
+    const tool: LLMTool = {
+      type: "function",
+      function: {
+        name: "mcp.enum80.pick",
+        description: "Pick one value.",
+        parameters: {
+          type: "object",
+          properties: {
+            value: { type: "string", enum: values },
+            ...Object.fromEntries(required.map((name) => [name, { type: "string" }])),
+          },
+          required,
+          anyOf: values.map((value) => ({ properties: { value: { const: value } } })),
+        },
+      },
+    };
+
+    const params = toSlimTool(tool).tool.function.parameters as {
+      readonly properties: { readonly value: { readonly enum: readonly string[] } };
+      readonly required: readonly string[];
+      readonly anyOf: readonly unknown[];
+    };
+
+    expect(params.properties.value.enum).toEqual(values);
+    expect(params.required).toEqual(required);
+    expect(params.anyOf).toHaveLength(80);
+  });
+
+  it("keeps an object-valued const literal intact", () => {
+    const schema = {
+      type: "object", properties: {
+        choice: { type: "string", enum: ["a", "b", "c"] },
+        literal: { const: { description: "a literal value", title: "kept" } },
+      },
+    };
+    const tool: LLMTool = { type: "function", function: { name: "fixture", description: "fixture", parameters: schema } };
+    expect(slimTools([tool]).tools[0]?.function.parameters).toMatchObject(schema);
   });
 });

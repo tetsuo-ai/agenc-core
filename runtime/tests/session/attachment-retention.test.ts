@@ -28,6 +28,46 @@ const toolResult = (id: string, body: string): LLMMessage => ({
 });
 
 describe("attachment retention", () => {
+  it("keeps the auto-mode note in every autonomous mode, not only in auto", () => {
+    const note: LLMMessage = {
+      role: "user",
+      content: "<system-reminder>\nAuto mode is active\n</system-reminder>",
+      runtimeOnly: { mergeBoundary: "user_context", permissionModeReminder: "auto" },
+    };
+    const exitNote: LLMMessage = {
+      role: "user",
+      content: "<system-reminder>\nexited auto mode\n</system-reminder>",
+      runtimeOnly: { mergeBoundary: "user_context", permissionModeReminder: "auto_exit" },
+    };
+    for (const mode of ["auto", "acceptEdits", "bypassPermissions"] as const) {
+      const ledger = createAttachmentRetentionLedger();
+      const first = [{ role: "system", content: "sys" } as LLMMessage, user("build it")];
+      recordRetainedAttachments(ledger, first, 1, "before", [note, exitNote]);
+      const second = [...first, assistantCall("c1"), toolResult("c1", "ok")];
+      const projected = projectRetainedAttachments(second, ledger, mode);
+      expect(projected.dropped, mode).toBe(0);
+      // The note stays where the provider first saw it; the exit note waits.
+      expect(projected.messages.map((m) => m.content), mode).toEqual([
+        "sys",
+        "<system-reminder>\nAuto mode is active\n</system-reminder>",
+        "build it",
+        "",
+        "ok",
+      ]);
+    }
+    for (const mode of ["default", "plan"] as const) {
+      const ledger = createAttachmentRetentionLedger();
+      const first = [{ role: "system", content: "sys" } as LLMMessage, user("build it")];
+      recordRetainedAttachments(ledger, first, 1, "before", [note, exitNote]);
+      const projected = projectRetainedAttachments(first, ledger, mode);
+      expect(projected.messages.map((m) => m.content), mode).toEqual([
+        "sys",
+        "<system-reminder>\nexited auto mode\n</system-reminder>",
+        "build it",
+      ]);
+    }
+  });
+
   it("keeps the first request's block before the prompt on later projections", () => {
     const ledger = createAttachmentRetentionLedger();
     const first = [{ role: "system", content: "sys" } as LLMMessage, user("build it")];

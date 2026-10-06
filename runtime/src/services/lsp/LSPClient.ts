@@ -11,14 +11,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 
-import {
-  createMessageConnection,
-  type HandlerResult,
-  type MessageConnection,
-  StreamMessageReader,
-  StreamMessageWriter,
-  Trace,
-} from "vscode-jsonrpc/node";
+import type { HandlerResult, MessageConnection } from "vscode-jsonrpc/node";
+import { loadJsonRpc } from "../../utils/lazy-runtime-packages.js";
 
 import type {
   InitializeParams,
@@ -67,6 +61,9 @@ export interface LSPClientOptions {
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
 const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
+
+/** Child errors that matter are handled by the listeners start() adds. */
+function ignoreChildError(): void {}
 
 function mergedEnv(
   baseEnv: NodeJS.ProcessEnv | undefined,
@@ -148,6 +145,10 @@ export function createLSPClient(
 
   const removeChildListeners = (currentChild: ChildProcess): void => {
     currentChild.removeAllListeners("error");
+    // Termination still needs one: a spawn that failed reports on the next
+    // tick, and kill() reports a failed signal as an error event. Without a
+    // listener either is an uncaught exception in the daemon.
+    currentChild.on("error", ignoreChildError);
     currentChild.removeAllListeners("exit");
     currentChild.stdin?.removeAllListeners("error");
     currentChild.stdout?.removeAllListeners("end");
@@ -313,6 +314,12 @@ export function createLSPClient(
         if (sandboxExecutionBroker === undefined) {
           throw missingSandboxExecutionBoundary("lsp");
         }
+        const {
+          createMessageConnection,
+          StreamMessageReader,
+          StreamMessageWriter,
+          Trace,
+        } = loadJsonRpc();
         const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
           "lsp",
           {
@@ -344,6 +351,9 @@ export function createLSPClient(
                 : {}),
             }),
         );
+        // A failed spawn reports on the next tick, and EMFILE or ENFILE also
+        // leave stdio undefined. Listen before the check below can throw.
+        child.on("error", ignoreChildError);
 
         if (!child.stdin || !child.stdout) {
           throw new Error("LSP server process stdio not available");

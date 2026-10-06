@@ -59,7 +59,13 @@ const AUTO_FAMILY_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   "bypassPermissions",
 ]);
 
-function isAutoFamilyMode(mode: PermissionMode): boolean {
+/**
+ * True for every mode that carries the auto-mode reminder. The retention
+ * ledger keeps the retained note under the same rule, so the note stays
+ * where the provider first saw it instead of being dropped and re-emitted
+ * at the end of the prompt (which moved the cached prefix on every call).
+ */
+export function isAutoFamilyMode(mode: PermissionMode): boolean {
   return AUTO_FAMILY_MODES.has(mode);
 }
 
@@ -170,11 +176,13 @@ export const autoModeProducer: AttachmentProducer = async (
   // Full / sparse cycle — count includes the attachment we are about to emit.
   const attachmentCount =
     countAutoModeAttachmentsSinceLastExit(opts.messages) + 1;
-  const variant: "full" | "sparse" =
+  const variant: "full" | "sparse" | "light" | "light-print" =
     attachmentCount %
       AUTO_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
     1
-      ? "full"
+      ? opts.lightMode === true
+        ? opts.lightPrint === true ? "light-print" : "light"
+        : "full"
       : "sparse";
 
   attachments.push({ kind: "auto_mode", variant });

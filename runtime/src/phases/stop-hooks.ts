@@ -114,13 +114,6 @@ export async function evaluateStopHooks(
   if (isHookExecutionSuppressed(session.services.runtimeOptions)) {
     return { allowStop: true, blocking: false };
   }
-  // Configured Stop hooks are arbitrary operator commands. Editor
-  // interactions have their own read-only/proposal-only contract and must
-  // never widen that authority by entering the ordinary Agent hook ladder.
-  if (ctx.editorInteraction !== undefined) {
-    return { allowStop: true, blocking: false };
-  }
-
   // Build a consistent request for every registered hook.
   const lastAssistant = state.assistantMessages.at(-1);
   const hookMessages = buildHookMessages(state);
@@ -462,11 +455,6 @@ export async function executeStopFailureHooks(
   session: Session,
 ): Promise<void> {
   if (isHookExecutionSuppressed(session.services.runtimeOptions)) return;
-  // Keep the same authority boundary as normal Stop hooks. This central
-  // guard covers every recovery callsite.
-  if (ctx.editorInteraction !== undefined) {
-    return;
-  }
   const lastAssistant = state.assistantMessages.at(-1);
   if (!isApiErrorAssistantMessage(lastAssistant)) {
     return;

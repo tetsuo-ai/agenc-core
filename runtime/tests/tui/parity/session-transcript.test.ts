@@ -149,7 +149,7 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
-  test("renders token_count ledger updates in transcript order", () => {
+  test("keeps token_count usage out of the transcript and adds its cost", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "user",
@@ -184,53 +184,13 @@ describe("AgenC TUI session transcript", () => {
       },
     ]);
 
+    // Spend shows in the status line and the details in /cost, so usage
+    // events no longer add a row per provider call.
     expect(transcript.messages.map((message) => message.type)).toEqual([
       "user",
-      "system",
       "assistant",
     ]);
-    expect(transcript.messages[1]).toMatchObject({
-      type: "system",
-      content:
-        "Token ledger update: 1.2K in · 450 out · 1.6K total · 300 cache read · 50 cache write · 25 reasoning · 1 web search · $0.019 · openai/gpt-5.4",
-    });
     expect(transcript.sessionCostUsd).toBeCloseTo(0.019, 3);
-  });
-
-  test("token ledger fallback total never re-adds cached tokens", () => {
-    // Cached input tokens are a SUBSET of promptTokens (OpenAI/xAI
-    // convention the daemon's LLMUsage normalizes to); when the provider
-    // omits totalTokens the fallback must be in + out — the old fallback
-    // added cached + cacheCreation + reasoning back in and nearly doubled
-    // the displayed total (absurd cached/total readings, 2026-07-20).
-    const transcript = adaptTranscriptEvents([
-      {
-        id: "usage",
-        seq: 1,
-        msg: {
-          type: "token_count",
-          payload: {
-            promptTokens: 48_892,
-            completionTokens: 169,
-            // no totalTokens from the provider
-            cachedInputTokens: 46_720,
-            reasoningOutputTokens: 15,
-            model: "grok-4.5",
-            provider: "grok",
-          },
-        },
-      },
-    ]);
-
-    const row = transcript.messages[0];
-    expect(row).toMatchObject({ type: "system" });
-    const content = String((row as { content?: unknown })?.content ?? "");
-    // 48,892 + 169 = 49,061 → "49.1K total"; the buggy fallback produced
-    // 95,796 → "95.8K total".
-    expect(content).toContain("49.1K total");
-    expect(content).not.toContain("95.8K total");
-    // Cache read still reported separately, honestly.
-    expect(content).toContain("46.7K cache read");
   });
 
   test("renders protocol events as inline system rows with badge variants", () => {
@@ -1441,6 +1401,25 @@ describe("AgenC TUI session transcript", () => {
       expect(JSON.stringify(transcript.messages)).toContain(
         "daemon disconnected, reconnecting",
       );
+    });
+
+    test("renders an unexpressible sandbox policy warning", () => {
+      const transcript = adaptTranscriptEvents([{
+        id: "sandbox-policy",
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "sandbox_policy_unexpressible",
+            message: "Workspace sandbox policy cannot be enforced; install bubblewrap",
+          },
+        },
+      }]);
+
+      expect(transcript.messages).toMatchObject([{
+        type: "system",
+        level: "warning",
+        content: "Workspace sandbox policy cannot be enforced; install bubblewrap",
+      }]);
     });
 
     test("renders background agent status events as visible status rows", () => {

@@ -23,7 +23,6 @@ import type { ExternalCommandConfig } from '../../utils/shell/readOnlyCommandVal
 import {
   DOCKER_READ_ONLY_COMMANDS,
   EXTERNAL_READONLY_COMMANDS,
-  GH_READ_ONLY_COMMANDS,
   GIT_READ_ONLY_COMMANDS,
   validateFlags,
 } from '../../utils/shell/readOnlyCommandValidation.js'
@@ -1700,60 +1699,10 @@ function isGitSafe(args: string[]): boolean {
   return validateFlags(flagArgs, 0, config, { commandName: 'git' })
 }
 
-function isGhSafe(args: string[]): boolean {
-  // gh commands are network-dependent; only allow for ant users
-  if (process.env.USER_TYPE !== 'ant') {
-    return false
-  }
-
-  if (args.length === 0) {
-    return true
-  }
-
-  // Try two-word subcommand first (e.g. 'pr view')
-  let config: ExternalCommandConfig | undefined
-  let subcommandTokens = 0
-
-  if (args.length >= 2) {
-    const twoWordKey = `gh ${args[0]?.toLowerCase()} ${args[1]?.toLowerCase()}`
-    config = GH_READ_ONLY_COMMANDS[twoWordKey]
-    subcommandTokens = 2
-  }
-
-  // Try single-word subcommand (e.g. 'gh version')
-  if (!config && args.length >= 1) {
-    const oneWordKey = `gh ${args[0]?.toLowerCase()}`
-    config = GH_READ_ONLY_COMMANDS[oneWordKey]
-    subcommandTokens = 1
-  }
-
-  if (!config) {
-    return false
-  }
-
-  const flagArgs = args.slice(subcommandTokens)
-
-  // SECURITY: Reject any arg containing `$` (variable reference). Bare
-  // VariableExpressionAst positionals reach here as literal text ($env:SECRET).
-  // deriveSecurityFlags does not gate bare Variable args — only subexpressions,
-  // splatting, expandable strings, etc. All gh subcommands are network-facing,
-  // so a variable arg is a data-exfiltration vector:
-  //   gh search repos $env:SECRET_API_KEY
-  //   → PowerShell expands at runtime → secret sent to GitHub API.
-  // git ls-remote has an equivalent inline guard; this generalizes it for gh.
-  // Bash equivalent: BashTool blanket `$` rejection at readOnlyValidation.ts:~1352.
-  for (const arg of flagArgs) {
-    if (arg.includes('$')) {
-      return false
-    }
-  }
-  if (
-    config.additionalCommandIsDangerousCallback &&
-    config.additionalCommandIsDangerousCallback('', flagArgs)
-  ) {
-    return false
-  }
-  return validateFlags(flagArgs, 0, config)
+function isGhSafe(_args: string[]): boolean {
+  // Every gh subcommand talks to the network, so none of them qualifies as
+  // a read-only command here. The Bash validator makes the same call.
+  return false
 }
 
 function isDockerSafe(args: string[]): boolean {

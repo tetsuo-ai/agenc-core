@@ -1017,7 +1017,7 @@ export async function runAdmittedToolCall(
       let preBoundaryEvent: Event | undefined;
       let preBoundaryProjected = false;
       const ensureUnknownRecorded = (): void => {
-        if (unknownProjected || category === "idempotent" || !boundaryCrossed) {
+        if (unknownProjected || !boundaryCrossed) {
           return;
         }
         if (unknownEvent !== undefined) {
@@ -1208,9 +1208,10 @@ export async function runAdmittedToolCall(
         },
         onForcedShutdown: async () => {
           try {
-            if (callerStopEvidenceRequired) {
-              ensureCallerStopEvidence();
-            }
+            // A forced stop cannot observe physical completion. Even an
+            // idempotent call needs a durable unknown record before the run
+            // can cross a suspension boundary; its key keeps replay safe.
+            ensureCallerStopEvidence();
             if (reservationId !== undefined && !admissionSettled) {
               client?.holdUnknown(
                 reservationId,

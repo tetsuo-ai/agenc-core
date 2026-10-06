@@ -59,6 +59,34 @@ const ARTIFACT = {
 };
 
 describe("projectWorkflowStatus", () => {
+  it("reports the frozen Light mode after the run session is gone", () => {
+    const status = projectWorkflowStatus({ runId: "run-1", effects: [
+      effect("workflow.intake", "committed", { spec: { lightMode: true, permissionMode: "default" } }),
+    ] });
+    expect(status.lightMode).toBe(true);
+  });
+  it("labels frozen intake policy as requested and never invents an effective cold mode", () => {
+    const status = projectWorkflowStatus({
+      runId: "run-1",
+      effects: [effect("workflow.intake", "committed", {
+        spec: { permissionMode: "bypassPermissions" },
+        effectivePermissionMode: "bypassPermissions",
+      })],
+    });
+    expect(status.requestedPermissionMode).toBe("bypassPermissions");
+    expect(status.effectivePermissionMode).toBeUndefined();
+  });
+
+  it("keeps legacy or absent permission evidence unknown", () => {
+    for (const evidence of [undefined, {}, { spec: {} }, { spec: { permissionMode: "forged" } }]) {
+      const status = projectWorkflowStatus({
+        runId: "run-1", effects: [effect("workflow.intake", "committed", evidence)],
+      });
+      expect(status.requestedPermissionMode).toBeUndefined();
+      expect(status.effectivePermissionMode).toBeUndefined();
+    }
+  });
+
   it("emits one entry per fixed pipeline stage, in order", () => {
     const status = projectWorkflowStatus({ runId: "run-1", effects: [] });
     expect(status.steps.map((step) => step.stage)).toEqual([

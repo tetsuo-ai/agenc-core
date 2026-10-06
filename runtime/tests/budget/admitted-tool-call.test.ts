@@ -1,16 +1,14 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  AdmissionAcquireInput,
-  ExecutionAdmissionClient,
-} from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { createAllowAdmissionHarness } from "./admission-test-harness.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
+import { WEB_FETCH_TOOL_NAME } from "../../src/tools/WebFetchTool/prompt.js";
 import {
   effectSettlementMetrics,
   resolveLiveEffectPoison,
@@ -21,6 +19,10 @@ import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
 import { createFileEditTool } from "../../src/tools/system/file-edit.js";
+import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
+import { createWriteStdinTool } from "../../src/tools/system/write-stdin.js";
+import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 const zeroAdmissionEstimate = () => ({
   maxInputTokens: 0,
@@ -29,56 +31,18 @@ const zeroAdmissionEstimate = () => ({
 });
 
 function toolHarness() {
-  const leaseController = new AbortController();
-  const acquire = vi.fn(
-    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
-      decision: "allow",
-      reservation: {
-        reservationId: "tool-reservation",
-        step: { runId: "run-1", stepId: input.stepId },
-        reservedCostUsd: input.maxCostUsd ?? 0,
-        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-        reservedAt: "2026-07-18T00:00:00.000Z",
-      },
-      request: {
-        step: { runId: "run-1", stepId: input.stepId },
-        kind: input.kind,
-        estimate: {
-          maxInputTokens: input.maxInputTokens,
-          maxOutputTokens: input.maxOutputTokens,
-          maxCostUsd: input.maxCostUsd,
-        },
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        parentScopeId: "turn-1",
-        autonomous: false,
-      },
-      signal: leaseController.signal,
-    }),
-  );
-  const reconcile = vi.fn(() => ({
-    applied: true as const,
-    outcome: "reconciled" as const,
-  }));
-  const holdUnknown = vi.fn();
-  const acknowledgeCompletion = vi.fn();
-  const admission = {
-    scope: {
-      runId: "run-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-1",
-      autonomous: false,
-    },
-    acquire,
-    markDispatched: vi.fn(),
-    reconcile,
-    holdUnknown,
-    void: vi.fn(),
+  const {
     acknowledgeCompletion,
-    recordFallback: vi.fn(),
-    forSession: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  } as unknown as ExecutionAdmissionClient;
+    acquire,
+    admission,
+    holdUnknown,
+    leaseController,
+    reconcile,
+  } = createAllowAdmissionHarness({
+    reservationId: "tool-reservation",
+    parentScopeId: "turn-1",
+    rejectDenialReason: false,
+  });
   const effectEvents: Event[] = [];
   const eventLog = new EventLog();
   eventLog.subscribe((event) => effectEvents.push(event));
@@ -106,6 +70,80 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
+  it.runIf(process.platform === "darwin")("settles a real pre-read CronDelete refusal and admits the next prompt's mutation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-cron-delete-settlement-"));
+    const state = toolHarness();
+    const metadata = join(root, ".agenc");
+    await mkdir(metadata, { mode: 0o700 });
+    await writeFile(join(metadata, "scheduled_tasks.json"), JSON.stringify({ tasks: [{
+      id: "durable-job", cron: "* * * * *", prompt: "work", createdAt: 1_000,
+    }] }), { mode: 0o600 });
+    const cronDelete = createModelFacingTools({ workspaceRoot: root, getSession: () => state.session })
+      .find((candidate) => candidate.name === "CronDelete")!;
+    const invoke = (tool: Tool, callId: string, args: Record<string, unknown>, turnId = "turn-1") => runAdmittedToolCall({
+      session: state.session, turnId, callId, tool, args,
+      invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(args); },
+    });
+    try {
+      const result = await invoke(cronDelete, "failed-delete", { id: "durable-job" });
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      const next = await invoke({
+        name: "next_prompt_mutation", description: "next prompt", inputSchema: { type: "object" },
+        recoveryCategory: "side-effecting", admissionEstimate: zeroAdmissionEstimate,
+        execute: async () => ({ content: "accepted" }),
+      } as Tool, "next-prompt", {}, "turn-2");
+      expect(next.content).toBe("accepted");
+      expect(state.effectEvents.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it.each(["timeout", "nonzero", "signal"] as const)(
+    "a real background process %s stays an error without locking subsequent commands",
+    async (termination) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-process-settlement-"));
+      const manager = new UnifiedExecProcessManager({ cwd: root });
+      const state = toolHarness();
+      const exec = bindExplicitDangerBoundary(createExecCommandTool({ cwd: root, unifiedExecManager: manager }));
+      const poll = bindExplicitDangerBoundary(createWriteStdinTool({ cwd: root, unifiedExecManager: manager }));
+      const invoke = (tool: Tool, callId: string, args: Record<string, unknown>) => runAdmittedToolCall({
+        session: state.session, turnId: "turn-1", callId, tool, args,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(args);
+        },
+      });
+      try {
+        await mkdir(join(root, "tmp"));
+        // A failed command can already have made changes. The poll receipt
+        // confirms observation, never that the workspace is unchanged.
+        const started = await invoke(exec, "start-background", {
+          cmd: termination === "nonzero"
+            ? "printf partial > tmp/partial.txt; sleep 0.6; exit 7"
+            : "printf partial > tmp/partial.txt; sleep 30",
+          yield_time_ms: 250,
+          ...(termination === "timeout" ? { timeoutMs: 600 } : {}),
+        });
+        const sessionId = started.metadata?.sessionId as number;
+        expect(sessionId, started.content).toEqual(expect.any(Number));
+        if (termination === "signal") manager.terminateProcess(sessionId);
+        const result = await invoke(poll, "poll-background", { session_id: sessionId, chars: "" });
+        expect(result.isError).toBe(true);
+        expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_committed", evidenceKind: "provider_receipt" });
+        expect(result.content).toContain(termination === "timeout" ? "timed_out=true" : termination === "nonzero" ? "exit_code=7" : "signal_terminated=true");
+        expect(await readFile(join(root, "tmp/partial.txt"), "utf8")).toBe("partial");
+        const followUp = await invoke(exec, "follow-up", { cmd: "printf recovered > tmp/recovered.txt" });
+        expect(followUp.isError).not.toBe(true);
+        expect(await readFile(join(root, "tmp/recovered.txt"), "utf8")).toBe("recovered");
+        expect(state.effectEvents.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
+      } finally {
+        await manager.closeAll("test_cleanup");
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("fails closed before tool dispatch when the canonical effect journal is detached", async () => {
     const state = toolHarness();
     Object.assign(state.session, { rolloutStore: null });
@@ -133,52 +171,17 @@ describe("runAdmittedToolCall", () => {
   });
 
   it("forwards live lease cancellation into the running tool", async () => {
-    const leaseController = new AbortController();
-    const holdUnknown = vi.fn();
-    const acknowledgeCompletion = vi.fn();
-    const acquire = vi.fn(
-      async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
-        decision: "allow",
-        reservation: {
-          reservationId: "tool-reservation",
-          step: { runId: "run-1", stepId: input.stepId },
-          reservedCostUsd: 0,
-          reservedTokens: 0,
-          reservedAt: "2026-07-18T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-1", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-1",
-          parentScopeId: "turn-1",
-          autonomous: false,
-        },
-        signal: leaseController.signal,
-      }),
-    );
-    const admission = {
-      scope: {
-        runId: "run-1",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        autonomous: false,
-      },
-      acquire,
-      markDispatched: vi.fn(),
-      reconcile: vi.fn(),
-      holdUnknown,
-      void: vi.fn(),
+    const {
       acknowledgeCompletion,
-      recordFallback: vi.fn(),
-      forSession: vi.fn(),
-      subscribe: vi.fn(() => () => {}),
-    } as unknown as ExecutionAdmissionClient;
+      acquire,
+      admission,
+      holdUnknown,
+      leaseController,
+    } = createAllowAdmissionHarness({
+      reservationId: "tool-reservation",
+      parentScopeId: "turn-1",
+      rejectDenialReason: false,
+    });
     const effectEvents: Event[] = [];
     const eventLog = new EventLog();
     eventLog.subscribe((event) => effectEvents.push(event));
@@ -384,6 +387,49 @@ describe("runAdmittedToolCall", () => {
     });
     expect(state.holdUnknown).not.toHaveBeenCalled();
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  it("settles a successful web_fetch at zero instead of holding it as missing usage", async () => {
+    // Foodstuff-beta-activity (DeepSeek, 2026-09-15): the nested extraction call reconciled at the
+    // model boundary, then the fetch's own reservation was held as missing_tool_usage because the
+    // tool declared no estimate, and the whole session's cost turned unknown. The real tool
+    // definition is used here; only the network fetch is stubbed.
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-web-fetch-admission-"));
+    try {
+      const webFetch = createModelFacingTools({
+        workspaceRoot,
+        agencHome: workspaceRoot,
+        env: {},
+        getSession: () => null,
+      }).find((candidate) => candidate.name === WEB_FETCH_TOOL_NAME);
+      expect(webFetch).toBeDefined();
+      const state = toolHarness();
+
+      await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-web-fetch",
+        tool: webFetch!,
+        args: { url: "https://example.com/data.json", prompt: "list the fields" },
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return { content: "page text" };
+        },
+      });
+
+      expect(state.acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "tool_exec", maxCostUsd: 0 }),
+        undefined,
+      );
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+      expect(state.reconcile).toHaveBeenCalledWith("tool-reservation", {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("holds the full bound when a charged tool omits usage", async () => {

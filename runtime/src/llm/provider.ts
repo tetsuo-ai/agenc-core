@@ -4,7 +4,9 @@
  * @module
  */
 
+import { observeEndpointMetadataFailures } from "./endpoint-metadata-cache.js";
 import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
+import { LLMMissingCredentialsError } from "./errors.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -50,6 +52,7 @@ import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { MetaProvider } from "./providers/meta/index.js";
+import { OllamaCloudProvider } from "./providers/ollama-cloud/index.js";
 import { CerebrasProvider } from "./providers/cerebras/index.js";
 import {
   ZaiCodingPlanProvider,
@@ -82,6 +85,7 @@ import {
 export { resolveBuiltInProviderSlug } from "./registry/provider-info.js";
 import {
   forceRefreshXaiOauthCredentials,
+  isXaiOauthBearer,
   readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
@@ -145,6 +149,8 @@ export type ProviderRuntimeExtra = Partial<
   readonly gemini?: GeminiRuntimeOptions;
   /** Grok-only opt-in for streaming previous_response_id continuation. */
   readonly incrementalContinuation?: boolean;
+  /** OpenRouter: route only to zero-data-retention endpoints (`provider.zdr`). */
+  readonly zeroDataRetention?: boolean;
   readonly grokAcp?: {
     readonly binaryPath?: string;
     readonly allowPermissions?: boolean;
@@ -153,10 +159,13 @@ export type ProviderRuntimeExtra = Partial<
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  readonly canonicalEndpointRequired?: boolean;
   readonly accessKeyId?: string;
   readonly secretAccessKey?: string;
   readonly sessionToken?: string;
   readonly region?: string;
+  /** Amazon Bedrock: the config's `modelOverrides`, for model identity. */
+  readonly modelOverrides?: Readonly<Record<string, string>>;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
@@ -204,15 +213,18 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "grokAcp",
   "defaultHeaders",
   "fetchImpl",
+  "canonicalEndpointRequired",
   "accessKeyId",
   "secretAccessKey",
   "sessionToken",
   "region",
+  "modelOverrides",
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
   "contextWindowTokens",
   "parallelToolCalls",
+  "incrementalContinuation",
   "visionModel",
   "webSearch",
   "searchMode",
@@ -372,7 +384,7 @@ function markFactoryProvider<T extends LLMProvider>(
     configurable: false,
     writable: false,
   });
-  return provider;
+  return observeEndpointMetadataFailures(provider, state.provider);
 }
 
 /** Preserve canonical factory identity when wrapping a provider object. */
@@ -470,7 +482,7 @@ function requireFactoryApiKey(
   const apiKey = resolveFactoryApiKey(opts, explicitApiKey);
   if (apiKey === undefined) {
     throw new Error(
-      `${provider} provider requires apiKey — pass apiKey or authBackend/sessionId in factory options`,
+      `${provider} provider requires apiKey: pass apiKey or authBackend/sessionId in factory options`,
     );
   }
   return apiKey;
@@ -640,6 +652,34 @@ class AuthVendedProvider implements LLMProvider {
       vended,
     );
     const baseURL = firstNonEmpty(options.baseURL, vended.baseUrl);
+    if (options.extra?.canonicalEndpointRequired === true) {
+      const canonical = defaultBaseURLFor(this.#provider);
+      const isCanonical = (value: string | undefined): boolean => {
+        if (value === undefined) return true;
+        try {
+          return new URL(value).href.replace(/\/+$/u, "") ===
+            new URL(canonical).href.replace(/\/+$/u, "");
+        } catch {
+          return false;
+        }
+      };
+      const vendedRegionalEndpoint = this.#provider === "amazon-bedrock"
+        ? resolveBuiltInProviderRegionalEndpoint(
+            this.#provider,
+            firstNonEmpty(
+              vended.kind === "aws-sigv4" ? vended.region : undefined,
+              readString(options.extra, "region"),
+            ),
+          )?.baseURL
+        : undefined;
+      if (!isCanonical(options.baseURL) || !isCanonical(vended.baseUrl) ||
+          !isCanonical(vendedRegionalEndpoint)) {
+        throw new Error(
+          `${this.#provider} managed child key vending returned a noncanonical endpoint; ` +
+          `cross-provider sub-agents require the default endpoint`,
+        );
+      }
+    }
     const model =
       baseURL !== undefined && options.model !== undefined
         ? normalizeManagedGatewayModel(this.#provider, options.model)
@@ -1136,6 +1176,9 @@ function readRuntimeExtra(
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
     ...(extra?.fetchImpl ? { fetchImpl: extra.fetchImpl as typeof fetch } : {}),
+    ...(readBoolean(extra, "canonicalEndpointRequired") === true
+      ? { canonicalEndpointRequired: true }
+      : {}),
     ...(readString(extra, "accessKeyId") !== undefined
       ? { accessKeyId: readString(extra, "accessKeyId") }
       : {}),
@@ -1147,6 +1190,9 @@ function readRuntimeExtra(
       : {}),
     ...(readString(extra, "region") !== undefined
       ? { region: readString(extra, "region") }
+      : {}),
+    ...(readStringRecord(extra, "modelOverrides") !== undefined
+      ? { modelOverrides: readStringRecord(extra, "modelOverrides") }
       : {}),
     ...(readString(extra, "anthropicVersion") !== undefined
       ? { anthropicVersion: readString(extra, "anthropicVersion") }
@@ -1165,6 +1211,9 @@ function readRuntimeExtra(
       : {}),
     ...(readBoolean(extra, "incrementalContinuation") !== undefined
       ? { incrementalContinuation: readBoolean(extra, "incrementalContinuation") }
+      : {}),
+    ...(readBoolean(extra, "zeroDataRetention") !== undefined
+      ? { zeroDataRetention: readBoolean(extra, "zeroDataRetention") }
       : {}),
     ...(readString(extra, "visionModel") !== undefined
       ? { visionModel: readString(extra, "visionModel") }
@@ -1325,6 +1374,7 @@ function buildOpenAICompatibleProvider(
     | "groq"
     | "deepseek"
     | "meta"
+    | "ollama-cloud"
     | "cerebras"
     | "zai"
     | "zai-coding-plan"
@@ -1386,6 +1436,9 @@ function buildOpenAICompatibleProvider(
     ...(extra.contextWindowTokens !== undefined
       ? { contextWindowTokens: extra.contextWindowTokens }
       : {}),
+    ...(extra.zeroDataRetention !== undefined
+      ? { zeroDataRetention: extra.zeroDataRetention }
+      : {}),
     ...(extra.authMode ? { authMode: extra.authMode } : {}),
     ...(oauthConfig ? { oauth: oauthConfig } : {}),
     ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
@@ -1397,6 +1450,8 @@ function buildOpenAICompatibleProvider(
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
   const providerExtra = readProviderRuntimeExtra({
     ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.canonicalEndpointRequired === true
+      ? { canonicalEndpointRequired: true } : {}),
     ...(extra.openAiCompatibility !== undefined
       ? { openAiCompatibility: extra.openAiCompatibility }
       : {}),
@@ -1581,6 +1636,16 @@ export function createProvider(
             "grok composer provider requires a prepared child environment in factory options extra",
           );
         }
+        if (
+          opts.credentialHome !== undefined &&
+          (isXaiOauthBearer(opts.credentialHome, factoryApiKey) ||
+            isXaiOauthBearer(opts.credentialHome, acpEnvironment.XAI_API_KEY) ||
+            isXaiOauthBearer(opts.credentialHome, acpEnvironment.GROK_API_KEY))
+        ) {
+          throw new Error(
+            "grok composer provider: refusing to pass the xAI sign-in token to the Grok CLI as an API key",
+          );
+        }
         const acpProvider = new GrokAcpProvider({
           model: grokRequestedModel as string,
           env: acpEnvironment,
@@ -1629,10 +1694,23 @@ export function createProvider(
       // bearer snapshot; once the stored grant has been refreshed the
       // snapshot no longer matches, and treating it as an API key sends a
       // dead token with no refresh path (xAI answers 403).
+      if (
+        extra.authMode === "api_key" &&
+        opts.credentialHome !== undefined &&
+        isXaiOauthBearer(opts.credentialHome, factoryApiKey)
+      ) {
+        throw new Error(
+          "grok provider: refusing to use the stored xAI sign-in token as an API key",
+        );
+      }
       const storedOauthBearer =
         extra.authMode !== "api_key" && opts.credentialHome !== undefined
           ? readXaiOauthAccessToken(opts.credentialHome)
           : undefined;
+      if (extra.canonicalEndpointRequired === true && extra.authMode === "oauth" &&
+          storedOauthBearer === undefined) {
+        throw new LLMMissingCredentialsError("grok", "approved sign-in is unavailable; a new child authority is required");
+      }
       const usesXaiOauth = storedOauthBearer !== undefined;
       const apiKey =
         storedOauthBearer ?? factoryApiKey ?? requireFactoryApiKey("grok", opts);
@@ -1643,9 +1721,12 @@ export function createProvider(
           ? { credentialHome: opts.credentialHome }
           : {}),
         apiKey,
+        // The adapter keeps priority processing off the sign-in route.
+        ...(usesXaiOauth ? { authMode: "oauth" as const } : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("grok"),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1679,19 +1760,24 @@ export function createProvider(
       if (usesXaiOauth && !isTrustedXaiOauthInferenceBaseUrl(cfg.baseURL)) {
         throw new Error(
           "grok provider: refusing to send the xAI OAuth bearer to a " +
-            `non-xAI base URL (${cfg.baseURL}). Unset the base URL override ` +
+            `custom base URL (${cfg.baseURL}). Unset the base URL override ` +
             "or set XAI_API_KEY to use an API key with custom gateways.",
         );
       }
       const grokProvider = new GrokProvider(cfg);
       if (usesXaiOauth) {
+        let activeBearer = apiKey;
         // I-14: first real consumer of the adapter's auth-refresh seam.
         // On 401, force a single-flight refresh of the stored OAuth grant,
         // swap the bearer on the live SDK client, and retry.
         grokProvider.withAuthRefreshCallbacks({
-          refreshBearer: async () => {
+          refreshBearer: async ({ attempt }) => {
+            if (extra.canonicalEndpointRequired === true && attempt > 1) {
+              return { kind: "exhausted", reason: "xAI sign-in retry was already used" };
+            }
             const refreshed = await forceRefreshXaiOauthCredentials(
               opts.credentialHome!,
+              activeBearer,
             );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
@@ -1704,7 +1790,7 @@ export function createProvider(
                 return {
                   kind: "exhausted",
                   reason:
-                    "xAI OAuth session expired — run /grok-login to sign in again, " +
+                    "xAI OAuth session expired. Run /grok-login to sign in again, " +
                     "or set XAI_API_KEY to use API-key billing",
                 };
               }
@@ -1712,20 +1798,33 @@ export function createProvider(
                 kind: "exhausted",
                 reason:
                   "xAI OAuth token refresh temporarily failed (network or " +
-                  "provider error). Your sign-in is still valid; retrying — " +
+                  "provider error). Your sign-in is still valid; retrying, " +
                   "no /grok-login needed",
               };
             }
             grokProvider.applyRefreshedBearer(refreshed.accessToken);
+            activeBearer = refreshed.accessToken;
             return { kind: "refreshed", bearer: refreshed.accessToken };
           },
         });
       }
       const storedExtra = readProviderRuntimeExtra({
         ...(cfg as unknown as Record<string, unknown>),
-        ...(extra.authMode !== undefined ? { authMode: extra.authMode } : {}),
+        ...(extra.canonicalEndpointRequired === true
+          ? { canonicalEndpointRequired: true } : {}),
+        ...(usesXaiOauth
+          ? { authMode: "oauth" }
+          : extra.authMode !== undefined
+            ? { authMode: extra.authMode }
+            : {}),
       });
-      return markFactoryProvider(grokProvider, {
+      // Recreate through the factory so child sessions own both continuation
+      // state and the OAuth refresh callback bound to their provider instance.
+      const sessionProvider = Object.assign(grokProvider, {
+        forkForSession: () =>
+          createProvider("grok", readProviderFactoryOptions(grokProvider)),
+      });
+      return markFactoryProvider(sessionProvider, {
         provider: "grok",
         options: {
           ...(opts.credentialHome !== undefined
@@ -1878,6 +1977,7 @@ export function createProvider(
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
         ...(numCtx !== undefined ? { numCtx } : {}),
         ...(extra.numGpu !== undefined ? { numGpu: extra.numGpu } : {}),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
       };
       return markFactoryProvider(new OllamaProvider(cfg), {
         provider: "ollama",
@@ -1935,6 +2035,12 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MetaProvider,
+      });
+    case "ollama-cloud":
+      return buildOpenAICompatibleProvider("ollama-cloud", opts, {
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: OllamaCloudProvider,
       });
     case "cerebras":
       return buildOpenAICompatibleProvider("cerebras", opts, {
@@ -2093,6 +2199,9 @@ export function createProvider(
         secretAccessKey,
         ...(sessionToken !== undefined ? { sessionToken } : {}),
         region,
+        ...(extra.modelOverrides !== undefined
+          ? { modelOverrides: extra.modelOverrides }
+          : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? endpoint.baseURL,

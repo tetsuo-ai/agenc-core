@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { defaultConfig } from "../config/schema.js";
+import { StaticModelsManager } from "../llm/models-manager.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { EventLog, type Event } from "../session/event-log.js";
 import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
@@ -18,7 +20,7 @@ import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
-import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
+import { backgroundTaskLifecycleForSession, isBackgroundTask } from "../tasks/index.js";
 import {
   createModelFacingTools,
   __setLiveWebFetchDnsAllLookupForTests,
@@ -33,6 +35,8 @@ import {
   _setAgentControlForTesting,
 } from "./delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
+import type { LiveAgent } from "../agents/control.js";
+import { bindLiveAgentSession } from "../agents/live-session.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
   checkForLSPDiagnostics,
@@ -148,9 +152,21 @@ function fakeSession(cwd = process.cwd()): Session {
   } as const;
   return {
     conversationId: "session-test",
+    abortController: new AbortController(),
     // The runtime's active-turn slot: tools read the live turn id off it,
     // and these fixtures run outside any turn.
     activeTurn: { unsafePeek: () => null },
+    // v2 spawn owns a durable-close finalizer and an agent-status
+    // subscription, and disposes both. These fixtures never shut down, so the
+    // listeners are dropped and the status stays at its initial value.
+    onBeforeDurableClose: () => () => {},
+    agentStatus: {
+      // A session executing a tool is live; the spawn path rejects a caller
+      // whose status is not, with invalid-runtime-identity.
+      value: { status: "running", turnId: "t", startedAtMs: 1 },
+      subscribe: () => () => {},
+      next: () => {},
+    },
     roleWorkspace,
     agentDefinitions: {
       agentRoleWorkspaceId: roleWorkspace.id,
@@ -227,11 +243,31 @@ function fakeSession(cwd = process.cwd()): Session {
   } as unknown as Session;
 }
 
+/** A tool invocation must keep the same authenticated Session across reads. */
+function stableFakeSession(cwd = process.cwd()): () => Session {
+  const session = fakeSession(cwd);
+  return () => session;
+}
+
 function addSessionAgentDefinition(
   session: Session,
   definition: AgentDefinition,
 ): void {
   session.agentDefinitions.activeAgents.push(definition);
+}
+
+/**
+ * Sets the user's sub-agent limits for the fake session's provider (grok:
+ * it has no provider service or config store). Without them a child runs at
+ * the model's lowest effort and standard speed.
+ */
+function withSubagentLimits(
+  session: Session,
+  limit: { readonly effort?: string; readonly speed?: string },
+): void {
+  (session.config as { agents?: unknown }).agents = {
+    subagent_limits: { grok: limit },
+  };
 }
 
 async function writeTestSkill(
@@ -553,7 +589,8 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({
-      required: ["message", "task_name"],
+      required: ["task_name"],
+      properties: { message_ref: { properties: { source: { enum: ["current_user_message"] } } } },
       additionalProperties: false,
     });
     expect(
@@ -730,6 +767,62 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("StructuredOutput");
   });
 
+  it("defers the CSV job family until system.searchTools loads it, keeping the worker-side report tool visible", async () => {
+    const session = fakeSession(process.cwd());
+    const registry = buildBootstrapToolRegistry({
+      workspaceRoot: process.cwd(),
+      agencHome: join(tmpdir(), "agenc-tools-test"),
+      mcpManager: fakeMcpManager() as never,
+      csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES,
+      getSession: () => session,
+      emitWarning: () => {},
+    });
+    const deferredCsvTools = [
+      "spawn_agents_on_csv",
+      "inspect_csv_agent_job",
+      "read_csv_agent_job_result",
+      "list_csv_job_reviews",
+      "show_csv_job_review",
+      "resolve_csv_job_review",
+    ];
+    const allNames = registry.tools.map((tool) => tool.name);
+    const visibleBefore = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
+    for (const name of deferredCsvTools) {
+      expect(allNames).toContain(name);
+      expect(visibleBefore).not.toContain(name);
+      expect(
+        registry.tools.find((tool) => tool.name === name)?.metadata?.deferred,
+      ).toBe(true);
+    }
+    // Row subagents spawned by a CSV job must call this without a discovery
+    // step, so it stays in the default catalog.
+    expect(visibleBefore).toContain("report_agent_job_result");
+    // The orchestration tools a coding turn does use stay visible.
+    for (const name of ["spawn_agent", "wait_agent", "close_agent", "list_agents"]) {
+      expect(visibleBefore).toContain(name);
+    }
+
+    const result = await registry.dispatch({
+      id: "search-select-csv",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "spawn_agents_on_csv" }),
+    });
+    const body = JSON.parse(result.content) as { loaded?: string[] };
+    expect(body.loaded, result.content).toContain("spawn_agents_on_csv");
+    const visibleAfter = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
+    expect(visibleAfter).toContain("spawn_agents_on_csv");
+    // The loaded description tells the model where the companion tools are.
+    const loaded = registry
+      .toLLMTools()
+      .find((tool) => tool.function.name === "spawn_agents_on_csv");
+    expect(loaded?.function.description).toContain("system.searchTools");
+    expect(loaded?.function.description).toContain("inspect_csv_agent_job");
+  });
+
   it("exposes only max_concurrency for CSV worker limits", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -775,7 +868,7 @@ describe("model-facing tools", () => {
       const session = fakeSession(root);
       const admission = kernel.bindClient({ cwd: root, scope: { runId: session.conversationId, sessionId: session.conversationId, autonomous: false }, budget: { runMaxCostUsd: 0.01 } });
       const eventLog = new EventLog();
-      Object.assign(session, { eventLog, emit: (event: Event) => eventLog.emit(event), rolloutStore: { assertToolAdmissionAllowed: vi.fn() } });
+      Object.assign(session, { eventLog, emit: (event: Event) => eventLog.emit(event), rolloutStore: { assertToolAdmissionAllowed: vi.fn(), listThreadSpawnDescendants: () => [] } });
       Object.assign(session.services, { executionAdmission: admission, admissionRequired: true });
       const registry = buildBootstrapToolRegistry({ workspaceRoot: root, agencHome: home, mcpManager: fakeMcpManager() as never, csvAgentJobsRepositories: UNUSED_CSV_AGENT_JOBS_REPOSITORIES, getSession: () => session, emitWarning: () => {} });
       let callSequence = 0;
@@ -1314,7 +1407,9 @@ describe("model-facing tools", () => {
       const observed = await Promise.race([
         nestedResults.then((value) => ({ kind: "completed" as const, value })),
         new Promise<{ readonly kind: "deadline" }>((resolve) => {
-          deadline = setTimeout(() => resolve({ kind: "deadline" }), 1_000);
+          // Keep the outer lease held throughout this deadlock check. Allow
+          // bounded CPU test runners time to finish the nested SQLite reads.
+          deadline = setTimeout(() => resolve({ kind: "deadline" }), 5_000);
         }),
       ]);
       expect(observed.kind).toBe("completed");
@@ -3076,11 +3171,17 @@ describe("model-facing tools", () => {
       const missing = await skill.execute({ skill: "missing-skill" });
 
       expect(missing.isError).toBe(true);
-      // Full parity: every name `/skills` shows the user is a name the model
-      // can actually load, bundled ones included.
-      expect(JSON.parse(missing.content).available).toEqual(
-        slashSnapshot.availableSkills.map((entry) => entry.name),
+      // Full parity: every name `/skills` shows the user that the model may
+      // load is offered, bundled ones included. Model-proof skills (batch,
+      // debug) are refused by the Skill tool, so offering them misleads.
+      const offered = JSON.parse(missing.content).available as string[];
+      expect(offered).toEqual(
+        slashSnapshot.availableSkills
+          .filter((entry) => entry.disableModelInvocation !== true)
+          .map((entry) => entry.name),
       );
+      expect(offered).not.toContain("batch");
+      expect(offered).not.toContain("debug");
 
       const retired = await skill.execute({ skill: "legacy-visible" });
       expect(retired.isError).toBe(true);
@@ -3134,7 +3235,7 @@ describe("model-facing tools", () => {
   it("rejects removed compatibility fields on strict agent tools", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -3179,7 +3280,7 @@ describe("model-facing tools", () => {
   it("rejects invalid strict spawn_agent arguments before delegation", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const spawnAgent = tools.find((tool) => tool.name === "spawn_agent")!;
 
@@ -3338,8 +3439,10 @@ describe("model-facing tools", () => {
     const delegated = delegateMock.mock.calls.at(-1)?.[0];
     expect(delegated).not.toHaveProperty("role");
     expect(delegated).not.toHaveProperty("model");
-    expect(delegated).not.toHaveProperty("reasoningEffort");
-    expect(delegated).not.toHaveProperty("serviceTier");
+    // Blank overrides ask for nothing: the child runs at its provider's
+    // limits, the model's lowest effort at standard speed (null: no tier).
+    expect(delegated.reasoningEffort).toBe("low");
+    expect(delegated.serviceTier).toBeNull();
     expect(delegated).not.toHaveProperty("forkMode");
     expect(delegated).not.toHaveProperty("isolation");
   });
@@ -3493,6 +3596,8 @@ describe("model-facing tools", () => {
       serviceTiers: [],
     };
     const session = fakeSession();
+    // Only a fast speed limit lets a child ask for the priority tier.
+    withSubagentLimits(session, { speed: "fast" });
     (
       session.services as unknown as {
         modelsManager: {
@@ -3632,6 +3737,8 @@ describe("model-facing tools", () => {
       baseDir: "programmatic",
       getSystemPrompt: () => "",
     });
+    // Limits above the role's, so its effort and tier apply as configured.
+    withSubagentLimits(session, { effort: "xhigh", speed: "fast" });
     delegateMock.mockResolvedValue({
       kind: "async_launched",
       thread: {
@@ -3746,7 +3853,7 @@ describe("model-facing tools", () => {
     expect(delegateMock).not.toHaveBeenCalled();
   });
 
-  it("allows explicit service_tier on full-history spawn_agent forks", async () => {
+  it("refuses an explicit service_tier on full-history spawn_agent forks, which keep the parent's", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -3785,13 +3892,159 @@ describe("model-facing tools", () => {
         service_tier: "priority",
       });
 
-    expect(result.isError).not.toBe(true);
-    expect(delegateMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        forkMode: { kind: "full_history" },
-        serviceTier: "priority",
-      }),
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe(
+      "Full-history forked agents inherit the parent agent type, model, reasoning effort, and service tier; omit agent_type, model, reasoning_effort, and service_tier, or spawn without a full-history fork.",
     );
+    expect(delegateMock).not.toHaveBeenCalled();
+  });
+
+  // Shared by the Opus 5.5 registry-validation tests below: a session wired
+  // to a StaticModelsManager for the given config, and a spawn_agent tool
+  // whose delegateMock resolves a live thread named after `agentSlug`.
+  function sessionWithStaticModels(
+    configOverrides: Partial<ReturnType<typeof defaultConfig>> = {},
+    fallbackProvider = "anthropic",
+  ) {
+    const session = fakeSession();
+    (session.services as unknown as { modelsManager: unknown }).modelsManager =
+      new StaticModelsManager({
+        config: { ...defaultConfig(), ...configOverrides },
+        fallbackProvider,
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      });
+    return session;
+  }
+
+  function spawnAgentTool(session: Session, agentSlug: string) {
+    const nickname = agentSlug[0]!.toUpperCase() + agentSlug.slice(1);
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: `thread-${agentSlug}`,
+          agentPath: `/root/${agentSlug}`,
+          nickname,
+          role: { name: "runner" },
+          status: {
+            value: { status: "running", turnId: `turn-${agentSlug}`, startedAtMs: 1 },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: `thread-${agentSlug}`,
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+    return createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+  }
+
+  it("validates Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const session = sessionWithStaticModels();
+    const spawn = spawnAgentTool(session, "opus");
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `opus_${effort}`,
+        model: "claude-opus-5-5",
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model: "claude-opus-5-5",
+        reasoningEffort: effort,
+      });
+    }
+
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "opus_minimal",
+      model: "claude-opus-5-5",
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      "Reasoning effort `minimal` is not supported for model `claude-opus-5-5`. Supported reasoning efforts: low, medium, high, xhigh, max",
+    );
+  });
+
+  it("validates Bedrock Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const model = "global.anthropic.claude-opus-5-5";
+    const session = sessionWithStaticModels({ model_provider: "amazon-bedrock", model }, "amazon-bedrock");
+    const spawn = spawnAgentTool(session, "bedrock");
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `bedrock_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model,
+        reasoningEffort: effort,
+      });
+    }
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "bedrock_minimal",
+      model,
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      `Reasoning effort \`minimal\` is not supported for model \`${model}\`. Supported reasoning efforts: low, medium, high, xhigh, max`,
+    );
+  });
+
+  describe("sub-agent effort by the shared Claude parser's identity", () => {
+    const spawnWithConfiguredModel = async (model: string, effort: "max" | "xhigh") => {
+      // The configured selection is listed, so spawn_agent accepts the id
+      // and validates its effort against the registry's ModelInfo.
+      const session = sessionWithStaticModels({ model_provider: "anthropic", model });
+      const spawn = spawnAgentTool(session, "claude");
+      return await spawn.execute({
+        message: "inspect",
+        task_name: `claude_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+    };
+
+    it("accepts the top tiers for the dotted and dated Opus 5.5 spellings", async () => {
+      for (const model of ["claude-opus-5.5", "claude-opus-5-5-20260922"]) {
+        for (const effort of ["xhigh", "max"] as const) {
+          const result = await spawnWithConfiguredModel(model, effort);
+          expect(result.isError, `${model} ${effort}`).not.toBe(true);
+          expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+            model,
+            reasoningEffort: effort,
+          });
+        }
+      }
+    });
+
+    it("rejects them for ids the parser rejects instead of lending them by prefix", async () => {
+      for (const model of ["claude-opus-5-5-fast", "claude-opus-5-5-preview"]) {
+        const rejected = await spawnWithConfiguredModel(model, "max");
+        expect(rejected.isError, model).toBe(true);
+        expect(JSON.parse(rejected.content).error, model).toContain(
+          `Reasoning effort \`max\` is not supported for model \`${model}\``,
+        );
+      }
+    });
   });
 
   it("uses a clean fork when spawn_agent role or effort overrides explicitly set fork_turns none", async () => {
@@ -3821,6 +4074,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -3849,23 +4104,33 @@ describe("model-facing tools", () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
-    (session as unknown as { emit: typeof emit }).emit = emit;
+    // A nested caller spawns from its own Session, and that Session is
+    // authoritative only through the live handle its AgentControl hands out:
+    // one stable object, bound by runAgent. Both are required here, or the
+    // spawn path refuses the caller as invalid-runtime-identity.
+    const callerSession = {
+      ...session,
+      conversationId: "child-1",
+      abortController: new AbortController(),
+      emit,
+    } as unknown as Session;
+    const callerLive = {
+      agentId: "child-1",
+      agentPath: "/root/child_1",
+      depth: 1,
+      nickname: "Deckard",
+      role: { name: "runner" },
+      abortController: new AbortController(),
+      status: {
+        value: { status: "running", turnId: "t", startedAtMs: 1 },
+      },
+    } as unknown as LiveAgent;
+    const revokeCallerSession = bindLiveAgentSession(callerLive, callerSession);
     const control = {
       roleWorkspace: DEFAULT_ROLE_WORKSPACE,
       assertRoleWorkspace: vi.fn(),
       getLive: vi.fn((threadId: string) =>
-        threadId === "child-1"
-          ? {
-              agentId: "child-1",
-              agentPath: "/root/child_1",
-              depth: 1,
-              nickname: "Deckard",
-              role: { name: "runner" },
-              status: {
-                value: { status: "running", turnId: "t", startedAtMs: 1 },
-              },
-            }
-          : undefined,
+        threadId === "child-1" ? callerLive : undefined,
       ),
     };
     delegateMock.mockResolvedValue({
@@ -3912,7 +4177,7 @@ describe("model-facing tools", () => {
       });
       expect(delegateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          parent: session,
+          parent: callerSession,
           parentPath: "/root/child_1",
           taskPrompt: "inspect",
           agentName: "grandchild",
@@ -3937,6 +4202,7 @@ describe("model-facing tools", () => {
       expect(endEnvelope?.msg?.payload?.status?.status).toBe("running");
       expect(endEnvelope?.msg?.payload?.status?.error).toBeUndefined();
     } finally {
+      revokeCallerSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -3984,6 +4250,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -4274,9 +4542,11 @@ describe("model-facing tools", () => {
 
       expect(resultA.isError).not.toBe(true);
       expect(resultB.isError).not.toBe(true);
+      // Neither role sets an effort: each child runs at its provider's
+      // limit, the model's lowest level.
       expect(observed).toEqual([
-        { effort: undefined, prompt: "Workspace A prompt." },
-        { effort: undefined, prompt: "Workspace B prompt." },
+        { effort: "low", prompt: "Workspace A prompt." },
+        { effort: "low", prompt: "Workspace B prompt." },
       ]);
 
       const coldMismatchedSession = fakeSession(workspaceB);
@@ -4345,7 +4615,7 @@ describe("model-facing tools", () => {
     const handle = (JSON.parse(spawned.content) as { task_name: string })
       .task_name;
     expect(handle).toBe("/root/task_handle");
-    backgroundTaskLifecycle.appendOutput("thread-handle-1", "alias output");
+    backgroundTaskLifecycleForSession(session).appendOutput("thread-handle-1", "alias output");
 
     const output = await byName.get("TaskOutput")!.execute({
       task_id: handle,
@@ -4412,7 +4682,7 @@ describe("model-facing tools", () => {
   it("rejects empty v2 agent messages before dispatch", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -4434,7 +4704,7 @@ describe("model-facing tools", () => {
   it("enforces the inter-agent byte cap when execute is called directly", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const send = tools.find((tool) => tool.name === "send_message")!;
     const result = await send.execute({
@@ -4463,7 +4733,7 @@ describe("model-facing tools", () => {
   it("does not fall back to raw unresolved agent targets", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -4488,24 +4758,21 @@ describe("model-facing tools", () => {
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
       emitted.push(event);
     };
+    const targetLive = {
+      agentId: "agent-1",
+      agentPath: "/root/task_1",
+      nickname: "TaskOne",
+      role: { name: "runner" },
+      metadata: {
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "runner",
+      },
+    };
     const control = {
       registerSessionRoot: vi.fn(),
-      getLive: vi.fn((threadId: string) =>
-        threadId === "agent-1"
-          ? {
-              agentId: "agent-1",
-              agentPath: "/root/task_1",
-              nickname: "TaskOne",
-              role: { name: "runner" },
-              metadata: {
-                agentId: "agent-1",
-                agentPath: "/root/task_1",
-                agentNickname: "TaskOne",
-                agentRole: "runner",
-              },
-            }
-          : undefined,
-      ),
+      getLive: vi.fn((threadId: string) => threadId === "agent-1" ? targetLive : undefined),
       getAgentMetadata: vi.fn(() => ({
         agentId: "agent-1",
         agentPath: "/root/task_1",
@@ -4516,7 +4783,10 @@ describe("model-facing tools", () => {
       sendInterAgentCommunication: vi.fn(async () => {
         throw new Error("agent with id agent-1 is closed");
       }),
-      getStatus: vi.fn(async () => ({ status: "shutdown" as const })),
+      sendPassiveMessageToActiveAgent: vi.fn(() => {
+        throw new Error("agent with id agent-1 is closed");
+      }),
+      getStatus: vi.fn().mockResolvedValue({ status: "shutdown" as const }),
     };
     _setAgentControlForTesting(session, {
       control: control as never,
@@ -4566,6 +4836,8 @@ describe("model-facing tools", () => {
     };
     sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
     const control = {
+      registerSessionRoot: vi.fn(),
+      drainRecoveredChildTaskUpdates: vi.fn(() => []),
       listAgents: vi.fn(() => []),
       getLive: vi.fn(() => undefined),
       resolveAgentReference: vi.fn(() => "agent-1"),
@@ -4633,6 +4905,8 @@ describe("model-facing tools", () => {
     ).waitForMailboxChange = waitForMailboxChange;
     _setAgentControlForTesting(session, {
       control: {
+        registerSessionRoot: vi.fn(),
+        drainRecoveredChildTaskUpdates: vi.fn(() => []),
         listAgents: vi.fn(() => []),
         getLive: vi.fn(() => undefined),
         resolveAgentReference: vi.fn(() => "agent-1"),
@@ -4684,6 +4958,8 @@ describe("model-facing tools", () => {
       drainPendingInputMessages;
     _setAgentControlForTesting(session, {
       control: {
+        registerSessionRoot: vi.fn(),
+        drainRecoveredChildTaskUpdates: vi.fn(() => []),
         listAgents: vi.fn(() => []),
         getLive: vi.fn(() => undefined),
         resolveAgentReference: vi.fn(() => "agent-1"),
@@ -4753,7 +5029,7 @@ describe("model-facing tools", () => {
   it("wait_agent rejects the removed target filter instead of draining unrelated receipts", async () => {
     const wait = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     }).find((tool) => tool.name === "wait_agent")!;
 
     expect(wait.isReadOnly).toBe(false);
@@ -4818,7 +5094,7 @@ describe("model-facing tools", () => {
   it("wait_agent rejects fractional timeout_ms values", async () => {
     const wait = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: () => fakeSession(),
+      getSession: stableFakeSession(),
     }).find((tool) => tool.name === "wait_agent")!;
 
     const result = await wait.execute({ timeout_ms: 10_000.5 });
@@ -4844,25 +5120,22 @@ describe("model-facing tools", () => {
       taskId: "assign-call-1",
       turnId: "assigned-turn-1",
     }));
+    const targetLive = {
+      agentId: "agent-1",
+      agentPath: "/root/task_1",
+      nickname: "TaskOne",
+      role: { name: "runner" },
+      status: { value: idleStatus },
+      metadata: {
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "runner",
+      },
+    };
     const control = {
       registerSessionRoot: vi.fn(),
-      getLive: vi.fn((threadId: string) =>
-        threadId === "agent-1"
-          ? {
-              agentId: "agent-1",
-              agentPath: "/root/task_1",
-              nickname: "TaskOne",
-              role: { name: "runner" },
-              status: { value: idleStatus },
-              metadata: {
-                agentId: "agent-1",
-                agentPath: "/root/task_1",
-                agentNickname: "TaskOne",
-                agentRole: "runner",
-              },
-            }
-          : undefined,
-      ),
+      getLive: vi.fn((threadId: string) => threadId === "agent-1" ? targetLive : undefined),
       getAgentMetadata: vi.fn(() => ({
         agentId: "agent-1",
         agentPath: "/root/task_1",
@@ -4896,6 +5169,7 @@ describe("model-facing tools", () => {
         turn_id: "assigned-turn-1",
       });
       expect(assignTask).toHaveBeenCalledWith("agent-1", {
+        exactOutput: false,
         author: "/root",
         recipient: "/root/task_1",
         content: "report now",
@@ -5109,6 +5383,9 @@ describe("model-facing tools", () => {
     expect(
       control.listAgents().some((agent) => agent.agentName === "/root"),
     ).toBe(false);
+    const revokeChildSession = bindLiveAgentSession(child, {
+      ...fakeSession(), conversationId: child.agentId,
+    } as Session);
     _setAgentControlForTesting(session, { control, registry });
     try {
       const sendMessage = createModelFacingTools({
@@ -5152,6 +5429,7 @@ describe("model-facing tools", () => {
         control.listAgents().some((agent) => agent.agentName === "/root"),
       ).toBe(true);
     } finally {
+      revokeChildSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -5174,6 +5452,9 @@ describe("model-facing tools", () => {
       threadId: "agent-worker",
       agentName: "worker",
     });
+    const revokeChildSession = bindLiveAgentSession(child, {
+      ...fakeSession(), conversationId: child.agentId,
+    } as Session);
     _setAgentControlForTesting(session, { control, registry });
     try {
       const assign = createModelFacingTools({
@@ -5198,6 +5479,7 @@ describe("model-facing tools", () => {
       });
       expect(mailboxSend).not.toHaveBeenCalled();
     } finally {
+      revokeChildSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -5231,7 +5513,7 @@ describe("model-facing tools", () => {
   it("rejects closing the root agent", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
-      getSession: fakeSession,
+      getSession: stableFakeSession(),
     });
     const close = tools.find((tool) => tool.name === "close_agent")!;
 
@@ -5874,13 +6156,14 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // The dispatcher validates this against NotebookRead's strict schema
+      // again, so FileRead's own fields must not come back in it.
+      expect(allowedInput).not.toHaveProperty("file_path");
+      expect(allowedInput).not.toHaveProperty("cwd");
 
       const blocked = await tool.checkPermissions?.(
         { notebook_path: outsidePath },
@@ -5929,13 +6212,12 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // NotebookEdit's schema has no file_path; the dispatcher re-validates.
+      expect(allowedInput).not.toHaveProperty("file_path");
 
       const blocked = await tool.checkPermissions?.(
         {

@@ -1,6 +1,7 @@
 import {
   spawn,
   spawnSync,
+  execFileSync,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -23,16 +24,18 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "vitest";
 
-import { SandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { SandboxExecutionBroker, attachSandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js";
+import { createGlobTool } from "../../../src/tools/system/glob.js";
+import { createGrepTool } from "../../../src/tools/system/grep.js";
 import { ExecutionAdmissionKernel } from "../../../src/budget/execution-admission-kernel.js";
 import { createHookExecutionAuthority } from "../../../src/hooks/execution-authority.js";
 import { executeSessionStatusLine } from "../../../src/hooks/status-line-executor.js";
 import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "../../../src/sandbox/linux-launcher/config.js";
 import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/launcher.js";
-import { bindWorkspaceDirectoryReadCapability } from "../../../src/workspace/file-mutation-transaction.js";
-import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
+import { bindWorkspaceDirectoryReadCapability, bindWorkspaceFileReadCapability, workspaceBoundReadOnlyCwd } from "../../../src/workspace/file-mutation-transaction.js";
 import { createTestConfigStore, mkSession } from "../../fixtures.js";
+import { captureWorktreeTurnEvidence, getOrCreateWorktree, removeAgentWorktree } from "../../../src/agents/worktree.js";
 
 const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const launcherEntry = join(runtimeRoot, "bin", "agenc-linux-sandbox");
@@ -43,6 +46,264 @@ const builtLauncher = join(
   "linux-launcher",
   "main.js",
 );
+
+test.each([["Glob", false], ["Grep", false], ["Glob", true], ["Grep", true]] as const)("runs production %s with narrow descriptor-bound read authority (exchange=%s)", { timeout: 30_000 }, async (name, exchange) => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-search-kernel-"));
+  const cwd = join(root, "workspace");
+  const temporary = join(root, "temp");
+  mkdirSync(cwd); mkdirSync(temporary);
+  writeFileSync(join(cwd, "readable.txt"), "needle public\n");
+  writeFileSync(join(root, "outside.txt"), "needle outside\n");
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "outside.txt"), "needle outside\n");
+  const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+  try {
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write", cwd, env: environment, sessionTempRoot: temporary,
+      agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+        { path: { kind: "path", path: cwd }, access: "write" },
+        { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+        { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+        { path: { kind: "path", path: temporary }, access: "write" },
+      ] }, network: "disabled" },
+    });
+    expect(broker.status().kind).toBe("ready");
+    const config = { allowedPaths: [cwd], ...(exchange ? { __testAfterFinalPathCheck: async () => {
+      renameSync(cwd, join(root, "displaced"));
+      symlinkSync(outside, cwd, "dir");
+    } } : {}) };
+    const tool = name === "Glob" ? createGlobTool(config) : createGrepTool(config);
+    const args: Record<string, unknown> = { pattern: name === "Glob" ? "*.txt" : "needle", path: cwd, includeIgnored: true, ...(name === "Grep" ? { output_mode: "content" } : {}) };
+    attachSandboxExecutionBroker(args, broker);
+    const result = await tool.execute(args);
+    expect(result.isError, result.content).not.toBe(true);
+    expect(result.content).toContain("readable.txt");
+    expect(result.content).not.toContain("outside.txt");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test.each(["Glob", "Grep"] as const)("refuses unsupported narrow %s read-deny policy before dispatch", { timeout: 30_000 }, async (name) => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-deny-kernel-"));
+  const cwd = join(root, "workspace");
+  mkdirSync(cwd);
+  writeFileSync(join(cwd, "secret.txt"), "needle confidential\n");
+  try {
+    for (const deny of [
+      { kind: "path" as const, path: join(cwd, "secret.txt") },
+      { kind: "glob" as const, pattern: join(cwd, "*.txt") },
+    ]) {
+      const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd,
+        env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") }, agencLinuxSandboxExe: launcherEntry,
+        permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+          { path: { kind: "path", path: cwd }, access: "write" },
+          { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+          { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+          { path: deny, access: "none" },
+        ] }, network: "disabled" },
+      });
+      const tool = name === "Glob" ? createGlobTool({ allowedPaths: [cwd] }) : createGrepTool({ allowedPaths: [cwd] });
+      const args: Record<string, unknown> = { pattern: name === "Glob" ? "*.txt" : "needle", path: cwd, includeIgnored: true };
+      attachSandboxExecutionBroker(args, broker);
+      await expect(tool.execute(args)).rejects.toThrow("cannot represent read-deny or glob policy entries");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("rejects copied, forged, revoked, exact-file and mismatched cwd capabilities before payload execution", { timeout: 30_000 }, async () => {
+  const root = realpathSync(mkdtempSync("/var/tmp/agenc-narrow-capability-kernel-"));
+  const cwd = join(root, "workspace");
+  const foreign = join(root, "foreign");
+  mkdirSync(cwd); mkdirSync(foreign);
+  writeFileSync(join(cwd, "file.txt"), "content");
+  writeFileSync(join(foreign, "secret.txt"), "outside-secret");
+  const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+  const capability = await bindWorkspaceDirectoryReadCapability(cwd);
+  const other = await bindWorkspaceDirectoryReadCapability(foreign);
+  const file = await bindWorkspaceFileReadCapability(join(cwd, "file.txt"));
+  try {
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd, env: environment, agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+        { path: { kind: "path", path: cwd }, access: "write" },
+        { path: { kind: "path", path: dirname(runtimeRoot) }, access: "read" },
+        { path: { kind: "path", path: dirname(process.execPath) }, access: "read" },
+      ] }, network: "disabled" },
+    });
+    const token = workspaceBoundReadOnlyCwd(capability)!;
+    expect(token).toBeDefined();
+    const command = { program: process.execPath, args: ["--input-type=module", "--eval", "import fs from 'node:fs';fs.writeFileSync('payload-ran','unexpected');"], cwd: ".", cwdBinding: "inherited_readonly" as const, env: environment };
+    expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: workspaceBoundReadOnlyCwd(other) })).toThrow("not wholly covered");
+    for (const invalid of [{ ...token }, { path: cwd, dev: "1", ino: "1", mode: "16832" }, workspaceBoundReadOnlyCwd(file)]) {
+      expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: invalid as never })).toThrow("current source-owned directory capability");
+    }
+    const confined = await broker.prepareSpawn("tool", { ...command, cwdCapability: token, args: [
+      "--input-type=module", "--eval", `
+        import fs from 'node:fs';
+        const attempt = fn => { try { fn(); return 'ALLOWED'; } catch (error) { return error.code; } };
+        process.stdout.write(JSON.stringify({
+          inside: fs.readFileSync('file.txt', 'utf8'),
+          write: attempt(() => fs.writeFileSync('payload-ran', 'unexpected')),
+          outside: attempt(() => fs.readFileSync(process.argv[1])),
+          publicCwd: attempt(() => fs.readFileSync(process.argv[2])),
+        }));
+      `, join(foreign, "secret.txt"), join(cwd, "file.txt"),
+    ] }).run(resolved => capability.runRipgrep({
+      program: resolved.program, args: resolved.args, env: resolved.env, argv0: resolved.argv0, timeoutMs: 10_000, maxOutputBytes: 16 * 1024,
+    }));
+    expect(confined.exitCode, confined.stderr.toString()).toBe(0);
+    const confinedEvidence = JSON.parse(confined.stdout.toString());
+    expect(confinedEvidence.inside).toBe("content");
+    for (const key of ["write", "outside", "publicCwd"]) expect(confinedEvidence[key], JSON.stringify(confinedEvidence)).not.toBe("ALLOWED");
+    const mismatch = await broker.prepareSpawn("tool", { ...command, cwdCapability: token }).run(resolved => other.runRipgrep({
+      program: resolved.program, args: resolved.args, env: resolved.env, argv0: resolved.argv0, timeoutMs: 10_000, maxOutputBytes: 16 * 1024,
+    }));
+    expect(mismatch.exitCode).not.toBe(0);
+    expect(mismatch.stderr.toString()).toContain("descriptor identity changed");
+    expect(existsSync(join(foreign, "payload-ran"))).toBe(false);
+    const disposing = capability.dispose();
+    expect(() => broker.prepareSpawn("tool", { ...command, cwdCapability: token })).toThrow("current source-owned directory capability");
+    await disposing;
+    expect(existsSync(join(cwd, "payload-ran"))).toBe(false);
+  } finally {
+    await Promise.all([capability.dispose(), other.dispose(), file.dispose()]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each([false, true])("supports an aliased command cwd without expanding filesystem access (narrow=%s)", { timeout: 30_000 }, async (narrow) => {
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-alias-cwd-kernel-")));
+  const physical = join(root, "real", "project");
+  const alias = join(root, "alias");
+  const chainedAlias = join(root, "alias-again");
+  const cwd = join(chainedAlias, "project");
+  const temporary = join(root, "temp");
+  const outside = join(root, "real", "ungranted.txt");
+  mkdirSync(join(physical, ".git"), { recursive: true });
+  mkdirSync(temporary);
+  symlinkSync(join(root, "real"), alias, "dir");
+  symlinkSync("alias", chainedAlias, "dir");
+  writeFileSync(join(physical, "readable.txt"), "readable");
+  writeFileSync(join(physical, "locked.txt"), "locked");
+  writeFileSync(join(physical, "secret.txt"), "secret");
+  writeFileSync(join(physical, ".git", "config"), "protected");
+  writeFileSync(outside, "outside");
+  const environment = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENC_HOME: join(root, "home") };
+  try {
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write", cwd, env: environment, sessionTempRoot: temporary,
+      agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: {
+        fileSystem: { kind: "restricted", includePlatformDefaults: true, entries: [
+          ...(!narrow ? [{ path: { kind: "special" as const, value: { kind: "root" as const } }, access: "read" as const }] : []),
+          { path: { kind: "path", path: cwd }, access: "write" },
+          { path: { kind: "path", path: temporary }, access: "write" },
+          { path: { kind: "path", path: join(runtimeRoot, "node_modules") }, access: "read" },
+          { path: { kind: "path", path: join(dirname(runtimeRoot), "node_modules") }, access: "read" },
+          { path: { kind: "path", path: join(cwd, "locked.txt") }, access: "read" },
+          { path: { kind: "path", path: join(cwd, "secret.txt") }, access: "none" },
+        ] },
+        network: "disabled",
+      },
+    });
+    const result = await broker.prepareSpawn("tool", {
+      program: process.execPath,
+      args: ["--input-type=module", "--eval", `
+        import fs from 'node:fs';
+        const [alias, outside] = process.argv.slice(1);
+        const attempt = (fn) => { try { fn(); return 'ALLOWED'; } catch (error) { return error.code; } };
+        process.stdout.write(JSON.stringify({
+          cwd: process.cwd(),
+          readable: fs.readFileSync('readable.txt', 'utf8'),
+          relativeWrite: attempt(() => fs.writeFileSync('relative.txt', 'relative')),
+          aliasWrite: attempt(() => fs.writeFileSync(alias + '/absolute.txt', 'absolute')),
+          lockedWrite: attempt(() => fs.writeFileSync('locked.txt', 'forged')),
+          secretRead: attempt(() => fs.readFileSync('secret.txt')),
+          metadataWrite: attempt(() => fs.writeFileSync('.git/config', 'forged')),
+          outsideRead: attempt(() => fs.readFileSync(outside)),
+          outsideWrite: attempt(() => fs.writeFileSync(outside, 'forged')),
+        }));
+      `, cwd, outside],
+      cwd, env: environment,
+    }).run(async (command) => spawnSync(command.program, [...command.args], {
+      cwd: command.cwd, env: command.env, encoding: "utf8", timeout: 10_000,
+    }));
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    expect(evidence).toMatchObject({ cwd: physical, readable: "readable", relativeWrite: "ALLOWED", aliasWrite: "ALLOWED" });
+    for (const key of ["lockedWrite", "secretRead", "metadataWrite"]) {
+      expect(evidence[key], JSON.stringify(evidence)).not.toBe("ALLOWED");
+    }
+    if (narrow) {
+      expect(evidence.outsideRead).not.toBe("ALLOWED");
+      // The private tmpfs may accept a new file at this spelling. It must
+      // neither reveal nor overwrite the host file, checked below.
+    } else {
+      expect(evidence.outsideWrite).not.toBe("ALLOWED");
+    }
+    expect(readFileSync(join(physical, "relative.txt"), "utf8")).toBe("relative");
+    expect(readFileSync(join(physical, "absolute.txt"), "utf8")).toBe("absolute");
+    expect(readFileSync(join(physical, "locked.txt"), "utf8")).toBe("locked");
+    expect(readFileSync(join(physical, ".git", "config"), "utf8")).toBe("protected");
+    expect(readFileSync(outside, "utf8")).toBe("outside");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("removes a verified clean worktree without a deletion-target mount or peer damage", { timeout: 30_000 }, async () => {
+  expect(process.platform).toBe("linux");
+  const root = realpathSync(mkdtempSync(join("/var/tmp", "agenc-remove-worktree-kernel-")));
+  const project = join(root, "project");
+  const temporary = join(root, "temp");
+  mkdirSync(project);
+  mkdirSync(temporary);
+  const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: project, encoding: "utf8" }).trim();
+  try {
+    git(["init", "-q"]);
+    writeFileSync(join(project, "tracked.txt"), "preserved sibling\n");
+    git(["add", "tracked.txt"]);
+    git(["-c", "user.name=AgenC Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "seed"]);
+    const baseCommit = git(["rev-parse", "HEAD"]);
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry });
+    expect(broker.status().kind).toBe("ready");
+    const target = await getOrCreateWorktree({ gitRoot: project, slug: "target", sandboxExecutionBroker: broker });
+    const sibling = await getOrCreateWorktree({ gitRoot: project, slug: "sibling", sandboxExecutionBroker: broker });
+    const evidence = await captureWorktreeTurnEvidence({ locator: target, baseCommit, sandboxExecutionBroker: broker });
+    expect(evidence.state).toBe("unchanged_clean");
+    const admin = readFileSync(join(target.path, ".git"), "utf8").trim().slice("gitdir: ".length);
+    await removeAgentWorktree({ ...target, sandboxExecutionBroker: broker });
+    expect(existsSync(target.path)).toBe(false);
+    expect(existsSync(admin)).toBe(false);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(git(["worktree", "list", "--porcelain"])).toContain(sibling.path);
+    mkdirSync(join(root, "external-worktrees"));
+    const external = await getOrCreateWorktree({ gitRoot: project, slug: "external", workspaceRoot: join(root, "external-worktrees"), sandboxExecutionBroker: broker });
+    const externalMarker = readFileSync(join(external.path, ".git"), "utf8");
+    await expect(removeAgentWorktree({ ...external, sandboxExecutionBroker: broker })).rejects.toThrow(/existing workspace write authority/u);
+    expect(readFileSync(join(external.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(readFileSync(join(external.path, ".git"), "utf8")).toBe(externalMarker);
+    expect(existsSync(externalMarker.trim().slice("gitdir: ".length))).toBe(true);
+
+    const protectedBroker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: project, sessionTempRoot: temporary, agencLinuxSandboxExe: launcherEntry,
+      permissionProfile: { fileSystem: { kind: "restricted", entries: [
+        { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+        { path: { kind: "path", path: project }, access: "write" },
+        { path: { kind: "path", path: join(sibling.path, "tracked.txt") }, access: "read" },
+      ] }, network: "disabled" },
+    });
+    await expect(removeAgentWorktree({ ...sibling, sandboxExecutionBroker: protectedBroker })).rejects.toThrow(/sandbox mount or protected path/u);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    const siblingMarker = readFileSync(join(sibling.path, ".git"), "utf8");
+    writeFileSync(join(sibling.path, ".git"), `gitdir: ${join(root, "foreign-metadata")}\n`);
+    await expect(removeAgentWorktree({ ...sibling, sandboxExecutionBroker: broker })).rejects.toThrow(/refused before mutation/u);
+    expect(readFileSync(join(sibling.path, "tracked.txt"), "utf8")).toBe("preserved sibling\n");
+    expect(existsSync(siblingMarker.trim().slice("gitdir: ".length))).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("renders a status command with ordinary workspace-write isolation and a captured system PATH", { timeout: 30_000 }, async () => {
   expect(process.platform).toBe("linux");
@@ -89,7 +350,6 @@ test("renders a status command with ordinary workspace-write isolation and a cap
     expect(admission.replayJournal?.().map((event) => event.event)).not.toContain("held_unknown");
   } finally {
     kernel.close();
-    workspaceMutationCoordinators.clearForTests();
     rmSync(home, { recursive: true, force: true });
   }
 });
@@ -281,9 +541,42 @@ test(
         readFileSync("/proc/self/attr/current", "utf8").trim(),
       ).toBe("agenc-native-userns (unconfined)");
 
+      // AppArmor may transition /usr/bin/bwrap and stack its child under the
+      // distro's unpriv_bwrap profile. Measure that transition independently
+      // of AgenC, using the same parent profile and child executable.
+      const profileProbe = spawnSync(bubblewrap!, [
+        "--die-with-parent", "--new-session",
+        "--unshare-user", "--unshare-pid", "--unshare-net",
+        "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
+        "--", process.execPath, "--input-type=module", "--eval",
+        'import { readFileSync } from "node:fs"; process.stdout.write(readFileSync("/proc/self/attr/current", "utf8"));',
+      ], {
+        cwd: workspace,
+        env: childEnv,
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 4_096,
+      });
+      const profileDiagnostics = `direct bubblewrap AppArmor probe: ${JSON.stringify({
+        status: profileProbe.status,
+        signal: profileProbe.signal,
+        error: profileProbe.error?.message,
+        stdout: profileProbe.stdout,
+        stderr: profileProbe.stderr,
+      })}`;
+      expect(profileProbe.error, profileDiagnostics).toBeUndefined();
+      expect(profileProbe.signal, profileDiagnostics).toBeNull();
+      expect(profileProbe.status, profileDiagnostics).toBe(0);
+      const expectedAppArmorProfile = profileProbe.stdout.trim();
+      expect([
+        "agenc-native-userns (unconfined)",
+        "bwrap//&unpriv_bwrap (enforce)",
+      ], profileDiagnostics).toContain(expectedAppArmorProfile);
+
       const payload = Buffer.from(
         JSON.stringify({
           allowedWrite,
+          expectedAppArmorProfile,
           descendantLeakMarker,
           descendantReadyMarker,
           descendantScript: Buffer.from(
@@ -335,6 +628,7 @@ test(
       const diagnostics = [
         `bubblewrap=${bubblewrap}`,
         `version=${version.stdout.trim()}`,
+        profileDiagnostics,
         `broker=${JSON.stringify(status)}`,
         `prepared=${JSON.stringify({
           program: prepared.program,
@@ -347,6 +641,7 @@ test(
         `timedOut=${String(result.timedOut)}`,
         `stdout=${JSON.stringify(result.stdout)}`,
         `stderr=${JSON.stringify(result.stderr)}`,
+        `evidence=${existsSync(evidencePath) ? readFileSync(evidencePath, "utf8") : "missing"}`,
       ].join("\n");
 
       expect(result.timedOut, diagnostics).toBe(false);
@@ -384,9 +679,7 @@ test(
         };
       };
       expect(evidence.allowedWrite).toBe(true);
-      expect(evidence.appArmorProfile).toBe(
-        "agenc-native-userns (unconfined)",
-      );
+      expect(evidence.appArmorProfile).toBe(expectedAppArmorProfile);
       expect(readFileSync(allowedWrite, "utf8")).toBe("workspace-write-ok");
       expect(evidence.hostReadOnly).toEqual({
         content: "host-read-only",
@@ -718,7 +1011,7 @@ function kernelProbeScript(): string {
       launcherRoot.content === "launcher-read-only" &&
       launcherRoot.writeError === "EROFS" &&
       launcherRoot.createError === "EROFS" &&
-      evidence.appArmorProfile === "agenc-native-userns (unconfined)" &&
+      evidence.appArmorProfile === payload.expectedAppArmorProfile &&
       network.blocked === true &&
       network.error === "EPERM" &&
       descendantReady === true &&

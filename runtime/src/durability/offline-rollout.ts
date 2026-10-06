@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable, consumeOneShotSeal } from "./one-shot-durability.js";
 import {
   closeSync,
   constants as fsConstants,
@@ -46,6 +47,8 @@ export interface PinnedOfflineRollout {
   readonly sourcePath: string;
   /** Current metadata read from the retained source descriptor. */
   stat(): { readonly size: number; readonly mtimeMs: number };
+  /** Exact device and inode numbers of the retained source descriptor. */
+  identity(): { readonly dev: string; readonly ino: string };
   /** Read the complete repaired rollout through the retained source fd. */
   readUtf8(): string;
   /** Append one or more complete JSONL records and fsync before returning. */
@@ -108,6 +111,7 @@ export function withPinnedOfflineRolloutReadLease<T>(
       fsConstants.O_RDONLY | noFollowFlag(),
     );
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
     const sourceFd = fd;
     let appendDescriptorTransferred = false;
     const rollout: PinnedOfflineRolloutReader = {
@@ -148,6 +152,7 @@ export function withPinnedOfflineRolloutReadLease<T>(
             "offline canonical rollout append descriptor was already transferred",
           );
         }
+        consumeOneShotSeal(scope.sourcePath, sourceFd);
         const appendFd = openPinnedAppendDescriptor(scope, pinned, sourceFd);
         appendDescriptorTransferred = true;
         return appendFd;
@@ -245,8 +250,11 @@ export function withPinnedOfflineRolloutLease<T>(
       fsConstants.O_RDWR | fsConstants.O_APPEND | noFollowFlag(),
     );
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
+    consumeOneShotSeal(scope.sourcePath, fd);
     truncateCorruptTailOnDescriptor(fd);
     assertOpenSourceIdentity(scope, pinned, fd);
+    assertOneShotRecoverable(scope.sourcePath, fd);
 
     const sourceFd = fd;
     const rollout: PinnedOfflineRollout = {
@@ -255,6 +263,11 @@ export function withPinnedOfflineRolloutLease<T>(
         assertOpenSourceIdentity(scope, pinned, sourceFd);
         const current = fstatSync(sourceFd);
         return { size: current.size, mtimeMs: current.mtimeMs };
+      },
+      identity: () => {
+        assertOpenSourceIdentity(scope, pinned, sourceFd);
+        const current = fstatSync(sourceFd, { bigint: true });
+        return { dev: current.dev.toString(10), ino: current.ino.toString(10) };
       },
       readUtf8: () => {
         assertOpenSourceIdentity(scope, pinned, sourceFd);
@@ -605,28 +618,35 @@ function descriptorOperationPath(
       if (realpathSync(candidate) === canonicalPath) return candidate;
     } catch {
       // Absence of a descriptor alias is not permission to fall back to a
-      // pathname that can be replaced during offline mutation.
+      // pathname that can be replaced during offline mutation; only the
+      // identity proof below is.
     }
   }
-  // darwin: realpathSync("/dev/fd/N") resolves back to "/dev/fd/N" rather than
-  // the target, so the alias comparison above can never match and the daemon
-  // refuses to recover any existing project state. Fall back to the canonical
-  // pathname only after proving through the retained descriptor that it is the
-  // same directory inode, which is the property the alias check was buying.
-  if (process.platform !== "win32") {
-    try {
-      const viaDescriptor = fstatSync(fd);
-      const viaPath = lstatSync(canonicalPath);
-      if (
-        viaPath.isDirectory() &&
-        viaDescriptor.dev === viaPath.dev &&
-        viaDescriptor.ino === viaPath.ino
-      ) {
-        return canonicalPath;
-      }
-    } catch {
-      // Fall through to the unavailable error below.
+  // No alias names the directory on darwin, where realpathSync("/dev/fd/N")
+  // resolves back to "/dev/fd/N", or on Windows, which has no descriptor
+  // filesystem at all. Refusing there meant no offline read could ever pin a
+  // journal, so every daemon start excluded every open run as "pending
+  // operator recovery action" (#1695 on macOS; every chat after any restart
+  // on Windows). Fall back to the canonical pathname only after proving
+  // through the retained descriptor that it is the same directory, which is
+  // the property the alias check was buying. The identities are compared as
+  // bigints: NTFS file ids pass 2^53, where plain numbers round, and two
+  // directories must never compare equal because their ids round alike.
+  try {
+    const viaDescriptor = fstatSync(fd, { bigint: true });
+    const viaPath = lstatSync(canonicalPath, { bigint: true });
+    if (
+      viaDescriptor.isDirectory() &&
+      viaPath.isDirectory() &&
+      !viaPath.isSymbolicLink() &&
+      hasSupportedFileIdentity(viaDescriptor) &&
+      viaDescriptor.dev === viaPath.dev &&
+      viaDescriptor.ino === viaPath.ino
+    ) {
+      return canonicalPath;
     }
+  } catch {
+    // Fall through to the unavailable error below.
   }
   return undefined;
 }

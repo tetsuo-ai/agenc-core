@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
+import {
+  SHELL_FILE_WRITE_TOOL_NAMES,
+  type ShellFileWriteTools,
+} from "../../llm/shell-write-policy.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 
 import {
   readToolRuntimeContext,
@@ -28,6 +33,12 @@ const PROMPT_FREE_APPROVAL_POLICIES: ReadonlySet<
 export interface ShellWorkspaceMutationPermission {
   readonly allowWorkspaceDeletions: boolean;
   readonly protectedRoots: readonly string[];
+  /** Directories the user added with `--add-dir` or approved during the session. */
+  readonly additionalRoots: readonly string[];
+  /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
+  readonly bypassesApprovalsAndSandbox: boolean;
+  /** The editing tools a refusal may name, read only when one is written. */
+  readonly fileWriteTools: () => ShellFileWriteTools | undefined;
 }
 
 type SessionLike = {
@@ -35,6 +46,11 @@ type SessionLike = {
   readonly services?: {
     readonly permissionModeRegistry?: { readonly current?: () => unknown };
     readonly configStore?: { readonly homeContext?: { readonly path?: unknown } };
+    readonly registry?: {
+      readonly tools?: unknown;
+      readonly toLLMTools?: () => unknown;
+      readonly getUnavailableToolNames?: () => ReadonlySet<string>;
+    };
   };
 };
 
@@ -45,9 +61,9 @@ function sessionOf(
   return typeof session === "object" && session !== null ? session : undefined;
 }
 
-function sessionPermissionMode(
+function sessionPermissionContext(
   context: ToolRuntimeAttemptContext | undefined,
-): string | undefined {
+): Record<string, unknown> | undefined {
   const session = sessionOf(context);
   const registry =
     session?.permissionModeRegistry ?? session?.services?.permissionModeRegistry;
@@ -55,13 +71,62 @@ function sessionPermissionMode(
     return undefined;
   }
   try {
-    const mode = (registry.current() as { readonly mode?: unknown } | null)?.mode;
-    return typeof mode === "string" ? mode : undefined;
+    const current = registry.current();
+    return typeof current === "object" && current !== null
+      ? (current as Record<string, unknown>)
+      : undefined;
   } catch {
     // The registry fences reads while an external authority publishes a new
-    // context; an unreadable mode is treated as one that prompts.
+    // context; an unreadable context is treated as one that prompts.
     return undefined;
   }
+}
+
+function sessionPermissionMode(
+  context: ToolRuntimeAttemptContext | undefined,
+): string | undefined {
+  const mode = sessionPermissionContext(context)?.mode;
+  return typeof mode === "string" ? mode : undefined;
+}
+
+/**
+ * Directories the user granted beyond the workspace: `--add-dir` on the
+ * command line, or a directory approved during the session. Read from the
+ * permission context the session publishes, the same source the file tools
+ * consult, so the shell policy and Edit/Write agree on what the user added.
+ */
+export function shellAdditionalWriteRoots(
+  context: ToolRuntimeAttemptContext | undefined,
+): readonly string[] {
+  const directories = sessionPermissionContext(context)?.additionalWorkingDirectories;
+  if (!(directories instanceof Map)) return [];
+  const roots = new Set<string>();
+  for (const entry of directories.values()) {
+    const path = (entry as { readonly path?: unknown } | null)?.path;
+    if (typeof path === "string" && path.trim().length > 0) {
+      roots.add(resolve(path.trim()));
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * Whether nothing but the shell write policy would gate a mutation: the
+ * session never asks (`approvalPolicy: never`, or the bypassPermissions mode
+ * the `--dangerously-bypass-approvals-and-sandbox` flag selects) AND it runs
+ * without a kernel sandbox. Either alone keeps the guards: `--bypass-approvals`
+ * leaves the sandbox as the boundary, and a prompting session in
+ * danger-full-access still routes each command past the user.
+ */
+export function shellBypassesApprovalsAndSandbox(
+  context: ToolRuntimeAttemptContext | undefined,
+): boolean {
+  if (context === undefined) return false;
+  if (context.sandboxMode !== "danger_full_access") return false;
+  return (
+    context.approvalPolicy === "never" ||
+    sessionPermissionMode(context) === "bypassPermissions"
+  );
 }
 
 /**
@@ -78,6 +143,56 @@ export function shellWorkspaceDeletionsAllowed(
   if (PROMPT_FREE_APPROVAL_POLICIES.has(context.approvalPolicy)) return true;
   const mode = sessionPermissionMode(context);
   return mode !== undefined && PROMPT_FREE_PERMISSION_MODES.has(mode);
+}
+
+/** The string `name` fields of a tool list, or of an LLM tool list's functions. */
+function namesOf(list: unknown, pick: (entry: Record<string, unknown>) => unknown): Set<string> {
+  const names = new Set<string>();
+  if (!Array.isArray(list)) return names;
+  for (const entry of list) {
+    const name = typeof entry === "object" && entry !== null
+      ? pick(entry as Record<string, unknown>)
+      : undefined;
+    if (typeof name === "string") names.add(name);
+  }
+  return names;
+}
+
+/**
+ * The editing tools of SHELL_FILE_WRITE_TOOL_NAMES this session has, read
+ * from the session's own registry: a subagent's registry already lacks what
+ * its role denies (the read-only roles have none of them). Split by whether
+ * the model's tool list carries them: an OpenAI Light session lists
+ * apply_patch and keeps Edit and Write behind system.searchTools. A refused
+ * shell write names only these, so the model is never sent to a tool it
+ * cannot reach. Undefined when there is no session registry to read.
+ */
+export function shellFileWriteTools(
+  context: ToolRuntimeAttemptContext | undefined,
+): ShellFileWriteTools | undefined {
+  const registry = sessionOf(context)?.services?.registry;
+  if (registry === undefined || registry === null) return undefined;
+  try {
+    const tools = registry.tools;
+    if (!Array.isArray(tools)) return undefined;
+    const unavailable = registry.getUnavailableToolNames?.() ?? new Set<string>();
+    const present = namesOf(tools, (tool) => tool.name);
+    const listed = namesOf(
+      registry.toLLMTools?.(),
+      (tool) => (tool.function as { readonly name?: unknown } | undefined)?.name,
+    );
+    const usable = SHELL_FILE_WRITE_TOOL_NAMES.filter(
+      (name) => present.has(name) && !unavailable.has(name),
+    );
+    return {
+      listed: usable.filter((name) => listed.has(name)),
+      unlisted: usable.filter((name) => !listed.has(name)),
+      ...(listed.has(SYSTEM_SEARCH_TOOLS_NAME) ? { loadWith: SYSTEM_SEARCH_TOOLS_NAME } : {}),
+    };
+  } catch {
+    // A registry that cannot list its tools right now names the defaults.
+    return undefined;
+  }
 }
 
 /** The AgenC home directories a shell command may never remove. */
@@ -123,5 +238,9 @@ export function shellWorkspaceMutationPermission(
   return {
     allowWorkspaceDeletions: shellWorkspaceDeletionsAllowed(context),
     protectedRoots: shellDeletionProtectedRoots(context),
+    additionalRoots: shellAdditionalWriteRoots(context),
+    bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
+    // Lazy: an allowed command never lists the session's tools.
+    fileWriteTools: () => shellFileWriteTools(context),
   };
 }

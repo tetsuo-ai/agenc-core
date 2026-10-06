@@ -29,7 +29,8 @@ import { DegradedStore } from "./degraded-store.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 import { StateSqliteDriver } from "../state/sqlite-driver.js";
-import { LogsRepository } from "../state/logs.js";
+import { LogsRepository, type IndexedLogEntry } from "../state/logs.js";
+import { logsDatabaseFilesAreAbsent } from "../state/logs-availability.js";
 import { redactSecretsInValue } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 
@@ -187,6 +188,8 @@ function createBufferedWriter(opts: BufferedWriterOpts): BufferedWriter {
 export interface ErrorLogSidecarOpts {
   readonly projectDir: string;
   readonly sessionId: string;
+  /** Trusted bootstrap selection for fresh relaxed one-shot diagnostics only. */
+  readonly deferStartupIndex?: boolean;
   readonly onDiagnostic?: (d: {
     readonly cause: string;
     readonly message: string;
@@ -206,6 +209,10 @@ export class ErrorLogSidecar implements Sidecar {
   private readonly degraded: DegradedStore<ErrorLogEntry>;
   private readonly stateDriver: StateSqliteDriver;
   private readonly logsRepository: LogsRepository;
+  private deferStartupIndex: boolean;
+  private pendingIndex: string[] = [];
+  private pendingIndexBytes = 0;
+  private stopped = false;
 
   constructor(opts: ErrorLogSidecarOpts) {
     this.errorsDir = join(opts.projectDir, "errors");
@@ -215,15 +222,19 @@ export class ErrorLogSidecar implements Sidecar {
     this.degraded = new DegradedStore<ErrorLogEntry>({
       flushFn: async (events) => this.replayDegraded(events),
     });
+    const logsDbPath = join(opts.projectDir, "agenc-logs_1.sqlite");
+    this.deferStartupIndex = opts.deferStartupIndex === true &&
+      logsDatabaseFilesAreAbsent(logsDbPath);
     this.stateDriver = new StateSqliteDriver({
       projectDir: opts.projectDir,
       stateDbPath: join(opts.projectDir, "agenc-state_1.sqlite"),
-      logsDbPath: join(opts.projectDir, "agenc-logs_1.sqlite"),
-    });
+      logsDbPath,
+    }, undefined, { deferLogs: this.deferStartupIndex });
     this.logsRepository = new LogsRepository(this.stateDriver);
   }
 
   async start(): Promise<void> {
+    if (this.stopped) throw new Error("error-log sidecar is stopped");
     try {
       mkdirSync(this.errorsDir, { recursive: true });
     } catch (err) {
@@ -239,12 +250,28 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.flushStartupIndex();
+    this.stopped = true;
+    const errors: unknown[] = [];
     for (const writer of this.writers.values()) {
-      writer.dispose();
+      try {
+        writer.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     this.writers.clear();
-    this.stateDriver.close();
-    this.degraded.stop();
+    try {
+      this.stateDriver.close();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      this.degraded.stop();
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "error-log sidecar shutdown failed");
+    }
   }
 
   isDegraded(): boolean {
@@ -252,6 +279,7 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   onEvent(event: Event): void {
+    if (this.stopped) return;
     const classification = classifyErrorLogEvent(event);
     if (!classification.persist) {
       return;
@@ -283,6 +311,9 @@ export class ErrorLogSidecar implements Sidecar {
       ...(payload.stack ? { stack: payload.stack } : {}),
     }) as ErrorLogEntry;
 
+    // Earlier warnings retain their FIFO position even when this error's JSONL
+    // copy must enter the existing degraded buffer instead of the writer.
+    if (level !== "warning") this.flushStartupIndex();
     if (this.degraded.isDegraded) {
       this.degraded.append(entry);
       return;
@@ -292,7 +323,7 @@ export class ErrorLogSidecar implements Sidecar {
     const writer = this.getWriter(path);
     try {
       writer.write(`${JSON.stringify(entry)}\n`);
-      this.logsRepository.tryAppend({
+      this.indexEntry({
         timestamp: entry.timestamp,
         level: entry.level,
         scope: entry.server ? "mcp" : "runtime",
@@ -313,6 +344,36 @@ export class ErrorLogSidecar implements Sidecar {
           message: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+  }
+
+  private indexEntry(entry: IndexedLogEntry): void {
+    if (this.deferStartupIndex) {
+      // Keep only immutable serialized values captured after event-time
+      // redaction. Neither later payload mutation nor secrets enter this FIFO.
+      const serialized = JSON.stringify(entry);
+      const bytes = Buffer.byteLength(serialized, "utf8");
+      if (this.pendingIndex.length < 32 && this.pendingIndexBytes + bytes <= 64 * 1024) {
+        this.pendingIndex.push(serialized);
+        this.pendingIndexBytes += bytes;
+        return;
+      }
+      this.flushStartupIndex();
+    }
+    this.logsRepository.tryAppend(entry);
+  }
+
+  /** End startup buffering before provider response processing or any seal. */
+  flushStartupIndex(): void {
+    if (!this.deferStartupIndex) return;
+    this.deferStartupIndex = false;
+    const pending = this.pendingIndex;
+    this.pendingIndex = [];
+    this.pendingIndexBytes = 0;
+    // Detach first so a repeated/reentrant flush cannot replay an attempted
+    // append. A false result keeps tryAppend's existing best-effort semantics.
+    for (const serialized of pending) {
+      this.logsRepository.tryAppend(JSON.parse(serialized) as IndexedLogEntry);
     }
   }
 
@@ -362,6 +423,7 @@ export class ErrorLogSidecar implements Sidecar {
   /** Manual flush — used by shutdown path. */
   flushNow(): void {
     for (const writer of this.writers.values()) writer.flush();
+    this.flushStartupIndex();
   }
 
   /** Stats for telemetry. */

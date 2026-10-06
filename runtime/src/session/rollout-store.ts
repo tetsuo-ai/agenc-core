@@ -38,6 +38,7 @@ import {
   withAtomicArtifactObservationSync,
 } from "../durability/atomic-artifact.js";
 import { withPinnedOfflineRolloutLease } from "../durability/offline-rollout.js";
+import { readSubagentTaskReceipts, type RecoveredChildTaskReceipt } from "./subagent-receipt-recovery.js";
 import {
   AgentIdExistsError,
   InvalidAgentMetadataError,
@@ -63,6 +64,9 @@ import {
 } from "./session-store.js";
 import {
   openStateDatabases,
+  StateSqliteReader,
+  STATE_DATABASE_FILENAME,
+  LOGS_DATABASE_FILENAME,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import {
@@ -141,7 +145,8 @@ import {
   CompactionTransactionError,
 } from "../services/compact/transaction-types.js";
 import {
-  canonicalizeJson,
+  canonicalizeSourceJson,
+  digestSourceWithDomain,
   digestWithDomain,
   sha256Hex,
   verifyCompactionSummaryDigest,
@@ -166,9 +171,11 @@ import {
   type CanonicalCompactionAttemptScan,
   type CanonicalRolloutScan,
 } from "./canonical-rollout-scanner.js";
-import { redactSecretsInValue } from "../secrets/sanitizer.js";
+import { redactDurableSecrets } from "./provider-replay-redaction.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
+  /** Drain auxiliary startup diagnostics before the existing one-shot seal. */
+  readonly beforeOneShotCheckpoint?: () => void;
   /** Session-owned temporary root captured at request ingress. */
   readonly sessionTempRoot: string;
   /** Flush interval in ms. Default 100. */
@@ -469,8 +476,8 @@ function requireCompactionPayloadBundle(
   // The bundle holds the redacted payload; expect the redacted value too.
   if (
     params.expectedValue !== undefined &&
-    canonicalizeJson(value) !==
-      canonicalizeJson(redactSecretsInValue(params.expectedValue))
+    canonicalizeSourceJson(value) !==
+      canonicalizeSourceJson(redactDurableSecrets(params.expectedValue, params.payloadKind === "replacement_history" || params.payloadKind === "source_history" ? "history" : "ordinary"))
   ) {
     throw new CompactionTransactionError(
       params.failureStage,
@@ -579,10 +586,10 @@ function compactionIntentMatchesPin(
     intent.source.source_sha256 === pin.sourceSha256 &&
     intent.source.source_bytes === pin.sourceBytes &&
     intent.source.history_digest === pin.historyDigest &&
-    canonicalizeJson(intent.source.active_history_refs) ===
-      canonicalizeJson(pin.activeHistoryRefs) &&
-    canonicalizeJson(intent.selected_history_indexes) ===
-      canonicalizeJson(pin.selectedHistoryIndexes) &&
+    canonicalizeSourceJson(intent.source.active_history_refs) ===
+      canonicalizeSourceJson(pin.activeHistoryRefs) &&
+    canonicalizeSourceJson(intent.selected_history_indexes) ===
+      canonicalizeSourceJson(pin.selectedHistoryIndexes) &&
     intent.policy_digest === pin.policyDigest &&
     intent.configuration_digest === pin.configurationDigest &&
     intent.accounting_ref === pin.accountingRef &&
@@ -600,9 +607,9 @@ function compactionCommitMatchesIntentAndPin(
   return (
     compactionIntentMatchesPin(intent, pin) &&
     commit.attempt_id === intent.attempt_id &&
-    canonicalizeJson(commit.source) === canonicalizeJson(intent.source) &&
-    canonicalizeJson(commit.selected_history_indexes) ===
-      canonicalizeJson(intent.selected_history_indexes) &&
+    canonicalizeSourceJson(commit.source) === canonicalizeSourceJson(intent.source) &&
+    canonicalizeSourceJson(commit.selected_history_indexes) ===
+      canonicalizeSourceJson(intent.selected_history_indexes) &&
     commit.policy_digest === intent.policy_digest &&
     commit.configuration_digest === intent.configuration_digest &&
     commit.accounting.accounting_ref === intent.accounting_ref &&
@@ -632,7 +639,7 @@ function compactionSourceAuthorityMatchesScan(
   }
   return (
     sourceBytes === source.source_bytes &&
-    digestWithDomain(
+    digestSourceWithDomain(
       COMPACTION_SOURCE_DIGEST_DOMAIN,
       source.active_history_refs,
     ) === source.source_sha256
@@ -790,7 +797,10 @@ export class RolloutStore {
       throw new TypeError("RolloutStore sessionTempRoot must be absolute");
     }
     this.sessionTempRoot = normalize(opts.sessionTempRoot);
-    this.store = new SessionStore(opts);
+    this.store = new SessionStore({ ...opts, checkpointOneShot: () => {
+      opts.beforeOneShotCheckpoint?.();
+      this.stateDriver.checkpointDurability();
+    } });
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
       this.store,
@@ -815,7 +825,10 @@ export class RolloutStore {
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
       agencHome: this.store.agencHome,
+      durabilityRunId: opts.sessionId,
       projectRootMarkers: opts.projectRootMarkers,
+      // Rollout authority uses state; open logs only if a caller needs them.
+      deferLogs: true,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
@@ -864,6 +877,17 @@ export class RolloutStore {
       }
 
       this.store.open(meta);
+      if (existingEpoch !== undefined) {
+        const liveHistoryRefs = this.compactionRetentionRepo
+          .listActiveForSourceBinding(
+            `rollout:${this.rolloutPath}#epoch:${existingEpoch.epoch}`,
+          )
+          .flatMap((pin) => pin.activeHistoryRefs);
+        this.store.rewriteFailedCompactionPayloadChunksAtomically(
+          COMPACTION_SOURCE_DIGEST_DOMAIN,
+          liveHistoryRefs,
+        );
+      }
       this.promoteDurableCheckpointSchema(meta);
       this.rebuildLiveToolPairProjection();
       // Re-check under the canonical rollout lease. Retention can retire the
@@ -1065,7 +1089,7 @@ export class RolloutStore {
     const authoritativeMessages = activeHistory.messages.map(
       runtimeMessageFromResponseItem,
     );
-    const historyDigest = digestWithDomain(
+    const historyDigest = digestSourceWithDomain(
       COMPACTION_SOURCE_DIGEST_DOMAIN,
       canonicalCompactionSourceMessages(authoritativeMessages),
     );
@@ -1112,7 +1136,7 @@ export class RolloutStore {
     const lastSequence = Math.max(
       ...activeHistoryRefs.map((ref) => ref.last_sequence),
     );
-    const sourceSha256 = digestWithDomain(
+    const sourceSha256 = digestSourceWithDomain(
       COMPACTION_SOURCE_DIGEST_DOMAIN,
       activeHistoryRefs,
     );
@@ -1373,7 +1397,7 @@ export class RolloutStore {
       replacement_history: input.replacement_history,
       cleanup_state: "pending",
     };
-    const commitSha256 = digestWithDomain(
+    const commitSha256 = digestSourceWithDomain(
       COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
       committed,
     );
@@ -1508,8 +1532,8 @@ export class RolloutStore {
     const exactCommit =
       terminalItems.length === 1 &&
       terminalItems[0]?.type === "compaction_committed" &&
-      canonicalizeJson(terminalItems[0].payload) ===
-        canonicalizeJson(expected.payload);
+      canonicalizeSourceJson(terminalItems[0].payload) ===
+        canonicalizeSourceJson(expected.payload);
     if (!exactCommit) {
       this.poisonCompactionProjection(expected.payload.attempt_id, [
         appendError,
@@ -1575,8 +1599,8 @@ export class RolloutStore {
       attempt === undefined ||
       persistedIntents.length !== 1 ||
       persistedIntents[0]!.item.type !== "compaction_intent" ||
-      canonicalizeJson(persistedIntents[0]!.item.payload) !==
-        canonicalizeJson(intent) ||
+      canonicalizeSourceJson(persistedIntents[0]!.item.payload) !==
+        canonicalizeSourceJson(intent) ||
       hasTerminal ||
       !attempt.admissionValid
     ) {
@@ -1780,7 +1804,7 @@ export class RolloutStore {
     const commit = commitRecord.item;
     if (
       commit.type !== "compaction_committed" ||
-      digestWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
+      digestSourceWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
         pin.commitSha256
     ) {
       throw new CompactionTransactionError(
@@ -1806,7 +1830,7 @@ export class RolloutStore {
       cloneProjectionMessage,
     );
     if (
-      digestWithDomain(
+      digestSourceWithDomain(
         COMPACTION_SOURCE_DIGEST_DOMAIN,
         canonicalCompactionSourceMessages(
           sourceHistory.map(runtimeMessageFromResponseItem),
@@ -2003,8 +2027,8 @@ export class RolloutStore {
       projected.length > rollback.source_history.length ||
       projected.some(
         (message, index) =>
-          canonicalizeJson(message) !==
-          canonicalizeJson(rollback.source_history[index]),
+          canonicalizeSourceJson(message) !==
+          canonicalizeSourceJson(rollback.source_history[index]),
       )
     ) {
       throw new CompactionTransactionError(
@@ -2040,8 +2064,8 @@ export class RolloutStore {
       .readAll()
       .flatMap((item) => (item.type === "response_item" ? [item.payload] : []));
     if (
-      canonicalizeJson(materialized) !==
-      canonicalizeJson(rollback.source_history)
+      canonicalizeSourceJson(materialized) !==
+      canonicalizeSourceJson(rollback.source_history)
     ) {
       throw new CompactionTransactionError(
         "commit_failed",
@@ -2362,7 +2386,7 @@ export class RolloutStore {
     if (
       commit.type !== "compaction_committed" ||
       pin.commitSha256 === undefined ||
-      digestWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
+      digestSourceWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload) !==
         pin.commitSha256
     ) {
       throw new CompactionTransactionError(
@@ -2563,6 +2587,7 @@ export class RolloutStore {
     );
     for (const attempt of orderedAttempts) {
       const intent = attempt.intent;
+      if (intent === undefined) continue;
       if (this.compactionRetentionRepo.get(intent.attempt_id) !== undefined) {
         continue;
       }
@@ -2645,7 +2670,7 @@ export class RolloutStore {
       }
       pin = this.compactionRetentionRepo.markCommitted(
         commit.payload,
-        digestWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload),
+        digestSourceWithDomain(COMPACTION_ACCOUNTING_DIGEST_DOMAIN, commit.payload),
       );
       this.compactionRetentionRepo.markProjectionComplete(
         pin.attemptId,
@@ -2824,7 +2849,7 @@ export class RolloutStore {
           "canonical compaction admission lifecycle is incomplete or contaminated",
         );
       }
-      const commitSha256 = digestWithDomain(
+      const commitSha256 = digestSourceWithDomain(
         COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
         commit.payload,
       );
@@ -3066,9 +3091,6 @@ export class RolloutStore {
     }
     if (message.type === "effect_unknown_outcome") {
       const payload = message.payload;
-      if (payload.recoveryCategory === "idempotent") {
-        throw new Error("idempotent effects cannot have unknown outcome");
-      }
       this.runDurabilityRepo.markEffectUnknown({
         runId: payload.runId,
         stepId: payload.stepId,
@@ -3089,14 +3111,16 @@ export class RolloutStore {
         },
         observedAt: payload.recordedAt,
       });
-      recordInFlightToolCallUnknownOutcome(this.stateDriver, {
-        sessionId: this.sessionId,
-        agentId: payload.runId,
-        toolCallId: payload.callId,
-        toolName: payload.toolName,
-        observedAt: payload.recordedAt,
-        recoveryCategory: payload.recoveryCategory,
-      });
+      if (payload.recoveryCategory !== "idempotent") {
+        recordInFlightToolCallUnknownOutcome(this.stateDriver, {
+          sessionId: this.sessionId,
+          agentId: payload.runId,
+          toolCallId: payload.callId,
+          toolName: payload.toolName,
+          observedAt: payload.recordedAt,
+          recoveryCategory: payload.recoveryCategory,
+        });
+      }
       return;
     }
     if (message.type === "effect_review_resolved") {
@@ -3135,8 +3159,8 @@ export class RolloutStore {
     }
   }
 
-  /** Fail closed unless this writer can relinquish a clean, effect-free epoch. */
-  assertRunSuspendable(): void {
+  /** Refuse suspension over an intent with no recorded outcome. */
+  assertRunSuspendable(options: { readonly allowUnsettledEffects?: boolean } = {}): void {
     const epoch = this.runEpoch;
     if (this.currentEpochIsTerminal(this.sessionId, epoch)) {
       throw new Error(
@@ -3148,18 +3172,57 @@ export class RolloutStore {
     ) {
       throw new Error(`run ${this.sessionId} is already suspended`);
     }
-    const unsettled = this.runDurabilityRepo
+    const blocking = this.runDurabilityRepo
       .listEffects(this.sessionId)
       .filter(
         (effect) =>
-          effect.outcome === undefined || effect.reviewStatus === "pending",
+          effect.outcome === undefined ||
+          (effect.reviewStatus === "pending" &&
+            options.allowUnsettledEffects !== true),
       );
-    if (unsettled.length > 0) {
+    if (blocking.length > 0) {
       throw new Error(
-        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${unsettled
+        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${blocking
           .map((effect) => effect.stepId)
           .join(", ")}`,
       );
+    }
+  }
+
+  hasPendingEffectReviews(): boolean {
+    if (!this.stateDriver.state.open) return false;
+    try {
+      // An outcome-less intent also describes a tool executing right now.
+      // Recovery journals an unknown outcome and marks its review pending;
+      // only that evidence (or a poisoned legacy call) stops model dispatch.
+      const durable = this.stateDriver.prepareState<
+        [string], { readonly present: number }
+      >(`SELECT 1 AS present FROM run_effects
+         WHERE session_id = ? AND review_status = 'pending'
+           AND recovery_category IN ('side-effecting', 'interactive')
+         LIMIT 1`).get(this.sessionId);
+      if (durable !== undefined) return true;
+      return this.stateDriver.prepareState<
+        [string], { readonly present: number }
+      >(`SELECT 1 AS present FROM in_flight_tool_calls
+         WHERE session_id = ? AND status = 'poisoned'
+         LIMIT 1`).get(this.sessionId) !== undefined;
+    } catch {
+      // A broken projection cannot prove that this conversation is safe.
+      return true;
+    }
+  }
+
+  private rootReviewGateActive = true;
+
+  /** Main's ordinary recovery path does not wait for root effect review. */
+  useOrdinaryRootBootstrapAfterWorkers(): void {
+    this.rootReviewGateActive = false;
+  }
+
+  assertModelExecutionAllowed(): void {
+    if (this.rootReviewGateActive && this.hasPendingEffectReviews()) {
+      throw new Error(`run ${this.sessionId} requires effect review before model execution`);
     }
   }
 
@@ -3180,6 +3243,7 @@ export class RolloutStore {
       eventSequence: event.seq,
       reason: event.msg.payload.reason,
       suspendedAt: event.msg.payload.suspendedAt,
+      allowUnsettledEffects: true,
     });
   }
 
@@ -3616,6 +3680,24 @@ export class RolloutStore {
     return this.listThreadSpawnChildrenMatching(parentThreadId);
   }
 
+  /** Recover committed task results without reopening the worker's execution epoch. */
+  readThreadSpawnTaskReceipts(childThreadId: ThreadId, deadline?: number, turnId?: string, liveSource?: RolloutStore): readonly RecoveredChildTaskReceipt[] {
+    const edge = this.getThreadSpawnEdge(childThreadId);
+    if (edge === undefined) throw new Error("Child receipt recovery requires a durable spawn edge.");
+    return readSubagentTaskReceipts({ edge,
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(liveSource === undefined ? {} : { scanLiveSource: (sourcePath: string, consume: (chunk: Uint8Array) => void) => {
+        if (liveSource.sessionId !== childThreadId || liveSource.rolloutPath !== sourcePath) return false;
+        liveSource.store.scanCanonicalChunks(64 * 1_024 * 1_024, consume);
+        return true;
+      } }),
+      projectDir: getProjectDir(this.store.cwd, this.projectRootMarkers, this.store.agencHome),
+      projectsDir: join(this.store.agencHome, "projects"),
+      bindings: this.runDurabilityRepo.listJournalBindings(childThreadId),
+      ...(deadline === undefined ? {} : { deadline }),
+      resolveSourcePath: resolveCurrentBoundRolloutPath });
+  }
+
   listThreadSpawnDescendants(
     rootThreadId: ThreadId,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
@@ -3627,6 +3709,78 @@ export class RolloutStore {
     status: ThreadSpawnEdgeStatus,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
     return this.listThreadSpawnDescendantsMatching(rootThreadId, status);
+  }
+
+  /**
+   * Check only eligibility for root checkpoint continuation. Worker turns are
+   * not restored after restart; any open edge or missing terminal outcome
+   * keeps the root on the ordinary bootstrap path. Worker continuation is
+   * follow-up work.
+   */
+  rootHasOnlyTerminalDescendants(rootThreadId: ThreadId): boolean {
+    try {
+      return this.listThreadSpawnDescendants(rootThreadId).every((edge) => {
+        if (edge.status !== "closed") return false;
+        const epoch = this.runDurabilityRepo.currentEpoch(edge.childThreadId);
+        if (epoch !== undefined &&
+          this.currentEpochIsTerminal(edge.childThreadId, epoch.epoch)) return true;
+        return this.terminalDescendantInAnotherProject(edge.childThreadId);
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private terminalDescendantInAnotherProject(runId: ThreadId): boolean {
+    // A finished worktree worker writes under its own project. Read only the
+    // terminal evidence; never mount or restore its session. Ambiguous or
+    // oversized discovery withholds root continuation.
+    const projectsDir = join(this.store.agencHome, "projects");
+    const rootProjectDir = getProjectDir(this.store.cwd,
+      this.projectRootMarkers, this.store.agencHome);
+    const dir = opendirSync(projectsDir);
+    let discovered = false;
+    let visited = 0;
+    try {
+      for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
+        if (++visited > MAX_BOUND_ROLLOUT_DIRECTORY_ENTRIES) return false;
+        if (!entry.isDirectory()) continue;
+        const projectDir = join(projectsDir, entry.name);
+        if (projectDir === rootProjectDir || !lstatSync(projectDir).isDirectory()) continue;
+        const stateDbPath = join(projectDir, STATE_DATABASE_FILENAME);
+        const logsDbPath = join(projectDir, LOGS_DATABASE_FILENAME);
+        if (!existsSync(stateDbPath)) continue;
+        const reader = new StateSqliteReader(
+          { projectDir, stateDbPath, logsDbPath }, { deferLogs: true });
+        try {
+          const epoch = reader.prepareState<[string], { epoch: number }>(
+            `SELECT epoch FROM run_lifecycle_epochs WHERE run_id = ? ORDER BY epoch DESC LIMIT 1`,
+          ).get(runId)?.epoch;
+          if (epoch === undefined) continue;
+          if (discovered) return false;
+          discovered = true;
+          if (reader.prepareState<[string, number], { event_id: string }>(
+            `SELECT event_id FROM run_terminal_results WHERE run_id = ? AND epoch = ?`,
+          ).get(runId, epoch) !== undefined) continue;
+          const bindings = reader.prepareState<[string, number], {
+            session_id: string; source_path: string }>(
+            `SELECT session_id, source_path FROM run_journal_bindings
+             WHERE run_id = ? AND epoch = ? ORDER BY source_path ASC`,
+          ).all(runId, epoch);
+          if (!bindings.some((binding) => withPinnedOfflineRolloutLease({
+            projectDir, sessionId: binding.session_id,
+            sourcePath: resolveCurrentBoundRolloutPath(binding.source_path),
+          }, (rollout) => rolloutContentContainsTerminal(rollout.readUtf8(), runId, epoch)))) {
+            return false;
+          }
+        } finally {
+          reader.close();
+        }
+      }
+      return discovered;
+    } finally {
+      dir.closeSync();
+    }
   }
 
   findThreadSpawnChildByPath(
@@ -3725,8 +3879,7 @@ export class RolloutStore {
   close(): void {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    this.stateDriver.close();
-    this.store.close();
+    try { this.store.close(); } finally { this.stateDriver.close(); }
   }
 
   private requireRunEpoch(runId: string) {
@@ -3902,15 +4055,14 @@ export class RolloutStore {
         `cannot resume run ${runId}: canonical suspension has no matching durable projection`,
       );
     }
-    const pendingEffects = this.runDurabilityRepo
+    const danglingEffects = this.runDurabilityRepo
       .listEffects(runId)
       .filter(
-        (effect) =>
-          effect.outcome === undefined || effect.reviewStatus === "pending",
+        (effect) => effect.outcome === undefined,
       );
-    if (pendingEffects.length > 0) {
+    if (danglingEffects.length > 0) {
       throw new Error(
-        `cannot resume run ${runId}: ${pendingEffects.length} effect(s) remain unresolved`,
+        `cannot resume run ${runId}: ${danglingEffects.length} effect(s) remain unresolved`,
       );
     }
     const items = this.store.readAll();
@@ -3995,6 +4147,7 @@ export class RolloutStore {
           eventSequence: event.seq,
           reason: event.msg.payload.reason,
           suspendedAt: event.msg.payload.suspendedAt,
+          allowUnsettledEffects: true,
         });
         continue;
       }
@@ -4149,7 +4302,12 @@ export class RolloutStore {
         } else if (event.msg.type === "effect_result") {
           effectBoundaryState.delete(event.msg.payload.stepId);
         } else if (event.msg.type === "effect_unknown_outcome") {
-          effectBoundaryState.set(event.msg.payload.stepId, "review_required");
+          effectBoundaryState.set(
+            event.msg.payload.stepId,
+            event.msg.payload.recoveryCategory === "idempotent"
+              ? "retry_safe"
+              : "review_required",
+          );
         } else if (
           typeof event.msg.payload.resolution !== "string" &&
           event.msg.payload.resolution.workflowStatus !== "pending"

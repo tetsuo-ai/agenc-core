@@ -9,6 +9,7 @@
 
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
+import { isNativeDeepSeekModel } from "./registry/deepseek-models.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
 import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
@@ -59,6 +60,23 @@ export interface ProviderReasoningProvenance {
   readonly model: string;
 }
 
+/** An explicit empty supported tool-response replay differs from unavailable reasoning. */
+export function isKnownEmptyProviderReasoning(
+  content: unknown,
+  provenance: unknown,
+): boolean {
+  if (content !== "" || !isRecord(provenance) ||
+      typeof provenance.provider !== "string" || typeof provenance.model !== "string") {
+    return false;
+  }
+  const provider = provenance.provider.trim().toLowerCase();
+  return provider === "deepseek"
+    ? isNativeDeepSeekModel(provenance.model)
+    : ["zai", "zai-coding-plan"].includes(provider) &&
+      /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
+        .test(provenance.model.trim());
+}
+
 /** Legacy unbound durable replay state; readable but never safe to replay. */
 export interface ProviderReasoningReplayV1 {
   readonly version: 1;
@@ -102,6 +120,8 @@ export interface LLMMessage {
    * provider serialization. This must be stripped before adapter payloads.
    */
   runtimeOnly?: {
+    /** Durable response-item identity retained across compaction replay. */
+    readonly responseItemId?: string;
     readonly mergeBoundary?: "user_context";
     readonly permissionModeReminder?: "plan" | "plan_exit" | "auto" | "auto_exit";
     readonly excludeFromDurableHistory?: true;
@@ -130,7 +150,8 @@ export interface LLMMessage {
       readonly kind:
         | "input_validation"
         | "mcp_tool_not_shell_command"
-        | "shell_workspace_write_policy";
+        | "shell_workspace_write_policy"
+        | "exec_detach_unavailable";
     };
     /**
      * Durable tool-result identity. This is runtime-only state: provider wire
@@ -282,7 +303,30 @@ export interface LLMUsage {
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * Anthropic sets this because `thinking_tokens` are a subset of inclusive
+   * `output_tokens`. The session budget then adds completion once. Providers
+   * that leave it unset still have reasoning added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   webSearchRequests?: number;
+  /**
+   * The wire this usage came from cannot report prompt-cache writes: it has
+   * no field equivalent to Responses' `input_tokens_details.cache_write_tokens`
+   * (OpenAI Chat Completions folds real cache writes into `promptTokens` with
+   * no way to tell them apart from ordinary input). Budget reconciliation
+   * uses this to avoid under-pricing those writes as ordinary input on models
+   * that bill cache writes above the input rate.
+   */
+  readonly cacheWritesUnreported?: boolean;
+  /**
+   * Speed the provider reports it served the call at (Anthropic
+   * `usage.speed`, the OpenAI and xAI response `service_tier`). Fast mode
+   * bills at its own rates, so cost accounting follows this rather than the
+   * speed that was requested.
+   */
+  readonly speed?: "fast" | "standard";
 }
 
 /**
@@ -386,6 +430,13 @@ export interface LLMProviderExecutionProfile {
   /** Whether request-scoped output-token limits reach the provider wire. */
   readonly supportsMaxOutputTokens: boolean;
   /**
+   * Extra context this provider reserves beyond prompt and output before it
+   * will accept a request. Preflight and admission must reserve the same room
+   * or they admit requests the provider then refuses at its own boundary.
+   * Declared only by providers whose request preparation actually enforces it.
+   */
+  readonly contextSafetyBufferTokens?: number;
+  /**
    * Opaque provider-owned handle that pins this exact routed execution for the
    * admitted wire attempt. The admission boundary copies it to
    * `LLMChatOptions.providerExecutionHandle`; callers must not inspect or
@@ -416,7 +467,11 @@ type LLMReasoningEffort =
   | "max";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "priority" | "flex";
+/**
+ * "default" names OpenAI's Standard tier explicitly; admission sends it under
+ * a hard USD cap so a project-level Fast default cannot apply.
+ */
+type LLMServiceTier = "priority" | "flex" | "default";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -644,6 +699,14 @@ export interface LLMChatOptions {
    */
   readonly accountedInputTokens?: number;
   /**
+   * @internal Pre-admission output ceiling, for warning only. Admission fits
+   * the reservation to the context window before dispatch, so an adapter
+   * otherwise sees only the already-fitted value and cannot tell a squeezed
+   * reservation from a request that only ever asked for that much. Never sent
+   * on the wire, and never used to widen any limit.
+   */
+  readonly requestedMaxOutputTokens?: number;
+  /**
    * Runtime admission boundary: one provider wire attempt is permitted for
    * this logical call. Provider adapters must not perform continuation,
    * transport, authentication, or configured-fallback retries while set;
@@ -706,10 +769,14 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Disable thinking for one reasoning-only output-cap recovery sample, on supported routes only. */
+  readonly disableThinkingForRecovery?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */
   readonly modelVerbosity?: LLMModelVerbosity;
+  /** Explicit session response detail, used only for prompt fallback routes. */
+  readonly responseDetailOverride?: LLMModelVerbosity;
   /** Provider-facing service-tier hint for APIs that expose it. */
   readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
@@ -777,10 +844,16 @@ export interface LLMStoredResponseDeleteResult {
  * Response from an LLM provider
  */
 export interface LLMResponse {
+  /** Non-executable identities only; argument bytes were cut off by the
+   * provider output limit. Used to report a retryable failure and guide repair. */
+  incompleteToolCalls?: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+
   content: string;
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */
   readonly toolCallRecovery?: {
+    /** Native calls rejected by provider validation, with no executable payload. */
+    readonly source?: "native";
     readonly reason: "invalid_arguments" | "not_advertised";
     readonly toolName: string;
     readonly message: string;
@@ -829,6 +902,8 @@ export interface LLMStreamChunk {
   content: string;
   done: boolean;
   toolCalls?: LLMToolCall[];
+  /** New non-whitespace output buffered for validation; carries no displayable text. */
+  bufferedContentProgress?: boolean;
   /**
    * When true, `content` is the full-so-far snapshot of the assistant
    * reply rather than an incremental delta. Downstream consumers MUST
@@ -954,24 +1029,6 @@ export interface LLMProviderSessionForkOptions {
   readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
-/** Provider-native fill-in-the-middle request for editor prediction. */
-export interface LLMCodePredictionRequest {
-  readonly prefix: string;
-  readonly suffix: string;
-  readonly language?: string;
-  readonly path: string;
-  readonly cursor: {
-    readonly line: number;
-    readonly byteColumn: number;
-  };
-}
-
-export interface LLMCodePredictionResponse {
-  readonly text: string;
-  readonly model?: string;
-  readonly usage?: LLMUsage;
-}
-
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -990,14 +1047,6 @@ export interface LLMProvider {
    * unconfigured streams remain unbounded.
    */
   readonly suggestedStreamIdleTimeoutMs?: number;
-  /**
-   * Optional low-latency fill-in-the-middle path. Implementations must remain
-   * tool-free and transcript-free; callers fall back to `chat` when absent.
-   */
-  predictCode?(
-    request: LLMCodePredictionRequest,
-    options?: LLMChatOptions,
-  ): Promise<LLMCodePredictionResponse>;
   chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse>;
   chatStream(
     messages: LLMMessage[],
@@ -1108,6 +1157,12 @@ function normalizeToolArguments(
   toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  // Handoffs carry exact task text and literal reference delimiters. Never
+  // repair a partial JSON string into an empty object or decode its contents.
+  if (toolName === "spawn_agent") {
+    try { return { value: JSON.parse(argumentsRaw) as unknown }; }
+    catch { return null; }
+  }
   const finalizeParsed = (value: unknown): { value: unknown } => {
     if (isRecord(value)) {
       return { value };
@@ -1220,7 +1275,7 @@ export function validateToolCallDetailed(
   }
 
   const normalizedArguments = JSON.stringify(
-    decodeHtmlEntitiesDeep(parsed) as Record<string, unknown>,
+    (name === "spawn_agent" ? parsed : decodeHtmlEntitiesDeep(parsed)) as Record<string, unknown>,
   );
 
   return {

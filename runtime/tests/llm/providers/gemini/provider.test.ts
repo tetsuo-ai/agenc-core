@@ -1,9 +1,20 @@
 import { describe, expect, test, vi } from "vitest";
 
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  isLLMPreGenerationRejection,
+} from "../../../../src/llm/errors.js";
+import { ProviderHttpError } from "../../../../src/llm/client-session.js";
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
 import { GeminiProvider } from "./index.js";
+import {
+  llmMessageToDurableResponseItem,
+  responseItemToLlmMessage,
+} from "../../../../src/session/message-history-conversion.js";
+import { serializeRolloutItem } from "../../../../src/session/rollout-item.js";
 import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
@@ -79,6 +90,8 @@ function missingCredentialPlan(
 }
 
 const developerEndpointPlan = createGeminiEndpointPlan();
+// Gemini sends no functionCall id before Gemini 3; the adapter then makes one.
+const GENERATED_CALL_ID = /^gemini_call_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const vertexEndpointPlan = createGeminiEndpointPlan({
   vertex: { project: "project-1", location: "us-central1" },
 });
@@ -107,6 +120,85 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
     fetchImpl,
   });
 }
+
+describe("Gemini pre-generation rejection evidence", () => {
+  test.each(["chat", "stream"] as const)("marks only single-attempt HTTP quota/payment rejections (%s)", async (operation) => {
+    for (const status of [402, 429, 500, 503]) {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+        Response.json({ error: { code: status, message: "request rejected" } }, { status }),
+      );
+      const error = await invokeGeminiWithOptions(providerWithFetch(fetchImpl), operation, {
+        singleWireAttempt: true,
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(isLLMPreGenerationRejection(error, "gemini")).toBe(status === 402 || status === 429);
+      expect(isLLMPreGenerationRejection(error, "deepseek")).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
+  test("does not certify an attempt that permits hidden retries", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ error: { code: 402, message: "payment required" } }, { status: 402 }),
+    );
+    const error = await providerWithFetch(fetchImpl).chat([{ role: "user", content: "hello" }]).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isLLMPreGenerationRejection(error, "gemini")).toBe(false);
+  });
+
+  test.each([false, true])("keeps a post-response status ambiguous (interim usage: %s)", async (withUsage) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "partial" }] } }],
+        ...(withUsage ? { usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 1 } } : {}),
+      })}\n\n`,
+    ]));
+    const error = await providerWithFetch(fetchImpl).chatStream(
+      [{ role: "user", content: "hello" }],
+      () => { throw new ProviderHttpError({ providerName: "gemini", status: 429,
+        headers: new Headers(), url: "https://example.test", message: "late rate limit" }); },
+      { singleWireAttempt: true },
+    ).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isLLMPreGenerationRejection(error, "gemini")).toBe(false);
+  });
+});
+
+test("a Gemini daily quota HTTP response stops after one wire attempt", async () => {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {
+    status: "RESOURCE_EXHAUSTED", message: "Daily quota exhausted",
+    details: [{ violations: [
+      { quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" },
+      { quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" },
+    ] }],
+  } }, { status: 429 }));
+  const provider = providerWithFetch(fetchImpl);
+  await expect(provider.chat([{ role: "user", content: "hello" }]))
+    .rejects.toMatchObject({ name: "LLMFundsError" });
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});
+
+test("Gemini function responses omit tool images without serializing base64 as text", async () => {
+  const fetchImpl = successfulGeminiFetch();
+  const provider = providerWithFetch(fetchImpl);
+  await provider.chat([
+    { role: "user", content: "inspect" },
+    { role: "assistant", content: "", toolCalls: [{ id: "call-image", name: "system.echo", arguments: "{}" }] },
+    { role: "tool", toolCallId: "call-image", toolName: "system.echo", content: [
+      { type: "text", text: "saved image" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+    ] },
+  ]);
+  const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+  expect(JSON.stringify(body)).not.toContain("YWJj");
+  expect(body).toMatchObject({ contents: [
+    { role: "user", parts: [{ text: "inspect" }] },
+    { role: "model", parts: [{ functionCall: { name: "system.echo", args: {} } }] },
+    { role: "user", parts: [{ functionResponse: { name: "system.echo", response: {
+      result: "saved image\n[image omitted: this provider cannot receive images in tool results]",
+    } } }] },
+  ] });
+});
 
 type GeminiToolOperation = "chat" | "stream" | "count";
 
@@ -777,6 +869,56 @@ describe("GeminiProvider", () => {
     expect(headers.get("x-goog-api-key")).toBe("gemini-test");
   });
 
+  test("keeps the functionCall id Gemini sends", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [{
+          content: { role: "model", parts: [{ functionCall: { id: "call_1081714", name: "system.echo", args: { text: "hi" } } }] },
+          finishReason: "STOP",
+        }],
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.8-flash",
+      fetchImpl,
+    });
+
+    const response = await provider.chat([{ role: "user", content: "call echo" }], { tools: [echoTool] });
+
+    expect(response.toolCalls).toEqual([
+      { id: "call_1081714", name: "system.echo", arguments: '{"text":"hi"}' },
+    ]);
+  });
+
+  test("gives id-less function calls ids that stay unique across responses", async () => {
+    // Every response numbers its parts from 0, so a position-based id made the
+    // second tool round of a turn repeat the first round's id.
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({
+        candidates: [{
+          content: { role: "model", parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } } }] },
+          finishReason: "STOP",
+        }],
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+    const messages = [{ role: "user" as const, content: "call echo" }];
+
+    const first = await provider.chat(messages, { tools: [echoTool] });
+    const second = await provider.chat(messages, { tools: [echoTool] });
+
+    expect(first.toolCalls[0]?.id).toMatch(GENERATED_CALL_ID);
+    expect(second.toolCalls[0]?.id).toMatch(GENERATED_CALL_ID);
+    expect(second.toolCalls[0]?.id).not.toBe(first.toolCalls[0]?.id);
+  });
+
   test("sends tools as Gemini function declarations and parses function calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -818,7 +960,7 @@ describe("GeminiProvider", () => {
 
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
+      { id: expect.stringMatching(GENERATED_CALL_ID), name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 4,
@@ -2410,6 +2552,8 @@ describe("GeminiProvider", () => {
       { tools: [echoTool] },
     );
 
+    const callId = response.toolCalls[0]?.id;
+    expect(callId).toMatch(GENERATED_CALL_ID);
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
       { content: "there", done: false },
@@ -2417,11 +2561,11 @@ describe("GeminiProvider", () => {
         content: "",
         done: false,
         toolInputBlockStart: {
-          callId: "gemini_call_0",
+          callId,
           index: 0,
           contentBlock: {
             type: "tool_use",
-            id: "gemini_call_0",
+            id: callId,
             name: "system.echo",
             input: { text: "hi" },
           },
@@ -2431,7 +2575,7 @@ describe("GeminiProvider", () => {
         content: "",
         done: false,
         toolInputDelta: {
-          callId: "gemini_call_0",
+          callId,
           index: 0,
           partialJson: '{"text":"hi"}',
         },
@@ -2441,7 +2585,7 @@ describe("GeminiProvider", () => {
         done: true,
         toolCalls: [
           {
-            id: "gemini_call_0",
+            id: callId,
             name: "system.echo",
             arguments: '{"text":"hi"}',
           },
@@ -2451,7 +2595,7 @@ describe("GeminiProvider", () => {
     expect(response.content).toBe("Hi there");
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
+      { id: callId, name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 7,
@@ -2544,6 +2688,158 @@ describe("GeminiProvider", () => {
     expect(requestBody.cachedContent).toBe("cachedContents/request-context");
   });
 
+  test.each([false, true])("replays a signed Gemini 3 function call after rollout resume (stream=%s)", async (stream) => {
+    const parts = [{
+      functionCall: { name: "system.echo", args: { text: "hi" } },
+      thoughtSignature: "c2lnbmVkLWZ1bmN0aW9uLWNhbGw=",
+    }];
+    const payload = {
+      candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }],
+    };
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(stream
+        ? sseResponse([`data: ${JSON.stringify(payload)}\n\n`])
+        : jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse({
+        candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+      }));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.1-pro",
+      fetchImpl,
+    });
+    const messages: LLMMessage[] = [{ role: "user", content: "echo hi" }];
+    const response = stream
+      ? await provider.chatStream(messages, () => {}, { tools: [echoTool] })
+      : await provider.chat(messages, { tools: [echoTool] });
+    const durable = llmMessageToDurableResponseItem({
+      role: "assistant",
+      content: response.content,
+      toolCalls: response.toolCalls,
+      providerReasoningContent: response.providerReasoningContent,
+      providerReasoningProvenance: response.providerReasoningProvenance,
+    });
+    const restored = responseItemToLlmMessage(JSON.parse(serializeRolloutItem({
+      type: "response_item",
+      payload: durable,
+    })).payload);
+    await provider.chat([
+      ...messages,
+      restored,
+      { role: "tool", toolCallId: response.toolCalls[0]!.id, content: "hi" },
+    ], { tools: [echoTool] });
+    const request = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(request.contents[1]).toEqual({ role: "model", parts });
+  });
+
+  describe.each([false, true])("Gemini part replay (stream=%s)", (stream) => {
+    test.each([
+      {
+        name: "parallel function calls",
+        parts: [
+          { text: "Calling tools." },
+          { functionCall: { name: "system.echo", args: { text: "first" } }, thoughtSignature: "Zmlyc3Q=" },
+          { functionCall: { name: "system.echo", args: { text: "second" } } },
+        ],
+      },
+      {
+        name: "signed text boundaries and an empty signed text part",
+        parts: [
+          { text: "First", thoughtSignature: "Zmlyc3Q=" },
+          { text: " second" },
+          { text: "", thoughtSignature: "c2Vjb25k" },
+        ],
+      },
+      {
+        name: "text and function call signatures in their original order",
+        parts: [
+          { text: "Before", thoughtSignature: "YmVmb3Jl" },
+          { functionCall: { name: "system.echo", args: { text: "hi" } }, thoughtSignature: "Y2FsbA==" },
+          { text: "After", thoughtSignature: "YWZ0ZXI=" },
+        ],
+      },
+      {
+        name: "unsigned legacy calls",
+        parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } } }],
+      },
+      {
+        name: "opaque signature bytes through rollout redaction",
+        parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } }, thoughtSignature: "A".repeat(84) }],
+      },
+    ])("preserves $name across two tool steps and resume", async ({ parts }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+        const candidate = (responseParts: unknown[]) => ({
+          candidates: [{ content: { role: "model", parts: responseParts }, finishReason: "STOP" }],
+        });
+        return stream
+          ? sseResponse(parts.map((part) => `data: ${JSON.stringify(candidate([part]))}\n\n`))
+          : jsonResponse(candidate(parts));
+      });
+      const provider = new GeminiProvider({
+        credentialPlan: apiKeyCredentialPlan(),
+        endpointPlan: developerEndpointPlan,
+        model: "gemini-3.8-flash",
+        fetchImpl,
+      });
+      const messages: LLMMessage[] = [{ role: "user", content: "echo" }];
+      for (let step = 0; step < 3; step += 1) {
+        const response = stream
+          ? await provider.chatStream(messages, () => {}, { tools: [echoTool] })
+          : await provider.chat(messages, { tools: [echoTool] });
+        const durable = llmMessageToDurableResponseItem({
+          role: "assistant",
+          content: response.content,
+          toolCalls: response.toolCalls,
+          providerReasoningContent: response.providerReasoningContent,
+          providerReasoningProvenance: response.providerReasoningProvenance,
+        });
+        messages.push(responseItemToLlmMessage(JSON.parse(serializeRolloutItem({
+          type: "response_item", payload: durable,
+        })).payload));
+        messages.push(...response.toolCalls.map((call): LLMMessage => ({
+          role: "tool", toolCallId: call.id, content: "done",
+        })));
+        if (response.toolCalls.length === 0) messages.push({ role: "user", content: "continue" });
+      }
+      const request = JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body));
+      expect(request.contents.filter((entry: { role: string }) => entry.role === "model"))
+        .toEqual([{ role: "model", parts }, { role: "model", parts }]);
+    });
+  });
+
+  test.each([
+    { name: "missing state", state: undefined, provenance: undefined },
+    { name: "malformed state", state: "invalid json", provenance: { provider: "gemini", model: "gemini-3.1-pro" } },
+    { name: "another provider", provenance: { provider: "openai", model: "gemini-3.1-pro" } },
+    { name: "another model", provenance: { provider: "gemini", model: "gemini-3.8-flash" } },
+    { name: "unbound state", provenance: undefined },
+  ])("keeps unsigned history behavior for $name", async ({ name, state, provenance }) => {
+    const part = { functionCall: { name: "system.echo", args: { text: "hi" } } };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+    }));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.1-pro",
+      fetchImpl,
+    });
+    await provider.chat([
+      { role: "user", content: "echo hi" },
+      {
+        role: "assistant", content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"text":"hi"}' }],
+        providerReasoningContent: name === "missing state" ? undefined
+          : state ?? JSON.stringify([{ ...part, thoughtSignature: "c2ln" }]),
+        providerReasoningProvenance: provenance,
+      },
+      { role: "tool", toolCallId: "call-1", content: "hi" },
+    ], { tools: [echoTool] });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.contents[1]).toEqual({ role: "model", parts: [part] });
+  });
+
   test("preserves Gemini thought signatures through history and response thinking", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -2566,7 +2862,7 @@ describe("GeminiProvider", () => {
         usageMetadata: {
           promptTokenCount: 4,
           candidatesTokenCount: 2,
-          totalTokenCount: 6,
+          totalTokenCount: 7,
           thoughtsTokenCount: 1,
         },
       }),
@@ -2602,6 +2898,8 @@ describe("GeminiProvider", () => {
       },
     ]);
     expect(response.usage.reasoningOutputTokens).toBe(1);
+    expect(response.usage.completionTokens).toBe(3);
+    expect(response.usage.totalTokens).toBe(7);
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as {
       contents: Array<{ role: string; parts: unknown[] }>;
@@ -2617,6 +2915,116 @@ describe("GeminiProvider", () => {
         { text: "previous answer" },
       ],
     });
+  });
+
+  test("normalizes thinking tokens into inclusive completion on generateContent", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 2,
+          thoughtsTokenCount: 1,
+          totalTokenCount: 7,
+        },
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.usage).toEqual({
+      promptTokens: 4,
+      completionTokens: 3,
+      totalTokens: 7,
+      reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
+      availability: "reported",
+      provenance: "provider",
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("normalizes thinking and tool-use token fields on streamGenerateContent", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"plan"}]},"finishReason":"STOP"}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":"done"},{"functionCall":{"name":"system.echo","args":{"text":"hi"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"thoughtsTokenCount":1,"toolUsePromptTokenCount":3,"totalTokenCount":10}}\n\n',
+      ]),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "call echo" }],
+      () => {},
+      { tools: [echoTool] },
+    );
+
+    expect(response.usage).toEqual({
+      promptTokens: 4,
+      completionTokens: 3,
+      totalTokens: 10,
+      reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
+      availability: "reported",
+      provenance: "provider",
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("emits a diagnostic when Gemini reports an inconsistent usage total", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 2,
+          thoughtsTokenCount: 1,
+          totalTokenCount: 99,
+        },
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.usage.completionTokens).toBe(3);
+    expect(response.usage.reasoningOutputTokens).toBe(1);
+    expect(response.usage.totalTokens).toBe(99);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ cause: "gemini_usage_total_mismatch" }),
+    ]);
   });
 
   test("rejects malformed Gemini function calls", async () => {
@@ -2645,5 +3053,222 @@ describe("GeminiProvider", () => {
         tools: [echoTool],
       }),
     ).rejects.toThrow("Gemini response emitted invalid functionCall");
+  });
+
+  describe("prompt-level blocks", () => {
+    const sensitivePrompt = "SECRET_PROMPT_TEXT_MUST_NOT_LEAK";
+
+    function promptBlockUsage() {
+      return {
+        promptTokenCount: 3,
+        totalTokenCount: 3,
+      };
+    }
+
+    function promptBlockedResponse(
+      blockReason: string,
+      extraFeedback: Record<string, unknown> = {},
+    ) {
+      return {
+        promptFeedback: {
+          blockReason,
+          ...extraFeedback,
+        },
+        usageMetadata: promptBlockUsage(),
+      };
+    }
+
+    function blockedUsage() {
+      return {
+        promptTokens: 3,
+        completionTokens: 0,
+        totalTokens: 3,
+        availability: "reported" as const,
+        provenance: "provider" as const,
+      };
+    }
+
+    async function chatBlockedPrompt(
+      body: unknown,
+    ): Promise<Awaited<ReturnType<GeminiProvider["chat"]>>> {
+      const provider = providerWithFetch(
+        vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body)),
+      );
+      return provider.chat([{ role: "user", content: sensitivePrompt }]);
+    }
+
+    async function streamBlockedPrompt(
+      body: unknown,
+    ): Promise<Awaited<ReturnType<GeminiProvider["chatStream"]>>> {
+      const provider = providerWithFetch(
+        vi.fn<typeof fetch>().mockResolvedValue(
+          sseResponse([`data: ${JSON.stringify(body)}\n\n`]),
+        ),
+      );
+      return provider.chatStream(
+        [{ role: "user", content: sensitivePrompt }],
+        () => {},
+      );
+    }
+
+    async function expectContentFilter(
+      operation: "chat" | "stream",
+      body: unknown,
+    ) {
+      const response =
+        operation === "chat"
+          ? await chatBlockedPrompt(body)
+          : await streamBlockedPrompt(body);
+      expect(response.finishReason).toBe("content_filter");
+      expect(response.content).toBe("");
+      expect(response.toolCalls).toEqual([]);
+      expect(response.error).toBeUndefined();
+      expect(response.usage).toEqual(blockedUsage());
+      expect(JSON.stringify(response)).not.toContain(sensitivePrompt);
+      return response;
+    }
+
+    test.each(["chat", "stream"] as const)(
+      "maps a SAFETY prompt block to content_filter in %s",
+      async (operation) => {
+        await expectContentFilter(
+          operation,
+          promptBlockedResponse("SAFETY", {
+            safetyRatings: [
+              {
+                category: "HARM_CATEGORY_HATE_SPEECH",
+                probability: "HIGH",
+                blocked: true,
+              },
+            ],
+          }),
+        );
+      },
+    );
+
+    test.each([
+      "BLOCKLIST",
+      "PROHIBITED_CONTENT",
+      "IMAGE_SAFETY",
+    ] as const)("maps prompt blockReason %s to content_filter", async (reason) => {
+      await expectContentFilter("chat", promptBlockedResponse(reason));
+      await expectContentFilter("stream", promptBlockedResponse(reason));
+    });
+
+    test.each(["chat", "stream"] as const)(
+      "keeps candidate-level SAFETY distinct from a prompt block in %s",
+      async (operation) => {
+        const body = {
+          candidates: [
+            {
+              content: { role: "model", parts: [] },
+              finishReason: "SAFETY",
+              safetyRatings: [
+                {
+                  category: "HARM_CATEGORY_HARASSMENT",
+                  probability: "MEDIUM",
+                },
+              ],
+            },
+          ],
+          usageMetadata: promptBlockUsage(),
+        };
+        await expectContentFilter(operation, body);
+      },
+    );
+
+    test("does not treat an empty candidate STOP as a prompt block", async () => {
+      const response = await chatBlockedPrompt({
+        candidates: [
+          {
+            content: { role: "model", parts: [] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: promptBlockUsage(),
+      });
+      expect(response.finishReason).toBe("stop");
+      expect(response.content).toBe("");
+      expect(response.usage).toEqual(blockedUsage());
+    });
+
+    test("evaluates promptFeedback before a leftover candidate finish reason", async () => {
+      const response = await chatBlockedPrompt({
+        promptFeedback: { blockReason: "SAFETY" },
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "should not win" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: promptBlockUsage(),
+      });
+      expect(response.finishReason).toBe("content_filter");
+      expect(response.content).toBe("");
+    });
+
+    test.each(["OTHER", "REGION_UNAVAILABLE"] as const)(
+      "treats prompt blockReason %s as a provider error",
+      async (reason) => {
+        const body = promptBlockedResponse(reason, {
+          blockReasonMessage: "operational hold",
+          safetyRatings: [
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              probability: "NEGLIGIBLE",
+            },
+          ],
+          prompt: sensitivePrompt,
+          text: sensitivePrompt,
+        });
+        await expect(chatBlockedPrompt(body)).rejects.toMatchObject({
+          name: "LLMProviderError",
+        });
+        await expect(streamBlockedPrompt(body)).rejects.toMatchObject({
+          name: "LLMProviderError",
+        });
+        const error = await chatBlockedPrompt(body).catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(LLMProviderError);
+        expect(error).not.toBeInstanceOf(LLMInvalidResponseError);
+        expect(String(error)).toMatch(new RegExp(`blockReason=${reason}`));
+        expect(String(error)).toMatch(
+          /HARM_CATEGORY_DANGEROUS_CONTENT=NEGLIGIBLE/,
+        );
+        expect(String(error)).toMatch(/operational hold/);
+        expect(String(error)).not.toContain(sensitivePrompt);
+      },
+    );
+
+    test.each(["chat", "stream"] as const)(
+      "fails a no-candidate %s response without a valid block reason",
+      async (operation) => {
+        const bodies = [
+          { usageMetadata: promptBlockUsage() },
+          {
+            promptFeedback: { blockReason: "BLOCK_REASON_UNSPECIFIED" },
+            usageMetadata: promptBlockUsage(),
+          },
+          {
+            promptFeedback: {},
+            candidates: [],
+            usageMetadata: promptBlockUsage(),
+          },
+        ];
+        for (const body of bodies) {
+          const invocation =
+            operation === "chat"
+              ? chatBlockedPrompt(body)
+              : streamBlockedPrompt(body);
+          await expect(invocation).rejects.toMatchObject({
+            name: "LLMInvalidResponseError",
+          });
+          const error = await invocation.catch((caught: unknown) => caught);
+          expect(error).toBeInstanceOf(LLMInvalidResponseError);
+          expect(String(error)).not.toContain(sensitivePrompt);
+        }
+      },
+    );
   });
 });

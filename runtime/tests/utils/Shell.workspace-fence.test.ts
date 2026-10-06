@@ -13,22 +13,13 @@ import { runWithCwdOverride } from "../../src/utils/cwd.js";
 import { exec } from "../../src/utils/Shell.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceMutationCoordinators,
-} from "../../src/workspace/mutation-coordinator.js";
-import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../../src/workspace/tool-operation-lifetime.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
-afterEach(() => {
-  workspaceMutationCoordinators.clearForTests();
-});
-
 describe("Shell workspace-operation lifetime", () => {
-  it("contains detached descendants before releasing the Editor fence", async () => {
+  it("contains detached descendants before the operation lifetime settles", async () => {
     if (process.platform === "win32") return;
     const workspaceRoot = await mkdtemp(
       join(tmpdir(), "agenc-shell-editor-descendant-"),
@@ -73,13 +64,7 @@ describe("Shell workspace-operation lifetime", () => {
       configStore,
       () =>
         runWithCurrentRuntimeSession(runtimeSession, async () => {
-          const operation = beginWorkspaceToolOperation(
-            workspaceRoot,
-            "generic-shell",
-          );
-          const lifetime = createWorkspaceOperationLifetime(() => {
-            endWorkspaceToolOperation(operation);
-          });
+          const lifetime = createWorkspaceOperationLifetime(() => {});
           const shellCommand = await runWithWorkspaceOperationLifetime(
             lifetime,
             () =>
@@ -100,12 +85,6 @@ describe("Shell workspace-operation lifetime", () => {
           await lifetime.release();
           await lifetime.settled();
 
-          expect(() =>
-            workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-              workspaceRoot,
-              editorInstanceId: "editor-after-generic-shell",
-            }),
-          ).not.toThrow();
           await delay(900);
           expect(await readFile(path, "utf8")).toBe("before\n");
           shellCommand.cleanup();

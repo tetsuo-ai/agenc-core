@@ -10,6 +10,7 @@
  *    the user must sign in again.
  */
 
+import { createHash } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -38,6 +39,8 @@ export const XAI_OAUTH_REFRESH_SKEW_MS = 60 * 60 * 1000
 
 export type XaiOauthCredentialBlob = {
   accessToken: string
+  /** Hashes of rotated bearers, retained so snapshots cannot become API keys. */
+  previousAccessTokenHashes?: string[]
   refreshToken?: string
   idToken?: string
   /** ms epoch */
@@ -110,9 +113,31 @@ export function isXaiOauthBearer(
 ): boolean {
   if (!apiKey) return false
   const blob = readXaiOauthCredentials(home)
-  return blob !== undefined &&
-    blob.quarantinedAt === undefined &&
-    blob.accessToken === apiKey
+  if (blob?.accessToken === apiKey ||
+    blob?.previousAccessTokenHashes?.includes(accessTokenHash(apiKey)) === true) {
+    return true
+  }
+  try {
+    return readNativeSecureStorage(home).xaiOauthRevokedAccessTokenHashes
+      ?.includes(accessTokenHash(apiKey)) === true
+  } catch {
+    return false
+  }
+}
+
+function accessTokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function previousAccessTokenHashes(
+  previous: XaiOauthCredentialBlob | undefined,
+  nextAccessToken: string,
+): string[] | undefined {
+  if (previous === undefined) return undefined
+  const hashes = previous.previousAccessTokenHashes ?? []
+  return previous.accessToken === nextAccessToken
+    ? hashes
+    : [...new Set([...hashes, accessTokenHash(previous.accessToken)])]
 }
 
 export function saveXaiOauthCredentials(
@@ -123,14 +148,29 @@ export function saveXaiOauthCredentials(
     return { success: false, warning: 'Access token is empty.' }
   }
   try {
+    let stored = blob
     updateNativeSecureStorage(
       home,
-      current => ({ ...current, [XAI_OAUTH_STORAGE_KEY]: blob }),
+      current => {
+        const hashes = previousAccessTokenHashes(
+          current.xaiOauth,
+          blob.accessToken,
+        )
+        stored = {
+          ...blob,
+          ...(hashes !== undefined || blob.previousAccessTokenHashes !== undefined
+            ? { previousAccessTokenHashes: [...new Set([
+                ...(blob.previousAccessTokenHashes ?? []), ...(hashes ?? []),
+              ])] }
+            : {}),
+        }
+        return { ...current, [XAI_OAUTH_STORAGE_KEY]: stored }
+      },
       'Native secure storage is unavailable; xAI OAuth credentials were not saved.',
     )
     readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
-      blob,
+      blob: stored,
     })
     return { success: true }
   } catch (error) {
@@ -146,6 +186,14 @@ export function clearXaiOauthCredentials(
       home,
       current => {
         const next = { ...current }
+        const previous = current.xaiOauth
+        if (previous !== undefined) {
+          next.xaiOauthRevokedAccessTokenHashes = [...new Set([
+            ...(current.xaiOauthRevokedAccessTokenHashes ?? []),
+            ...(previous.previousAccessTokenHashes ?? []),
+            accessTokenHash(previous.accessToken),
+          ])]
+        }
         delete next[XAI_OAUTH_STORAGE_KEY]
         return next
       },
@@ -170,6 +218,14 @@ export function xaiOauthTokensToBlob(
     identity.email ?? identity.name ?? context.previous?.accountLabel
   return {
     accessToken: tokens.accessToken,
+    ...(context.previous !== undefined
+      ? {
+          previousAccessTokenHashes: previousAccessTokenHashes(
+            context.previous,
+            tokens.accessToken,
+          ),
+        }
+      : {}),
     // A refresh response without a rotated refresh_token keeps the old one.
     ...(tokens.refreshToken ?? context.previous?.refreshToken
       ? { refreshToken: tokens.refreshToken ?? context.previous?.refreshToken }
@@ -212,12 +268,17 @@ const inflightRefreshByHome = new Map<
  * updated blob, or `undefined` when no refresh is possible (missing/
  * quarantined credentials, or terminal invalid_grant — which quarantines).
  */
-export function forceRefreshXaiOauthCredentials(home: HomeContext): Promise<
+export function forceRefreshXaiOauthCredentials(home: HomeContext, rejectedAccessToken?: string): Promise<
   XaiOauthCredentialBlob | undefined
 > {
   const storageIdentity = secureStorageIdentityKey(home)
   const existing = inflightRefreshByHome.get(storageIdentity)
   if (existing) return existing
+  const current = readXaiOauthCredentials(home)
+  if (rejectedAccessToken !== undefined && current?.accessToken !== undefined &&
+      current.accessToken !== rejectedAccessToken && current.quarantinedAt === undefined) {
+    return Promise.resolve(current)
+  }
   const pending = doRefresh(home).finally(() => {
     if (inflightRefreshByHome.get(storageIdentity) === pending) {
       inflightRefreshByHome.delete(storageIdentity)
@@ -397,6 +458,8 @@ function sameXaiOauthCredentials(
 ): boolean {
   if (left === undefined || right === undefined) return left === right
   return left.accessToken === right.accessToken &&
+    JSON.stringify(left.previousAccessTokenHashes) ===
+      JSON.stringify(right.previousAccessTokenHashes) &&
     left.refreshToken === right.refreshToken &&
     left.idToken === right.idToken &&
     left.expiresAt === right.expiresAt &&

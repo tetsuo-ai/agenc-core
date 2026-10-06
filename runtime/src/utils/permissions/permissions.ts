@@ -1,6 +1,6 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
-import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIUserAbortError } from '@anthropic-ai/sdk/core/error'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   getToolNameForPermissionCheck,
@@ -68,7 +68,6 @@ import {
   clearClassifierChecking,
   setClassifierChecking,
 } from '../classifierApprovals.js'
-import { executePermissionRequestHooks } from '../hooks.js'
 import {
   AUTO_REJECT_MESSAGE,
   buildClassifierUnavailableMessage,
@@ -390,6 +389,7 @@ async function runPermissionRequestHooksForHeadlessAgent(
   suggestions: PermissionUpdate[] | undefined,
 ): Promise<PermissionDecision | null> {
   try {
+    const { executePermissionRequestHooks } = await import('../hooks.js')
     for await (const hookResult of executePermissionRequestHooks(
       tool.name,
       toolUseID,
@@ -674,20 +674,6 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         clearClassifierChecking(toolUseID)
       }
 
-      // Notify ants when classifier error dumped prompts (will be in /share)
-      if (
-        process.env.USER_TYPE === 'ant' &&
-        classifierResult.errorDumpPath &&
-        context.addNotification
-      ) {
-        context.addNotification({
-          key: 'auto-mode-error-dump',
-          text: `Auto mode classifier error — prompts dumped to ${classifierResult.errorDumpPath} (included in /share)`,
-          priority: 'immediate',
-          color: 'error',
-        })
-      }
-
       if (classifierResult.durationMs !== undefined) {
         addToTurnClassifierDuration(classifierResult.durationMs)
       }
@@ -718,7 +704,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           }
         }
         // When classifier is unavailable (API error), behavior depends on
-        // the tengu_iron_gate_closed gate.
+        // the classifier circuit-breaker gate.
         if (classifierResult.unavailable) {
           if (
             true

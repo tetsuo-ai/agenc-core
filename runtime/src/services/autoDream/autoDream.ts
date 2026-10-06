@@ -21,8 +21,6 @@ import {
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
-import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
-import type { ChildToolPolicy } from '../../agents/run-agent.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { isAutoDreamEnabled } from './config.js'
 import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
@@ -34,6 +32,8 @@ import {
   getSessionId,
 } from '../../bootstrap/state.js'
 import { createAutoMemoryToolPolicy } from '../extractMemories/extractMemories.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import { createMemoryMaintenancePermissionCheck } from './maintenance-permissions.js'
 import { buildConsolidationPrompt } from './consolidationPrompt.js'
 import {
   readLastConsolidatedAt,
@@ -115,36 +115,6 @@ function isForced(): boolean {
 
 type AppendSystemMessageFn = NonNullable<ToolUseContext['appendSystemMessage']>
 
-// Bridge the memory-extraction `ChildToolPolicy` (tool, input) => decision into
-// the `CanUseToolFn` shape that runForkedAgent declares. runForkedAgent only
-// reads `behavior` / `message` / `updatedInput` from the result (see
-// turn-compat's runtimeToolFromOldTool), so this is a type-level adapter that
-// preserves the policy's allow/deny decisions verbatim — it just supplies the
-// `decisionReason` that PermissionDecision requires on deny.
-function childPolicyAsCanUseTool(policy: ChildToolPolicy): CanUseToolFn {
-  return async (tool, input) => {
-    const decision = await policy({ name: tool.name }, input)
-    if (decision.behavior === 'deny') {
-      return {
-        behavior: 'deny',
-        message: decision.message,
-        decisionReason: {
-          type: 'other',
-          reason:
-            typeof decision.metadata?.reason === 'string'
-              ? decision.metadata.reason
-              : 'child_tool_policy',
-        },
-      }
-    }
-    return {
-      behavior: 'allow',
-      ...(decision.updatedInput !== undefined
-        ? { updatedInput: decision.updatedInput }
-        : {}),
-    }
-  }
-}
 
 let runner:
   | ((
@@ -240,6 +210,7 @@ function initAutoDream(): void {
       abortController,
     })
 
+    let approvalDeferred = false
     try {
       const memoryRoot = getAutoMemPath()
       const transcriptDir = getProjectDir(getOriginalCwd())
@@ -248,7 +219,7 @@ function initAutoDream(): void {
       // would be misleading there.
       const extra = `
 
-**Tool constraints for this run:** Bash is restricted to read-only commands (\`ls\`, \`find\`, \`grep\`, \`cat\`, \`stat\`, \`wc\`, \`head\`, \`tail\`, and similar). Anything that writes, redirects to a file, or modifies state will be denied. Plan your exploration with this in mind — no need to probe.
+**Tool constraints for this run:** Only the memory file tools are available. Read and write within the memory directory; shell commands and access outside that directory are denied. Work requiring new user approval is deferred.
 
 Sessions since last consolidation (${sessionIds.length}):
 ${sessionIds.map(id => `- ${id}`).join('\n')}`
@@ -257,16 +228,25 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
       const result = await runForkedAgent({
         promptMessages: [createUserMessage({ content: prompt })],
         cacheSafeParams: createCacheSafeParams(context),
-        canUseTool: childPolicyAsCanUseTool(
+        canUseTool: createMemoryMaintenancePermissionCheck(
           createAutoMemoryToolPolicy(memoryRoot),
+          peekAmbientRuntimeSession(),
+          toolName => {
+            approvalDeferred = true
+            abortController.abort('background maintenance requires approval')
+            failDreamTask(taskId, setAppState)
+            logForDebugging(`[autoDream] deferred: approval required for ${toolName}; no foreground prompt`)
+          },
         ),
         querySource: 'auto_dream',
         forkLabel: 'auto_dream',
         skipTranscript: true,
+        maxTurns: 5,
         overrides: { abortController },
         onMessage: makeDreamProgressWatcher(taskId, setAppState),
       })
 
+      if (approvalDeferred) return
       completeDreamTask(taskId, setAppState)
       // Inline completion summary in the main transcript (same surface as
       // extractMemories's "Saved N memories" message).
@@ -301,6 +281,9 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
         `[autoDream] completed — cache: read=${result.totalUsage.cache_read_input_tokens} created=${result.totalUsage.cache_creation_input_tokens}`,
       )
     } catch (e: unknown) {
+      // Keep the consolidation cooldown after a deferred approval so idle
+      // hooks do not repeatedly retry work that still needs a human grant.
+      if (approvalDeferred) return
       // If the user killed from the bg-tasks dialog, DreamTask.kill already
       // aborted, rolled back the lock, and set status=killed. Don't overwrite
       // or double-rollback.

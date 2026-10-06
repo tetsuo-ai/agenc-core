@@ -37,7 +37,10 @@ vi.mock("../../utils/settings/settings.js", () => ({
   updateSettingsForSource: harness.updateSettingsForSource,
 }));
 
-vi.mock("../../utils/settings/canonicalAuthority.js", () => ({
+vi.mock("../../utils/settings/canonicalAuthority.js", async importOriginal => ({
+  ...(await importOriginal<
+    typeof import("../../utils/settings/canonicalAuthority.js")
+  >()),
   getCanonicalSettingsAuthority: () => ({
     homeContext: { path: "/agenc-home" },
   }),

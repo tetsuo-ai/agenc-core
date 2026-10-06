@@ -11,7 +11,7 @@
  *   - Team-memory sync transport remains behind the existing feature gates.
  *   - Session-memory services keep their own session/turn-context boundary.
  */
-import { memoryAge, memoryFreshnessText } from './age.js'
+export { formatRelevantMemoryHeader } from './age.js'
 
 type AgenCMdModule = typeof import('./agencmd.js')
 
@@ -123,16 +123,6 @@ export {
   type SecretMatch,
   type SessionFileType,
 } from './privacy.js'
-
-export function formatRelevantMemoryHeader(
-  path: string,
-  mtimeMs: number,
-): string {
-  const staleness = memoryFreshnessText(mtimeMs)
-  return staleness
-    ? `${staleness}\n\nMemory: ${path}:`
-    : `Memory (saved ${memoryAge(mtimeMs)}): ${path}:`
-}
 
 export async function getMemoryFiles(
   ...args: Parameters<AgenCMdModule['getMemoryFiles']>

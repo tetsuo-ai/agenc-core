@@ -13,6 +13,7 @@ import type {
   Tool,
   ToolEffectDispositionEvidence,
 } from "./tools-types.js";
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
 
 // Permissive LLMTool / LLMToolCall shapes — the agent code never inspects
 // these fields, it just forwards them to the parent dispatch().
@@ -23,6 +24,7 @@ export type LLMToolCall = any;
 
 export interface ToolDispatchResult {
   readonly content: string;
+  readonly contentItems?: readonly FunctionCallOutputContentItem[];
   readonly isError?: boolean;
   readonly metadata?: Record<string, unknown>;
   readonly admissionUsage?: {
@@ -38,4 +40,6 @@ export interface ToolRegistry {
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  /** Tools the parent keeps for telemetry only; a child never runs them. */
+  getUnavailableToolNames?(): ReadonlySet<string>;
 }

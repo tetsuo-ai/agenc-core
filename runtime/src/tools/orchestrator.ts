@@ -95,6 +95,7 @@ import {
   defaultAvailableApprovalDecisions,
 } from "../sandbox/escalation/approvals.js";
 import { asRecord } from "../utils/record.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import { readPendingPhysicalSettlement } from "./physical-settlement.js";
 
 export { requestApproval };
@@ -462,28 +463,55 @@ function effectiveApprovalPolicyForTool(
     : fallback;
 }
 
+/**
+ * When an approval was refused. `before_execution`: the call never ran.
+ * `sandbox_escalation`: the call already ran once inside the sandbox, the
+ * sandbox blocked it, and the refused approval was for running it again
+ * without the sandbox.
+ */
+export type ApprovalRejectionStage = "before_execution" | "sandbox_escalation";
+const ROUTINE_SANDBOX_ONLY_REASON =
+  "routine commands run only inside the OS sandbox";
+const ROUTINE_SANDBOX_ONLY_MESSAGE =
+  "This routine's commands run only inside the OS sandbox and write only in its workspace, " +
+  "and this one would have run outside it or with wider access. Nobody is attached to approve that. " +
+  "Do not retry; use a command the sandbox allows, or report that it could not run.";
+const ROUTINE_NO_APPROVER_REASON =
+  "routine run has no approver";
+function routineNoApproverMessage(toolName: string): string {
+  return (
+    `${toolName} needs approval in this routine's permission mode, and a scheduled run has ` +
+    "nobody attached to give it. Do not retry. Write what you found into your final answer instead."
+  );
+}
+
 export class ApprovalRejectedError extends Error {
   readonly kind = "approval_rejected" as const;
   readonly decision: ReviewDecision;
   /** Where the decision came from; absent for callers that predate it. */
   readonly source?: RequestApprovalResult["source"];
+  readonly stage: ApprovalRejectionStage;
   constructor(
     message: string,
     decision: ReviewDecision,
     source?: RequestApprovalResult["source"],
+    stage: ApprovalRejectionStage = "before_execution",
   ) {
     super(message);
     this.name = "ApprovalRejectedError";
     this.decision = decision;
     if (source !== undefined) this.source = source;
+    this.stage = stage;
   }
 }
 
 /**
- * True for a resolver denial: the session's approval resolver (a live
- * prompt or an automated policy) said no. Such results end the turn after
- * the batch so the model cannot loop on the same call, the way a user
- * rejection does in the reference harness.
+ * True for a denial a person made on the session's approval prompt. Such
+ * results end the turn after the batch so the model cannot loop on the same
+ * call, the way a user rejection does in the reference harness. A resolver
+ * denial without user provenance (the live broker refusing a request itself,
+ * a non-interactive client's auto-denial) is a policy answer: the model keeps
+ * the turn and can say what was not permitted.
  *
  * A default denial (no resolver exists at all) is deliberately excluded:
  * nobody could ever approve, so ending the turn would only cut off the
@@ -492,7 +520,11 @@ export class ApprovalRejectedError extends Error {
  * says not to retry, and the identical-failing-call guard stops any loop.
  */
 export function approvalDenialEndsTurn(err: ApprovalRejectedError): boolean {
-  return err.decision.kind === "denied" && err.source === "resolver";
+  return (
+    err.decision.kind === "denied" &&
+    err.decision.decidedBy === "user" &&
+    err.source === "resolver"
+  );
 }
 
 function resolveApprovalSignal(
@@ -708,6 +740,14 @@ export async function orchestrateToolCall<T>(
   }).session?.permissionModeRegistry?.current?.();
   const isBypassPermissionsMode =
     asRecord(sessionMode)?.mode === "bypassPermissions";
+  // A scheduled routine run: nobody is attached, and its commands never run
+  // outside the OS sandbox, whatever an exec-policy rule, an escalation
+  // request or a sandbox denial would otherwise select.
+  const routineRun =
+    routineRunOptions(opts.approvalCtx.invocation.session) !== undefined;
+  const routineWithoutApprover =
+    routineRun &&
+    asRecord(asRecord(sessionMode)?.unattendedPolicy)?.noApprover === true;
   const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
@@ -799,6 +839,34 @@ export async function orchestrateToolCall<T>(
   const requestedAdditionalPermissions =
     runtimeAdditionalPermissionsForSandboxRequest(normalizedSandboxPermissions);
 
+  if (
+    routineRun &&
+    (
+      (sandboxOverride.kind === "bypass_sandbox" &&
+        opts.sandboxMode !== "danger_full_access") ||
+      requestedAdditionalPermissions !== undefined
+    )
+  ) {
+    await recordApprovalRequirementOutcome(
+      opts,
+      { kind: "forbidden", reason: ROUTINE_SANDBOX_ONLY_REASON },
+      effectiveApprovalPolicy,
+    );
+    throw new ApprovalRejectedError(ROUTINE_SANDBOX_ONLY_MESSAGE, { kind: "denied" });
+  }
+  if (routineWithoutApprover && requirement.kind === "needs_approval") {
+    // Nobody can answer: refuse now instead of waiting for a person.
+    await recordApprovalRequirementOutcome(
+      opts,
+      { kind: "forbidden", reason: ROUTINE_NO_APPROVER_REASON },
+      effectiveApprovalPolicy,
+    );
+    throw new ApprovalRejectedError(
+      routineNoApproverMessage(opts.approvalCtx.toolName),
+      { kind: "denied" },
+    );
+  }
+
   if (requirement.kind === "skip") {
     await recordApprovalRequirementOutcome(opts, requirement, effectiveApprovalPolicy);
   }
@@ -874,6 +942,13 @@ export async function orchestrateToolCall<T>(
   } catch (err) {
     if (!isSandboxDeniedError(err)) throw err;
 
+    // A routine run never reruns a command outside the OS sandbox, and never
+    // asks anyone whether it may: the original denial stands.
+    if (routineRun) {
+      await recordSandboxPolicyOutcome(opts, "sandbox_escalation_not_allowed");
+      throw err;
+    }
+
     // Read-only or otherwise-opting-out tools bail with the original
     // sandbox denial instead of requesting approval to rerun unsandboxed.
     if (!escalateOnFailure(opts.tool)) {
@@ -922,10 +997,13 @@ export async function orchestrateToolCall<T>(
         stage: "sandbox_escalation",
       });
       if (!isApprovalAccepted(approval.decision)) {
+        // The sandboxed attempt above already ran; only the unsandboxed
+        // retry is refused, and its effect records stay as they are.
         throw new ApprovalRejectedError(
           approvalRejectionMessage(approval, escalationCtx.toolName),
           approval.decision,
           approval.source,
+          "sandbox_escalation",
         );
       }
     }

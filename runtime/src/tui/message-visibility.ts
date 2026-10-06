@@ -1,8 +1,8 @@
 import type { Message, NormalizedMessage } from '../types/message.js'
 import {
-  isRetiredAttachmentType,
   type Attachment,
 } from '../utils/attachments.js'
+import { isRetiredAttachmentType } from '../utils/attachment-message.js'
 
 /**
  * Attachment types that render no visible TUI row. The transcript pipeline

@@ -47,6 +47,18 @@ describe("normalizeHistoryMessages", () => {
     expect(live?.runtimeOnly?.toolResultIntegrity).toEqual(integrity);
   });
 
+  it("keeps response-item identity from persisted and live history", () => {
+    const [persisted, live] = normalizeHistoryMessages([
+      { role: "developer", content: "boundary", id: "boundary-id" },
+      { role: "user", content: "summary", runtimeOnly: { responseItemId: "summary-id" } },
+    ]);
+
+    expect(persisted?.runtimeOnly?.responseItemId).toBe("boundary-id");
+    expect(live?.runtimeOnly?.responseItemId).toBe("summary-id");
+    expect(llmMessageToCheckpointResponseItem(persisted!).id).toBe("boundary-id");
+    expect(llmMessageToCheckpointResponseItem(live!).id).toBe("summary-id");
+  });
+
   it("prefers the runtimeOnly seal when both shapes are present", () => {
     const other = createToolResultIntegrity({
       runId: "conv-resumed",

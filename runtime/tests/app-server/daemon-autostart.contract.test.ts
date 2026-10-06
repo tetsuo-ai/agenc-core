@@ -1,6 +1,7 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -224,6 +225,61 @@ async function closeServer(server: Server | null): Promise<void> {
 }
 
 describe("AgenC daemon autostart", () => {
+  it("wakes the owned provisional child's initial lifecycle acquisition, then proves identity", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    const pid = 5201;
+    base.runningPids.add(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(base.env, base.userHome), pid);
+    (await acquireAgenCDaemonLifecycleLock(base))();
+    const owner = new DatabaseSync(join(agencHome, "daemon-lifecycle.lock.sqlite"), { timeout: 0 });
+    owner.exec("BEGIN IMMEDIATE");
+    const ready = new AbortController();
+    const subscribed = Promise.withResolvers<void>();
+    const add = ready.signal.addEventListener.bind(ready.signal);
+    const addSpy = vi.spyOn(ready.signal, "addEventListener").mockImplementation((type, listener, options) => {
+      add(type, listener, options);
+      if (type === "abort") subscribed.resolve();
+    });
+    const hint = vi.fn((ownedPid: number) => ownedPid === pid ? ready.signal : undefined);
+    const proof = vi.fn(base.requestDaemonInstanceIdentity);
+    const connect = vi.fn();
+    const releaseControl = vi.fn();
+    let pending: ReturnType<typeof ensureAgenCDaemonAutostart> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      pending = ensureAgenCDaemonAutostart({
+        host: { ...base, spawnedDaemonReadinessSignal: hint, releaseSpawnedDaemonControl: releaseControl },
+        provisionalOwnedPid: pid,
+        isReady: () => true,
+        requestDaemonInstanceIdentity: proof,
+        findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [], connect,
+      });
+      void pending.catch(() => {});
+      await subscribed.promise;
+      expect(proof).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      base.recordDaemon(pid);
+      owner.exec("ROLLBACK");
+      ready.abort();
+      await expect(pending).resolves.toMatchObject({ pid, status: "started", ready: true });
+      expect(hint).toHaveBeenCalledExactlyOnceWith(pid);
+      expect(proof).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledOnce();
+      expect(releaseControl).toHaveBeenCalledExactlyOnceWith(pid);
+      expect(base.spawnedPids).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (owner.isTransaction) owner.exec("ROLLBACK");
+      owner.close();
+      ready.abort();
+      vi.useRealTimers();
+      addSpy.mockRestore();
+      await pending?.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the default readiness window long enough for cold starts", () => {
     // Raised from 15s to give cold hydration comfortable margin, and kept in
     // sync with the shared bare-control default so both paths move together.
@@ -1365,6 +1421,122 @@ autostart = true
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("notifies after spawn and readiness starts, without bypassing publication or authentication", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const events: string[] = [];
+    let makeReady!: (ready: boolean) => void;
+    const readyGate = new Promise<boolean>((resolve) => { makeReady = resolve; });
+    let notified!: () => void;
+    const notification = new Promise<void>((resolve) => { notified = resolve; });
+    let enteredPublication!: () => void;
+    const publication = new Promise<void>((resolve) => { enteredPublication = resolve; });
+    let publish!: () => void;
+    const publicationGate = new Promise<void>((resolve) => { publish = resolve; });
+    const identity = host.requestDaemonInstanceIdentity;
+    host.requestDaemonInstanceIdentity = () => {
+      events.push("authenticate");
+      return identity();
+    };
+    const connect = vi.fn(() => { events.push("connect"); });
+    let settled = false;
+    const ensuring = ensureAgenCDaemonAutostart({
+      host,
+      isReady: () => { events.push("wait"); return readyGate; },
+      onReadinessWaitStarted: () => {
+        events.push("notify");
+        notified();
+      },
+      identityPublicationBarrier: async () => {
+        events.push("publication");
+        enteredPublication();
+        await publicationGate;
+      },
+      findOrphanDaemonPids: () => [],
+      findSupersededDaemonPids: () => [],
+      connect,
+    }).then((result) => { settled = true; return result; });
+    try {
+      await notification;
+      expect(events).toEqual(["wait", "notify"]);
+      expect(host.spawnedPids).toEqual([5201]);
+      expect(settled).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
+      makeReady(true);
+      await publication;
+      expect(events).toEqual(["wait", "notify", "publication"]);
+      expect(settled).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
+      publish();
+      await expect(ensuring).resolves.toMatchObject({ status: "started", connected: true });
+      expect(events.indexOf("authenticate")).toBeGreaterThan(events.indexOf("publication"));
+      expect(events.at(-1)).toBe("connect");
+    } finally {
+      makeReady(true);
+      publish();
+      await ensuring.catch(() => {});
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["throw", "reject", "pending"])("does not let a %s observer replace an authenticated failure", async (mode) => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pid = 5302;
+    host.runningPids.add(pid);
+    const original = host.recordDaemon(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), pid);
+    host.requestDaemonInstanceIdentity = () => {
+      host.recordDaemon(pid);
+      return original;
+    };
+    const observer = vi.fn(() => {
+      if (mode === "throw") throw new Error("observer error");
+      if (mode === "reject") return Promise.reject(new Error("observer error"));
+      return new Promise<void>(() => {});
+    });
+    const connect = vi.fn();
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, isReady: () => true, onReadinessWaitStarted: observer,
+        findSupersededDaemonPids: () => [], connect,
+      })).rejects.toThrow(/sidecar changed during proof/u);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(connect).not.toHaveBeenCalled();
+      expect(host.spawnedPids).toEqual([]);
+      expect(host.runningPids.has(pid)).toBe(true);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("starts the existing timeout budget before the optional observer", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pid = 5304;
+    host.runningPids.add(pid);
+    host.recordDaemon(pid);
+    await writeAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), pid);
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const isReady = vi.fn(() => false);
+    const connect = vi.fn();
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, waitTimeoutMs: 100, isReady, connect,
+        onReadinessWaitStarted: () => { now = 101; },
+        findSupersededDaemonPids: () => [],
+      })).rejects.toThrow(/did not become ready before timeout/u);
+      expect(isReady).toHaveBeenCalledTimes(2); // first poll, then final check
+      expect(connect).not.toHaveBeenCalled();
+      expect(host.spawnedPids).toEqual([]);
+    } finally {
+      clock.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "waits for the spawned foreground identity commit after socket readiness",
     async () => {
@@ -1466,6 +1638,38 @@ autostart = true
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
+  });
+
+  it("keeps the startup cause in the message when the dead daemon's cleanup cannot be verified", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    // The child lives long enough to be recorded and identified, then dies
+    // before becoming ready. Its recorded identity can no longer be proven, so
+    // the cleanup after the failed start throws too. Pre-fix the wrapper said
+    // only "replacement cleanup could not be verified" and the real cause,
+    // the daemon's own stderr, never reached the operator.
+    await writeFile(
+      join(agencHome, "daemon-spawn-stderr.log"),
+      "agenc: daemon state recovery failed: GLIBC_2.33 not found\n",
+    );
+    let readinessChecks = 0;
+    host.cancelSpawnedDaemon = () => {
+      throw new Error("cancel refused by host");
+    };
+    await expect(
+      ensureAgenCDaemonAutostart({
+        host,
+        waitTimeoutMs: 60_000,
+        isReady: ({ pid }) => {
+          readinessChecks += 1;
+          if (readinessChecks === 1) host.runningPids.delete(pid);
+          return false;
+        },
+      }),
+    ).rejects.toThrow(
+      /replacement cleanup could not be verified \(pid \d+\): AgenC daemon exited before becoming ready.*GLIBC_2\.33 not found; cleanup: cancel refused by host/s,
+    );
+    await rm(agencHome, { recursive: true, force: true });
   });
 
   it("fails fast with the exit diagnosis when the spawned daemon dies before ready", async () => {
@@ -1983,6 +2187,48 @@ autostart = true
     }
   });
 
+  it("starts a replacement after a hard-killed daemon left its socket and cookie behind", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    const socketPath = resolveAgenCDaemonSocketPath(base.env, base.userHome);
+    // What SIGKILL, the OOM killer or a power cut leaves: a socket inode with
+    // no listener and a valid cookie. Judged by presence, the replacement
+    // looked ready the instant it was spawned, had published no identity yet,
+    // and was terminated as a legacy daemon on every cycle.
+    await createStaleSocketInode(socketPath);
+    await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+    let polls = 0;
+    let socketServer: Server | null = null;
+    const host = {
+      ...base,
+      // The real daemon publishes its identity only after it is listening.
+      spawnDetachedDaemon: () => {
+        const pid = 5201 + base.spawnedPids.length;
+        base.runningPids.add(pid);
+        base.spawnedPids.push(pid);
+        return pid;
+      },
+      sleep: async () => {
+        polls += 1;
+        if (polls !== 3 || socketServer !== null) return;
+        await rm(socketPath, { force: true });
+        socketServer = await listenUnixSocket(socketPath);
+        base.recordDaemon(base.spawnedPids.at(-1)!);
+      },
+    };
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({ host, waitTimeoutMs: 5_000 }),
+      ).resolves.toMatchObject({ pid: 5201, status: "started" });
+      expect(base.spawnedPids).toEqual([5201]);
+      expect(polls).toBeGreaterThanOrEqual(3);
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("does not adopt a pidless daemon whose socket inode is stale (no listener)", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -2109,5 +2355,91 @@ autostart = true
     ).rejects.toBeInstanceOf(AgenCDaemonAutostartError);
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+});
+
+describe("owned daemon IPC readiness", () => {
+  it.each(["autostart", "start"] as const)("%s wakes without polling and still proves identity", async (mode) => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    let socketServer: Server | null = null;
+    const proof = vi.fn(() => base.requestDaemonInstanceIdentity());
+    const sleep = vi.fn(async () => { throw new Error("unexpected readiness polling"); });
+    const release = vi.fn();
+    const wait = vi.fn(async (pid: number) => {
+      expect(pid).toBe(5201);
+      await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+      socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+      return "ready" as const;
+    });
+    const host = { ...base, sleep, waitSpawnedDaemonReady: wait, releaseSpawnedDaemonControl: release };
+    try {
+      if (mode === "autostart") {
+        await expect(ensureAgenCDaemonAutostart({
+          host, requestDaemonInstanceIdentity: proof, findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+        })).resolves.toMatchObject({ pid: 5201, ready: true, status: "started" });
+      } else {
+        await expect(runAgenCDaemonCli({ kind: "command", action: "start" }, {
+          host, requestDaemonInstanceIdentity: proof,
+        })).resolves.toBe(0);
+      }
+      expect(wait).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
+      expect(proof).toHaveBeenCalled();
+      expect(release).toHaveBeenCalledExactlyOnceWith(5201);
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a mismatching identity after a ready hint and cancels only its owned child", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    base.platform = "darwin";
+    let socketServer: Server | null = null;
+    const cancel = vi.fn((pid: number) => { base.runningPids.delete(pid); });
+    const signal = vi.fn();
+    const connect = vi.fn();
+    const host = {
+      ...base, terminatePid: signal, cancelSpawnedDaemon: cancel,
+      waitSpawnedDaemonReady: async () => {
+        await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+        socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+        return "ready" as const;
+      },
+    };
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host, connect, findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+        requestDaemonInstanceIdentity: () => ({ ...base.requestDaemonInstanceIdentity(), instanceId: "wrong-instance" }),
+      })).rejects.toThrow(/identity|instance/u);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(5201);
+      expect(signal).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps bounded polling when an owned IPC channel closes before publication", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    let socketServer: Server | null = null;
+    const sleep = vi.fn(async () => {
+      await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+      socketServer = await listenUnixSocket(resolveAgenCDaemonSocketPath(base.env, base.userHome));
+    });
+    try {
+      await expect(ensureAgenCDaemonAutostart({
+        host: { ...base, sleep, waitSpawnedDaemonReady: async () => "closed" },
+        findOrphanDaemonPids: () => [], findSupersededDaemonPids: () => [],
+      })).resolves.toMatchObject({ pid: 5201, ready: true });
+      expect(sleep).toHaveBeenCalledOnce();
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 });

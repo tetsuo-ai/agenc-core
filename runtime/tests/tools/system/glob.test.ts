@@ -30,7 +30,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -38,29 +38,17 @@ import {
   __INTERNAL,
   createGlobTool as createUnboundGlobTool,
   GLOB_TOOL_NAME,
+  runRipgrepFiles,
 } from "./glob.js";
-import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
-import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
+import {
+  bindExplicitDangerBoundary,
+  withExplicitDangerBoundary,
+} from "../../helpers/explicit-danger-boundary.js";
+import { selectPinnedRipgrepPath } from "../../../src/tools/system/pinned-ripgrep.js";
 import { attachToolRuntimeContext } from "../../../src/tools/runtimes/context.js";
 
 const createGlobTool = (...args: Parameters<typeof createUnboundGlobTool>) =>
   bindExplicitDangerBoundary(createUnboundGlobTool(...args));
-
-function attachTrustedEditorContext(args: Record<string, unknown>): void {
-  attachToolRuntimeContext(args, {
-    callId: "trusted-editor-glob",
-    toolName: GLOB_TOOL_NAME,
-    sandboxMode: "danger_full_access",
-    invocation: {
-      turn: {
-        editorInteraction: {
-          interactionId: "trusted-editor-glob",
-          policy: "read_only",
-        },
-      },
-    },
-  } as never);
-}
 
 function isWindowsExchangeDenial(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code;
@@ -102,19 +90,11 @@ function expectCompletedExchangeAttempt(
   if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
 }
 
-/**
- * Enter protected mode for `root` (an editor holds the workspace lease) and
- * run one Glob query against it.
- */
-async function runProtectedGlob(
+/** Run one scoped Glob query against `root` and assert it succeeded. */
+async function runScopedGlob(
   root: string,
-  editorInstanceId: string,
   args: { readonly pattern: string; readonly path: string },
 ) {
-  workspaceMutationCoordinators.getOrCreate(root).acquire({
-    workspaceRoot: root,
-    editorInstanceId,
-  });
   const tool = createGlobTool({ allowedPaths: [root] });
   const result = await tool.execute(args);
   expect(result.isError).toBeUndefined();
@@ -129,11 +109,9 @@ describe("Glob tool", () => {
     root = await mkdtemp(join(tmpdir(), "agenc-glob-"));
     previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = join(root, ".agenc-test-home");
-    workspaceMutationCoordinators.clearForTests();
   });
 
   afterEach(async () => {
-    workspaceMutationCoordinators.clearForTests();
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     if (previousAgencHome === undefined) {
@@ -233,7 +211,7 @@ describe("Glob tool", () => {
     expect(result.content).not.toContain("skip.md");
   });
 
-  test("scoped searches honor root ignore rules in clean and protected workspaces", async () => {
+  test("scoped searches honor root ignore rules", async () => {
     const scoped = join(root, "sub");
     await mkdir(scoped);
     await writeFile(join(root, ".gitignore"), "sub/ignored.ts\n", "utf8");
@@ -246,7 +224,7 @@ describe("Glob tool", () => {
     expect(clean.content).toContain("sub/visible.ts");
     expect(clean.content).not.toContain("ignored.ts");
 
-    const protectedResult = await runProtectedGlob(root, "glob-ignore-editor", {
+    const protectedResult = await runScopedGlob(root, {
       pattern: "*.ts",
       path: scoped,
     });
@@ -254,7 +232,7 @@ describe("Glob tool", () => {
     expect(protectedResult.content).not.toContain("ignored.ts");
   });
 
-  test("protected-workspace validation keeps every match and the mtime order", async () => {
+  test("batched validation keeps every match and the mtime order", async () => {
     // Matches are validated 16 at a time through the directory helper; the
     // result must still list every file, newest first, exactly as the
     // sequential path did.
@@ -270,10 +248,7 @@ describe("Glob tool", () => {
       await utimes(file, stamp, stamp);
       names.push(name);
     }
-    const result = await runProtectedGlob(
-      root,
-      "glob-bounded-validation-editor",
-      { pattern: "*.ts", path: scoped },
+    const result = await runScopedGlob(root, { pattern: "*.ts", path: scoped },
     );
 
     const listed = result.content
@@ -299,10 +274,6 @@ describe("Glob tool", () => {
 
       const run = async (editorProtected: boolean) => {
         if (editorProtected) {
-          workspaceMutationCoordinators.getOrCreate(root).acquire({
-            workspaceRoot: root,
-            editorInstanceId: "glob-ignore-snapshot-editor",
-          });
         }
         let exchanged = false;
         const tool = createGlobTool({
@@ -338,10 +309,6 @@ describe("Glob tool", () => {
     await mkdir(outside);
     await writeFile(join(scoped, "inside.ts"), "inside\n", "utf8");
     await writeFile(join(outside, "outside-secret.ts"), "outside\n", "utf8");
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "glob-prebind-editor",
-    });
     let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
     const tool = createGlobTool({
       allowedPaths: [workspace],
@@ -406,10 +373,6 @@ describe("Glob tool", () => {
     await mkdir(outside);
     await writeFile(join(workspace, "inside-only.ts"), "inside\n", "utf8");
     await writeFile(join(outside, "outside-secret.ts"), "outside\n", "utf8");
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "glob-confinement-editor",
-    });
     let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
     const tool = createGlobTool({
       allowedPaths: [workspace],
@@ -431,113 +394,6 @@ describe("Glob tool", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("inside-only.ts");
     expect(result.content).not.toContain("outside-secret.ts");
-  });
-
-  test.runIf(process.platform !== "win32")(
-    "holds an Editor-acquisition fence across final read seams",
-    async () => {
-      for (const seam of ["final-path", "root-ignore"] as const) {
-        const workspace = join(root, `late-authority-${seam}`);
-        const displaced = join(root, `late-authority-${seam}-displaced`);
-        const outside = join(root, `late-authority-${seam}-outside`);
-        await mkdir(workspace);
-        await mkdir(outside);
-        await writeFile(join(workspace, "inside.ts"), "inside\n", "utf8");
-        await writeFile(
-          join(outside, "outside-secret.ts"),
-          "outside-glob-secret\n",
-          "utf8",
-        );
-        let lateAcquireError: unknown;
-        let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" =
-          "pending";
-        const attemptLateAuthority = async (): Promise<void> => {
-          exchangeOutcome = await exchangeDirectory(
-            workspace,
-            displaced,
-            outside,
-          );
-          try {
-            workspaceMutationCoordinators.acquireEditor(workspace, {
-              workspaceRoot: workspace,
-              editorInstanceId: `glob-late-${seam}`,
-            });
-          } catch (error) {
-            lateAcquireError = error;
-          }
-        };
-        const tool = createGlobTool({
-          allowedPaths: [workspace],
-          ...(seam === "final-path"
-            ? { __testAfterFinalPathCheck: attemptLateAuthority }
-            : { __testAfterRootIgnoreSnapshot: attemptLateAuthority }),
-        });
-
-        const result = await tool.execute({
-          pattern: "**/*.ts",
-          path: workspace,
-        });
-
-        expect((lateAcquireError as { code?: unknown })?.code).toBe(
-          "EDITOR_LEASE_CONFLICT",
-        );
-        expectCompletedExchangeAttempt(exchangeOutcome);
-        expect(result.isError).toBeUndefined();
-        expect(result.content).toContain("inside.ts");
-        expect(result.content).not.toContain("outside-secret.ts");
-        expect(result.content).not.toContain("outside-glob-secret");
-        const postToolLease = workspaceMutationCoordinators.acquireEditor(
-          workspace,
-          {
-            workspaceRoot: workspace,
-            editorInstanceId: `glob-post-${seam}`,
-          },
-        );
-        expect(postToolLease.editorInstanceId).toBe(`glob-post-${seam}`);
-      }
-    },
-  );
-
-  test("keeps trusted Editor listings bound after the live lease disappears", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    await writeFile(join(workspace, "inside-trusted.ts"), "inside\n", "utf8");
-    await writeFile(
-      join(outside, "outside-trusted-secret.ts"),
-      "outside\n",
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "expired-glob-editor",
-    });
-    workspaceMutationCoordinators.clearForTests();
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createGlobTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-    const args: Record<string, unknown> = {
-      pattern: "*.ts",
-      path: workspace,
-    };
-    attachTrustedEditorContext(args);
-
-    const result = await tool.execute(args);
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("inside-trusted.ts");
-    expect(result.content).not.toContain("outside-trusted-secret.ts");
   });
 
   test("drops an intermediate-swap candidate restored before validation", async () => {
@@ -587,10 +443,6 @@ await rename(displaced, nested);
       );
     }
     await chmod(fakeRipgrep, 0o755);
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "glob-intermediate-editor",
-    });
     const tool = createGlobTool({
       allowedPaths: [workspace],
       ripgrepCommand: fakeRipgrep,
@@ -714,7 +566,7 @@ await rename(displaced, nested);
     expect(result.metadata?.numFiles).toBe(3);
   });
 
-  test("truncates a protected one-chunk result without exhausting work", async () => {
+  test("truncates a one-chunk result without exhausting work", async () => {
     const fakeRipgrepScript = join(root, "one-chunk-rg.mjs");
     const fakeRipgrep =
       process.platform === "win32"
@@ -739,10 +591,6 @@ await rename(displaced, nested);
       );
     }
     await chmod(fakeRipgrep, 0o755);
-    workspaceMutationCoordinators.getOrCreate(root).acquire({
-      workspaceRoot: root,
-      editorInstanceId: "glob-one-chunk-editor",
-    });
     const tool = createGlobTool({
       allowedPaths: [root],
       maxResults: 3,
@@ -987,4 +835,370 @@ await rename(displaced, nested);
       expect.arrayContaining(["x.txt", "a/y.txt", "a/b/z.txt"]),
     );
   });
+});
+
+const TRUNCATION_NOTE =
+  "(Results are truncated. Consider using a more specific path or pattern.)";
+
+/**
+ * The workspace shape from the Linux release-candidate report: slash patterns
+ * such as `tree/**\/*.txt`, `repo/*.py` and `dir with spaces/*.txt` returned
+ * "No files found" while the files existed.
+ */
+const SLASH_FIXTURE: readonly string[] = [
+  "top.txt",
+  "tree/top.txt",
+  "tree/d0/s0/f0.txt",
+  "tree/d0/s0/f1.txt",
+  "tree/d0/s1/f0.txt",
+  "tree/d1/s0/f0.txt",
+  "tree/d1/s1/f1.txt",
+  "other/tree/x.txt",
+  "repo/config.py",
+  "repo/pkg/mod.py",
+  "dir with spaces/a.txt",
+  "dir with spaces/nested/b.txt",
+  "café-ñandú/résumé.md",
+  ".github/workflows/ci.yml",
+];
+
+async function writeFiles(
+  root: string,
+  files: readonly string[],
+): Promise<void> {
+  for (const file of files) {
+    await mkdir(dirname(join(root, file)), { recursive: true });
+    await writeFile(join(root, file), `${file}\n`, "utf8");
+  }
+}
+
+function listedPaths(content: string): string[] {
+  return content
+    .split("\n")
+    .filter(
+      (line) =>
+        line.length > 0 && line !== TRUNCATION_NOTE && line !== "No files found",
+    )
+    .sort();
+}
+
+describe("Glob slash patterns", () => {
+  let root = "";
+  let previousAgencHome: string | undefined;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-glob-slash-"));
+    previousAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = join(root, ".agenc-test-home");
+    await writeFiles(root, SLASH_FIXTURE);
+  });
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = "";
+    if (previousAgencHome === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previousAgencHome;
+    }
+  });
+
+  async function glob(
+    args: Record<string, unknown>,
+    config: {
+      readonly maxResults?: number;
+      readonly maxPathPatternListingBytes?: number;
+      readonly maxPathPatternMatchWork?: number;
+    } = {},
+  ) {
+    const result = await createGlobTool({ allowedPaths: [root], ...config }).execute({
+      path: root,
+      ...args,
+    });
+    expect(result.isError).toBeUndefined();
+    return result;
+  }
+
+  async function listed(pattern: string): Promise<string[]> {
+    return listedPaths((await glob({ pattern })).content);
+  }
+
+  test("match full paths relative to the search root", async () => {
+    const underTree = [
+      "tree/d0/s0/f0.txt",
+      "tree/d0/s0/f1.txt",
+      "tree/d0/s1/f0.txt",
+      "tree/d1/s0/f0.txt",
+      "tree/d1/s1/f1.txt",
+    ];
+    expect(await listed("tree/**/*.txt")).toEqual(
+      [...underTree, "tree/top.txt"].sort(),
+    );
+    expect(await listed("tree/*/*/*.txt")).toEqual(underTree);
+    expect(await listed("tree/d0/*/*.txt")).toEqual(underTree.slice(0, 3));
+    expect(await listed("**/tree/*.txt")).toEqual([
+      "other/tree/x.txt",
+      "tree/top.txt",
+    ]);
+    expect(await listed("tree/**")).toEqual(
+      [...underTree, "tree/top.txt"].sort(),
+    );
+  });
+
+  test("keep `*` inside one directory while slash-free patterns match at any depth", async () => {
+    expect(await listed("repo/*.py")).toEqual(["repo/config.py"]);
+    expect(await listed("repo/**/*.py")).toEqual([
+      "repo/config.py",
+      "repo/pkg/mod.py",
+    ]);
+    expect(await listed("*.py")).toEqual(["repo/config.py", "repo/pkg/mod.py"]);
+  });
+
+  test("match directory names with spaces, unicode and leading dots", async () => {
+    expect(await listed("dir with spaces/*.txt")).toEqual([
+      "dir with spaces/a.txt",
+    ]);
+    expect(await listed("dir with spaces/**/*.txt")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("dir with spaces/**")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("**/dir*/**")).toEqual([
+      "dir with spaces/a.txt",
+      "dir with spaces/nested/b.txt",
+    ]);
+    expect(await listed("café-ñandú/*.md")).toEqual(["café-ñandú/résumé.md"]);
+    expect(await listed(".github/workflows/*.yml")).toEqual([
+      ".github/workflows/ci.yml",
+    ]);
+  });
+
+  test("resolve against an explicit path and an absolute pattern's base directory", async () => {
+    const tree = join(root, "tree");
+    expect(
+      listedPaths((await glob({ pattern: "d0/*/*.txt", path: tree })).content),
+    ).toEqual(["tree/d0/s0/f0.txt", "tree/d0/s0/f1.txt", "tree/d0/s1/f0.txt"]);
+    expect((await glob({ pattern: "tree/*.txt", path: tree })).content).toBe(
+      "No files found",
+    );
+    expect(
+      listedPaths(
+        (await glob({ pattern: join(root, "tree", "*", "s1", "*.txt") }))
+          .content,
+      ),
+    ).toEqual(["tree/d0/s1/f0.txt", "tree/d1/s1/f1.txt"]);
+  });
+
+  test("support brace alternatives across directories and a leading ./", async () => {
+    expect(await listed("{repo,tree}/*.{py,txt}")).toEqual([
+      "repo/config.py",
+      "tree/top.txt",
+    ]);
+    expect(await listed("./repo/*.py")).toEqual(["repo/config.py"]);
+    // `./` anchors the pattern at the search root instead of any depth.
+    expect(await listed("./*.txt")).toEqual(["top.txt"]);
+  });
+
+  test("keep ignore rules, default excludes and includeIgnored", async () => {
+    await writeFile(join(root, ".ignore"), "repo/secret.py\n", "utf8");
+    await writeFile(join(root, "repo", "secret.py"), "secret\n", "utf8");
+    await mkdir(join(root, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(root, "node_modules", "pkg", "index.js"), "x\n", "utf8");
+
+    expect(await listed("repo/*.py")).toEqual(["repo/config.py"]);
+    expect((await glob({ pattern: "node_modules/*/*.js" })).content).toBe(
+      "No files found",
+    );
+    expect(
+      listedPaths(
+        (await glob({ pattern: "node_modules/*/*.js", includeIgnored: true }))
+          .content,
+      ),
+    ).toEqual(["node_modules/pkg/index.js"]);
+    expect(
+      listedPaths(
+        (await glob({ pattern: "repo/*.py", includeIgnored: true })).content,
+      ),
+    ).toEqual(["repo/config.py", "repo/secret.py"]);
+  });
+
+  test("keep newest-first order and the result cap", async () => {
+    const logs = join(root, "logs");
+    await mkdir(logs);
+    const now = Date.now() / 1000;
+    for (const [name, age] of [
+      ["old.log", 300],
+      ["mid.log", 150],
+      ["new.log", 0],
+    ] as const) {
+      await writeFile(join(logs, name), `${name}\n`, "utf8");
+      await utimes(join(logs, name), now - age, now - age);
+    }
+    // The newest .log overall is outside `logs/`, so it must be filtered out
+    // without disturbing the order of the real matches.
+    await writeFile(join(root, "stray.log"), "stray\n", "utf8");
+    await utimes(join(root, "stray.log"), now + 60, now + 60);
+
+    const all = await glob({ pattern: "logs/*.log" });
+    expect(all.content.split("\n")).toEqual([
+      "logs/new.log",
+      "logs/mid.log",
+      "logs/old.log",
+    ]);
+    expect(all.metadata).toMatchObject({ numFiles: 3, truncated: false });
+
+    const capped = await glob({ pattern: "logs/*.log" }, { maxResults: 2 });
+    expect(capped.content.split("\n")).toEqual([
+      "logs/new.log",
+      "logs/mid.log",
+      TRUNCATION_NOTE,
+    ]);
+    expect(capped.metadata).toMatchObject({ numFiles: 2, truncated: true });
+  });
+
+  test("find an older match behind more than 20,000 newer non-matching files", async () => {
+    // A "/" pattern used to read at most 20,000 newest-first candidates, so a
+    // match listed after them was reported as missing.
+    const now = Date.now() / 1000;
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+    await utimes(join(root, "keep", "old.txt"), now - 3600, now - 3600);
+    for (let batch = 0; batch < 21; batch += 1) {
+      const directory = join(root, `noise${batch}`);
+      await mkdir(directory);
+      await Promise.all(
+        Array.from({ length: 1000 }, (_, index) =>
+          writeFile(join(directory, `n${index}.txt`), "n\n", "utf8"),
+        ),
+      );
+    }
+
+    const result = await glob({ pattern: "keep/*.txt" });
+    expect(result.content).toBe("keep/old.txt");
+    expect(result.metadata).toMatchObject({ numFiles: 1, truncated: false });
+  }, 120_000);
+
+  test("report a listing cut short by its byte cap as truncated", async () => {
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+
+    const capped = await glob(
+      { pattern: "keep/*.txt" },
+      { maxPathPatternListingBytes: 8 },
+    );
+    expect(capped.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
+    expect(capped.metadata).toMatchObject({ numFiles: 0, truncated: true });
+  });
+
+  test("report matching that runs out of work as truncated", async () => {
+    const result = await glob(
+      { pattern: "tree/**/*.txt" },
+      { maxPathPatternMatchWork: 1 },
+    );
+    expect(result.content).toBe(`No files found\n${TRUNCATION_NOTE}`);
+    expect(result.metadata).toMatchObject({ numFiles: 0, truncated: true });
+  });
+
+  test("filter a listing without a directory capability", async () => {
+    const now = Date.now() / 1000;
+    await mkdir(join(root, "keep"));
+    await writeFile(join(root, "keep", "old.txt"), "old\n", "utf8");
+    await utimes(join(root, "keep", "old.txt"), now - 3600, now - 3600);
+    const ripgrep = selectPinnedRipgrepPath();
+    expect(ripgrep).toBeDefined();
+    const examined: string[] = [];
+    const listing = {
+      command: ripgrep!,
+      pattern: "*.txt",
+      cwd: root,
+      searchPath: ".",
+      includeIgnored: false,
+    };
+
+    const filtered = await runRipgrepFiles({
+      ...listing,
+      toolArgs: withExplicitDangerBoundary({}),
+      limit: 1,
+      acceptRecord: (record) => {
+        const path = record.toString("utf8");
+        examined.push(path);
+        return path.endsWith("keep/old.txt") ? "accept" : "reject";
+      },
+    });
+    expect(filtered.pathRecords.map((record) => record.toString("utf8"))).toEqual([
+      "./keep/old.txt",
+    ]);
+    expect(filtered.killedAfterLimit).toBe(true);
+    expect(filtered.listingTruncated).toBeUndefined();
+    // The oldest file is listed last, after every newer non-match.
+    expect(examined.at(-1)).toBe("./keep/old.txt");
+    expect(examined.length).toBeGreaterThan(1);
+
+    const capped = await runRipgrepFiles({
+      ...listing,
+      toolArgs: withExplicitDangerBoundary({}),
+      limit: 10,
+      maxListingBytes: 8,
+      acceptRecord: () => "accept",
+    });
+    expect(capped.pathRecords).toEqual([]);
+    expect(capped.listingTruncated).toBe(true);
+  });
+
+  test("return a Glob error when brace groups nest too deeply", async () => {
+    // 4,003 bytes, well under the pattern limit; it used to overflow the
+    // stack while compiling and reject instead of returning a result.
+    const pattern = `x/${"{".repeat(2000)}a${"}".repeat(2000)}`;
+    const result = await createGlobTool({ allowedPaths: [root] }).execute({
+      pattern,
+      path: root,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Glob error: error parsing glob");
+    expect(result.content).toContain("nest deeper than 32 levels");
+  });
+
+  test("stay correct on the 5,000-file tree from the report", async () => {
+    await rm(join(root, "tree"), { recursive: true, force: true });
+    for (let d = 0; d < 50; d += 1) {
+      for (let s = 0; s < 10; s += 1) {
+        const directory = join(root, "tree", `d${d}`, `s${s}`);
+        await mkdir(directory, { recursive: true });
+        await Promise.all(
+          Array.from({ length: 10 }, (_, f) =>
+            writeFile(join(directory, `f${f}.txt`), "x\n", "utf8"),
+          ),
+        );
+      }
+    }
+
+    // Every .txt file is a candidate; a page of 20 matches is returned.
+    const recursive = await glob(
+      { pattern: "tree/**/*.txt" },
+      { maxResults: 20 },
+    );
+    expect(recursive.metadata).toMatchObject({ numFiles: 20, truncated: true });
+    for (const line of listedPaths(recursive.content)) {
+      expect(line).toMatch(/^tree\/d\d+\/s\d\/f\d\.txt$/u);
+    }
+
+    // 500 files named f0.txt are candidates; 50 match and none is left unread.
+    const oneSubdirectory = await glob({ pattern: "tree/*/s0/f0.txt" });
+    expect(oneSubdirectory.metadata).toMatchObject({
+      numFiles: 50,
+      truncated: false,
+    });
+    expect(listedPaths(oneSubdirectory.content)).toEqual(
+      Array.from({ length: 50 }, (_, d) => `tree/d${d}/s0/f0.txt`).sort(),
+    );
+
+    expect(await listed("tree/d4*/s9/f9.txt")).toEqual(
+      ["d4", ...Array.from({ length: 10 }, (_, index) => `d4${index}`)]
+        .map((directory) => `tree/${directory}/s9/f9.txt`)
+        .sort(),
+    );
+  }, 120_000);
 });

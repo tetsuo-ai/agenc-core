@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 
 import { swarmCommand } from "../../src/commands/swarm.js";
 import {
-  claimRequiredSwarmToolChoice,
   swarmModeProducer,
 } from "../../src/prompts/attachments/swarm-mode.js";
 import { routeSwarmTask } from "../../src/agents/swarm-routing.js";
@@ -139,10 +138,10 @@ describe("swarmModeProducer", () => {
       "Swarm mode is active",
     );
     expect((attachments[0] as { content?: string }).content ?? "").toContain(
-      "Call `spawn_agent` now",
+      "This parallel route recommends delegation",
     );
     expect((attachments[0] as { content?: string }).content ?? "").toContain(
-      "Do not merely describe or promise fan-out",
+      "Obtain any required approval and satisfy any conditions first",
     );
   });
 
@@ -170,7 +169,7 @@ describe("swarmModeProducer", () => {
     expect(content).toContain('"policy_version":"agenc.swarm.route.v2"');
     expect(content).toContain('"mode":"parallel"');
     expect(content).toContain(
-      '"delegation_enforcement":"require_initial_spawn"',
+      '"delegation_enforcement":"none"',
     );
     expect(content).toContain('"recommended_max_agents":4');
     expect(content).toContain('"recommended_isolation":"worktree"');
@@ -248,7 +247,7 @@ describe("swarmModeProducer", () => {
     ).toBe(2);
   });
 
-  test("records the exact routing decision used by provider enforcement", async () => {
+  test("records the exact routing decision used by prompt guidance", async () => {
     await persistSwarmMode(true);
     const tracking = { swarmRoutingDecisionCount: 0 } as never;
     await swarmModeProducer(
@@ -264,7 +263,7 @@ describe("swarmModeProducer", () => {
       lastSwarmRoutingTurnId: "turn-enforced",
       lastSwarmRoutingDecision: {
         mode: "parallel",
-        delegationEnforcement: "require_initial_spawn",
+        delegationEnforcement: "none",
       },
     });
   });
@@ -467,7 +466,7 @@ describe("routeSwarmTask", () => {
     ).toMatchObject({
       policyVersion: "agenc.swarm.route.v2",
       mode: "parallel",
-      delegationEnforcement: "require_initial_spawn",
+      delegationEnforcement: "none",
       maxAgents: 2,
       signals: expect.arrayContaining([
         "independent_list",
@@ -487,103 +486,5 @@ describe("routeSwarmTask", () => {
     expect(listed.mode).toBe("parallel");
     expect(inline.mode).toBe("sequential");
     expect(listed.inputFingerprint).not.toBe(inline.inputFingerprint);
-  });
-});
-
-describe("claimRequiredSwarmToolChoice", () => {
-  function parallelTracking() {
-    return {
-      swarmRoutingDecisionCount: 1,
-      lastSwarmRoutingTurnId: "turn-parallel",
-      lastSwarmRoutingDecision: routeSwarmTask(
-        "Review these areas:\n- API behavior\n- TUI behavior",
-      ),
-    };
-  }
-
-  test("force-selects spawn_agent exactly once for an exact parallel root turn", () => {
-    const trackingState = parallelTracking();
-    const options = {
-      trackingState,
-      turnId: "turn-parallel",
-      subagentDepth: 0,
-      planMode: false,
-      toolNames: ["FileRead", "spawn_agent"],
-    };
-
-    expect(claimRequiredSwarmToolChoice(options)).toEqual({
-      type: "function",
-      name: "spawn_agent",
-    });
-    expect(claimRequiredSwarmToolChoice(options)).toBeUndefined();
-    expect(trackingState.lastSwarmSpawnToolChoiceTurnId).toBe(
-      "turn-parallel",
-    );
-  });
-
-  test.each([
-    {
-      label: "sequential route",
-      mutate: (tracking: ReturnType<typeof parallelTracking>) => {
-        tracking.lastSwarmRoutingDecision = routeSwarmTask("Fix this one file");
-      },
-      overrides: {},
-    },
-    {
-      label: "different turn",
-      mutate: () => {},
-      overrides: { turnId: "turn-other" },
-    },
-    {
-      label: "child agent",
-      mutate: () => {},
-      overrides: { subagentDepth: 1 },
-    },
-    {
-      label: "plan mode",
-      mutate: () => {},
-      overrides: { planMode: true },
-    },
-    {
-      label: "missing tool",
-      mutate: () => {},
-      overrides: { toolNames: ["FileRead"] },
-    },
-  ])("does not force a spawn for $label", ({ mutate, overrides }) => {
-    const trackingState = parallelTracking();
-    mutate(trackingState);
-    expect(
-      claimRequiredSwarmToolChoice({
-        trackingState,
-        turnId: "turn-parallel",
-        subagentDepth: 0,
-        planMode: false,
-        toolNames: ["spawn_agent"],
-        ...overrides,
-      }),
-    ).toBeUndefined();
-    expect(trackingState.lastSwarmSpawnToolChoiceTurnId).toBeUndefined();
-  });
-
-  test("plan mode does not consume the later execution-mode claim", () => {
-    const trackingState = parallelTracking();
-    expect(
-      claimRequiredSwarmToolChoice({
-        trackingState,
-        turnId: "turn-parallel",
-        subagentDepth: 0,
-        planMode: true,
-        toolNames: ["spawn_agent"],
-      }),
-    ).toBeUndefined();
-    expect(
-      claimRequiredSwarmToolChoice({
-        trackingState,
-        turnId: "turn-parallel",
-        subagentDepth: 0,
-        planMode: false,
-        toolNames: ["spawn_agent"],
-      }),
-    ).toEqual({ type: "function", name: "spawn_agent" });
   });
 });

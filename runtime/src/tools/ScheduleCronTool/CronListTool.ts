@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import { getProjectRoot } from "../../bootstrap/state.js";
 import { buildTool, type ToolDef } from "../Tool.js";
 import { cronToHuman } from "../../utils/cron.js";
-import { listAllCronTasks } from "../../utils/cronTasks.js";
+import { cronRestoreFailureNeedsWarning, listAllCronTasks, listSessionCronTasks } from "../../utils/cronTasks.js";
 import { truncate } from "../../utils/format.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import { getTeammateContext } from "../../utils/teammateContext.js";
@@ -30,6 +30,7 @@ const outputSchema = lazySchema(() =>
         durable: z.boolean().optional(),
       }),
     ),
+    warning: z.string().optional(),
   }),
 );
 type OutputSchema = ReturnType<typeof outputSchema>;
@@ -65,7 +66,17 @@ export const CronListTool = buildTool({
     if (typeof conversationId !== "string" || conversationId.length === 0) {
       throw new Error("CronList requires an active owning conversation");
     }
-    const allTasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    let allTasks;
+    let warning: string | undefined;
+    try {
+      allTasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "DESCRIPTOR_UNSUPPORTED") throw error;
+      allTasks = listSessionCronTasks(conversationId);
+      if (await cronRestoreFailureNeedsWarning(error, getProjectRoot())) {
+        warning = "Durable jobs are unavailable on this host; only session jobs are listed.";
+      }
+    }
     // Teammates only see their own crons; team lead (no ctx) sees all.
     const ctx = getTeammateContext();
     const tasks = ctx
@@ -79,21 +90,21 @@ export const CronListTool = buildTool({
       ...(t.recurring ? { recurring: true } : {}),
       ...(t.durable === false ? { durable: false } : {}),
     }));
-    return { data: { jobs } };
+    return { data: { jobs, ...(warning ? { warning } : {}) } };
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     return {
       tool_use_id: toolUseID,
       type: "tool_result",
-      content:
-        output.jobs.length > 0
+      content: (output.warning ? `${output.warning}\n` : "") +
+        (output.jobs.length > 0
           ? output.jobs
               .map(
                 (j) =>
                   `${j.id} — ${j.humanSchedule}${j.recurring ? " (recurring)" : " (one-shot)"}${j.durable === false ? " [session-only]" : ""}: ${truncate(j.prompt, 80, true)}`,
               )
               .join("\n")
-          : "No scheduled jobs.",
+          : "No scheduled jobs."),
     };
   },
   renderToolUseMessage: renderListToolUseMessage,

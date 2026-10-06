@@ -34,12 +34,20 @@
  * @module
  */
 
+import {
+  lightBudgetWorkflow,
+  lightBudgetSystem,
+  lightBudgetActions,
+  LIGHT_BUDGET_DEADLINE,
+} from "./light-budget-prompt.js";
+import { lightEditsWithApplyPatch } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ConfigStore } from "../config/store.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import { isEnvDefinedFalsy, isEnvTruthy } from "../utils/envBoolean.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
 import { hardenGitWorktreeMutationArgs } from "../sandbox/worktree-permissions.js";
@@ -51,6 +59,7 @@ import { feature } from "bun:bundle";
 import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
+import { getResponseDetailSection } from "./response-detail.js";
 import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
@@ -67,8 +76,25 @@ import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
 import { loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  getAllOutputStyles,
+  selectOutputStyleConfig,
+} from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import { isLightPrintRun } from "./light-print.js";
+import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
+import {
+  getLeanActionsSection,
+  getLeanAgentToolSection,
+  getLeanDoingTasksSection,
+  getLeanIntroSection,
+  getLeanSystemSection,
+  getLeanToneSection,
+  getLeanUsingYourToolsSection,
+  leanSystemPromptEnabled,
+} from "./lean-system-prompt.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 
@@ -133,7 +159,8 @@ export function getSimpleSystemSection(): string {
  * AgenC uses stable tool display names here and keeps only guidance backed
  * by live AgenC surfaces.
  */
-export function getSimpleDoingTasksSection(): string {
+export function getSimpleDoingTasksSection(options: { readonly headlessContract?: boolean } = {}): string {
+  const headlessContract = options.headlessContract === true;
   const codeStyleSubitems = [
     `Don't add features, refactor code, or make "improvements" beyond what was asked. A bug fix doesn't need surrounding code cleaned up. A simple feature doesn't need extra configurability. Don't add docstrings, comments, or type annotations to code you didn't change. Only add comments where the logic isn't self-evident.`,
     `Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries (user input, external APIs). Don't use feature flags or backwards-compatibility shims when you can just change the code.`,
@@ -151,11 +178,11 @@ export function getSimpleDoingTasksSection(): string {
     `In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications.`,
     `Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.`,
     `Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.`,
-    `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with the ask-user-question tool only when you're genuinely stuck after investigation, not as a first response to friction.`,
+    `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either.${headlessContract ? "" : " Escalate to the user with the ask-user-question tool only when you're genuinely stuck after investigation, not as a first response to friction."}`,
     `Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.`,
     ...codeStyleSubitems,
     `Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.`,
-    `Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results with unnecessary disclaimers, downgrade finished work to "partial," or re-verify things you already checked. The goal is an accurate report, not a defensive one.`,
+    `Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results with unnecessary disclaimers${headlessContract ? ' or downgrade finished work to "partial."' : ', downgrade finished work to "partial," or re-verify things you already checked.'} The goal is an accurate report, not a defensive one.`,
     `When the requested change is made and verified, stop and report in a few lines. Do not start adjacent work the user did not ask for.`,
   ];
 
@@ -177,6 +204,63 @@ Examples of the kind of risky actions that warrant user confirmation:
 - Uploading content to third-party web tools (diagram renderers, pastebins, gists) publishes it - consider whether it could be sensitive before sending, since it may be cached or indexed even if later deleted.
 
 When you encounter an obstacle, do not use destructive actions as a shortcut to simply make it go away. For instance, try to identify root causes and fix underlying issues rather than bypassing safety checks (e.g. --no-verify). If you discover unexpected state like unfamiliar files, branches, or configuration, investigate before deleting or overwriting, as it may represent the user's in-progress work. For example, typically resolve merge conflicts rather than discarding changes; similarly, if a lock file exists, investigate what process holds it rather than deleting it. In short: only take risky actions carefully, and when in doubt, ask before acting. Follow both the spirit and letter of these instructions - measure twice, cut once.`;
+}
+
+/**
+ * Environment switch for {@link getHeadlessCompletionSection}. Unset means
+ * on for non-interactive sessions; a defined falsy value turns it off.
+ */
+export const HEADLESS_COMPLETION_CONTRACT_ENV = "AGENC_COMPLETION_CONTRACT";
+
+/**
+ * Measurement switch for the completion contract. When set and the contract is emitted, three default lines that
+ * contradict it are left out: the output-efficiency "simplest approach" line and the doing-tasks advice not to
+ * re-verify and to escalate with the ask-user-question tool. Unset leaves every section unchanged.
+ */
+export const COMPLETION_CONTRACT_COHERENT_ENV = "AGENC_COMPLETION_CONTRACT_COHERENT";
+
+/**
+ * 4b. headless_completion — the completion contract for sessions nobody
+ * reviews while they run (`agenc -p`, routines, evaluation harnesses).
+ *
+ * An interactive session can stop early because the human reads the reply
+ * and steers; a non-interactive session has no such correction, so the
+ * final message must carry its own evidence. The section is only emitted
+ * when the session was created with `runtimeOptions.nonInteractive`; the
+ * environment switch exists so one run can be measured with and without
+ * it.
+ */
+export const HEADLESS_DEADLINE_GUIDANCE =
+  `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`;
+
+export function getHeadlessCompletionSection(input: {
+  readonly nonInteractive: boolean | undefined;
+  readonly env: NodeJS.ProcessEnv;
+  /** The run has a `--deadline` (#2503): time is a constraint after all. */
+  readonly deadline?: boolean;
+}): string | null {
+  if (input.nonInteractive !== true) return null;
+  if (isEnvDefinedFalsy(input.env[HEADLESS_COMPLETION_CONTRACT_ENV])) {
+    return null;
+  }
+  const items = [
+    `Nobody reviews this session while it runs, nobody answers questions, and your final message is the whole deliverable. It is judged only by whether the result actually works when someone checks it after you stop.`,
+    `Before you act, restate the task as a checklist of concrete, checkable requirements: every input, output, file, path, name, format, command, and edge case the task states or clearly implies. Small requirements (an exact filename, an exact output format, a "must not modify", a bound on time or memory) count as much as the main deliverable, and missing one fails the whole task.`,
+    `Ask what the task's author would check, and check it yourself. Run the program on the examples the task gives, on empty and malformed input, and on the boundaries. If the task ships tests, run them. If it does not, write a quick check and run it. Read the actual output; do not infer it from the code.`,
+    `A check that exercises only the path your own input happens to take proves that path, not the requirement. For every rule the task states, build the case that would break it: the variant the wording allows but your example does not contain, a different order or timing, the state a previous step leaves behind, the two rules interacting. When a rule names a distinction (public and private, before and after, merged and unmerged, active and idle), run one case on each side of it.`,
+    `Repeating a check whose code, input and environment have not changed reconfirms it but adds no coverage. Re-run the affected checks after every change, and spend the rest of the verification effort on what you have never exercised: requirements you reasoned about but never ran, branches your own tests never entered, and each claim you are about to write down. A test you derived from your own design shares its blind spots, so derive the case from the task's wording instead.`,
+    `A result that should work is not done; a result you have run and watched working is done. Do not stop at the first version that looks right. When a check fails, fix the cause and re-run the whole checklist, not only the failing item, because a fix can break something that passed before.`,
+    `Your own summary is a claim that needs evidence. Before writing the final message, re-run every check the task implies and confirm each item on the checklist has been observed to pass. If something cannot be verified, say exactly what and why instead of implying success.`,
+    `Never ask for clarification or confirmation and never end your turn waiting for input: decide, act, and state the assumption you made. When the task is ambiguous, choose the reading that satisfies the most likely check. Actions the task requires are authorized by the task; actions it does not require and that would be hard to reverse are still off limits.`,
+    input.deadline === true
+      ? // A deadline-bounded run (#2503) was killed mid-optimization with a
+        // broken file on disk hours after it had a passing one. Keep the
+        // verified result safe and finish inside the budget.
+        HEADLESS_DEADLINE_GUIDANCE
+      : `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
+    `The final message lists which requirements you verified and how, in a few lines.`,
+  ];
+  return joinSection("# Completing work without a human", items);
 }
 
 /**
@@ -276,6 +360,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     );
   }
 
+  if (hasShell && enabledTools.has("kill_process")) {
+    items.push(
+      `To stop background work you started, call kill_process with its session_id (session_ids for several, all=true for every session you still have running)${enabledTools.has("list_processes") ? "; list_processes shows which of your sessions are still live" : ""}. A terminated=false result means that session already exited. Never clean up by searching the process table for task filenames or command text and signalling the matches: that also selects AgenC's own CLI and process brokers and ends the session.`,
+    );
+  }
+
   // Stated once here instead of inside every tool result. Per-result frames
   // now carry only a provenance line and the boundary marker (external
   // results keep the full text inline), so this paragraph is what makes the
@@ -291,25 +381,51 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
 /**
  * 6. agent_tool — guidance for the multi-agent delegation surface.
  *
- * The host exposes delegation through the primary agent tool spec.
+ * Emitted only when the primary `spawn_agent` tool (agents/v2/spawn.ts) is
+ * in the catalog. This is the home of the delegation discipline that used to
+ * ride inside the spawn_agent tool description on every request: when to
+ * delegate, how to design subtasks, what to do after delegating, parallel
+ * patterns. The description now states only what the schema needs and points
+ * here; the rules live in the cacheable static head so they are sent once per
+ * prefix, not once per tool catalog, and in fewer words.
+ *
  * Do not add separate prompt guidance for AgenC's compatibility
- * `system.agent.delegate` compatibility shim; surfacing that tool here
- * causes the model to bypass the supported task-name/background semantics.
+ * `system.agent.delegate` shim; surfacing that tool here causes the model to
+ * bypass the supported task-name/background semantics.
  */
 export function getAgentToolSection(
   enabledTools: ReadonlySet<string>,
 ): string | null {
-  void enabledTools;
-  return null;
+  if (!enabledTools.has("spawn_agent")) return null;
+  const items: Array<string | string[]> = [
+    `Decide whether to delegate from the user's full request and its prerequisites. Requests qualified by approval require that approval before spawning; conditional requests require the condition to be satisfied first, including prerequisites stated in another sentence. Quoted examples and programming terms such as worker threads, child processes, and React children props do not authorize subagents.`,
+    `When the user explicitly asks for delegation, or the active Goal/workflow requires delegation, and its prerequisites are satisfied, spawn the requested child before doing its assigned work yourself. This includes handing off a single blocking task and waiting for its result. If delegation is unavailable or refused, report that boundary rather than silently substituting your own work.`,
+    `For ordinary chats without a delegation requirement, plan first: identify the critical-path step you must do locally right now and the bounded sidecar tasks that can run in parallel without blocking it. Keep the immediate blocking step local unless delegation is explicitly required.`,
+    `Delegate concrete, self-contained subtasks that materially advance the task and can run beside your own work. Absent an explicit delegation requirement, keep work local when it is tightly coupled, urgent, likely to block your next step, or too hard to specify well.`,
+    `Before spawning a reviewer, tester, or verifier, create the artifact it must inspect and do the smallest local check that it exists.`,
+    `Do not duplicate work between yourself and subagents, and do not issue another delegate call on the same unresolved thread unless the new task is genuinely different and necessary. Narrow each ask to the concrete output you need next.`,
+    `For coding work, prefer bounded runner subtasks with a clear write scope over read-only scanner analysis. Tell the worker to edit files directly in its workspace and to list the paths it changed in its final answer. Give parallel code-edit subtasks disjoint write sets and isolation: "worktree"; require each worker to commit and report the commit, the changed files, and the verification it ran; integrate one exact verified base_commit..integration_ref range at a time, and never infer an integration target from a mutable worker branch or treat completion as merge approval. A deliverable under an ignored path must be explicitly unignored or force-added and committed.`,
+    `The spawned agent inherits your working directory and receives the same Environment section. Refer to files relative to that cwd; do not embed absolute paths from memory or invent a project root in the message.`,
+    `Omit fork_turns for the default clean fork and make the message fully self-contained (background, goal, constraints, relevant paths and snippets): the agent has not seen this conversation. Use fork_turns "all" only when the subtask genuinely needs the whole conversation; it then inherits your role, model, and effort and cannot be combined with agent_type, model, or reasoning_effort overrides. A positive integer string such as "3" forks only the most recent turns.`,
+    `Use spawn_agent.message_ref to copy the current user message or a delimited excerpt verbatim into the child task without regenerating it. Prefer this for long prompts; the child still receives the usual limits and permissions.`,
+    `Set exact_output: true on spawn_agent or assign_task when you need verbatim JSON or another machine-readable child answer. This applies only to that child task; ordinary chat keeps completion verification, even when its text mentions JSON. Child final answers are always delivered verbatim to you, using result_ref pages for large answers.`,
+    `When asked to return a child result verbatim, preserve its exact final answer, including JSON and whitespace. Do not add a checklist, fences, a summary, or repeat the child’s file work.`,
+    `After delegating, call wait_agent only when the next critical-path step is blocked on the result; otherwise do meaningful non-overlapping work and never wait by reflex. Do not redo delegated work. When a coding task returns, review the changes, then integrate or refine them.`,
+    `Run independent information-seeking subtasks in parallel, split implementation into disjoint slices for parallel agents when write scopes do not overlap, and delegate verification only when it can run beside implementation and is likely to catch a concrete risk before integration.`,
+  ];
+  return joinSection("# Subagents", items);
 }
 
 /**
  * 7. output_efficiency — brevity rules.
  */
-export function getOutputEfficiencySection(): string {
+export function getOutputEfficiencySection(options: { readonly headlessContract?: boolean } = {}): string {
+  const opening = options.headlessContract === true
+    ? "IMPORTANT: Go straight to the point. Be extra concise."
+    : "IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.";
   return `# Output efficiency
 
-IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.
+${opening}
 
 Keep your text output brief and direct. Lead with the answer or action, not the reasoning. Skip filler words, preamble, and unnecessary transitions. Do not restate what the user said — just do it. When explaining, include only what is necessary for the user to understand.
 
@@ -423,7 +539,7 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    });
+    }, session.services?.providerEnvironment);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -489,13 +605,11 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
-  // disambiguation note. Tool descriptions elsewhere mention agent-namespace
-  // pseudo-paths like `/root/task1`; without this anchor, smaller / local
-  // models confuse the agent-tree pseudo-path with a filesystem path and
-  // try to read `/root/<file>` instead of resolving against the actual cwd.
+  // disambiguation note. Agent-tree identifiers such as `/root/task1` are
+  // not files; absolute Linux paths under `/root` are filesystem paths.
   const items: string[] = [
     `Filesystem working directory: <cwd>${cwd}</cwd>`,
-    `All relative file paths in tool calls resolve against <cwd>. Do NOT use \`/root\` as a filesystem path — it is the agent-tree namespace prefix and is unrelated to the filesystem.`,
+    `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
     `Primary working directory: ${cwd}`,
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
@@ -664,6 +778,7 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SystemPromptSessionSnapshot {
+  readonly providerService?: { current(): { readonly provider: string; readonly model: string } };
   readonly services?: {
     readonly runtimeOptions?: Partial<AgentRuntimeOptions>;
     readonly configStore?: ConfigStore;
@@ -674,6 +789,7 @@ export interface SystemPromptSessionSnapshot {
 }
 
 export interface AssembleSystemPromptOpts {
+  readonly lightProfile?: boolean;
   /** Captured session services that affect prompt assembly. */
   readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
@@ -704,6 +820,8 @@ export interface AssembleSystemPromptOpts {
   readonly scratchpadDir?: string;
   /** Provider slug for env-info. */
   readonly provider?: string;
+  /** Concrete child destination when a managed transport routes to another provider. */
+  readonly promptIdentity?: { readonly provider: string; readonly model: string };
   /**
    * Active permission context (mode + rules). Drives the AgenC implementationed
    * approval-policy / sandbox-mode prose injection. When `undefined` /
@@ -740,7 +858,7 @@ export interface AssembledSystemPrompt {
   readonly dynamicSuffix: string;
 }
 
-export type SystemPromptProfile = "standard" | "compact" | "coordinator";
+export type SystemPromptProfile = "standard" | "compact" | "light" | "coordinator";
 
 export interface AssembleSystemPromptSnapshotOpts
   extends AssembleSystemPromptOpts {
@@ -759,7 +877,9 @@ function fixedSystemPromptSnapshot(text: string): AssembledSystemPrompt {
 function compactSystemPromptSnapshot(
   ctx: TurnContext,
   enabledTools: ReadonlySet<string>,
+  outputStyle: OutputStyleInput | null = null,
 ): AssembledSystemPrompt {
+  const style = getOutputStyleSection(outputStyle);
   return fixedSystemPromptSnapshot(
     [
       `You are AgenC, an open-source coding agent. You work inside the user's repository and complete their request by calling tools.`,
@@ -791,6 +911,7 @@ function compactSystemPromptSnapshot(
       ``,
       `CWD: ${ctx.cwd}`,
       `Date: ${ctx.currentDate ?? "unknown"}`,
+      ...(style === null ? [] : ["", style]),
     ].join("\n"),
   );
 }
@@ -824,8 +945,16 @@ export async function assembleSystemPromptSnapshot(
     };
   };
   switch (opts.profile ?? "standard") {
+    case "light":
+      return assembleSystemPrompt({ ...opts, lightProfile: true });
     case "compact":
-      return withClientRendering(compactSystemPromptSnapshot(opts.ctx, opts.enabledToolNames ?? new Set()));
+      return withClientRendering(
+        compactSystemPromptSnapshot(
+          opts.ctx,
+          opts.enabledToolNames ?? new Set(),
+          opts.outputStyle ?? null,
+        ),
+      );
     case "coordinator": {
       const { getLiveCoordinatorSystemPrompt } =
         await import("../coordinator/coordinatorMode.js");
@@ -838,6 +967,24 @@ export async function assembleSystemPromptSnapshot(
   }
 }
 
+async function resolveOutputStyleFromSession(
+  session: SystemPromptSessionSnapshot,
+  cwd: string,
+): Promise<OutputStyleInput | null> {
+  const pluginStorageRoot = session.services?.runtimeOptions?.pluginStorageRoot;
+  const configStore = session.services?.configStore;
+  if (typeof pluginStorageRoot !== "string" || configStore === undefined) {
+    return null;
+  }
+  const config = configStore.current();
+  const allStyles = await runWithCanonicalSettingsAuthority(configStore, () =>
+    getAllOutputStyles(cwd, pluginStorageRoot, config),
+  );
+  const selected = selectOutputStyleConfig(allStyles, config.outputStyle);
+  if (selected === null) return null;
+  return { name: selected.name, prompt: selected.prompt };
+}
+
 export async function assembleBaseInstructionsForModel(params: {
   readonly session: SystemPromptSessionSnapshot;
   readonly ctx: TurnContext;
@@ -845,6 +992,7 @@ export async function assembleBaseInstructionsForModel(params: {
     readonly tools: ReadonlyArray<{ readonly name: string }>;
   };
   readonly provider: string;
+  readonly promptIdentity?: { readonly provider: string; readonly model: string };
   readonly permissionContext: ToolPermissionContext | null;
   readonly profile: SystemPromptProfile;
 }): Promise<string> {
@@ -864,9 +1012,14 @@ export async function assembleBaseInstructionsForModel(params: {
     enabledToolNames,
     agentsEnabled: enabledToolNames.has("spawn_agent"),
     provider: params.provider,
+    ...(params.promptIdentity !== undefined
+      ? { promptIdentity: params.promptIdentity } : {}),
     permissionContext: params.permissionContext,
     autonomousMode: params.ctx.config.autonomousMode === true,
-    outputStyle: null,
+    outputStyle: await resolveOutputStyleFromSession(
+      params.session,
+      params.ctx.cwd,
+    ),
   });
   return snapshot.text;
 }
@@ -985,21 +1138,35 @@ export async function assembleSystemPrompt(
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
   const agentsEnabled = opts.agentsEnabled ?? false;
+  const light = opts.lightProfile === true || session.services?.runtimeOptions?.lightMode === true;
+  const lightPrint = isLightPrintRun(
+    { ...session.services?.runtimeOptions, lightMode: light },
+    session.services?.providerEnvironment,
+  );
+  const memorySection = getMemorySection(opts.memoryPrompt);
 
   const clientRendering = getClientRenderingSection(
     session.services?.providerEnvironment,
   );
 
-  const model = ctx.config.model;
+  // The turn config can inherit the root model in a delegated child. Its
+  // session binding is the authority for the actual destination.
+  const childBinding = session.providerService?.current();
+  const model = opts.promptIdentity?.model ?? childBinding?.model ??
+    ctx.modelInfo?.slug ?? ctx.config.model;
   const cwd = ctx.cwd;
   const envInfoInputs: EnvInfoInputs = {
     model,
-    provider: opts.provider,
+    provider: opts.promptIdentity?.provider ?? childBinding?.provider ?? opts.provider,
     cwd,
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
       : {}),
   };
+  // Managed routing is resolved later by the delegated concrete adapter.
+  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
+    ? null
+    : getResponseDetailSection(ctx.responseDetailOverride);
 
   // Session-scoped reduced-prompt path. Never re-read process.env here: a
   // daemon can host concurrent sessions with different startup options.
@@ -1010,6 +1177,7 @@ export async function assembleSystemPrompt(
     const env = buildEnvInfoSection(envInfoInputs);
     const dynamicParts = [
       env,
+      ...(responseDetail === null ? [] : [responseDetail]),
       ...(clientRendering === null ? [] : [clientRendering]),
     ];
     const sections = [intro, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ...dynamicParts];
@@ -1028,23 +1196,65 @@ export async function assembleSystemPrompt(
   // slotted right after `# Using your tools` so multi-agent guidance lives
   // next to per-tool guidance.
   // Section order:
-  //   intro → system → doing_tasks → actions → using_your_tools
-  //   → (agent_tool) → (session_guidance) → tone_and_style
-  //   → output_efficiency → (auto memory)
-  const staticSections: Array<string | null> = [
-    getSimpleIntroSection(opts.outputStyle != null),
-    getSimpleSystemSection(),
-    opts.outputStyle === null || opts.outputStyle === undefined
-      ? getSimpleDoingTasksSection()
-      : null,
-    getActionsSection(),
-    getUsingYourToolsSection(enabledTools),
-    getAgentToolSection(enabledTools),
-    getSessionGuidanceSection(enabledTools, agentsEnabled),
-    getSimpleToneAndStyleSection(),
-    getOutputEfficiencySection(),
-    getMemoryInstructionsSection(opts.memoryInstructions),
-  ];
+  //   intro → system → doing_tasks → actions → (headless_completion)
+  //   → using_your_tools → (agent_tool) → (session_guidance)
+  //   → tone_and_style → output_efficiency → (auto memory)
+  const promptEnvironment =
+    session.services?.userShell?.childEnvironment ??
+    session.services?.providerEnvironment ??
+    {};
+  const headlessCompletionSection = getHeadlessCompletionSection({
+    nonInteractive: session.services?.runtimeOptions?.nonInteractive,
+    env: promptEnvironment,
+    deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
+  });
+  const headlessContract =
+    headlessCompletionSection !== null &&
+    isEnvTruthy(promptEnvironment[COMPLETION_CONTRACT_COHERENT_ENV]);
+  // The lean head keeps the same product knowledge and safety rules as plain
+  // descriptions; its default depends on the provider
+  // (prompts/lean-system-prompt.ts).
+  const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
+  const staticSections: Array<string | null> = light
+    ? [
+        lightBudgetWorkflow(opts.outputStyle != null, lightEditsWithApplyPatch(envInfoInputs.provider)),
+        lightBudgetSystem(),
+        lightBudgetActions(),
+        session.services?.runtimeOptions?.nonInteractive === true
+          ? null : getMemoryInstructionsSection(opts.memoryInstructions),
+        typeof session.services?.runtimeOptions?.deadlineAt === "number"
+          ? LIGHT_BUDGET_DEADLINE
+          : null,
+      ]
+    : lean
+    ? [
+        getLeanIntroSection(opts.outputStyle != null),
+        getLeanSystemSection(),
+        opts.outputStyle === null || opts.outputStyle === undefined
+          ? getLeanDoingTasksSection({ headlessContract })
+          : null,
+        getLeanActionsSection(),
+        headlessCompletionSection,
+        getLeanUsingYourToolsSection(enabledTools),
+        getLeanAgentToolSection(enabledTools),
+        getLeanToneSection(),
+        getMemoryInstructionsSection(opts.memoryInstructions),
+      ]
+    : [
+        getSimpleIntroSection(opts.outputStyle != null),
+        getSimpleSystemSection(),
+        opts.outputStyle === null || opts.outputStyle === undefined
+          ? getSimpleDoingTasksSection({ headlessContract })
+          : null,
+        getActionsSection(),
+        headlessCompletionSection,
+        getUsingYourToolsSection(enabledTools),
+        getAgentToolSection(enabledTools),
+        getSessionGuidanceSection(enabledTools, agentsEnabled),
+        getSimpleToneAndStyleSection(),
+        getOutputEfficiencySection({ headlessContract }),
+        getMemoryInstructionsSection(opts.memoryInstructions),
+      ];
 
   // Dynamic (post-boundary) tail. Sections returning null are dropped.
   const dynamicDecls: SystemPromptSection[] = [
@@ -1061,6 +1271,10 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
+            }, {
+              light,
+              lightPrint,
+              escalationConfined: escalationStaysConfined(session),
             }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
@@ -1076,7 +1290,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
-      () => getMemorySection(opts.memoryPrompt),
+      () => lightPrint && memorySection !== null
+        ? `Workspace: ${cwd}. ${memorySection}`
+        : memorySection,
       "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1089,7 +1305,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => lightPrint && memorySection !== null
+        ? null
+        : light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1103,6 +1321,11 @@ export async function assembleSystemPrompt(
       "output style is a per-turn preference",
     ),
     DANGEROUS_uncachedSystemPromptSection(
+      "response_detail",
+      () => responseDetail,
+      "response detail can change between turns without changing the cached head",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
       "mcp_instructions",
       () => getMcpInstructionsSection(opts.mcpServers),
       "MCP servers connect/disconnect between turns",
@@ -1112,7 +1335,9 @@ export async function assembleSystemPrompt(
       () => getScratchpadSection(opts.scratchpadDir),
       "scratchpad availability is session-specific",
     ),
-    ...(feature("TOKEN_BUDGET")
+    // The lean head leaves the token-target explanation to the continuation
+    // message the runtime sends when a target is set.
+    ...(feature("TOKEN_BUDGET") && !lean && !light
       ? [
           systemPromptSection(
             "token_budget",

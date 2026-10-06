@@ -1,10 +1,13 @@
+import { EndpointMetadataCache, type EndpointMetadataScope } from "./endpoint-metadata-cache.js";
 import {
   readProviderConfig,
 } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
+import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
+  allowsOpenAICompatibleKeyFallback,
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "./registry/provider-ingress.js";
@@ -19,7 +22,9 @@ import {
   getOpenAICompatibleMaxOutputTokens,
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from "./openai-compatible-token-limits.js";
+import { OLLAMA_CLOUD_BASE_URL } from "./registry/ollama-cloud-models.js";
 import { asRecord } from "../utils/record.js";
+import { fetchProviderRequest } from "./credential-redirect-fetch.js";
 
 export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW;
@@ -36,6 +41,7 @@ const LIVE_METADATA_PROVIDERS = new Set([
   "lmstudio",
   "openai-compatible",
   "ollama",
+  "ollama-cloud",
   "groq",
   "deepseek",
   "meta",
@@ -68,6 +74,13 @@ export interface ModelMetadataResolverOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly onWarn?: (msg: string) => void;
+  /**
+   * Share downloads of the public catalogs (models.dev, the LiteLLM model
+   * map) with other resolvers. Without it, this resolver downloads its own.
+   */
+  readonly publicCatalogs?: PublicModelCatalogCache;
+  /** Explicitly opt this resolver into one private transport partition. */
+  readonly endpointCatalogs?: EndpointMetadataCache;
 }
 
 interface LookupParams {
@@ -91,12 +104,78 @@ interface FetchJsonOptions {
   readonly jsonBody?: Readonly<Record<string, unknown>>;
 }
 
+type MetadataJson = object | string | number | boolean | null;
+
+/** How long later sessions reuse one download of a public model catalog. */
+const PUBLIC_CATALOG_REUSE_MS = 10 * 60_000;
+
+/**
+ * One download of each public model catalog (models.dev and the LiteLLM model
+ * map), shared by the resolvers given this cache. Every session builds its
+ * own resolver, so a daemon restoring 32 sessions at startup downloaded and
+ * parsed each catalog 32 times. Now concurrent lookups share one request, a
+ * successful download is reused for PUBLIC_CATALOG_REUSE_MS, and a failed one
+ * is not kept, so the next lookup tries again, as each session did before.
+ */
+export class PublicModelCatalogCache {
+  readonly #now: () => number;
+  readonly #reuseMs: number;
+  readonly #inFlight = new Map<string, Promise<MetadataJson | undefined>>();
+  readonly #downloaded = new Map<
+    string,
+    { readonly value: MetadataJson; readonly at: number }
+  >();
+
+  constructor(
+    options: { readonly now?: () => number; readonly reuseMs?: number } = {},
+  ) {
+    this.#now = options.now ?? Date.now;
+    this.#reuseMs = options.reuseMs ?? PUBLIC_CATALOG_REUSE_MS;
+  }
+
+  async get(
+    url: string,
+    download: () => Promise<MetadataJson | undefined>,
+  ): Promise<MetadataJson | undefined> {
+    const downloaded = this.#downloaded.get(url);
+    if (
+      downloaded !== undefined &&
+      this.#now() - downloaded.at < this.#reuseMs
+    ) {
+      return downloaded.value;
+    }
+    const pending = this.#inFlight.get(url);
+    if (pending !== undefined) return await pending;
+    const request = download();
+    this.#inFlight.set(url, request);
+    try {
+      const value = await request;
+      if (value !== undefined) {
+        this.#downloaded.set(url, { value, at: this.#now() });
+      }
+      return value;
+    } finally {
+      this.#inFlight.delete(url);
+    }
+  }
+}
+
+/** The process-wide cache sessions use when they fetch over the network. */
+export const SHARED_PUBLIC_MODEL_CATALOGS = new PublicModelCatalogCache();
+
 export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
-  private readonly jsonCache = new Map<string, Promise<unknown | undefined>>();
+  private readonly publicCatalogs?: PublicModelCatalogCache;
+  private readonly endpointCatalogs?: EndpointMetadataCache;
+  private endpointRevision = -1;
+  private inFlightJson = new Map<
+    string,
+    Promise<MetadataJson | undefined>
+  >();
+  private jsonCache = new Map<string, MetadataJson | undefined>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
@@ -104,6 +183,37 @@ export class ModelMetadataResolver {
     this.env = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
     this.onWarn = options.onWarn;
+    this.publicCatalogs = options.publicCatalogs;
+    this.endpointCatalogs = options.endpointCatalogs;
+  }
+
+  /** Observe authority changes even when an upper-level model cache has a hit. */
+  cacheRevision(params: LookupParams): number {
+    this.endpointScope(params);
+    const revision = this.endpointCatalogs?.revision ?? 0;
+    if (revision !== this.endpointRevision) {
+      // Replace maps, do not clear them: an old pending download owns the old
+      // maps and must not republish data into this generation.
+      this.inFlightJson = new Map();
+      this.jsonCache = new Map();
+      this.endpointRevision = revision;
+    }
+    return revision;
+  }
+
+  private endpointScope(params: LookupParams): EndpointMetadataScope | undefined {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return this.endpointCatalogs?.observe(provider, this.endpointConfiguration(params));
+  }
+
+  private endpointConfiguration(params: LookupParams): unknown {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return {
+      config: readProviderConfig(params.config, provider),
+      baseUrl: providerBaseUrl(params.config, provider, this.env),
+      headers: authHeaders(provider, params.config, this.env),
+      timeoutMs: this.timeoutMs,
+    };
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -126,6 +236,23 @@ export class ModelMetadataResolver {
   }
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
+    const scope = this.endpointScope(params);
+    this.cacheRevision(params);
+    const metadata = await this.resolveMetadata(params);
+    // Other sessions may rotate the shared scope while this request is in
+    // flight. Their rotation only revokes shared publication. If this caller's
+    // own authority changed, fail explicitly rather than using old limits or
+    // extending the discovery timeout with an automatic retry.
+    if (scope !== undefined && !this.endpointCatalogs!.matchesConfiguration(
+      scope, this.endpointConfiguration(params),
+    )) {
+      this.endpointCatalogs!.invalidate(scope);
+      throw new Error("Provider metadata configuration changed during discovery; retry with the current configuration");
+    }
+    return metadata;
+  }
+
+  private async resolveMetadata(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
     if (shouldPreferLiveEndpointOverExplicit(params, this.env)) {
       const live = await this.resolveLiveEndpointMetadata(params);
@@ -189,9 +316,25 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    const builtIn = inferBuiltInMetadata(params.provider, params.model);
+    // An explicit output cap overrides that field, not the model's remaining
+    // metadata. Dropping its known context window makes session admission fail.
+    const sourced = source === "explicit_config"
+      ? { ...builtIn, ...metadata }
+      : metadata;
+    // Any source can know a model's output limit and not its window: an
+    // explicit cap, or a models list that names the window in a field not read
+    // here. A session without a window fails every turn before sending it, so
+    // the built-in window stays, and a model nothing here knows plans against
+    // the conservative window, as it does when no source answers at all.
+    const knownContextWindow = sourced.contextWindow ?? builtIn?.contextWindow;
+    const mergedMetadata = {
+      ...sourced,
+      contextWindow: knownContextWindow ?? CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+    };
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
-      metadata,
+      mergedMetadata,
     );
     const output = resolveEffectiveOutputTokens({
       config: params.config,
@@ -200,15 +343,14 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(metadata.contextWindow !== undefined
-        ? { contextWindow: metadata.contextWindow }
-        : {}),
+      contextWindow: mergedMetadata.contextWindow,
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
       maxOutputTokensExplicit: output.maxOutputTokensExplicit,
       maxOutputTokensCappedDefault: output.maxOutputTokensCappedDefault,
       source,
-      usedFallbackModelMetadata,
+      usedFallbackModelMetadata:
+        usedFallbackModelMetadata || knownContextWindow === undefined,
     };
   }
 
@@ -226,17 +368,27 @@ export class ModelMetadataResolver {
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
-    const headers = authHeaders(provider, this.env);
+    if (provider === "ollama-cloud" && baseUrl.replace(/\/+$/, "") !== OLLAMA_CLOUD_BASE_URL) return undefined;
+    const headers = authHeaders(provider, params.config, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
-    if (provider !== "ollama") {
-      const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
+    if (provider !== "ollama" && provider !== "ollama-cloud") {
+      const response = await this.fetchEndpointJson(params, baseUrl, modelsUrlFromBaseUrl(baseUrl), {
         headers,
       });
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
       if (hasAnyMetadata(openAi)) return openAi;
     }
-    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+    if (
+      provider !== "ollama" &&
+      provider !== "ollama-cloud" &&
+      !isLocalOllamaCompatibleEndpoint(provider, baseUrl)
+    ) return undefined;
+    return await this.resolveOllamaNativeMetadata(
+      baseUrl,
+      params,
+      provider === "ollama-cloud" ? headers : undefined,
+    );
   }
 
   /**
@@ -244,20 +396,41 @@ export class ModelMetadataResolver {
    * context length -- so a local model silently inherited the conservative
    * 128k fallback while really being 32k (qwen2.5-coder) or 2k (moondream).
    * `/api/show` reports the true window under an architecture-prefixed key
-   * (`qwen2.context_length`). This also runs for `openai-compatible` and
-   * `lmstudio` pointed at an Ollama endpoint, which is a common setup; a
-   * non-Ollama server simply 404s and the caller falls through.
+   * (`qwen2.context_length`). Compatible local providers pointed at Ollama's
+   * default port also use this endpoint, without forwarding their API keys.
    */
   private async resolveOllamaNativeMetadata(
     baseUrl: string,
     params: LookupParams,
     headers: Readonly<Record<string, string>> | undefined,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(ollamaShowUrlFromBaseUrl(baseUrl), {
+    const response = await this.fetchEndpointJson(params, baseUrl, ollamaShowUrlFromBaseUrl(baseUrl), {
       ...(headers !== undefined ? { headers } : {}),
       jsonBody: { model: params.model },
     });
     return metadataFromOllamaShowResponse(response);
+  }
+
+  private async fetchEndpointJson(
+    params: LookupParams,
+    baseUrl: string,
+    url: string,
+    options: FetchJsonOptions,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.endpointCatalogs;
+    const scope = this.endpointScope(params);
+    if (shared === undefined || scope === undefined) return this.fetchJson(url, options);
+    return this.fetchJson(url, options, () => shared.get(scope, {
+      baseUrl,
+      url,
+      method: options.jsonBody === undefined ? "GET" : "POST",
+      headers: {
+        ...options.headers,
+        ...(options.jsonBody !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(options.jsonBody !== undefined ? { body: JSON.stringify(options.jsonBody) } : {}),
+      timeoutMs: this.timeoutMs,
+    }, () => this.fetchJsonUncached(url, options)));
   }
 
   private async resolveOpenRouterMetadata(
@@ -271,40 +444,59 @@ export class ModelMetadataResolver {
   private async resolveModelsDevMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(MODELS_DEV_API_URL);
+    const response = await this.fetchPublicCatalog(MODELS_DEV_API_URL);
     return metadataFromModelsDev(response, params.provider, params.model);
   }
 
   private async resolveLiteLlmMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(LITELLM_MODEL_MAP_URL);
+    const response = await this.fetchPublicCatalog(LITELLM_MODEL_MAP_URL);
     return metadataFromLiteLlm(response, params.provider, params.model);
+  }
+
+  /**
+   * A public catalog is requested without headers or a body, so every
+   * resolver's download of it is the same. With a shared cache this resolver
+   * takes the shared download, and still keeps what it read for its own
+   * lifetime, as it does for every other lookup.
+   */
+  private async fetchPublicCatalog(
+    url: string,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.publicCatalogs;
+    if (shared === undefined) return await this.fetchJson(url);
+    return await this.fetchJson(url, {}, () =>
+      shared.get(url, () => this.fetchJsonUncached(url, {})),
+    );
   }
 
   private async fetchJson(
     url: string,
     options: FetchJsonOptions = {},
-  ): Promise<unknown | undefined> {
+    download: () => Promise<MetadataJson | undefined> = () =>
+      this.fetchJsonUncached(url, options),
+  ): Promise<MetadataJson | undefined> {
     if (!this.fetchImpl) return undefined;
     const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
       JSON.stringify(options.jsonBody ?? null)
     }`;
-    const cached = this.jsonCache.get(cacheKey);
-    if (cached) return await cached;
-    const request = this.fetchJsonUncached(url, options);
-    this.jsonCache.set(cacheKey, request);
-    return await request;
+    return await rememberSuccessfulLookup(
+      { inFlight: this.inFlightJson, success: this.jsonCache },
+      cacheKey,
+      download,
+      (value) => value !== undefined,
+    );
   }
 
   private async fetchJsonUncached(
     url: string,
     options: FetchJsonOptions,
-  ): Promise<unknown | undefined> {
+  ): Promise<MetadataJson | undefined> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl!(url, {
+      const response = await fetchProviderRequest(url, {
         ...(options.jsonBody !== undefined
           ? {
             method: "POST",
@@ -316,7 +508,7 @@ export class ModelMetadataResolver {
           }
           : { headers: options.headers }),
         signal: controller.signal,
-      });
+      }, this.fetchImpl!);
       if (!response.ok) return undefined;
       return await response.json();
     } catch {
@@ -413,7 +605,7 @@ function shouldPreferDynamicMetadata(
   // Z.AI's curated catalog is authoritative even when an operator overrides
   // the API base URL. `/models` remains a credential health probe, but its
   // list does not replace exact context/output limits here.
-  if (provider === "zai" || provider === "zai-coding-plan") return false;
+  if (provider === "zai" || provider === "zai-coding-plan" || provider === "ollama-cloud") return false;
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -422,14 +614,40 @@ function shouldQueryLiveEndpoint(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const provider = normalizeMetadataProviderIdentity(params.provider);
-  const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
     provider === "ollama" ||
-    Boolean(providerConfig?.base_url?.trim()) ||
-    Boolean(envBaseUrl(provider, env))
+    provider === "ollama-cloud" ||
+    hasCustomProviderBaseUrl(
+      provider,
+      providerBaseUrl(params.config, provider, env),
+    )
   );
+}
+
+function hasCustomProviderBaseUrl(
+  provider: string,
+  baseUrl: string | undefined,
+): boolean {
+  if (!baseUrl?.trim()) return false;
+  const defaultBaseUrl = defaultProviderBaseUrl(provider);
+  if (!defaultBaseUrl) return true;
+  try {
+    const configured = new URL(baseUrl.trim());
+    const official = new URL(defaultBaseUrl);
+    const path = (url: URL) => url.pathname.replace(/\/+$/, "") || "/";
+    return configured.protocol !== official.protocol ||
+      configured.hostname !== official.hostname ||
+      configured.port !== official.port ||
+      path(configured) !== path(official) ||
+      configured.username !== official.username ||
+      configured.password !== official.password ||
+      configured.search !== official.search ||
+      configured.hash !== official.hash;
+  } catch {
+    return true;
+  }
 }
 
 function shouldPreferLiveEndpointOverExplicit(
@@ -551,6 +769,7 @@ const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
   "qwen",
   "qwen-token-plan",
   "cerebras",
+  "ollama-cloud",
   "zai",
   "zai-coding-plan",
   "kimi",
@@ -742,13 +961,15 @@ function metadataFromGenericRecord(
   const topProvider = asRecord(record.top_provider);
   return {
     // The served window is checked before the model's advertised maximum: a
-    // local server refuses anything past what it actually loaded.
+    // local server refuses anything past what it actually loaded. DeepSeek's
+    // /models names the advertised window `context_window`.
     ...(servedContextWindow(record) !== undefined
       ? { contextWindow: servedContextWindow(record) }
       : readPositiveInteger(
         record,
         "max_model_len",
         "context_length",
+        "context_window",
         "max_context_length",
         "max_input_tokens",
         "max_tokens",
@@ -758,6 +979,7 @@ function metadataFromGenericRecord(
             record,
             "max_model_len",
             "context_length",
+            "context_window",
             "max_context_length",
             "max_input_tokens",
             "max_tokens",
@@ -867,6 +1089,24 @@ function providerBaseUrl(
   return envBaseURL || configured || defaultProviderBaseUrl(provider);
 }
 
+function isLocalOllamaCompatibleEndpoint(
+  provider: string,
+  baseUrl: string,
+): boolean {
+  if (provider !== "openai-compatible" && provider !== "lmstudio") {
+    return false;
+  }
+  try {
+    const url = new URL(baseUrl);
+    return url.port === "11434" &&
+      (url.hostname === "localhost" ||
+        url.hostname === "[::1]" ||
+        /^127\./.test(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ollama's native API sits at the origin while its OpenAI-compatible surface
  * lives under `/v1`, so a base URL configured for either one has to collapse
@@ -906,10 +1146,18 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 
 function authHeaders(
   provider: string,
+  config: AgenCConfig,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const apiKey = envApiKey(provider, env);
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  const credential = resolveProviderApiKeyEnvironment(provider, env);
+  if (
+    provider === "openai-compatible" &&
+    credential?.envVar === "OPENAI_API_KEY" &&
+    !allowsOpenAICompatibleKeyFallback(
+      envBaseUrl(provider, env) ?? readProviderConfig(config, provider)?.base_url?.trim(),
+    )
+  ) return undefined;
+  return credential ? { Authorization: `Bearer ${credential.value}` } : undefined;
 }
 
 function envBaseUrl(
@@ -917,13 +1165,6 @@ function envBaseUrl(
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   return resolveProviderBaseURLEnvironment(provider, env)?.value;
-}
-
-function envApiKey(
-  provider: string,
-  env: Readonly<Record<string, string | undefined>>,
-): string | undefined {
-  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {

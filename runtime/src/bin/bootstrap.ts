@@ -1,3 +1,8 @@
+import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
+import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
+import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
+import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
+import { readStartupCronTasks } from "../utils/cron-startup.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { fstatSync, lstatSync, realpathSync } from "node:fs";
@@ -5,11 +10,15 @@ import { join } from "node:path";
 
 import {
   createProvider,
+  readProviderFactoryOptions,
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../llm/provider.js";
+import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
+import { endpointMetadataForTransport } from "../llm/endpoint-metadata-cache.js";
+import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
 import {
@@ -94,6 +103,10 @@ import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
+  NON_INTERACTIVE_HIDDEN_TOOLS,
+  withDisabledTools,
+} from "../tools/config.js";
+import {
   UnifiedExecProcessManager,
   type UnifiedExecSandboxAuthorityQuiesceToken,
 } from "../unified-exec/process-manager.js";
@@ -117,6 +130,7 @@ import {
 import {
   resolveCommandExecutionAuthority,
   resolveAgentRuntimeOptions,
+  routineRunOptions,
   runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -143,6 +157,10 @@ import {
   startupConfigLayerOptions,
   type StartupCliFlags,
 } from "./startup-selection.js";
+import {
+  resolveStartupSandboxBypass,
+  writeStartupSandboxBypassNotice,
+} from "./bypass-approvals.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 import { findSuitableShell } from "../utils/Shell.js";
 import { subprocessEnv } from "../utils/subprocessEnv.js";
@@ -509,6 +527,7 @@ function buildDeferredConfig(
   const maxBudgetUsd = maxBudgetUsdFromAgenCConfig(config);
   return {
     model,
+    ...(config.agents !== undefined ? { agents: config.agents } : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
@@ -534,6 +553,11 @@ function buildDeferredConfig(
     ...(config.durableTurns !== undefined
       ? { durableTurns: config.durableTurns }
       : {}),
+    ...(config.completion_gate !== undefined
+      ? { completionGate: config.completion_gate }
+      : {}),
+    ...(config.goal !== undefined ? { goal: config.goal } : {}),
+    ...(config.compaction !== undefined ? { compaction: config.compaction } : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
@@ -592,6 +616,8 @@ function createMemoryAutoSaveSidecar(): Sidecar {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
+  /** Scratch warm-daemon ceiling; canonical rollout and admission stay eager. */
+  readonly deferAuxiliarySetupUntilRequest?: boolean;
   readonly signal?: AbortSignal;
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
@@ -621,6 +647,12 @@ export interface BootstrapLocalRuntimeSessionOptions {
   >;
   /** Production daemon entrypoints require a healthy boundary before startup. */
   readonly requireSandboxReadyAtStartup?: boolean;
+  /**
+   * Print the CLI cost summary when the process exits (default). Daemon-hosted
+   * sessions pass `false`: one multiplexed process must not register an exit
+   * hook per session nor write per-session summaries to its own stdout.
+   */
+  readonly costSummaryOnExit?: boolean;
   /** Shared daemon authority. Omit only for an independently owned session. */
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   /** Shared daemon authority. Omit only for an independently owned session. */
@@ -690,7 +722,7 @@ export interface LocalRuntimeBootstrap {
   readonly authSubscriptionTier: AuthSubscriptionTier;
   readonly memoryDir: string;
   readonly memoryMdPath: string;
-  readonly shutdown: () => Promise<void>;
+  readonly shutdown: (reason?: "session_shutdown" | "daemon_shutdown") => Promise<void>;
   readonly autonomousModeEnabled: boolean;
   /**
    * Drive the durable-turn resume that `deferDurableTurnResume` withheld from
@@ -704,8 +736,14 @@ export interface LocalRuntimeBootstrap {
    *
    * Optional so the many test doubles that stand in for a bootstrap keep
    * compiling; `bootstrapLocalRuntimeSession` always provides it.
+   *
+   * `beforeResume` commits caller-owned startup authority after eligibility
+   * checks and before the continuation's first durable write. A failure
+   * prevents the turn from starting.
    */
-  readonly runDeferredDurableTurnResume?: () => Promise<DurableResumeAttempt>;
+  readonly runDeferredDurableTurnResume?: (
+    beforeResume?: () => void,
+  ) => Promise<DurableResumeAttempt>;
 }
 
 export interface PreparedConfiguredExecutionAuthority {
@@ -804,8 +842,15 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
-      dangerouslyBypassApprovalsAndSandbox:
-        cli.dangerouslyBypassApprovalsAndSandbox === true,
+      ...(cli.lightMode === true ? { lightMode: true } : {}),
+      dangerouslyBypassApprovalsAndSandbox: (() => {
+        const sandboxBypass = resolveStartupSandboxBypass(cli, {
+          cwd: process.cwd(),
+          env,
+        });
+        writeStartupSandboxBypassNotice(sandboxBypass);
+        return sandboxBypass.dangerouslyBypassApprovalsAndSandbox;
+      })(),
     });
   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
   options.signal?.throwIfAborted();
@@ -844,7 +889,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
-  const providerEnvironment = options.providerEnvironment;
   const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
@@ -874,6 +918,12 @@ async function bootstrapLocalRuntimeSessionScoped(
     }),
   });
   await configStore.reload();
+  // `[providers.<openai|grok>] auth` fills OPENAI_AUTH_MODE / GROK_AUTH_MODE
+  // where the environment leaves them unset; an exported variable wins.
+  const providerEnvironment = withConfiguredProviderAuth(
+    options.providerEnvironment,
+    configStore.current(),
+  );
   const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
     ...(profileName !== undefined ? { profileName } : {}),
@@ -1140,11 +1190,17 @@ async function bootstrapLocalRuntimeSessionScoped(
       ),
       workspaceRoot,
     );
+  const routineRun = routineRunOptions({ services: { runtimeOptions } });
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     mode: initialSandboxExecutionAuthority.mode,
     cwd: workspaceRoot,
     env,
     sessionTempRoot,
+    // A scheduled routine run: its commands write only in the workspace and
+    // get a scratch folder there (or the workspace itself) as TMPDIR.
+    ...(routineRun !== undefined
+      ? { routineChildTempRoot: routineRun.scratchRoot ?? workspaceRoot }
+      : {}),
     ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
       ? {
           permissionProfile:
@@ -1155,7 +1211,12 @@ async function bootstrapLocalRuntimeSessionScoped(
       initialSandboxExecutionAuthority.windowsSandboxLevel,
     allowGpu: initialSandboxExecutionAuthority.allowGpu,
   });
-  if (options.requireSandboxReadyAtStartup === true) {
+  const sandboxStartupStatus = sandboxExecutionBroker.status();
+  if (
+    options.requireSandboxReadyAtStartup === true &&
+    (runtimeOptions.nonInteractive === true ||
+      sandboxStartupStatus.landlockPolicyRefusal === undefined)
+  ) {
     sandboxExecutionBroker.assertReady("startup");
   }
   const permissionModeRegistry = new PermissionModeRegistry(
@@ -1176,6 +1237,11 @@ async function bootstrapLocalRuntimeSessionScoped(
     subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
+  const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
+    runtimeOptions.lightMode === true && runtimeOptions.nonInteractive === true &&
+    !resumeConversation && options.resumeRolloutPath === undefined && resolvedProvider === "deepseek"
+    ? createWarmSessionSetupCeiling(agencHome, conversationId) : undefined;
+
   const providerModel = modelSelection.model;
   return runWithStartupProviderSelection({
     provider: resolvedProvider,
@@ -1280,8 +1346,15 @@ async function bootstrapLocalRuntimeSessionScoped(
       : null;
   const csvAgentJobsRepositories =
     options.csvAgentJobsRepositories ?? ownedCsvAgentJobsRepositories!;
-  const baseToolsConfig =
+  const releaseCsvWorkspace = csvAgentJobsRepositories.retainWorkspace?.(workspaceRoot);
+  const configuredToolsConfig =
     options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
+  // A session nobody can answer (one-shot `agenc -p`) must not offer tools
+  // that exist only to ask a person: the client auto-denies every request,
+  // so the question would end the turn instead of getting an answer.
+  const baseToolsConfig = runtimeOptions.nonInteractive
+    ? withDisabledTools(configuredToolsConfig, NON_INTERACTIVE_HIDDEN_TOOLS)
+    : configuredToolsConfig;
   const registry = buildBootstrapToolRegistry({
     workspaceRoot,
     agencHome,
@@ -1294,11 +1367,15 @@ async function bootstrapLocalRuntimeSessionScoped(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      lightMode: runtimeOptions.lightMode === true,
       sandboxExecutionBroker,
       codeModeService,
       ...(startup.config.browser !== undefined
         ? { browserConfig: startup.config.browser }
         : {}),
+      projectRootMarkers: startup.config.project_root_markers,
+      projectRootMarkersProvider: () => configStore.current().project_root_markers,
+      subscribeProjectRootMarkers: (listener) => configStore.subscribe(() => listener()),
       // Coordinator mode restricts the LIVE surface to orchestration +
       // user-interaction tools: the coordinator directs workers, it
       // does not edit files or run commands itself.
@@ -1371,7 +1448,9 @@ async function bootstrapLocalRuntimeSessionScoped(
         // global fetch here makes providers unable to distinguish the normal
         // runtime path from an authority-boundary/custom transport. Qwen uses
         // that distinction to install its official-host DNS recovery path.
-        ...(options.fetchImpl !== undefined ? { fetchImpl } : {}),
+        ...(deferredSetup !== undefined && provider === "deepseek"
+          ? { fetchImpl: deferredSetup.wrap(options.fetchImpl ?? concurrentChatFetch()) }
+          : options.fetchImpl !== undefined ? { fetchImpl } : {}),
         sandboxExecutionBroker,
       },
     });
@@ -1463,6 +1542,14 @@ async function bootstrapLocalRuntimeSessionScoped(
     metadata: {
       fetchImpl,
       env,
+      // Sessions on the real network share one download of each public model
+      // catalog. An injected fetch keeps its own, so it sees only its data.
+      ...(options.fetchImpl === undefined
+        ? {
+          publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS,
+          endpointCatalogs: endpointMetadataForTransport(globalThis.fetch),
+        }
+        : {}),
       onWarn: (message) =>
         emitProviderWarning({
           cause: "model_token_limit_config",
@@ -1470,7 +1557,18 @@ async function bootstrapLocalRuntimeSessionScoped(
         }),
     },
   });
-  const rawModelInfo = await modelsManager.getModelInfo(model);
+  // A Grok session on the xAI sign-in route never sends priority processing,
+  // so its model info does not offer the Fast tier.
+  // Two providers can list the same model id (the managed AgenC route and
+  // public OpenRouter share DeepSeek ids), so the bound provider decides
+  // whose limits the session plans with.
+  const rawModelInfo = withoutXaiSignInFastTier(
+    await modelsManager.getModelInfoForProvider(resolvedProvider, model),
+    {
+      provider: resolvedProvider,
+      factoryOptions: readProviderFactoryOptions(provider),
+    },
+  );
   const modelInfo =
     hasManagedCredential &&
     initialPreparation.runtime.applyManagedDefaultOutputCap
@@ -1529,7 +1627,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     permissionContext: toolPermissionContext,
     profile: coordinatorModeEnabled
       ? "coordinator"
-      : usesLocalToolProfile(resolvedProvider)
+      : runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(resolvedProvider)
         ? "compact"
         : "standard",
   });
@@ -1587,6 +1687,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
+  let errorLogSidecar: ErrorLogSidecar | undefined;
+  const flushStartupLogIndex = (): void => errorLogSidecar?.flushStartupIndex();
   let clearActiveCostSidecar: (() => void) | null = null;
   let shutdownTask: Promise<void> | null = null;
   let shutdownComplete = false;
@@ -1610,6 +1712,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
+      flushStartupLogIndex,
       provider,
       providerName: resolvedProvider,
       ...(options.authBackend !== undefined
@@ -1639,14 +1742,16 @@ async function bootstrapLocalRuntimeSessionScoped(
       sandboxExecutionBroker,
       executionAdmission,
       admissionRequired: true,
+      ...(deferredSetup !== undefined ? { deferThreadProjection: deferredSetup.register } : {}),
     });
 
-  const shutdown = (): Promise<void> => {
+  const shutdown = (reason: "session_shutdown" | "daemon_shutdown" = "session_shutdown"): Promise<void> => {
     if (shutdownComplete) return Promise.resolve();
     if (shutdownTask !== null) return shutdownTask;
     // Close startup admission synchronously. The task body intentionally
     // begins on a microtask, and sidecar stop may await; neither may leave a
     // window where a late submit can activate MCP/cron/job startup.
+    const deferredSetupClosed = deferredSetup?.close();
     sessionForShutdown?.beginShutdown();
     let partialMcpDisposeTask: Promise<void> | undefined;
     if (sessionForShutdown === null) {
@@ -1662,6 +1767,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
       if (!shutdownPrepared) {
+        // A deferred callback can own allocated sidecars/watchers while it
+        // awaits I/O. Drain it before stopping them or closing their Session.
+        await deferredSetupClosed;
         shutdownPrepared = true;
         if (sessionForShutdown !== null) {
           clearCurrentRuntimeSession(sessionForShutdown);
@@ -1686,6 +1794,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         if (sessionForShutdown !== null) {
           await shutdownSessionLifecycle({
             session: sessionForShutdown,
+            shutdownReason: reason,
             ...(agentControlForShutdown !== null
               ? { agentControl: agentControlForShutdown }
               : {}),
@@ -1714,6 +1823,16 @@ async function bootstrapLocalRuntimeSessionScoped(
         // The ordinary MCP stop is fail-soft. Its broker participant retries
         // retained cleanup in strict mode before root shutdown can succeed.
         await disposeSandboxExecutionBroker(sandboxExecutionBroker);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        executionAdmission.release?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await releaseCsvWorkspace?.();
       } catch (error) {
         errors.push(error);
       }
@@ -1779,6 +1898,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       modelInfo,
       initialTranscriptEvents,
       enablePrewarm: false,
+      ...(deferredSetup !== undefined
+        ? { deferSkillsWatcherUntilRequest: deferredSetup.register } : {}),
       ...(options.deferSessionStartHooks === true
         ? { deferSessionStartHooks: true }
         : {}),
@@ -1864,12 +1985,16 @@ async function bootstrapLocalRuntimeSessionScoped(
         // canonical rollout descriptor is claimed and any resumed writer is
         // activated.
         assertPinnedResumeCwd(options, workspaceRoot);
+        const relaxedOneShot = runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
+          runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined;
         const rolloutStore = new RolloutStore({
           cwd: workspaceRoot,
           sessionId: conversationId,
           agencVersion: VERSION,
           agencHome,
           sessionTempRoot,
+          relaxedOneShot,
+          beforeOneShotCheckpoint: flushStartupLogIndex,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }
@@ -2002,6 +2127,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           });
         }
 
+        const initializeSidecars = async (): Promise<void> => {
+        s.abortController.signal.throwIfAborted();
         const projectDir = getProjectDir(
           workspaceRoot,
           sessionProjectRootMarkers,
@@ -2038,19 +2165,26 @@ async function bootstrapLocalRuntimeSessionScoped(
         );
         s.attachFileHistory(fileHistory);
 
-        sidecarManager.register(
-          new ErrorLogSidecar({
-            projectDir,
-            sessionId: conversationId,
-          }),
-        );
+        errorLogSidecar = new ErrorLogSidecar({
+          projectDir,
+          sessionId: conversationId,
+          // The store may have fallen back to FULL or been promoted since
+          // the request. Only its active run-bound authority allows buffering.
+          deferStartupIndex: relaxedOneShot &&
+            relaxedOneShotTransaction(projectDir, conversationId),
+        });
+        sidecarManager.register(errorLogSidecar);
 
         const costSidecar = new CostSidecar({
           defaultModel: model,
           defaultProvider: resolvedProvider,
-          exitSummary: {
-            shouldPrint: () => process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
-          },
+          exitSummary:
+            options.costSummaryOnExit === false
+              ? false
+              : {
+                  shouldPrint: () =>
+                    process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
+                },
           budgetTracker: s.budgetTracker,
           projectDir,
           sessionId: conversationId,
@@ -2063,12 +2197,20 @@ async function bootstrapLocalRuntimeSessionScoped(
               at: Date.now(),
             }),
         });
+        // Register before the await so partial initialization is always owned
+        // by the ordinary shutdown cleanup, even if loading fails or closes.
+        sidecarManager.register(costSidecar);
         await costSidecar.loadFromDisk();
+        deferredSetup?.assertOpen();
+        s.abortController.signal.throwIfAborted();
         (s.services as { costSidecar?: CostSidecar }).costSidecar = costSidecar;
         clearActiveCostSidecar?.();
         clearActiveCostSidecar = bindActiveCostSidecar(costSidecar);
-        sidecarManager.register(costSidecar);
         sidecarManager.register(createMemoryAutoSaveSidecar());
+        if (deferredSetup !== undefined) await sidecarManager.start(s.eventLog);
+        };
+        if (deferredSetup !== undefined) deferredSetup.register(initializeSidecars);
+        else await initializeSidecars();
 
         ctxForReturn = buildTurnContext({
           conversationId,
@@ -2101,6 +2243,26 @@ async function bootstrapLocalRuntimeSessionScoped(
             },
           },
         ]);
+
+        if (
+          runtimeOptions.nonInteractive !== true &&
+          sandboxStartupStatus.landlockPolicyRefusal !== undefined
+        ) {
+          const { buildLandlockFallbackWarning } = await import("../utils/doctorDiagnostic.js");
+          const warning = buildLandlockFallbackWarning(sandboxStartupStatus);
+          if (warning !== null) {
+            s.emit({
+              id: s.nextInternalSubId(),
+              msg: {
+                type: "warning",
+                payload: {
+                  cause: "sandbox_policy_unexpressible",
+                  message: `${warning.issue}. ${warning.fix}`,
+                },
+              },
+            });
+          }
+        }
 
         // Start sidecars AFTER session_configured so they cannot emit
         // earlier events.
@@ -2142,9 +2304,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           const rearmPersistedCron = async (): Promise<void> => {
             assertStartupActive();
             try {
-              const { readCronTasks } = await import("../utils/cronTasks.js");
-              assertStartupActive();
-              const persisted = await readCronTasks(workspaceRoot);
+              const persisted = await readStartupCronTasks(workspaceRoot, assertStartupActive);
               assertStartupActive();
               if (persisted.length > 0) {
                 const { startCronSchedulerRunner } =
@@ -2157,8 +2317,19 @@ async function bootstrapLocalRuntimeSessionScoped(
                   session: s,
                 });
               }
-            } catch {
-              /* cron re-arm is best-effort; tools re-arm on next CronCreate */
+            } catch (error) {
+              if (!startupWasCancelled()) {
+                const { cronRestoreFailureNeedsWarning } = await import("../utils/cronTasks.js");
+                if (await cronRestoreFailureNeedsWarning(error, workspaceRoot)) {
+                  s.emit({
+                    id: s.nextInternalSubId(),
+                    msg: { type: "warning", payload: {
+                      cause: "cron_storage_unavailable",
+                      message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+                    } },
+                  });
+                }
+              }
             }
             assertStartupActive();
           };
@@ -2234,6 +2405,9 @@ async function bootstrapLocalRuntimeSessionScoped(
 
     sessionRef = session;
     sessionForShutdown = session;
+    session.registerShutdownResourceRelease(async () => {
+      await releaseCsvWorkspace?.();
+    });
 
     if (rolloutStoreForReturn === null || ctxForReturn === null) {
       // This is unreachable — `onBeforeSessionConfigured` always
@@ -2263,17 +2437,19 @@ async function bootstrapLocalRuntimeSessionScoped(
       mcpManager,
       session,
       rolloutStore: rolloutStoreForReturn,
-      sidecarManager: sidecarManager!,
+      get sidecarManager() { return sidecarManager!; },
       ctx: ctxForReturn,
       authSubscriptionTier,
       memoryDir,
       memoryMdPath,
       shutdown,
       autonomousModeEnabled,
-      runDeferredDurableTurnResume: async (): Promise<DurableResumeAttempt> => {
+      runDeferredDurableTurnResume: async (
+        beforeResume,
+      ): Promise<DurableResumeAttempt> => {
         const manager = conversationThreadManagerForReturn;
         if (manager === null) return { resumed: false };
-        return manager.runDeferredDurableTurnResume(session);
+        return manager.runDeferredDurableTurnResume(session, beforeResume);
       },
     };
   } catch (err) {

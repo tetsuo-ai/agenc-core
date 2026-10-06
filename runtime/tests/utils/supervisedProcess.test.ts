@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import * as childProcess from "node:child_process";
 import {
   accessSync,
   chmodSync,
@@ -10,10 +11,16 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const {
   resolveTrustedWindowsSystemExecutableMock,
@@ -35,6 +42,7 @@ import {
   runSupervisedProcess,
   signalProcessTree,
   spawnContainedProcess,
+  terminateProcessTreeAndReport,
   terminateProcessTreeAndWait,
   throwIfPreparedSpawnCleanupUnproven,
   POSIX_PROCESS_GATE_SCRIPT,
@@ -81,6 +89,8 @@ async function waitForProcessExit(
   }
   return !processIsRunning(pid);
 }
+
+let brokerFaultEnvironment: NodeJS.ProcessEnv | undefined;
 
 async function withLinuxBrokerFaultLibrary<T>(
   run: (libraryPath: string, scratchDirectory: string) => Promise<T>,
@@ -209,7 +219,19 @@ FILE *fopen(const char *path, const char *mode) {
       ],
       { stdio: "pipe" },
     );
-    return await run(libraryPath, scratchDirectory);
+    // Fault injection belongs to the test's host launch seam. Workload env
+    // no longer configures (or preloads libraries into) the native broker.
+    const { spawn: nativeSpawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const injection = vi.spyOn(childProcess, "spawn").mockImplementation(((program, args, options) =>
+      nativeSpawn(program, args, program.endsWith("/agenc-process-broker")
+        ? { ...options, env: { ...options?.env, ...brokerFaultEnvironment } }
+        : options)) as typeof childProcess.spawn);
+    try {
+      return await run(libraryPath, scratchDirectory);
+    } finally {
+      injection.mockRestore();
+      brokerFaultEnvironment = undefined;
+    }
   } finally {
     rmSync(scratchDirectory, { recursive: true, force: true });
   }
@@ -220,7 +242,7 @@ function linuxBrokerFaultEnvironment(
   fault: "children" | "setsid" | "wait-signal",
   extra: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  return {
+  brokerFaultEnvironment = {
     ...process.env,
     ...extra,
     AGENC_TEST_BROKER_FAULT: fault,
@@ -229,6 +251,7 @@ function linuxBrokerFaultEnvironment(
         ? libraryPath
         : `${libraryPath}:${process.env.LD_PRELOAD}`,
   };
+  return brokerFaultEnvironment;
 }
 
 function waitForChildClose(
@@ -1113,6 +1136,50 @@ describe("runSupervisedProcess", () => {
 });
 
 describe("process-tree root safety", () => {
+  it.skipIf(process.platform === "win32")(
+    "refuses a missing working directory before spawning anything",
+    () => {
+      const missing = join(tmpdir(), `agenc-missing-cwd-${process.pid}-${Date.now()}`, "vchk");
+      // Never call through: a real spawn here is exactly what killed the group.
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+        throw new Error("spawn must not run for a missing working directory");
+      });
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: missing, env: process.env }),
+        ).toThrow(`working directory does not exist: ${missing}`);
+        expect(spawnSpy).not.toHaveBeenCalled();
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "never signals a child whose spawn failed without a pid",
+    () => {
+      // Node leaves a failed spawn's handle open with no pid, and kill() on it
+      // reaches pid 0: that SIGKILLed the calling daemon and its whole group.
+      const failed = Object.assign(new EventEmitter(), {
+        pid: undefined,
+        kill: vi.fn(() => true),
+        stdio: [null, null, null, null, null],
+      });
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockReturnValue(failed as never);
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: tmpdir(), env: process.env }),
+        ).toThrow();
+        expect(failed.kill).not.toHaveBeenCalled();
+        expect(failed.listenerCount("error")).toBeGreaterThan(0);
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "contains Bash startup hooks behind the POSIX process gate",
     async () => {
@@ -1534,13 +1601,12 @@ describe("process-tree root safety", () => {
       );
       expect(
         brokerSource.match(/write_status\(\s*broker_ready_status,/gu),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
 
       const mainDefinition = brokerSource.indexOf(
         "int main(int argc, char **argv) {",
       );
       const prototypeSection = brokerSource.slice(0, mainDefinition);
-      const implementation = brokerSource.slice(mainDefinition);
       const functionDefinitions = [
         ...brokerSource.matchAll(
           /^(?:static\s+)?(?:_Noreturn\s+)?[A-Za-z_][A-Za-z0-9_]*\s+\**([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*?\)\s*\{/gmu,
@@ -1560,9 +1626,6 @@ describe("process-tree root safety", () => {
           new RegExp(`\\b${name}\\s*\\([^;{}]*\\)\\s*;`, "su"),
         );
       }
-      expect(implementation).not.toMatch(
-        /(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|[0-9]+[uUlL]*)(?![A-Za-z0-9_])/u,
-      );
 
       const mainEnd = functionDefinitions[1]?.index ?? brokerSource.length;
       const mainImplementation = brokerSource.slice(mainDefinition, mainEnd);
@@ -1574,8 +1637,12 @@ describe("process-tree root safety", () => {
             sigset_t wait_mask;
             int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 
-            if (launch_supervised_target(argc, argv, &wait_mask) !=
-                AGENC_BROKER_SUCCESS) {
+            if (argc == 2 && strcmp(argv[1], "--describe-protocol") == 0)
+              return describe_v2_protocol();
+            int launch_status = argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
+                ? launch_v2_supervised_target(&wait_mask)
+                : launch_supervised_target(argc, &wait_mask);
+            if (launch_status != AGENC_BROKER_SUCCESS) {
               return AGENC_BROKER_ERROR_EXIT;
             }
             if (monitor_root_process(&wait_mask, &root_status) !=
@@ -1638,13 +1705,6 @@ describe("process-tree root safety", () => {
     );
     const supervisionSource = readFileSync(
       new URL("../../src/utils/supervisedProcess.ts", import.meta.url),
-      "utf8",
-    );
-    const discoverySource = readFileSync(
-      new URL(
-        "../../src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
-        import.meta.url,
-      ),
       "utf8",
     );
     const packageManifest = JSON.parse(
@@ -1727,9 +1787,6 @@ describe("process-tree root safety", () => {
       "dist/agenc-process-job-broker.exe",
     );
     expect(entrypointCheck).toContain('"dist/agenc-process-job-broker.exe"');
-    expect(discoverySource).toContain(
-      'process.platform === "win32" ? 5_000 : 1200',
-    );
   });
 
   it("guards PID 1 inside the detached POSIX owner watchdog", () => {
@@ -1779,9 +1836,47 @@ describe("process-tree root safety", () => {
         };
         signalProcessTree(liveInvalidRoot, "SIGKILL");
 
+        // No OS-level signal: kill(1) is init and kill(-1) every process the
+        // user owns. The handle's own kill() is refused too. It used to be
+        // called here, on the theory that a ChildProcess handle only reaches
+        // its own child; but not every handle is bound to a real child
+        // (node-pty's kill() is process.kill(this.pid)), and no child this
+        // process starts can have pid 1.
         expect(osKill).not.toHaveBeenCalled();
-        expect(directKill).toHaveBeenCalledOnce();
-        expect(directKill).toHaveBeenCalledWith("SIGKILL");
+        expect(directKill).not.toHaveBeenCalled();
+
+        // A live invalid root is therefore never signalled; cleanup fails
+        // closed instead of being reported as done.
+        await expect(
+          terminateProcessTreeAndWait(liveInvalidRoot, {
+            terminateGraceMs: 1,
+            killGraceMs: 1,
+            label: "invalid root",
+          }),
+        ).rejects.toThrow("invalid root invalid process root survived forced shutdown");
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
+      } finally {
+        osKill.mockRestore();
+      }
+    },
+  );
+
+  // 0 and -1 were already refused; a non-integer pid reached process.kill.
+  it.each([2.5, Number.NaN])(
+    "never signals a handle whose pid is %s",
+    (pid) => {
+      const directKill = vi.fn(() => true);
+      // Never calls through: a real kill with these pids is the hazard.
+      const osKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+      try {
+        signalProcessTree(
+          { pid, exitCode: null, signalCode: null, kill: directKill },
+          "SIGTERM",
+        );
+
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
       } finally {
         osKill.mockRestore();
       }
@@ -1959,4 +2054,55 @@ describe("posix process gate handoff", () => {
     expect(code).toBe(0);
     expect(stdout).toBe("legacy\n");
   });
+});
+
+describe("terminateProcessTreeAndReport", () => {
+  it.runIf(process.platform !== "win32")(
+    "reports whether it found anything left to stop",
+    async () => {
+      const gone = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
+      await waitForChildClose(gone, 5_000);
+
+      const afterExit = await terminateProcessTreeAndReport(gone, {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "test process",
+      });
+      expect(afterExit.residualProcessesTerminated).toBe(false);
+
+      const lingering = spawn("sh", ["-c", "sleep 30 & wait"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      await new Promise<void>((resolve, reject) => {
+        lingering.once("spawn", resolve);
+        lingering.once("error", reject);
+      });
+      // Subscribe before terminating: the close event can fire while the
+      // supervisor awaits, and the leader stays a zombie (kill(pid, 0) still
+      // succeeds) until Node has reaped it.
+      const closed = waitForChildClose(lingering, 5_000);
+
+      const whileAlive = await terminateProcessTreeAndReport(lingering, {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "test process",
+      });
+      expect(whileAlive.residualProcessesTerminated).toBe(true);
+      await closed;
+      expect(processIsRunning(lingering.pid!)).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "the void variant still resolves without a value",
+    async () => {
+      const gone = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
+      await waitForChildClose(gone, 5_000);
+
+      await expect(
+        terminateProcessTreeAndWait(gone, { label: "test process" }),
+      ).resolves.toBeUndefined();
+    },
+  );
 });

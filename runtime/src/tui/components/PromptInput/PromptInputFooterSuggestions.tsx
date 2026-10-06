@@ -43,7 +43,7 @@ export type SuggestionType =
 export const OVERLAY_MAX_ITEMS = 5
 
 export function getSuggestionPopupWidth(columns: number, overlay?: boolean): number {
-  // In overlay (fullscreen/workbench) mode the popup floats directly above the
+  // In overlay (fullscreen) mode the popup floats directly above the
   // composer box, which spans the full terminal width (width="100%"). The popup
   // therefore takes the full width too — with no horizontal margin — so its
   // border corners line up with the composer's border corners below it. Any
@@ -157,7 +157,8 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   const selectedPrefix = `${glyphs.pointer} `
   const prefixWidth = stringWidth(selectedPrefix)
   const selectionPrefix = isSelected ? selectedPrefix : ' '.repeat(prefixWidth)
-  const rowBackgroundColor: keyof Theme = isSelected ? 'text' : 'surfaceBackground'
+  // Only the selected row is filled; the rest clear to the screen's background.
+  const rowBackgroundColor: keyof Theme | undefined = isSelected ? 'text' : undefined
   const textColor: keyof Theme | undefined = isSelected
     ? 'inverseText'
     : item.color
@@ -357,7 +358,7 @@ export function PromptInputFooterSuggestions({
     overflowRowBudget > (showHiddenBefore ? 1 : 0)
 
   const glyphs = selectAgenCTuiGlyphs()
-  // Overlay popups live inside a frame in workbench mode. Their parent can be
+  // Overlay popups live inside a frame in fullscreen mode. Their parent can be
   // narrower than the terminal, so use that measured width when supplied;
   // sizing to terminal columns pushes the right border outside the viewport.
   const width = getSuggestionPopupWidth(availableColumns ?? columns, overlay)
@@ -401,19 +402,17 @@ export function PromptInputFooterSuggestions({
       borderStyle="single"
       borderColor="text"
       paddingX={1}
-      backgroundColor="surfaceBackground"
       opaque={true}
     >
       <Box
         width="100%"
         opaque={true}
-        backgroundColor="surfaceBackground"
       >
         <Text color="inactive" bold>{titleRow.left}</Text>
         <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
       </Box>
       {showHiddenBefore ? (
-        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+        <Box width="100%" opaque={true}>
           <Text dimColor>{glyphs.arrowUp} {hiddenBefore} more above</Text>
         </Box>
       ) : null}
@@ -434,11 +433,11 @@ export function PromptInputFooterSuggestions({
         )
       })}
       {showHiddenAfter ? (
-        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+        <Box width="100%" opaque={true}>
           <Text dimColor>{glyphs.arrowDown} {hiddenAfter} more below</Text>
         </Box>
       ) : null}
-      <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+      <Box width="100%" opaque={true}>
         <Text color="inactive">{footerHintRow.left}</Text>
         <Text color="inactive">
           {footerHintRow.gap}

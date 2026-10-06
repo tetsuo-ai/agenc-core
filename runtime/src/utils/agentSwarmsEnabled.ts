@@ -4,8 +4,6 @@ import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 /**
  * Check if --agent-teams flag is provided via CLI.
  * Checks process.argv directly to avoid import cycles with bootstrap/state.
- * Note: The flag is only shown in help for ant users, but if external users
- * pass it anyway, it will work (subject to the killswitch).
  */
 function isAgentTeamsFlagSet(): boolean {
   return tokenizeCliOptionRegion(process.argv.slice(2)).optionArgs.includes(
@@ -18,25 +16,12 @@ function isAgentTeamsFlagSet(): boolean {
  * This is the single gate that should be checked everywhere teammates
  * are referenced (prompts, code, tools isEnabled, UI, etc.).
  *
- * Ant builds: always enabled.
- * External builds require both:
- * 1. Opt-in via AGENC_EXPERIMENTAL_AGENT_TEAMS env var OR --agent-teams flag
- * 2. GrowthBook gate 'tengu_amber_flint' enabled (killswitch)
+ * Teams are opt-in: the AGENC_EXPERIMENTAL_AGENT_TEAMS env var or the
+ * --agent-teams flag turns them on. Nothing else does.
  */
 export function isAgentSwarmsEnabled(): boolean {
-  // Ant: always on
-  if (process.env.USER_TYPE === 'ant') {
-    return true
-  }
-
-  // External: require opt-in via env var or --agent-teams flag
-  if (
-    !isEnvTruthy(process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS) &&
-    !isAgentTeamsFlagSet()
-  ) {
-    return false
-  }
-
-  // Killswitch — always respected for external users
-  return true
+  return (
+    isEnvTruthy(process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS) ||
+    isAgentTeamsFlagSet()
+  )
 }

@@ -923,8 +923,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(result).toMatchObject({ isError: false });
     expect(result.content).toContain("null\n7\nloose string");
     expect(result.content).toContain("Invalid MCP text content omitted");
-    expect(result.content).toContain("Invalid or oversized MCP binary content omitted");
-    expect(result.content).toContain("aggregate safety budget exhausted");
+    expect(result.content).toContain("MCP image omitted: invalid, unsupported, or oversized image");
     expect(JSON.stringify(result)).not.toContain("not-base64!");
     expect(result.codeModeResult).toBeDefined();
     expect(observedResults).toEqual([result.content]);
@@ -1248,6 +1247,35 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       content: "blocked by policy",
       isError: true,
     });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  test("revocation cancels a pending permission evaluator and discards its late answer", async () => {
+    let release!: (value: { behavior: "allow" }) => void;
+    const evaluator = new Promise<{ behavior: "allow" }>(resolve => { release = resolve; });
+    const entered = vi.fn();
+    const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "should-not-run" }] }));
+    const revocation = new AbortController();
+    const bridge = await createToolBridge({
+      listTools: async () => ({ tools: [{ name: "write", description: "writes remotely" }] }),
+      callTool,
+      close: async () => {},
+    }, "srv", undefined, {
+      revocationSignal: revocation.signal,
+      revocationGuard: () => !revocation.signal.aborted,
+      permissions: {
+        canUseTool: async () => { entered(); return evaluator; },
+        permissionContext: permissionContext(),
+      },
+    });
+    const pending = bridge.tools[0]!.execute({ value: 1 });
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+    revocation.abort();
+    const result = await Promise.race([pending, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("evaluator wait was not cancelled")), 200))]);
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    release({ behavior: "allow" });
+    await Promise.resolve();
     expect(callTool).not.toHaveBeenCalled();
   });
 

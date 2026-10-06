@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,11 +23,26 @@ import { execFileSync } from "node:child_process";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
+import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { AgentControl } from "./control.js";
+import { toListedAgentJson } from "./v2/common.js";
+import { delegate } from "./delegate.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
+import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
-import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
+import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions, registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
+import { validateCanonicalJournalText } from "../../src/state/recovery-journal-contract.js";
 import { AgentRegistry } from "./registry.js";
+import { createMultiAgentV2Tools } from "./v2/index.js";
+import { createSpawnAgentTool } from "./v2/spawn.js";
+import { createWaitAgentTool } from "./v2/wait.js";
+import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../../src/tools/untrusted-tool-result-framing.js";
+import { computeEffectiveMaxResultBytes } from "../../src/tools/execution.js";
+import { AgentRoleCatalog } from "./role-catalog.js";
+import type { MultiAgentV2Options } from "./v2/common.js";
+import { bindLiveAgentSession, liveAgentSession } from "./live-session.js";
 import {
   buildFilteredRegistry,
   initMcpForAgent,
@@ -47,6 +63,10 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
+import { GrokProvider } from "../llm/providers/grok/adapter.js";
+import { AgenCProvider } from "../llm/providers/agenc/index.js";
+import { ZaiProvider } from "../llm/providers/zai/index.js";
+import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
@@ -72,8 +92,10 @@ import {
   SandboxExecutionBroker,
   readSandboxExecutionBroker,
 } from "../sandbox/execution-broker.js";
+import { canReadPathWithCwd, canWritePathWithCwd } from "../sandbox/engine/index.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
@@ -127,7 +149,13 @@ import {
   withSignedAllowedRoots,
 } from "../tools/system/filesystem.js";
 import { signSessionId } from "../agents/_deps/filesystem-args.js";
-import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { bindExplicitDangerBoundary, explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import { registerBuiltinTool } from "../../src/tools/builtin-provenance.js";
+import { createGlobTool } from "../../src/tools/system/glob.js";
+import { createGrepTool } from "../../src/tools/system/grep.js";
+import { createFileReadTool } from "../../src/tools/system/file-read.js";
+import { createFileWriteTool } from "../../src/tools/system/file-write.js";
+import { createFileEditTool, createFileMultiEditTool } from "../../src/tools/system/file-edit.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
@@ -138,9 +166,15 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
-import { ConfigStore } from "../config/store.js";
+import { ConfigStore, nextConfigReadMark } from "../config/store.js";
+import { SessionProviderService } from "../session/provider-service.js";
+import { LLMFundsError } from "../llm/errors.js";
+import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
+import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -374,6 +408,33 @@ async function stopKeepAliveRun(
 ): Promise<RunAgentResult> {
   if (!signal.signal.aborted) signal.abort("test cleanup");
   return (await collectRun(iter)).result;
+}
+
+async function sendQueuedMessageDuringRun(
+  session: Session,
+  waitForKind: RunAgentProgressEvent["kind"],
+  content: string,
+): Promise<{
+  result: RunAgentResult;
+  live: Awaited<ReturnType<typeof spawnLive>>["live"];
+}> {
+  const { control, live } = await spawnLive(session);
+  const iter = runAgent({
+    live,
+    parent: session,
+    initialMessages: [{ role: "user", content: "go" }],
+    taskPrompt: "go",
+  });
+  await nextProgressEvent(iter, waitForKind);
+  await control.sendInterAgentCommunication(live.agentId, {
+    author: "/root",
+    recipient: live.agentPath,
+    content,
+    triggerTurn: false,
+    metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
+  });
+  const { result } = await collectRun(iter);
+  return { result, live };
 }
 
 async function spawnLive(session: Session, roleName?: string) {
@@ -674,6 +735,563 @@ describe("wrapProviderForAgentSummary", () => {
 });
 
 describe("runAgent", () => {
+  function crossProviderRuntime(target: LLMProvider, configStore: ConfigStore,
+    selection = { provider: "deepseek", model: "deepseek-v4-pro" },
+    authProfile?: "sign_in") {
+    const rootProvider = makeProvider([]);
+    const prepare = vi.fn(async () => ({
+      binding: { ...selection, instance: target },
+      ...(authProfile !== undefined ? { authProfile, billingSource: authProfile } : {}),
+    }));
+    const providerService = {
+      current: () => ({ provider: "grok", model: "grok-4.6", instance: rootProvider }),
+      environment: () => Object.freeze({ DEEPSEEK_API_KEY: "captured-target-key" }),
+      ...(authProfile !== undefined ? { previewChildDestination: async () => ({
+        endpoint: "https://api.openai.com/v1", authProfile, billingSource: authProfile,
+      }) } : {}),
+      prepare,
+      prepareChild: prepare,
+      forkForChild: (provider: LLMProvider, selection: { provider: string; model: string }) =>
+        new SessionProviderService({
+          initialProvider: provider,
+          initialProviderName: selection.provider,
+          initialModel: selection.model,
+          environment: { DEEPSEEK_API_KEY: "captured-target-key" },
+        }),
+    } as unknown as SessionServices["providerService"];
+    const parent = makeStubSession({ services: {
+      provider: rootProvider,
+      providerService,
+      configStore,
+      sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "read_only", cwd: "/tmp" }),
+    } });
+    const modelInfo: ModelInfo = {
+      ...mkModelInfo(), slug: selection.model, contextWindow: 1_048_576,
+      supportedReasoningLevels: ["low", "high", "max"],
+    };
+    return { parent, rootProvider, prepare, modelInfo };
+  }
+
+  async function authorizedCrossProviderPlan(parent: Session, modelInfo: ModelInfo,
+    selection = { provider: "deepseek", model: "deepseek-v4-pro" }) {
+    Object.assign(parent.services, { crossProviderConsent: {
+      ownerSessionId: parent.conversationId, sessionEpoch: "run-agent-test-human",
+      request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+        kind: "granted" as const,
+        grant: { kind: "once" as const, ownerSessionId: parent.conversationId,
+          sessionEpoch: "run-agent-test-human", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+      }),
+    } });
+    const proposed = await createChildExecutionPlan({ session: parent,
+      selection, modelInfo,
+      parentPath: "/root", taskId: "run-agent-test-task", taskName: "worker", taskText: "go",
+      toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(parent, proposed);
+    if (authorized.kind !== "granted") throw new Error("fixture consent failed");
+    return authorized.plan;
+  }
+
+  it.each([
+    { provider: "deepseek", model: "deepseek-v4-pro", authProfile: undefined },
+    { provider: "openai", model: "gpt-6-luna", authProfile: "sign_in" as const },
+  ])("sends a $provider child's own identity and prompt to its provider", async ({ provider, model, authProfile }) => {
+    const selection = { provider, model };
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openai"] },
+    } });
+    let requestPrompt = "";
+    let requestSpawnModel: { description: string; enum?: string[] } | undefined;
+    const target = { ...makeProvider([]), name: provider,
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        requestSpawnModel = (options?.tools?.find((tool) => tool.function.name === "spawn_agent")?.function.parameters as
+          { properties?: { model?: { description: string; enum?: string[] } } } | undefined)?.properties?.model;
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model, finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore, selection, authProfile);
+    const spawnTool = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => { throw new Error("not used"); },
+    } as unknown as MultiAgentV2Options);
+    Object.assign(parent.services, { registry: {
+      ...mkRegistry(), tools: [spawnTool],
+      toLLMTools: () => [{ type: "function", function: {
+        name: spawnTool.name, description: spawnTool.description, parameters: spawnTool.inputSchema,
+      } }],
+    } satisfies ToolRegistry });
+    await parent.state.with((state) => { state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      collaborationMode: { model: "grok-4.7" },
+      baseInstructions: "# Grok-specific notes\nModel: grok-4.7 (provider: grok)",
+    }; });
+    const plan = await authorizedCrossProviderPlan(parent, {
+      ...modelInfo,
+      modelMessages: { instructionsTemplate:
+        `${provider.toUpperCase()} provider notes\n{{ base_instructions }}` },
+    }, selection);
+    expect(plan.destination.authProfile).toBe(authProfile ?? "api_key");
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(target.chatStream).toHaveBeenCalled();
+    expect(requestPrompt).toContain(`Model: ${model} (provider: ${provider})`);
+    expect(requestSpawnModel?.description).toContain(`current model (\`${model}\`)`);
+    expect(requestSpawnModel?.description).not.toContain("current model (`grok-4.7`)");
+    expect(requestPrompt).toContain(`${provider.toUpperCase()} provider notes`);
+    expect(requestPrompt).not.toMatch(/grok|xai/iu);
+  });
+
+  it.each([
+    { model: "grok-4.6", expected: "Model: grok-4.6 (provider: grok)" },
+    { model: "grok-4.7", expected: "SAME_MODEL_BASE" },
+  ])("sends a same-provider $model child's correct base instructions", async ({ model, expected }) => {
+    let requestPrompt = "";
+    const provider = { ...makeProvider([]), name: "grok",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model, finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const parent = makeStubSession({ services: { provider },
+      sessionConfiguration: mkSessionConfiguration({
+        collaborationMode: { model: "grok-4.7" },
+        baseInstructions: "SAME_MODEL_BASE\nModel: grok-4.7 (provider: grok)",
+      }),
+      config: { ...mkConfig(), model: "grok-4.7" },
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.7",
+        modelMessages: { instructionsTemplate: "Grok 4.7-only note\n{{ base_instructions }}" } },
+    });
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(requestPrompt).toContain(expected);
+    if (model !== "grok-4.7") {
+      expect(requestPrompt).not.toContain("Model: grok-4.7");
+      expect(requestPrompt).not.toContain("Grok 4.7-only note");
+    } else {
+      expect(requestPrompt).toContain("Model: grok-4.7 (provider: grok)");
+      expect(requestPrompt).toContain("Grok 4.7-only note");
+    }
+  });
+
+  it("dispatches another Grok model when the parent provider has factory model metadata", async () => {
+    const provider = createProvider("grok", { apiKey: "xai-test", model: "grok-4.7" });
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      resolvePreparationRequest: ({ model }) => ({ requested: {
+        ...readProviderFactoryOptions(provider), model,
+      } }),
+    });
+    const chat = vi.spyOn(GrokProvider.prototype, "chatStream").mockResolvedValue({
+      content: "child completed", toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "grok-4.6", finishReason: "stop",
+    });
+    const parent = makeStubSession({
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: "grok-4.7" } }),
+      config: { ...mkConfig(), model: "grok-4.7" },
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.7" },
+    });
+    try {
+      const { live } = await spawnLive(parent);
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "grok-4.6",
+      }));
+      expect(result.outcome, result.error).toBe("completed");
+      expect(chat).toHaveBeenCalled();
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      chat.mockRestore();
+    }
+  });
+
+  it("dispatches another hosted AgenC model using the parent session authority", async () => {
+    const parentModel = "deepseek/deepseek-v4-flash-0731";
+    const authBackend = {
+      kind: "remote" as const,
+      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
+      vendKey: vi.fn(), inferAgencModel: vi.fn(),
+      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
+    } as never;
+    const provider = createProvider("agenc", {
+      model: parentModel, extra: { authBackend, sessionId: "hosted-parent" },
+    });
+    const factoryExtra = readProviderFactoryOptions(provider).extra ?? {};
+    expect(factoryExtra).not.toHaveProperty("authBackend");
+    expect(factoryExtra).not.toHaveProperty("sessionId");
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      authBackend,
+      sessionId: "hosted-parent",
+      subscriptionTier: "pro",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model } }),
+    });
+    const prepare = vi.spyOn(providerService, "prepareChild");
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const profile = vi.spyOn(AgenCProvider.prototype, "getExecutionProfile").mockResolvedValue({
+      provider: "agenc", model: "agenc", usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
+    });
+    const accounting = vi.spyOn(AgenCProvider.prototype, "projectRequestForAccounting")
+      .mockImplementation((messages, options) => ({ messages, options }));
+    const chat = vi.spyOn(AgenCProvider.prototype, "chatStream").mockImplementation(async () => {
+      const child = liveAgentSession(live)!;
+      expect(child.providerService.current()).toMatchObject({ provider: "agenc", model: "agenc" });
+      expect(child.services.provider).not.toBe(provider);
+      return { content: "child completed", toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "agenc", finishReason: "stop" };
+    });
+    const parent = makeStubSession({
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: parentModel } }),
+      config: { ...mkConfig(), model: parentModel },
+      modelInfo: { ...mkModelInfo(), slug: parentModel },
+    });
+    try {
+      ({ live } = await spawnLive(parent));
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "agenc",
+      }));
+      if (result.error) throw result.error;
+      expect(result.outcome, result.error).toBe("completed");
+      expect(prepare).toHaveBeenCalledWith({ provider: "agenc", model: "agenc" },
+        undefined, { signal: expect.any(AbortSignal) });
+      expect(chat).toHaveBeenCalledOnce();
+      expect(parent.providerService.current().model).toBe(parentModel);
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      accounting.mockRestore();
+      profile.mockRestore();
+      chat.mockRestore();
+    }
+  });
+
+  it("sends a restored cross-provider child's own identity after restart", async () => {
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    } });
+    let requestPrompt = "";
+    const target = { ...makeProvider([]), name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const originalControl = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    const original = await originalControl.spawn({ parentPath: "/root", agentName: "worker",
+      providerSelection: plan.route, executionPlan: plan });
+
+    const { parent: restoredParent } = crossProviderRuntime(target, configStore);
+    Object.assign(restoredParent.services, {
+      crossProviderConsent: parent.services.crossProviderConsent,
+    });
+    await restoredParent.state.with((state) => { state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      collaborationMode: { model: "grok-4.7" },
+      baseInstructions: "# Grok-specific notes\nModel: grok-4.7 (provider: grok)",
+    }; });
+    const restoredControl = new AgentControl({ session: restoredParent,
+      registry: new AgentRegistry() });
+    const restored = await restoredControl.resume({ parentPath: "/root",
+      metadata: structuredClone(original.metadata) });
+    expect(restored).not.toBeNull();
+    const { result } = await collectRun(runAgent({ live: restored!, parent: restoredParent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
+      taskId: plan.task.id,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(requestPrompt).toContain("Model: deepseek-v4-pro (provider: deepseek)");
+    expect(requestPrompt).not.toMatch(/grok|xai/iu);
+  });
+
+  it("binds a cross-provider child to its own provider, model data, and parent authority", async () => {
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (): Promise<LLMResponse> => {
+        const child = liveAgentSession(live)!;
+        expect(child.providerService.current()).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+        expect(child.services.provider).toBe(target);
+        expect(child.sessionConfiguration.provider).toBe(target);
+        expect(child.config.model).toBe("deepseek-v4-pro");
+        expect(child.modelInfo).toMatchObject({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 });
+        expect(child.permissionModeRegistry).toBe(parent.permissionModeRegistry);
+        expect(child.fileReadScope).toBe(parent.fileReadScope);
+        expect(child.sessionConfiguration.sandboxPolicy).toEqual(parent.sessionConfiguration.sandboxPolicy);
+        expect(child.services.sandboxExecutionBroker).not.toBe(parent.services.sandboxExecutionBroker);
+        expect(child.services.registry).not.toBe(parent.services.registry);
+        return { content: "target", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, rootProvider, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    ({ live } = await spawnLive(parent));
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    expect(result.outcome).toBe("completed");
+    expect(prepare).toHaveBeenCalledWith(
+      { provider: "deepseek", model: "deepseek-v4-pro" }, undefined,
+      { signal: expect.any(AbortSignal) }, true,
+      undefined, plan.destination,
+    );
+    expect(target.chatStream).toHaveBeenCalledOnce();
+    expect(rootProvider.chatStream).not.toHaveBeenCalled();
+    expect(live.configSnapshot?.crossProvider).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" });
+  });
+
+  it("disposes a prepared child when policy is revoked during preparation", async () => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    const dispose = vi.fn(async () => {});
+    const target = { ...makeProvider([]), name: "deepseek", dispose,
+      chatStream: vi.fn() } as LLMProvider;
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        enabled = false;
+        await configStore.reload();
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
+      plan,
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(dispose).toHaveBeenCalledOnce(); // only the post-consent run preparation
+    expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("never reaches the provider of a managed child whose settings change while its last check resolves the destination", async () => {
+    let enabled = true;
+    const agents = () => ({ cross_provider_enabled: enabled, allowed_providers: ["agenc", "deepseek"] });
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { model_provider: "grok", model: "grok-4.6", agents: agents() },
+      loader: async () => ({ model_provider: "grok", model: "grok-4.6", agents: agents() }),
+    });
+    const target = { ...makeProvider([{ content: "done" }]), name: "agenc", chatStream: vi.fn() } as LLMProvider;
+    const selection = { provider: "agenc", model: "agenc" };
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore, selection);
+    // After preparation, the last plan check awaits the managed destination.
+    let armed = false;
+    let arrived!: () => void;
+    const atDestination = new Promise<void>((resolve) => { arrived = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    Object.assign(parent.providerService, {
+      resolveManagedChildDestination: async () => {
+        if (armed) {
+          armed = false;
+          arrived();
+          await released;
+        }
+        return { provider: "deepseek", model: "deepseek-v4-pro" };
+      },
+      previewChildDestination: async (_selection: unknown, concrete: { provider: string } | undefined) => ({
+        endpoint: concrete?.provider === "agenc" ? "https://id.agenc.ag/v1" : "https://api.deepseek.com/v1",
+        authProfile: "managed", billingSource: "managed",
+      }),
+    });
+    const plan = await authorizedCrossProviderPlan(parent, { ...modelInfo, slug: "agenc" }, selection);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        armed = true;
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await atDestination;
+    // A daemon reload turns the feature off before the child subscribes.
+    enabled = false;
+    await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+    release();
+    const { result } = await run;
+    expect(result.outcome).not.toBe("completed");
+    expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("stops and cleans up a child while its model-list preparation is stalled", async () => {
+    const configStore = new ConfigStore({ cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } } });
+    const target = { ...makeProvider([]), name: "deepseek", chatStream: vi.fn() } as LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    Object.assign(parent.services, { unifiedExecManager: {
+      terminateOwnedProcesses: vi.fn(() => ({ results: [] })) } });
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => { entered = resolve; });
+    let preparationSignal: AbortSignal | undefined;
+    Object.assign(parent.providerService, { prepareChild: async (
+      _selection: unknown, _requested: unknown, runtime: { signal?: AbortSignal },
+    ) => {
+      preparationSignal = runtime.signal;
+      entered();
+      if (runtime.signal === undefined) throw new Error("model-list preparation has no child signal");
+      await new Promise<never>((_resolve, reject) => runtime.signal!.addEventListener("abort",
+        () => reject(new Error("model-list request aborted")), { once: true }));
+      throw new Error("unreachable");
+    } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await preparing;
+    control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
+    const result = await Promise.race([run.then(({ result }) => result),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 250))]);
+    expect(result).not.toBe("timed out");
+    expect(preparationSignal?.aborted).toBe(true);
+    expect(live.abortController.signal.aborted).toBe(true);
+    expect(target.chatStream).not.toHaveBeenCalled();
+    expect(liveAgentSession(live)).toBeUndefined();
+  });
+
+  it.each(["Stop", "switch off", "daemon reload", "failed daemon reload"])("cancels an active cross-provider stream on %s", async (cause) => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    let started!: () => void;
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    let streamSignal: AbortSignal | undefined;
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _chunk: StreamProgressCallback, options?: LLMChatOptions): Promise<LLMResponse> => {
+        streamSignal = options?.signal;
+        started();
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted) resolve();
+          else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("stream aborted");
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const terminateOwnedProcesses = vi.fn(() => ({ results: [] as [] }));
+    Object.assign(parent.services, { unifiedExecManager: { terminateOwnedProcesses } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    expect(control.openThreadSpawnChildren(parent.conversationId).map(([id]) => id)).toContain(live.agentId);
+    const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await active;
+    if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
+    else if (cause === "failed daemon reload") {
+      // The session cannot read its settings again, so it is narrowed to the
+      // daemon's view, which turned the feature off.
+      expect(configStore.limitAgentsSection({ cross_provider_enabled: false }, nextConfigReadMark())).toBe(true);
+    } else {
+      enabled = false;
+      // A daemon reload refreshes only the [agents] section of an open session.
+      if (cause === "daemon reload") await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+      else await configStore.reload();
+    }
+    const { result } = await run;
+    expect(streamSignal?.aborted).toBe(true);
+    expect(result.outcome).not.toBe("completed");
+    const receipt = parent.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.content).toContain(`"reason":"${cause === "Stop" ? "parent_cancelled" : "policy_revoked"}"`);
+    if (cause === "Stop") {
+      expect(live.abortController.signal.aborted).toBe(true);
+      expect(terminateOwnedProcesses).toHaveBeenCalledWith({ ownerId: live.agentId });
+    }
+  });
+  it("forks a factory Grok provider for the child session", async () => {
+    const provider = createProvider("grok", {
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      extra: { incrementalContinuation: true },
+    });
+    const parentChat = vi.spyOn(provider, "chatStream");
+    const fork = provider.forkForSession!.bind(provider);
+    let child: LLMProvider | undefined;
+    const forkSpy = vi.spyOn(provider, "forkForSession").mockImplementation((options) => {
+      child = fork(options);
+      vi.spyOn(child, "chatStream").mockResolvedValue({
+        content: "child completed",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "grok-4-fast",
+        finishReason: "stop",
+      });
+      return child;
+    });
+    const session = makeStubSession({
+      services: {
+        provider,
+        sandboxExecutionBroker: new SandboxExecutionBroker({
+          mode: "danger_full_access",
+          cwd: "/tmp",
+        }),
+      },
+    });
+    const { live } = await spawnLive(session);
+    try {
+      const { result } = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }));
+
+      expect(result.error).toBeUndefined();
+      expect(result.outcome).toBe("completed");
+      expect(forkSpy).toHaveBeenCalledOnce();
+      expect(child).not.toBe(provider);
+      expect(child!.chatStream).toHaveBeenCalledOnce();
+      expect(parentChat).not.toHaveBeenCalled();
+    } finally {
+      await session.shutdown();
+      await provider.dispose?.();
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each([
     ["success", "completed"],
     ["error", "errored"],
@@ -1025,9 +1643,9 @@ describe("runAgent", () => {
     const childDispose = vi.fn(async () => {});
     const childProvider: LLMProvider = {
       ...makeProvider([{ content: "summary seed" }]),
-      forkForSession: nestedFork,
       dispose: childDispose,
     };
+    Object.setPrototypeOf(childProvider, { forkForSession: nestedFork });
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: "/tmp",
@@ -1476,6 +2094,58 @@ describe("runAgent", () => {
     );
   });
 
+  it("keeps a passive child message out of the current turn's model calls", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+      { content: "done", finishReason: "stop" },
+    ]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        registry: {
+          tools: [{
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: "ok" }),
+          }],
+          toLLMTools: () => [{
+            type: "function",
+            function: { name: "system.echo", description: "echo", parameters: { type: "object" } },
+          }],
+          dispatch: async () => ({ content: "ok" }),
+        } satisfies ToolRegistry,
+      },
+    });
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "tool_call",
+      "check the edge case",
+    );
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[1]![0] as LLMMessage[];
+    expect(JSON.stringify(secondMessages)).not.toContain("check the edge case");
+    expect(live.downInbox.hasPending()).toBe(true);
+  });
+
+  it("does not read a message sent after the child's last model call", async () => {
+    const provider = makeProvider([{ content: "finished" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "message",
+      "too late for this turn",
+    );
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(live.downInbox.hasPending()).toBe(true);
+  });
+
   it("ignores array-shaped parent services when resolving the provider", async () => {
     const provider = makeProvider([{ content: "should not run" }]);
     const session = makeStubSession();
@@ -1529,6 +2199,417 @@ describe("runAgent", () => {
     }
   });
 
+  it("revokes live Session authority synchronously at shutdown and permits a fresh binding after close", async () => {
+    const parent = makeStubSession();
+    const { control, live } = await spawnLive(parent);
+    const child = makeStubSession({ conversationId: live.agentId });
+    const revoke = bindLiveAgentSession(live, child);
+    expect(liveAgentSession(live)).toBe(child);
+    child.beginShutdown();
+    expect(liveAgentSession(live)).toBeUndefined();
+    await child.shutdown();
+    const replacement = makeStubSession({ conversationId: live.agentId });
+    bindLiveAgentSession(live, replacement);
+    revoke();
+    expect(liveAgentSession(live)).toBe(replacement);
+    await replacement.shutdown();
+    expect(liveAgentSession(live)).toBeUndefined();
+    const closing = makeStubSession({ conversationId: live.agentId });
+    closing.beginShutdown();
+    expect(() => bindLiveAgentSession(live, closing)).toThrow(/shutting down/);
+    await closing.shutdown();
+    await control.shutdownAll();
+    await parent.shutdown();
+  });
+
+  it.each(["execute", "dispatch"] as const)("keeps nested %s on its own broker and identity while retaining ancestor policies", async (boundary) => {
+    const parentBroker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp/parent" });
+    const childBroker = new SandboxExecutionBroker({ mode: "read_only", cwd: "/tmp/child" });
+    const admission = makeChildToolAdmission({ runId: "nested-child", sessionId: "nested-child" });
+    const child = makeStubSession({ conversationId: "nested-child", sessionConfiguration: mkSessionConfiguration({ cwd: "/tmp/child" }), services: { executionAdmission: admission.client, sandboxExecutionBroker: childBroker } });
+    let parentDeny = false;
+    let childDeny = false;
+    let childRewrites = false;
+    const execute = vi.fn(async (args: Record<string, unknown>) => ({ content: JSON.stringify({ parentChecked: args.parentChecked, childChecked: args.childChecked }) }));
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [{ name: "exec_command", description: "fixture command", inputSchema: { type: "object" }, execute }, { name: "hidden", description: "hidden", inputSchema: { type: "object" }, execute }] }, {
+      childConversationId: "parent-child", sandboxExecutionBroker: parentBroker, disabledTools: new Set(["hidden"]),
+      worktree: { path: "/tmp/parent", branch: "parent", gitRoot: "/tmp", created: false },
+      childToolPolicy: (_tool, args) => parentDeny || args.redirected === true ? { behavior: "deny", message: "ancestor denies" } : { behavior: "allow", updatedInput: { ...args, parentChecked: true } },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, sandboxExecutionBroker: childBroker, getSession: () => child,
+      childToolPolicy: (_tool, args) => childDeny ? { behavior: "deny", message: "child denies" } : { behavior: "allow", updatedInput: { ...args, childChecked: true, redirected: childRewrites } },
+    });
+    const invoke = () => boundary === "execute" ? nested.tools[0]!.execute({ __agencSessionId: "forged" }) : nested.dispatch({ name: "exec_command", id: "nested-policy", arguments: JSON.stringify({ __agencSessionId: "forged" }) });
+    try {
+      expect(nested.tools.map((tool) => tool.name)).toEqual(["exec_command"]);
+      expect(await invoke()).toMatchObject({ content: JSON.stringify({ parentChecked: true, childChecked: true }) });
+      expect(execute.mock.calls[0]![0][SESSION_ID_ARG]).toBe(child.conversationId);
+      expect(execute.mock.calls[0]![0].workdir).toBe("/tmp/child");
+      expect(readSandboxExecutionBroker(execute.mock.calls[0]![0])).toBe(childBroker);
+      parentDeny = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("ancestor denies") });
+      parentDeny = false;
+      childDeny = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("child denies") });
+      childDeny = false;
+      childRewrites = true;
+      expect(await invoke()).toMatchObject({ isError: true, content: expect.stringContaining("ancestor denies") });
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(parentBroker);
+      await disposeSandboxExecutionBroker(childBroker);
+    }
+  });
+
+  it.each([
+    ["Glob", "read-only", "execute"], ["Glob", "read-only", "dispatch"],
+    ["Grep", "read-only", "execute"], ["Grep", "read-only", "dispatch"],
+    ["Glob", "writer", "execute"], ["Glob", "writer", "dispatch"],
+    ["Grep", "writer", "execute"], ["Grep", "writer", "dispatch"],
+  ] as const)("defaults nested %s for a %s child to its live cwd through %s", async (toolName, role, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-search-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = role === "writer" ? join(workspace, "writer") : implementationCwd;
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    mkdirSync(join(workspace, "src"));
+    mkdirSync(join(childCwd, "src"));
+    writeFileSync(join(workspace, "parent-cwd-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(workspace, "src", "parent-src-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(childCwd, "src", "child-src-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(childCwd, "child-cwd-hit.txt"), "cwd-proof-token\n");
+    writeFileSync(join(alternate, "alternate-cwd-hit.txt"), "cwd-proof-token\n");
+    // Exercise actual search results and delegated path checks. Subprocess
+    // confinement has its own kernel suite; this owned unit fixture declares
+    // the host mechanics explicitly instead of depending on a built launcher.
+    const tool = registerBuiltinTool(bindExplicitDangerBoundary(toolName === "Glob"
+      ? createGlobTool({ allowedPaths: [workspace] })
+      : createGrepTool({ allowedPaths: [workspace] })));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "search-child", sessionId: "search-child" });
+    const child = makeStubSession({
+      conversationId: "search-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: { executionAdmission: admission.client, sandboxExecutionBroker: broker,
+        ...(role === "read-only" ? { readOnlyDelegation: { kind: "read-only", ownerThreadId: "implementation" } as const } : {}),
+      },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      ...(role === "writer" ? { worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false } } : {}),
+    });
+    const pattern = toolName === "Glob" ? "*.txt" : "cwd-proof-token";
+    let calls = 0;
+    const invoke = (extra: Record<string, unknown> = {}) => {
+      const args = { pattern, ...extra };
+      return boundary === "execute" ? nested.tools[0]!.execute(args)
+        : nested.dispatch({ name: toolName, id: `search-${++calls}`, arguments: JSON.stringify(args) });
+    };
+    try {
+      const first = await invoke();
+      expect(first.isError, first.content).not.toBe(true);
+      expect(first.content).toContain("child-cwd-hit.txt");
+      expect(first.content).not.toContain("parent-cwd-hit.txt");
+
+      // Reuse the same live child registry after its first completed search.
+      writeFileSync(join(childCwd, "later-cwd-hit.txt"), "cwd-proof-token\n");
+      const reused = await invoke({ path: "", cwd: "" });
+      expect(reused.isError, reused.content).not.toBe(true);
+      expect(reused.content).toContain("later-cwd-hit.txt");
+      expect(reused.content).not.toContain("parent-cwd-hit.txt");
+
+      const explicitCwd = await invoke({ cwd: alternate });
+      expect(explicitCwd.isError, explicitCwd.content).not.toBe(true);
+      expect(explicitCwd.content).toContain("alternate-cwd-hit.txt");
+      expect(explicitCwd.content).not.toContain("child-cwd-hit.txt");
+      const explicitPath = await invoke({ path: alternate, cwd: workspace });
+      expect(explicitPath.isError, explicitPath.content).not.toBe(true);
+      expect(explicitPath.content).toContain("alternate-cwd-hit.txt");
+      expect(explicitPath.content).not.toContain("parent-cwd-hit.txt");
+      const malformedCwd = await invoke({ cwd: 42 });
+      if (toolName === "Glob" && role === "writer") {
+        // Glob ignores a non-string cwd; do not silently normalize it here.
+        expect(malformedCwd.content).toContain("parent-cwd-hit.txt");
+      } else {
+        expect(malformedCwd).toMatchObject({ isError: true });
+      }
+      const nullDefault = await invoke({ path: null, cwd: null });
+      expect(nullDefault.isError, nullDefault.content).not.toBe(true);
+      expect(nullDefault.content).toContain("child-cwd-hit.txt");
+      expect(nullDefault.content).not.toContain("parent-cwd-hit.txt");
+
+      // The signed child cwd is the base for explicit relative searches.
+      for (const relativePath of [".", "src"]) {
+        const relative = await invoke({ path: relativePath });
+        if (role === "read-only" && toolName !== "Grep") {
+          expect(relative).toMatchObject({
+            isError: true, content: expect.stringContaining("outside delegated read authority"),
+          });
+        } else {
+          expect(relative.isError, relative.content).not.toBe(true);
+          if (toolName === "Grep") {
+            expect(relative.content).toContain("child-src-hit.txt");
+            expect(relative.content).not.toContain("parent-src-hit.txt");
+          } else {
+            expect(relative.content).toContain("parent-src-hit.txt");
+          }
+        }
+      }
+      if (toolName === "Grep" && role === "writer") {
+        const worktreeOnly = await invoke({ path: "src/child-src-hit.txt" });
+        expect(worktreeOnly.isError, worktreeOnly.content).not.toBe(true);
+        expect(worktreeOnly.content).toContain("child-src-hit.txt");
+      }
+      if (role === "read-only") {
+        if (toolName === "Grep") {
+          expect(await invoke({ path: ".", cwd: workspace })).toMatchObject({
+            isError: true, content: expect.stringContaining("outside delegated read authority"),
+          });
+        }
+        expect(await invoke({ path: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+        expect(await invoke({ cwd: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["scanner", "execute"], ["scanner", "dispatch"],
+    ["writer", "execute"], ["writer", "dispatch"],
+  ] as const)("resolves nested FileRead from the %s caller through %s", async (role, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-file-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = role === "scanner" ? implementationCwd : join(workspace, "writer");
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    writeFileSync(join(workspace, "README.md"), "parent-only-content\n");
+    writeFileSync(join(childCwd, "README.md"), "child-only-content\n");
+    writeFileSync(join(alternate, "README.md"), "alternate-only-content\n");
+    const tool = registerBuiltinTool(createFileReadTool({ allowedPaths: [workspace] }));
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "file-child", sessionId: "file-child" });
+    const child = makeStubSession({
+      conversationId: "file-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: {
+        executionAdmission: admission.client,
+        sandboxExecutionBroker: broker,
+        ...(role === "scanner" ? { readOnlyDelegation: { kind: "read-only", ownerThreadId: "implementation" } as const } : {}),
+      },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      ...(role === "writer" ? { worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false } } : {}),
+    });
+    let calls = 0;
+    const invoke = (extra: Record<string, unknown> = {}) => {
+      const args = { file_path: "README.md", ...extra };
+      return boundary === "execute" ? nested.tools[0]!.execute(args)
+        : nested.dispatch({ name: "FileRead", id: `file-read-${++calls}`, arguments: JSON.stringify(args) });
+    };
+    try {
+      for (const cwd of [undefined, null, "", "  ", 42]) {
+        const result = await invoke(cwd === undefined ? {} : { cwd });
+        expect(result.isError, result.content).not.toBe(true);
+        expect(result.content).toContain("child-only-content");
+        expect(result.content).not.toContain("parent-only-content");
+      }
+      writeFileSync(join(childCwd, "README.md"), "updated-child-content\n");
+      expect((await invoke()).content).toContain("updated-child-content");
+      expect((await invoke({ cwd: alternate })).content).toContain("alternate-only-content");
+      expect((await invoke({ file_path: "alternate/README.md" })).content).toContain("alternate-only-content");
+      expect((await invoke({ file_path: join(alternate, "README.md"), cwd: workspace })).content).toContain("alternate-only-content");
+      if (role === "scanner") {
+        expect(await invoke({ file_path: join(workspace, "README.md") })).toMatchObject({
+          isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
+        });
+        expect(await invoke({ cwd: workspace })).toMatchObject({
+          isError: true, content: expect.stringContaining("outside delegated read authority"),
+        });
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["Write", "execute"], ["Write", "dispatch"],
+    ["Edit", "execute"], ["Edit", "dispatch"],
+    ["MultiEdit", "execute"], ["MultiEdit", "dispatch"],
+  ] as const)("resolves nested %s mutations inside the writer cwd through %s", async (toolName, boundary) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-delegated-mutation-cwd-"));
+    const implementationCwd = join(workspace, "implementation");
+    const childCwd = join(workspace, "writer");
+    const alternate = join(childCwd, "alternate");
+    mkdirSync(implementationCwd, { recursive: true });
+    mkdirSync(alternate, { recursive: true });
+    const config = { allowedPaths: [workspace] };
+    const tools = [createFileReadTool(config), createFileWriteTool(config), createFileEditTool(config), createFileMultiEditTool(config)].map(registerBuiltinTool);
+    const broker = new SandboxExecutionBroker({ mode: "workspace_write", cwd: childCwd });
+    const admission = makeChildToolAdmission({ runId: "file-writer", sessionId: "file-writer" });
+    const child = makeStubSession({
+      conversationId: "file-writer",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+      services: { executionAdmission: admission.client, sandboxExecutionBroker: broker },
+    });
+    const ancestor = buildFilteredRegistry({ ...mkRegistry(), tools }, {
+      childConversationId: "implementation",
+      worktree: { path: implementationCwd, branch: "implementation", gitRoot: workspace, created: false },
+    });
+    const nested = buildFilteredRegistry(ancestor, {
+      childConversationId: child.conversationId, getSession: () => child,
+      sandboxExecutionBroker: broker,
+      worktree: { path: childCwd, branch: "writer", gitRoot: workspace, created: false },
+    });
+    let calls = 0;
+    const invoke = (name: string, args: Record<string, unknown>) => boundary === "execute"
+      ? nested.tools.find((tool) => tool.name === name)!.execute(args)
+      : nested.dispatch({ name, id: `file-mutate-${++calls}`, arguments: JSON.stringify(args) });
+    try {
+      for (const [index, cwd] of [undefined, toolName === "Write" ? "" : "  ", alternate].entries()) {
+        const name = `target-${index}.txt`;
+        const target = join(cwd === alternate ? alternate : childCwd, name);
+        if (toolName !== "Write") {
+          writeFileSync(join(workspace, name), "parent-old\n");
+          writeFileSync(target, "child-old\n");
+          const read = await invoke("FileRead", { file_path: target });
+          expect(read.isError, read.content).not.toBe(true);
+        }
+        const args = {
+          file_path: name,
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(toolName === "Write" ? { content: "child-new\n" }
+            : toolName === "Edit" ? { old_string: "child-old", new_string: "child-new" }
+            : { edits: [{ old_string: "child-old", new_string: "child-new" }] }),
+        };
+        const result = await invoke(toolName, args);
+        expect(result.isError, result.content).not.toBe(true);
+        expect(readFileSync(target, "utf8")).toBe("child-new\n");
+        if (toolName === "Write") expect(existsSync(join(workspace, name))).toBe(false);
+        else expect(readFileSync(join(workspace, name), "utf8")).toBe("parent-old\n");
+      }
+      if (toolName === "Write") {
+        const whitespace = await invoke(toolName, { file_path: "whitespace.txt", content: "unchanged", cwd: "  " });
+        expect(whitespace).toMatchObject({ isError: true });
+        expect(existsSync(join(childCwd, "whitespace.txt"))).toBe(false);
+      }
+    } finally {
+      await child.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["FileRead", false], ["FileRead", true], ["Write", false], ["Write", true],
+    ["Edit", false], ["Edit", true], ["MultiEdit", false], ["MultiEdit", true],
+  ] as const)("checks nested %s permissions on the execution cwd with policy=%s", async (toolName, withPolicy) => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-file-permission-cwd-"));
+    const childCwd = join(workspace, "child");
+    mkdirSync(childCwd);
+    const config = { allowedPaths: [workspace] };
+    const tools = [createFileReadTool(config), createFileWriteTool(config), createFileEditTool(config), createFileMultiEditTool(config)];
+    const tool = tools.find((candidate) => candidate.name === toolName)!;
+    const check = vi.spyOn(tool, "checkPermissions");
+    const child = makeStubSession({
+      conversationId: "file-permission-child",
+      sessionConfiguration: mkSessionConfiguration({ cwd: childCwd }),
+    });
+    const nested = buildFilteredRegistry(buildFilteredRegistry({ ...mkRegistry(), tools: [tool] }, {
+      childConversationId: "implementation",
+      worktree: { path: join(workspace, "implementation"), branch: "implementation", gitRoot: workspace, created: false },
+    }), {
+      childConversationId: child.conversationId, getSession: () => child,
+      ...(withPolicy ? { childToolPolicy: (_tool: unknown, args: Record<string, unknown>) => ({ behavior: "allow" as const, updatedInput: { ...args, policySeen: true } }) } : {}),
+    });
+    let permissions = createEmptyToolPermissionContext({
+      mode: "acceptEdits",
+      alwaysDenyRules: { session: [`${toolName === "FileRead" ? "FileRead" : "Edit"}(${join(childCwd, "denied.txt")})`] },
+    });
+    const context = { session: child, getAppState: () => ({ toolPermissionContext: permissions, denialTracking: freshDenialTracking(), autoModeActive: false }) };
+    const args = { file_path: "denied.txt", content: "new", old_string: "old", new_string: "new", edits: [{ old_string: "old", new_string: "new" }] };
+    try {
+      expect(await nested.tools[0]!.checkPermissions!(args, context)).toMatchObject({ behavior: "deny" });
+      expect(check.mock.calls[0]![0]).toMatchObject({ cwd: childCwd });
+      expect(check.mock.calls[0]![0]).not.toHaveProperty(SESSION_ALLOWED_ROOTS_ARG);
+      expect(check.mock.calls[0]![0]).not.toHaveProperty(SESSION_ID_ARG);
+      permissions = createEmptyToolPermissionContext({ mode: "default" });
+      const allowed = await nested.tools[0]!.checkPermissions!({ ...args, file_path: "allowed.txt" }, context);
+      expect(allowed).toMatchObject({
+        behavior: toolName === "FileRead" ? "allow" : "ask",
+      });
+      expect(allowed.updatedInput).not.toHaveProperty("cwd");
+      const explicit = join(childCwd, "explicit");
+      await nested.tools[0]!.checkPermissions!({ ...args, cwd: explicit }, context);
+      expect(check.mock.lastCall?.[0]).toMatchObject({ cwd: explicit });
+    } finally {
+      check.mockRestore();
+      await child.shutdown();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("projects the bound child provider while the parent and child selections change independently", async () => {
+    const provider = makeProvider([{ content: "ok" }]);
+    const session = makeStubSession({ services: { provider } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const projections: unknown[] = [];
+    const originalChat = provider.chatStream!;
+    vi.spyOn(provider, "chatStream").mockImplementationOnce(async (...args) => {
+      const child = liveAgentSession(live);
+      expect(child).toBeDefined();
+      if (child === undefined) throw new Error("child binding missing during model call");
+      const parentCurrent = vi.spyOn(session.providerService, "current").mockReturnValue({ provider: "openai", model: "parent-only" });
+      const childCurrent = vi.spyOn(child.providerService, "current").mockReturnValue({ provider: "deepseek", model: "child-first" });
+      try {
+        const capture = () => projections.push(
+          control.listAgents().find((item) => item.agentName === live.agentPath),
+          control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === live.agentId),
+        );
+        capture();
+        parentCurrent.mockReturnValue({ provider: "grok", model: "parent-changed" });
+        capture();
+        childCurrent.mockReturnValue({ provider: "deepseek", model: "child-second" });
+        capture();
+      } finally { childCurrent.mockRestore(); parentCurrent.mockRestore(); }
+      return originalChat(...args);
+    });
+    const { result } = await collectRun(runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+    expect(result.outcome).toBe("completed");
+    expect(projections).toEqual([
+      ...Array.from({ length: 4 }, () => expect.objectContaining({ provider: "deepseek", model: "child-first" })),
+      ...Array.from({ length: 2 }, () => expect.objectContaining({ provider: "deepseek", model: "child-second" })),
+    ]);
+    await control.shutdownAll();
+    await session.shutdown();
+  });
+
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -1560,7 +2641,16 @@ describe("runAgent", () => {
         } as never,
       },
     });
-    const { live } = await spawnLive(session);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    let nativeAtInterruption: ReturnType<typeof control.snapshotNativeWorkers> = [];
+    let listedAtInterruption: ReturnType<typeof control.listAgents> = [];
+    live.status.subscribe((status) => {
+      if (status.status !== "interrupted") return;
+      nativeAtInterruption = control.snapshotNativeWorkers(session.conversationId);
+      listedAtInterruption = control.listAgents();
+    });
 
     const { events, result } = await collectRun(
       runAgent({
@@ -1575,6 +2665,24 @@ describe("runAgent", () => {
     expect(provider.chatStream).not.toHaveBeenCalled();
     expect(result.outcome).toBe("interrupted");
     expect(live.status.value.status).toBe("interrupted");
+    expect(live.status.value).toMatchObject({ terminal: {
+      reason: "parent_cancelled", retryable: false, dispatch: "unknown",
+    } });
+    const terminal = live.status.value.status === "interrupted" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    expect(toListedAgentJson({ agentName: live.agentPath, agentStatus: live.status.value }).terminal)
+      .toEqual(terminal);
+    expect(nativeAtInterruption).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: live.agentId, terminal }),
+    ]));
+    expect(listedAtInterruption.find((agent) => agent.agentName === live.agentPath)?.agentStatus)
+      .toMatchObject({ terminal });
+    if (terminal !== undefined) {
+      control.recordTerminalOutcome(live.agentId, terminal);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "parent_cancelled" },
+      });
+    }
     expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
     expect(events.some((event) => event.kind === "run_complete")).toBe(false);
     const receipt = session.mailbox
@@ -1585,6 +2693,51 @@ describe("runAgent", () => {
       taskId: "cancelled-task",
     });
     expect(receipt?.content).toContain('"outcome":"interrupted"');
+  });
+
+  it.each(["external", "parent", "live"] as const)("does not dispatch after a pre-aborted %s signal", async (source) => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-pre-aborted-run-"));
+    const sentinel = join(cwd, "unexpected-provider-effect");
+    const baseProvider = makeProvider([{ content: "must not run" }]);
+    const provider: LLMProvider = {
+      ...baseProvider,
+      chatStream: vi.fn(async (...args) => {
+        writeFileSync(sentinel, "unexpected dispatch\n");
+        return baseProvider.chatStream(...args);
+      }),
+    };
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd }),
+      services: { provider },
+    });
+    const { live, control } = await spawnLive(session);
+    const external = new AbortController();
+    const controller = source === "external" ? external
+      : source === "parent" ? session.abortController : live.abortController;
+    controller.abort("already cancelled");
+    try {
+      const { events, result } = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "must not execute" }],
+        taskPrompt: "must not execute",
+        taskId: "pre-aborted-task",
+        externalSignal: external.signal,
+      }));
+      expect(provider.chatStream).not.toHaveBeenCalled();
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(existsSync(sentinel)).toBe(false);
+      expect(result.outcome).toBe("aborted");
+      expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
+      expect(events.some((event) => event.kind === "run_complete")).toBe(false);
+      const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+      expect(receipt?.metadata).toMatchObject({
+        outcome: "interrupted", taskId: "pre-aborted-task",
+      });
+    } finally {
+      await control.shutdown(live.agentId, "test cleanup");
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("removes the external abort listener after completion", async () => {
@@ -1753,6 +2906,112 @@ describe("runAgent", () => {
       reasoningEffort: "high",
       serviceTier: "priority",
     });
+  });
+
+  /**
+   * Spawns a child of a parent on openai/gpt-5.4 at high effort through the
+   * spawn_agent tool, the real delegate and the real runAgent, and returns
+   * the options of the child's first model call.
+   */
+  async function childCallThroughSpawn(opts: {
+    readonly parentServiceTier?: string;
+    readonly limits?: Record<string, unknown>;
+    readonly args?: Record<string, unknown>;
+  }): Promise<LLMChatOptions> {
+    const childCalls: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(async (messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined && JSON.stringify(messages).includes("limited child task")) childCalls.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "gpt-5.4", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const parent = makeStubSession({
+      roleWorkspace: ROLE_WORKSPACE,
+      services: { provider, configStore: new ConfigStore({ cwd: "/tmp", base: {
+        agents: { subagent_limits: opts.limits ?? {} } } }) },
+      sessionConfiguration: mkSessionConfiguration({
+        provider: { slug: "openai" } as unknown as SessionConfiguration["provider"],
+        collaborationMode: { model: "gpt-5.4", reasoningEffort: "high" },
+        ...(opts.parentServiceTier !== undefined ? { serviceTier: opts.parentServiceTier } : {}),
+      }),
+      config: { ...mkConfig(), model: "gpt-5.4" },
+      modelInfo: { ...mkModelInfo(), slug: "gpt-5.4", supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+        serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed, increased usage" }] },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({
+      session: parent as unknown as ConstructorParameters<typeof AgentControl>[0]["session"],
+      registry,
+    });
+    const spawn = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => ({ control, registry }),
+    } as unknown as MultiAgentV2Options);
+    try {
+      const result = await spawn.execute({ message: "limited child task", task_name: "worker", ...opts.args });
+      expect(result.isError, result.content).not.toBe(true);
+      await vi.waitFor(() => expect(childCalls).toHaveLength(1));
+      return childCalls[0]!;
+    } finally {
+      await control.shutdownAll("test cleanup");
+    }
+  }
+
+  it("sends no tier for a child at standard speed, even under a parent on priority", async () => {
+    const call = await childCallThroughSpawn({ parentServiceTier: "priority" });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("sends priority for a child whose limit is fast, under a parent at standard speed", async () => {
+    const call = await childCallThroughSpawn({ limits: { openai: { effort: "medium", speed: "fast" } } });
+    expect(call.serviceTier).toBe("priority");
+    expect(call.reasoningEffort).toBe("medium");
+  });
+
+  it("does not let a role's tier or effort take a child above its limits", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: ['reasoning_effort = "high"', 'service_tier = "priority"'].join("\n"),
+      },
+    });
+    const call = await childCallThroughSpawn({ args: { agent_type: "priority-reviewer" } });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("does not let a role's tier override a cross-provider plan's standard speed", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: { description: "Review quickly.", configToml: 'service_tier = "priority"' },
+    });
+    const seen: LLMChatOptions[] = [];
+    const target = { ...makeProvider([]), name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined) seen.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    } });
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    expect(plan.serviceTier).toBeUndefined();
+    const { live } = await spawnLive(parent, "priority-reviewer");
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    expect(result.outcome).toBe("completed");
+    expect(seen[0]?.serviceTier).toBeUndefined();
   });
 
   it("captures matching session and child tool metadata from the same registry", async () => {
@@ -1935,19 +3194,21 @@ describe("runAgent", () => {
     );
   });
 
-  it("treats child maxTurns termination as an errored run", async () => {
+  it.each(["success", "failure", "empty", "unsolicited-tool"])("returns a partial child result at maxTurns: %s", async (mode) => {
     const provider = makeProvider([
       {
-        content: "",
-        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        content: "Found a missing check; verifying the caller next.",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"file":"caller.ts"}' }],
         finishReason: "tool_calls",
       },
-      {
-        content: "",
-        toolCalls: [{ id: "call-2", name: "system.echo", arguments: "{}" }],
-        finishReason: "tool_calls",
-      },
+      { content: mode === "success" ? "The caller lacks validation. Tests were not checked." : "",
+        ...(mode === "unsolicited-tool" ? { toolCalls: [{ id: "forbidden", name: "system.echo", arguments: "{}" }] } : {}) },
     ]);
+    if (mode === "failure") provider.chatStream.mockImplementationOnce(async () => ({
+      content: "Found a missing check; verifying the caller next.",
+      toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"file":"caller.ts"}' }],
+      model: "mock", finishReason: "tool_calls", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    })).mockImplementationOnce(async () => { throw new Error("provider unavailable"); });
     const session = makeStubSession({
       services: {
         provider,
@@ -1987,20 +3248,66 @@ describe("runAgent", () => {
       }),
     );
 
-    expect(result.outcome).toBe("errored");
-    expect(result.error).toBeInstanceOf(Error);
-    expect((result.error as Error).message).toBe(
-      "subagent exceeded maxTurns (1)",
-    );
+    expect(result.outcome).toBe("completed");
+    expect(result.error).toBeUndefined();
+    expect(result.finalMessage).toContain("stopped at the step limit");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const finalOptions = provider.chatStream.mock.calls[1]![2];
+    expect(finalOptions).toMatchObject({ tools: provider.chatStream.mock.calls[0]![2]?.tools, toolChoice: "none", singleWireAttempt: true });
+    if (mode === "success") {
+      expect(result.finalMessage).toContain("The caller lacks validation. Tests were not checked.");
+    } else {
+      expect(result.finalMessage).toContain("Found a missing check");
+      expect(result.finalMessage).toContain('system.echo {"file":"caller.ts"}');
+    }
+    expect(result.toolCallCount).toBe(1);
+    const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({ outcome: "completed", taskId: "max-turns-task" });
+    expect(receipt?.content).toContain('"reason":"step_limit"');
+    expect(receipt?.content).toContain('"outcome":"completed"');
+    expect(toListedAgentJson({ agentName: live.agentPath, agentStatus: live.status.value }).terminal)
+      .toMatchObject({ reason: "step_limit", retryable: false, completedWork: result.finalMessage, unfinishedWork: "go" });
+
+  });
+
+  it("keeps interactive capped turns alive without a wrap-up call", async () => {
+    const provider = makeProvider([{ content: "Still investigating.",
+      toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "review" }], taskPrompt: "review", maxTurns: 1, keepAlive: true });
+    await nextProgressEvent(iter, "turn_complete");
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
-    const receipt = session.mailbox
-      .drain()
-      .find((message) => message.metadata?.lifecycle === "turn");
-    expect(receipt?.metadata).toMatchObject({
-      outcome: "errored",
-      taskId: "max-turns-task",
-    });
-    expect(receipt?.content).toContain('"outcome":"errored"');
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "step_limit" } });
+    live.abortController.abort("test complete");
+    expect((await collectRun(iter)).result.outcome).toBe("errored");
+  });
+
+  it("summarizes an unattended task on a reusable worker and accepts another assignment", async () => {
+    const provider = makeProvider([
+      { content: "Investigating.", toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" },
+      { content: "Partial findings; tests unchecked." },
+      { content: "Follow-up completed." },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { live, control } = await spawnLive(session);
+    const iter = runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "review" }], taskPrompt: "review", taskId: "first-task",
+      maxTurns: 1, keepAlive: true, summarizeAtStepLimit: true });
+    const first = await nextProgressEvent(iter, "turn_complete");
+    expect(first.finalMessage).toContain("Partial findings; tests unchecked.");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "step_limit", retryable: false } });
+    const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({ outcome: "completed", taskId: "first-task" });
+    expect(receipt?.content).toContain('"reason":"step_limit"');
+    const next = nextProgressEvent(iter, "turn_complete");
+    control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath, content: "finish", taskId: "second-task" });
+    expect((await next).finalMessage).toBe("Follow-up completed.");
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "completed" } });
+    live.abortController.abort("test complete");
+    expect((await collectRun(iter)).result.outcome).toBe("completed");
   });
 
   it("does not reuse a non-keep-alive worker for queued follow-up input", async () => {
@@ -2058,7 +3365,7 @@ describe("runAgent", () => {
           direction: "up",
           triggerTurn: true,
           content: expect.stringContaining(
-            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}"}`,
+            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}","task_id":"${completed.turnId}"}`,
           ),
           metadata: expect.objectContaining({
             kind: "subagent_notification",
@@ -2075,12 +3382,12 @@ describe("runAgent", () => {
   });
 
   it.each([
-    ["max_turns", "subagent exceeded maxTurns"],
-    ["max_budget_usd", "subagent reached the canonical session cost cap"],
-    ["no_progress", "Turn stopped because progress stalled."],
-    ["compact_failed", "compact request does not fit"],
-    ["empty_response", "subagent returned no assistant output after a retry"],
-  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason) => {
+    ["max_turns", "subagent exceeded maxTurns", "step_limit"],
+    ["max_budget_usd", "subagent reached the canonical session cost cap", "cost_cap_reached"],
+    ["no_progress", "Turn stopped because progress stalled.", "no_progress"],
+    ["compact_failed", "compact request does not fit", "context_insufficient"],
+    ["empty_response", "subagent returned no assistant output after a retry", "model_refused"],
+  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason, terminalReason) => {
     let turns = 0;
     const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
       turns += 1;
@@ -2124,6 +3431,8 @@ describe("runAgent", () => {
         reason,
       });
       expect(failedReceipt?.content).toContain('"outcome":"errored"');
+      expect(failedReceipt?.content).toContain(`"reason":"${terminalReason}"`);
+      expect(failedReceipt?.content).toContain('"retryable":false');
 
       const next = nextProgressEvent(iter, "turn_complete");
       control.assignTask(live.agentId, {
@@ -2203,17 +3512,21 @@ describe("runAgent", () => {
   it("closes an idle keep-alive worker as completed instead of failing its finished turn", async () => {
     const provider = makeProvider([{ content: "verified" }]);
     const session = makeStubSession({ services: { provider } });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     const iter = runAgent({
       live,
       parent: session,
       initialMessages: [{ role: "user", content: "verify" }],
       taskPrompt: "verify",
+      taskId: "verify-task",
       keepAlive: true,
     });
 
     const completed = await nextProgressEvent(iter, "turn_complete");
     expect(completed.finalMessage).toBe("verified");
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
     live.abortController.abort("agent shutdown");
 
     const { result } = await collectRun(iter);
@@ -2221,7 +3534,52 @@ describe("runAgent", () => {
       outcome: "completed",
       finalMessage: "verified",
     });
-    expect(live.status.value.status).toBe("completed");
+    expect(live.status.value).toMatchObject({ status: "completed", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
+    const terminal = live.status.value.status === "completed" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    control.recordTerminalOutcome(live.agentId, terminal!);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "completed" },
+    });
+  });
+
+  it("keeps a max_turns terminal when an idle worker is torn down", async () => {
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
+      yield { type: "turn_complete", content: "unfinished",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "max_turns" };
+      return { reason: "completed" };
+    });
+    const session = makeStubSession({ services: { provider: makeProvider([]) } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "finish" }],
+      taskPrompt: "finish", taskId: "bounded-task", keepAlive: true,
+    });
+    try {
+      const completed = await nextProgressEvent(iter, "turn_complete");
+      expect(completed.finalMessage).toBe("subagent exceeded maxTurns");
+      expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+        reason: "step_limit", retryable: false,
+      } });
+      live.abortController.abort("worker closed");
+      const { result } = await collectRun(iter);
+      expect(result.outcome).toBe("errored");
+      expect(live.status.value).toMatchObject({ status: "errored", terminal: {
+        reason: "step_limit", retryable: false,
+      } });
+      const terminal = live.status.value.status === "errored" ? live.status.value.terminal : undefined;
+      expect(terminal).toBeDefined();
+      control.recordTerminalOutcome(live.agentId, terminal!);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "step_limit", retryable: false },
+      });
+    } finally {
+      turnSpy.mockRestore();
+    }
   });
 
   it("fsyncs one correlated child outcome before projecting its one parent receipt", async () => {
@@ -2280,6 +3638,537 @@ describe("runAgent", () => {
         .drain()
         .filter((message) => message.metadata?.lifecycle === "turn"),
     ).toHaveLength(1);
+  });
+
+  it("ends a looping child with model_loop in its journal, status and parent receipt", async () => {
+    // Synchronous fake stream avoids substituting a mocked runTurn: this goes
+    // through the same shared stream guard and reconnect path as a real child.
+    const provider = makeProvider([]);
+    provider.chatStream = vi.fn(async (_messages, emit, options) => {
+      for (let i = 0; i < 500 && !options?.signal?.aborted; i++) {
+        emit({ content: "", done: false, reasoningSummaryDelta: {
+          delta: i % 2 ? "Let me know if you want to tweak anything! " : "I can adjust the implementation if you would like changes. ",
+          summaryIndex: i % 2,
+        } });
+      }
+      throw options?.signal?.reason ?? new Error("Expected loop guard to abort");
+    });
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const outcomes: unknown[] = [];
+    const { result } = await collectRun(runAgent({
+      live, parent: session, initialMessages: [{ role: "user", content: "build the parser" }],
+      taskPrompt: "build the parser", taskId: "loop-task",
+      onCacheSafeParams: captured => {
+        const child = (captured as unknown as { toolUseContext: { admissionSession: Session } }).toolUseContext.admissionSession;
+        child.eventLog.subscribe(event => {
+          if (event.msg.type === "subagent_turn_outcome") outcomes.push(event.msg.payload);
+        });
+      },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(live.status.value).toMatchObject({ status: "errored", terminal: {
+      reason: "model_loop", retryable: false, dispatch: "sent",
+    } });
+    expect(outcomes).toEqual([expect.objectContaining({ terminal: expect.objectContaining({ reason: "model_loop" }) })]);
+    expect(session.mailbox.drain().some(message =>
+      typeof message.content === "string" && message.content.includes('"reason":"model_loop"'))).toBe(true);
+  });
+
+  it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {
+    const billing = Object.assign(new Error("Insufficient Balance"), { status: 402 });
+    const provider: LLMProvider = {
+      name: "deepseek",
+      chat: vi.fn(),
+      chatStream: vi.fn().mockRejectedValue(billing),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const outcomes: unknown[] = [];
+    const notices: unknown[] = [];
+    const order: string[] = [];
+    const closeSpawnEdge = vi.fn(async () => { order.push("closed_edge"); });
+    session.eventLog.subscribe((event) => {
+      if (event.msg.type === "subagent_funds_notice") {
+        order.push("user_notice");
+        notices.push(event.msg.payload);
+      }
+    });
+    const { result } = await collectRun(runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "build the parser" }],
+      taskPrompt: "build the parser", taskId: "funds-task",
+      onTerminalFundsStop: closeSpawnEdge,
+      onCacheSafeParams: (captured) => {
+        const child = (captured as unknown as { toolUseContext: { admissionSession: Session } })
+          .toolUseContext.admissionSession;
+        child.eventLog.subscribe((event) => {
+          if (event.msg.type === "subagent_turn_outcome") {
+            order.push("durable_outcome");
+            outcomes.push(event.msg.payload);
+          }
+        });
+      },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(closeSpawnEdge).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["closed_edge", "durable_outcome", "user_notice"]);
+    expect(outcomes).toEqual([expect.objectContaining({
+      terminal: expect.objectContaining({ provider: "deepseek", reason: "insufficient_funds",
+        retryable: false, unfinishedWork: "build the parser" }),
+    })]);
+    expect(notices).toEqual([expect.objectContaining({
+      agentPath: live.agentPath,
+      terminal: expect.objectContaining({ reason: "insufficient_funds" }),
+    })]);
+    expect(live.status.value).toMatchObject({
+      status: "errored", terminal: { reason: "insufficient_funds" },
+    });
+    const terminal = live.status.value;
+    if (terminal.status !== "errored" || terminal.terminal === undefined) throw new Error("missing funds terminal");
+    control.recordTerminalOutcome(live.agentId, terminal.terminal);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "insufficient_funds" },
+    });
+    const recovered = new AgentControl({ session, registry: new AgentRegistry() });
+    await expect(recovered.resume({ parentPath: "/root", metadata: live.metadata }))
+      .rejects.toThrow(/funds-stopped child/u);
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(session.mailbox.drain().some((message) =>
+      typeof message.content === "string" && message.content.includes('"reason":"insufficient_funds"'))).toBe(true);
+  });
+
+  /**
+   * Runs one cross-provider child whose provider stops on funds, after two
+   * session grants (the child's and an unrelated OpenRouter task's). Checks
+   * that the funds stop invalidated the other grant: a reworded retry asks
+   * again and is denied.
+   */
+  async function runCrossProviderFundsStop(options: {
+    readonly label: string;
+    readonly provider: string;
+    readonly model: string;
+    readonly stubPrepare: (session: ReturnType<typeof makeStubSession>) => void;
+  }) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${options.label}-`));
+    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
+      // These cases approve through the prompt, so they opt into per-spawn consent.
+      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"],
+        cross_provider_ask_each_spawn: true } } });
+    const session = makeStubSession({ conversationId: `${options.label}-root`, services: { configStore },
+      sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+    const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    parentRollout.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(),
+      cwd, originator: `${options.label}-test`, agencVersion: "0.2.0",
+      model: session.modelInfo.slug, modelProvider: "grok" });
+    session.mountRolloutStore(parentRollout);
+    Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
+      rootHumanTurn: { turnId: "human-turn" } }) },
+      currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
+    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
+    const close = broker.register(session, { isActive: () => true });
+    const approveSession = async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
+      const pending = authorizeChildExecutionPlan(session, proposed);
+      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+      const card = broker.list(session.conversationId)[0]!;
+      broker.resolve(session.conversationId, card.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      const decision = await pending;
+      if (decision.kind !== "granted") throw new Error(decision.reason);
+      return decision.plan;
+    };
+    try {
+      const { live } = await spawnLive(session);
+      const proposed = await createChildExecutionPlan({
+        session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
+          services: session.services, config: session.config, modelInfo: session.modelInfo,
+          providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
+        selection: { provider: options.provider, model: options.model },
+        modelInfo: { ...mkModelInfo(), slug: options.model, provider: options.provider },
+        parentPath: "/root", taskId: options.label, taskName: "worker", taskText: "build parser",
+        toolFree: false, forkedHistory: false,
+      });
+      const other = { ...proposed,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
+          endpoint: "https://openrouter.ai/api/v1" },
+        task: { ...proposed.task, id: "earlier-other", text: "other work" },
+      };
+      await approveSession(other);
+      const plan = await approveSession(proposed);
+      options.stubPrepare(session);
+      const notices: unknown[] = [];
+      const closeSpawnEdge = vi.fn(async () => {});
+      session.eventLog.subscribe(event => { if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload); });
+      const { result } = await collectRun(runAgent({ live, parent: session, plan,
+        taskPrompt: "build parser", taskId: options.label,
+        onTerminalFundsStop: closeSpawnEdge,
+        initialMessages: [{ role: "user", content: "build parser" }] }));
+      const retry = authorizeChildExecutionPlan(session, { ...other, task: { ...other.task,
+        id: "retry-other", text: "different wording" }, consentGrant: null });
+      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+      broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
+        { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
+      expect((await retry).kind).toBe("consent_denied");
+      return { result, live, notices, closeSpawnEdge };
+    } finally {
+      close(); await session.shutdown(); rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it.each(["deepseek", "zai"] as const)("publishes a %s setup-time funds stop and invalidates reusable cross-provider grants", async (destinationProvider) => {
+    const model = destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro";
+    const billingError = destinationProvider === "zai"
+      ? await new ZaiProvider({ apiKey: "test", model: "glm-5.3",
+          fetchImpl: async () => new Response(JSON.stringify({ error: {
+            code: "1113", message: "Insufficient balance" } }), { status: 429 }) })
+          .chat([{ role: "user", content: "go" }]).then(() => undefined, (error: unknown) => error)
+      : new LLMFundsError("deepseek", 402);
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "setup-funds", provider: destinationProvider, model,
+      stubPrepare: (session) => { vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(billingError); },
+    });
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored", terminal: { reason: "insufficient_funds" } });
+  });
+
+  it("stops an OpenAI SSE billing failure and invalidates session consent grants", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: {
+        error: { code: "insufficient_quota", message: "Billing is unavailable" },
+      } })}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+      useResponsesApi: true, fetchImpl });
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "stream-funds", provider: "openai", model: "gpt-5",
+      stubPrepare: (session) => {
+        vi.spyOn(session.providerService, "prepareChild").mockResolvedValue({
+          binding: { provider: "openai", model: "gpt-5", instance: provider },
+        });
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored",
+      terminal: { reason: "insufficient_funds", retryable: false } });
+  });
+
+  /**
+   * A root conversation with a real rollout whose settings are the
+   * cross-provider consent (no per-spawn opt-in). `restart` shuts it down and
+   * restores it from its rollout under a new broker, as a daemon restart does.
+   */
+  function settingsConsentConversation(label: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${label}-`));
+    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openrouter"] } } });
+    const sessionId = `${label}-root`;
+    const open = (resume: boolean) => {
+      const session = makeStubSession({ conversationId: sessionId, services: { configStore },
+        sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+      const rollout = new RolloutStore({ cwd, sessionId, agencVersion: "0.2.0",
+        sessionTempRoot: tmpdir(), ...(resume ? { resume: true } : {}) });
+      rollout.open({ sessionId, timestamp: new Date().toISOString(), cwd, originator: `${label}-test`,
+        agencVersion: "0.2.0", model: session.modelInfo.slug, modelProvider: "grok" });
+      session.mountRolloutStore(rollout);
+      // Bootstrap seeds a resumed session's event log from its rollout.
+      session.eventLog.seedCanonicalHistory(rollout.readAll().flatMap((item) =>
+        item.type === "event_msg" ? [item.payload] : []));
+      Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
+        rootHumanTurn: { turnId: "human-turn" } }) },
+        currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
+      const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
+      return { session, broker, unregister: broker.register(session, { isActive: () => true }) };
+    };
+    let current = open(false);
+    const childPlan = (session: Session, taskId: string) => createChildExecutionPlan({
+      session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
+        services: session.services, config: session.config, modelInfo: session.modelInfo,
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
+      selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+      parentPath: "/root", taskId, taskName: "worker", taskText: "build parser",
+      toolFree: false, forkedHistory: false,
+    });
+    return {
+      configStore, cwd, childPlan,
+      get session() { return current.session; },
+      get broker() { return current.broker; },
+      restart: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        current = open(true);
+      },
+      /** Requests consent, expects a question, and denies it. */
+      denyNextQuestion: async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
+        const { session, broker } = current;
+        const pending = authorizeChildExecutionPlan(session, proposed);
+        await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+        broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
+          { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
+        return (await pending).kind;
+      },
+      dispose: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        rmSync(cwd, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("ends settings consent at a funds stop without the per-spawn opt-in, also after a daemon restart", async () => {
+    const conversation = settingsConsentConversation("settings-funds");
+    try {
+      const session = conversation.session;
+      const { live } = await spawnLive(session);
+      const proposed = await conversation.childPlan(session, "settings-funds");
+      // Settings are the consent: the spawn runs without a question.
+      const granted = await authorizeChildExecutionPlan(session, proposed);
+      if (granted.kind !== "granted") throw new Error(granted.reason);
+      expect(conversation.broker.list(session.conversationId)).toHaveLength(0);
+      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(new LLMFundsError("deepseek", 402));
+      const notices: unknown[] = [];
+      session.eventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload);
+      });
+      const { result } = await collectRun(runAgent({ live, parent: session, plan: granted.plan,
+        taskPrompt: "build parser", taskId: "settings-funds", onTerminalFundsStop: vi.fn(async () => {}),
+        initialMessages: [{ role: "user", content: "build parser" }] }));
+      expect(result.outcome).toBe("errored");
+      expect(notices).toHaveLength(1);
+      const other = { ...proposed,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
+          endpoint: "https://openrouter.ai/api/v1" },
+        task: { ...proposed.task, id: "after-stop", text: "other work" },
+      };
+      expect(await conversation.denyNextQuestion(other)).toBe("consent_denied");
+      await conversation.restart();
+      expect(await conversation.denyNextQuestion({ ...other,
+        task: { ...other.task, id: "after-restart" } })).toBe("consent_denied");
+    } finally {
+      await conversation.dispose();
+    }
+  });
+
+  it("journals a nested child's funds stop with the root owner, in a valid journal read back after a restart", async () => {
+    const conversation = settingsConsentConversation("nested-funds");
+    const root = conversation.session;
+    const child = makeStubSession({ conversationId: "nested-funds-child",
+      services: { configStore: conversation.configStore },
+      sessionConfiguration: mkSessionConfiguration({ cwd: conversation.cwd }),
+      config: { ...mkConfig(), cwd: conversation.cwd } });
+    try {
+      registerChildApprovalSession(child, root);
+      const notice = {
+        agentPath: "/root/worker/researcher", taskId: "grandchild-task", taskText: "research the parser",
+        terminal: childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+          reason: "insufficient_funds", dispatch: "sent", unfinishedWork: "research the parser" }),
+        message: "deepseek/deepseek-v4-pro ran out of credits. The child stopped; ask before switching providers.",
+      };
+      // run-agent emits a grandchild's notice on its parent, this child.
+      child.emit({ id: child.nextInternalSubId(), msg: { type: "subagent_funds_notice", payload: notice } },
+        { durable: true });
+      const rolloutPath = root.rolloutStore!.rolloutPath;
+      expect(root.rolloutStore!.readAll().flatMap((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "subagent_funds_notice"
+          ? [item.payload.msg.payload] : [])).toEqual([notice]);
+      await conversation.restart();
+      expect(() => validateCanonicalJournalText(readFileSync(rolloutPath, "utf8"))).not.toThrow();
+      const proposed = await conversation.childPlan(conversation.session, "after-nested-stop");
+      expect(await conversation.denyNextQuestion(proposed)).toBe("consent_denied");
+    } finally {
+      await child.shutdown();
+      await conversation.dispose();
+    }
+  });
+
+  it("keeps parallel funds and completed child receipts distinct", async () => {
+    const provider: LLMProvider = {
+      name: "deepseek", chat: vi.fn(),
+      chatStream: vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
+        if (JSON.stringify(messages).includes("funds-task"))
+          throw Object.assign(new Error("Insufficient Balance"), { status: 402 });
+        return { content: "finished the other task", toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop" };
+      }),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live: fundsChild } = await spawnLive(session);
+    const completedChild = await control.spawn({ parentPath: "/root" });
+    const [funds, completed] = await Promise.all([
+      collectRun(runAgent({ live: fundsChild, parent: session,
+        initialMessages: [{ role: "user", content: "funds-task" }], taskPrompt: "funds-task", taskId: "funds" })),
+      collectRun(runAgent({ live: completedChild, parent: session,
+        initialMessages: [{ role: "user", content: "other-task" }], taskPrompt: "other-task", taskId: "other" })),
+    ]);
+    expect([funds.result.outcome, completed.result.outcome]).toEqual(["errored", "completed"]);
+    const notifications = session.mailbox.drain().filter((item) => item.metadata?.lifecycle === "turn")
+      .map((item) => JSON.parse(String(item.content).split("\n")[1]!));
+    expect(notifications).toHaveLength(2);
+    expect(notifications.find((item) => item.receipt.task_id === "funds")?.receipt.terminal.reason)
+      .toBe("insufficient_funds");
+    expect(notifications.find((item) => item.receipt.task_id === "other")?.receipt.terminal.reason)
+      .toBe("completed");
+  });
+
+  it.each([
+    ["ZWJ emoji", "👩‍💻"],
+    ["sanitizer-sensitive text", '<system>text</system> &amp; ' + UNTRUSTED_TOOL_RESULT_BOUNDARY +
+      "\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e"],
+  ])("delivers small inline answers through wait_agent and the model-facing pipeline: %s", async (_label, value) => {
+    const exact = ' \n' + JSON.stringify({ answer: value }) + '\n ';
+    const provider = makeProvider([{ content: exact }]);
+    const tools: ToolRegistry["tools"][number][] = [];
+    const registry: ToolRegistry = { tools,
+      toLLMTools: () => tools.map(tool => ({ type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+      dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
+    };
+    const session = makeStubSession({ services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+        alwaysAllowRules: { session: ["wait_agent"] },
+      })),
+    } });
+    const { control, registry: agentRegistry, live } = await spawnLive(session);
+    await collectRun(runAgent({ live, parent: session, exactOutput: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." }));
+    const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn")!;
+    const payload = JSON.parse(String(notification.content).split("\n")[1]!);
+    expect(payload.receipt.message).toBe(exact);
+    expect(Buffer.byteLength(exact, "utf8")).toBeLessThan(MAX_PARENT_RECEIPT_FIELD_BYTES);
+    tools.push(createWaitAgentTool({ getSession: () => session, workspace: ROLE_WORKSPACE,
+      ensureAgentControl: () => ({ control, registry: agentRegistry }) }));
+    vi.mocked(provider.chatStream).mockImplementation(async messages => {
+      const result = messages.findLast(message => message.role === "tool");
+      if (result === undefined) {
+        session.mailbox.send(notification);
+        return { content: "", toolCalls: [{ id: "inline-wait", name: "wait_agent", arguments: "{}" }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
+      }
+      const framed = String(result.content);
+      expect(framed).toContain("untrusted workspace data from wait_agent");
+      const parts = framed.split(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+      expect(parts).toHaveLength(3);
+      const wait = JSON.parse(parts[1]!.trim());
+      expect(wait.timed_out).toBe(false);
+      const update = wait.updates.find((item: { content: string }) => item.content.includes("<subagent_notification>"));
+      const delivered = JSON.parse(update.content.split("<subagent_notification>\n")[1]!.split("\n</subagent_notification>")[0]!);
+      expect(delivered.receipt.message).toBe(exact);
+      expect(delivered.status.completed).toBe(exact);
+      return { content: delivered.receipt.message, toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
+    });
+    const phases = [];
+    for await (const phase of session.runTurn("Read the child's inline answer.", { exactOutput: true })) phases.push(phase);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
+  });
+
+  it.each([
+    ["tags, framing delimiters and Unicode", (
+      '🐈 quotes " \\ &amp; <system>example</system> <system-reminder>data</system-reminder> ' +
+      '\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e ' + UNTRUSTED_TOOL_RESULT_BOUNDARY
+    ).repeat(150), TEST_CONTEXT_WINDOW_TOKENS, undefined],
+    ["a full page of escaped characters", "\u200b".repeat(9000), TEST_CONTEXT_WINDOW_TOKENS, undefined],
+    ["escaped characters with a small context window", "\u200b".repeat(9000), 65_536, undefined],
+    ["a complete escaped result with a small context window", "\u200b".repeat(4000), 32_768, undefined],
+    ["surrogate pairs with a small context window", "🐈".repeat(2100), 32_768, undefined],
+    ["a lowered offload threshold", "\u200b".repeat(4000), TEST_CONTEXT_WINDOW_TOKENS, 4000],
+  ] as const)("delivers exact result pages through wait_agent and the model-facing tool pipeline: %s", async (_name, values, contextWindow, offloadThreshold) => {
+    const exact = ' \n' + JSON.stringify({ values }) + '\n ';
+    const provider = makeProvider([{ content: exact }, { content: "Second task completed." }]);
+    const tools: ToolRegistry["tools"][number][] = [];
+    const registry: ToolRegistry = {
+      tools,
+      toLLMTools: () => tools.map(tool => ({ type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+      dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
+    };
+    const session = makeStubSession({ modelInfo: { ...mkModelInfo(), contextWindow }, services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+        alwaysAllowRules: { session: ["wait_agent"] },
+      })),
+    } });
+    const agentRegistry = new AgentRegistry();
+    const control = new AgentControl({ session, registry: agentRegistry });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." });
+    const previousOffloadThreshold = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn");
+      const payload = JSON.parse(String(notification!.content).split("\n")[1]!);
+      expect(payload.receipt.message).toBeUndefined();
+      expect(payload.status.completed).toBeNull();
+      expect(payload.result_ref).toEqual({ agent_id: live.agentId, turn_id: live.lastTaskReceipt!.turnId });
+      const next = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+        content: "Complete the second task.", taskId: "second-task" });
+      expect((await next).finalMessage).toBe("Second task completed.");
+      expect(live.lastTaskReceipt!.turnId).not.toBe(payload.result_ref.turn_id);
+      expect(live.status.value.status).toBe("idle");
+      if (offloadThreshold !== undefined) process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES = String(offloadThreshold);
+      tools.push(createWaitAgentTool({ getSession: () => session, workspace: ROLE_WORKSPACE,
+        ensureAgentControl: () => ({ control, registry: agentRegistry }) }));
+      const pages: string[] = [];
+      const parentPhases = [];
+      vi.mocked(provider.chatStream).mockImplementation(async (messages) => {
+        const result = messages.findLast(message => message.role === "tool");
+        let offset = 0;
+        if (result !== undefined) {
+          const framed = String(result.content);
+          expect(framed).toContain("untrusted workspace data from wait_agent");
+          const parts = framed.split(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+          expect(parts).toHaveLength(3);
+          const transport = parts[1]!.trim();
+          expect(Buffer.byteLength(framed, "utf8")).toBeLessThanOrEqual(
+            Math.min(offloadThreshold ?? Infinity,
+              computeEffectiveMaxResultBytes({ content: transport, contextWindowTokens: contextWindow })),
+          );
+          expect(transport).not.toContain("<system>");
+          expect(transport).not.toContain("\u200b");
+          const page = JSON.parse(transport);
+          expect(page.result_ref).toEqual(payload.result_ref);
+          expect(page.total_chars).toBe(exact.length);
+          expect(page.complete).toBe(page.next_offset === null);
+          expect(page.text.length).toBeGreaterThan(0);
+          expect(page.text.isWellFormed()).toBe(true);
+          pages.push(page.text);
+          if (page.complete) return { content: exact, toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
+          offset = page.next_offset;
+          expect(offset).toBe(pages.join("").length);
+        }
+        return { content: "", toolCalls: [{ id: `page-${offset}`, name: "wait_agent",
+          arguments: JSON.stringify({ result_ref: { ...payload.result_ref, offset } }) }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
+      });
+      for await (const phase of session.runTurn("Read all pages of the child's completed result.", { exactOutput: true })) parentPhases.push(phase);
+      expect(parentPhases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
+      const text = pages.join("");
+      expect(pages.length).toBeGreaterThan(1);
+      expect(text).toBe(exact);
+      expect(JSON.parse(text)).toEqual(JSON.parse(exact));
+      expect(() => control.readChildResultPage("unrelated-parent", live.agentId, payload.result_ref.turn_id)).toThrow("not a child");
+    } finally {
+      if (previousOffloadThreshold === undefined) delete process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
+      else process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES = previousOffloadThreshold;
+      await stopKeepAliveRun(iter, live.abortController);
+    }
   });
 
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
@@ -2534,6 +4423,12 @@ describe("runAgent", () => {
     const provider = makeProvider([{ content: "initial result" }]);
     const session = makeStubSession({ services: { provider } });
     const { control, live } = await spawnLive(session);
+    let costUsd = 0;
+    Object.assign(session.services, { executionAdmission: {
+      scope: { runId: session.conversationId },
+      getUsageSummary: () => ({ agents: [{ runId: live.agentId, costUsd, hasUnknownCost: false }] }),
+      forSession: () => undefined,
+    } });
     const childOutcomes: unknown[] = [];
     let unsubscribeChild: (() => void) | undefined;
     const iter = runAgent({
@@ -2543,6 +4438,7 @@ describe("runAgent", () => {
       taskPrompt: "initial task",
       keepAlive: true,
       onCacheSafeParams: (captured) => {
+        costUsd = 1;
         const child = (
           captured as unknown as {
             toolUseContext: { admissionSession: Session };
@@ -2588,6 +4484,8 @@ describe("runAgent", () => {
         turnId: accepted.turnId,
         outcome: "nack",
         reason: "worker_teardown_before_start",
+        terminal: expect.objectContaining({ costUsd: 0, completedWork: "",
+          unfinishedWork: "never start this", dispatch: "not_sent" }),
       }),
     );
   });
@@ -2718,6 +4616,7 @@ describe("runAgent", () => {
         integrationRef: firstHead,
       });
       expect(firstReceiptContent).toContain(`"integration_ref":"${firstHead}"`);
+      expect(firstReceiptContent).toContain('"terminal":{"provider":');
 
       const secondPromise = nextProgressEvent(iter, "turn_complete");
       await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
@@ -2747,6 +4646,234 @@ describe("runAgent", () => {
       expect(firstReceiptContent).not.toContain(secondHead);
       await stopKeepAliveRun(iter, live.abortController);
     } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("preserves a delegated worktree across three assignments until close (commits=%s)", async (commitResults) => {
+    const repo = makeWorktreeEvidenceRepo();
+    const worktreePath = join(repo, ".agenc-worktrees", "reusable");
+    const turns: Extract<RunAgentProgressEvent, { kind: "turn_complete" }>[] = [];
+    const baseProvider = makeProvider([
+      { content: "first result" },
+      { content: "second result" },
+      { content: "third result" },
+    ]);
+    let turnIndex = 0;
+    const provider: LLMProvider = {
+      ...baseProvider,
+      chatStream: vi.fn(async (...args) => {
+        turnIndex += 1;
+        if (commitResults) {
+          const filename = `result-${turnIndex}.txt`;
+          writeFileSync(join(worktreePath, filename), `result ${turnIndex}\n`);
+          git(worktreePath, "add", filename);
+          git(worktreePath, "commit", "-m", `task result ${turnIndex}`);
+        }
+        return baseProvider.chatStream(...args);
+      }),
+    };
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+      services: {
+        provider,
+        sandboxExecutionBroker: explicitDangerBroker.forkForCwd(repo),
+      },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    let thread: AgentThread | undefined;
+    try {
+      const outcome = await delegate({
+        parent: session,
+        parentPath: "/root",
+        control,
+        registry,
+        agentName: "reusable",
+        taskPrompt: "first assignment",
+        taskId: "reusable-task-1",
+        isolation: "worktree",
+        worktreeSlug: "reusable",
+        keepAlive: true,
+        runInBackground: true,
+        onProgress: (event) => {
+          if (event.kind === "turn_complete") turns.push(event);
+        },
+      });
+      expect(outcome.kind).toBe("async_launched");
+      if (outcome.kind !== "async_launched") {
+        throw new Error("delegate did not launch");
+      }
+      thread = outcome.thread;
+      const agentId = thread.live.agentId;
+      let firstReceipt = "";
+      for (let index = 1; index <= 3; index += 1) {
+        if (index > 1) {
+          control.assignTask(agentId, {
+            author: "/root",
+            recipient: thread.live.agentPath,
+            content: `assignment ${index}`,
+            taskId: `reusable-task-${index}`,
+          });
+        }
+        await vi.waitFor(() => {
+          expect(turns).toHaveLength(index);
+          expect(thread!.live.status.value.status).toBe("idle");
+        });
+        expect(thread.live.agentId).toBe(agentId);
+        expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("base\n");
+        expect(existsSync(join(repo, ".git", "worktrees", "reusable"))).toBe(true);
+        const receipt = session.mailbox.drain().find(
+          (message) => message.metadata?.lifecycle === "turn" &&
+            message.metadata.taskId === `reusable-task-${index}`,
+        );
+        expect(receipt).toBeDefined();
+        expect(turns[index - 1]?.worktreeEvidence?.state).toBe(
+          commitResults ? "committed_clean" : "unchanged_clean",
+        );
+        if (index === 1) firstReceipt = receipt!.content;
+        if (commitResults) {
+          const head = git(worktreePath, "rev-parse", "HEAD");
+          expect(receipt!.content).toContain(`"integration_ref":"${head}"`);
+          expect(readFileSync(join(worktreePath, `result-${index}.txt`), "utf8")).toBe(`result ${index}\n`);
+          if (index > 1) {
+            expect(firstReceipt).not.toContain(head);
+            const previousEvidence = turns[index - 2]?.worktreeEvidence;
+            if (previousEvidence?.state !== "committed_clean") {
+              throw new Error("previous assignment has no immutable commit evidence");
+            }
+            expect(turns[index - 1]?.worktreeEvidence).toMatchObject({
+              baseCommit: previousEvidence.headCommit,
+            });
+          }
+        }
+      }
+      expect(new Set(turns.map((turn) => turn.turnId)).size).toBe(3);
+      await control.shutdown(thread.threadId, "test explicit close");
+      await thread.join();
+      expect(existsSync(worktreePath)).toBe(commitResults);
+      expect(existsSync(join(repo, ".git", "worktrees", "reusable"))).toBe(commitResults);
+    } finally {
+      if (thread) {
+        await control.shutdown(thread.threadId, "test cleanup");
+        await thread.join();
+      }
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ...(["keep-alive", "one-shot", "sync", "workflow"] as const).flatMap((mode) =>
+      (["completed", "errored", "interrupted"] as const).map((terminal) => ({ mode, terminal })),
+    ),
+    { mode: "sync", terminal: "preconstruction" } as const,
+    { mode: "sync", terminal: "receipt-failure" } as const,
+  ])("preserves a delegated worktree with unverifiable child evidence ($mode, $terminal)", async ({ mode, terminal }) => {
+    const repo = makeWorktreeEvidenceRepo();
+    const worktreePath = join(repo, ".agenc-worktrees", "unverifiable");
+    const parentBroker = explicitDangerBroker.forkForCwd(repo);
+    const childBroker = explicitDangerBroker.forkForCwd(worktreePath);
+    const prepareSpawn = vi.spyOn(childBroker, "prepareSpawn").mockImplementation(() => {
+      throw new Error("child Git evidence authority is unavailable");
+    });
+    const originalFork = parentBroker.forkForCwd.bind(parentBroker);
+    const fork = vi.spyOn(parentBroker, "forkForCwd").mockImplementation((cwd) =>
+      cwd === worktreePath ? childBroker : originalFork(cwd),
+    );
+    const provider = makeProvider([{ content: "read-only task complete" }]);
+    if (terminal === "errored") {
+      vi.mocked(provider.chatStream).mockRejectedValue(new Error("injected provider failure"));
+    }
+    const session = makeStubSession({
+      sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+      services: {
+        provider,
+        sandboxExecutionBroker: parentBroker,
+        ...(terminal === "interrupted" ? {
+          guardianRejectionCircuitBreaker: {
+            clearTurn: vi.fn(),
+            isOpen: vi.fn(() => true),
+          } as never,
+        } : {}),
+      },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const external = new AbortController();
+    const originalEmit = Session.prototype.emit;
+    const emit = terminal === "receipt-failure"
+      ? vi.spyOn(Session.prototype, "emit").mockImplementation(function (this: Session, event, options) {
+          if (this !== session && event.msg.type === "subagent_turn_outcome") {
+            throw new Error("injected receipt fsync failure");
+          }
+          return originalEmit.call(this, event, options);
+        })
+      : undefined;
+    let thread: AgentThread | undefined;
+    try {
+      const outcome = await delegate({
+        parent: session,
+        parentPath: "/root",
+        control,
+        registry,
+        taskPrompt: "read-only assignment",
+        taskId: "unverifiable-task",
+        isolation: "worktree",
+        worktreeSlug: "unverifiable",
+        externalSignal: external.signal,
+        onProgress: (event) => {
+          if (terminal === "preconstruction" && event.kind === "status") {
+            external.abort("injected early abort");
+          }
+        },
+        keepAlive: mode === "keep-alive",
+        runInBackground: mode === "keep-alive" || mode === "one-shot",
+        forceSynchronous: mode === "sync" || mode === "workflow",
+        ...(mode === "workflow" ? {
+          finalMessageSink: { reset() {}, writeCanonicalDelta() {} },
+        } : {}),
+      });
+      expect(outcome.kind).toBe(
+        mode === "sync" || mode === "workflow" ? "sync_completed" : "async_launched",
+      );
+      if (outcome.kind === "rejected") {
+        throw new Error("delegate did not launch");
+      }
+      thread = outcome.thread;
+      const result = outcome.kind === "sync_completed" ? outcome.result : await thread.join();
+      expect(result.outcome).toBe(
+        terminal === "preconstruction" ? "aborted"
+          : terminal === "receipt-failure" ? "errored" : terminal,
+      );
+      const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+      if (terminal === "preconstruction") {
+        expect(prepareSpawn).not.toHaveBeenCalled();
+        expect(provider.chatStream).not.toHaveBeenCalled();
+      } else {
+        expect(prepareSpawn).toHaveBeenCalled();
+      }
+      if (terminal === "receipt-failure") {
+        expect(receipt).toBeUndefined();
+        expect(result.error?.message).toContain("task receipt durability failed");
+      } else {
+        expect(receipt?.metadata?.outcome).toBe(terminal === "preconstruction" ? "interrupted" : terminal);
+        expect(receipt?.metadata?.worktreeEvidence).toMatchObject({ state: "unverifiable" });
+        expect(receipt?.content).not.toContain("integration_ref");
+      }
+      expect(thread.live.status.value.status).not.toBe("idle");
+      expect(() => control.assignTask(thread!.live.agentId, {
+        author: "/root",
+        recipient: thread!.live.agentPath,
+        content: "unsafe reuse",
+        taskId: "unsafe-reuse",
+      })).toThrow();
+      expect(existsSync(join(repo, ".git", "worktrees", "unverifiable"))).toBe(true);
+      expect(readFileSync(join(worktreePath, "README.md"), "utf8")).toBe("base\n");
+    } finally {
+      emit?.mockRestore();
+      if (thread) await control.shutdown(thread.threadId, "test cleanup");
+      fork.mockRestore();
+      prepareSpawn.mockRestore();
       rmSync(repo, { recursive: true, force: true });
     }
   });
@@ -2876,6 +5003,48 @@ describe("runAgent", () => {
     }
   });
 
+  it("bounds repeated worker results and reads evicted answers from its live journal", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-result-cache-"));
+    const answers = Array.from({ length: 48 }, (_, index) => ' \n' + JSON.stringify({ index, text: "🐈".repeat(512) }) + '\n ');
+    const provider = makeProvider(answers.map(content => ({ content })));
+    const session = makeStubSession({ services: { provider }, config: { ...mkConfig(), cwd },
+      sessionConfiguration: mkSessionConfiguration({ cwd }) });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd,
+      originator: "cache-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    live.completedTaskResults = new CompletedTaskResults(16 * 1024);
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
+      initialMessages: [{ role: "user", content: "first" }], taskPrompt: "first" });
+    const turnIds: string[] = [];
+    try {
+      for (let index = 0; index < answers.length; index += 1) {
+        const completed = nextProgressEvent(iter, "turn_complete");
+        if (index > 0) control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+          content: `assignment ${index}`, taskId: `task-${index}`, exactOutput: index % 2 === 0 });
+        const event = await completed;
+        expect(event.finalMessage).toBe(answers[index]);
+        turnIds.push(event.turnId!);
+        session.mailbox.drain();
+        expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      }
+      expect(live.completedTaskResults.size).toBeLessThan(answers.length);
+      expect(live.completedTaskResults.get(turnIds[0]!)).toBeUndefined();
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[0]!).text).toBe(answers[0]);
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[1]!).text).toBe(answers[1]);
+      expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      expect(provider.chatStream).toHaveBeenCalledTimes(answers.length);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      await session.shutdown();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("wakes a keep-alive worker with exactly the assigned input and a fresh turn id", async () => {
     const provider = makeProvider([
       { content: "first result" },
@@ -2930,6 +5099,52 @@ describe("runAgent", () => {
       await stopKeepAliveRun(iter, live.abortController);
     }
   });
+
+  it.each(["completed", "errored", "unknown"] as const)(
+    "reports only each assignment's reconciled cost when the follow-up is %s", async (outcome) => {
+      let costUsd = 0;
+      let hasUnknownCost = false;
+      const provider = makeProvider([]);
+      vi.mocked(provider.chatStream).mockImplementationOnce(async () => {
+        costUsd = 1;
+        return { content: "first result", toolCalls: [], model: "fake-model", finishReason: "stop",
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+      }).mockImplementation(async () => {
+        costUsd = 2.75;
+        hasUnknownCost = outcome === "unknown";
+        if (outcome === "errored") throw new LLMFundsError("fake", 402);
+        return { content: "second result", toolCalls: [], model: "fake-model", finishReason: "stop",
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+      });
+      const session = makeStubSession({ services: { provider } });
+      const { control, live } = await spawnLive(session);
+      // Isolate receipt accounting from wire admission. The production facade
+      // reports cumulative per-run spend; child sampling stays mocked here.
+      Object.assign(session.services, { executionAdmission: {
+        scope: { runId: session.conversationId },
+        getUsageSummary: () => ({ agents: [{ runId: live.agentId, costUsd, hasUnknownCost }] }),
+        forSession: () => undefined,
+      } });
+      const iter = runAgent({ live, parent: session,
+        initialMessages: [{ role: "user", content: "first task" }], taskPrompt: "first task",
+        taskId: "first-cost-task", keepAlive: true });
+      try {
+        await nextProgressEvent(iter, "turn_complete");
+        const first = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+        expect(first?.content).toContain('"costUsd":1');
+        const next = outcome === "errored" ? collectRun(iter) : nextProgressEvent(iter, "turn_complete");
+        control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+          content: "second task", taskId: "second-cost-task" });
+        await next;
+        const second = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+        expect(second?.metadata?.taskId).toBe("second-cost-task");
+        if (outcome === "unknown") expect(second?.content).not.toContain('"costUsd"');
+        else expect(second?.content).toContain('"costUsd":1.75');
+      } finally {
+        await stopKeepAliveRun(iter, live.abortController);
+      }
+    },
+  );
 
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {
     const provider = makeProvider([
@@ -3607,6 +5822,109 @@ describe("runAgent", () => {
     }
   });
 
+  it.each(["allowed", "ask", "deny", "outside"] as const)(
+    "keeps %s memory maintenance off the foreground approval bridge", async (kind) => {
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-memory-maintenance-"));
+      const memoryRoot = join(cwd, "state", "memory");
+      mkdirSync(memoryRoot, { recursive: true });
+      const target = join(kind === "outside" ? cwd : memoryRoot, "feedback.md");
+      const configStore = new ConfigStore({ home: join(cwd, "state"), cwd,
+        cliOverrides: { autoMemoryEnabled: true, autoMemoryDirectory: memoryRoot } });
+      await configStore.reload();
+      let permissions = createEmptyToolPermissionContext();
+      if (kind === "ask" || kind === "deny") {
+        permissions = applyPermissionUpdate(permissions, { type: "addRules",
+          destination: "session", behavior: kind,
+          rules: [{ toolName: "Write", ruleContent: target }] });
+      }
+      writeFileSync(join(memoryRoot, "MEMORY.md"), "Response preferences\n");
+      const provider = makeProvider([
+        ...(kind === "allowed" ? [
+          { toolCalls: [{ id: "memory-glob", name: "Glob", arguments: JSON.stringify({ path: memoryRoot, pattern: "*.md" }) }], finishReason: "tool_calls" as const },
+          { toolCalls: [{ id: "memory-read", name: "FileRead", arguments: JSON.stringify({ file_path: join(memoryRoot, "MEMORY.md") }) }], finishReason: "tool_calls" as const },
+        ] : []),
+        { toolCalls: [{ id: "memory-write", name: "Write", arguments: JSON.stringify({
+          file_path: target, content: "Prefer concise responses.\n",
+        }) }], finishReason: "tool_calls" },
+        { content: "Memory reviewed", finishReason: "stop" },
+      ]);
+      const foregroundRequest = vi.fn(async () => ({ kind: "approved" as const }));
+      const deferred = vi.fn();
+      const parent = makeStubSession({ config: { ...mkConfig(), cwd },
+        sessionConfiguration: mkSessionConfiguration({ cwd,
+          approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "danger_full_access" } }),
+        services: { provider, configStore,
+          permissionModeRegistry: new PermissionModeRegistry(permissions),
+          approvalResolver: { request: foregroundRequest },
+          registry: buildProductionToolRegistry({ workspaceRoot: cwd, requireAdmission: false }),
+        } });
+      // This is how the daemon installs its foreground bridge on newly-created
+      // children. A silent maintenance child must remain noninteractive even
+      // when that observer installs a resolver after construction.
+      const unobserve = observeChildApprovalSessions(parent, (child) => {
+        Object.assign(child.services, { approvalResolver: { request: foregroundRequest } });
+        return () => {};
+      });
+      try {
+        const { live } = await spawnLive(parent);
+        const { result, events } = await collectRun(runAgent({ live, parent,
+          initialMessages: [{ role: "user", content: "Remember response preferences" }],
+          taskPrompt: "Remember response preferences", silent: true,
+          toolAllowlist: ["Glob", "FileRead", "Write"], childToolPolicy: createAutoMemoryToolPolicy(memoryRoot),
+          deferInteractiveApprovals: deferred,
+        }));
+        expect(foregroundRequest).not.toHaveBeenCalled();
+        expect(existsSync(target)).toBe(kind === "allowed");
+        if (kind === "allowed") {
+          expect(readFileSync(target, "utf8")).toBe("Prefer concise responses.\n");
+          expect(result.outcome, String(result.error)).toBe("completed");
+          const toolResults = events.filter((event) => event.kind === "tool_result");
+          expect(toolResults.map((event) => [event.callId, event.isError])).toEqual([
+            ["memory-glob", false], ["memory-read", false], ["memory-write", false],
+          ]);
+        }
+        if (kind === "ask") expect(deferred).toHaveBeenCalledWith("Write");
+        else expect(deferred).not.toHaveBeenCalled();
+        expect(parent.abortController.signal.aborted).toBe(false);
+      } finally {
+        unobserve();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["execute", "dispatch"] as const)("passes MCP image content items through child %s", async (boundary) => {
+    const imageUrl = "data:image/png;base64,YWJj";
+    const registry = buildFilteredRegistry({
+      tools: [{
+        name: "system.image",
+        description: "image",
+        inputSchema: { type: "object" },
+        execute: async () => ({
+          content: "saved image",
+          contentItems: [
+            { type: "input_text" as const, text: "saved image" },
+            { type: "input_image" as const, image_url: imageUrl },
+          ],
+        }),
+      }],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "unexpected" }),
+    }, {
+      childConversationId: "image-child",
+      unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+      worktree: { path: "/tmp/subagent-wt", branch: "image", gitRoot: "/repo", created: false },
+    });
+    const result = boundary === "execute"
+      ? await registry.tools[0]!.execute({})
+      : await registry.dispatch({ name: "system.image", id: "call-image", arguments: "{}" });
+    expect(result.content).toBe("saved image");
+    expect(result.contentItems).toEqual([
+      { type: "input_text", text: "saved image" },
+      { type: "input_image", image_url: imageUrl },
+    ]);
+  });
+
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {
     // SECURITY (audit #1/#2/#4): a child model that emits
     // `__agencSessionAllowedRoots:["/"]` must NOT have it folded into the
@@ -4231,6 +6549,60 @@ describe("runAgent", () => {
     expect(result.content).toBe("{}");
   });
 
+  it("scopes a child's tool search to the tools the child can call", async () => {
+    // A subagent searched for a browser, was told the Desktop's MCP browser
+    // tools were "now available", and every call failed with "No such tool".
+    const mcpTool = {
+      name: "mcp.agenc-desktop-control.browser_tabs",
+      description: "List the app browser tabs",
+      inputSchema: { type: "object" as const },
+      execute: async () => ({ content: "{}" }),
+    };
+    const parent = buildProductionToolRegistry({
+      workspaceRoot: process.cwd(),
+      requireAdmission: false,
+      mcpToolsProvider: { getTools: () => [mcpTool] },
+    });
+    expect(parent.tools.map((tool) => tool.name)).toContain(mcpTool.name);
+    const child = buildFilteredRegistry(parent, {
+      childConversationId: "child-search",
+      unadmittedDispatchOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+    });
+    type SearchResult = {
+      loaded: string[];
+      missingSelections: string[];
+      results: { name: string; advertised: boolean }[];
+    };
+    const search = async (args: Record<string, unknown>): Promise<SearchResult> =>
+      JSON.parse(String((await child.dispatch({
+        id: `call-${Object.keys(args).join("-")}`,
+        name: "system.searchTools",
+        arguments: JSON.stringify(args),
+      })).content)) as SearchResult;
+
+    const selected = await search({ select: mcpTool.name });
+    expect(selected.loaded).toEqual([]);
+    expect(selected.missingSelections).toEqual([mcpTool.name]);
+    expect(parent.getDiscoveredToolNames?.().has(mcpTool.name)).toBe(false);
+    const browsed = await search({ query: "browser tabs" });
+    expect(browsed.results.map((entry) => entry.name)).not.toContain(mcpTool.name);
+
+    // Registry dispatch and the executor's direct call both report what the
+    // child was actually sent.
+    const viaDispatch = await search({ select: "exec_command" });
+    expect(viaDispatch.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+    const wrapped = child.tools.find((tool) => tool.name === "system.searchTools");
+    const args: Record<string, unknown> = { select: "exec_command" };
+    Object.defineProperty(args, "__agencAdvertisedToolNames", {
+      value: ["exec_command"],
+      enumerable: false,
+      configurable: true,
+    });
+    const direct = JSON.parse(String((await wrapped!.execute(args)).content)) as SearchResult;
+    expect(direct.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+  });
+
   it("mounts one child rollout and refuses the same identity after terminal", async () => {
     const provider = makeProvider([{ content: "child wrote rollout" }]);
     const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-"));
@@ -4369,6 +6741,70 @@ describe("runAgent", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("releases daemon project descriptors after spawned children end", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-child-fd-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-child-fd-parent-"));
+    const provider = makeProvider(Array.from({ length: 20 }, () => ({ content: "done" })));
+    const configStore = new ConfigStore({ home, cwd });
+    const session = makeStubSession({
+      services: { provider, configStore },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd,
+        provider: provider as unknown as SessionConfiguration["provider"],
+      }),
+      config: { ...mkConfig(), cwd },
+    });
+    const parentRollout = new RolloutStore({
+      cwd,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+      agencHome: home,
+      sessionTempRoot: tmpdir(),
+    });
+    parentRollout.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd,
+      originator: "child-fd-test",
+      agencVersion: "0.2.0",
+      model: session.modelInfo.slug,
+      modelProvider: provider.name,
+    });
+    session.mountRolloutStore(parentRollout);
+    const daemonThreads = new MultiProjectFileThreadStore({
+      primaryCwd: cwd,
+      agencHome: home,
+    });
+    const baseline = readdirSync("/dev/fd").length;
+    const projects: string[] = [];
+    const counts: number[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const path = mkdtempSync(join(tmpdir(), "agenc-child-fd-worktree-"));
+        projects.push(path);
+        const { live } = await spawnLive(session);
+        const { result } = await collectRun(runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          worktree: { path, branch: `fd-${index}`, gitRoot: cwd, created: false },
+        }));
+        expect(result.outcome).toBe("completed");
+        daemonThreads.listThreads({ pageSize: 50, archived: false, useStateDbOnly: true });
+        counts.push(readdirSync("/dev/fd").length);
+      }
+      console.info(`child fd counts: baseline=${baseline} closed=${counts.join(",")}`);
+      expect(counts.at(-1)).toBeLessThanOrEqual(baseline + 3);
+    } finally {
+      daemonThreads.close();
+      await session.shutdown();
+      for (const path of projects) rmSync(path, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("records a failed child terminal when setup stops before Session construction", async () => {
     const previousAgencHome = process.env.AGENC_HOME;
     const home = mkdtempSync(
@@ -4382,9 +6818,13 @@ describe("runAgent", () => {
     const invalidProvider = {
       name: "missing-chat-provider",
     } as unknown as LLMProvider;
+    const planConfigStore = new ConfigStore({ cwd,
+      base: { model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
     const session = makeStubSession({
       conversationId: "root-preconstruction-failure",
-      services: { provider: invalidProvider },
+      services: { provider: invalidProvider, configStore: planConfigStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }),
       config: { ...mkConfig(), cwd },
     });
@@ -4407,12 +6847,38 @@ describe("runAgent", () => {
 
     try {
       const { live } = await spawnLive(session);
+      Object.assign(session.services, { crossProviderConsent: {
+        ownerSessionId: session.conversationId, sessionEpoch: "test-interactive-session",
+        request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: session.conversationId,
+            sessionEpoch: "test-interactive-session", taskId: disclosure.taskId,
+            scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const proposedPlan = await createChildExecutionPlan({
+        session: { conversationId: session.conversationId,
+          sessionConfiguration: session.sessionConfiguration,
+          services: session.services, config: session.config,
+          modelInfo: session.modelInfo, providerService: {
+          current: () => ({ provider: "grok", model: "grok-4.6" }),
+        } } as Session,
+        selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+        parentPath: "/root", taskId: "journal-destination", taskName: "worker", taskText: "go",
+        toolFree: false, forkedHistory: false,
+      });
+      const authorized = await authorizeChildExecutionPlan(session, proposedPlan);
+      expect(authorized.kind).toBe("granted");
+      if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+      const plan = authorized.plan;
       const { result } = await collectRun(
         runAgent({
           live,
           parent: session,
           initialMessages: [{ role: "user", content: "go" }],
           taskPrompt: "go",
+          plan,
         }),
       );
       expect(result).toMatchObject({
@@ -4420,6 +6886,7 @@ describe("runAgent", () => {
         outcome: "errored",
       });
       expect(live.rolloutPath).toBeDefined();
+      expect(readFileSync(live.rolloutPath!, "utf8")).toContain('"modelProvider":"deepseek"');
 
       const inspection = new AgenCDaemonRunInspectionService({
         stateDatabasePaths: () => [
@@ -4437,7 +6904,7 @@ describe("runAgent", () => {
         terminal: true,
         output: {
           available: true,
-          stopReason: "subagent has no provider on parent.services.provider",
+          stopReason: "deepseek provider switch has no canonical preparation request",
           finalMessage: null,
         },
       });
@@ -4554,6 +7021,133 @@ describe("runAgent", () => {
     }
   });
 
+  it.each([
+    ["worker", "bypassPermissions", false], ["scanner", "bypassPermissions", false],
+    ["worker", "default", false], ["scanner", "default", false],
+    ["worker", "bypassPermissions", true],
+  ] as const)("admits a nested %s in %s mode and reads its current worktree (truncated spawn: %s)", async (role, permissionMode, truncateSpawn) => {
+    const previousHome = process.env.AGENC_HOME;
+    const home = mkdtempSync(join(tmpdir(), "agenc-nested-parent-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-parent-workspace-"));
+    const worktreePath = join(cwd, "implementation");
+    const git = (directory: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: directory, stdio: "pipe" });
+    git(cwd, "init", "-q");
+    writeFileSync(join(cwd, "revision.txt"), "stale root revision");
+    git(cwd, "add", "revision.txt");
+    git(cwd, "commit", "-qm", "initial fixture");
+    git(cwd, "worktree", "add", "-qb", "implementation", worktreePath);
+    writeFileSync(join(worktreePath, "revision.txt"), "current implementation revision");
+    git(worktreePath, "add", "revision.txt");
+    git(worktreePath, "commit", "-qm", "implementation fixture change");
+    process.env.AGENC_HOME = home;
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home, ownerId: "nested-parent-test", ownerPid: process.pid });
+    const rootAdmission = kernel.bindClient({ cwd, scope: { runId: "nested-root", sessionId: "nested-root", autonomous: false } });
+    const children: Session[] = [];
+    let spawned = false;
+    const spawnBudgets: Array<number | undefined> = [];
+    let readRequested = false;
+    const provider = makeProvider([]);
+    provider.getExecutionProfile = async () => ({ provider: "fake", model: "fake-model", usageReporting: "authoritative", supportsMaxOutputTokens: true });
+    vi.mocked(provider.chatStream).mockImplementation(async (messages, _onChunk, options) => {
+      const nested = messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("nested-worker-task"));
+      const base = { content: "complete", toolCalls: [], usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12, availability: "reported" as const, provenance: "provider" as const }, model: "fake-model", finishReason: "stop" as const };
+      if (nested && !readRequested) {
+        readRequested = true;
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-read", name: "FileRead", arguments: JSON.stringify({ file_path: "revision.txt" }) }] };
+      }
+      if (!nested && !spawned) {
+        spawnBudgets.push(options?.maxOutputTokens);
+        if (truncateSpawn) {
+          expect(children[0]!.currentRootHumanTurn()).toBeNull();
+          if (spawnBudgets.length <= 2) return { ...base, content: "", finishReason: "length",
+            incompleteToolCalls: [{ id: `nested-spawn-cut-${spawnBudgets.length}`, name: "spawn_agent" }] };
+          const guidance = messages.findLast(message => message.role === "user")?.content;
+          expect(guidance).toContain("Retry with complete valid JSON");
+          expect(guidance).not.toContain("message_ref");
+        }
+        spawned = true;
+        return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-spawn", name: "spawn_agent", arguments: JSON.stringify({ message: "nested-worker-task", task_name: "worker", fork_turns: "none", isolation: "none", ...(role === "scanner" ? { agent_type: "scanner" } : {}) }) }] };
+      }
+      return base;
+    });
+    const tools: ToolRegistry["tools"][number][] = [];
+    const fileRead = buildProductionToolRegistry({ workspaceRoot: cwd, requireAdmission: false }).tools.find((tool) => tool.name === "FileRead")!;
+    const read = vi.spyOn(fileRead, "execute");
+    // The observer wrapper changes execute's identity. Register that trusted
+    // test wrapper so the scanner retains the actual builtin implementation.
+    registerBuiltinTool(fileRead);
+    tools.push(fileRead);
+    const broker = new SandboxExecutionBroker({ cwd, mode: "danger_full_access" });
+    const session = makeStubSession({
+      conversationId: "nested-root",
+      services: { provider, executionAdmission: rootAdmission, admissionRequired: true, sandboxExecutionBroker: broker, permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: permissionMode, isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd], alwaysAllowRules: { session: ["spawn_agent"] } })), registry: { ...mkRegistry(), tools } },
+      sessionConfiguration: mkSessionConfiguration({ cwd, sandboxPolicy: { value: "danger_full_access" }, provider: { slug: "fake" } as SessionConfiguration["provider"] }),
+      config: { ...mkConfig(), cwd }, modelInfo: { ...mkModelInfo(), maxOutputTokens: 32,
+        ...(truncateSpawn ? { maxOutputTokensCappedDefault: true } : {}) },
+    });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId, agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd, originator: "nested-parent-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    session.onBeforeDurableClose(bindExecutionAdmissionJournal(session, rootAdmission));
+    const { control, registry, live } = await spawnLive(session);
+    tools.push(...createMultiAgentV2Tools({ getSession: () => session, workspace: session.roleWorkspace, ensureAgentControl: () => ({ control, registry }) }));
+    const unsubscribe = observeChildApprovalSessions(session, (child) => { children.push(child); return () => {}; });
+    const shutdowns = new Map<Session, Promise<void>>();
+    const shutdown = Session.prototype.shutdown;
+    const observeShutdown = vi.spyOn(Session.prototype, "shutdown").mockImplementation(function (this: Session) {
+      const pending = shutdown.call(this);
+      shutdowns.set(this, pending);
+      void pending.catch(() => {});
+      return pending;
+    });
+    try {
+      const { result } = await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "implementation-parent-task" }], taskPrompt: "implementation-parent-task", worktree: { path: worktreePath, branch: "implementation", gitRoot: cwd, created: false } }));
+      expect(result.outcome, String(result.error)).toBe("completed");
+      if (truncateSpawn) {
+        expect(spawnBudgets).toHaveLength(3);
+        expect(spawnBudgets[1]).toBeGreaterThan(spawnBudgets[0]!);
+        expect(spawnBudgets[2]).toBe(spawnBudgets[1]);
+      }
+      await vi.waitFor(() => expect(children, JSON.stringify(vi.mocked(provider.chatStream).mock.calls.at(-1)?.[0].filter((message) => message.role === "tool"))).toHaveLength(2));
+      expect(children[1]!.services.executionAdmission!.scope.parentRunId).toBe(live.agentId);
+      expect(children[1]!.sessionConfiguration.cwd).toBe(worktreePath);
+      if (role === "scanner") expect(children[1]!.services.readOnlyDelegation?.kind).toBe("read-only");
+      expect(store.getThreadSpawnEdge(children[1]!.conversationId)?.parentThreadId).toBe(live.agentId);
+      await vi.waitFor(() => expect(read,
+        JSON.stringify(vi.mocked(provider.chatStream).mock.calls.flatMap(([messages]) => messages.filter((message) => message.role === "tool"))),
+      ).toHaveBeenCalledOnce());
+      expect(read.mock.calls[0]![0][SESSION_ID_ARG]).toBe(children[1]!.conversationId);
+      const readBroker = readSandboxExecutionBroker(read.mock.calls[0]![0]);
+      if (role === "scanner") {
+        // Read-only admission attenuates the session broker for this call.
+        expect(readBroker?.cwd).toBe(worktreePath);
+        expect(readBroker?.executionAuthority?.().mode).toBe("read_only");
+        expect(readBroker).not.toBe(broker);
+      } else {
+        expect(readBroker).toBe(children[1]!.services.sandboxExecutionBroker);
+      }
+      expect((await read.mock.results[0]!.value).content).toContain("current implementation revision");
+      const admissionEvents = () => readFileSync(children[1]!.rolloutStore!.rolloutPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((item) => item.type === "event_msg" && item.payload.msg.type === "execution_admission").map((item) => item.payload.msg.payload);
+      await vi.waitFor(() => expect(admissionEvents().filter((event) => event.event === "allowed").map((event) => event.kind)).toEqual(expect.arrayContaining(["model_turn", "tool_exec"])));
+      expect(admissionEvents().some((event) => JSON.stringify(event).includes("ancestor_parent_ambiguous"))).toBe(false);
+    } finally {
+      unsubscribe();
+      read.mockRestore();
+      await control.shutdownAll("nested test cleanup");
+      // Abort the owned runners, then join their cleanup. Calling shutdown
+      // again here races the runner's durable terminal finalizer.
+      await vi.waitFor(() => expect(children.every((child) => shutdowns.has(child))).toBe(true));
+      await Promise.all(children.map((child) => shutdowns.get(child)!));
+      observeShutdown.mockRestore();
+      await session.shutdown();
+      await disposeSandboxExecutionBroker(broker);
+      kernel.close();
+      if (previousHome === undefined) delete process.env.AGENC_HOME; else process.env.AGENC_HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps root spawn evidence and child model evidence in their canonical run journals", async () => {
     const previousAgencHome = process.env.AGENC_HOME;
     const home = mkdtempSync(join(tmpdir(), "agenc-child-journal-home-"));
@@ -4660,12 +7254,24 @@ describe("runAgent", () => {
           event.msg.type === "execution_admission" ? event.msg.payload : null,
         )
         .filter((event) => event !== null);
-      const childAdmissionEvents = readFileSync(childRolloutPath!, "utf8")
+      const childJournalEvents = readFileSync(childRolloutPath!, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { type: string; payload?: Event })
         .filter((item) => item.type === "event_msg")
-        .map((item) => item.payload!)
+        .map((item) => item.payload!);
+      const taskAdmissionIndex = childJournalEvents.findIndex((event) => event.msg.type === "subagent_task_admitted");
+      const firstModelDispatchIndex = childJournalEvents.findIndex((event) => event.msg.type === "execution_admission" &&
+        event.msg.payload.kind === "model_turn" && event.msg.payload.event === "dispatched");
+      expect(taskAdmissionIndex).toBeGreaterThanOrEqual(0);
+      expect(firstModelDispatchIndex).toBeGreaterThan(taskAdmissionIndex);
+      expect(childJournalEvents[taskAdmissionIndex]!.msg).toMatchObject({ type: "subagent_task_admitted",
+        payload: { agentId: live.agentId, agentPath: live.agentPath, taskText: "go", author: "/root" } });
+      const initialAdmission = childJournalEvents[taskAdmissionIndex]!.msg;
+      if (initialAdmission.type !== "subagent_task_admitted") throw new Error("Expected durable task admission.");
+      expect(childJournalEvents.find((event) => event.msg.type === "subagent_turn_outcome")?.msg)
+        .toMatchObject({ payload: { taskId: initialAdmission.payload.taskId, turnId: initialAdmission.payload.turnId } });
+      const childAdmissionEvents = childJournalEvents
         .filter((event) => event.msg.type === "execution_admission")
         .map((event) =>
           event.msg.type === "execution_admission" ? event.msg.payload : null,
@@ -5074,6 +7680,206 @@ describe("runAgent", () => {
     expect(result?.outcome).toBe("interrupted");
     expect(live.status.value.status).toBe("interrupted");
     expect(collected.some((e) => e.kind === "run_interrupted")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Worktree children: shell commands write inside the worktree only
+// ─────────────────────────────────────────────────────────────────────
+
+// A Goal step runs in <checkout>/.agenc-worktrees/m5-<run>, and the
+// verified-change workflow promises that the user's checkout is never
+// mutated. The step's exec_command is the parent's tool: its write guard
+// measures paths against the parent's checkout, and its sandbox keeps the
+// parent's writable root, so a shell command could still change the user's
+// files.
+describe("a worktree child's shell command writes inside its worktree only", () => {
+  type ChildMode = "bypassPermissions" | "acceptEdits";
+  const CHILD_MODES: readonly ChildMode[] = ["bypassPermissions", "acceptEdits"];
+  let checkout: string;
+  let worktree: string;
+  let sessionTempRoot: string;
+
+  beforeEach(() => {
+    checkout = realpathSync(mkdtempSync(join(tmpdir(), "agenc-worktree-shell-")));
+    sessionTempRoot = realpathSync(mkdtempSync(join(tmpdir(), "agenc-worktree-shell-temp-")));
+    worktree = join(checkout, ".agenc-worktrees", "m5-wfshell");
+    mkdirSync(join(worktree, "src"), { recursive: true });
+    mkdirSync(join(checkout, "src"), { recursive: true });
+    mkdirSync(join(checkout, "dist"), { recursive: true });
+    writeFileSync(join(checkout, "src", "a.js"), "the user's code\n");
+    writeFileSync(join(worktree, "src", "a.js"), "the step's copy\n");
+  });
+
+  afterEach(() => {
+    rmSync(checkout, { recursive: true, force: true });
+    rmSync(sessionTempRoot, { recursive: true, force: true });
+  });
+
+  /** Records what each command would run under; `stderr` makes every command fail with it. */
+  function recordingManager(stderr?: string) {
+    const manager = new UnifiedExecProcessManager({ cwd: checkout, sessionTempRoot });
+    const requests: Parameters<UnifiedExecProcessManager["execCommand"]>[0][] = [];
+    const exitCode = stderr === undefined ? 0 : 1;
+    vi.spyOn(manager, "execCommand").mockImplementation(async (request) => {
+      requests.push(request);
+      return { output: stderr ?? "ran", stdout: stderr === undefined ? "ran" : "", stderr: stderr ?? "", exitCode, exit_code: exitCode, durationMs: 1, wall_time_seconds: 0.001, timedOut: false, truncated: false, original_token_count: 1 };
+    });
+    return { manager, requests };
+  }
+
+  async function runWorktreeChild(options: {
+    readonly mode: ChildMode;
+    readonly sandbox: "workspace_write" | "danger_full_access";
+    readonly calls: readonly Record<string, unknown>[];
+    readonly manager: UnifiedExecProcessManager;
+  }) {
+    const provider = makeProvider([
+      ...options.calls.map((args, index) => ({
+        toolCalls: [{ id: `shell-${index}`, name: "exec_command", arguments: JSON.stringify(args) }],
+        finishReason: "tool_calls" as const,
+      })),
+      { content: "done", finishReason: "stop" as const },
+    ]);
+    const approvals = vi.fn(async () => ({ kind: "approved" as const }));
+    const broker = new SandboxExecutionBroker({
+      mode: options.sandbox,
+      cwd: checkout,
+      sessionTempRoot,
+      agencLinuxSandboxExe: process.execPath,
+      probe: (probe) => ({ kind: "ready", mode: probe.mode, platform: process.platform, helperPath: process.execPath }),
+    });
+    const session = makeStubSession({
+      config: { ...mkConfig(), cwd: checkout, agencLinuxSandboxExe: process.execPath },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd: checkout,
+        // bypassPermissions answers approvals itself; acceptEdits asks for commands.
+        approvalPolicy: { value: options.mode === "bypassPermissions" ? "never" : "on_request" },
+        sandboxPolicy: { value: options.sandbox },
+        // A workspace-write session's own workspace root is writable.
+        fileSystemSandboxPolicy: {
+          allowWrite: options.sandbox === "workspace_write" ? [checkout] : [],
+          denyWrite: [],
+          allowRead: [],
+          denyRead: [],
+        },
+      }),
+      services: {
+        provider,
+        permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+          mode: options.mode,
+          isBypassPermissionsModeAvailable: options.mode === "bypassPermissions",
+          ...(options.mode === "bypassPermissions" ? { bypassPermissionsAcceptedIn: [checkout] } : {}),
+        })),
+        sandboxExecutionBroker: broker,
+        // The user approves every command the step asks about.
+        approvalResolver: { request: approvals },
+        runtimeOptions: resolveAgentRuntimeOptions({}, { sessionTempRoot }),
+        registry: buildProductionToolRegistry({ workspaceRoot: checkout, unifiedExecManager: options.manager, requireAdmission: false }),
+      },
+    });
+    const { live } = await spawnLive(session);
+    try {
+      const run = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "Implement the change" }],
+        taskPrompt: "Implement the change",
+        worktree: { path: worktree, branch: "worktree-m5-wfshell", gitRoot: checkout, created: false },
+      }));
+      return { ...run, approvals };
+    } finally {
+      await options.manager.closeAll();
+      await disposeSandboxExecutionBroker(broker);
+    }
+  }
+
+  describe.each(CHILD_MODES)("in %s without an OS sandbox", (mode) => {
+    it("refuses every write it can see outside the worktree and keeps the user's files", async () => {
+      const { result, events, approvals } = await runWorktreeChild({
+        mode,
+        sandbox: "danger_full_access",
+        manager: new UnifiedExecProcessManager({ cwd: checkout, sessionTempRoot }),
+        calls: [
+          { cmd: "rm ../../src/a.js" },
+          { cmd: "mv src/a.js ../../src/moved.js" },
+          { cmd: "echo built > ../../dist/out.js" },
+          { cmd: "cd ../.. && rm src/a.js" },
+          { cmd: "rm src/a.js" },
+        ],
+      });
+      // A refusal is a tool error the step recovers from, never a policy stop.
+      expect(result.outcome, String(result.error)).toBe("completed");
+      expect(readFileSync(join(checkout, "src", "a.js"), "utf8")).toBe("the user's code\n");
+      expect(existsSync(join(checkout, "src", "moved.js"))).toBe(false);
+      expect(existsSync(join(checkout, "dist", "out.js"))).toBe(false);
+      const results = events.filter((event) => event.kind === "tool_result");
+      expect(results.map((event) => event.isError)).toEqual([true, true, true, true, false]);
+      for (const refused of results.slice(0, 4)) {
+        expect(refused.result).toContain(`works in its own git worktree (${worktree})`);
+        expect(refused.metadata?.approvalFailure).toBeUndefined();
+      }
+      // Inside its worktree the step still removes its own file.
+      expect(existsSync(join(worktree, "src", "a.js"))).toBe(false);
+      // Refused before approval: nobody is asked about a command that cannot run.
+      expect(approvals).toHaveBeenCalledTimes(mode === "acceptEdits" ? 1 : 0);
+    });
+  });
+
+  describe.each(CHILD_MODES)("in %s under the OS sandbox", (mode) => {
+    it("runs every attempt, escalated or not, in a sandbox that writes only in the worktree and the temp root", async () => {
+      const { manager, requests } = recordingManager();
+      // The guard cannot see where a program writes; only the sandbox can.
+      const cmd = "node -e \"require('fs').writeFileSync('../../src/a.js', 'x')\"";
+      const { result } = await runWorktreeChild({
+        mode,
+        sandbox: "workspace_write",
+        manager,
+        calls: [
+          { cmd },
+          { cmd, sandbox_permissions: "require_escalated", justification: "write the file" },
+          {
+            cmd,
+            sandbox_permissions: "with_additional_permissions",
+            additional_permissions: { file_system: { write: [checkout] }, network: { enabled: true } },
+          },
+        ],
+      });
+      expect(result.outcome, String(result.error)).toBe("completed");
+      expect(requests).toHaveLength(3);
+      for (const request of requests) {
+        const sandbox = request.runtimeSandbox;
+        expect(sandbox).toBeDefined();
+        expect(sandbox?.additionalPermissions).toBeUndefined();
+        const fileSystem = sandbox!.permissionProfile.fileSystem;
+        const writable = (target: string) =>
+          canWritePathWithCwd(fileSystem, target, sandbox!.sandboxPolicyCwd, sandbox!.sessionTempRoot);
+        expect(writable(join(checkout, "src", "a.js"))).toBe(false);
+        expect(writable(join(checkout, "dist", "out.js"))).toBe(false);
+        expect(writable(join(worktree, "src", "a.js"))).toBe(true);
+        expect(writable(join(sessionTempRoot, "scratch.txt"))).toBe(true);
+        // Reads stay allowed.
+        expect(canReadPathWithCwd(fileSystem, join(checkout, "src", "a.js"), sandbox!.sandboxPolicyCwd, sandbox!.sessionTempRoot)).toBe(true);
+      }
+      // Escalation and an approved grant keep what they give besides writes.
+      expect(requests[0]!.runtimeSandbox!.permissionProfile.network).toBe("disabled");
+      expect(requests[1]!.runtimeSandbox!.permissionProfile.network).toBe("enabled");
+      expect(requests[2]!.runtimeSandbox!.permissionProfile.network).toBe("enabled");
+    });
+
+    it("tells the step that a refused write fails the same way escalated", async () => {
+      const { manager } = recordingManager("sh: ../../src/a.js: Operation not permitted");
+      const { result, events } = await runWorktreeChild({
+        mode,
+        sandbox: "workspace_write",
+        manager,
+        calls: [{ cmd: "node -e \"require('fs').writeFileSync('../../src/a.js', 'x')\"" }],
+      });
+      expect(result.outcome, String(result.error)).toBe("completed");
+      const [refused] = events.filter((event) => event.kind === "tool_result");
+      expect(refused).toMatchObject({ isError: true });
+      expect(refused!.result).toContain(`[sandbox] This agent works in its own git worktree (${worktree})`);
+    });
   });
 });
 

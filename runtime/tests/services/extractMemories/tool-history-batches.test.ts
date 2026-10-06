@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LLMMessage } from "../../../src/llm/types.js";
+import type { TurnContext } from "../../../src/session/turn-context.js";
 import { findToolTurnValidationIssue } from "../../../src/llm/tool-turn-validator.js";
 import { memoryExtractionVisibleRange } from "../../../src/memory/extraction-triggers.js";
 import { readMemoryExtractionState } from "../../../src/session/memory-extraction-state.js";
@@ -37,6 +38,20 @@ function conversationWithParallelTools(visibleCount: number): LLMMessage[] {
 describe("memory extraction tool history", () => {
   let root = "";
   let memoryDir = "";
+  // Extraction refuses to dispatch a child when the inherited sandbox cannot
+  // write the memory root. The shared ctx fixture is read_only, so these
+  // batching tests have to grant the root they actually extract into.
+  const writableCtx = (): TurnContext =>
+    mkCtx({
+      cwd: root,
+      sandboxPolicy: { value: "workspace_write" },
+      fileSystemSandboxPolicy: {
+        allowRead: [root, memoryDir],
+        denyRead: [],
+        allowWrite: [root, memoryDir],
+        denyWrite: [],
+      },
+    });
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-memory-tool-history-"));
     memoryDir = join(root, "memory");
@@ -79,7 +94,7 @@ describe("memory extraction tool history", () => {
       env: {}, minEligibleTurns: 1, runChild,
       resolveMemoryDirectory: async () => ({ enabled: true as const, path: memoryDir }),
     };
-    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root }) };
+    const context = { session, messages, completedToolResults: [], ctx: writableCtx() };
     for (const cursor of [12, 24, 26]) {
       initExtractMemories(dependencies);
       await executeExtractMemories(context);
@@ -102,7 +117,7 @@ describe("memory extraction tool history", () => {
       env: {}, minEligibleTurns: 1, runChild,
       resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
     });
-    const context = { session, messages, completedToolResults: [], ctx: mkCtx({ cwd: root }) };
+    const context = { session, messages, completedToolResults: [], ctx: writableCtx() };
     await executeExtractMemories(context);
     expect((await readMemoryExtractionState(session, memoryDir))?.processedVisibleCount).toBe(0);
     await executeExtractMemories(context);

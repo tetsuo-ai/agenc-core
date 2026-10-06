@@ -49,6 +49,12 @@ import type {
 import type { delegate as delegateFn } from "../../agents/delegate.js";
 import type { ensureAgentControl as ensureAgentControlFn } from "../../bin/delegate-tool.js";
 import { withSignedAllowedRoots } from "../../agents/_deps/filesystem-args.js";
+import { canWritePathWithCwd } from "../../sandbox/engine/index.js";
+import {
+  agencHomeCarveOutAllowsWrite,
+  permissionProfileForLiveSandboxPolicies,
+} from "../../tools/runtimes/sandboxing.js";
+import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { AgentPath } from "../../agents/registry.js";
 import {
   createMemoryExtractionTriggerState,
@@ -173,7 +179,7 @@ export interface ExtractMemoriesChildRequest {
 }
 
 export interface ExtractMemoriesChildResult {
-  readonly outcome: RunAgentResult["outcome"] | "rejected";
+  readonly outcome: RunAgentResult["outcome"] | "rejected" | "deferred";
   readonly error?: unknown;
   /**
    * The child's final reply. Memory lands on disk through the tool policy;
@@ -532,6 +538,7 @@ async function defaultRunChild(
       : import("../../agents/delegate.js"),
   ]);
   const { control, registry } = ensureAgentControl(request.session);
+  let deferredTool: string | undefined;
   const outcome = await delegate({
     parent: request.session,
     parentPath: "/root" as AgentPath,
@@ -545,6 +552,7 @@ async function defaultRunChild(
     runInBackground: false,
     forceSynchronous: true,
     silent: true,
+    deferInteractiveApprovals: (toolName) => { deferredTool = toolName; },
     // The catalog is filtered before the path policy runs, so the child
     // never sees shell, network, or agent tools it would only be denied.
     toolAllowlist: MEMORY_EXTRACTION_TOOL_ALLOWLIST,
@@ -556,6 +564,9 @@ async function defaultRunChild(
     },
   });
 
+  if (deferredTool !== undefined) {
+    return { outcome: "deferred", error: `approval required for ${deferredTool}` };
+  }
   if (outcome.kind === "rejected") {
     return { outcome: "rejected", error: outcome.reason };
   }
@@ -878,6 +889,32 @@ export function initExtractMemories(
       return;
     }
 
+    const ctx = queued.context.ctx;
+    const profile = permissionProfileForLiveSandboxPolicies(
+      ctx.sandboxPolicy.value,
+      ctx.cwd,
+      ctx.fileSystemSandboxPolicy,
+      ctx.networkSandboxPolicy,
+    );
+    const sessionTempRoot = session.services.runtimeOptions.sessionTempRoot;
+    if (ctx.sandboxPolicy.value === "read_only" || (
+      !canWritePathWithCwd(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot) &&
+      // The file tools may write the durable memory roots under
+      // workspace_write; the extractor's Write calls go through the same
+      // runtime sandbox check, so admit exactly what it admits.
+      !(isDurableMemoryWritePath(memoryDir) &&
+        agencHomeCarveOutAllowsWrite(profile.fileSystem, memoryDir, ctx.cwd, sessionTempRoot))
+    )) {
+      // A child path allowlist cannot grant filesystem authority. Do not
+      // spend provider turns retrying writes the inherited sandbox denies.
+      // As with approval deferral, retire this batch without requesting input.
+      lane.trigger.processedVisibleCount = batchEnd;
+      lane.failedRuns = 0;
+      emitExtractionWarning(session, "memory_extraction_skipped",
+        "memory directory is not writable under the current sandbox; background memory stopped before dispatch");
+      return;
+    }
+
     const tracker = createChildWriteTracker(memoryDir);
     const existingMemories = formatMemoryManifest(
       await (deps.scanMemoryFiles ?? scanMemoryFiles)(
@@ -918,6 +955,15 @@ export function initExtractMemories(
       onProgress: (event) => tracker.onProgress(event),
     });
 
+    if (childResult.outcome === "deferred") {
+      // Do not repeatedly spend model turns on a batch requiring a human grant.
+      // The next foreground turn remains usable; diagnostics stay in its log.
+      lane.trigger.processedVisibleCount = batchEnd;
+      lane.failedRuns = 0;
+      emitExtractionWarning(session, "memory_extraction_skipped",
+        `${errorText(childResult.error)}; background memory stopped without requesting input`);
+      return;
+    }
     if (
       childResult.outcome !== "completed" ||
       tracker.policyDeniedWrite ||

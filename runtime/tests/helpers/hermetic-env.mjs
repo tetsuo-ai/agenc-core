@@ -27,7 +27,7 @@
 //     that sets its own env inside the test body (the hermetic pattern, e.g.
 //     withProAuthSession in tests/commands/model.test.ts) is unaffected.
 
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
@@ -70,6 +70,7 @@ export const HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS = Object.freeze([
   'ANTHROPIC_CUSTOM_HEADERS',
   // remaining built-in providers
   'LMSTUDIO_API_KEY',
+  'OLLAMA_API_KEY',
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'DEEPSEEK_API_KEY',
@@ -195,6 +196,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_WALLET_VAULT_PASSPHRASE',
   // arbitrary env-file injection
   'AGENC_ENV_FILE',
+  // system prompt layout (a test that needs it sets it explicitly)
+  'AGENC_CACHE_SESSION_TAIL',
   // config-behavior overrides (src/config/env.ts applyEnvOverrides et al.)
   'AGENC_PROFILE',
   'AGENC_PROVIDER',
@@ -207,11 +210,15 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS',
   'AGENC_MAX_BUDGET_USD',
   'AGENC_AUTH_MANAGED_KEYS_ENABLED',
+  // system prompt head selection (a test that needs it sets it explicitly)
+  'AGENC_LEAN_SYSTEM_PROMPT',
   // ambient authorization/profile switches must not weaken a default worker
   'AGENC_ALLOW_UNTRUSTED_HOOKS',
   'AGENC_DISABLE_COMMAND_INJECTION_CHECK',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'USER_TYPE',
+  // advertised tool set (a test that needs it sets it explicitly)
+  'AGENC_DEFER_RARE_TOOLS',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',
@@ -221,8 +228,14 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_INTERNAL_ARTIFACTORY_BASE_URL',
   'AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL',
   'AGENC_AUTO_BACKGROUND_TASKS',
+  // FileRead line-number format (a test that needs it sets it explicitly)
+  'AGENC_SPARSE_LINE_NUMBERS',
   // host-managed provider routing
   'AGENC_PROVIDER_MANAGED_BY_HOST',
+  // opt-in provider wire changes (tests that need one set it explicitly)
+  'AGENC_OPENAI_REASONING_REPLAY',
+  // session request-layout switch (a test that needs it sets it explicitly)
+  'AGENC_SHARED_PREFIX_TAIL',
   // MCP process injection, mutation, OAuth, and sizing overrides
   'AGENC_MCP_SERVERS',
   'AGENC_MCP_ALLOW_MUTATIONS',
@@ -665,7 +678,15 @@ export function getOrCreateHermeticTestHome() {
   if (existing !== undefined) return existing.path
 
   const marker = lockedHermeticRuntimeMarker()
-  const runRoot = typeof marker?.runRoot === 'string' ? marker.runRoot : tmpdir()
+  // Without the prelauncher (plain `vitest`), the worker home and the TMPDIR
+  // derived from it live under the ambient temp directory. Resolve it first:
+  // on macOS that directory sits behind a symlink (`/var` -> `/private/var`),
+  // and runtime code resolves homes and cwds to their real path, so a test
+  // that builds a path from `tmpdir()` would otherwise compare two spellings
+  // of one directory. On Linux `/tmp` is already canonical.
+  const runRoot = typeof marker?.runRoot === 'string'
+    ? marker.runRoot
+    : realpathSync(tmpdir())
   const officialRun = typeof marker?.runRoot === 'string'
   const homePrefix = officialRun
     ? `h-${process.pid}-`

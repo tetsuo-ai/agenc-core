@@ -64,6 +64,10 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
 
     // Before the fix this was `undefined` (silent success); after, true.
     expect(result.isError).toBe(true);
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_committed",
+      evidenceRef: "tool:system.write-stdin:process-exit",
+    });
   });
 
   test("flags a timed-out kill (exitCode null, no process_id, timedOut) as isError", async () => {
@@ -81,6 +85,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
     const result = await tool.execute({ session_id: 1, chars: "" });
 
     expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
   });
 
   test("does NOT flag a still-alive yielded process (exitCode null, process_id set)", async () => {
@@ -99,6 +104,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
     const result = await tool.execute({ session_id: 7, chars: "" });
 
     expect(result.isError).toBeUndefined();
+    expect(result.effectDisposition?.evidenceRef).toBe("tool:system.write-stdin:process-yield");
   });
 
   test("does NOT flag a clean completion (exitCode 0)", async () => {
@@ -111,6 +117,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
     const result = await tool.execute({ session_id: 1, chars: "" });
 
     expect(result.isError).toBeUndefined();
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
   });
 
   test("flags a non-zero exit code as isError", async () => {
@@ -123,5 +130,6 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
     const result = await tool.execute({ session_id: 1, chars: "" });
 
     expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
   });
 });

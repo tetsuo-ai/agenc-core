@@ -3,6 +3,22 @@ import { describe, expect, test } from "vitest";
 import { validateToolCallDetailed } from "./types.js";
 
 describe("validateToolCallDetailed", () => {
+  test("rejects truncated spawn JSON instead of silently replacing it with an empty object", () => {
+    const result = validateToolCallDetailed({ id: "spawn", name: "spawn_agent", arguments: '{"message":"unfinished' });
+    expect(result.toolCall).toBeNull();
+    expect(result.failure?.code).toBe("invalid_json");
+  });
+
+  test("preserves literal handoff text and reference delimiters through normalization", () => {
+    for (const args of [
+      { task_name: "child", message: '  <data>&amp; &quot; 🐈</data>\n' },
+      { task_name: "child", message_ref: { source: "current_user_message", after: "&lt;task&gt;", before: "&lt;/task&gt;" } },
+    ]) {
+      const result = validateToolCallDetailed({ id: "spawn", name: "spawn_agent", arguments: JSON.stringify(args) });
+      expect(JSON.parse(result.toolCall!.arguments)).toEqual(args);
+    }
+  });
+
   test("normalizes plain-string file arguments for readFile", () => {
     const result = validateToolCallDetailed({
       id: "call-1",

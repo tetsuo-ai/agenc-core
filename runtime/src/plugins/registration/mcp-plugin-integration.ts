@@ -1,4 +1,12 @@
 import type { McpServerConfig } from "../../config/schema.js";
+import { join, relative } from "node:path";
+
+/**
+ * A plugin server config as the runtime carries it: the canonical config plus
+ * the decoded sensitive values used for redaction. config.toml can never set
+ * pluginSecretValues; only plugin resolution adds it.
+ */
+export type PluginMcpServerConfig = McpServerConfig & { readonly pluginSecretValues?: readonly string[] };
 import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
 import {
   isRepositoryControlledPlugin,
@@ -6,6 +14,7 @@ import {
   type PluginLoadIssue,
 } from "../loader.js";
 import {
+  pathInsideOrEqual,
   resolvePluginMcpSandboxedServer,
   type PluginMcpSandboxIssue,
 } from "../sandbox.js";
@@ -26,6 +35,7 @@ import {
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
 import { getPluginDataDir } from "../directories.js";
+import { fingerprintPluginCatalogConfig, snapshotInstalledPluginOffThread } from "../../mcp-client/plugin-catalog-cache.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -43,11 +53,15 @@ export interface PluginChannelRegistration {
 interface ServerResolutionIssues {
   readonly missingUserConfig: Set<string>;
   readonly missingEnv: Set<string>;
+  readonly unsafeSensitive: Set<string>;
+  readonly invalidTransportValues: Set<string>;
+  readonly sensitiveValues: Set<string>;
 }
 
 interface SchemaOwnedServerUserConfig {
   readonly values: Readonly<Record<string, PluginConfigStoredValue>>;
   readonly schema: Readonly<Record<string, PluginUserConfigOption>>;
+  readonly sensitiveKeys: ReadonlySet<string>;
 }
 
 function schemaOwnedServerUserConfig(
@@ -67,6 +81,7 @@ function schemaOwnedServerUserConfig(
     : loadPluginOptions(
         plugin.id,
         topLevelSchema as unknown as PluginOptionSchema,
+        { fresh: true },
       );
   const channel = channelSchema === undefined
     ? undefined
@@ -74,10 +89,17 @@ function schemaOwnedServerUserConfig(
         plugin.id,
         serverName,
         channelSchema as unknown as UserConfigSchema,
+        { fresh: true },
       );
+  const values = { ...topLevel, ...channel };
   return {
-    values: { ...topLevel, ...channel },
+    values,
     schema: { ...topLevelSchema, ...channelSchema },
+    sensitiveKeys: new Set(Object.keys(values).filter(key =>
+      Object.hasOwn(channel ?? {}, key)
+        ? channelSchema?.[key]?.sensitive === true
+        : topLevelSchema?.[key]?.sensitive === true,
+    )),
   };
 }
 
@@ -85,6 +107,9 @@ function createServerResolutionIssues(): ServerResolutionIssues {
   return {
     missingUserConfig: new Set(),
     missingEnv: new Set(),
+    unsafeSensitive: new Set(),
+    invalidTransportValues: new Set(),
+    sensitiveValues: new Set(),
   };
 }
 
@@ -94,7 +119,29 @@ function resolveServerString(
   options: PluginMcpRegistrationOptions,
   issues: ServerResolutionIssues,
   userConfig?: SchemaOwnedServerUserConfig,
+  field = 'value',
 ): string {
+  if (field === 'env' || field === 'headers') {
+    for (const match of value.matchAll(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g)) {
+      const key = match[1]!
+      if (userConfig?.sensitiveKeys.has(key) !== true) continue
+      const decoded = userConfig.values[key]
+      for (const part of Array.isArray(decoded) ? decoded : [decoded]) {
+        if (part !== undefined && String(part)) issues.sensitiveValues.add(String(part))
+      }
+    }
+  }
+  if (field !== 'env' && field !== 'headers') {
+    for (const match of value.matchAll(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g)) {
+      const key = match[1]!
+      if (userConfig?.values[key] !== undefined
+        ? userConfig.sensitiveKeys.has(key)
+        : userConfig?.schema[key]?.sensitive === true) {
+        issues.unsafeSensitive.add(`${key} in ${field}`)
+      }
+    }
+    if (issues.unsafeSensitive.size > 0) return value
+  }
   const result = resolvePluginServerTemplate(value, plugin, {
     sessionId: options.sessionId,
     env: options.env,
@@ -119,12 +166,13 @@ function substituteStringRecord(
   options: PluginMcpRegistrationOptions,
   issues: ServerResolutionIssues,
   userConfig?: SchemaOwnedServerUserConfig,
+  field = 'env',
 ): Readonly<Record<string, string>> | undefined {
   if (value === undefined) return undefined;
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      resolveServerString(plugin, entry, options, issues, userConfig),
+      resolveServerString(plugin, entry, options, issues, userConfig, field),
     ]),
   );
 }
@@ -133,7 +181,7 @@ export function resolvePluginMcpEnvironment(
   plugin: LoadedPlugin,
   server: McpServerConfig,
   options: PluginMcpRegistrationOptions,
-): McpServerConfig {
+): PluginMcpServerConfig {
   return resolvePluginMcpEnvironmentWithIssues(plugin, server, options).server;
 }
 
@@ -142,7 +190,7 @@ function resolvePluginMcpEnvironmentWithIssues(
   server: McpServerConfig,
   options: PluginMcpRegistrationOptions,
   userConfig?: SchemaOwnedServerUserConfig,
-): { readonly server: McpServerConfig; readonly issues: ServerResolutionIssues } {
+): { readonly server: PluginMcpServerConfig; readonly issues: ServerResolutionIssues } {
   const issues = createServerResolutionIssues();
   const env = substituteStringRecord(
     plugin,
@@ -150,15 +198,21 @@ function resolvePluginMcpEnvironmentWithIssues(
     options,
     issues,
     userConfig,
+    'env',
   );
+  const headers = substituteStringRecord(plugin, server.headers, options, issues, userConfig, 'headers');
+  for (const [field, values] of [['env', env], ['headers', headers]] as const) {
+    if (Object.values(values ?? {}).some(value => /[\u0000-\u001f\u007f]/u.test(value))) issues.invalidTransportValues.add(field);
+  }
   return {
     server: {
       ...server,
+      pluginSecretValues: [...issues.sensitiveValues],
       ...(server.oauth === undefined ? {} : {
         oauth: {
           ...server.oauth,
           ...(server.oauth.clientId === undefined ? {} : {
-            clientId: resolveServerString(plugin, server.oauth.clientId, options, issues, userConfig),
+            clientId: resolveServerString(plugin, server.oauth.clientId, options, issues, userConfig, 'oauth.clientId'),
           }),
         },
       }),
@@ -170,13 +224,14 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'command',
             ),
           }
         : {}),
       ...(server.args !== undefined
         ? {
             args: server.args.map((arg) =>
-              resolveServerString(plugin, arg, options, issues, userConfig)
+              resolveServerString(plugin, arg, options, issues, userConfig, 'args')
             ),
           }
         : {}),
@@ -188,20 +243,11 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'endpoint',
             ),
           }
         : {}),
-      ...(server.headers !== undefined
-        ? {
-            headers: substituteStringRecord(
-              plugin,
-              server.headers,
-              options,
-              issues,
-              userConfig,
-            ),
-          }
-        : {}),
+      ...(headers !== undefined ? { headers } : {}),
       ...(server.cwd !== undefined
         ? {
             cwd: resolveServerString(
@@ -210,6 +256,7 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'cwd',
             ),
           }
         : server.command !== undefined
@@ -229,7 +276,21 @@ function reportServerIssues(
 ): boolean {
   const missingUserConfig = [...issues.missingUserConfig].sort();
   const missingEnv = [...issues.missingEnv].sort();
-  if (missingUserConfig.length === 0 && missingEnv.length === 0) return false;
+  const unsafeSensitive = [...issues.unsafeSensitive].sort((a, b) => a.localeCompare(b));
+  const invalidTransportValues = [...issues.invalidTransportValues].sort((a, b) => a.localeCompare(b));
+  if (missingUserConfig.length === 0 && missingEnv.length === 0 && unsafeSensitive.length === 0 && invalidTransportValues.length === 0) return false;
+  if (invalidTransportValues.length > 0) {
+    options.errors?.push({
+      type: 'mcp', source: `plugin:${plugin.id}`, plugin: plugin.id, path: serverName,
+      message: `Invalid MCP ${invalidTransportValues.join(' and ')} value`,
+    });
+  }
+  if (unsafeSensitive.length > 0) {
+    options.errors?.push({
+      type: 'mcp', source: `plugin:${plugin.id}`, plugin: plugin.id, path: serverName,
+      message: `Sensitive user configuration may only be used in MCP env values or headers: ${unsafeSensitive.join(', ')}`,
+    });
+  }
   if (missingUserConfig.length > 0) {
     options.errors?.push({
       type: "mcp",
@@ -270,6 +331,8 @@ function addPluginScopeToServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, McpServerConfig>>,
   options: PluginMcpRegistrationOptions,
+  userConfigFor: (serverName: string) => SchemaOwnedServerUserConfig | undefined =
+    serverName => schemaOwnedServerUserConfig(plugin, serverName),
 ): Readonly<Record<string, McpServerConfig>> {
   const scoped: Record<string, McpServerConfig> = {};
   const scopedCounts = new Map<string, number>();
@@ -283,7 +346,7 @@ function addPluginScopeToServers(
       options.errors?.push({ type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id, message: "Plugin MCP server names have an ambiguous runtime identity." });
       continue;
     }
-    const userConfig = schemaOwnedServerUserConfig(plugin, name);
+    const userConfig = userConfigFor(name);
     const resolved = resolvePluginMcpEnvironmentWithIssues(
       plugin,
       server,
@@ -319,8 +382,18 @@ export interface PluginMcpServerRegistration {
   readonly name: string;
   readonly pluginName: string;
   readonly pluginSource: string;
+  readonly pluginRoot: string;
+  readonly snapshotRoot: string;
+  readonly userConfigDigest?: string;
   readonly serverName: string;
   readonly server: McpServerConfig;
+  /** Resolved against the installed root, as command policy saw it before snapshots. */
+  readonly installationIdentity?: Pick<McpServerConfig, "command" | "args" | "cwd">;
+  readonly version?: string;
+  readonly digest: string;
+  readonly eager: boolean;
+  readonly idleTimeoutMs: number;
+  readonly maxProcesses: number;
 }
 
 async function extractMcpServerRegistrationsFromPlugins(
@@ -331,17 +404,70 @@ async function extractMcpServerRegistrationsFromPlugins(
   for (const plugin of plugins.filter(
     (candidate) => !isRepositoryControlledPlugin(candidate)
   )) {
-    const scoped = addPluginScopeToServers(plugin, plugin.mcpServers, options);
+    let digest: string;
+    let snapshotRoot: string;
+    try {
+      ({ digest, snapshotRoot } = await snapshotInstalledPluginOffThread(plugin.root, options.pluginStorageRoot));
+    }
+    catch (error) {
+      options.errors?.push({
+        type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id,
+        message: `Could not hash installed plugin content: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+    // Resolve launch templates against the immutable bytes, before a shell
+    // argument can embed an absolute path to the mutable installation.
+    // The loader has already resolved an explicit cwd against the install
+    // root. Rebase that path before sandbox containment checks the snapshot.
+    const snapshotServers = Object.fromEntries(Object.entries(plugin.mcpServers).map(([name, server]) => [
+      name,
+      server.cwd !== undefined && pathInsideOrEqual(plugin.root, server.cwd)
+        ? { ...server, cwd: join(snapshotRoot, relative(plugin.root, server.cwd)) }
+        : server,
+    ]));
+    // Each settings read reaches secure storage. The launch values, the
+    // installed-path identity and the catalog digest share one read per server.
+    const userConfigs = new Map<string, SchemaOwnedServerUserConfig | undefined>();
+    const userConfigFor = (serverName: string): SchemaOwnedServerUserConfig | undefined => {
+      if (!userConfigs.has(serverName)) userConfigs.set(serverName, schemaOwnedServerUserConfig(plugin, serverName));
+      return userConfigs.get(serverName);
+    };
+    const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, snapshotServers, options, userConfigFor);
+    const lifecycleEntry = plugin.configEntry ?? options.config?.plugins?.plugins?.[plugin.id];
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];
       if (server === undefined) continue;
+      const userConfig = userConfigFor(serverName);
+      const installation = resolvePluginMcpEnvironmentWithIssues(
+        plugin,
+        plugin.mcpServers[serverName]!,
+        options,
+        userConfig,
+      ).server;
       registrations.push({
         name,
         pluginName: plugin.id,
         pluginSource: plugin.source,
+        pluginRoot: plugin.root,
+        snapshotRoot,
+        userConfigDigest: fingerprintPluginCatalogConfig(userConfig?.values ?? {}),
         serverName,
         server,
+        installationIdentity: {
+          ...(installation.command !== undefined ? { command: installation.command } : {}),
+          ...(installation.args !== undefined ? { args: installation.args } : {}),
+          ...(installation.cwd !== undefined ? { cwd: installation.cwd } : {}),
+        },
+        ...(plugin.version !== undefined ? { version: plugin.version } : {}),
+        digest,
+        eager: plugin.manifest.channels?.some(channel => channel.server === serverName) === true ||
+          plugin.manifest.mcpEagerServers?.includes(serverName) === true ||
+          lifecycleEntry?.mcp_servers?.[serverName]?.eager === true,
+        idleTimeoutMs: lifecycleEntry?.mcp_servers?.[serverName]?.idle_timeout_ms ??
+          options.config?.plugins?.mcp_idle_timeout_ms ?? 600_000,
+        maxProcesses: options.config?.plugins?.mcp_max_processes ?? 8,
       });
     }
   }
@@ -353,6 +479,39 @@ export async function loadPluginMcpServerRegistrations(
 ): Promise<readonly PluginMcpServerRegistration[]> {
   const plugins = await resolvePlugins(options);
   return extractMcpServerRegistrationsFromPlugins(plugins, options);
+}
+
+export interface PluginMcpServerInstallation {
+  readonly pluginRoot: string;
+  readonly snapshotRoot: string;
+  readonly digest: string;
+  /** The plugin server's own enabled flag, before session overrides. */
+  readonly enabled: boolean;
+}
+
+/**
+ * Identify one installed plugin MCP server without resolving settings: only
+ * the target plugin is hashed, and no plugin settings or secure storage are read.
+ */
+export async function loadPluginMcpServerInstallation(
+  options: PluginMcpRegistrationOptions & {
+    readonly name: string;
+    readonly pluginName: string;
+    readonly serverName: string;
+  },
+): Promise<PluginMcpServerInstallation | undefined> {
+  for (const plugin of await resolvePlugins(options)) {
+    if (isRepositoryControlledPlugin(plugin) || plugin.id !== options.pluginName) continue;
+    const server = Object.hasOwn(plugin.mcpServers, options.serverName)
+      ? plugin.mcpServers[options.serverName] : undefined;
+    // Registration skips a server whose scoped name is ambiguous.
+    const scopedNames = Object.keys(plugin.mcpServers).filter(serverName =>
+      pluginScopedServerIdentifier(plugin.id, serverName) === options.name);
+    if (server === undefined || scopedNames.length !== 1 || scopedNames[0] !== options.serverName) continue;
+    const { digest, snapshotRoot } = await snapshotInstalledPluginOffThread(plugin.root, options.pluginStorageRoot);
+    return { pluginRoot: plugin.root, snapshotRoot, digest, enabled: server.enabled !== false };
+  }
+  return undefined;
 }
 
 export async function loadPluginMcpServers(

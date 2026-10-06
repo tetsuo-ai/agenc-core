@@ -58,6 +58,7 @@ interface ClearableSessionShape {
   clearProviderResponseId?: () => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
   clearDaemonSession?: () => Promise<void>;
+  settleInterruptedTurnHandoff?: () => Promise<void>;
 }
 
 /** Best-effort reset of any sidecar instance that exposes `reset()`. */
@@ -96,6 +97,7 @@ export async function clearSession(session: Session): Promise<void> {
     );
   }
   const clearable = session as unknown as ClearableSessionShape;
+  await clearable.settleInterruptedTurnHandoff?.();
   if (typeof clearable.clearDaemonSession === "function") {
     await clearable.clearDaemonSession();
   } else if (typeof clearable.state?.with === "function") {

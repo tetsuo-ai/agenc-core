@@ -11,8 +11,14 @@ import {
   isWithheld413Message,
   isWithheldMaxOutputTokens,
   parsePromptTooLongTokenCounts,
+  isResampleableStreamInterruption,
 } from "./api-errors.js";
-import { LLMProviderError, mapLLMError } from "../llm/errors.js";
+import {
+  LLMRequestRebuiltError,
+  LLMProviderError,
+  LLMStreamTruncatedError,
+  mapLLMError,
+} from "../llm/errors.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 
 function mkMsg(
@@ -98,6 +104,25 @@ describe("Media / max-output-tokens / withhold helpers", () => {
   });
 });
 
+describe("isResampleableStreamInterruption", () => {
+  test("transient faults before any streamed tool call can be re-sampled", () => {
+    const cut = Object.assign(new Error("terminated"), {});
+    expect(isResampleableStreamInterruption(cut, 0)).toBe(true);
+    expect(isResampleableStreamInterruption(Object.assign(new Error("x"), { code: "ECONNRESET" }), 0)).toBe(true);
+  });
+
+  test("a streamed tool call or a non-transient fault keeps the partial response", () => {
+    expect(isResampleableStreamInterruption(new Error("terminated"), 1)).toBe(false);
+    expect(isResampleableStreamInterruption(new Error("invalid request"), 0)).toBe(false);
+  });
+});
+
+describe("LLMRequestRebuiltError", () => {
+  test("is transient: the adapter already rebuilt its plan for the next attempt", () => {
+    expect(isTransientProviderError(new LLMRequestRebuiltError("grok", "store refused"))).toBe(true);
+  });
+});
+
 describe("isTransientProviderError", () => {
   test("ECONNRESET + 502 + stream_idle → transient", () => {
     expect(isTransientProviderError(new Error("ECONNRESET"))).toBe(true);
@@ -105,6 +130,18 @@ describe("isTransientProviderError", () => {
     (err502 as unknown as { status: number }).status = 502;
     expect(isTransientProviderError(err502)).toBe(true);
     expect(isTransientProviderError(new Error("stream_idle"))).toBe(true);
+  });
+  test("a stream that ended before its terminal event is transient", () => {
+    // The transport delivered a clean end and no status or socket code marks
+    // it, so only the typed error identifies the truncation.
+    const truncated = new LLMStreamTruncatedError(
+      "grok",
+      "Stream closed without a response.completed or response.failed event",
+    );
+    expect(isTransientProviderError(truncated)).toBe(true);
+    expect(
+      isTransientProviderError(new LLMProviderError("grok", truncated.message)),
+    ).toBe(false);
   });
   test("an SDK connection error is transient, raw and after mapLLMError", () => {
     // openai's APIConnectionError: fixed message, no status, the socket error as cause.

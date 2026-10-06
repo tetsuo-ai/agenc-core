@@ -7,9 +7,15 @@
  * records and never imports from the compatibility scaffolding tree.
  */
 
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { load as loadYaml } from "js-yaml";
+import { stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { loadYaml } from "../../utils/lazy-runtime-packages.js";
+import {
+  PLUGIN_MARKDOWN_WALK,
+  bindContainedRoot,
+  readContainedUtf8,
+  walkContainedFiles,
+} from "../../fs/root-contained-read.js";
 
 import { parseArguments } from "../../tui/slash/argument-substitution.js";
 import {
@@ -26,6 +32,7 @@ import {
   resolvePluginStorageAuthority,
 } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "../payload-paths.js";
 import { isBareMode } from "../../utils/envUtils.js";
 import {
   loadPluginOptions,
@@ -42,9 +49,6 @@ import type {
 type PluginRuntimeOptionSchema = Readonly<
   Record<string, PluginUserConfigOption>
 >;
-
-const MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES = 512;
-const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
 
 export interface PluginRuntimeLoadOptions {
   readonly readOnly?: boolean;
@@ -140,8 +144,9 @@ export function splitFrontmatter(raw: string): {
   }
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
+  const { load: parseYaml } = loadYaml();
   try {
-    const parsed = loadYaml(match[1] ?? "");
+    const parsed = parseYaml(match[1] ?? "");
     return {
       frontmatter: isRecord(parsed) ? parsed : {},
       markdown: match[2] ?? "",
@@ -154,59 +159,33 @@ export function splitFrontmatter(raw: string): {
 export async function readMarkdownFile(
   filePath: string,
   baseDir: string,
+  pluginRoot: string,
 ): Promise<ParsedMarkdownFile | null> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = splitFrontmatter(raw);
-    return {
-      filePath,
-      baseDir,
-      frontmatter: parsed.frontmatter,
-      markdown: parsed.markdown,
-    };
-  } catch {
-    return null;
-  }
+  const root = await bindContainedRoot(pluginRoot);
+  if (root === null) return null;
+  const read = await readContainedUtf8(root, filePath);
+  if (!read.ok) return null;
+  const parsed = splitFrontmatter(read.text);
+  return {
+    filePath,
+    baseDir,
+    frontmatter: parsed.frontmatter,
+    markdown: parsed.markdown,
+  };
 }
 
-export async function collectMarkdownFiles(root: string): Promise<readonly string[]> {
-  const out: string[] = [];
-  const queue: Array<{ readonly path: string; readonly depth: number }> = [
-    { path: root, depth: 0 },
-  ];
-  const visited = new Set<string>();
-  while (queue.length > 0) {
-    if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
-    const current = queue.shift()!;
-    if (current.depth > MAX_PLUGIN_REGISTRATION_SCAN_DEPTH) continue;
-    const identity = await maybeRealpath(current.path);
-    if (visited.has(identity)) continue;
-    visited.add(identity);
-    let entries;
-    try {
-      entries = await readdir(current.path, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
-      const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
-        queue.push({ path, depth: current.depth + 1 });
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        out.push(path);
-      }
-    }
-  }
-  return out.sort((a, b) => a.localeCompare(b));
-}
-
-async function maybeRealpath(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
+export async function collectMarkdownFiles(
+  start: string,
+  pluginRoot = dirname(start),
+): Promise<readonly string[]> {
+  if (isExcludedPluginPayloadPath(pluginRoot, start)) return [];
+  const root = await bindContainedRoot(pluginRoot);
+  if (root === null) return [];
+  const walked = await walkContainedFiles(root, start, {
+    ...PLUGIN_MARKDOWN_WALK,
+    skipDir: isExcludedPluginPayloadDirectory,
+  });
+  return walked.files;
 }
 
 export async function pathIsDirectory(path: string): Promise<boolean> {
@@ -390,23 +369,20 @@ function resolvePluginTemplate(
     );
     return pluginDataDir;
   };
-  let out = value
-    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
-      formatTemplatePath(plugin.root),
-    )
-    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
-    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
-  out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
-    const value = pluginSettingValue(plugin, key, {
+  const out = value.replace(/\$\{[^}]+\}/g, placeholder => {
+    if (placeholder === '${AGENC_PLUGIN_ROOT}') return formatTemplatePath(plugin.root);
+    if (placeholder === '${AGENC_PLUGIN_DATA}') return dataDir();
+    if (placeholder === '${AGENC_SESSION_ID}') return options.sessionId ?? '';
+    const userConfig = /^\$\{user_config\.([A-Za-z_][\w.-]*)\}$/.exec(placeholder);
+    if (userConfig === null) return placeholder;
+    const key = userConfig[1]!;
+    const literal = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
       schemaOwnedValues: options.schemaOwnedValues,
       schema: options.schema,
     });
-    if (value === undefined) {
-      missingUserConfig.push(key);
-      return "";
-    }
-    return value;
+    if (literal === undefined) missingUserConfig.push(key);
+    return literal ?? '';
   });
   return { value: out, missingUserConfig: [...new Set(missingUserConfig)] };
 }
@@ -455,20 +431,37 @@ export function resolvePluginServerTemplate(
     readonly schema?: PluginRuntimeOptionSchema;
   } = {},
 ): PluginServerTemplateResolution {
-  const pluginResult = resolvePluginTemplate(value, plugin, {
-    sessionId: options.sessionId,
-    exposeSensitive: true,
-    schemaOwnedValues: options.schemaOwnedValues,
-    schema: options.schema,
-    ...(options.pluginStorageRoot !== undefined
-      ? { pluginStorageRoot: options.pluginStorageRoot }
-      : {}),
+  const missingUserConfig = new Set<string>();
+  const missingEnv = new Set<string>();
+  let pluginDataDir: string | undefined;
+  // Visit placeholders in the manifest text once. A substituted secret is a
+  // literal value, even when it contains text that looks like a template.
+  const resolved = value.replace(/\$\{[^}]+\}/g, placeholder => {
+    if (placeholder === '${AGENC_PLUGIN_ROOT}') return formatTemplatePath(plugin.root);
+    if (placeholder === '${AGENC_PLUGIN_DATA}') {
+      pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.id, options.pluginStorageRoot));
+      return pluginDataDir;
+    }
+    if (placeholder === '${AGENC_SESSION_ID}') return options.sessionId ?? '';
+    const userConfig = /^\$\{user_config\.([A-Za-z_][\w.-]*)\}$/.exec(placeholder);
+    if (userConfig) {
+      const key = userConfig[1]!;
+      const literal = pluginSettingValue(plugin, key, {
+        exposeSensitive: true,
+        schemaOwnedValues: options.schemaOwnedValues,
+        schema: options.schema,
+      });
+      if (literal === undefined) missingUserConfig.add(key);
+      return literal ?? '';
+    }
+    const result = expandEnvTemplate(placeholder, options.env);
+    result.missingEnv.forEach(key => missingEnv.add(key));
+    return result.value;
   });
-  const envResult = expandEnvTemplate(pluginResult.value, options.env);
   return {
-    value: envResult.value,
-    missingUserConfig: pluginResult.missingUserConfig,
-    missingEnv: envResult.missingEnv,
+    value: resolved,
+    missingUserConfig: [...missingUserConfig],
+    missingEnv: [...missingEnv],
   };
 }
 

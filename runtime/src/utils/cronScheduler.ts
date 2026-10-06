@@ -35,7 +35,7 @@
 // structured telemetry is emitted on every wake/dispatch.
 
 import type { AgentId } from "../types/ids.js";
-import { getScheduledTasksEnabled } from "../bootstrap/state.js";
+import { getScheduledTasksEnabled, removeSessionCronTasks } from "../bootstrap/state.js";
 import { logForDebugging } from "./debug.js";
 import { enqueuePendingNotification } from "./messageQueueManager.js";
 import { monotonicMs } from "./monotonic.js";
@@ -43,6 +43,7 @@ import {
   DEFAULT_CRON_JITTER_CONFIG,
   jitteredNextCronRunMs,
   listAllCronTasks,
+  listSessionCronTasks,
   markCronTasksFired,
   nextCronRunMs,
   oneShotJitteredNextCronRunMs,
@@ -76,6 +77,8 @@ export type CronEnqueue = (command: {
 export type CronSchedulerActivation = {
   readonly queueOwner: CronSessionQueueOwner;
   readonly workspaceRoot: string;
+  /** Do not read, arm, or mutate any file-backed jobs for this activation. */
+  readonly sessionOnly?: boolean;
 };
 
 /** Injectable clocks/timer so tests can drive the driver with fake timers. */
@@ -92,6 +95,8 @@ export type CronSchedulerDeps = {
   clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   /** Load the currently-enabled tasks (file-backed + session). */
   loadTasks: (dir: string, conversationId: string) => Promise<CronTask[]>;
+  /** Visible owner diagnostics; a failed load must never look like an empty schedule. */
+  onLoadError: (error: unknown, activation: CronSchedulerActivation) => void;
   enqueue: CronEnqueue;
 };
 
@@ -101,6 +106,10 @@ const defaultDeps: CronSchedulerDeps = {
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: (handle) => clearTimeout(handle),
   loadTasks: (dir, conversationId) => listAllCronTasks(dir, conversationId),
+  onLoadError: (error) => logForDebugging(
+    `[CronScheduler] durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    { level: "warn" },
+  ),
   enqueue: () => {
     // Default stub: never invokes the model. The real call site overrides this
     // with the TUI command queue (enqueuePendingNotification). Keeping a no-op
@@ -198,6 +207,8 @@ export class CronScheduler {
   private readonly inFlightUntil = new Map<string, number>();
   /** Monotonic ms of the last enqueue per task — drives the min-interval floor. */
   private readonly lastInvokedAt = new Map<string, number>();
+  /** Retry delay for durable occurrences whose claim was not accepted. */
+  private readonly durableClaimBackoff = new Map<string, { failures: number; untilMono: number }>();
   /**
    * Wall-clock instant (epoch ms) through which each task has already been
    * dispatched this process. The effective schedule anchor is the LATER of
@@ -246,11 +257,19 @@ export class CronScheduler {
     if (!getScheduledTasksEnabled()) return;
     const normalized = normalizeCronSchedulerActivation(activation);
     if (this.running) {
-      if (!sameCronSchedulerActivation(this.activation, normalized)) {
+      if (sameCronSchedulerActivation(this.activation, normalized)) return;
+      if (this.activation?.queueOwner.conversationId !== normalized.queueOwner.conversationId ||
+        this.activation.workspaceRoot !== normalized.workspaceRoot) {
         throw new Error(
           "Cron scheduler is already active for a different conversation or workspace",
         );
       }
+      // Retire stale loads/wakes without forgetting already-fired session
+      // occurrences or resetting the rate/overlap limits for this owner.
+      this.activation = normalized;
+      this.scheduleGeneration += 1;
+      this.clearTimer();
+      void this.reschedule();
       return;
     }
     this.resetActivationState();
@@ -321,7 +340,7 @@ export class CronScheduler {
     const generation = ++this.scheduleGeneration;
     this.clearTimer();
 
-    const dueAt = await this.earliestDueAt(activation);
+    const dueAt = await this.earliestDueAt(activation, generation);
     if (
       !this.isCurrentActivation(activation, generation) ||
       this.paused ||
@@ -384,8 +403,13 @@ export class CronScheduler {
   ): Promise<void> {
     if (!this.isCurrentActivation(activation, generation) || this.paused)
       return;
-    await this.dispatchDue(activation, generation);
-    if (!this.isCurrentActivation(activation, generation) || this.paused)
+    const restoredClaim = await this.dispatchDue(activation, generation);
+    // A concurrent reschedule can observe the temporary firedThrough anchor
+    // while a durable claim is pending. If that claim is then cancelled, its
+    // restored anchor and backoff need a fresh timer even though the earlier
+    // scan advanced the generation. Never revive a stopped/replaced activation.
+    if (!this.running || this.activation !== activation || this.paused ||
+      (generation !== this.scheduleGeneration && !restoredClaim))
       return;
     // Re-arm AFTER the tick so the next wake reflects post-fire next_due.
     await this.reschedule();
@@ -400,11 +424,24 @@ export class CronScheduler {
    */
   private async loadRunnableTasks(
     activation: CronSchedulerActivation,
+    generation: number,
   ): Promise<CronTask[]> {
-    const tasks = await this.deps.loadTasks(
-      activation.workspaceRoot,
-      activation.queueOwner.conversationId,
-    );
+    let tasks: CronTask[];
+    try {
+      tasks = activation.sessionOnly === true
+        ? listSessionCronTasks(activation.queueOwner.conversationId)
+        : await this.deps.loadTasks(
+          activation.workspaceRoot,
+          activation.queueOwner.conversationId,
+        );
+    } catch (error) {
+      if (!this.isCurrentActivation(activation, generation)) return [];
+      this.deps.onLoadError(error, activation);
+      // Unavailable durable storage must not suppress independently owned
+      // in-memory jobs. Keep durable reads/listing failures visible and admit
+      // only this conversation's memory tasks through the normal filters.
+      tasks = listSessionCronTasks(activation.queueOwner.conversationId);
+    }
     return tasks.filter(
       (task) =>
         task.deliver === undefined &&
@@ -422,23 +459,30 @@ export class CronScheduler {
   private async dispatchDue(
     activation: CronSchedulerActivation,
     generation: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const now = this.deps.now();
-    const tasks = await this.loadRunnableTasks(activation);
+    const tasks = await this.loadRunnableTasks(activation, generation);
     // loadTasks may cross a session switch. A stale wake must leave no queue
     // item, rate accounting, lease, or task-file mutation behind.
     if (!this.isCurrentActivation(activation, generation) || this.paused)
-      return;
+      return false;
 
     let dispatched = 0;
     let coalescedMisses = 0;
     let skippedDueToLock = 0;
+    let restoredClaim = false;
     const firedRecurringIds: string[] = [];
     const firedOneShotIds: string[] = [];
 
     for (const task of tasks) {
       if (!this.isCurrentActivation(activation, generation) || this.paused) {
-        return;
+        return restoredClaim;
+      }
+      // Another task can wake this scheduler before a failed durable claim's
+      // retry timer. Enforce the deadline here as well as in timer selection.
+      const claimBackoff = this.durableClaimBackoff.get(task.id);
+      if (claimBackoff !== undefined && this.deps.monotonicNow() < claimBackoff.untilMono) {
+        continue;
       }
       const occurrences = this.dueOccurrences(task, now);
       if (occurrences === 0) continue;
@@ -462,8 +506,8 @@ export class CronScheduler {
         this.inFlightUntil.delete(task.id);
       }
 
-      // Rate cap: pause the whole schedule rather than keep firing.
-      if (!this.tryRecordInvocation(now)) {
+      // Check capacity before dispatch, then charge only after acceptance.
+      if (!this.hasInvocationCapacity(now)) {
         this.pauseForCap();
         break;
       }
@@ -474,10 +518,10 @@ export class CronScheduler {
         task.id,
         firedAtMono + this.opts.minIntervalFloorMs,
       );
-      this.lastInvokedAt.set(task.id, firedAtMono);
       // Advance the effective anchor past everything we just coalesced so the
       // next reschedule resolves this task to a FUTURE slot — never the same
       // past-due instant (which would re-fire in a tight loop / busy-spin).
+      const previouslyFiredThrough = this.firedThrough.get(task.id);
       this.firedThrough.set(task.id, now);
       const queueOwner =
         task.durable === false ? task.queueOwner : activation.queueOwner;
@@ -488,7 +532,6 @@ export class CronScheduler {
         // Runtime-only tasks without exact provenance are inert. Never repair
         // them by attributing them to whichever session happens to be active.
         this.inFlightUntil.delete(task.id);
-        this.lastInvokedAt.delete(task.id);
         this.firedThrough.delete(task.id);
         continue;
       }
@@ -509,7 +552,25 @@ export class CronScheduler {
         } finally {
           this.inFlightUntil.delete(task.id);
         }
-        if (result === "cancelled") continue;
+        if (result === "cancelled") {
+          if (task.durable !== false) {
+            // The claim was never accepted. Leave its schedule anchor in place
+            // so the same slot remains due when backoff expires.
+            if (previouslyFiredThrough === undefined) this.firedThrough.delete(task.id);
+            else this.firedThrough.set(task.id, previouslyFiredThrough);
+            const failures = (this.durableClaimBackoff.get(task.id)?.failures ?? 0) + 1;
+            this.durableClaimBackoff.set(task.id, {
+              failures,
+              untilMono: this.deps.monotonicNow() +
+                Math.min(60_000 * 2 ** Math.min(failures, 10), 15 * 60_000),
+            });
+            restoredClaim = true;
+          }
+          continue;
+        }
+        this.recordInvocation(now);
+        this.lastInvokedAt.set(task.id, firedAtMono);
+        this.durableClaimBackoff.delete(task.id);
         dispatched += 1;
         if (result === "accepted") continue;
         if (task.recurring) {
@@ -517,14 +578,21 @@ export class CronScheduler {
             await markCronTasksFired([task.id], now, activation.workspaceRoot);
           }
         } else {
-          await removeCronTasks(
-            [task.id],
-            activation.workspaceRoot,
-            activation.queueOwner.conversationId,
-          );
+          if (task.durable === false) {
+            removeSessionCronTasks([task.id], activation.queueOwner.conversationId);
+          } else {
+            await removeCronTasks(
+              [task.id],
+              activation.workspaceRoot,
+              activation.queueOwner.conversationId,
+            );
+          }
         }
         continue;
       }
+      this.recordInvocation(now);
+      this.lastInvokedAt.set(task.id, firedAtMono);
+      this.durableClaimBackoff.delete(task.id);
       dispatched += 1;
 
       if (task.recurring) {
@@ -533,7 +601,11 @@ export class CronScheduler {
         // listAllCronTasks).
         if (task.durable !== false) firedRecurringIds.push(task.id);
       } else {
-        firedOneShotIds.push(task.id);
+        if (task.durable === false) {
+          removeSessionCronTasks([task.id], activation.queueOwner.conversationId);
+        } else {
+          firedOneShotIds.push(task.id);
+        }
       }
     }
 
@@ -566,6 +638,7 @@ export class CronScheduler {
       `[CronScheduler] wake fired=${now} dispatched=${dispatched} ` +
         `coalescedMisses=${coalescedMisses} skippedDueToLock=${skippedDueToLock}`,
     );
+    return restoredClaim;
   }
 
   /**
@@ -614,9 +687,10 @@ export class CronScheduler {
    */
   private async earliestDueAt(
     activation: CronSchedulerActivation,
+    generation: number,
   ): Promise<number | null> {
     const now = this.deps.now();
-    const tasks = await this.loadRunnableTasks(activation);
+    const tasks = await this.loadRunnableTasks(activation, generation);
     let earliest: number | null = null;
     for (const task of tasks) {
       const due = this.nextDueForTask(task, now);
@@ -633,11 +707,11 @@ export class CronScheduler {
    */
   private nextDueForTask(task: CronTask, now: number): number | null {
     const anchor = this.effectiveAnchor(task);
-    // If a scheduled instant is already at/behind now, it's due now — return
-    // `now` so the timer fires immediately and dispatchDue() coalesces.
+    // If a scheduled instant is already at/behind now, fire now unless this
+    // task is still waiting after a failed durable claim.
     const plain = nextCronRunMs(task.cron, anchor);
     if (plain === null) return null;
-    if (plain <= now) return now;
+    if (plain <= now) return this.backoffDueAt(task, now);
 
     // Future fire: apply jitter (recurring → forward, one-shot → backward) to
     // spread synchronized herds, then clamp with the min-interval floor so a
@@ -664,24 +738,26 @@ export class CronScheduler {
       const elapsed = this.deps.monotonicNow() - last;
       const remainingFloor = this.opts.minIntervalFloorMs - elapsed;
       if (remainingFloor > 0) {
-        return Math.max(target, now + remainingFloor);
+        return Math.max(target, now + remainingFloor, this.backoffDueAt(task, now));
       }
     }
-    return target;
+    return Math.max(target, this.backoffDueAt(task, now));
   }
 
-  /**
-   * Record an invocation against the rolling window. Returns false (cap hit)
-   * when adding this one would exceed maxInvocationsPerWindow.
-   */
-  private tryRecordInvocation(now: number): boolean {
+  private backoffDueAt(task: CronTask, now: number): number {
+    const backoff = this.durableClaimBackoff.get(task.id);
+    return backoff === undefined ? now : now + Math.max(0, backoff.untilMono - this.deps.monotonicNow());
+  }
+
+  /** Whether another accepted invocation fits in the rolling window. */
+  private hasInvocationCapacity(now: number): boolean {
     const cutoff = now - this.opts.windowMs;
     this.invocationLog = this.invocationLog.filter((t) => t > cutoff);
-    if (this.invocationLog.length >= this.opts.maxInvocationsPerWindow) {
-      return false;
-    }
+    return this.invocationLog.length < this.opts.maxInvocationsPerWindow;
+  }
+
+  private recordInvocation(now: number): void {
     this.invocationLog.push(now);
-    return true;
   }
 
   private pauseForCap(): void {
@@ -738,6 +814,7 @@ export class CronScheduler {
   private resetActivationState(): void {
     this.inFlightUntil.clear();
     this.lastInvokedAt.clear();
+    this.durableClaimBackoff.clear();
     this.firedThrough.clear();
     this.invocationLog = [];
     this.paused = false;
@@ -760,6 +837,7 @@ function normalizeCronSchedulerActivation(
   return {
     queueOwner: { kind: "session", conversationId },
     workspaceRoot,
+    ...(activation.sessionOnly === true ? { sessionOnly: true } : {}),
   };
 }
 
@@ -770,7 +848,8 @@ function sameCronSchedulerActivation(
   return (
     left?.queueOwner.kind === "session" &&
     left.queueOwner.conversationId === right.queueOwner.conversationId &&
-    left.workspaceRoot === right.workspaceRoot
+    left.workspaceRoot === right.workspaceRoot &&
+    (left.sessionOnly === true) === (right.sessionOnly === true)
   );
 }
 

@@ -79,16 +79,17 @@ export function phaseEventToProgressEvent(
         max_turns: "Turn capped: iteration limit hit; send a new prompt to continue.",
         max_budget_usd: "Turn capped: cost ceiling hit; send a new prompt to continue.",
         no_progress: "Turn halted by the progress backstop; send a new prompt to continue.",
+        effect_review_required:
+          "Turn stopped: a tool effect has an unknown outcome and needs operator review; run /resolve <call-id> …, then send a new prompt to continue.",
+        deadline_reached:
+          "Run stopped at its deadline; the files on disk are what was saved before it.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
-        editor_request_failed:
-          "Editor request stopped safely; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
         const preferredMessage =
-          (event.stopReason === "compact_failed" ||
-            event.stopReason === "editor_request_failed") &&
+          event.stopReason === "compact_failed" &&
           event.error instanceof Error &&
           event.error.message.length > 0
             ? event.error.message

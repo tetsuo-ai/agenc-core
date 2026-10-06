@@ -26,6 +26,7 @@ import {
   deriveFlatCatalog,
   listRegisteredModelCatalogEntries,
   resolveModelCatalogMetadata,
+  resolveRegisteredModelCatalogEntry,
 } from "../../../src/llm/registry/model-catalog.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -48,7 +49,6 @@ const TOUCHED_ENV_KEYS = [
   "AGENC_HOME",
   "AGENC_PROVIDER",
   "AGENC_MAX_CONTEXT_TOKENS",
-  "USER_TYPE",
   "XAI_API_KEY",
 ] as const;
 
@@ -154,7 +154,10 @@ describe("retired models remain historical metadata, not live choices", () => {
       "mixtral-8x7b-32768",
     );
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.mistral).toEqual([
-      "mistral-medium-latest",
+      "mistral-medium-latest", "mistral-small-latest", "codestral-latest",
+      "ministral-14b-latest", "ministral-8b-latest", "ministral-3b-latest",
+      "voxtral-small-latest", "labs-leanstral-1-5",
+      "mistral-large-latest", "zai-glm-5-3", "zai-glm-5-2",
     ]);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
   });
@@ -169,6 +172,12 @@ describe("retired models remain historical metadata, not live choices", () => {
 });
 
 describe("canonical provider catalogs preserve supported selection rows", () => {
+  it("keeps Copilot Claude identifiers out of the native Anthropic catalog", () => {
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).toContain("claude-opus-5-5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).not.toContain("claude-opus-5.5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain("github:copilot:claude-opus-5.5");
+  });
+
   it("contains no duplicate raw or provider-local rows", () => {
     for (const [provider, models] of Object.entries(
       BUILT_IN_PROVIDER_MODEL_CATALOG,
@@ -190,10 +199,11 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    expect(models).toHaveLength(110);
-    expect(new Set(models)).toHaveLength(110);
+    expect(models).toHaveLength(115);
+    expect(new Set(models)).toHaveLength(115);
     expect(models).toEqual(
       expect.arrayContaining([
+        "openai/gpt-oss-120b",
         "nvidia/cosmos-reason2-8b",
         "meta/codellama-70b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
@@ -220,18 +230,36 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
     );
   });
 
+  it("gives GPT-5 the effort ladder its API accepts and keeps xhigh for the later generations", () => {
+    // Probed on the Responses API 2026-09-11: gpt-5 rejects xhigh
+    // ("Supported values are: minimal, low, medium, high"); gpt-5.5 and
+    // gpt-5.4 accept xhigh and reject max; gpt-5.3-codex rejects minimal.
+    expect(
+      resolveRegisteredModelCatalogEntry({ provider: "openai", model: "gpt-5" })
+        ?.supportedReasoningLevels,
+    ).toEqual(["minimal", "low", "medium", "high"]);
+    for (const model of ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2"]) {
+      const levels = resolveRegisteredModelCatalogEntry({ provider: "openai", model })
+        ?.supportedReasoningLevels;
+      expect(levels, model).toContain("xhigh");
+      expect(levels, model).not.toContain("minimal");
+      expect(levels, model).not.toContain("max");
+    }
+  });
+
   it("keeps every supported MiniMax generation in one catalog", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG.minimax;
+    // The lineup MiniMax documents for its OpenAI-compatible route
+    // (platform.minimax.io, 2026-09-11), newest first.
     expect(models).toEqual([
       "MiniMax-M3",
       "MiniMax-M2.7",
-      "MiniMax-M2",
-      "MiniMax-M2.1",
+      "MiniMax-M2.7-highspeed",
       "MiniMax-M2.5",
-      "MiniMax-Text-01",
-      "MiniMax-Text-01-Preview",
-      "MiniMax-Vision-01",
-      "MiniMax-Vision-01-Fast",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2",
     ]);
     expect(new Set(models)).toHaveLength(models.length);
     expect(buildProviderModelCatalog(defaultConfig()).minimax).toEqual(models);

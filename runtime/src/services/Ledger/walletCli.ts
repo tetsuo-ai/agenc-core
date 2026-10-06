@@ -34,9 +34,11 @@ import {
 import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { extract, list, type ReadEntry } from "tar";
+import type { ReadEntry } from "tar";
+import { loadTar } from "../../utils/lazy-runtime-packages.js";
 import { resolveHomeContext } from "../../config/home.js";
 import * as lockfile from "../../utils/lockfile.js";
+import { isSignalablePid } from "../../utils/child-signal.js";
 
 export const WALLET_CLI_PACKAGE = "@ledgerhq/wallet-cli";
 export const WALLET_CLI_INSTALL_TOOL_NAME = "install_ledger_wallet_cli";
@@ -424,6 +426,16 @@ export function runWalletCliProcess(
     readonly captureStdout?: boolean;
   },
 ): Promise<WalletCliProcessResult> {
+  // An interrupt that already happened (for example during the install's
+  // extraction, which does not watch the signal) must not start the CLI.
+  if (options.signal?.aborted === true) {
+    return Promise.resolve({
+      stdout: "",
+      stderr: "wallet-cli was cancelled before it started",
+      code: null,
+      timedOut: false,
+    });
+  }
   return new Promise((resolveResult) => {
     const child = spawn(executable, [...args], {
       cwd: options.cwd,
@@ -439,6 +451,18 @@ export function runWalletCliProcess(
     let timedOut = false;
     let settled = false;
 
+    // A failed spawn reports on the next tick; listen before anything else.
+    child.on("error", (error) => {
+      finish({
+        stdout,
+        stderr: `${stderr}${String(error)}`,
+        code: -1,
+        timedOut,
+      });
+    });
+    child.on("close", (code) => {
+      finish({ stdout, stderr, code, timedOut });
+    });
     const finish = (result: WalletCliProcessResult): void => {
       if (settled) return;
       settled = true;
@@ -447,6 +471,9 @@ export function runWalletCliProcess(
       resolveResult(result);
     };
     const abort = (): void => {
+      // A failed spawn has no pid, but until Node reports the failure its
+      // open handle sends kill() to pid 0: this process's whole group.
+      if (!isSignalablePid(child.pid)) return;
       try {
         child.kill("SIGTERM");
       } catch {
@@ -462,24 +489,12 @@ export function runWalletCliProcess(
           }, options.timeoutMs);
     timer?.unref?.();
 
-    if (options.signal?.aborted === true) abort();
     options.signal?.addEventListener("abort", abort, { once: true });
     child.stdout?.on("data", (data) => {
       stdout += data.toString("utf8");
     });
     child.stderr?.on("data", (data) => {
       stderr += data.toString("utf8");
-    });
-    child.on("error", (error) => {
-      finish({
-        stdout,
-        stderr: `${stderr}${String(error)}`,
-        code: -1,
-        timedOut,
-      });
-    });
-    child.on("close", (code) => {
-      finish({ stdout, stderr, code, timedOut });
     });
   });
 }
@@ -763,6 +778,7 @@ async function extractVerifiedPackage(
   ]);
   let executableEntries = 0;
   let unpackedBytes = 0;
+  const { list, extract } = loadTar();
   await list({
     file: archivePath,
     strict: true,

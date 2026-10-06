@@ -11,6 +11,7 @@ import {
   readOAuthTokenJsonResponse,
 } from '../services/api/openAiCodeOAuthShared.js'
 import { getProxyFetchOptions } from './proxy.js'
+import { fetchTrustedTokenEndpoint } from '../llm/trusted-token-endpoint.js'
 import type { SecureStorageData } from './secureStorage/index.js'
 import {
   NativeSecureStorageError,
@@ -33,15 +34,14 @@ export interface OpenAiOauthRefreshResult {
 
 export interface RefreshOpenAiSubscriptionOptions {
   readonly force?: boolean
+  /** A 401 for an older bearer must reuse the grant already rotated by another session. */
+  readonly rejectedAccessToken?: string
   readonly nowMs?: number
   readonly windowMs?: number
 }
 
 interface OpenAiRefreshState {
-  readonly inFlightByEnvironment: WeakMap<
-    object,
-    Promise<OpenAiOauthRefreshResult>
-  >
+  inFlight?: Promise<OpenAiOauthRefreshResult>
   lastRefreshFailureAt: number | null
 }
 
@@ -266,7 +266,6 @@ function refreshState(home: HomeContext): OpenAiRefreshState {
   const existing = refreshStateByStorageIdentity.get(storageIdentity)
   if (existing !== undefined) return existing
   const created: OpenAiRefreshState = {
-    inFlightByEnvironment: new WeakMap(),
     lastRefreshFailureAt: null,
   }
   refreshStateByStorageIdentity.set(storageIdentity, created)
@@ -370,97 +369,101 @@ export async function refreshOpenAiSubscriptionIfNeeded(
   environment: ProviderEnvironment,
   options: RefreshOpenAiSubscriptionOptions = {},
 ): Promise<OpenAiOauthRefreshResult> {
-  const current = await readOpenAiOauthCredentialsAsync(home)
-  if (current === undefined) {
-    return { refreshed: false }
-  }
-  const refreshToken = credentialString(current.refreshToken)
-  const accessToken = credentialString(current.accessToken)
-  const accountId = credentialString(current.accountId)
-  if (
-    refreshToken === undefined ||
-    accessToken === undefined ||
-    accountId === undefined
-  ) {
-    return { refreshed: false, credentials: current }
-  }
-
-  const now = options.nowMs ?? Date.now()
-  const windowMs = options.windowMs ?? REFRESH_WINDOW_MS
-  if (options.force !== true && !shouldRefresh(current, now, windowMs)) {
-    return { refreshed: false, credentials: current }
-  }
   const state = refreshState(home)
-  if (refreshIsCoolingDown(current, state, now)) {
-    return { refreshed: false, credentials: current }
-  }
-
-  const existing = state.inFlightByEnvironment.get(environment)
-  if (existing !== undefined) return existing
-
+  if (state.inFlight !== undefined) return state.inFlight
   const inFlight = Promise.resolve().then(async () => {
-    const attemptedAt = options.nowMs ?? Date.now()
     try {
-      const body = new URLSearchParams({
-        client_id: getOpenAiCodeOAuthClientId(environment),
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-      })
-      const response = await fetch(PROVIDER_CODE_REFRESH_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-        signal: AbortSignal.timeout(30_000),
-        ...getProxyFetchOptions({ environment }),
-      })
-      if (!response.ok) {
-        const bodyText = await response.text().catch(() => '')
-        throw new Error(refreshErrorMessage(response.status, bodyText))
+      const current = await readOpenAiOauthCredentialsAsync(home)
+      if (current === undefined) {
+        return { refreshed: false }
       }
-      const payload = normalizeOAuthTokenPayload(
-        await readOAuthTokenJsonResponse(response, 'OpenAI token refresh'),
-      )
-      if (payload.accessToken === undefined) {
-        throw new Error(
-          'OpenAI token refresh succeeded without a new access token.',
-        )
+      const refreshToken = credentialString(current.refreshToken)
+      const accessToken = credentialString(current.accessToken)
+      const accountId = credentialString(current.accountId)
+      if (
+        refreshToken === undefined ||
+        accessToken === undefined ||
+        accountId === undefined
+      ) {
+        return { refreshed: false, credentials: current }
       }
 
-      const next: OpenAiOauthCredentialBlob = {
-        ...withoutRefreshFailure(current),
-        authMode: current.apiKey === undefined ? 'chatgpt' : 'apiKey',
-        accessToken: payload.accessToken,
-        accountId:
-          parseChatgptAccountId(payload.idToken) ??
-          parseChatgptAccountId(payload.accessToken) ??
-          accountId,
-        idToken: payload.idToken ?? current.idToken,
-        refreshToken: payload.refreshToken ?? refreshToken,
-        lastRefreshAt: attemptedAt,
+      const now = options.nowMs ?? Date.now()
+      const windowMs = options.windowMs ?? REFRESH_WINDOW_MS
+      if (options.rejectedAccessToken !== undefined &&
+          accessToken !== options.rejectedAccessToken) {
+        return { refreshed: true, credentials: current }
       }
-      const written = compareAndSetOpenAiOauthCredentials(
-        home,
-        current,
-        next,
-      )
-      state.lastRefreshFailureAt = null
-      if (written === undefined) {
-        return {
-          refreshed: false,
+      if (options.force !== true && !shouldRefresh(current, now, windowMs)) {
+        return { refreshed: false, credentials: current }
+      }
+      if (refreshIsCoolingDown(current, state, now)) {
+        return { refreshed: false, credentials: current }
+      }
+
+      const attemptedAt = options.nowMs ?? Date.now()
+      try {
+        const body = new URLSearchParams({
+          client_id: getOpenAiCodeOAuthClientId(environment),
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+        })
+        const response = await fetchTrustedTokenEndpoint(PROVIDER_CODE_REFRESH_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+          signal: AbortSignal.timeout(30_000),
+          ...getProxyFetchOptions({ environment }),
+        }, fetch)
+        if (!response.ok) {
+          const bodyText = await response.text().catch(() => '')
+          throw new Error(refreshErrorMessage(response.status, bodyText))
         }
+        const payload = normalizeOAuthTokenPayload(
+          await readOAuthTokenJsonResponse(response, 'OpenAI token refresh'),
+        )
+        if (payload.accessToken === undefined) {
+          throw new Error(
+            'OpenAI token refresh succeeded without a new access token.',
+          )
+        }
+
+        const next: OpenAiOauthCredentialBlob = {
+          ...withoutRefreshFailure(current),
+          authMode: current.apiKey === undefined ? 'chatgpt' : 'apiKey',
+          accessToken: payload.accessToken,
+          accountId:
+            parseChatgptAccountId(payload.idToken) ??
+            parseChatgptAccountId(payload.accessToken) ??
+            accountId,
+          idToken: payload.idToken ?? current.idToken,
+          refreshToken: payload.refreshToken ?? refreshToken,
+          lastRefreshAt: attemptedAt,
+        }
+        const written = compareAndSetOpenAiOauthCredentials(
+          home,
+          current,
+          next,
+        )
+        state.lastRefreshFailureAt = null
+        if (written === undefined) {
+          return {
+            refreshed: false,
+          }
+        }
+        return {
+          refreshed: sameCredentials(written, next),
+          credentials: written,
+        }
+      } catch (error) {
+        persistRefreshFailure(home, current, attemptedAt)
+        throw error
       }
-      return {
-        refreshed: sameCredentials(written, next),
-        credentials: written,
-      }
-    } catch (error) {
-      persistRefreshFailure(home, current, attemptedAt)
-      throw error
     } finally {
-      state.inFlightByEnvironment.delete(environment)
+      if (state.inFlight === inFlight) state.inFlight = undefined
     }
   })
 
-  state.inFlightByEnvironment.set(environment, inFlight)
+  state.inFlight = inFlight
   return inFlight
 }

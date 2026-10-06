@@ -572,8 +572,8 @@ export function startCronDelivery(
         CRON_DELIVERY_SCAN_CAP_MS,
         Math.max(0, Math.max(retryFloorAt, earliest) - now()),
       );
-    } catch {
-      log("cron: delivery state unavailable; inspect the task file and directory permissions");
+    } catch (error) {
+      log(`cron: delivery state unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (stopped) return;
     timer = clock.setTimer(() => {
@@ -596,8 +596,8 @@ export function startCronDelivery(
           log("cron: task " + JSON.stringify(entry.taskId) + " delivery deferred; inspect persisted state");
         }
       }
-    } catch {
-      log("cron: delivery state unavailable; inspect the task file and directory permissions");
+    } catch (error) {
+      log(`cron: delivery state unavailable: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       running = false;
       await arm();

@@ -105,6 +105,11 @@ function snapshotGrokAcpEnvironment(
   delete environment.XAI_API_KEY;
   delete environment.GROK_API_KEY;
   if (apiKey !== undefined) environment.XAI_API_KEY = apiKey;
+  else {
+    // The CLI may use its cached sign-in when no API key is selected.
+    delete environment.XAI_BASE_URL;
+    delete environment.GROK_BASE_URL;
+  }
   if (config.path !== undefined) environment.PATH = config.path;
   return Object.freeze(environment);
 }

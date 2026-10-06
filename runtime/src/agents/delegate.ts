@@ -25,16 +25,22 @@ import {
   assertAgentInvocationEnvelope,
   type AgentInvocationEnvelope,
 } from "../contracts/agent-invocation-envelope.js";
-import type { AgentControl, LiveAgent } from "./control.js";
+import {
+  MaxDepthExceededError,
+  type AgentControl,
+  type LiveAgent,
+} from "./control.js";
 import {
   AgentCapacityQueueFullError,
   AgentConcurrencyLimitError,
+  AgentPathExistsError,
   type AgentCapacityPermit,
   type AgentRegistry,
   type AgentPath,
 } from "./registry.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import type { ForkMode } from "./fork-context.js";
-import type { WorktreeHandle } from "./worktree.js";
+import type { WorktreeHandle, WorktreeTurnEvidence } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
 import type {
   ChildToolPolicy,
@@ -42,6 +48,10 @@ import type {
   RunAgentResult,
 } from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import type { ModelInfo } from "../session/turn-context.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, currentChildProvider, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
+import { subagentModelSettings, type SubagentModelSettings } from "./subagent-limits.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -55,6 +65,7 @@ import {
   WorktreePreconditionError,
 } from "./worktree.js";
 import { runAgent } from "./run-agent.js";
+import { terminalFromAgentStatus } from "./status.js";
 import { ResumeManager } from "./resume.js";
 import {
   missingSandboxExecutionBoundary,
@@ -72,9 +83,12 @@ export type DelegateFinalMessageSink = AssistantOutputStreamSink;
 export interface DelegateOpts {
   readonly parent: Session;
   readonly parentPath: AgentPath;
+  /** Source-owned caller binding check, repeated across asynchronous setup. */
+  readonly assertParentSessionActive?: () => void;
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   /** Correlation id for the initial task/assignment. */
   readonly taskId?: string;
   readonly taskContent?: readonly LLMContentPart[];
@@ -82,10 +96,22 @@ export interface DelegateOpts {
   readonly role?: string;
   readonly agentName?: string;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
+  /**
+   * The child's effort and service tier. A caller that sets them applies the
+   * sub-agent limits itself, as spawn_agent does. Left out, a child without a
+   * plan runs at its provider's limits for what its role asks
+   * (`subagentModelSettings`); a full-history fork keeps its parent's. A
+   * null tier is standard: no tier, neither the parent's nor the role's.
+   */
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
+  /** Internal workflow handoff. Inspect an already-owned worktree without creating or deleting it. */
+  readonly inspectionWorktree?: WorktreeHandle;
   readonly forkMode?: ForkMode;
   readonly parentMessagesOverride?: ReadonlyArray<LLMMessage>;
   readonly runInBackground?: boolean;
@@ -98,6 +124,7 @@ export interface DelegateOpts {
   readonly capacityPermit?: AgentCapacityPermit;
   readonly capacityOwnerId?: string;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly resumeManager?: ResumeManager;
   /**
    * Keep the agent's downInbox loop alive between turns instead of
@@ -105,6 +132,7 @@ export interface DelegateOpts {
    * agents so multiple message.stream calls land on the same live thread.
    */
   readonly keepAlive?: boolean;
+  readonly summarizeAtStepLimit?: boolean;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -140,6 +168,53 @@ export type DelegateOutcome =
       readonly effectDisposition?: ToolEffectDispositionEvidence;
     };
 
+function delegateModelOptions(
+  opts: DelegateOpts,
+  settings: SubagentModelSettings,
+): Pick<DelegateOpts, "plan" | "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
+  if (opts.plan !== undefined) return { plan: opts.plan };
+  return {
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+    ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+    ...(settings.reasoningEffort !== undefined
+      ? { reasoningEffort: settings.reasoningEffort }
+      : {}),
+    ...(settings.serviceTier !== undefined ? { serviceTier: settings.serviceTier } : {}),
+  };
+}
+
+/**
+ * Evidence that a refused delegation created no child and no worktree. A
+ * caller such as spawn_agent otherwise files the refusal as an unknown
+ * outcome, which gates the whole session behind /resolve (luna-mac F1).
+ */
+function noChildCreated(reason: string): ToolEffectDispositionEvidence {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef: "agents.delegate:refused-before-child",
+    evidenceMaterial: reason,
+  });
+}
+
+/**
+ * AgentControl.spawn commits a child only at its durable spawn edge and rolls
+ * back its slot, path and nickname for every refusal before that commit.
+ * These refusals are raised only before it (the depth cap, the slot limits,
+ * and a path another agent of this session holds). Any other failure,
+ * including a thread id collision that the commit itself can report, stays
+ * unknown.
+ */
+function refusedBeforeChildCommit(error: unknown): boolean {
+  return (
+    error instanceof AgentConcurrencyLimitError ||
+    error instanceof AgentCapacityQueueFullError ||
+    error instanceof AgentPathExistsError ||
+    error instanceof MaxDepthExceededError
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // delegate — main entry
 // ─────────────────────────────────────────────────────────────────────
@@ -161,6 +236,26 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     };
   };
 
+  if (opts.plan !== undefined) {
+    try {
+      await assertChildExecutionPlan(opts.parent, opts.plan);
+      if (opts.plan.parent.agentPath !== opts.parentPath ||
+          opts.plan.task.id !== (opts.taskId ?? opts.plan.task.id)) {
+        throw new Error("child execution plan task identity changed");
+      }
+      if (opts.plan.crossProvider && forkMode !== undefined &&
+          opts.plan.route.provider !== currentChildProvider(opts.parent).provider) {
+        throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+    }
+  } else if (opts.providerSelection !== undefined) {
+    const reason = "consent_unavailable: a cross-provider child requires a human-granted execution plan";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+  }
+
   if (opts.invocationEnvelope !== undefined) {
     try {
       assertAgentInvocationEnvelope(opts.invocationEnvelope);
@@ -170,10 +265,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         );
       }
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       return reject(
         "INVALID_DELEGATE_REQUEST",
         "invalid_request",
-        error instanceof Error ? error.message : String(error),
+        reason,
+        noChildCreated(reason),
       );
     }
   }
@@ -182,32 +279,72 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     isolation === "worktree" &&
     (!opts.worktreeSlug || opts.worktreeSlug.trim().length === 0)
   ) {
+    const reason = "worktree isolation requires a non-empty worktreeSlug";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "worktree isolation requires a non-empty worktreeSlug",
+      reason,
+      noChildCreated(reason),
     );
   }
 
   const parentThreadId = opts.registry.agentIdForPath?.(opts.parentPath);
+  const requestedRole = opts.control.roleCatalog?.require(opts.role);
   const readOnlyConstraint = childReadOnlyDelegation(
     opts.parent,
-    opts.control.roleCatalog?.require(opts.role),
+    requestedRole,
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
+  if (opts.inspectionWorktree !== undefined &&
+      (readOnlyConstraint === undefined || isolation !== "none")) {
+    const reason = "An inspection worktree requires read-only delegation and isolation none.";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+  }
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
+    const reason =
+      "Read-only delegation cannot create a worktree. Use isolation none.";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "Read-only delegation cannot create a worktree. Use isolation none.",
+      reason,
+      noChildCreated(reason),
     );
   }
 
+  // Every child runs at its provider's sub-agent limits, whatever path
+  // creates it: spawn_agent (which applies them itself), spawn_agents_on_csv
+  // workers, workflow agents. A plan carries its destination's; a fork of the
+  // full conversation keeps its parent's, so it can reuse the parent's
+  // prompt cache.
+  const modelSettings: SubagentModelSettings =
+    opts.plan === undefined && opts.providerSelection === undefined &&
+      forkMode?.kind !== "full_history"
+      ? await subagentModelSettings(opts.parent, {
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+          ...(requestedRole !== undefined ? { role: requestedRole } : {}),
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        })
+      : {
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        };
+
   // Set up worktree if requested.
-  let worktree: WorktreeHandle | undefined;
+  // This invocation never owns lifecycle cleanup of an inspection checkout.
+  let worktree: WorktreeHandle | undefined = opts.inspectionWorktree === undefined
+    ? undefined : { ...opts.inspectionWorktree, created: false };
   let baseCommit: string | null = null;
   let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;
+  let worktreeEvidenceRequiringReview: WorktreeTurnEvidence | undefined;
+  if (opts.inspectionWorktree !== undefined) {
+    const broker = opts.parent.services?.sandboxExecutionBroker;
+    if (broker === undefined) throw missingSandboxExecutionBoundary("child_agent");
+    baseCommit = await captureBaseCommit(opts.inspectionWorktree.path,
+      broker.forkForCwd(opts.inspectionWorktree.path));
+  }
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
@@ -232,8 +369,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       if (parentSandboxExecutionBroker === undefined) {
         throw missingSandboxExecutionBoundary("child_agent");
       }
+      // Creating the worktree is the runtime's own Git work on the
+      // repository: a worktree child's confinement is for its commands.
       worktreeSandboxExecutionBroker =
-        parentSandboxExecutionBroker.forkForCwd(canonicalGitRoot);
+        parentSandboxExecutionBroker.forkForCwd(canonicalGitRoot, {
+          worktreeConfinement: null,
+        });
       worktree = await getOrCreateWorktree({
         gitRoot: canonicalGitRoot,
         slug: worktreeSlug,
@@ -275,8 +416,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   // Spawn the live agent (AgentControl owns depth + slot + metadata).
   let live: LiveAgent;
   try {
+    opts.assertParentSessionActive?.();
     live = await opts.control.spawn({
       parentPath: opts.parentPath,
+      initialTask: { text: opts.taskPrompt, ...(opts.taskId === undefined ? {} : { taskId: opts.taskId }),
+        ...(opts.plan?.destination ?? opts.providerSelection ?? currentChildProvider(opts.parent)),
+        ...(opts.model === undefined || opts.plan !== undefined ? {} : { modelOverride: opts.model }) },
       ...(opts.role !== undefined ? { roleName: opts.role } : {}),
       ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
       ...(opts.depthCap !== undefined ? { depthCap: opts.depthCap } : {}),
@@ -286,6 +431,10 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.capacityOwnerId !== undefined
         ? { capacityOwnerId: opts.capacityOwnerId }
         : {}),
+      ...(opts.plan?.crossProvider || opts.providerSelection !== undefined
+        ? { providerSelection: opts.plan?.route ?? opts.providerSelection }
+        : {}),
+      ...(opts.plan !== undefined ? { executionPlan: opts.plan } : {}),
     });
   } catch (err) {
     // Teardown worktree if we created one — slot reservation rolled back.
@@ -310,23 +459,52 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       });
     }
     const reason = err instanceof Error ? err.message : String(err);
+    // A worktree created for this child is removed above, but that is a
+    // change and its cleanup can fail, so only a spawn without one claims
+    // no effect.
+    const evidence =
+      refusedBeforeChildCommit(err) && worktree?.created !== true
+        ? noChildCreated(reason)
+        : undefined;
     if (err instanceof AgentConcurrencyLimitError) {
-      return reject("AGENT_CONCURRENCY_LIMIT", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CONCURRENCY_LIMIT",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
     if (err instanceof AgentCapacityQueueFullError) {
-      return reject("AGENT_CAPACITY_QUEUE_FULL", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CAPACITY_QUEUE_FULL",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
-    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason);
+    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason, evidence);
   }
 
   // Build the fork context.
   let fork: Awaited<ReturnType<typeof forkSubagent>>;
   try {
+    opts.assertParentSessionActive?.();
     const parentMessages =
       opts.parentMessagesOverride ?? opts.parent.snapshotHistoryMessages();
+    const parentBinding = opts.parent.services?.providerService?.current?.();
+    const parentProvider = parentBinding?.provider;
+    const parentModel = parentBinding?.model ??
+      opts.parent.sessionConfiguration?.collaborationMode?.model ??
+      opts.parent.modelInfo?.slug;
+    const childProvider = opts.plan?.destination.provider ??
+      opts.providerSelection?.provider ?? parentProvider;
+    const childModel = opts.plan?.destination.model ?? opts.model ??
+      live.role.config.model ?? parentModel;
     fork = await forkSubagent({
       parent: opts.parent,
       parentMessages,
+      inheritParentInstructions: childProvider === parentProvider &&
+        childModel === parentModel,
       ...(forkMode !== undefined ? { mode: forkMode } : {}),
       ...(opts.parentMessagesOverride !== undefined
         ? { useProvidedParentMessages: true }
@@ -340,6 +518,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         : {}),
       ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
     });
+    opts.assertParentSessionActive?.();
   } catch (error) {
     const cleanupFailures: string[] = [];
     await opts.control
@@ -408,13 +587,15 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       },
     );
 
-  const execute = async (thread: AgentThread): Promise<RunAgentResult> =>
-    runDelegateAgentLoop({
+  const execute = async (thread: AgentThread): Promise<RunAgentResult> => {
+    opts.assertParentSessionActive?.();
+    return runDelegateAgentLoop({
       thread,
       parent: opts.parent,
       parentPath: opts.parentPath,
       control: opts.control,
       taskPrompt: opts.taskPrompt,
+      exactOutput: opts.exactOutput,
       ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
       initialMessages: fork.messages,
       ...(worktree !== undefined ? { worktree } : {}),
@@ -430,17 +611,22 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { externalSignal: opts.externalSignal }
         : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
-      ...(opts.model !== undefined ? { model: opts.model } : {}),
-      ...(opts.reasoningEffort !== undefined
-        ? { reasoningEffort: opts.reasoningEffort }
-        : {}),
-      ...(opts.serviceTier !== undefined
-        ? { serviceTier: opts.serviceTier }
-        : {}),
+      ...(opts.deferInteractiveApprovals !== undefined
+        ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
+      ...delegateModelOptions(opts, modelSettings),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+      ...(opts.summarizeAtStepLimit !== undefined ? { summarizeAtStepLimit: opts.summarizeAtStepLimit } : {}),
+      onWorktreeEvidence: (evidence) => {
+        if (
+          evidence.state !== "unchanged_clean" &&
+          evidence.state !== "committed_clean"
+        ) {
+          worktreeEvidenceRequiringReview = evidence;
+        }
+      },
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(opts.finalMessageSink !== undefined
         ? { finalMessageSink: opts.finalMessageSink }
@@ -449,6 +635,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         preserveLiveAfterRoleProvenanceFailure = true;
       },
     });
+  };
 
   if (
     !opts.forceSynchronous &&
@@ -483,6 +670,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
             registry: opts.registry,
             parent: opts.parent,
             shutdownAgent,
+            ...(worktreeEvidenceRequiringReview !== undefined
+              ? { worktreeEvidenceRequiringReview }
+              : {}),
             ...(baseCommit !== null ? { baseCommit } : {}),
           });
         }
@@ -505,6 +695,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         registry: opts.registry,
         parent: opts.parent,
         shutdownAgent: true,
+        ...(worktreeEvidenceRequiringReview !== undefined
+          ? { worktreeEvidenceRequiringReview }
+          : {}),
         ...(baseCommit !== null ? { baseCommit } : {}),
       });
     }
@@ -577,6 +770,7 @@ async function runDelegateAgentLoop(opts: {
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly taskId?: string;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
@@ -586,11 +780,17 @@ async function runDelegateAgentLoop(opts: {
   readonly maxTurns?: number;
   readonly externalSignal?: AbortSignal;
   readonly silent?: boolean;
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
+  readonly summarizeAtStepLimit?: boolean;
+  readonly onWorktreeEvidence: (evidence: WorktreeTurnEvidence) => void;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -598,6 +798,7 @@ async function runDelegateAgentLoop(opts: {
   readonly finalMessageSink?: DelegateFinalMessageSink;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<RunAgentResult> {
+  const startedRuns = new Set<string>();
   while (true) {
     const live = opts.thread.live;
     const result = await runToCompletion(
@@ -606,7 +807,11 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         initialMessages: opts.initialMessages,
         taskPrompt: opts.taskPrompt,
-        ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
+        exactOutput: opts.exactOutput,
+        ...(opts.taskId !== undefined ? { taskId: opts.taskId }
+          : live.metadata.initialTaskAdmission !== undefined ? { taskId: live.metadata.initialTaskAdmission.taskId } : {}),
+        ...(!startedRuns.has(live.agentId) && live.metadata.initialTaskAdmission !== undefined
+          ? { initialTurnId: live.metadata.initialTaskAdmission.turnId } : {}),
         ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.worktreeBaseCommit !== undefined
           ? { worktreeBaseCommit: opts.worktreeBaseCommit }
@@ -622,7 +827,12 @@ async function runDelegateAgentLoop(opts: {
           ? { externalSignal: opts.externalSignal }
           : {}),
         ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
+        ...(opts.deferInteractiveApprovals !== undefined
+          ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),
@@ -630,6 +840,9 @@ async function runDelegateAgentLoop(opts: {
           ? { serviceTier: opts.serviceTier }
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+        ...(opts.summarizeAtStepLimit !== undefined ? { summarizeAtStepLimit: opts.summarizeAtStepLimit } : {}),
+        onWorktreeEvidence: opts.onWorktreeEvidence,
+        onTerminalFundsStop: () => opts.control.markThreadSpawnEdgeClosed(live.agentId),
         ...(opts.finalMessageSink !== undefined
           ? { finalMessageSink: opts.finalMessageSink }
           : {}),
@@ -643,6 +856,13 @@ async function runDelegateAgentLoop(opts: {
       },
       opts.finalMessageSink,
     );
+
+    startedRuns.add(live.agentId);
+    const terminal = opts.thread.live.status.value;
+    const terminalOutcome = terminalFromAgentStatus(terminal);
+    if (terminalOutcome !== undefined) {
+      opts.control.recordTerminalOutcome(opts.thread.live.agentId, terminalOutcome);
+    }
 
     if (result.outcome !== "errored") {
       opts.resumeManager?.recordSuccess(live.agentId);
@@ -670,6 +890,8 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         parentPath: opts.parentPath,
         control: opts.control,
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
       });
       if (!restarted) {
@@ -758,6 +980,8 @@ async function restartLiveAgent(opts: {
   readonly parent: Session;
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
@@ -765,6 +989,45 @@ async function restartLiveAgent(opts: {
     opts.control.assertAgentMetadataRoleWorkspace(live.metadata);
   } catch (err) {
     opts.onRoleProvenanceFailure();
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_restart_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+  const persisted = live.metadata.crossProvider;
+  const plan = live.metadata.executionPlan ?? opts.plan;
+  const providerSelection = persisted === undefined
+    ? opts.providerSelection
+    : { provider: persisted.provider, model: persisted.model };
+  try {
+    if (plan !== undefined) await assertChildExecutionPlan(opts.parent, plan);
+    if (persisted !== undefined && opts.providerSelection !== undefined &&
+        (persisted.provider !== opts.providerSelection.provider ||
+          persisted.model !== opts.providerSelection.model)) {
+      throw new Error("child provider/model pair changed before restart");
+    }
+    if (providerSelection !== undefined) {
+      assertCrossProviderAllowed(opts.parent, providerSelection.provider);
+      const validated = await resolveChildSelection(
+        opts.parent, providerSelection.provider, providerSelection.model,
+      );
+      if (validated.provider !== providerSelection.provider ||
+          validated.model !== providerSelection.model) {
+        throw new Error("child provider/model pair changed before restart");
+      }
+      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true,
+        plan?.route.provider === "agenc" ? plan.destination : undefined,
+        plan?.destination);
+      try {
+        if (plan !== undefined) assertPreparedChildMatchesPlan(plan, prepared);
+      } finally {
+        await prepared.binding.instance.dispose?.();
+      }
+    }
+  } catch (err) {
     emitWarning(
       opts.parent.eventLog,
       opts.parent.nextInternalSubId(),
@@ -783,13 +1046,26 @@ async function restartLiveAgent(opts: {
   await opts.control.shutdown(live.agentId, "delegate_restart");
 
   try {
-    return await opts.control.spawn({
+    const restarted = await opts.control.spawn({
       parentPath: opts.parentPath,
+      initialTask: { text: opts.thread.taskPrompt,
+        ...(live.metadata.initialTaskAdmission === undefined ? {} : { taskId: live.metadata.initialTaskAdmission.taskId }),
+        ...(plan?.destination ?? providerSelection ?? currentChildProvider(opts.parent)),
+        ...(live.metadata.initialTaskAdmission === undefined ? {} : { modelOverride: live.metadata.initialTaskAdmission.model }) },
       roleName: live.metadata.agentRole ?? live.role.name,
       agentPath: live.agentPath,
       preferredNickname: live.nickname,
       expectedRoleProvenance: live.metadata,
+      ...(providerSelection !== undefined ? { providerSelection } : {}),
+      ...(plan !== undefined ? { executionPlan: plan } : {}),
     });
+    if (providerSelection !== undefined &&
+        (restarted.metadata.crossProvider?.provider !== providerSelection.provider ||
+          restarted.metadata.crossProvider.model !== providerSelection.model)) {
+      await opts.control.shutdown(restarted.agentId, "delegate_restart_provenance_failed");
+      throw new Error("replacement spawn lost child provider/model provenance");
+    }
+    return restarted;
   } catch (err) {
     emitWarning(
       opts.parent.eventLog,
@@ -811,6 +1087,7 @@ async function teardown(opts: {
   readonly registry: AgentRegistry;
   readonly parent: Session;
   readonly shutdownAgent: boolean;
+  readonly worktreeEvidenceRequiringReview?: WorktreeTurnEvidence;
   readonly baseCommit?: string;
 }): Promise<void> {
   void opts.registry;
@@ -822,6 +1099,18 @@ async function teardown(opts: {
 
   // If we own a worktree, decide keep-vs-remove.
   if (opts.thread.worktree && opts.baseCommit) {
+    // A terminal worker can still have uncertain effects. A fresh query under
+    // the parent's authority must not override the child's canonical evidence
+    // and turn a fail-closed receipt into destructive automatic cleanup.
+    if (opts.worktreeEvidenceRequiringReview !== undefined) {
+      emitWarning(
+        opts.parent.eventLog,
+        opts.parent.nextInternalSubId(),
+        "worktree_evidence_preserved",
+        `worktree ${opts.thread.worktree.path} was preserved for explicit review (evidence=${opts.worktreeEvidenceRequiringReview.state})`,
+      );
+      return;
+    }
     // A resumed worktree may contain commits retained from an earlier run.
     // The turn-start base only distinguishes this turn's output; it does not
     // prove the pre-existing worktree is safe to delete. Auto-cleanup is
@@ -898,5 +1187,6 @@ function requireChildWorktreeSandboxExecutionBroker(
   if (broker === undefined) {
     throw missingSandboxExecutionBoundary("child_agent");
   }
-  return broker.forkForCwd(cwd);
+  // Inspecting and removing the worktree is the runtime's own Git work.
+  return broker.forkForCwd(cwd, { worktreeConfinement: null });
 }

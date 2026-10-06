@@ -73,6 +73,8 @@ import type {
   ToolPairDanglingUse,
   ToolPairProjection,
 } from "./tool-pair-validator.js";
+import { validateToolPairSequence } from "./tool-pair-validator.js";
+import { createToolResultIntegrity } from "./tool-result-integrity.js";
 
 export interface RolloutCheckpointProjectionOptions {
   readonly projection: ToolPairProjection;
@@ -598,7 +600,7 @@ export function reconstructFromRollout(
     : [compactionLineage.at(-1)!];
 
   // Reverse scan.
-  for (let idx = rolloutItems.length - 1; idx >= 0; idx -= 1) {
+  historyMetadata: for (let idx = rolloutItems.length - 1; idx >= 0; idx -= 1) {
     const item = rolloutItems[idx]!;
     switch (item.type) {
       case "compacted": {
@@ -708,7 +710,12 @@ export function reconstructFromRollout(
       case "event_msg": {
         const inner = item.payload.msg;
         const innerType = (inner as { type?: string }).type;
-        const terminal = classifyTurnTerminal(inner, { legacyJournal: true });
+        // A graceful daemon shutdown closes the old runtime, not the user's
+        // work. Keep its checkpoint eligible for the same recovery path as a
+        // killed process. The distinct reason remains durable for clients.
+        const terminal = inner.type === "turn_aborted" && inner.payload.reason === "daemon_shutdown"
+          ? undefined
+          : classifyTurnTerminal(inner, { legacyJournal: true });
         if (terminal !== undefined) {
           if (!active) active = emptySegment();
           if (active.turnId === undefined && terminal.turnId !== undefined) {
@@ -718,6 +725,18 @@ export function reconstructFromRollout(
           break;
         }
         switch (innerType) {
+          case "history_cleared": {
+            // A clear retires every older history/context base. Keep forward
+            // replay intact so unrelated session facts still reach the reducer.
+            if (active !== null) {
+              finalizeActiveSegment(active, pending);
+              active = null;
+            }
+            if (pending.referenceContextItem.kind === "never_set") {
+              pending.referenceContextItem = { kind: "cleared" };
+            }
+            break historyMetadata;
+          }
           case "thread_rolled_back": {
             const payload = (
               inner as unknown as { payload: { numTurns: number } }
@@ -781,11 +800,15 @@ export function reconstructFromRollout(
   // prefixes. Only an orphan's highest checkpoint can authorize execution.
   const turnBuildIds = new Map<string, string | undefined>();
   const turnStartedIndexes = new Map<string, number>();
+  let latestTurnStartedId: string | undefined;
+  let latestAcceptedUserIndex = -1;
+  let latestHistoryClearIndex = -1;
   let latestUserStopIndex = -1;
   let userStopHeld = false;
   let hasExplicitUserStop = false;
   const reconstructionRunId = reconstructionSessionId ?? opts.checkpointProjection?.expectedRunId;
   const resolverDeniedTurns = new Set<string>();
+  const shutdownInterruptedTurns = new Set<string>();
   const highestCheckpointByTurn = new Map<
     string,
     { readonly checkpoint: TurnCheckpointEvent; readonly rolloutIndex: number; readonly userStopHeld: boolean }
@@ -804,16 +827,27 @@ export function reconstructFromRollout(
     }
     if (item?.type !== "event_msg") continue;
     const event = item.payload.msg;
+    if (event.type === "history_cleared") latestHistoryClearIndex = rolloutIndex;
+    if ((event.type === "user_message" &&
+      !item.payload.eventId?.startsWith("shell-input:")) ||
+      (event.type === "message_submission" &&
+        event.payload.streamId !== "session.shell.execute")) {
+      latestAcceptedUserIndex = rolloutIndex;
+    }
     if (
       event.type === "permission_decision" &&
       event.payload.decision === "denied" &&
-      event.payload.source === "resolver"
+      event.payload.source === "resolver" &&
+      event.payload.decidedBy !== "runtime"
     ) {
       resolverDeniedTurns.add(event.payload.turnId);
       if (reconstructionRunId === undefined || event.payload.runId === reconstructionRunId) {
         userStopHeld = true;
         latestUserStopIndex = rolloutIndex;
       }
+    } else if (event.type === "turn_aborted" && event.payload.reason === "daemon_shutdown" &&
+      typeof event.payload.turnId === "string") {
+      shutdownInterruptedTurns.add(event.payload.turnId);
     } else if (event.type === "turn_aborted" && event.payload.reason === "interrupted") {
       userStopHeld = true;
       latestUserStopIndex = rolloutIndex;
@@ -831,10 +865,13 @@ export function reconstructFromRollout(
         seenStarted.add(payload.turnId);
         turnBuildIds.set(payload.turnId, payload.buildId);
         if (!turnStartedIndexes.has(payload.turnId)) turnStartedIndexes.set(payload.turnId, rolloutIndex);
+        latestTurnStartedId = payload.turnId;
       }
       continue;
     }
-    const terminal = typeof inner.type === "string"
+    const terminal = typeof inner.type === "string" &&
+      !(inner.type === "turn_aborted" &&
+        (inner.payload as { reason?: string } | undefined)?.reason === "daemon_shutdown")
       ? classifyTurnTerminal({ ...inner, type: inner.type }, { legacyJournal: true })
       : undefined;
     if (terminal?.turnId !== undefined) {
@@ -898,6 +935,9 @@ export function reconstructFromRollout(
     const item = rolloutSuffix[suffixIndex];
     if (item === undefined) continue;
     const rolloutIndex = rolloutSuffixStartIndex + suffixIndex;
+    if (item.type === "event_msg" && item.payload.msg.type === "history_cleared") {
+      sawLegacyCompactionWithoutReplacement = false;
+    }
     // (b) Compatibility compaction: rebuild history in place via the inline
     // `buildCompactedHistory` helper instead of deferring to the
     // reducer (which would just clear the reference).
@@ -977,6 +1017,8 @@ export function reconstructFromRollout(
   const expectedBuildId = currentBuildId();
   const synthesized: RolloutItem[] = [];
   for (const turnId of seenStarted) {
+    // A cleared conversation cannot authorize resuming one of its old turns.
+    if ((turnStartedIndexes.get(turnId) ?? -1) < latestHistoryClearIndex) continue;
     if (!seenTerminated.has(turnId)) {
       orphanedTurnIds.push(turnId);
 
@@ -991,7 +1033,11 @@ export function reconstructFromRollout(
       if (
         checkpointRecord !== undefined && !userStopHeld && !checkpointRecord.userStopHeld &&
         !resolverDeniedTurns.has(turnId) &&
-        (turnStartedIndexes.get(turnId) ?? -1) > latestUserStopIndex
+        (turnStartedIndexes.get(turnId) ?? -1) > latestUserStopIndex &&
+        // A resumed turn emits another start with the same id. Only a start
+        // belonging to a different turn supersedes this checkpoint.
+        latestTurnStartedId === turnId &&
+        checkpointRecord.rolloutIndex >= latestAcceptedUserIndex
       ) {
         const { checkpoint, rolloutIndex } = checkpointRecord;
         const buildId = turnBuildIds.get(turnId);
@@ -1000,6 +1046,89 @@ export function reconstructFromRollout(
           status: "deferred" as const,
           reason: "checkpoint was outside the raw replay validation window",
         };
+        let resumeHistoryMessageCount = checkpoint.persistedMessageCount;
+        let danglingToolUses = integrity.status === "valid" ? integrity.danglingToolUses : [];
+        const reconciledToolResults: ResponseItem[] = [];
+        // The postAssistant barrier precedes tool execution. Successful
+        // results can be fsynced before shutdown without another checkpoint.
+        // Authenticate those adjacent results against the exact tool-pair
+        // projection before treating their calls as settled.
+        if (integrity.status === "valid" && danglingToolUses.length > 0) {
+          const trailingResults: ResponseItem[] = [];
+          for (const suffixItem of rolloutItems.slice(rolloutIndex + 1)) {
+            if (suffixItem.type === "response_item") {
+              if (suffixItem.payload.role !== "tool") break;
+              trailingResults.push(suffixItem.payload);
+            } else if (suffixItem.type === "event_msg") {
+              const event = suffixItem.payload.msg;
+              // A shutdown abort is a suspension boundary. A recovery pairing
+              // fsynced after it still belongs to this checkpointed turn.
+              if (event.type === "turn_aborted" && event.payload.reason === "daemon_shutdown")
+                continue;
+              if (["turn_started", "turn_complete", "turn_aborted", "turn_failed", "history_cleared"]
+                .includes(event.type)) break;
+            }
+          }
+          if (trailingResults.length > 0 && opts.checkpointProjection !== undefined) {
+            const projection = opts.checkpointProjection;
+            const validated = validateToolPairSequence(
+              [...rawState.history.slice(0, checkpoint.persistedMessageCount), ...trailingResults],
+              projection.projection,
+              { projectionId: `${projection.projectionId}:post-checkpoint:${turnId}`,
+                sourceKey: projection.sourceKey,
+                requireResultIntegrity: true,
+                expectedRunId: projection.expectedRunId,
+                allowDanglingAtEnd: true },
+            );
+            if (validated.status === "dangling" || validated.status === "valid") {
+              resumeHistoryMessageCount += trailingResults.length;
+              danglingToolUses = validated.status === "dangling" ? validated.danglingToolUses : [];
+            }
+          }
+          // An effect acknowledgement is authoritative even if the process
+          // died before it wrote the conversation response. Match both the
+          // call and its intent, then add a durable response before sampling.
+          const intents = new Map<string, { stepId: string; eventSeq: number; toolName: string }>();
+          const settled = new Map<string, string>();
+          for (const suffixItem of rolloutItems.slice(rolloutIndex + 1)) {
+            if (suffixItem.type !== "event_msg") continue;
+            const event = suffixItem.payload.msg;
+            if (["turn_started", "turn_complete", "turn_failed", "history_cleared"].includes(event.type)) break;
+            if (event.type === "effect_intent" && event.payload.runId === opts.checkpointProjection?.expectedRunId) {
+              intents.set(event.payload.callId, { stepId: event.payload.stepId,
+                eventSeq: suffixItem.payload.seq ?? -1, toolName: event.payload.toolName });
+            } else if (event.type === "effect_result" &&
+              event.payload.runId === opts.checkpointProjection?.expectedRunId) {
+              const intent = intents.get(event.payload.callId);
+              if (intent?.stepId === event.payload.stepId &&
+                intent.eventSeq === event.payload.intentEventSeq &&
+                intent.toolName === event.payload.toolName) {
+                settled.set(event.payload.callId,
+                  `The ${event.payload.toolName} call finished before restart (${event.payload.outcome}); its response was not recorded.`);
+              }
+            } else if (event.type === "effect_review_resolved" &&
+              event.payload.runId === opts.checkpointProjection?.expectedRunId &&
+              typeof event.payload.resolution !== "string" &&
+              event.payload.resolution.workflowStatus === "resolved") {
+              const intent = intents.get(event.payload.callId);
+              if (intent?.stepId === event.payload.stepId) {
+                settled.set(event.payload.callId,
+                  `Operator review resolved the ${intent.toolName} call (${event.payload.resolution.disposition}); its response was not recorded.`);
+              }
+            }
+          }
+          danglingToolUses = danglingToolUses.filter((call) => {
+            const content = settled.get(call.callId);
+            if (content === undefined) return true;
+            reconciledToolResults.push({ role: "tool", content,
+              toolCallId: call.callId, toolName: call.toolName,
+              toolResultIntegrity: createToolResultIntegrity({
+                runId: opts.checkpointProjection!.expectedRunId,
+                toolCallId: call.callId, content,
+              }) });
+            return false;
+          });
+        }
         const historyPrefixValid = integrity.status === "valid";
         resumableTurns.push({
           turnId,
@@ -1018,10 +1147,13 @@ export function reconstructFromRollout(
             resumableState:
               checkpoint.resumableState as TurnCheckpointSliceLine,
           },
-          danglingToolUses:
-            integrity.status === "valid" ? integrity.danglingToolUses : [],
+          ...(resumeHistoryMessageCount > checkpoint.persistedMessageCount
+            ? { resumeHistoryMessageCount } : {}),
+          danglingToolUses,
+          ...(reconciledToolResults.length > 0 ? { reconciledToolResults } : {}),
         });
       }
+      if (shutdownInterruptedTurns.has(turnId)) continue;
       synthesized.push({
         type: "event_msg",
         payload: {

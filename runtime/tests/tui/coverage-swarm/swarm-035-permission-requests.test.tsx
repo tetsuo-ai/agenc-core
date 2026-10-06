@@ -317,7 +317,7 @@ describe("permission request swarm coverage", () => {
         .onAllow(confirms.get("custom-text")!.input, []);
 
       await expect(missingPayloadDecision).resolves.toEqual(APPROVED);
-      await expect(arrayPayloadDecision).resolves.toEqual(DENIED);
+      await expect(arrayPayloadDecision).resolves.toEqual({ ...DENIED, decidedBy: "user" });
       await expect(blankMcpDecision).resolves.toEqual(ABORT);
       await expect(customTextDecision).resolves.toEqual(APPROVED);
       await waitFor(() => {
@@ -364,7 +364,7 @@ describe("permission request swarm coverage", () => {
     ]) as ProjectedConfirm;
 
     invalidAskConfirm.onReject("The user wants to clarify these questions");
-    expect(invalidAskDecisions).toEqual([DENIED]);
+    expect(invalidAskDecisions).toEqual([{ ...DENIED, decidedBy: "user" }]);
 
     const askDecisions: ReviewDecision[] = [];
     const askRequest = createPendingRequest(

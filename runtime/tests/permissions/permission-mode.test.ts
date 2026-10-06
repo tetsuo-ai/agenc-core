@@ -651,11 +651,7 @@ describe("isDangerousBashPermission", () => {
   });
 
   it("uses the live upstream Bash pattern list instead of the old subset", () => {
-    if (process.env.USER_TYPE === "ant") {
-      expect(isDangerousBashPermission("system.bash", "gh api:*")).toBe(true);
-    } else {
-      expect(isDangerousBashPermission("system.bash", "gh api:*")).toBe(false);
-    }
+    expect(isDangerousBashPermission("system.bash", "gh api:*")).toBe(false);
   });
 
   it("ignores non-Bash tools", () => {

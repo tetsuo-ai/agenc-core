@@ -22,17 +22,19 @@ import {
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { type Tool, toolMatchesName } from '../../tools/Tool.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { ALL_AGENT_DISALLOWED_TOOLS } from '../../tools.js'
+import { ALL_AGENT_DISALLOWED_TOOLS } from '../../constants/tools.js'
 import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import { createAbortController } from '../abortController.js'
-import { createAttachmentMessage } from '../attachments.js'
+import { createAttachmentMessage } from '../attachment-message.js'
 import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
 import type { HookResult } from '../hooks.js'
 import { createUserMessage } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
+import { serializeRuleValue } from '../../permissions/rules.js'
+import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
 import type { AgentHook } from '../../schemas/hooks.js'
@@ -45,6 +47,14 @@ import {
   registerStructuredOutputEnforcement,
 } from './hookHelpers.js'
 import { clearSessionHooks } from './sessionHooks.js'
+
+/** Session allow rule so a hook child can FileRead its transcript path. */
+export function buildHookTranscriptFileReadGrant(transcriptPath: string): string {
+  return serializeRuleValue({
+    toolName: FILE_READ_TOOL_NAME,
+    ruleContent: transcriptPath,
+  })
+}
 
 /**
  * Execute an agent-based hook using a multi-turn LLM query
@@ -188,7 +198,7 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
               mode: 'dontAsk' as const,
               alwaysAllowRules: {
                 ...appState.toolPermissionContext.alwaysAllowRules,
-                session: [...existingSessionRules, `Read(/${transcriptPath})`],
+                session: [...existingSessionRules, buildHookTranscriptFileReadGrant(transcriptPath)],
               },
             },
           }

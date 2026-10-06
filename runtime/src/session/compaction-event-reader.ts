@@ -1,3 +1,4 @@
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_RETENTION_EXTENSION_DIGEST_DOMAIN,
@@ -45,9 +46,10 @@ import {
   verifyCompactionPayloadManifestV1,
 } from "../services/compact/payload-manifest.js";
 import {
+  digestSourceWithDomain,
   digestWithDomain,
-  validateProgrammaticCompactionBodyV1,
   validateCompactionProvenance,
+  validateProgrammaticCompactionBodyV1,
   verifyCompactionSummaryDigest,
 } from "../services/compact/summary-v1.js";
 import { canonicalCompactionProjectionMessages } from "../services/compact/projection-digest.js";
@@ -864,7 +866,7 @@ function assertSummaryLeavesBindSource(
       last_history_index: active.history_index,
       contributing_ref_ids: [active.ref_id],
     }));
-    const expectedSha256 = digestWithDomain(COMPACTION_SOURCE_DIGEST_DOMAIN, {
+    const expectedSha256 = digestSourceWithDomain(COMPACTION_SOURCE_DIGEST_DOMAIN, {
       source_sha256: source.source_sha256,
       message_sources: messageSources,
     });
@@ -1000,7 +1002,7 @@ function readRollback(value: unknown): CompactionRollbackCommittedV1 {
   );
   const historyDigest = digest(record.history_digest, "history_digest");
   if (
-    digestWithDomain(
+    digestSourceWithDomain(
       COMPACTION_SOURCE_DIGEST_DOMAIN,
       canonicalCompactionProjectionMessages(sourceHistory),
     ) !== historyDigest
@@ -1413,6 +1415,10 @@ function readProjectionMessage(
   const providerReasoning = record.providerReasoning === undefined
     ? undefined
     : readProviderReasoningReplay(record.providerReasoning);
+  if (providerReasoning?.content === "" &&
+      (role !== "assistant" || (toolCalls?.length ?? 0) === 0)) {
+    throw malformed("empty provider reasoning requires an assistant tool call");
+  }
   if (record.toolResultIntegrity !== undefined) {
     if (toolCallId === undefined) {
       throw malformed("tool-result integrity requires toolCallId");
@@ -1474,7 +1480,8 @@ function readProviderReasoningReplay(
   }
   if (candidate.version === 2) {
     const record = exact(candidate, ["version", "content", "provider", "model"]);
-    if (typeof record.content !== "string" || record.content.length === 0) {
+    if (typeof record.content !== "string" ||
+        (record.content.length === 0 && !isKnownEmptyProviderReasoning(record.content, record))) {
       throw malformed("provider reasoning content must be nonempty");
     }
     return {

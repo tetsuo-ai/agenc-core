@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { waitForExactFileText } from "../helpers/workbench-buffer-neovim.mjs";
+import { waitForExactFileText } from "../helpers/frame.mjs";
 
 const markerFileName = "agenc-e2e-direct-shell-134.txt";
 const markerText = "agenc-e2e-direct-shell-marker-134";

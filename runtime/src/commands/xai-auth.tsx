@@ -9,27 +9,17 @@
  * because xAI's shared CLI OAuth client is used.
  */
 
-import { Box, Text } from "../tui/ink.js";
-import {
-  runXaiBrowserLogin,
-  runXaiDeviceLogin,
-  XaiOauthError,
-  type XaiBrowserLoginResult,
-} from "../services/xai/oauth.js";
+import { env as hostEnv } from "../utils/env.js";
 import {
   clearXaiOauthCredentials,
   readXaiOauthCredentials,
-  saveXaiOauthCredentials,
-  xaiOauthTokensToBlob,
 } from "../utils/xaiOauthCredentials.js";
 import { resolveApiKey } from "../config/env.js";
-import { openUrlInBrowser } from "./auth.js";
 import {
   providerEnvironmentFromCommandContext,
   requireCommandConfigStore,
 } from "./config-context.js";
-import { openLocalJsxCommand } from "./local-jsx-command.js";
-import { applyProviderSwitch } from "./provider.js";
+import { signInToProvider } from "./provider-sign-in.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -93,42 +83,52 @@ async function executeGrokLogin(
       };
     }
 
-    let login: XaiBrowserLoginResult;
+    // Keep notices synchronous after loading so cancellation and browser
+    // fallback cannot paint a notice after the login has completed.
+    const showLoginNotice = typeof ctx.appState?.setToolJSX === "function"
+      ? (await import("./xai-auth-menu.js")).showLoginNotice
+      : () => {};
+    const controller = new AbortController();
+    const onCancel = () => controller.abort();
+    let result;
     try {
-      login = arg === "device"
-        ? await runDeviceFlow(ctx)
-        : await runBrowserFlowWithDeviceFallback(ctx);
+      // The browser flow redirects to 127.0.0.1 on THIS machine and opens
+      // the browser on THIS machine's desktop. Over SSH the user sees
+      // neither, so a remote session goes straight to the device code.
+      result = await signInToProvider({
+        provider: "grok",
+        home,
+        environment,
+        signal: controller.signal,
+        device: arg === "device",
+        canOpenBrowser: !hostEnv.isSSH(),
+        onProgress: (progress) => {
+          showLoginNotice(ctx, {
+            heading: progress.heading,
+            url: progress.url ?? "",
+            ...(progress.userCode === undefined ? {} : { userCode: progress.userCode }),
+            onCancel,
+          });
+        },
+      });
     } finally {
       clearLoginNotice(ctx);
     }
-
-    const blob = xaiOauthTokensToBlob(login.tokens, {
-      tokenEndpoint: login.tokenEndpoint,
-    });
-    const saved = saveXaiOauthCredentials(home, blob);
-    if (!saved.success) {
-      return {
-        kind: "error",
-        message: `Signed in, but storing tokens failed: ${saved.warning ?? "unknown error"}`,
-      };
+    if (!result.ok) {
+      return result.cancelled
+        ? { kind: "text", text: "xAI sign-in cancelled." }
+        : { kind: "error", message: result.message };
     }
 
-    const who = blob.accountLabel ?? login.identity.sub ?? "xAI account";
-    const lines = [`Signed in to xAI as ${who}.`];
-
-    // OAuth always wins over env BYOK — switch to grok regardless of keys.
-    const switchOutcome = await applyProviderSwitch(ctx.session, "grok");
-    lines.push(switchOutcome.summary);
-    lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
-    lines.push(
-      "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +
-        "in the environment (subscription Grok Build access).",
-    );
-    const envKey = resolveApiKey(environment);
-    if (envKey !== undefined) {
+    const lines = [
+      `Signed in to xAI as ${result.account}.`,
+      "Open /providers to use Grok with this account.",
+      "Unless auth is set to api-key, this sign-in is used before any " +
+        "XAI_API_KEY / GROK_API_KEY in the environment (subscription Grok Build access).",
+    ];
+    if (resolveApiKey(environment) !== undefined) {
       lines.push(
-        "Note: an API key is also set in the environment but is ignored " +
-          "while you are signed in. /grok-logout to fall back to API-key billing.",
+        "Note: an API key is also set in the environment. /grok-logout to fall back to API-key billing.",
       );
     }
     lines.push(
@@ -137,76 +137,6 @@ async function executeGrokLogin(
     );
     return { kind: "text", text: lines.join("\n") };
   });
-}
-
-async function runBrowserFlowWithDeviceFallback(
-  ctx: SlashCommandContext,
-): Promise<XaiBrowserLoginResult> {
-  try {
-    return await runXaiBrowserLogin({
-      onAuthorizeUrl: async (url) => {
-        showLoginNotice(ctx, {
-          heading: "Sign in with your X / xAI account to continue.",
-          url,
-        });
-        try {
-          await openUrlInBrowser(url);
-        } catch {
-          showLoginNotice(ctx, {
-            heading: "Open this URL in your browser to sign in:",
-            url,
-          });
-        }
-      },
-    });
-  } catch (error) {
-    // Loopback unavailable (e.g. the Grok CLI holds port 56121, or a
-    // headless host): fall back to the device-code flow.
-    if (error instanceof XaiOauthError && error.code === "callback_failed") {
-      return runDeviceFlow(ctx);
-    }
-    throw error;
-  }
-}
-
-async function runDeviceFlow(
-  ctx: SlashCommandContext,
-): Promise<XaiBrowserLoginResult> {
-  return runXaiDeviceLogin({
-    onUserCode: async ({ userCode, verificationUri, verificationUriComplete }) => {
-      const url = verificationUriComplete ?? verificationUri;
-      showLoginNotice(ctx, {
-        heading: "Sign in with your X / xAI account to continue.",
-        url,
-        userCode,
-      });
-      try {
-        await openUrlInBrowser(url);
-      } catch {
-        // URL is already displayed; nothing else to do.
-      }
-    },
-  });
-}
-
-function showLoginNotice(
-  ctx: SlashCommandContext,
-  info: { heading: string; url: string; userCode?: string },
-): void {
-  openLocalJsxCommand(
-    ctx,
-    () => (
-      <Box flexDirection="column" paddingX={1} borderStyle="round">
-        <Text>{info.heading}</Text>
-        <Text dimColor>
-          The consent page may say "Grok Build" — that is xAI's shared sign-in.
-        </Text>
-        {info.userCode ? <Text>Code: {info.userCode}</Text> : null}
-        <Text dimColor>URL: {info.url}</Text>
-      </Box>
-    ),
-    { shouldHidePromptInput: false },
-  );
 }
 
 function clearLoginNotice(ctx: SlashCommandContext): void {

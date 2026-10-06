@@ -42,7 +42,6 @@ describe("PromptSuggestion service", () => {
     isSpeculationEnabledMock.mockReset();
     isSpeculationEnabledMock.mockReturnValue(false);
     startSpeculationMock.mockReset();
-    delete process.env.USER_TYPE;
     clearDynamicTeamContext();
     resetStateForTests();
   });
@@ -64,7 +63,6 @@ describe("PromptSuggestion service", () => {
   });
 
   it("uses the prepared swarm setting without reading ambient feature state", () => {
-    process.env.USER_TYPE = "ant";
 
     expect(
       shouldEnablePromptSuggestion({
@@ -83,7 +81,6 @@ describe("PromptSuggestion service", () => {
   });
 
   it("honors persisted prompt-suggestion settings", () => {
-    process.env.USER_TYPE = "ant";
     setIsInteractive(true);
 
     expect(
@@ -96,7 +93,6 @@ describe("PromptSuggestion service", () => {
   });
 
   it("suppresses prompt suggestions through the live non-interactive bootstrap state", () => {
-    process.env.USER_TYPE = "ant";
     setIsInteractive(false);
 
     expect(
@@ -105,7 +101,6 @@ describe("PromptSuggestion service", () => {
   });
 
   it("suppresses prompt suggestions for dynamic and in-process teammates", () => {
-    process.env.USER_TYPE = "ant";
     setIsInteractive(true);
 
     setDynamicTeamContext({

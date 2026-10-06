@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import type { JsonObject, SessionTranscriptV2Result } from "../../src/app-server/protocol/index.js";
 import {
   daemonTranscriptSnapshotCoversEvent,
   daemonTranscriptSnapshotEvents,
+  resolveDaemonTranscriptTextArtifacts,
 } from "../../src/tui/daemon-transcript-snapshot.js";
 import { adaptTranscriptEvents } from "../../src/tui/session-transcript.js";
 
@@ -42,6 +44,26 @@ function covers(state: SessionTranscriptV2Result, sequence: number, type: string
 }
 
 describe("daemon transcript snapshot", () => {
+  it("fetches every chunk of an oversized answer before restoring it", async () => {
+    const answer = "Answer with detail. ".repeat(35_000);
+    const bytes = Buffer.from(answer);
+    const id = createHash("sha256").update(bytes).digest("hex");
+    const state = snapshot({ messages: [{
+      messageId: "answer", commitEventId: "event:10", role: "assistant",
+      text: "[Full message available with session.artifact.read]", committedSequence: 10,
+      textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" },
+    }] });
+    expect(() => daemonTranscriptSnapshotEvents(state, "session_1")).toThrow(/unresolved text artifact/u);
+    const offsets: number[] = [];
+    const restored = await resolveDaemonTranscriptTextArtifacts(state, async (params) => {
+      offsets.push(params.offset ?? 0);
+      const offset = params.offset ?? 0;
+      const end = Math.min(offset + (params.length ?? 524_288), bytes.length);
+      return { sessionId: "session_1", id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
+    });
+    expect(offsets).toEqual([0, 524_288]);
+    expect(JSON.stringify(adaptTranscriptEvents(daemonTranscriptSnapshotEvents(restored, "session_1")).messages)).toContain(answer);
+  });
   it("restores visible messages without leaving an idle session streaming", () => {
     const events = daemonTranscriptSnapshotEvents(snapshot(), "session_1");
     const transcript = adaptTranscriptEvents(events);

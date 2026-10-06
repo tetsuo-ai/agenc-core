@@ -16,10 +16,16 @@
  * its own trusted scheme instead of guessing.
  */
 
-import { createHash } from "node:crypto";
-import { isAbsolute, join, resolve, sep } from "node:path";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import * as lockfile from "../../utils/lockfile.js";
+import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
+import { readStableFile } from "../../config/stable-file.js";
+import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
+import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
+import { updateMarketplaceInventory } from "./inventory.js";
 
 import {
   findInstallableMarketplacePlugin,
@@ -27,6 +33,7 @@ import {
   marketplaceRootDir,
   marketplaceStoreRoot,
   readMarketplaceIndex,
+  upgradeMarketplaceOp,
   type Fetcher,
   type Marketplace,
   type MarketplacePlugin,
@@ -63,6 +70,65 @@ export const OFFICIAL_MARKETPLACE_URL =
  */
 export const OFFICIAL_MARKETPLACE_REFRESH_MS = 60 * 60_000;
 
+/** A successful update or attempted refresh cannot have happened after the current clock. */
+function marketplaceFreshnessTime(value: string | undefined, now: number): number {
+  const parsed = value === undefined ? NaN : Date.parse(value);
+  return Number.isFinite(parsed) ? Math.min(parsed, now) : 0;
+}
+
+/** A read-only shortcut may skip the lock only when both persisted times are valid and in the past. */
+function marketplaceFreshnessNeedsClaim(updatedAt: string, checkedAt: string | undefined,
+  now: number): boolean {
+  const updated = Date.parse(updatedAt);
+  const checked = checkedAt === undefined ? 0 : Date.parse(checkedAt);
+  return !Number.isFinite(updated) || !Number.isFinite(checked) ||
+    updated > now || checked > now ||
+    now - Math.max(updated, checked) > OFFICIAL_MARKETPLACE_REFRESH_MS;
+}
+
+async function claimMarketplaceRefresh(
+  options: MarketplaceOperationOptions,
+  name: string,
+): Promise<boolean> {
+  const now = (options.now ?? (() => new Date()))().getTime();
+  return updateMarketplaceInventory({ pluginsDirectory: options.pluginStorageRoot }, (current) => {
+    const record = current[name];
+    if (record === undefined || record.refreshable === false || record.autoUpdate === false) {
+      return { inventory: current, result: false };
+    }
+    const updated = marketplaceFreshnessTime(record.lastUpdated, now);
+    const checked = marketplaceFreshnessTime(record.lastChecked, now);
+    const rebased = {
+      ...record,
+      ...(updated !== Date.parse(record.lastUpdated)
+        ? { lastUpdated: new Date(updated).toISOString() } : {}),
+      ...(record.lastChecked !== undefined && checked !== Date.parse(record.lastChecked)
+        ? { lastChecked: new Date(checked).toISOString() } : {}),
+    };
+    if (now - Math.max(updated, checked) <= OFFICIAL_MARKETPLACE_REFRESH_MS) {
+      return { inventory: { ...current, [name]: rebased }, result: false };
+    }
+    return { inventory: { ...current,
+      [name]: { ...rebased, lastChecked: new Date(now).toISOString() } }, result: true };
+  });
+}
+
+/** Refresh configured sources before using their signed payload adverts. */
+export async function refreshStaleMarketplaces(
+  options: MarketplaceOperationOptions,
+  upgrade: typeof upgradeMarketplaceOp = upgradeMarketplaceOp,
+): Promise<void> {
+  const index = await readMarketplaceIndex(options);
+  const now = (options.now ?? (() => new Date()))().getTime();
+  for (const record of Object.values(index.marketplaces)) {
+    if (record.refreshable === false || record.autoUpdate === false) continue;
+    if (!marketplaceFreshnessNeedsClaim(record.updatedAt, record.lastCheckedAt, now)) continue;
+    if (!(await claimMarketplaceRefresh(options, record.name))) continue;
+    try { await upgrade({ ...options, name: record.name }); }
+    catch { /* Keep the verified cached marketplace while offline. */ }
+  }
+}
+
 /**
  * Register the official marketplace when the profile has none, and fetch it
  * again once the cached copy is older than the refresh window. Returns true
@@ -81,12 +147,13 @@ export async function ensureOfficialMarketplace(
   const index = await readMarketplaceIndex(options);
   const official = index.marketplaces[OFFICIAL_MARKETPLACE_NAME];
   const hasAny = Object.keys(index.marketplaces).length > 0;
+  const now = (options.now ?? (() => new Date()))().getTime();
   // A manifest older than the window is fetched again in place. Failure keeps
   // the cached copy: a stale catalog is a catalog, an empty one is an outage.
-  const stale =
-    official !== undefined &&
-    (options.now ?? (() => new Date()))().getTime() - Date.parse(official.updatedAt) >
-      OFFICIAL_MARKETPLACE_REFRESH_MS;
+  const stale = official !== undefined && official.autoUpdate !== false &&
+    official.refreshable !== false &&
+    marketplaceFreshnessNeedsClaim(official.updatedAt, official.lastCheckedAt, now) &&
+    await claimMarketplaceRefresh(options, OFFICIAL_MARKETPLACE_NAME);
   if (hasAny && !stale) return false;
   try {
     await addMarketplace({
@@ -114,10 +181,13 @@ export interface MarketplaceCatalogPluginRow {
   readonly description?: string;
   /** Manifest version read at the pinned commit, when available. */
   readonly version?: string;
+  readonly payloadDigest?: string;
+  readonly sourceCommit?: string;
+  readonly lastRefreshTime?: string;
   /** Skills the pinned manifest declares, with SKILL.md descriptions. */
   readonly skills?: readonly { name: string; description?: string }[];
   /** Commands the pinned manifest declares. */
-  readonly commands?: readonly { name: string; description?: string }[];
+  readonly commands?: readonly { name: string; description?: string; argumentHint?: string }[];
   /** Absolute path of the plugin logo, present only when it exists. */
   readonly logoPath?: string;
   /**
@@ -232,14 +302,22 @@ function pinnedRawUrl(
   } catch {
     return undefined;
   }
-  if (parsed.hostname !== "github.com") return undefined;
-  const segments = parsed.pathname.replace(/^\/+/u, "").replace(/\.git$/u, "").split("/");
-  const [owner, repo, ...rest] = segments;
-  if (owner === undefined || repo === undefined || rest.length > 0) return undefined;
-  const prefix = source.path === undefined ? "" : `${source.path.replace(/^\/+|\/+$/gu, "")}/`;
+  const declared = /^https:\/\/github\.com(\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/?)$/iu.exec(source.url);
+  if (declared === null || parsed.protocol !== "https:" || parsed.hostname !== "github.com" ||
+    parsed.pathname !== declared[1] || !/^[a-f0-9]{40}$/iu.test(source.sha)) return undefined;
+  const [owner, rawRepo] = declared[1]!.replace(/^\/|\/$/gu, "").split("/");
+  const repo = rawRepo?.replace(/\.git$/u, "");
+  if (owner === undefined || repo === undefined || repo.length === 0) return undefined;
+  const prefix = source.path === undefined ? [] : source.path.split("/");
   const clean = relativePath.replace(/^\.\//u, "").replace(/^\/+/u, "");
-  if (clean.length === 0 || clean.includes("..")) return undefined;
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${source.sha}/${prefix}${clean}`;
+  const parts = [...prefix, ...clean.split("/")];
+  if (parts.some((part) => part.length === 0 || part === "." || part === ".." ||
+    part.includes("\\") || part.includes("\0") ||
+    isExcludedPluginPayloadDirectory(part))) return undefined;
+  const pathname = `/${[owner, repo, source.sha, ...parts].map(encodeURIComponent).join("/")}`;
+  const raw = new URL(`https://raw.githubusercontent.com${pathname}`);
+  return raw.pathname === pathname && raw.hostname === "raw.githubusercontent.com"
+    ? raw.href : undefined;
 }
 
 async function fetchBounded(
@@ -266,14 +344,21 @@ async function fetchBounded(
  * honest way to show a plugin's own logo on its card is to read the
  * plugin manifest at the pinned commit, take the `logo` it declares, and
  * fetch exactly that file. The bytes are cached under the marketplace
- * store keyed by commit + path, so a catalog is one network round trip
- * per plugin on first sight and none afterwards. Every failure is
- * silent: a missing logo is a generic card, never a broken catalog.
+ * store keyed by commit + path. Display cards reuse that cache. Signed
+ * comparisons reverify signed bytes cached for the exact pinned source,
+ * including on a later process invocation.
+ * Every failure is silent: a missing logo is a generic card.
  */
 interface MarketplaceComponentRow {
   readonly name: string;
   readonly displayName?: string;
   readonly description?: string;
+  readonly argumentHint?: string;
+}
+
+interface PendingSkillFetch {
+  readonly index: number;
+  readonly path: string;
 }
 
 interface PrefetchedCardMeta {
@@ -281,6 +366,7 @@ interface PrefetchedCardMeta {
   readonly displayName?: string;
   readonly description?: string;
   readonly version?: string;
+  readonly payloadDigest?: string;
   readonly interface?: Record<string, unknown>;
   readonly skills?: readonly MarketplaceComponentRow[];
   readonly commands?: readonly MarketplaceComponentRow[];
@@ -357,10 +443,12 @@ function cardComponentRows(value: unknown): readonly MarketplaceComponentRow[] |
     if (name === undefined) return [];
     const displayName = normalizeSkillDisplayName(raw.displayName);
     const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
+    const argumentHint = cardString(raw.argumentHint, 120);
     return [{
       name,
       ...(displayName !== undefined ? { displayName } : {}),
       ...(description !== undefined ? { description } : {}),
+      ...(argumentHint !== undefined ? { argumentHint } : {}),
     }];
   }).slice(0, CARD_LIST_MAX);
   return rows.length > 0 ? rows : undefined;
@@ -370,38 +458,40 @@ async function prefetchSkillRows(
   fetcher: Fetcher,
   source: MarketplacePlugin["source"],
   declaredSkills: unknown,
-): Promise<{ readonly rows: readonly MarketplaceComponentRow[]; readonly complete: boolean } | undefined> {
+): Promise<{ readonly rows: readonly MarketplaceComponentRow[]; readonly pending: readonly PendingSkillFetch[] } | undefined> {
   if (!Array.isArray(declaredSkills)) return undefined;
   const rows: MarketplaceComponentRow[] = [];
-  let complete = true;
+  const pending: PendingSkillFetch[] = [];
   for (const declared of declaredSkills.slice(0, CARD_SKILLS_MAX)) {
     if (typeof declared !== "string" || declared.length === 0) continue;
     const clean = declared.replace(/^\.\//u, "").replace(/\/+$/u, "");
     const name = clean.split("/").pop();
     if (name === undefined || name.length === 0) continue;
-    let description: string | undefined;
-    let displayName: string | undefined;
+    if (clean.split("/").some(isExcludedPluginPayloadDirectory)) continue;
+    let details: Pick<MarketplaceComponentRow, "displayName" | "description"> = {};
     const skillUrl = pinnedRawUrl(source, `${clean}/SKILL.md`);
     if (skillUrl !== undefined) {
       const bytes = await fetchBounded(fetcher, skillUrl, SKILL_PREFETCH_MAX_BYTES);
       if (bytes !== undefined) {
-        const head = Buffer.from(bytes).toString("utf8");
-        displayName = skillDisplayNameFromMarkdown(head);
-        const match = /^description:\s*(.+)$/mu.exec(head);
-        if (match?.[1] !== undefined) {
-          description = match[1].trim().slice(0, CARD_DESCRIPTION_MAX);
-        }
+        details = skillDetails(bytes);
       } else {
-        complete = false;
+        pending.push({ index: rows.length, path: clean });
       }
     }
-    rows.push({
-      name,
-      ...(displayName !== undefined ? { displayName } : {}),
-      ...(description !== undefined ? { description } : {}),
-    });
+    rows.push({ name, ...details });
   }
-  return rows.length > 0 ? { rows, complete } : undefined;
+  return rows.length > 0 ? { rows, pending } : undefined;
+}
+
+function skillDetails(bytes: Uint8Array): Pick<MarketplaceComponentRow, "displayName" | "description"> {
+  const head = Buffer.from(bytes).toString("utf8");
+  const displayName = skillDisplayNameFromMarkdown(head);
+  const match = /^description:\s*(.+)$/mu.exec(head);
+  const description = match?.[1]?.trim().slice(0, CARD_DESCRIPTION_MAX);
+  return {
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(description !== undefined ? { description } : {}),
+  };
 }
 
 function metaFromSidecar(value: unknown, logoPath: string | undefined): PrefetchedCardMeta {
@@ -414,6 +504,7 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
     (surface?.displayName as string | undefined);
   const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
   const version = cardString(raw.version, 64);
+  const payloadDigest = cardString(raw.payloadDigest, 71);
   const skills = cardComponentRows(raw.skills);
   const commands = cardComponentRows(raw.commands);
   return {
@@ -421,64 +512,478 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
     ...(displayName !== undefined ? { displayName } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(version !== undefined ? { version } : {}),
+    ...(payloadDigest !== undefined ? { payloadDigest } : {}),
     ...(surface !== undefined ? { interface: surface } : {}),
     ...(skills !== undefined ? { skills } : {}),
     ...(commands !== undefined ? { commands } : {}),
   };
 }
 
+const cardFetches = new Map<string, Promise<PrefetchedCardMeta | undefined>>();
+const authenticatedAdverts = new Map<string, { readonly manifest: Uint8Array; readonly signature: Uint8Array }>();
+const MAX_PERSISTED_AUTHENTICATED_ADVERTS = 128;
+
+function advertBinding(key: Uint8Array, manifestUrl: string, manifest: Uint8Array,
+  signature: Uint8Array): Buffer {
+  return createHmac("sha256", key).update(manifestUrl).update("\0")
+    .update(manifest).update("\0").update(signature).digest();
+}
+
+/** The binding secret belongs to Core's private home state, outside plugin stores. */
+async function advertBindingKeyPath(agencHome: string): Promise<string> {
+  const home = await realpath(agencHome);
+  const directory = join(home, "private", "plugin-adverts");
+  await mkdir(join(home, "private"), { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  for (const path of [join(home, "private"), directory]) {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+      (process.platform !== "win32" &&
+        ((info.mode & 0o777) !== 0o700 ||
+          (typeof process.getuid === "function" && info.uid !== process.getuid())))) {
+      throw new Error(`advert binding directory is not owner-only: ${path}`);
+    }
+  }
+  return join(directory, "binding-key");
+}
+
+async function readAdvertBindingKey(agencHome: string): Promise<Buffer | undefined> {
+  try {
+    const path = await advertBindingKeyPath(agencHome);
+    const snapshot = await readStableFile(path);
+    if (snapshot === null) return undefined;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 ||
+      info.dev !== snapshot.dev || info.ino !== snapshot.ino ||
+      (process.platform !== "win32" &&
+        (snapshot.mode !== 0o600 || (info.mode & 0o777) !== 0o600 ||
+          (typeof process.getuid === "function" && info.uid !== process.getuid())))) return undefined;
+    const key = snapshot.bytes.toString("utf8");
+    return /^[a-f0-9]{64}$/u.test(key) ? Buffer.from(key, "hex") : undefined;
+  } catch { return undefined; }
+}
+
+async function ensureAdvertBindingKey(agencHome: string): Promise<Buffer> {
+  const keyPath = await advertBindingKeyPath(agencHome);
+  return withAdvertSidecarLock(keyPath, async () => {
+    const existing = await readAdvertBindingKey(agencHome);
+    if (existing !== undefined) return existing;
+    if (await lstat(keyPath).then(() => true, () => false)) {
+      throw new Error("advert binding key failed owner or mode validation");
+    }
+    const key = randomBytes(32);
+    await writeDurableAtomicFile(keyPath, `${keyPath}.tmp-${process.pid}-${randomUUID()}`,
+      key.toString("hex"), 0o600);
+    return key;
+  });
+}
+
+function authenticatedAdvertPath(cacheRoot: string, key: string): string {
+  return join(cacheRoot, `${key}.authenticated.json`);
+}
+
+async function readAuthenticatedAdvert(
+  path: string, manifestUrl: string, agencHome: string,
+): Promise<{ readonly manifest: Uint8Array; readonly signature: Uint8Array } | undefined> {
+  try {
+    if ((await stat(path)).size > 720_000) return undefined;
+    const value: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (typeof value !== "object" || value === null) return undefined;
+    const record = value as Record<string, unknown>;
+    if (record.manifestUrl !== manifestUrl ||
+      typeof record.manifest !== "string" || typeof record.signature !== "string" ||
+      typeof record.binding !== "string" || !/^[a-f0-9]{64}$/u.test(record.binding) ||
+      record.manifest.length > 350_000 || record.signature.length > 350_000 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/u.test(record.manifest) ||
+      !/^[A-Za-z0-9+/]*={0,2}$/u.test(record.signature)) return undefined;
+    const manifest = Buffer.from(record.manifest, "base64");
+    const signature = Buffer.from(record.signature, "base64");
+    if (manifest.length === 0 || manifest.length > MANIFEST_PREFETCH_MAX_BYTES ||
+      signature.length === 0 || signature.length > 256 * 1024) return undefined;
+    const key = await readAdvertBindingKey(agencHome);
+    if (key === undefined || !timingSafeEqual(Buffer.from(record.binding, "hex"),
+      advertBinding(key, manifestUrl, manifest, signature))) return undefined;
+    return { manifest, signature };
+  } catch { return undefined; }
+}
+
+async function writeAuthenticatedAdvert(
+  path: string, manifestUrl: string, manifest: Uint8Array, signature: Uint8Array,
+  agencHome: string,
+): Promise<void> {
+  const cacheRoot = dirname(path);
+  await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+  await withAdvertSidecarLock(join(cacheRoot, ".authenticated-budget"), async () => {
+    const key = await ensureAdvertBindingKey(agencHome);
+    const entries = (await readdir(cacheRoot)).filter((name) => name.endsWith(".authenticated.json"));
+    const currentName = path.slice(cacheRoot.length + 1);
+    const older = await Promise.all(entries.filter((name) => name !== currentName).map(async (name) => ({
+      name, mtimeMs: (await stat(join(cacheRoot, name))).mtimeMs,
+    })));
+    older.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+    const keepOthers = MAX_PERSISTED_AUTHENTICATED_ADVERTS - 1;
+    for (const entry of older.slice(0, Math.max(0, older.length - keepOthers))) {
+      const sourceSidecar = join(cacheRoot,
+        entry.name.replace(/\.authenticated\.json$/u, ".meta.json"));
+      await withAdvertSidecarLock(sourceSidecar, async () => {
+        // The sidecar owns the deadline and any in-flight advert or skill claim.
+        // Eviction removes only the authenticated bytes, under that source's lock.
+        await rm(join(cacheRoot, entry.name), { force: true });
+      });
+    }
+    await writeDurableAtomicFile(path, `${path}.tmp-${process.pid}-${randomUUID()}`,
+      `${JSON.stringify({ manifestUrl, manifest: Buffer.from(manifest).toString("base64"),
+        signature: Buffer.from(signature).toString("base64"),
+        binding: advertBinding(key, manifestUrl, manifest, signature).toString("hex") })}\n`, 0o600);
+  });
+}
+
+function advertSidecarPath(cacheRoot: string, key: string): string {
+  return join(cacheRoot, `${key}.meta.json`);
+}
+
+async function readAdvertSidecar(path: string): Promise<Record<string, unknown>> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+async function withAdvertSidecarLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+  const release = await lockfile.lock(path, {
+    realpath: false, stale: 30_000,
+    retries: { retries: 20, factor: 1.35, minTimeout: 10, maxTimeout: 250, randomize: true },
+    lockfilePath: `${path}.lock`,
+  });
+  try { return await operation(); }
+  finally { await release(); }
+}
+
+async function writeAdvertSidecar(path: string, sidecar: Record<string, unknown>): Promise<void> {
+  await writeDurableAtomicFile(path, `${path}.tmp-${process.pid}-${randomUUID()}`,
+    `${JSON.stringify(sidecar)}\n`);
+}
+
+/** Fold previous sidecar deadlines into one source-wide deadline on first claim. */
+function migratedAdvertSidecar(cached: Record<string, unknown>): Record<string, unknown> {
+  const { manifestRetryAfter, authRetryAfter, authRecoveryAfter, authRefreshPending,
+    ...current } = cached;
+  const legacy = [manifestRetryAfter, authRetryAfter, authRecoveryAfter]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => Date.parse(value)).filter(Number.isFinite);
+  const existing = typeof current.advertRetryAfter === "string"
+    ? Date.parse(current.advertRetryAfter) : NaN;
+  const deadline = Math.max(...legacy, ...(Number.isFinite(existing) ? [existing] : []));
+  if (Number.isFinite(deadline)) current.advertRetryAfter = new Date(deadline).toISOString();
+  return current;
+}
+
+/** Caller holds the sidecar lock. Persist every claim before fetching. */
+async function claimAdvertDeadline(path: string, cached: Record<string, unknown>,
+  now: number, recovery: boolean): Promise<string | undefined> {
+  const current = migratedAdvertSidecar(cached);
+  const migrated = JSON.stringify(current) !== JSON.stringify(cached);
+  const deadline = typeof current.advertRetryAfter === "string"
+    ? Date.parse(current.advertRetryAfter) : NaN;
+  if (deadline > now + OFFICIAL_MARKETPLACE_REFRESH_MS) {
+    await writeAdvertSidecar(path, { ...current,
+      advertRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+    return undefined;
+  }
+  if (deadline > now && !(recovery && current.advertRecoveryEligible === true)) {
+    if (migrated) await writeAdvertSidecar(path, current);
+    return undefined;
+  }
+  const claim = randomUUID();
+  const { payloadDigest: _digest, signedManifestSha256: _hash,
+    signedSignature: _signature, ...display } = current;
+  await writeAdvertSidecar(path, { ...display, advertClaim: claim,
+    advertRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+    advertRecoveryEligible: false });
+  return claim;
+}
+
+/** Persist the deadline before any network fetch; the lock spans CLI processes. */
+async function claimAdvertRefresh(path: string, now: number): Promise<string | undefined> {
+  try {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    return await withAdvertSidecarLock(path, async () => {
+      const cached = await readAdvertSidecar(path);
+      return claimAdvertDeadline(path, cached, now, false);
+    });
+  } catch { return undefined; }
+}
+
+async function finishAdvertRefresh(path: string, claim: string, metadata: Record<string, unknown>,
+  authenticated: boolean): Promise<void> {
+  try {
+    await withAdvertSidecarLock(path, async () => {
+      const cached = await readAdvertSidecar(path);
+      if (cached.advertClaim !== claim) return;
+      const { advertClaim: _claim, ...rest } = cached;
+      await writeAdvertSidecar(path, { ...rest, ...metadata,
+        ...(authenticated ? { advertRecoveryEligible: true } : {}) });
+    });
+  } catch { /* The claimed deadline remains in force after cache write failures. */ }
+}
+
+/** A display-only catalog may have claimed the manifest window first. */
+async function claimAdvertAuthentication(
+  path: string, now: number, recovery: boolean, authenticatedPath: string,
+  manifestUrl: string, agencHome: string,
+): Promise<{ readonly claim?: string; readonly digest?: string }> {
+  try {
+    return await withAdvertSidecarLock(path, async () => {
+      const cached = await readAdvertSidecar(path);
+      // Another process may have rebound the advert after this caller observed
+      // an unbound file. Recheck it while holding the same lock as both claims.
+      const rebound = await readAuthenticatedAdvert(authenticatedPath, manifestUrl, agencHome);
+      if (rebound !== undefined) {
+        try {
+          const digest = await verifiedAdvertisedPluginPayloadDigest(
+            rebound.manifest, rebound.signature, { agencHome });
+          return { digest };
+        } catch { /* Current publisher trust still requires a fresh attempt. */ }
+      }
+      const claim = await claimAdvertDeadline(path, cached, now, recovery);
+      return { claim };
+    });
+  } catch { return {}; }
+}
+
+async function authenticatedDigestDuringWindow(
+  options: MarketplaceOperationOptions,
+  source: MarketplacePlugin["source"],
+  fetcher: Fetcher,
+  manifestUrl: string,
+  sidecarPath: string,
+  authenticatedPath: string,
+  cacheIdentity: string,
+  now: number,
+): Promise<string | undefined> {
+  if (options.agencHome === undefined) return undefined;
+  const authenticated = authenticatedAdverts.get(cacheIdentity) ??
+    await readAuthenticatedAdvert(authenticatedPath, manifestUrl, options.agencHome);
+  if (authenticated !== undefined) {
+    try {
+      return await verifiedAdvertisedPluginPayloadDigest(
+        authenticated.manifest, authenticated.signature, { agencHome: options.agencHome });
+    } catch { /* Current publisher trust may reject formerly signed bytes. */ }
+  }
+  const unboundEntry = authenticated === undefined && await stat(authenticatedPath)
+    .then(() => true, () => false);
+  const claim = await claimAdvertAuthentication(sidecarPath, now, unboundEntry,
+    authenticatedPath, manifestUrl, options.agencHome);
+  if (claim.digest !== undefined) return claim.digest;
+  if (claim.claim === undefined) return undefined;
+  const signatureUrl = pinnedRawUrl(source, ".agenc-plugin/signature.json");
+  if (signatureUrl === undefined) return undefined;
+  const manifest = await fetchBounded(fetcher, manifestUrl, MANIFEST_PREFETCH_MAX_BYTES);
+  const signature = await fetchBounded(fetcher, signatureUrl, 256 * 1024);
+  if (manifest === undefined || signature === undefined) return undefined;
+  try {
+    const digest = await verifiedAdvertisedPluginPayloadDigest(
+      manifest, signature, { agencHome: options.agencHome });
+    authenticatedAdverts.set(cacheIdentity, { manifest, signature });
+    if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
+    let persistedAuthentication = false;
+    try {
+      await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifest, signature,
+        options.agencHome);
+      persistedAuthentication = true;
+    } catch { /* The in-memory verified advert is still safe to use. */ }
+    await finishAdvertRefresh(sidecarPath, claim.claim, {}, persistedAuthentication && !unboundEntry);
+    return digest;
+  } catch { return undefined; }
+}
+
+/** Skill documents have their own retry state; they do not reopen the manifest advert claim. */
+async function retryIncompleteSkillMetadata(
+  path: string,
+  cached: Record<string, unknown>,
+  fetcher: Fetcher,
+  source: MarketplacePlugin["source"],
+  now: number,
+): Promise<Record<string, unknown>> {
+  const rows = cardComponentRows(cached.skills);
+  if (rows === undefined || !Array.isArray(cached.pendingSkillFetches)) return cached;
+  if (cached.pendingSkillFetches.length > CARD_SKILLS_MAX) return cached;
+  const pending = cached.pendingSkillFetches.filter((entry): entry is PendingSkillFetch => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const candidate = entry as Record<string, unknown>;
+    return Number.isInteger(candidate.index) && (candidate.index as number) >= 0 &&
+      (candidate.index as number) < rows.length &&
+      typeof candidate.path === "string" && candidate.path.length <= MANIFEST_PREFETCH_MAX_BYTES &&
+      candidate.path.split("/").pop() === rows[candidate.index as number]?.name;
+  });
+  if (pending.length === 0 || pending.length !== cached.pendingSkillFetches.length) return cached;
+  let claim: string | undefined;
+  try {
+    claim = await withAdvertSidecarLock(path, async () => {
+      const current = await readAdvertSidecar(path);
+      if (JSON.stringify(current.pendingSkillFetches) !== JSON.stringify(cached.pendingSkillFetches) ||
+        current.advertRetryAfter !== cached.advertRetryAfter) {
+        return undefined;
+      }
+      const skillDeadline = typeof current.skillRetryAfter === "string"
+        ? Date.parse(current.skillRetryAfter) : NaN;
+      if (skillDeadline > now + OFFICIAL_MARKETPLACE_REFRESH_MS) {
+        await writeAdvertSidecar(path, { ...current,
+          skillRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+        return undefined;
+      }
+      if (skillDeadline > now) return undefined;
+      const next = randomUUID();
+      await writeAdvertSidecar(path, { ...current, skillClaim: next,
+        skillRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+      return next;
+    });
+  } catch { return cached; }
+  if (claim === undefined) return cached;
+  const updatedRows = [...rows];
+  const remaining: PendingSkillFetch[] = [];
+  for (const entry of pending) {
+    const url = pinnedRawUrl(source, entry.path + "/SKILL.md");
+    const bytes = url === undefined ? undefined : await fetchBounded(fetcher, url, SKILL_PREFETCH_MAX_BYTES);
+    if (bytes === undefined) {
+      remaining.push(entry);
+    } else {
+      updatedRows[entry.index] = { ...updatedRows[entry.index]!, ...skillDetails(bytes) };
+    }
+  }
+  try {
+    return await withAdvertSidecarLock(path, async () => {
+      const current = await readAdvertSidecar(path);
+      if (current.skillClaim !== claim) return current;
+      const { skillClaim: _claim, ...rest } = current;
+      const updated = { ...rest, skills: updatedRows, pendingSkillFetches: remaining,
+        ...(remaining.length === 0 ? { cardMetadataVersion: CARD_METADATA_VERSION } : {}) };
+      await writeAdvertSidecar(path, updated);
+      return updated;
+    });
+  } catch { return cached; }
+}
+
 async function prefetchPinnedCardMeta(
   options: MarketplaceOperationOptions,
   plugin: MarketplacePlugin,
+  includePayloadDigest = false,
 ): Promise<PrefetchedCardMeta | undefined> {
-  const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
-  if (typeof fetcher !== "function") return undefined;
   const manifestUrl = pinnedRawUrl(plugin.source, ".agenc-plugin/plugin.json");
   if (manifestUrl === undefined) return undefined;
-  const cacheRoot = logoCacheRoot(options);
-  const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
-  let staleCached: PrefetchedCardMeta | undefined;
+  const flightKey = `${logoCacheRoot(options)}:${options.agencHome ?? ""}:${includePayloadDigest}:${manifestUrl}`;
+  const current = cardFetches.get(flightKey);
+  if (current !== undefined) return current;
+  const pending = prefetchPinnedCardMetaOnce(options, plugin, includePayloadDigest, manifestUrl);
+  cardFetches.set(flightKey, pending);
   try {
-    const cachedRaw: unknown = JSON.parse(
-      await readFile(join(cacheRoot, `${key}.meta.json`), "utf8"),
-    );
-    if (typeof cachedRaw === "object" && cachedRaw !== null) {
-      const cached = cachedRaw as Record<string, unknown>;
-      let logoPath: string | undefined;
-      if (
-        typeof cached.logoExt === "string" &&
-        /^(png|jpg|webp)$/u.test(cached.logoExt)
-      ) {
-        const cachedLogo = join(cacheRoot, `${key}.${cached.logoExt}`);
-        try {
-          const stats = await stat(cachedLogo);
-          if (stats.isFile() && stats.size > 0) logoPath = cachedLogo;
-        } catch {
-          // Meta survives a pruned logo file.
-        }
-      }
-      const metadata = metaFromSidecar(cached, logoPath);
-      if (cached.cardMetadataVersion === CARD_METADATA_VERSION) return metadata;
-      staleCached = metadata;
-    }
-  } catch {
-    // Not cached yet.
+    return await pending;
+  } finally {
+    cardFetches.delete(flightKey);
   }
+}
+
+async function prefetchPinnedCardMetaOnce(
+  options: MarketplaceOperationOptions,
+  plugin: MarketplacePlugin,
+  includePayloadDigest: boolean,
+  manifestUrl: string,
+): Promise<PrefetchedCardMeta | undefined> {
+  const cacheRoot = logoCacheRoot(options);
+  await rm(join(cacheRoot, ".advert-binding-key"), { force: true }).catch(() => {});
+  const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  if (typeof fetcher !== "function") return undefined;
+  const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+  const sidecarPath = advertSidecarPath(cacheRoot, key);
+  const authenticatedPath = authenticatedAdvertPath(cacheRoot, key);
+  const cacheIdentity = `${cacheRoot}:${manifestUrl}`;
+  const cached = await readAdvertSidecar(sidecarPath);
+  let cachedLogoPath: string | undefined;
+  if (typeof cached.logoExt === "string" && /^(png|jpg|webp)$/u.test(cached.logoExt)) {
+    const cachedLogo = join(cacheRoot, `${key}.${cached.logoExt}`);
+    try {
+      const stats = await stat(cachedLogo);
+      if (stats.isFile() && stats.size > 0) cachedLogoPath = cachedLogo;
+    } catch { /* Meta survives a pruned logo file. */ }
+  }
+  // Persisted display metadata is untrusted for update comparisons. Only
+  // bytes fetched for this exact URL in this process can yield a cached digest.
+  const { payloadDigest: _untrustedDigest, ...staleCached } = metaFromSidecar(cached, cachedLogoPath);
+  const now = (options.now ?? (() => new Date()))().getTime();
+  // Legacy complete display sidecars predate advert deadlines. They are still
+  // reusable for card copy; signed update comparisons must claim a fresh fetch.
+  if (cached.advertRetryAfter === undefined && cached.manifestRetryAfter === undefined &&
+    cached.authRetryAfter === undefined && cached.authRecoveryAfter === undefined &&
+    cached.cardMetadataVersion === CARD_METADATA_VERSION && !includePayloadDigest) {
+    return staleCached;
+  }
+  const claim = await claimAdvertRefresh(sidecarPath, now);
+  if (claim === undefined) {
+    const current = await readAdvertSidecar(sidecarPath);
+    const displaySidecar = await retryIncompleteSkillMetadata(
+      sidecarPath, current, fetcher, plugin.source, now);
+    const { payloadDigest: _currentDigest, ...display } =
+      metaFromSidecar(displaySidecar, cachedLogoPath);
+    if (includePayloadDigest) {
+      const payloadDigest = await authenticatedDigestDuringWindow(options, plugin.source,
+        fetcher, manifestUrl, sidecarPath, authenticatedPath, cacheIdentity, now);
+      if (payloadDigest !== undefined) return { ...display, payloadDigest };
+    }
+    return display;
+  }
+  const lastAuthenticated = async (): Promise<PrefetchedCardMeta> => {
+    if (!includePayloadDigest) return staleCached;
+    const payloadDigest = await authenticatedDigestDuringWindow(options, plugin.source,
+      fetcher, manifestUrl, sidecarPath, authenticatedPath, cacheIdentity, now);
+    return payloadDigest === undefined ? staleCached : { ...staleCached, payloadDigest };
+  };
   const manifestBytes = await fetchBounded(
     fetcher,
     manifestUrl,
     MANIFEST_PREFETCH_MAX_BYTES,
   );
-  if (manifestBytes === undefined) return staleCached;
+  if (manifestBytes === undefined) {
+    return lastAuthenticated();
+  }
+  const signatureUrl = includePayloadDigest
+    ? pinnedRawUrl(plugin.source, ".agenc-plugin/signature.json") : undefined;
+  const signatureBytes = signatureUrl === undefined ? undefined
+    : await fetchBounded(fetcher, signatureUrl, 256 * 1024);
+  let payloadDigest: string | undefined;
+  if (signatureBytes !== undefined && options.agencHome !== undefined) {
+    try { payloadDigest = await verifiedAdvertisedPluginPayloadDigest(manifestBytes, signatureBytes,
+      { agencHome: options.agencHome });
+    }
+    catch { /* An invalid advertised signature is not a verified update. */ }
+  }
   let manifest: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(
       Buffer.from(manifestBytes).toString("utf8"),
     );
-    if (typeof parsed !== "object" || parsed === null) return staleCached;
+    if (typeof parsed !== "object" || parsed === null) return lastAuthenticated();
     manifest = parsed as Record<string, unknown>;
   } catch {
-    return staleCached;
+    return lastAuthenticated();
+  }
+  if (includePayloadDigest && payloadDigest === undefined) {
+    const previous = await lastAuthenticated();
+    if (previous.payloadDigest !== undefined) return previous;
+  }
+  let persistedAuthentication = false;
+  if (payloadDigest !== undefined && signatureBytes !== undefined && options.agencHome !== undefined) {
+    authenticatedAdverts.set(cacheIdentity, { manifest: manifestBytes, signature: signatureBytes });
+    if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
+    try {
+      await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifestBytes, signatureBytes,
+        options.agencHome);
+      persistedAuthentication = true;
+    }
+    catch { /* Current invocation can still use its authenticated bytes. */ }
   }
   const surface = cardInterface(manifest.interface);
   const description = cardString(manifest.description, CARD_DESCRIPTION_MAX);
@@ -492,6 +997,10 @@ async function prefetchPinnedCardMeta(
               description:
                 typeof entry === "object" && entry !== null
                   ? (entry as { description?: unknown }).description
+                  : undefined,
+              argumentHint:
+                typeof entry === "object" && entry !== null
+                  ? (entry as { argumentHint?: unknown }).argumentHint
                   : undefined,
             }),
           ),
@@ -530,9 +1039,11 @@ async function prefetchPinnedCardMeta(
     }
   }
   const sidecar = {
-    // Retry incomplete skill reads on the next catalog request; do not freeze a
-    // transient fetch failure into a current-version, permanently unlabeled card.
-    ...(skillMetadata?.complete !== false ? { cardMetadataVersion: CARD_METADATA_VERSION } : {}),
+    cardMetadataVersion: skillMetadata?.pending.length ? undefined : CARD_METADATA_VERSION,
+    pendingSkillFetches: skillMetadata?.pending ?? [],
+    ...(skillMetadata?.pending.length ? {
+      skillRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+    } : {}),
     ...(surface?.displayName !== undefined
       ? { displayName: surface.displayName }
       : {}),
@@ -543,33 +1054,47 @@ async function prefetchPinnedCardMeta(
     ...(commands !== undefined ? { commands } : {}),
     ...(logoExt !== undefined ? { logoExt } : {}),
   };
-  try {
-    await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
-    await writeFile(
-      join(cacheRoot, `${key}.meta.json`),
-      `${JSON.stringify(sidecar)}\n`,
-      { mode: 0o600 },
-    );
-  } catch {
-    // Uncached is refetched next catalog, never fatal.
-  }
-  return metaFromSidecar(sidecar, logoPath);
+  await finishAdvertRefresh(sidecarPath, claim, sidecar, persistedAuthentication);
+  return { ...metaFromSidecar(sidecar, logoPath),
+    ...(payloadDigest !== undefined ? { payloadDigest } : {}) };
 }
 
 async function catalogRowsForMarketplace(
   options: MarketplaceOperationOptions,
   marketplace: Marketplace,
   product: string | undefined,
+  lastRefreshTime: string,
+  includePayloadDigests: boolean,
+  includeAllProducts: boolean,
+  selectPlugin?: (marketplaceName: string, plugin: MarketplacePlugin) => boolean,
 ): Promise<readonly MarketplaceCatalogPluginRow[]> {
   const rows: MarketplaceCatalogPluginRow[] = [];
   for (const plugin of marketplace.plugins) {
     if (plugin.policy.installation === "NOT_AVAILABLE") continue;
-    if (!marketplacePluginSupportsProduct(plugin.policy, product)) continue;
+    if (!includeAllProducts && !marketplacePluginSupportsProduct(plugin.policy, product)) continue;
+    if (selectPlugin !== undefined && !selectPlugin(marketplace.name, plugin)) continue;
     const manifestLogo = await resolveLogoPath(marketplace.root, plugin);
-    const prefetched =
-      manifestLogo === undefined
-        ? await prefetchPinnedCardMeta(options, plugin)
-        : undefined;
+    const prefetched = await prefetchPinnedCardMeta(options, plugin, includePayloadDigests);
+    let localPayloadDigest: string | undefined;
+    let localVersion: string | undefined;
+    if (plugin.source.type === "local") {
+      try {
+        const manifest: unknown = JSON.parse(await readFile(
+          join(plugin.source.path, ".agenc-plugin", "plugin.json"), "utf8"));
+        if (typeof manifest === "object" && manifest !== null) {
+          localVersion = cardString((manifest as Record<string, unknown>).version, 64);
+        }
+      } catch { /* An unreadable local manifest has no advertised version. */ }
+    }
+    if (includePayloadDigests && plugin.source.type === "local" && options.agencHome !== undefined) {
+      try {
+        localPayloadDigest = await verifiedAdvertisedPluginPayloadDigest(
+          await readFile(join(plugin.source.path, ".agenc-plugin", "plugin.json")),
+          await readFile(join(plugin.source.path, ".agenc-plugin", "signature.json")),
+          { agencHome: options.agencHome },
+        );
+      } catch { /* Local packages may be unsigned. */ }
+    }
     const logoPath = manifestLogo ?? prefetched?.logoPath;
     const logoRoot =
       manifestLogo !== undefined
@@ -595,11 +1120,16 @@ async function catalogRowsForMarketplace(
       policy: plugin.policy,
       ...(surface !== undefined ? { interface: surface } : {}),
       root: marketplace.root,
+      lastRefreshTime,
+      ...(plugin.source.type === "git" && plugin.source.sha !== undefined
+        ? { sourceCommit: plugin.source.sha } : {}),
+      ...((prefetched?.payloadDigest ?? localPayloadDigest) !== undefined
+        ? { payloadDigest: prefetched?.payloadDigest ?? localPayloadDigest } : {}),
       ...(prefetched?.description !== undefined
         ? { description: prefetched.description }
         : {}),
-      ...(prefetched?.version !== undefined
-        ? { version: prefetched.version }
+      ...((prefetched?.version ?? localVersion) !== undefined
+        ? { version: prefetched?.version ?? localVersion }
         : {}),
       ...(prefetched?.skills !== undefined ? { skills: prefetched.skills } : {}),
       ...(prefetched?.commands !== undefined
@@ -620,6 +1150,9 @@ async function catalogRowsForMarketplace(
 export async function buildMarketplaceCatalog(
   options: MarketplaceOperationOptions,
   product?: string,
+  includePayloadDigests = false,
+  includeAllProducts = false,
+  selectPlugin?: (marketplaceName: string, plugin: MarketplacePlugin) => boolean,
 ): Promise<MarketplaceCatalogDocument> {
   const index = await readMarketplaceIndex(options);
   const records = Object.values(index.marketplaces).sort((left, right) =>
@@ -640,7 +1173,8 @@ export async function buildMarketplaceCatalog(
           : {}),
         sourceType: record.sourceType,
         source: record.source,
-        plugins: await catalogRowsForMarketplace(options, marketplace, product),
+        plugins: await catalogRowsForMarketplace(options, marketplace, product, record.updatedAt,
+          includePayloadDigests, includeAllProducts, selectPlugin),
       });
     } catch (error) {
       errors.push({

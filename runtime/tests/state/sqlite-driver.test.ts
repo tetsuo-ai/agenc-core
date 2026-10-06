@@ -14,6 +14,7 @@ import { StateSchemaMismatchError } from "./errors.js";
 import {
   applyMigrations,
   openStateDatabases,
+  PREPARED_STATEMENT_CACHE_LIMIT,
   reclaimStateFreePages,
   resolveStateDatabasePaths,
   STATE_PRE_V15_BACKUP_FILENAME,
@@ -43,6 +44,40 @@ afterEach(() => {
 });
 
 describe("openStateDatabases", () => {
+  it("upgrades a populated v34 effect table for idempotent unknown outcomes", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const raw = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(raw, STATE_DB_MIGRATIONS.filter((migration) => migration.version < 35));
+      raw.prepare("INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at) VALUES (?, ?, ?)")
+        .run("upgrade-run", 1, "2026-09-24T00:00:00.000Z");
+      raw.prepare(`INSERT INTO run_effects (
+        run_id, step_id, epoch, session_id, call_id, tool_name,
+        recovery_category, idempotency_key, intent_digest, intent_event_id,
+        intent_sequence, intent_at, effect_format_version, minimum_reader_runtime
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "upgrade-run", "tool:turn:call", 1, "upgrade-run", "call", "read",
+        "idempotent", "sha256:key", "sha256:intent", "intent-event", 1,
+        "2026-09-24T00:00:00.000Z", 2, "0.14.0",
+      );
+    } finally { raw.close(); }
+    const driver = openStateDatabases({ cwd });
+    try {
+      driver.prepareState(`UPDATE run_effects SET
+        outcome = 'unknown_outcome', result_event_id = 'unknown-event',
+        result_sequence = 2, unknown_reason = 'forced_shutdown',
+        completed_at = '2026-09-24T00:00:01.000Z', review_status = 'pending'
+        WHERE run_id = 'upgrade-run' AND step_id = 'tool:turn:call'`).run();
+      expect(driver.prepareState<[], { outcome: string; idempotency_key: string }>(
+        "SELECT outcome, idempotency_key FROM run_effects WHERE run_id = 'upgrade-run'",
+      ).get()).toEqual({ outcome: "unknown_outcome", idempotency_key: "sha256:key" });
+      expect(() => driver.prepareState(
+        "UPDATE run_effects SET idempotency_key = 'changed' WHERE run_id = 'upgrade-run'",
+      ).run()).toThrow();
+    } finally { driver.close(); }
+  });
+
   it("creates project-scoped state and logs databases with migrations", () => {
     const driver = openStateDatabases({ cwd });
     try {
@@ -710,5 +745,84 @@ describe("free-page reclaim", () => {
     } finally {
       driver.close();
     }
+  });
+});
+
+describe("prepared statement reuse", () => {
+  it("compiles each SQL text once and keeps results per call", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE reuse_probe (id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
+      const insertSql = "INSERT INTO reuse_probe (id, label) VALUES (?, ?)";
+      const insert = driver.prepareState<[number, string]>(insertSql);
+      insert.run(1, "one");
+      expect(driver.prepareState(insertSql)).toBe(insert);
+      driver.prepareState<[number, string]>(insertSql).run(2, "two");
+
+      const selectSql = "SELECT label FROM reuse_probe WHERE id = ?";
+      expect(
+        driver.prepareState<[number], { label: string }>(selectSql).get(1)?.label,
+      ).toBe("one");
+      expect(
+        driver.prepareState<[number], { label: string }>(selectSql).get(2)?.label,
+      ).toBe("two");
+      expect(driver.prepareLogs("SELECT 1")).toBe(driver.prepareLogs("SELECT 1"));
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("hands a statement that is still iterating to nobody else", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE iterate_probe (id INTEGER PRIMARY KEY)");
+      driver.state.exec("INSERT INTO iterate_probe (id) VALUES (1), (2), (3)");
+      const sql = "SELECT id FROM iterate_probe ORDER BY id";
+      const outer = driver.prepareState<[], { id: number }>(sql);
+      const seen: number[][] = [];
+      for (const row of outer.iterate()) {
+        const inner = driver.prepareState<[], { id: number }>(sql);
+        expect(inner).not.toBe(outer);
+        seen.push([row.id, inner.all().length]);
+      }
+      expect(seen).toEqual([
+        [1, 3],
+        [2, 3],
+        [3, 3],
+      ]);
+      // Idle again once the iteration finished: reused, not recompiled.
+      expect(driver.prepareState(sql)).toBe(outer);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("keeps at most PREPARED_STATEMENT_CACHE_LIMIT texts, dropping the least recent", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const sqlFor = (index: number): string => `SELECT ${index} AS value`;
+      const first = driver.prepareState(sqlFor(0));
+      const second = driver.prepareState(sqlFor(1));
+      for (let index = 2; index < PREPARED_STATEMENT_CACHE_LIMIT; index += 1) {
+        driver.prepareState(sqlFor(index));
+      }
+      // Touch the first text so the second one is now the least recent.
+      expect(driver.prepareState(sqlFor(0))).toBe(first);
+      driver.prepareState(sqlFor(PREPARED_STATEMENT_CACHE_LIMIT));
+      expect(driver.prepareState(sqlFor(0))).toBe(first);
+      expect(driver.prepareState(sqlFor(1))).not.toBe(second);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("fails like a fresh prepare once the connection is closed", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const sql = "SELECT 1 AS value";
+    driver.prepareState(sql).get();
+    driver.close();
+    expect(() => driver.prepareState(sql).get()).toThrow(
+      "The database connection is not open",
+    );
   });
 });

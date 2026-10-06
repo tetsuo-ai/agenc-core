@@ -4,6 +4,8 @@ import type { StateSqliteDriver } from "./sqlite-driver.js";
 
 export interface IndexedThreadRecord {
   readonly threadId: ThreadId;
+  /** Derived from the canonical spawn edge; distinct from a user-created fork. */
+  readonly parentThreadId?: ThreadId;
   readonly name?: string;
   readonly model?: string;
   readonly modelProvider?: string;
@@ -16,6 +18,7 @@ export interface IndexedThreadRecord {
   readonly forkedFromId?: ThreadId;
   readonly rolloutPath?: string;
   readonly archivedRolloutPath?: string;
+  readonly archiveCleanupGeneration?: string;
 }
 
 export interface IndexedThreadPage {
@@ -25,6 +28,7 @@ export interface IndexedThreadPage {
 
 interface ThreadRow {
   readonly thread_id: string;
+  readonly parent_thread_id: string | null;
   readonly name: string | null;
   readonly created_at: string;
   readonly updated_at: string;
@@ -38,6 +42,7 @@ interface ThreadRow {
   readonly memory_mode: string | null;
   readonly rollout_path: string | null;
   readonly archived_rollout_path: string | null;
+  readonly archive_cleanup_generation: string | null;
 }
 
 export class StateThreadRepository {
@@ -47,7 +52,9 @@ export class StateThreadRepository {
    * Relocate every live SQLite reference when a rollout JSONL is archived or
    * restored. The filesystem rename is owned by FileThreadStore; keeping this
    * projection move in one immediate transaction prevents replay, retention,
-   * and terminal-epoch checks from retaining a stale source path.
+   * and terminal-epoch checks from retaining a stale source path. A canonical
+   * projection marker moves with its receipt: a rename keeps the file's bytes,
+   * mtime and inode, so the moved rows still project exactly those bytes.
    */
   relocateRolloutSource(sourcePath: string, targetPath: string): void {
     if (sourcePath === targetPath) return;
@@ -109,8 +116,9 @@ export class StateThreadRepository {
           model_provider,
           memory_mode,
           rollout_path,
-          archived_rollout_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          archived_rollout_path,
+          archive_cleanup_generation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           name = excluded.name,
           created_at = excluded.created_at,
@@ -123,7 +131,21 @@ export class StateThreadRepository {
           model_provider = excluded.model_provider,
           memory_mode = excluded.memory_mode,
           rollout_path = excluded.rollout_path,
-          archived_rollout_path = excluded.archived_rollout_path`,
+          archived_rollout_path = excluded.archived_rollout_path,
+          archive_cleanup_generation = excluded.archive_cleanup_generation
+        WHERE threads.name IS NOT excluded.name
+           OR threads.created_at IS NOT excluded.created_at
+           OR threads.updated_at IS NOT excluded.updated_at
+           OR threads.archived_at IS NOT excluded.archived_at
+           OR threads.cwd IS NOT excluded.cwd
+           OR threads.source_json IS NOT excluded.source_json
+           OR threads.forked_from_id IS NOT excluded.forked_from_id
+           OR threads.model IS NOT excluded.model
+           OR threads.model_provider IS NOT excluded.model_provider
+           OR threads.memory_mode IS NOT excluded.memory_mode
+           OR threads.rollout_path IS NOT excluded.rollout_path
+           OR threads.archived_rollout_path IS NOT excluded.archived_rollout_path
+           OR threads.archive_cleanup_generation IS NOT excluded.archive_cleanup_generation`,
       )
       .run(
         record.threadId,
@@ -139,6 +161,7 @@ export class StateThreadRepository {
         record.memoryMode ?? null,
         record.rolloutPath ?? null,
         record.archivedRolloutPath ?? null,
+        record.archiveCleanupGeneration ?? null,
       );
   }
 
@@ -148,6 +171,10 @@ export class StateThreadRepository {
   ): void {
     const existing = this.getThread(record.threadId);
     const replaceArchiveState = opts.replaceArchiveState === true;
+    // An active thread's archived path is a pending cleanup cursor after
+    // unarchive. Recovery may replace archive metadata without erasing it.
+    const preservePendingCleanup = existing?.archivedAt === undefined &&
+      existing?.archivedRolloutPath !== undefined && record.archivedAt === undefined;
     const name = record.name ?? existing?.name;
     const model = record.model ?? existing?.model;
     const modelProvider = record.modelProvider ?? existing?.modelProvider;
@@ -178,11 +205,17 @@ export class StateThreadRepository {
       ...(record.rolloutPath !== undefined
         ? { rolloutPath: record.rolloutPath }
         : {}),
-      ...(!replaceArchiveState && existing?.archivedRolloutPath !== undefined
+      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archivedRolloutPath !== undefined
         ? { archivedRolloutPath: existing.archivedRolloutPath }
         : {}),
       ...(record.archivedRolloutPath !== undefined
         ? { archivedRolloutPath: record.archivedRolloutPath }
+        : {}),
+      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archiveCleanupGeneration !== undefined
+        ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+        : {}),
+      ...(record.archiveCleanupGeneration !== undefined
+        ? { archiveCleanupGeneration: record.archiveCleanupGeneration }
         : {}),
     };
     this.upsertThread(merged);
@@ -193,7 +226,9 @@ export class StateThreadRepository {
       .prepareState<[ThreadId], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
          WHERE thread_id = ?`,
       )
@@ -202,12 +237,25 @@ export class StateThreadRepository {
   }
 
   listThreads(): ReadonlyArray<IndexedThreadRecord> {
+    return this.selectThreads("");
+  }
+
+  /** Only these rows can carry unfinished unarchive artifact cleanup. */
+  listPendingUnarchiveCleanup(): ReadonlyArray<IndexedThreadRecord> {
+    return this.selectThreads(
+      "WHERE archived_at IS NULL AND archived_rollout_path IS NOT NULL",
+    );
+  }
+
+  private selectThreads(predicate: string): ReadonlyArray<IndexedThreadRecord> {
     return this.driver
       .prepareState<[], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
-         FROM threads`,
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
+         FROM threads ${predicate}`,
       )
       .all()
       .map((row: ThreadRow) => rowToThread(row));
@@ -256,7 +304,9 @@ export class StateThreadRepository {
     const statement = this.driver.prepareState(
       `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
+          (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
          WHERE ${archivePredicate}${pagePredicate}
          ORDER BY ${sortColumn} ${direction}, thread_id ${direction}
@@ -370,6 +420,12 @@ export class StateThreadRepository {
     readonly size: number;
     readonly sha256: string;
     readonly lineCount: number;
+    /**
+     * Set only by canonical admission recovery for bytes it strictly
+     * validated and fsyncs before this transaction commits. Omitted, the
+     * write clears any earlier marker for the source.
+     */
+    readonly canonicalMarker?: CanonicalProjectionMarker;
   }): void {
     this.driver.transaction(() => {
       this.driver
@@ -406,8 +462,85 @@ export class StateThreadRepository {
         sha256: params.sha256,
         lineCount: params.lineCount,
         itemCount: params.items.length,
+        ...(params.canonicalMarker !== undefined
+          ? { canonicalMarker: params.canonicalMarker }
+          : {}),
       });
     });
+  }
+
+  /**
+   * The marker canonical admission recovery left on its last projection of
+   * `sourcePath`, or `undefined` when the last projection came from any
+   * other path. Only an exact match against the current source proves the
+   * rows still project those exact, strictly validated bytes.
+   */
+  getCanonicalProjectionMarker(
+    sourcePath: string,
+  ): (CanonicalProjectionMarker & { readonly threadId: ThreadId }) | undefined {
+    const row = this.driver
+      .prepareState<[string], CanonicalProjectionMarkerRow>(
+        `SELECT thread_id, canonical_epoch, canonical_size, canonical_mtime_ms,
+                canonical_sha256, canonical_dev, canonical_ino
+         FROM backfill_files
+         WHERE source_path = ?`,
+      )
+      .get(sourcePath);
+    if (
+      row === undefined ||
+      row.canonical_epoch === null ||
+      row.canonical_size === null ||
+      row.canonical_mtime_ms === null ||
+      row.canonical_sha256 === null ||
+      row.canonical_dev === null ||
+      row.canonical_ino === null
+    ) {
+      return undefined;
+    }
+    return {
+      threadId: row.thread_id,
+      epoch: row.canonical_epoch,
+      size: row.canonical_size,
+      mtimeMs: row.canonical_mtime_ms,
+      sha256: row.canonical_sha256,
+      dev: row.canonical_dev,
+      ino: row.canonical_ino,
+    };
+  }
+
+  /**
+   * Move a marker to the file identity that now holds its exact bytes. The
+   * caller fsyncs that file before this transaction commits; the update
+   * applies only while every content field still matches.
+   */
+  updateCanonicalProjectionIdentity(
+    sourcePath: string,
+    marker: CanonicalProjectionMarker,
+  ): void {
+    const changes = this.driver
+      .prepareState<[string, string, string, string, number, number, string]>(
+        `UPDATE backfill_files
+         SET canonical_dev = ?, canonical_ino = ?
+         WHERE source_path = ?
+           AND canonical_epoch = ?
+           AND canonical_size = ?
+           AND canonical_mtime_ms = ?
+           AND canonical_sha256 = ?`,
+      )
+      .run(
+        marker.dev,
+        marker.ino,
+        sourcePath,
+        marker.epoch,
+        marker.size,
+        marker.mtimeMs,
+        marker.sha256,
+      ).changes;
+    if (changes !== 1) {
+      throw new Error(
+        `canonical projection marker for ${sourcePath} changed while it was being reused`,
+      );
+    }
   }
 
   /**
@@ -507,12 +640,19 @@ export class StateThreadRepository {
     readonly sha256: string;
     readonly lineCount: number;
     readonly itemCount: number;
+    readonly canonicalMarker?: CanonicalProjectionMarker;
   }): void {
+    // Every projection write replaces the canonical marker columns: the
+    // canonical admission path sets them, every other writer (tolerant
+    // backfill, incremental append, strict startup replay) clears them.
+    const marker = params.canonicalMarker;
     this.driver
       .prepareState(
         `INSERT INTO backfill_files (
-          source_path, thread_id, mtime_ms, size, sha256, line_count, item_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          source_path, thread_id, mtime_ms, size, sha256, line_count, item_count,
+          canonical_epoch, canonical_size, canonical_mtime_ms, canonical_sha256,
+          canonical_dev, canonical_ino
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
           thread_id = excluded.thread_id,
           mtime_ms = excluded.mtime_ms,
@@ -520,6 +660,12 @@ export class StateThreadRepository {
           sha256 = excluded.sha256,
           line_count = excluded.line_count,
           item_count = excluded.item_count,
+          canonical_epoch = excluded.canonical_epoch,
+          canonical_size = excluded.canonical_size,
+          canonical_mtime_ms = excluded.canonical_mtime_ms,
+          canonical_sha256 = excluded.canonical_sha256,
+          canonical_dev = excluded.canonical_dev,
+          canonical_ino = excluded.canonical_ino,
           imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
       )
       .run(
@@ -530,6 +676,12 @@ export class StateThreadRepository {
         params.sha256,
         params.lineCount,
         params.itemCount,
+        marker?.epoch ?? null,
+        marker?.size ?? null,
+        marker?.mtimeMs ?? null,
+        marker?.sha256 ?? null,
+        marker?.dev ?? null,
+        marker?.ino ?? null,
       );
     this.driver
       .prepareState(
@@ -574,6 +726,31 @@ interface BackfillFileRow {
   readonly item_count: number;
 }
 
+/**
+ * Proof that canonical admission recovery strictly validated these exact
+ * source bytes, projected them, and fsynced the file with this identity
+ * before the marker committed. `epoch` names the build that did it; a
+ * marker from any other build is never reused.
+ */
+export interface CanonicalProjectionMarker {
+  readonly epoch: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly sha256: string;
+  readonly dev: string;
+  readonly ino: string;
+}
+
+interface CanonicalProjectionMarkerRow {
+  readonly thread_id: string;
+  readonly canonical_epoch: string | null;
+  readonly canonical_size: number | null;
+  readonly canonical_mtime_ms: number | null;
+  readonly canonical_sha256: string | null;
+  readonly canonical_dev: string | null;
+  readonly canonical_ino: string | null;
+}
+
 /** One indexed rollout line, ready to INSERT into `thread_rollout_items`. */
 export interface RolloutItemRow {
   readonly lineNumber: number;
@@ -590,6 +767,7 @@ export interface RolloutItemRow {
 function rowToThread(row: ThreadRow): IndexedThreadRecord {
   const record: IndexedThreadRecord = {
     threadId: row.thread_id,
+    ...(row.parent_thread_id != null ? { parentThreadId: row.parent_thread_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.name !== null ? { name: row.name } : {}),
@@ -611,6 +789,9 @@ function rowToThread(row: ThreadRow): IndexedThreadRecord {
     ...(row.rollout_path !== null ? { rolloutPath: row.rollout_path } : {}),
     ...(row.archived_rollout_path !== null
       ? { archivedRolloutPath: row.archived_rollout_path }
+      : {}),
+    ...(row.archive_cleanup_generation !== null
+      ? { archiveCleanupGeneration: row.archive_cleanup_generation }
       : {}),
   };
   return record;

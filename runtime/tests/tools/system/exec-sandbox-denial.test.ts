@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  bypassGrantsSandboxEscalation,
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
   SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE,
   SANDBOX_BIND_DENIED_NO_ESCALATION,
+  worktreeWriteDenialNotice,
 } from "../../../src/tools/system/exec-sandbox-denial.js";
 
 // The body the live incident produced 21 times (session conv-mtjdmlfc,
@@ -83,5 +85,79 @@ describe("sandboxEscalationAvailable", () => {
     for (const policy of ["on_request", "on_failure", "untrusted", "granular"]) {
       expect(sandboxEscalationAvailable(policy)).toBe(true);
     }
+  });
+
+  const sessionIn = (
+    mode: string,
+    services: Record<string, unknown> = {},
+  ) => ({
+    permissionModeRegistry: { current: () => ({ mode }) },
+    services: { runtimeOptions: { routineRun: false }, ...services },
+  });
+  const workspaceWrite = (session: unknown) => ({ sandboxMode: "workspace_write", session });
+
+  // Bypass runs under the never policy, but the orchestrator grants its
+  // escalation request without asking, and the prompt says so for a
+  // workspace-write sandbox, so a denial there is not a dead end.
+  test("a bypass session in a workspace-write sandbox can still leave it", () => {
+    expect(sandboxEscalationAvailable("never", workspaceWrite(sessionIn("bypassPermissions")))).toBe(true);
+    expect(bypassGrantsSandboxEscalation(sessionIn("bypassPermissions"))).toBe(true);
+    expect(denial({
+      escalationAvailable: sandboxEscalationAvailable("never", workspaceWrite(sessionIn("bypassPermissions"))),
+    })?.notice).toBe(SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE);
+  });
+
+  test("the never verdict stays wherever the prompt does not offer escalation", () => {
+    const bypass = sessionIn("bypassPermissions");
+    // Other sandboxes: the prompt keeps the never text there.
+    for (const sandboxMode of ["read_only", "danger_full_access", undefined]) {
+      expect(sandboxEscalationAvailable("never", { sandboxMode, session: bypass })).toBe(false);
+    }
+    // A routine never leaves its sandbox.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { runtimeOptions: { routineRun: true } }),
+    ))).toBe(false);
+    // A worktree child's escalated command stays in its worktree.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { sandboxExecutionBroker: { worktreeConfinement: { worktree: "/w", checkout: "/c" } } }),
+    ))).toBe(false);
+    // A read-only delegation child refuses require_escalated outright.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { readOnlyDelegation: { deniedRules: [] } }),
+    ))).toBe(false);
+    // A Light print run's prompt tells the model not to escalate.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { runtimeOptions: { lightMode: true, nonInteractive: true } }),
+    ))).toBe(false);
+    // Other modes, and no session at all.
+    for (const mode of ["default", "acceptEdits", "plan"]) {
+      expect(sandboxEscalationAvailable("never", workspaceWrite(sessionIn(mode)))).toBe(false);
+    }
+    expect(sandboxEscalationAvailable("never", workspaceWrite(undefined))).toBe(false);
+    expect(sandboxEscalationAvailable("never")).toBe(false);
+    expect(bypassGrantsSandboxEscalation(null)).toBe(false);
+  });
+});
+
+// A worktree child's commands write inside its worktree only, escalated or
+// not. The model's next move after a refused write is an escalated retry.
+describe("worktreeWriteDenialNotice", () => {
+  const worktree = "/repo/.agenc-worktrees/m5-run";
+
+  test("names the worktree and says an escalated retry fails the same way", () => {
+    for (const output of [
+      "sh: ../../src/a.js: Operation not permitted",
+      "touch: cannot touch '/repo/src/a.js': Read-only file system",
+      "Error: EPERM: operation not permitted, open '/repo/src/a.js'",
+    ]) {
+      const notice = worktreeWriteDenialNotice({ output, exitCode: 1, worktree });
+      expect(notice, output).toContain(`This agent works in its own git worktree (${worktree})`);
+      expect(notice, output).toContain("with or without sandbox_permissions");
+    }
+  });
+
+  test("says nothing for a success or for another failure", () => {
+    expect(worktreeWriteDenialNotice({ output: "Operation not permitted", exitCode: 0, worktree })).toBeNull();
+    expect(worktreeWriteDenialNotice({ output: "npm error Missing script: test", exitCode: 1, worktree })).toBeNull();
   });
 });

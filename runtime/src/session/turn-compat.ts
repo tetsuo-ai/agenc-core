@@ -47,7 +47,7 @@ import {
 import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
 import { appendSystemContext, prependUserContext } from "../utils/api.js";
-import { createAttachmentMessage } from "../utils/attachments.js";
+import { createAttachmentMessage } from "../utils/attachment-message.js";
 import {
   createAssistantAPIErrorMessage,
   createAssistantMessage,
@@ -136,12 +136,6 @@ function createStatelessProviderSessionView(
     chatStream: (messages, onChunk, options) =>
       provider.chatStream(messages, onChunk, options),
     healthCheck: () => provider.healthCheck(),
-    ...(provider.predictCode !== undefined
-      ? {
-          predictCode: (request, options) =>
-            provider.predictCode!(request, options),
-        }
-      : {}),
     ...(provider.getExecutionProfile !== undefined
       ? {
           getExecutionProfile: (options) =>
@@ -253,6 +247,7 @@ export async function createTurnCompatSession(
   ).join("\n\n");
   const { history, userMessage } = splitMessagesForTurn(
     prependUserContext([...params.messages], params.userContext),
+    parent.services.runtimeOptions?.lightMode === true,
   );
   const effectiveCwd =
     getCwdOverrideForCurrentContext() ??
@@ -992,11 +987,11 @@ function attachToolContextSurface(
   });
 }
 
-function splitMessagesForTurn(messages: readonly Message[]): {
+function splitMessagesForTurn(messages: readonly Message[], compactWorkspace = false): {
   readonly history: LLMMessage[];
   readonly userMessage: string | readonly LLMContentPart[];
 } {
-  const converted = messagesToLlmMessages(messages);
+  const converted = messagesToLlmMessages(messages, compactWorkspace);
   for (let index = converted.length - 1; index >= 0; index -= 1) {
     const message = converted[index];
     if (message?.role !== "user") continue;
@@ -1011,7 +1006,7 @@ function splitMessagesForTurn(messages: readonly Message[]): {
   };
 }
 
-function messagesToLlmMessages(messages: readonly Message[]): LLMMessage[] {
+function messagesToLlmMessages(messages: readonly Message[], compactWorkspace = false): LLMMessage[] {
   const converted: LLMMessage[] = [];
   let pendingCompatMessages: Message[] = [];
   const flushPendingCompatMessages = (): void => {
@@ -1038,7 +1033,7 @@ function messagesToLlmMessages(messages: readonly Message[]): LLMMessage[] {
     pendingCompatMessages.push(message);
   }
   flushPendingCompatMessages();
-  return frameUntrustedToolHistoryMessages(converted);
+  return frameUntrustedToolHistoryMessages(converted, compactWorkspace);
 }
 
 function messageToLlmMessages(message: Message): LLMMessage[] {
@@ -1392,12 +1387,11 @@ function emitLegacyProgress(
 function stripInjectedArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  const clean: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (key.startsWith("__")) continue;
-    clean[key] = value;
-  }
-  return clean;
+  // Own data properties only: assigning model keys onto `{}` would run any
+  // setter on the prototype chain, `__proto__` included.
+  return Object.fromEntries(
+    Object.entries(args).filter(([key]) => !key.startsWith("__")),
+  );
 }
 
 function copyExecutionBoundary(

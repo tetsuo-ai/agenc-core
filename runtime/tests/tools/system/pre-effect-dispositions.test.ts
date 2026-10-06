@@ -11,7 +11,9 @@ import {
   UnifiedExecError,
   type UnifiedExecProcessManagerLike,
 } from "../../../src/unified-exec/types.js";
+import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-manager.js";
 import type { ToolResult } from "../../../src/tools/types.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 
 // #2190: a bare isError from a side-effecting tool is filed as an unknown
 // outcome and gates the session behind /resolve. Every refusal below happens
@@ -85,6 +87,43 @@ describe("monitor refusals", () => {
     const tool = createMonitorTool({ cwd: root, unifiedExecManager: manager() });
     expectNoEffect(await tool.execute({ description: "list files" }), "command must be");
   });
+
+  test("a manager that refuses before starting the command", async () => {
+    const refusing: UnifiedExecProcessManagerLike = {
+      ...manager(),
+      execCommand: vi.fn(async () => {
+        throw new UnifiedExecError("process_limit", "too many live unified exec processes (64/64)");
+      }),
+    };
+    const tool = bindExplicitDangerBoundary(
+      createMonitorTool({ cwd: root, unifiedExecManager: refusing }),
+    );
+    expectNoEffect(
+      await tool.execute({ command: "tail -f log", description: "follow the log" }),
+      "too many live unified exec processes",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a working directory that no longer exists",
+    async () => {
+      // The session root was deleted: the process manager refuses to spawn
+      // there, and nothing has run.
+      const sessionRoot = join(root, "session");
+      const processes = new UnifiedExecProcessManager({ cwd: sessionRoot });
+      const tool = bindExplicitDangerBoundary(
+        createMonitorTool({ cwd: sessionRoot, unifiedExecManager: processes }),
+      );
+      try {
+        expectNoEffect(
+          await tool.execute({ command: "tail -f log", description: "follow the log" }),
+          `working directory does not exist: ${sessionRoot}`,
+        );
+      } finally {
+        await processes.closeAll("test_cleanup");
+      }
+    },
+  );
 });
 
 describe("filesystem refusals before mkdir, rm or rename", () => {

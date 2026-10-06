@@ -1,3 +1,4 @@
+export { hasInstructionsLoadedHook } from "./hooks/instructionsLoaded.js";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Hooks are user-defined shell commands that can be executed at various points
@@ -130,7 +131,7 @@ import {
   emitHookResponse,
   startHookProgressInterval,
 } from "./hooks/hookEvents.js";
-import { createAttachmentMessage } from "./attachments.js";
+import { createAttachmentMessage } from "./attachment-message.js";
 import { all } from "./generators.js";
 import {
   findToolByName,
@@ -805,7 +806,7 @@ async function execCommandHook(
     if (!(await pathExists(pluginRoot))) {
       throw new Error(
         `Plugin directory does not exist: ${pluginRoot}` +
-          (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ""),
+          (pluginId ? ` (${pluginId}; run /plugin to reinstall)` : ""),
       );
     }
     // Use the function form of replace so paths containing `$` are not
@@ -1114,6 +1115,14 @@ async function execCommandHook(
     // bash `read -r line` returns exit 1 (EOF before delimiter) — the
     // variable IS populated but `if read -r line; then ...` skips the
     // branch. See gh-30509 / CC-161.
+    // A hook that exits without reading its input makes this write fail with
+    // EPIPE once the input is larger than the pipe buffer. Without a
+    // listener that is an uncaught exception; the hook's exit reports it.
+    child.stdin.on("error", (error) => {
+      logForDebugging(
+        `Hooks: stdin error for async hook ${processId}: ${errorMessage(error)}`,
+      );
+    });
     child.stdin.write(jsonInput + "\n", "utf8");
     child.stdin.end();
     stdinWritten = true;
@@ -3844,20 +3853,6 @@ export type InstructionsLoadReason =
 
 export type InstructionsMemoryType = "User" | "Project" | "Local" | "Managed";
 
-/**
- * Check if InstructionsLoaded hooks are configured (without executing them).
- * Callers should check this before invoking executeInstructionsLoadedHooks to avoid
- * building hook inputs for every instruction file when no hook is configured.
- *
- * Checks registered plugin and SDK callback hooks. Session-derived hooks
- * (structured output enforcement etc.) are internal and not checked.
- */
-export function hasInstructionsLoadedHook(): boolean {
-  if (shouldDisableAllHooksIncludingManaged()) return false;
-  const registeredHooks = getRegisteredHooks()?.["InstructionsLoaded"];
-  if (registeredHooks && registeredHooks.length > 0) return true;
-  return false;
-}
 
 /**
  * Execute InstructionsLoaded hooks when an instruction file (AGENC.md or

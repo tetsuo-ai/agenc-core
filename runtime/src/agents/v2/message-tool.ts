@@ -6,6 +6,8 @@ import {
 } from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
+import { authorizeChildExecutionPlan, isChildExecutionPolicyCurrent, type ChildExecutionPlan } from "../cross-provider.js";
+import { liveAgentSession } from "../live-session.js";
 import {
   agentValidationError,
   callIdFromArgs,
@@ -49,6 +51,9 @@ export async function handleMessageStringTool(
   opts: MultiAgentV2Options,
   mode: MessageDeliveryMode,
 ): Promise<ToolResult> {
+  if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+    return agentValidationError("exact_output must be a boolean");
+  }
   const target = stringValue(args.target);
   const message = typeof args.message === "string" ? args.message : undefined;
   if (!target || !message) {
@@ -74,6 +79,23 @@ export async function handleMessageStringTool(
   if (isCurrentAgentContextError(current)) {
     return confirmedNoAgentEffect(current);
   }
+  const caller = current.threadId === sessionOrError.conversationId
+    ? undefined : control.getLive(current.threadId);
+  const callerSession = current.threadId === sessionOrError.conversationId
+    ? sessionOrError : caller === undefined ? undefined : liveAgentSession(caller);
+  const callerTurnId = callerSession?.activeTurn?.unsafePeek()?.turnId;
+  const abortSignal = (args as { readonly __abortSignal?: AbortSignal }).__abortSignal;
+  const callerIsCurrent = (): boolean => callerSession !== undefined &&
+    abortSignal?.aborted !== true &&
+    callerSession.activeTurn?.unsafePeek()?.turnId === callerTurnId &&
+    opts.getSession() === sessionOrError && !sessionOrError.isShuttingDown &&
+    !callerSession.isShuttingDown && (caller === undefined
+      ? callerSession === sessionOrError
+      : control.getLive(current.threadId) === caller &&
+        caller.agentPath === current.agentPath && liveAgentSession(caller) === callerSession);
+  if (!callerIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling agent session is not live");
+  }
   let agentId: ThreadId;
   try {
     agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
@@ -97,6 +119,61 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
+  const targetPlan = live?.metadata.executionPlan ?? metadata?.executionPlan;
+  const targetSession = live === undefined ? undefined : liveAgentSession(live);
+  const targetIsCurrent = (): boolean => agentId === sessionOrError.conversationId ||
+    (live !== undefined && control.getLive(agentId) === live &&
+      live.agentPath === receiverAgentPath &&
+      targetSession?.isShuttingDown !== true &&
+      // A starting worker may bind its first Session while consent waits.
+      (targetSession === undefined || liveAgentSession(live) === targetSession) &&
+      (live.metadata.executionPlan ?? control.getAgentMetadata(agentId)?.executionPlan) === targetPlan);
+  if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
+      targetPlan?.crossProvider !== true) {
+    return agentValidationError("consent_unavailable: destination has no consent provenance");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
+  }
+  let assignedPlan: ChildExecutionPlan | undefined;
+  if (mode === "queue_only" && targetPlan?.crossProvider) {
+    // A passive message is prepended to a later assignment, so its text needs
+    // consent before it enters the child's mailbox. Settings consent covers
+    // it. With per-spawn consent, or after a funds stop, it needs a fresh
+    // approval even if the worker holds a reusable session grant.
+    const previous = targetPlan;
+    const parentTurnId = callerSession!.activeTurn?.unsafePeek()?.turnId;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(callerSession!, proposed, { fresh: true });
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Keep this message on the current provider or request consent again for a new task." }, true));
+    }
+  }
+  if (mode === "trigger_turn" && targetPlan?.crossProvider) {
+    const previous = targetPlan;
+    const parentTurnId = callerSession!.activeTurn?.unsafePeek()?.turnId;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(callerSession!, proposed);
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
+    }
+    assignedPlan = consent.plan;
+  }
+  // Consent can wait while either participant is closed or replaced. The
+  // approval covers the captured worker and caller, not a replacement handle.
+  if (!callerIsCurrent() || !targetIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling or target agent session is no longer live");
+  }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -106,19 +183,41 @@ export async function handleMessageStringTool(
       prompt: message,
     },
   });
+  // Event publication can synchronously run subscribers. Check again at the
+  // delivery boundary, including policy changes after consent returned.
+  if (!callerIsCurrent() || !targetIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling or target agent session is no longer live");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
+  }
   let deliveryError: unknown;
   let acceptedTask:
     { readonly taskId: string; readonly turnId: string } | undefined;
+  let passiveAdmission:
+    ReturnType<typeof control.sendPassiveMessageToActiveAgent> | undefined;
   try {
     if (mode === "trigger_turn") {
       acceptedTask = control.assignTask(agentId, {
+        exactOutput: args.exact_output === true,
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,
         taskId: callId,
+        ...(assignedPlan !== undefined ? { executionPlan: assignedPlan } : {}),
+      });
+    } else if (agentId === sessionOrError.conversationId) {
+      await control.sendInterAgentCommunication(agentId, {
+        author: current.agentPath,
+        recipient: receiverAgentPath,
+        content: message,
+        triggerTurn: false,
+        metadata: createMailboxMetadataRecord("inter_agent_communication", [
+          ["deliveryMode", mode],
+        ]),
       });
     } else {
-      await control.sendInterAgentCommunication(agentId, {
+      passiveAdmission = control.sendPassiveMessageToActiveAgent(agentId, {
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,
@@ -158,11 +257,32 @@ export async function handleMessageStringTool(
       true,
     );
   }
+  if (passiveAdmission?.accepted === false) {
+    return confirmedNoAgentEffect(
+      json({
+        ok: false,
+        delivered: false,
+        mode: "send_message",
+        target: receiverAgentPath,
+        status: passiveAdmission.status,
+        hint: "This child is idle or finished. Use assign_task to start an idle worker's next turn.",
+      }),
+    );
+  }
   return json({
     ok: true,
     mode: mode === "trigger_turn" ? "assign_task" : "send_message",
     target: receiverAgentPath,
     status,
+    ...(mode === "queue_only"
+      ? {
+          delivered: false,
+          delivery: "accepted_unconfirmed",
+          hint: agentId === sessionOrError.conversationId
+            ? "Queued for the root mailbox's next drain."
+            : "Queued for the child's next turn. If the child finishes first, the message is lost.",
+        }
+      : {}),
     ...(acceptedTask !== undefined
       ? {
           task_id: acceptedTask.taskId,

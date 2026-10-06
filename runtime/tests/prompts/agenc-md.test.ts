@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { platform, tmpdir } from "node:os";
@@ -959,9 +960,9 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       // sees a meaningful difference even on filesystems that round
       // mtimes (HFS+, ext4 with old kernels). 2 seconds in the future
       // is far above any practical filesystem rounding.
-      const futureMs = Math.floor(Date.now() / 1000) + 2;
+      const futureSeconds = Math.floor(Date.now() / 1000) + 2;
       writeFileSync(join(repo, "AGENC.md"), "second");
-      execFileSync("touch", ["-d", `@${futureMs}`, join(repo, "AGENC.md")]);
+      utimesSync(join(repo, "AGENC.md"), futureSeconds, futureSeconds);
 
       const b = await loadTieredInstructions(opts);
       expect(b).not.toBe(a);

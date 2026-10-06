@@ -1326,7 +1326,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     );
     expect(rejection).toBeInstanceOf(ApprovalRejectedError);
     const error = rejection as ApprovalRejectedError;
-    expect(error.decision).toEqual({ kind: "denied" });
+    expect(error.decision).toMatchObject({ kind: "denied" });
     return error;
   }
 
@@ -1335,7 +1335,7 @@ describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
     const error = await deniedCall({
       tool: mkTool({ requiresApproval: true }),
       dispatch: dispatched,
-      approvalResolver: { request: async () => ({ kind: "denied" }) },
+      approvalResolver: { request: async () => ({ kind: "denied", decidedBy: "user" }) },
     });
 
     expect(error.source).toBe("resolver");

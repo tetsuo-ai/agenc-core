@@ -78,7 +78,7 @@ describe('UserToolErrorMessage swarm-138 coverage', () => {
 
     expect(output).toContain('Permission request denied by user.')
     expect(output).toContain('Interrupted')
-    expect(output).toContain('PLAN REJECTED')
+    expect(output).toContain('● plan rejected')
     expect(output).toContain('Inspect before editing.')
     expect(output).toContain('Tool use rejected')
   })

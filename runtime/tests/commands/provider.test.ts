@@ -7,8 +7,9 @@ import {
   providerCommand,
   applyProviderSwitch,
   checkModelHistoryCompat,
+  switchProviderModel,
 } from "./provider.js";
-import { readProviderMenuSnapshot } from "./provider-menu.js";
+import { readProviderMenuSnapshot } from "./provider-menu-snapshot.js";
 import type { Session } from "../session/session.js";
 import type {
   SlashCommandAppStateBridge,
@@ -210,7 +211,7 @@ describe("providerCommand", () => {
     expect(providerCommand.userInvocable).toBe(true);
     expect(providerCommand.immediate).toBe(true);
     expect(providerCommand.name).toBe("provider");
-    expect(providerCommand.aliases).toBeUndefined();
+    expect(providerCommand.aliases).toEqual(["providers"]);
   });
 
   it("re-exports the live I-57 implementation", () => {
@@ -257,29 +258,15 @@ describe("providerCommand", () => {
     });
   });
 
-  it("rejects a provider picker row whose model belongs to another provider", async () => {
+  it("rejects a providers-screen choice whose model belongs to another provider", async () => {
     const session = stubSession();
     const setModel = vi.fn();
-    const setToolJSX = vi.fn();
-    await providerCommand.execute(
-      mkctx(session, "", { setModel, setToolJSX }),
-    );
-    const payload = setToolJSX.mock.calls[0]?.[0] as unknown as {
-      jsx?: {
-        props?: {
-          onSelect?: (
-            provider: "grok",
-            model: string,
-          ) => Promise<{ message: string; shouldClose: boolean }>;
-        };
-      };
-    };
-    const onSelect = payload.jsx?.props?.onSelect;
-    if (onSelect === undefined) throw new Error("provider picker missing onSelect");
 
-    await expect(onSelect("grok", "gpt-5")).resolves.toMatchObject({
+    await expect(
+      switchProviderModel(mkctx(session, "", { setModel }), "grok", "gpt-5"),
+    ).resolves.toMatchObject({
+      applied: false,
       message: expect.stringContaining("belongs to provider 'openai'"),
-      shouldClose: false,
     });
     expect(setModel).not.toHaveBeenCalled();
     expect(

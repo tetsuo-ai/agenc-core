@@ -1,3 +1,4 @@
+import { parseBubblewrapCapabilityHint, type BubblewrapCapabilityHint } from "./capability-hint.js";
 import path from "node:path";
 
 import {
@@ -6,8 +7,9 @@ import {
   type PermissionEnforcement,
   type PermissionProfile,
   permissionProfileToRuntimePermissions,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "./config.js";
+import { parseBoundReadOnlyCwdIdentity, type BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 
 export class LinuxSandboxCliError extends Error {
   constructor(message: string) {
@@ -17,9 +19,12 @@ export class LinuxSandboxCliError extends Error {
 }
 
 export interface LinuxSandboxLauncherOptions {
+  readonly capabilityHint?: BubblewrapCapabilityHint;
+  readonly browserCdpOverStdio?: boolean;
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
   readonly inheritedCwd: boolean;
+  readonly boundReadOnlyCwd?: BoundReadOnlyCwdIdentity;
   readonly permissionProfile: PermissionProfile;
   readonly sessionTempRoot: string;
   readonly applySeccompThenExec: boolean;
@@ -66,15 +71,18 @@ const ENFORCEMENT_VALUES: ReadonlySet<string> = new Set(["default", "untrusted",
 export function parseLinuxSandboxLauncherArgs(
   argv: readonly string[],
 ): LinuxSandboxLauncherOptions {
+  let capabilityHint: BubblewrapCapabilityHint | undefined;
   let sandboxPolicyCwd: string | null = null;
   let commandCwd: string | null = null;
   let inheritedCwd = false;
+  let boundReadOnlyCwd: BoundReadOnlyCwdIdentity | undefined;
   let permissionProfile: PermissionProfile | null = null;
   let sessionTempRoot: string | null = null;
   let applySeccompThenExec = false;
   let allowNetworkForProxy = false;
   let proxyRouteSpec: string | null = null;
   let mountProc = true;
+  let browserCdpOverStdio = false;
   const command: string[] = [];
   const seenValueFlags = new Set<string>();
 
@@ -96,6 +104,13 @@ export function parseLinuxSandboxLauncherArgs(
       break;
     }
     switch (arg) {
+      case "--bwrap-capability-hint":
+        capabilityHint = parseBubblewrapCapabilityHint(takeValue(arg, index));
+        index += 1;
+        break;
+      case "--browser-cdp-over-stdio":
+        browserCdpOverStdio = true;
+        break;
       case "--sandbox-policy-cwd":
         sandboxPolicyCwd = normalizeCwd(takeValue(arg, index), arg);
         index += 1;
@@ -109,6 +124,10 @@ export function parseLinuxSandboxLauncherArgs(
         break;
       case "--permission-profile":
         permissionProfile = parsePermissionProfile(takeValue(arg, index));
+        index += 1;
+        break;
+      case "--bound-readonly-cwd-identity":
+        boundReadOnlyCwd = parseBoundReadOnlyCwdIdentity(JSON.parse(takeValue(arg, index)));
         index += 1;
         break;
       case "--session-temp-root":
@@ -153,6 +172,7 @@ export function parseLinuxSandboxLauncherArgs(
       "--inherited-readonly-command-cwd is only valid for the outer launcher stage",
     );
   }
+  if (boundReadOnlyCwd !== undefined && !inheritedCwd) throw new LinuxSandboxCliError("bound cwd identity requires inherited read-only cwd");
   if (proxyRouteSpec !== null && !allowNetworkForProxy) {
     throw new LinuxSandboxCliError(
       "--proxy-route-spec requires --allow-network-for-proxy",
@@ -168,9 +188,12 @@ export function parseLinuxSandboxLauncherArgs(
     ? INHERITED_CWD_SANDBOX_PATH
     : commandCwd ?? resolvedSandboxCwd;
   return {
+    ...(capabilityHint === undefined ? {} : { capabilityHint }),
+    ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,
     inheritedCwd,
+    ...(boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd }),
     permissionProfile,
     sessionTempRoot,
     applySeccompThenExec,

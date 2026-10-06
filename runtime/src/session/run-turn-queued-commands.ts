@@ -15,7 +15,6 @@ import {
   getCommandsByMaxPriority,
   isSlashCommand,
   queuedCommandOwnedByConversation,
-  queuedCommandWorkspaceView,
   remove as removeFromQueue,
 } from "../utils/messageQueueManager.js";
 import { wrapCommandText } from "../utils/messages.js";
@@ -38,13 +37,8 @@ function isSubagentSessionSource(source: SessionSource): boolean {
   );
 }
 
-function pendingInputOwnershipForTurn(ctx: TurnContext): IdleInputOwnership {
-  return ctx.editorInteraction === undefined
-    ? { workspaceView: "agent" }
-    : {
-        workspaceView: "editor",
-        editorInteractionId: ctx.editorInteraction.interactionId,
-      };
+function pendingInputOwnershipForTurn(): IdleInputOwnership {
+  return { workspaceView: "agent" };
 }
 
 function textFromQueuedCommandValue(value: QueuedCommand["value"]): string {
@@ -128,10 +122,6 @@ function queuedCommandMatchesTurn(
   if (!queuedCommandOwnedByConversation(command, conversationId)) return false;
   if (!isInlineQueuedCommand(command)) return false;
   if (isSlashCommand(command)) return false;
-  // Explicit Editor ownership is presentation- and policy-sensitive. Preserve
-  // those commands for App's between-turn drain, which applies the matching
-  // workspace sync and proposal-review gates before submission.
-  if (queuedCommandWorkspaceView(command) === "editor") return false;
   if (isMainThreadQueueSource(querySource)) {
     return command.agentId === undefined;
   }
@@ -160,12 +150,6 @@ function drainQueuedCommandsAfterTools(params: {
   readonly querySource: string;
   readonly sleepRan: boolean;
 }): PhaseEvent[] {
-  // Commands in the global input queue belong to fresh Agent turns unless
-  // explicitly admitted through the Editor-owned mailbox path. Consuming
-  // them here would persist and resample an unrelated Agent prompt under the
-  // authority of the active immutable Editor interaction.
-  if (params.ctx.editorInteraction !== undefined) return [];
-
   const currentAgentId = isMainThreadQueueSource(params.querySource)
     ? undefined
     : buildAgenCToolUseContext(params.session, params.ctx, {

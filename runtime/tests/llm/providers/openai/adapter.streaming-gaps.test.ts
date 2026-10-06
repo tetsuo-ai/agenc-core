@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { LLMStreamTruncatedError } from "../../../../src/llm/errors.js";
 import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
@@ -149,12 +150,60 @@ describe("OpenAIProvider streaming gaps", () => {
     expect(chunks).toEqual([
       { content: "Par", done: false },
       { content: "tial", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "", done: true },
     ]);
     expect(response.content).toBe("Partial");
     expect(response.partial).toBe(true);
     expect(response.finishReason).toBe("error");
     expect(response.error).toBeInstanceOf(Error);
+  });
+
+  test("a Responses stream that ends before response.completed throws the typed truncation error", async () => {
+    // A gateway dropped the upstream socket after the first delta: the SSE
+    // body ends cleanly with no terminal event. The error must be the typed
+    // transient one so the turn reconnects instead of failing.
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-6-astra",
+      useResponsesApi: true,
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chatStream([{ role: "user", content: "go" }], () => {}),
+    ).rejects.toBeInstanceOf(LLMStreamTruncatedError);
+  });
+
+  test.each([
+    { arguments: '{"message":"unfinished', outputInTerminal: true },
+    { arguments: '{"message":"unfinished', outputInTerminal: false },
+    { arguments: '{"message":"complete JSON"}', outputInTerminal: true },
+  ])("keeps output-limited Responses calls non-executable: %j", async ({ arguments: args, outputInTerminal }) => {
+    const item = { type: "function_call", id: "fc_cut", call_id: "call_cut",
+      name: "spawn_agent", arguments: args };
+    const frame = (type: string, fields: object) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      frame("response.output_item.done", { item }),
+      frame("response.incomplete", { response: { status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output: outputInTerminal ? [item] : [], usage: { input_tokens: 5, output_tokens: 7 } } }),
+    ]));
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-5", fetchImpl });
+    const chunks: StreamChunk[] = [];
+    const result = await provider.chatStream([{ role: "user", content: "Delegate" }], chunk => chunks.push(chunk));
+    expect(result).toMatchObject({ finishReason: "length", toolCalls: [],
+      incompleteToolCalls: [{ id: "call_cut", name: "spawn_agent" }],
+      usage: { promptTokens: 5, completionTokens: 7 } });
+    expect(chunks.flatMap(chunk => chunk.toolCalls ?? [])).toEqual([]);
+    expect(chunks.at(-1)?.done).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   test("still throws when a malformed function_call arrives before any output", async () => {

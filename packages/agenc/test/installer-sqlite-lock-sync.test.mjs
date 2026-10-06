@@ -98,7 +98,10 @@ test("Sonar excludes only canonical installer and generated contract copies", ()
   assert.equal(
     readFileSync(join(repoRoot, ".sonarcloud.properties"), "utf8"),
     "# The generated public contracts are checked against their canonical sources.\n" +
-      "sonar.cpd.exclusions=scripts/install/runtime-installer.cjs,packages/agenc-sdk/src/protocol-wire.generated.ts,packages/agenc-sdk/src/turn-terminal.generated.ts\n",
+      "sonar.cpd.exclusions=scripts/install/runtime-installer.cjs,packages/agenc-sdk/src/protocol-wire.generated.ts,packages/agenc-sdk/src/turn-terminal.generated.ts\n" +
+      "# The launcher startup preflight is a minified esbuild bundle rendered from\n" +
+      "# runtime/src/bin (check-launcher-preflight.mjs); its sources are analyzed.\n" +
+      "sonar.exclusions=packages/agenc/generated/startup-preflight.mjs\n",
   );
   assert.equal(
     readFileSync(join(repoRoot, "packages/agenc-sdk/src/turn-terminal.generated.ts"), "utf8"),

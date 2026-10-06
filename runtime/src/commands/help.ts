@@ -16,7 +16,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import React from "react";
 import {
   CUSTOM_COMMANDS_TITLE,
   HELP_WORKFLOW_GROUPS,
@@ -243,7 +242,8 @@ async function openHelpMenu(
   return openAsyncLocalJsxCommand(ctx, async close => {
     const { HelpV2 } = await import("../tui/components/HelpV2/HelpV2.js");
     const runtimeState = requireCommandConfigStore(ctx).stateRepository.get();
-    return React.createElement(HelpV2, {
+    const { createElement } = await import("react");
+    return createElement(HelpV2, {
       commands: commands as never,
       query,
       onClose: close,

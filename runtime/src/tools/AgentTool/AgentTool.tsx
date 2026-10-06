@@ -193,7 +193,7 @@ const isBackgroundTasksDisabled =
   isEnvTruthy(process.env.AGENC_DISABLE_BACKGROUND_TASKS);
 
 // Auto-background agent tasks after this many ms (0 = disabled)
-// Enabled by env var OR GrowthBook gate (checked lazily since GB may not be ready at module load)
+// Enabled by env var (checked lazily at call time)
 function getAutoBackgroundMs(): number {
   if (isEnvTruthy(process.env.AGENC_AUTO_BACKGROUND_TASKS) || false) {
     return 120_000;
@@ -286,13 +286,10 @@ export const inputSchema = lazySchema(() => {
         cwd: true,
       });
 
-  // GrowthBook-in-lazySchema is acceptable here (unlike subagent_type, which
-  // was removed in 906da6c723): the divergence window is one-session-per-
-  // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
-  // "schema shows a no-op param" (gate flips on mid-session: param ignored
-  // by forceAsync) or "schema hides a param that would've worked" (gate
-  // flips off mid-session: everything still runs async via memoized
-  // forceAsync). No Zod rejection, no crash — unlike required→optional.
+  // Reading the gate inside lazySchema is acceptable here: the worst case
+  // is "schema shows a no-op param" (param ignored by forceAsync) or "schema
+  // hides a param that would've worked" (everything still runs async via
+  // memoized forceAsync). No Zod rejection, no crash — unlike required→optional.
   return isBackgroundTasksDisabled || isForkSubagentEnabled()
     ? schema.omit({
         run_in_background: true,
@@ -1668,20 +1665,8 @@ export const AgentTool = buildTool({
   getActivityDescription(input) {
     return input?.description ?? "Running task";
   },
-  async checkPermissions(input, context): Promise<PermissionResult> {
-    const appState = context.getAppState();
-    // Only route through auto mode classifier when in auto mode
-    // In all other modes, auto-approve sub-agent generation
-    // Note: "external" === 'ant' guard enables dead code elimination for external builds
-    if (
-      ("external" as string) === "ant" &&
-      appState.toolPermissionContext.mode === "auto"
-    ) {
-      return {
-        behavior: "passthrough",
-        message: "Agent tool requires permission to spawn sub-agents.",
-      };
-    }
+  async checkPermissions(input, _context): Promise<PermissionResult> {
+    // Sub-agent generation is auto-approved in every mode.
     return {
       behavior: "allow",
       updatedInput: input,

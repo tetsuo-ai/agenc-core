@@ -26,9 +26,6 @@ import { randomUUID } from "node:crypto";
 import {
   resolveApiKey,
 } from "../config/env.js";
-import {
-  createProvider,
-} from "../llm/provider.js";
 import type {
   LLMProvider,
   LLMStructuredOutputSchema,
@@ -43,7 +40,6 @@ import {
 import type { ToolPermissionContext } from "./types.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
-import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   LIST_MCP_RESOURCES_TOOL_NAME,
@@ -127,9 +123,8 @@ export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Live circuit breaker for the auto-mode classifier. AgenC wires
- * this to GrowthBook's `tengu_iron_gate_closed` flag. AgenC does not yet
- * ship that remote circuit-breaker surface, so the gate is considered open
+ * Live circuit breaker for the auto-mode classifier. There is no remote
+ * circuit-breaker surface, so the gate is considered open
  * when the local runtime can actually reach the xAI-backed classifier
  * (currently: an xAI API key is configured). Tests can still override the
  * resolver directly.
@@ -284,10 +279,10 @@ export function __resetClassifierStubSessionForTesting(): void {
  *
  * Structural gaps that remain after this tranche:
  *
- *   - AgenC does not yet expose AgenC's remote auto-mode circuit breaker
- *     or custom auto-mode rules/model settings. The gate therefore uses local
- *     classifier reachability (API key present) rather than GrowthBook, and
- *     the prompt is runtime-owned rather than settings-owned.
+ *   - There is no remote auto-mode circuit breaker or custom auto-mode
+ *     rules/model settings yet. The gate therefore uses local classifier
+ *     reachability (API key present), and the prompt is runtime-owned rather
+ *     than settings-owned.
  */
 const DEFAULT_AUTO_MODE_FAST_MODEL = "grok-4-fast";
 const DEFAULT_AUTO_MODE_THINKING_MODEL = "grok-4";
@@ -472,6 +467,12 @@ async function defaultRemoteClassifierStageRunner(
   config: RemoteClassifierConfig,
   session: Session,
 ): Promise<RemoteClassifierStageResponse> {
+  // Permission-mode predicates also import this module in thin clients. Load
+  // provider construction and admission only when a remote stage actually runs.
+  const [{ createProvider }, { runAdmittedModelCall }] = await Promise.all([
+    import("../llm/provider.js"),
+    import("../budget/admitted-model-call.js"),
+  ]);
   const provider = createProvider("grok", {
     apiKey: config.apiKey,
     model: request.model,

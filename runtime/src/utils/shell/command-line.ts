@@ -156,8 +156,8 @@ export function lexShellCommand(command: string): ShellCommandTokens {
       quote = null;
     } else {
       current += character;
-      if (character === "$") requiresExpansion = true;
       const logicalNext = command[skipLineContinuations(command, index + 1)];
+      if (character === "$" && startsParameterExpansion(logicalNext)) requiresExpansion = true;
       if (character === "`" || (character === "$" && logicalNext === "(")) {
         hasCommandSubstitution = true;
       }
@@ -209,7 +209,14 @@ export function lexShellCommand(command: string): ShellCommandTokens {
     }
     current += character;
     wordStarted = true;
-    if ("$*?[]{}~".includes(character)) requiresExpansion = true;
+    if (character === "$") {
+      // Unquoted, `$'...'` and `$"..."` are ANSI-C and locale quoting.
+      if (startsParameterExpansion(logicalNext) || logicalNext === "'" || logicalNext === '"') {
+        requiresExpansion = true;
+      }
+    } else if ("*?[]{}~".includes(character)) {
+      requiresExpansion = true;
+    }
     index += 1;
   };
 
@@ -230,6 +237,15 @@ export function lexShellCommand(command: string): ShellCommandTokens {
     quote !== null || openBacktick ||
     awaitingHeredoc !== undefined || pendingHeredocs.length > 0;
   return { tokens, malformed, hasComment, hasCommandSubstitution };
+}
+
+/**
+ * Whether a `$` followed by this character expands: a name, a positional or
+ * special parameter, `${`, `$(`, `$((`, or `$[`. Before anything else, such
+ * as `/`, a blank, a quote, or the end of the word, the `$` is literal.
+ */
+function startsParameterExpansion(next: string | undefined): boolean {
+  return next !== undefined && /[A-Za-z0-9_{([@*#?$!-]/u.test(next);
 }
 
 function hasTrailingContinuation(line: string): boolean {

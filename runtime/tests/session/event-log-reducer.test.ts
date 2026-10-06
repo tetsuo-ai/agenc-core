@@ -14,6 +14,32 @@ import {
 import { llmMessageToResponseItem } from "./message-history-conversion.js";
 
 describe("event-log-reducer (I-26 + I-27)", () => {
+  test("history_cleared resets conversation history while preserving session facts", () => {
+    const original = {
+      ...emptyReducedState(),
+      history: [{ role: "user" as const, content: "old request" }],
+      sessionMeta: { sessionId: "clear-run" },
+      agentTask: { taskId: "retained-task" },
+      lastCompaction: { message: "old summary" },
+      lastTurnContext: {
+        turnId: "old-turn", model: "old-model", cwd: "/workspace",
+        approvalPolicy: "on-request", sandboxPolicy: "workspace-write",
+      },
+      lastSeq: 4,
+    };
+    const { state, report } = reduce(original, { type: "event_msg", payload: {
+      id: "clear", seq: 5, msg: { type: "history_cleared", payload: { timestamp: 1 } },
+    } });
+    expect(state.history).toEqual([]);
+    expect(state.lastCompaction).toBeUndefined();
+    expect(state.lastTurnContext).toBeUndefined();
+    expect(state.sessionMeta).toEqual(original.sessionMeta);
+    expect(state.agentTask).toEqual(original.agentTask);
+    expect(state.lastSeq).toBe(5);
+    expect(report).toEqual({});
+    expect(original.history).toHaveLength(1);
+  });
+
   test("reduces response_item into history", () => {
     const { state } = reduceAll([
       {

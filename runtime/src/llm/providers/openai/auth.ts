@@ -91,7 +91,7 @@ export class OpenAIAuthSession {
       throw error;
     }
     options.signal?.throwIfAborted();
-    if (authFailures >= MAX_CONSECUTIVE_AUTH_FAILURES) {
+    if (authFailures > (oauth.maxRefreshAttempts ?? MAX_CONSECUTIVE_AUTH_FAILURES - 1)) {
       throw this.oauthState === state ? this.exhaustedError(state) : error;
     }
     if (this.oauthState !== state) return;

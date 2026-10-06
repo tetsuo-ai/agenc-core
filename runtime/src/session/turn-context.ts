@@ -33,8 +33,7 @@ import type {
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
-import type { SessionEditorInteraction } from "./autonomous-mode.js";
-import type { DurableTurnsConfig } from "../config/schema.js";
+import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -70,6 +69,8 @@ export interface ModelServiceTier {
 
 export interface ModelInfo {
   readonly slug: string;
+  /** Provider that supplied this catalog or discovery result. */
+  readonly provider?: string;
   readonly contextWindow?: number;
   readonly effectiveContextWindowPercent: number;
   readonly maxOutputTokens?: number;
@@ -238,6 +239,8 @@ export interface SkillLoadOutcome {
     readonly allowedTools?: readonly string[];
     readonly argumentHint?: string;
     readonly argNames?: readonly string[];
+    /** Id of the owning plugin when the skill ships inside one. */
+    readonly pluginId?: string;
     readonly whenToUse?: string;
     readonly version?: string;
     readonly model?: string;
@@ -357,6 +360,10 @@ export interface SessionConfiguration {
   readonly collaborationMode: CollaborationMode;
   readonly personality?: Personality;
   readonly modelVerbosity?: "low" | "medium" | "high";
+  /** Session-only override; null means use inheritedModelVerbosity. */
+  readonly modelVerbosityOverride?: "low" | "medium" | "high" | null;
+  /** Config value retained while a session override is active. */
+  readonly inheritedModelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly approvalsReviewer?: string;
@@ -459,6 +466,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;
@@ -505,6 +513,12 @@ export interface Config {
   readonly maxBudgetUsd?: number;
   /** Canonical durable checkpoint/resume policy captured for this session. */
   readonly durableTurns?: DurableTurnsConfig;
+  /** Completion gate policy for non-interactive verification rounds. */
+  readonly completionGate?: CompletionGateConfig;
+  /** `/goal` policy: rounds, stall window, reviewer model, verification timeout. */
+  readonly goal?: GoalConfig;
+  /** Degraded compaction ladder policy (#2497). */
+  readonly compaction?: CompactionConfig;
   readonly experimental_realtime_start_instructions?: string;
   readonly experimental_realtime_ws_backend_prompt?: string;
   // Expanded as further config surfaces land.
@@ -606,6 +620,9 @@ export interface TurnContext {
 
   /** Provider-facing output verbosity hint. */
   readonly modelVerbosity?: "low" | "medium" | "high";
+
+  /** Explicit session response-detail override; null keeps inherited requests unchanged. */
+  readonly responseDetailOverride?: "low" | "medium" | "high" | null;
 
   /** Provider-facing service-tier hint. */
   readonly serviceTier?: string;
@@ -719,9 +736,6 @@ export interface TurnContext {
    * the live registry value.
    */
   readonly permissionMode: PermissionMode;
-
-  /** Trusted editor context and mutation policy for an editor-originated turn. */
-  readonly editorInteraction?: SessionEditorInteraction;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -731,7 +745,9 @@ export interface TurnContext {
 /**
  * Effective context window: model's context window * `effectiveContextWindowPercent` / 100.
  */
-export function modelContextWindow(ctx: TurnContext): number | undefined {
+export function modelContextWindow(ctx: {
+  readonly modelInfo: Pick<ModelInfo, "contextWindow" | "effectiveContextWindowPercent">;
+}): number | undefined {
   const cw = ctx.modelInfo.contextWindow;
   if (cw === undefined) return undefined;
   return Math.floor((cw * ctx.modelInfo.effectiveContextWindowPercent) / 100);
@@ -1276,6 +1292,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     reasoningEffort,
     reasoningSummary,
     modelVerbosity: sc.modelVerbosity,
+    responseDetailOverride: sc.modelVerbosityOverride,
     serviceTier: sc.serviceTier,
     sessionSource: sc.sessionSource,
     environment: opts.environment,

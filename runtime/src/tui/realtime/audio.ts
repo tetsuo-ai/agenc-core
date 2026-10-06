@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 import type { ThreadRealtimeAudioChunk } from "../../app-server/protocol/index.js";
+import type { RealtimePlaybackBackend } from "../../services/voice.js";
+import { isSignalablePid } from "../../utils/child-signal.js";
 
 export interface RealtimeAudioCaptureCallbacks {
   readonly onAudio: (audio: ThreadRealtimeAudioChunk) => void;
@@ -20,6 +22,8 @@ export type StartRealtimeAudioCapture = (
 export interface RealtimeAudioPlayer {
   enqueue(audio: ThreadRealtimeAudioChunk): void;
   close(): void;
+  /** Clears a permanent-unavailable latch and installs the backend resolved at readiness. */
+  beginSession?(backend: RealtimePlaybackBackend | null): void;
 }
 
 export type RealtimeAudioPlayerSpawn = (
@@ -27,6 +31,14 @@ export type RealtimeAudioPlayerSpawn = (
   args: readonly string[],
   options: SpawnOptions,
 ) => ChildProcess;
+
+export type { RealtimePlaybackBackend };
+
+export interface CreateProcessRealtimeAudioPlayerOptions {
+  readonly onError?: (message: string) => void;
+  /** Backend already resolved at readiness. enqueue never probes PATH. */
+  readonly backend?: RealtimePlaybackBackend | null;
+}
 
 const INPUT_SAMPLE_RATE = 16_000;
 const INPUT_CHANNELS = 1;
@@ -44,6 +56,10 @@ export async function startDefaultRealtimeAudioCapture(
   const availability = await voice.checkRecordingAvailability();
   if (!availability.available) {
     throw new Error(availability.reason ?? "Audio recording is not available");
+  }
+  const playback = await voice.checkPlaybackAvailability();
+  if (!playback.available) {
+    throw new Error(playback.reason ?? "Audio playback is not available");
   }
   const started = await voice.startRecording(
     (chunk: Buffer) => {
@@ -65,15 +81,23 @@ export async function startDefaultRealtimeAudioCapture(
 
 export function createProcessRealtimeAudioPlayer(
   spawnProcess: RealtimeAudioPlayerSpawn = spawn,
+  options: CreateProcessRealtimeAudioPlayerOptions = {},
 ): RealtimeAudioPlayer {
   let child: ChildProcess | null = null;
   let format: { sampleRate: number; numChannels: number } | null = null;
   const queue: Buffer[] = [];
   let queuedBytes = 0;
   let waitingForDrain = false;
+  // Set once `play` turns out to be missing or not executable (stock macOS
+  // has no SoX). Without it every audio chunk spawned `play` again.
+  // Cleared on session start so a later session can retry.
+  let playerUnavailable = false;
+  let backend: RealtimePlaybackBackend | null =
+    options.backend === undefined ? "play" : options.backend;
 
   const reset = (active: ChildProcess | null): void => {
     if (active !== child) return;
+    active?.stdin?.removeAllListeners("drain");
     child = null;
     format = null;
     queue.length = 0;
@@ -88,17 +112,27 @@ export function createProcessRealtimeAudioPlayer(
     active?.stdin?.removeAllListeners("error");
     active?.stdin?.removeAllListeners("close");
     active?.stdin?.destroy();
-    active?.kill("SIGTERM");
+    // A failed spawn has no pid, but until Node reports the failure its open
+    // handle sends kill() to pid 0: the TUI's whole process group, including
+    // the shell job it runs in. Its error event does the cleanup instead.
+    if (active !== null && isSignalablePid(active.pid)) active.kill("SIGTERM");
   };
 
   const flush = (): void => {
     const active = child;
-    if (active === null || active.stdin === null || active.stdin.destroyed) {
+    // EMFILE and ENFILE leave a failed child's stdin undefined, not null.
+    if (
+      active === null ||
+      active.stdin === null ||
+      active.stdin === undefined ||
+      active.stdin.destroyed
+    ) {
       queue.length = 0;
       queuedBytes = 0;
       waitingForDrain = false;
       return;
     }
+    if (waitingForDrain) return;
     while (queue.length > 0) {
       const chunk = queue[0]!;
       let accepted = false;
@@ -111,19 +145,20 @@ export function createProcessRealtimeAudioPlayer(
       queue.shift();
       queuedBytes -= chunk.length;
       if (!accepted) {
-        if (!waitingForDrain) {
-          waitingForDrain = true;
-          active.stdin.once("drain", () => {
-            waitingForDrain = false;
-            flush();
-          });
-        }
+        waitingForDrain = true;
+        active.stdin.once("drain", () => {
+          if (child !== active) return;
+          waitingForDrain = false;
+          flush();
+        });
         return;
       }
     }
   };
 
   const enqueueBuffer = (chunk: Buffer): void => {
+    // Drop oldest queued audio first so a slow player keeps the newest
+    // frames and the application-owned queue stays within the 512 KiB cap.
     while (
       queue.length > 0 &&
       queuedBytes + chunk.length > MAX_OUTPUT_QUEUE_BYTES
@@ -137,7 +172,12 @@ export function createProcessRealtimeAudioPlayer(
   };
 
   return {
+    beginSession(next) {
+      playerUnavailable = false;
+      backend = next;
+    },
     enqueue(audio) {
+      if (playerUnavailable) return;
       const decoded = decodeRealtimeOutputAudioChunk(audio);
       if (decoded === null) return;
       const nextFormat = {
@@ -151,27 +191,30 @@ export function createProcessRealtimeAudioPlayer(
         format.numChannels !== nextFormat.numChannels
       ) {
         close();
+        const selected = backend;
+        if (selected === null) {
+          playerUnavailable = true;
+          options.onError?.(
+            "Realtime voice playback requires a local `play` (SoX) or `aplay` (ALSA) command.",
+          );
+          return;
+        }
         child = spawnProcess(
-          "play",
-          [
-            "-q",
-            "-t",
-            "raw",
-            "-r",
-            String(nextFormat.sampleRate),
-            "-e",
-            "signed",
-            "-b",
-            "16",
-            "-c",
-            String(nextFormat.numChannels),
-            "-",
-          ],
+          selected,
+          playbackBackendArgs(selected, nextFormat),
           { stdio: ["pipe", "ignore", "ignore"] },
         );
         format = nextFormat;
         const active = child;
-        active?.on("error", () => reset(active));
+        active?.on("error", (error: NodeJS.ErrnoException) => {
+          if (active !== child) return;
+          const permanent = isPermanentSpawnFailure(active, error);
+          if (permanent) playerUnavailable = true;
+          reset(active);
+          if (permanent) {
+            options.onError?.(playbackFailureMessage(error, selected));
+          }
+        });
         active?.on("close", () => reset(active));
         active?.stdin?.on("error", () => reset(active));
         active?.stdin?.on("close", () => reset(active));
@@ -180,6 +223,66 @@ export function createProcessRealtimeAudioPlayer(
     },
     close,
   };
+}
+
+function isPermanentSpawnFailure(
+  active: ChildProcess,
+  error: NodeJS.ErrnoException,
+): boolean {
+  return (
+    active.pid === undefined &&
+    (error.code === "ENOENT" || error.code === "EACCES")
+  );
+}
+
+function playbackBackendArgs(
+  backend: RealtimePlaybackBackend,
+  format: { sampleRate: number; numChannels: number },
+): string[] {
+  switch (backend) {
+    case "play":
+      return [
+        "-q",
+        "-t",
+        "raw",
+        "-r",
+        String(format.sampleRate),
+        "-e",
+        "signed",
+        "-b",
+        "16",
+        "-c",
+        String(format.numChannels),
+        "-",
+      ];
+    case "aplay":
+      return [
+        "-q",
+        "-t",
+        "raw",
+        "-f",
+        "S16_LE",
+        "-r",
+        String(format.sampleRate),
+        "-c",
+        String(format.numChannels),
+        "-",
+      ];
+    default: {
+      const exhaustive: never = backend;
+      throw new Error(`Unsupported playback backend: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function playbackFailureMessage(
+  error: unknown,
+  backend: RealtimePlaybackBackend,
+): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return `Realtime audio playback failed (${backend})`;
 }
 
 function decodeRealtimeOutputAudioChunk(

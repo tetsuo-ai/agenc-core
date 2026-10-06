@@ -9,7 +9,7 @@ Live help: `agenc help` and `agenc help <topic>`. Sources:
 Top-level help is a command index; `agenc help <topic>` contains each
 command's full syntax and options.
 
-Version: **0.17.0**. Default session provider **grok**, fresh-config session model
+Version: **0.18.0**. Default session provider **grok**, fresh-config session model
 **grok-4.6** (see [providers.md](providers.md)).
 
 ---
@@ -48,25 +48,79 @@ From `formatCliHelpText()`:
 | `-h`, `--help` | Show top-level help |
 | `--version` | Print `agenc <version>` |
 | `-p`, `--print` | Headless one-shot print mode |
+| `--full-durability` | Keep per-write durable syncing in fresh one-shot print runs |
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
+| `--deadline <+seconds\|ISO-8601>` | Print mode: the instant the run must end by, as `+<seconds>` from now or an ISO 8601 time with a zone. See the print-mode notes. |
+| `--deadline-reserve <seconds>` | Print mode, with `--deadline`: how long before the deadline the model is told to wrap up. Default 10 % of the budget, clamped to 5-30 minutes and never more than half the budget. |
 | `--no-tui` | Force one-shot CLI mode (no interactive TUI) |
 | `--bare` | Use reduced startup mode; immutably suppress every session hook extension point and skip LSP, plugin sync, and skill discovery while keeping authentication active |
-| `-c`, `--continue` | Continue the latest project session |
-| `-r`, `--resume <session-id>` | Resume a prior project session in the TUI |
+| `-c`, `--continue` | Continue the latest project session. In the TUI this reopens it; with `-p`, piped stdin or `--no-tui` the prompt runs as one more turn of that session and the process exits with the turn's outcome (`agenc -c -p "next step"`). |
+| `-r`, `--resume <session-id>` | Resume a prior project session. TUI by default; headless (`-p`, piped stdin, `--no-tui`) runs the prompt as one more turn of that session. |
 | `--config <path>` | Load an explicit schema-v2 `config.toml` layer for this invocation |
 | `--profile <name>` | Named config profile |
 | `--provider <name>` | Override provider for this session |
 | `--model <id\|provider:id>` | Override model for this session |
 | `--permission-mode <mode>` | Override startup mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is an explicit session-only opt-in bound to the current workspace. Internal `unattended` / `bubble` modes are not CLI addressable. |
 | `--autonomous` | Enable autonomous tick mode |
-| `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks |
+| `--bypass-approvals` | Skip approval prompts, sandbox escalation requests included: commands start in the OS sandbox, and one that asks to run outside it (`sandbox_permissions: "require_escalated"`) is allowed without a prompt. In a workspace-write sandbox the model is told it may ask only for GUI apps and blocked network, and to keep file changes inside the workspace; elsewhere it is told such requests are rejected. Same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`. On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
+| `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks everywhere (the explicit no-sandbox opt-out) |
 | `--image <file\|url\|data-url>` | Attach a startup image |
 
 ### Print-mode notes
 
+- A print-mode turn that stops with `compact_failed` (compaction could not shrink the context even after the degraded ladder) is re-entered once with a runtime-authored continuation turn on the same session before the run exits 1; `AGENC_ONE_SHOT_COMPACT_RETRIES` sets the count (`0` disables). The exit code is the last turn's outcome.
+- A print-mode turn that stops with `effect_review_required` exits 3. A side-effecting tool call ended with an unknown outcome (the runtime could not prove whether the effect happened), so the live-effect gate refuses every later side-effecting or interactive call until an operator reviews it. Nobody is attached to a print-mode run, so the turn ends at the first refusal instead of retrying blocked tools; a stderr marker names the review command. Review with `agenc state resolve-tool-call <session-id> <call-id> …` (see [`state`](#state) below) or `/resolve` in a live session, then re-run. Interactive sessions end the turn after three consecutive gate refusals, with the same stop reason, so the user can run `/resolve` and prompt again. Exit 1 remains a task failure and exit 2 a denied tool.
+- A print-mode turn that stops with `empty_response` exits 4. The model returned an empty sample and kept doing so through the unattended retry ladder: three re-samples with 2 s, 8 s and 30 s of backoff, each recorded as a `warning` with cause `empty_response_retry`, the second and third with a fresh provider conversation so a stuck server-side continuation is not reused. Retries happen before the turn's commit, so they do not consume `maxTurns`. The run did no wrong work; a harness should retry it rather than grade it. A stderr marker says so. Interactive sessions keep one immediate retry and end the turn with the same stop reason so the user can prompt again.
+- `--deadline` bounds a print-mode run in time; a harness passes its own timeout minus a margin (the Harbor adapter does this by default). The model is told the run is time-bounded, gets the remaining budget at the start of each turn and as `time_remaining_sec` on every tool result, and is asked to keep a verified result on disk and improve on a copy. When the reserve begins (`--deadline-reserve`), it is told once to stop exploring, restore its best verified state, run the final checks and write the final message; new subagents are refused and the completion gate accepts that answer. None of these reminders enters durable history. A turn still running at the deadline is stopped (running tools are interrupted), ends with the bounded stop `deadline_reached`, and the run exits 5 with a stderr marker; the files the run saved are the result. If the daemon has not ended the turn 20 s after the deadline, the client interrupts it and exits 5 anyway. `--deadline` is rejected outside print mode, piped stdin, `--no-tui` and headless continue/resume.
+- `agenc -p "/goal <objective> [flags]"` runs a [goal](goal.md) headless: the goal is set before the first turn, and the run exits 0 only when it is met (1 otherwise, with the final status and the reviewer's reason on stderr). It needs `--bypass-approvals` or allow rules, since print mode denies every approval.
+- `agenc -c -p "<prompt>"` and `agenc --resume <id> -p "<prompt>"` continue a prior session headless: the session is revived from its rollout (or reused when a TUI or the desktop still has it live), the prompt is submitted as a new turn, output streams to stdout, and the exit code is the turn's outcome. A session this run revived is stopped again afterwards; a live one keeps running. Only explicit `--model`, `--provider` and `--profile` overrides travel; otherwise the session keeps the provider and model it was recorded with. No prior session for the project exits 1 with `agenc: no previous session found for this project`.
+
 - `--print` / `-p` and `--no-tui` select non-interactive runs suitable for
-  scripts and CI.
+  scripts and CI. Nobody can answer a question in print mode, so the daemon
+  hides `AskUserQuestion` from the model for these sessions (the run is
+  created with `runtimeOptions.nonInteractive`); a permission request that
+  still reaches the client is denied, never granted. These sessions also
+  receive the completion contract, a system prompt section that tells the
+  model nobody reviews the run while it happens: restate the task as a
+  checklist of checkable requirements, run the checks the task implies
+  before the final message, never end the turn waiting for input, and report
+  what was verified. `AGENC_COMPLETION_CONTRACT=0` in the CLI environment
+  leaves the section out; interactive sessions never receive it.
+  `AGENC_COMPLETION_CONTRACT_COHERENT=1` is a measurement switch: with the
+  contract present it also leaves out three default lines that contradict it
+  (the "simplest approach, do not overdo it" line, the advice not to
+  re-verify, and the advice to escalate with the ask-user-question tool). The
+  contract is also enforced structurally: the first tool-free final answer of
+  a turn that used tools is held back while the runtime injects a
+  `<completion_gate>` verification request, unless it already passes
+  verification and cites a command that ran successfully after the last
+  workspace change. Verification requires each nonempty checked `- [x]`
+  item to have an associated successful tool result after the last
+  workspace change (the last file edit or a command the checklist does not
+  name). The tool name, arguments, or content must share a distinctive
+  token with the claim; sentence punctuation is not part of a token. A
+  checked item without such a result and without a
+  failed check is quoted back apart from the other unmet items, with a
+  request to put the command run or file inspected on its line. Unchecked
+  `- [ ]` items
+  and malformed checklist items prevent verification. An explicit `- [-]`
+  unavailable claim is asked to show its observed limitation, and the gate
+  keeps asking while the model runs tools, up to
+  `completion_gate.max_rounds`, where the leftover settles as `partial`. It
+  is never settled early on a successful check for some other item. Failed
+  tools and explicitly still-running commands do not count, and an
+  unrelated successful read does not verify a different claim. This is a
+  structural check, not a guarantee of task correctness and not a
+  benchmark pass. After `completion_gate.max_rounds` (default 3), an
+  unmet answer still ends the turn with the existing exit code. An answer
+  that ran no tool since the last request and draws that request's verdict
+  again (the same reason and items) settles the same way before the cap:
+  the same request again cannot change it. Text-mode
+  `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
+  structured output includes the event. `completion_gate.mode = "never"`
+  in the config turns that off; see
+  [config.md](config.md#built-in-defaults).
 - `--output-format stream-json` with `--input-format stream-json` is the
   protocol used by the SDK subprocess transport
   (`promptViaSubprocess` in `@tetsuo-ai/agenc-sdk`).
@@ -135,6 +189,12 @@ active turn.
   `--print` and `--no-tui` exit 1, and the compatibility `runAgent` surface
   with `keepAlive: false` reports failure. See
   [daemon.md](daemon.md#compact-skip-stays-per-turn).
+- A transactional compact — `/compact` or automatic — has a 900 s
+  whole-transaction wall budget. The former 300 s bound cut off a
+  measured grok-4.6 summarizer. Expiry is `wall_time_exceeded` after
+  intent, not `provider_timeout` and not `mid_turn_compact_skipped`.
+  There is no env override. See
+  [CP-0006 wall budget](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
 
 ---
 
@@ -362,6 +422,11 @@ policy and model rather than the daemon default. The CLI has no
 model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
+
+The `run.start` RPC and SDK `startRun` accept `lightMode: true` to run the
+Goal and its child sessions in Light mode. Omit it for standard mode. The
+frozen setting appears in `run.status.workflow.lightMode` and is inherited
+by a continuation unless that request supplies its own boolean value.
 
 Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
 Use `--permission-mode default` for normal per-tool approval checks. `run start`
@@ -605,6 +670,7 @@ session model and the configured default when they differ.
 ```bash
 agenc config set approval_policy never
 agenc config set plugins.enabled true
+agenc config set agent.retention.rollout_days 0
 agenc config validate
 ```
 
@@ -801,7 +867,7 @@ agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --con
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
 | `resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` | Record a typed, evidence-bound operator disposition for one unresolved `unknown_outcome` tool call |
-| `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline |
+| `recovery quarantine list/show` | Inspect bounded source-integrity evidence offline. A pending effect review whose journal was already removed (retention or loss) is quarantined here with `reasonCode: "source_changed"` and a 64-zero source digest instead of blocking daemon start. See [session rollout retention](daemon.md#session-rollout-retention). |
 | `recovery deferred list/show` | Inspect bounded operational blocks and retry metadata offline |
 | `recovery … rescan/retry/abandon` | Strict descriptor-pinned recovery actions; rescan and abandon require exact digest/run confirmations |
 
@@ -841,6 +907,15 @@ project directory; they open SQLite even when the daemon cannot start.
 `agenc state --help` may still say mutations fail closed; the CLI installs
 `createRecoveryMutationAdapter()`. Actor for mutations is `--actor`, else
 `AGENC_REVIEWER_ID`, else `USER`/`USERNAME`, else `local_operator`.
+
+Daemon startup releases two kinds of deferral itself once their retry time
+has passed, then rescans the run under the full strict validation:
+`source_not_quiescent` (a live writer still held the journal) and
+`recovery_lock_unavailable` with error class
+`RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE` (the runtime that looked could not pin
+the journal's directories, as every Windows build did before it could). A
+source that still cannot be read records a new block. Every other deferral
+stays until `recovery deferred retry` or `abandon`.
 
 Windows does not publish large artifacts without descriptor-relative paths
 (`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`). That is fail-closed, not a recovery
@@ -896,6 +971,7 @@ agenc daemon stop
 agenc daemon status
 agenc daemon reload
 agenc daemon restart
+agenc daemon install-service
 ```
 
 | Command | Meaning |
@@ -904,12 +980,26 @@ agenc daemon restart
 | `start --foreground` | Run the daemon in the current process |
 | `stop` | Stop the local AgenC daemon |
 | `status` | Show local daemon status |
-| `reload` | Reload daemon configuration in place |
+| `reload` | Reload daemon configuration in place. Open sessions take the new `[agents]` cross-provider settings. The command prints each session that could not read them again, and says when its read only ran out of time. Such a session keeps its earlier settings without what the save took away from the daemon's settings. Other session settings apply to new sessions |
 | `restart` | Stop and start the local AgenC daemon |
+| `install-service` | Write a WinSW XML definition from this install's absolute launcher, `AGENC_HOME`, and installing-user account. Does not install or start the Windows service. |
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
-Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
-`AGENC_DAEMON_READY_TIMEOUT_MS`.
+The Windows one-line installer writes a generated WinSW 2.12.0 file. Installing
+that service is a separate elevated step: `agenc-daemon.exe install` (no `/p`),
+then set the account password in the Services Log On tab. `start` fails with
+error 1069 until that password is set. Then `sc.exe qc agenc-daemon`.
+`SERVICE_START_NAME` must be the installing user. The password is set outside
+the XML.
+
+The rest of this section is about the launcher-started daemon, not the Windows
+service. Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
+`AGENC_DAEMON_READY_TIMEOUT_MS`. After a hard kill, readiness is the
+socket accepting a connection, not the leftover inode. Direct
+`agenc daemon start` keeps waiting while the startup log advances, up to
+`AGENC_DAEMON_START_MAX_WAIT_MS`. A TUI that loses its daemon mid-turn
+ends the turn locally when the daemon does not answer within 10 s. See
+[recovery after a disappeared daemon](daemon.md#recovery-after-a-disappeared-daemon).
 
 ---
 
@@ -1000,3 +1090,24 @@ its working directory.
 - Documentation map: [`../INDEX.md`](../INDEX.md)
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Product README: [`../../README.md`](../../README.md)
+
+### Print-mode durability
+
+Fresh, noninteractive one-shot print runs use buffered canonical appends and
+run-scoped SQLite `NORMAL` transactions by default on Linux and macOS. Other
+platforms keep full syncing until they support the durable directory-marker
+proof. A process crash ordinarily
+preserves page-cache bytes; a host crash or power loss can lose the unsynced
+suffix. Interactive, Desktop, routine, goal, child-agent, and resumed (`-c` or
+`--resume`) sessions keep full syncing. Use `agenc -p --full-durability "…"`
+to opt out for a fresh print run. Starting a goal or spawning an agent first
+promotes the current run to full durability.
+
+Before buffered work begins, AgenC durably marks its canonical history as
+incomplete. A clean close syncs the canonical file and SQLite WAL, then seals
+its exact length and hash. Continuing an incomplete run or a history that no
+longer matches its seal fails closed and preserves the evidence for review.
+This includes loss of complete JSONL rows: uncertain effects are never silently
+replayed as new work. A killed process can therefore require review even when
+its page-cache bytes survived. A verified clean run can be continued with full
+syncing.

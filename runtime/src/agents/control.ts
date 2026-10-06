@@ -31,11 +31,14 @@
  * @module
  */
 
-import { emitError, emitWarning } from "../session/event-log.js";
+import { CompletedTaskResults } from "./completed-task-results.js";
+import { emitError, emitWarning, type SubagentTaskAdmissionEvent } from "../session/event-log.js";
 import { childReadOnlyDelegation, normalizeReadOnlyDelegationConstraint } from "./readonly-delegation.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
+import type { RecoveredChildTaskReceipt } from "../session/subagent-receipt-recovery.js";
+import { boundedRecoveredChildText, formatRecoveredChildTaskReceipt, projectRecoveredChildReceipt, recoveredChildProjectionId, recoveredChildStatus } from "./recovered-child-results.js";
 import type { Session } from "../session/session.js";
 import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import {
@@ -48,6 +51,10 @@ import {
   requireMailboxMetadataKind,
 } from "./mailbox.js";
 import type { ValidatedMailboxMetadata } from "./mailbox-metadata.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, currentChildProvider, resolveChildSelection } from "./cross-provider.js";
+import { childTerminalOutcome } from "./child-terminal.js";
+import { liveAgentSession } from "./live-session.js";
 import {
   AgentIdExistsError,
   AgentPathExistsError,
@@ -123,6 +130,8 @@ import {
   AgentStatusTracker,
   formatSubagentNotification,
   isFinal,
+  terminalFromAgentStatus,
+  turnIdFromAgentStatus,
   type AgentStatus,
 } from "./status.js";
 import type { ThreadManager } from "./thread-manager.js";
@@ -228,6 +237,9 @@ export class AgentAssignmentRejectedError extends Error {
 
 export interface AgentAssignmentAdmission {
   readonly taskId: string;
+  readonly taskText: string;
+  readonly exactOutput?: boolean;
+  readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   readonly turnId: string;
   readonly author: AgentPath;
   readonly acceptedAtMs: number;
@@ -278,6 +290,27 @@ export interface ListedAgent {
   readonly agentName: string;
   readonly agentStatus: AgentStatus;
   readonly lastTaskMessage?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+}
+
+/** Current native workers under one parent; closed handles are absent. */
+export interface NativeWorkerSnapshot {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly nickname: string;
+  readonly role: string;
+  readonly prompt?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+  readonly status: AgentStatus["status"];
+  readonly error?: string;
+  readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
+  readonly toolUseCount: number;
+  readonly tokenCount: number;
+  readonly timing?: import("./status.js").NativeWorkerTiming;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -298,7 +331,7 @@ export interface LiveAgent {
   /** Per-agent AbortController — triggered by `interrupt()`. */
   readonly abortController: AbortController;
   /** Cached metadata snapshot at spawn time. */
-  readonly metadata: AgentMetadata;
+  metadata: AgentMetadata;
   /** Live child transcript, updated by the child run loop. */
   readonly messages: LLMMessage[];
   /** Scratch memory entries associated with this child. */
@@ -320,7 +353,10 @@ export interface LiveAgent {
   lastTaskReceipt?: {
     readonly turnId: string;
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
+    readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   };
+  /** Byte-bounded front for exact answers stored in the child journal. */
+  completedTaskResults?: CompletedTaskResults;
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
   /** Local rollout path for the live child session once initialized. */
@@ -362,6 +398,23 @@ export class AgentControl {
   /** Sole executable role authority for schema, spawn, and resume. */
   readonly roleCatalog: AgentRoleCatalog;
   private readonly live = new Map<ThreadId, LiveAgent>();
+  private readonly recoveredTaskReceipts = new Map<ThreadId, readonly RecoveredChildTaskReceipt[]>();
+  private readonly recoveredTaskReceiptSizes = new Map<ThreadId, number>();
+  private recoveredTaskReceiptBytes = 0;
+  private readonly deliveredRecoveredTaskReceipts = new Set<string>();
+  private recoverableChildIds: ReadonlySet<ThreadId> | undefined;
+  private recoveryNotice: { readonly incomplete: true; readonly message: string;
+    readonly child_thread_id?: string; readonly parent_rollout_path?: string } | undefined;
+
+  get childResultRecoveryNotice(): typeof this.recoveryNotice { return this.recoveryNotice; }
+
+  private noteIncompleteChildRecovery(message: string, threadId?: string): void {
+    this.recoveryNotice ??= { incomplete: true, message: message.slice(0, 1_024),
+      ...(threadId === undefined || threadId.length > 256 ? {} : { child_thread_id: threadId }),
+      ...(this.session.rolloutStore === null || this.session.rolloutStore === undefined ? {} : {
+        parent_rollout_path: this.session.rolloutStore.rolloutPath }) };
+  }
+
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
   /** Registered session-root thread id (see `registerSessionRoot`). */
@@ -378,6 +431,7 @@ export class AgentControl {
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
+    this.captureRecoverableChildIds();
     const sessionRoleWorkspace = (
       opts.session as Session & { readonly roleWorkspace?: AgentRoleWorkspace }
     ).roleWorkspace;
@@ -395,6 +449,16 @@ export class AgentControl {
     this.maxDepth =
       opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
+  }
+
+  private captureRecoverableChildIds(): void {
+    if (this.recoverableChildIds !== undefined || this.session.rolloutStore == null) return;
+    // Bootstrap creates this control before mounting resumed storage. Freeze
+    // the old generation only once a store exists, and before any new spawn
+    // edge is written. Current-generation results retain their live delivery.
+    this.recoverableChildIds = new Set(this.session.rolloutStore.listThreadSpawnDescendants(
+      this.session.conversationId,
+    ).map((edge) => edge.childThreadId));
   }
 
   bindThreadManager(threadManager: ThreadManager): void {
@@ -447,6 +511,7 @@ export class AgentControl {
    */
   async spawn(opts: {
     readonly parentPath: AgentPath;
+    readonly initialTask?: { readonly taskId?: string; readonly text: string; readonly provider: string; readonly model: string; readonly modelOverride?: string };
     readonly roleName?: string;
     readonly threadId?: ThreadId;
     readonly agentName?: string;
@@ -455,12 +520,50 @@ export class AgentControl {
     readonly depthCap?: number;
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
+    readonly providerSelection?: ProviderSelection;
+    readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     /** Fail-closed role identity for restart/rehydration spawns. */
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
+    const parentMetadata = this.getLiveByPath(opts.parentPath)?.metadata;
+    if ((parentMetadata?.executionPlan?.crossProvider === true || parentMetadata?.crossProvider !== undefined) &&
+        opts.executionPlan?.crossProvider !== true) {
+      throw new Error("consent_unavailable: descendant spawn has no destination consent provenance");
+    }
+    if (opts.providerSelection !== undefined && opts.executionPlan?.crossProvider !== true) {
+      throw new Error("consent_unavailable: cross-provider child construction requires a granted execution plan");
+    }
+    if (opts.executionPlan?.crossProvider) {
+      const consent = this.session.services.crossProviderConsent;
+      if (consent === undefined || !consentGrantCoversPlan(opts.executionPlan,
+          consent.ownerSessionId, opts.executionPlan.task.text,
+          opts.executionPlan.task.attachments, consent.sessionEpoch)) {
+        throw new Error("resume_blocked: cross-provider child construction requires a live, in-scope consent grant");
+      }
+    }
+    if (opts.executionPlan !== undefined &&
+        opts.executionPlan.parent.sessionId === this.session.conversationId) {
+      await assertChildExecutionPlan(this.session, opts.executionPlan);
+    }
+    if (opts.executionPlan !== undefined && opts.executionPlan.parent.agentPath !== opts.parentPath) {
+      throw new Error("child execution plan parent path changed before spawn");
+    }
+    if (opts.providerSelection !== undefined) {
+      assertCrossProviderAllowed(this.session, opts.providerSelection.provider);
+      const validated = await resolveChildSelection(
+        this.session,
+        opts.providerSelection.provider,
+        opts.providerSelection.model,
+        opts.executionPlan?.crossProvider ? opts.executionPlan.destination : undefined,
+      );
+      if (validated.provider !== opts.providerSelection.provider ||
+          validated.model !== opts.providerSelection.model) {
+        throw new Error("child provider/model pair changed before spawn");
+      }
+    }
     if (this.threadManager) {
       return this.threadManager.spawnLiveAgent(opts);
     }
@@ -469,6 +572,7 @@ export class AgentControl {
 
   async spawnLiveAgentForThreadManager(opts: {
     readonly parentPath: AgentPath;
+    readonly initialTask?: { readonly taskId?: string; readonly text: string; readonly provider: string; readonly model: string; readonly modelOverride?: string };
     readonly roleName?: string;
     readonly threadId?: ThreadId;
     readonly agentName?: string;
@@ -477,6 +581,8 @@ export class AgentControl {
     readonly depthCap?: number;
     readonly capacityPermit?: AgentCapacityPermit;
     readonly capacityOwnerId?: string;
+    readonly providerSelection?: ProviderSelection;
+    readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     readonly expectedRoleProvenance?: Pick<
       AgentMetadata,
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
@@ -671,6 +777,27 @@ export class AgentControl {
           ? { agentPath: explicitAgentPath }
           : {}),
       });
+      if (opts.providerSelection !== undefined) {
+        metadata = {
+          ...metadata,
+          crossProvider: {
+            ...opts.providerSelection,
+            policy: "user-or-managed-agents-v1",
+          },
+        };
+      }
+      if (opts.executionPlan !== undefined) {
+        metadata = { ...metadata, executionPlan: opts.executionPlan };
+      }
+      if (opts.initialTask !== undefined) {
+        const task = opts.initialTask;
+        metadata = { ...metadata, lastTaskMessage: task.text, initialTaskAdmission: {
+          agentId: threadId, agentPath: metadata.agentPath!, taskId: task.taskId ?? crypto.randomUUID(),
+          turnId: crypto.randomUUID(), author: opts.parentPath, taskText: task.text, acceptedAt: Date.now(),
+          provider: opts.executionPlan?.destination.provider ?? task.provider,
+          model: opts.executionPlan?.destination.model ?? task.modelOverride ?? role.config.model ?? task.model,
+        } };
+      }
       if (explicitAgentPath === undefined && metadata.agentPath !== undefined) {
         reservation.reserveAgentPath(metadata.agentPath);
       }
@@ -1132,6 +1259,8 @@ export class AgentControl {
       readonly recipient: AgentPath;
       readonly content: string;
       readonly taskId: string;
+      readonly exactOutput?: boolean;
+      readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     },
   ): { readonly taskId: string; readonly turnId: string } {
     const agent = this.requireLive(threadId);
@@ -1162,15 +1291,53 @@ export class AgentControl {
         `agent ${agent.agentPath} is not an idle reusable worker`,
       );
     }
+    if (agent.metadata.executionPlan?.crossProvider &&
+        (assignment.executionPlan === undefined ||
+         assignment.executionPlan.task.id !== assignment.taskId ||
+         assignment.executionPlan.task.text !== assignment.content ||
+         assignment.executionPlan.consentGrant === null)) {
+      throw new AgentAssignmentRejectedError("worker_not_idle",
+        "resume_blocked: cross-provider worker's new task has no matching human consent grant");
+    }
 
     const admission: AgentAssignmentAdmission = {
       taskId: assignment.taskId,
+      taskText: assignment.content,
+      exactOutput: assignment.exactOutput,
       turnId: crypto.randomUUID(),
       author: assignment.author,
       acceptedAtMs: Date.now(),
       state: "accepted",
+      ...(assignment.executionPlan !== undefined ? { executionPlan: assignment.executionPlan } : {}),
     };
+    const childSession = liveAgentSession(agent);
+    const durableChild = childSession?.rolloutStore !== undefined && childSession.rolloutStore !== null
+      ? childSession : undefined;
+    const admissionServices = childSession?.services ?? this.session.services;
+    if (durableChild === undefined && (admissionServices.executionAdmission !== undefined ||
+        admissionServices.admissionRequired !== false)) {
+      throw new AgentAssignmentRejectedError("worker_not_idle", "Child task admission requires its live durable journal.");
+    }
+    const destination = assignment.executionPlan?.destination ?? agent.metadata.executionPlan?.destination ??
+      (durableChild === undefined ? undefined : currentChildProvider(durableChild));
+    const durableAdmission: SubagentTaskAdmissionEvent | undefined = durableChild === undefined || destination === undefined
+      ? undefined : { agentId: agent.agentId, agentPath: agent.agentPath, turnId: admission.turnId,
+        taskId: admission.taskId, author: admission.author, taskText: assignment.content,
+        acceptedAt: admission.acceptedAtMs, provider: destination.provider, model: destination.model };
+    // Reserve before emit, which can synchronously publish to reentrant
+    // subscribers. They must not admit a second task while this one commits.
     agent.assignment = admission;
+    try {
+      if (durableAdmission !== undefined) {
+        // The receipt is child-owned and fsynced before mailbox acceptance or
+        // tool success. A restart can report this task even if it never starts.
+        durableChild!.emit({ id: durableChild!.nextInternalSubId(),
+          msg: { type: "subagent_task_admitted", payload: durableAdmission } }, { durable: true });
+      }
+    } catch (error) {
+      if (agent.assignment === admission) agent.assignment = undefined;
+      throw error;
+    }
     try {
       const delivery = agent.downInbox.send({
         author: assignment.author,
@@ -1192,12 +1359,28 @@ export class AgentControl {
       }
     } catch (error) {
       if (agent.assignment === admission) agent.assignment = undefined;
+      if (durableAdmission !== undefined) {
+        try {
+          durableChild!.emit({ id: durableChild!.nextInternalSubId(), msg: { type: "subagent_turn_outcome",
+            payload: { agentId: agent.agentId, agentPath: agent.agentPath, turnId: admission.turnId,
+              taskId: admission.taskId, outcome: "nack", reason: "assignment_mailbox_rejected", toolCallCount: 0,
+              terminal: childTerminalOutcome({ provider: durableAdmission.provider, model: durableAdmission.model,
+                reason: "resume_blocked", retryable: false, dispatch: "not_sent", costUsd: 0,
+                unfinishedWork: assignment.content }) } } }, { durable: true });
+        } catch (receiptError) {
+          throw new Error("Child task admission could not finalize its rejected assignment.", { cause: receiptError });
+        }
+      }
       if (error instanceof MailboxClosedError) {
         throw new ThreadNotFoundError(threadId);
       }
       throw error;
     }
     this.registry.updateLastTaskMessage(threadId, assignment.content);
+    if (assignment.executionPlan !== undefined) {
+      agent.metadata = { ...agent.metadata, executionPlan: assignment.executionPlan };
+      this.registry.updateExecutionPlan(threadId, assignment.executionPlan);
+    }
     return { taskId: admission.taskId, turnId: admission.turnId };
   }
 
@@ -1270,6 +1453,45 @@ export class AgentControl {
     this.registry.updateLastTaskMessage(threadId, communication.content);
   }
 
+  /** Check active-child admission and enqueue without yielding between them. */
+  sendPassiveMessageToActiveAgent(
+    threadId: ThreadId,
+    communication: {
+      readonly author: string;
+      readonly recipient: string;
+      readonly content: string;
+      readonly triggerTurn: false;
+      readonly metadata?: ValidatedMailboxMetadata;
+    },
+  ): { readonly accepted: boolean; readonly status: AgentStatus } {
+    const agent = this.requireLive(threadId);
+    const status = agent.status.value;
+    if (status.status !== "running" && status.status !== "pending_init") {
+      return { accepted: false, status };
+    }
+    const metadata = requireMailboxMetadataKind(
+      communication.metadata,
+      "inter_agent_communication",
+    );
+    try {
+      const delivery = agent.downInbox.send({
+        ...communication,
+        direction: "down",
+        metadata,
+      });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
+    } catch (error) {
+      if (error instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw error;
+    }
+    this.registry.updateLastTaskMessage(threadId, communication.content);
+    return { accepted: true, status };
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Interrupt
   // ─────────────────────────────────────────────────────────────────
@@ -1314,11 +1536,33 @@ export class AgentControl {
     if (!agent.abortController.signal.aborted) {
       agent.abortController.abort(reason);
     }
-    agent.status.markInterrupted(agent.agentId, reason);
+    const interruptedStatus = agent.status.value;
+    agent.status.markInterrupted(turnIdFromAgentStatus(interruptedStatus) ?? agent.agentId, reason);
 
     // Cascade to descendants.
     for (const descendant of this.descendantsOf(agent.agentPath)) {
       this.interrupt(descendant.agentId, `cascade: ${reason}`);
+    }
+  }
+
+  /** Stop open spawn children and yielded exec sessions owned by current or earlier descendants. */
+  stopOpenSpawnChildren(
+    parentThreadId: ThreadId,
+    reason: string,
+    earlyDescendants: ReadonlySet<ThreadId> = new Set(),
+  ): void {
+    // Snapshot first because interrupting a child can close its spawn edge.
+    // The thread id is also the child conversation id stamped on its exec calls.
+    const descendants = new Set(this.liveThreadSpawnDescendants(parentThreadId));
+    for (const childThreadId of earlyDescendants) {
+      if (childThreadId !== parentThreadId) descendants.add(childThreadId);
+    }
+    for (const [childThreadId] of this.openThreadSpawnChildren(parentThreadId)) {
+      this.interrupt(childThreadId, reason);
+    }
+    const manager = this.session.services.unifiedExecManager;
+    for (const childThreadId of descendants) {
+      manager.terminateOwnedProcesses?.({ ownerId: childThreadId });
     }
   }
 
@@ -1416,8 +1660,15 @@ export class AgentControl {
   async resume(opts: {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
+    /** Rollout restores handles before runAgent binds their Sessions. */
+    readonly deferNestedPlanValidation?: boolean;
   }): Promise<LiveAgent | null> {
     const metadata = normalizeAgentMetadata(opts.metadata);
+    if (metadata.terminalOutcome?.reason === "insufficient_funds") {
+      throw new InvalidAgentMetadataError(
+        "resume_blocked: funds-stopped child cannot be redispatched on its provider",
+      );
+    }
     const { parentPath } = opts;
     const threadId = metadata.agentId;
     const agentPath = metadata.agentPath;
@@ -1451,6 +1702,70 @@ export class AgentControl {
     }
 
     const role = resolveResumedAgentRole(this.roleCatalog, metadata);
+    let planParentSession = this.session;
+    let deferredPlanValidation = false;
+    if (metadata.executionPlan !== undefined) {
+      try {
+        if (metadata.executionPlan.parent.agentPath !== parentPath) {
+          throw new Error("child execution plan parent path changed");
+        }
+        const planParent = parentPath === ROOT_AGENT_PATH
+          ? this.session : liveAgentSession(this.getLiveByPath(parentPath)!);
+        if (planParent === undefined) {
+          if (!opts.deferNestedPlanValidation || parentPath === ROOT_AGENT_PATH ||
+              this.getLiveByPath(parentPath)?.agentId !== metadata.executionPlan.parent.sessionId) {
+            throw new Error("parent session is not live for child plan recovery");
+          }
+          // This restores only a handle. runAgent rechecks the complete plan
+          // against the bound parent Session before preparing or dispatching.
+          if (metadata.executionPlan.crossProvider) {
+            const consent = this.session.services.crossProviderConsent;
+            if (consent === undefined || !consentGrantCoversPlan(metadata.executionPlan,
+                consent.ownerSessionId, metadata.executionPlan.task.text,
+                metadata.executionPlan.task.attachments, consent.sessionEpoch)) {
+              throw new Error("resume_blocked: cross-provider child has no live consent grant");
+            }
+            assertCrossProviderAllowed(this.session, metadata.executionPlan.destination.provider);
+          }
+          deferredPlanValidation = true;
+        } else {
+          await assertChildExecutionPlan(planParent, metadata.executionPlan);
+          planParentSession = planParent;
+        }
+      } catch (error) {
+        throw new InvalidAgentMetadataError(
+          `cannot resume child execution plan: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (metadata.crossProvider !== undefined && !deferredPlanValidation) {
+      try {
+        if (metadata.executionPlan === undefined) {
+          throw new Error("resume_blocked: cross-provider child has no persisted consent plan");
+        }
+        assertCrossProviderAllowed(planParentSession, metadata.crossProvider.provider);
+        const selection = await resolveChildSelection(
+          planParentSession,
+          metadata.crossProvider.provider,
+          metadata.crossProvider.model,
+          metadata.executionPlan.destination,
+        );
+        const prepared = await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
+          metadata.executionPlan.route.provider === "agenc" ? metadata.executionPlan.destination : undefined,
+          metadata.executionPlan.destination);
+        try {
+          if (metadata.executionPlan !== undefined)
+            assertPreparedChildMatchesPlan(metadata.executionPlan, prepared);
+        } finally {
+          await prepared.binding.instance.dispose?.();
+        }
+      } catch (error) {
+        throw new InvalidAgentMetadataError(
+          `${metadata.executionPlan?.destination.authProfile === "sign_in" ? "resume_blocked: " : ""}` +
+          `cannot resume cross-provider child: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
 
     // Idempotency is exact identity, never merely a matching id or path. A
     // partial match would let resume overwrite one live map while leaving the
@@ -1620,6 +1935,7 @@ export class AgentControl {
           const childLive = await this.resumeSingleAgentFromRollout({
             parentPath: edge.parentPath,
             metadata: edge.metadata,
+            deferNestedPlanValidation: true,
           });
           if (!childLive) {
             continue;
@@ -1647,6 +1963,7 @@ export class AgentControl {
   async resumeSingleAgentFromRollout(opts: {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
+    readonly deferNestedPlanValidation?: boolean;
   }): Promise<LiveAgent | null> {
     return this.resume(opts);
   }
@@ -1683,7 +2000,9 @@ export class AgentControl {
   ): Record<string, unknown> | undefined {
     const agent = this.live.get(threadId);
     if (!agent) return undefined;
-    if (agent.configSnapshot) return { ...agent.configSnapshot };
+    if (agent.configSnapshot) return { ...agent.configSnapshot,
+      ...(agent.metadata.terminalOutcome !== undefined
+        ? { terminalOutcome: agent.metadata.terminalOutcome } : {}) };
     return {
       threadId: agent.agentId,
       agentPath: agent.agentPath,
@@ -1691,7 +2010,26 @@ export class AgentControl {
       agentRole: agent.role.name,
       depth: agent.depth,
       roleConfig: agent.role.config,
+      ...(agent.metadata.crossProvider !== undefined
+        ? { crossProvider: agent.metadata.crossProvider }
+        : {}),
+      ...(agent.metadata.executionPlan !== undefined
+        ? { executionPlan: agent.metadata.executionPlan }
+        : {}),
+      ...(agent.metadata.terminalOutcome !== undefined
+        ? { terminalOutcome: agent.metadata.terminalOutcome } : {}),
     };
+  }
+
+  recordTerminalOutcome(threadId: ThreadId,
+    terminal: import("./child-terminal.js").ChildTerminalOutcome): void {
+    const agent = this.live.get(threadId);
+    if (agent === undefined) return;
+    if (terminal.reason === "insufficient_funds") {
+      this.session.rolloutStore?.setThreadSpawnEdgeStatus(threadId, "closed");
+    }
+    agent.metadata = { ...agent.metadata, terminalOutcome: terminal };
+    this.registry.updateTerminalOutcome(threadId, terminal);
   }
 
   async getStatus(threadId: ThreadId): Promise<AgentStatus> {
@@ -1806,6 +2144,17 @@ export class AgentControl {
     return lines.join("\n");
   }
 
+  private childProviderProjection(agent: LiveAgent): ProviderSelection | undefined {
+    const terminal = terminalFromAgentStatus(agent.status.value);
+    if (terminal !== undefined) return { provider: terminal.provider, model: terminal.model };
+    const plan = agent.metadata.executionPlan;
+    if (plan !== undefined) return plan.destination;
+    const child = liveAgentSession(agent);
+    if (child?.providerService !== undefined) return currentChildProvider(child);
+    const initial = agent.metadata.initialTaskAdmission;
+    return initial === undefined ? undefined : { provider: initial.provider, model: initial.model };
+  }
+
   /**
    * Lists agents with an optional role +
    * path-prefix filter. Includes root when no prefix is supplied or
@@ -1817,6 +2166,8 @@ export class AgentControl {
       readonly pathPrefix?: AgentPath;
     } = {},
   ): ReadonlyArray<ListedAgent> {
+    this.captureRecoverableChildIds();
+    this.recoveryNotice = undefined;
     const prefix = opts.pathPrefix;
     const roleName = opts.roleName
       ? canonicalAgentRoleName(opts.roleName)
@@ -1847,15 +2198,206 @@ export class AgentControl {
         ? this.live.get(metadata.agentId)
         : undefined;
       if (!agent) continue;
+      const destination = this.childProviderProjection(agent);
       result.push({
         agentName: metadata.agentPath ?? agent.agentId,
         agentStatus: agent.status.value,
+        ...(destination !== undefined ? { provider: destination.provider, model: destination.model } : {}),
+        ...(metadata.executionPlan?.reasoningEffort !== undefined
+          ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
         ...(metadata.lastTaskMessage !== undefined
           ? { lastTaskMessage: metadata.lastTaskMessage }
           : {}),
       });
     }
 
+    if (this.rootThreadId !== undefined) {
+      const recoveryDeadline = Date.now() + 2_000;
+      let recoveredBytes = 0;
+      let recoveredCount = 0;
+      for (const edge of this.session.rolloutStore?.listThreadSpawnDescendants(this.rootThreadId) ?? []) {
+        if (!this.recoverableChildIds?.has(edge.childThreadId) || this.live.has(edge.childThreadId) ||
+            (roleName !== undefined && edge.metadata.agentRole !== roleName) ||
+            (prefix !== undefined && !agentMatchesPrefix(edge.metadata.agentPath, prefix))) continue;
+        if (Date.now() > recoveryDeadline) {
+          this.noteIncompleteChildRecovery("Child recovery reached its time limit. Results are incomplete. Narrow path_prefix or inspect the durable child journals.", edge.childThreadId);
+          break;
+        }
+        const recovered = this.readRecoveredChildTaskReceipts(edge.childThreadId, recoveryDeadline).at(-1);
+        if (recovered === undefined) continue;
+        const terminal = recovered.receipt.terminal;
+        const destination = terminal ?? edge.metadata.executionPlan?.destination;
+        const taskText = recovered.taskText ?? recovered.admission?.taskText ?? edge.metadata.lastTaskMessage;
+        const listed: ListedAgent = { agentName: recovered.receipt.agentPath,
+          agentStatus: recoveredChildStatus(recovered.receipt),
+          ...(destination === undefined ? {} : { provider: boundedRecoveredChildText(destination.provider, 512),
+            model: boundedRecoveredChildText(destination.model, 512) }),
+          ...(taskText === undefined ? {} : { lastTaskMessage: boundedRecoveredChildText(taskText) }) };
+        // Reserve headroom for the tool's snake-case projection of this row.
+        const size = Buffer.byteLength(JSON.stringify(listed), "utf8") * 2;
+        if (size > 64 * 1_024) {
+          this.noteIncompleteChildRecovery("A recovered child result exceeds the list size limit. Inspect the durable child journal.", edge.childThreadId);
+          continue;
+        }
+        if (recoveredCount >= 64 || recoveredBytes + size > 128 * 1_024) {
+          this.noteIncompleteChildRecovery("Recovered child listing reached its size limit. Results are incomplete. Narrow path_prefix or inspect the durable child journals.", edge.childThreadId);
+          break;
+        }
+        result.push(listed);
+        recoveredBytes += size;
+        recoveredCount += 1;
+      }
+    }
+    return result;
+  }
+
+  /** Read an exact result page, authorized by a direct parent-child edge and
+   * immutable turn ID. Durable reads retain the recovery reader's byte/time
+   * bounds; no caller-supplied path is ever opened and no worker is restarted. */
+  readChildResultPage(parentThreadId: ThreadId, childThreadId: ThreadId, turnId: string, offset = 0): {
+    readonly text: string; readonly total_chars: number; readonly next_offset: number | null; readonly complete: boolean;
+  } {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("result_ref.offset must be a nonnegative integer");
+    const live = this.live.get(childThreadId);
+    const edge = this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId)
+      .find(edge => edge.childThreadId === childThreadId);
+    if (this.parentOf.get(childThreadId) !== parentThreadId && edge === undefined) {
+      throw new Error("Result reference is not a child of the calling agent");
+    }
+    const completedMessage = live?.completedTaskResults?.get(turnId);
+    const receipt = completedMessage === undefined
+      ? this.session.rolloutStore?.readThreadSpawnTaskReceipts(childThreadId, Date.now() + 2_000, turnId,
+        live === undefined ? undefined : liveAgentSession(live)?.rolloutStore ?? undefined)
+        .find(item => item.admission === undefined && item.receipt.turnId === turnId)?.receipt
+      : { turnId, outcome: "completed" as const, message: completedMessage };
+    if (receipt?.turnId !== turnId || receipt.outcome !== "completed" || receipt.message === undefined) {
+      throw new Error("The referenced child turn has no completed final answer");
+    }
+    const text = receipt.message;
+    if (live !== undefined && completedMessage === undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(turnId, text);
+    }
+    if (offset > text.length) throw new Error("result_ref.offset exceeds the final answer length");
+    const splitsCharacter = (index: number): boolean => {
+      const previous = text.charCodeAt(index - 1), next = text.charCodeAt(index);
+      return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+    };
+    if (splitsCharacter(offset)) throw new Error("result_ref.offset splits a Unicode character; use next_offset from the previous page");
+    let end = Math.min(text.length, offset + 8_192);
+    if (splitsCharacter(end)) end -= 1;
+    return { text: text.slice(offset, end), total_chars: text.length,
+      next_offset: end < text.length ? end : null, complete: end === text.length };
+  }
+
+  /** Lost mailbox projections are replayable from child-owned durable receipts. */
+  drainRecoveredChildTaskUpdates(parentThreadId: ThreadId): readonly { role: "user"; content: string }[] {
+    this.captureRecoverableChildIds();
+    this.recoveryNotice = undefined;
+    if (parentThreadId !== this.rootThreadId && !this.live.has(parentThreadId)) return [];
+    const updates: { role: "user"; content: string }[] = [];
+    let bytes = 0;
+    const recoveryDeadline = Date.now() + 2_000;
+    for (const edge of this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId) ?? []) {
+      if (!this.recoverableChildIds?.has(edge.childThreadId) || this.live.has(edge.childThreadId)) continue;
+      if (Date.now() > recoveryDeadline) {
+        this.noteIncompleteChildRecovery("Child recovery reached its time limit. Results are incomplete. Retry wait_agent or inspect the durable child journals.", edge.childThreadId);
+        return updates;
+      }
+      for (const receipt of this.readRecoveredChildTaskReceipts(edge.childThreadId, recoveryDeadline)) {
+        const projectionId = recoveredChildProjectionId(receipt);
+        if (this.deliveredRecoveredTaskReceipts.has(projectionId)) continue;
+        const content = formatRecoveredChildTaskReceipt(receipt);
+        const size = Buffer.byteLength(content, "utf8");
+        // Unreturned receipts remain eligible for the next wait. Recovery
+        // must not overwhelm the parent context after a long worker lifetime.
+        if (updates.length > 0 && (updates.length >= 16 || bytes + size > 128 * 1_024)) {
+          this.noteIncompleteChildRecovery("More recovered child results are available. Call wait_agent again to read the next page.", edge.childThreadId);
+          return updates;
+        }
+        this.deliveredRecoveredTaskReceipts.add(projectionId);
+        updates.push({ role: "user", content });
+        bytes += size;
+      }
+    }
+    return updates;
+  }
+
+  private readRecoveredChildTaskReceipts(threadId: ThreadId, deadline: number): readonly RecoveredChildTaskReceipt[] {
+    const cached = this.recoveredTaskReceipts.get(threadId);
+    if (cached !== undefined) return cached;
+    try {
+      if (Date.now() > deadline) throw new Error("Child result recovery time limit reached. Retry with a narrower path prefix.");
+      const receipts = (this.session.rolloutStore?.readThreadSpawnTaskReceipts(threadId, deadline) ?? [])
+        .map((item): RecoveredChildTaskReceipt => {
+          const receipt = projectRecoveredChildReceipt(item.receipt);
+          const admission = item.admission;
+          return { edge: item.edge, sourcePath: item.sourcePath, sequence: item.sequence, receipt,
+            ...(item.taskText === undefined ? {} : { taskText: boundedRecoveredChildText(item.taskText) }),
+            ...(item.eventId === undefined ? {} : { eventId: item.eventId }),
+            ...(item.spawnEdgeId === undefined ? {} : { spawnEdgeId: item.spawnEdgeId }),
+            ...(admission === undefined ? {} : { admission: { agentId: admission.agentId,
+              agentPath: admission.agentPath, taskId: admission.taskId, turnId: admission.turnId,
+              author: admission.author, acceptedAt: admission.acceptedAt,
+              taskText: receipt.terminal?.unfinishedWork ?? "", provider: receipt.terminal?.provider ?? "",
+              model: receipt.terminal?.model ?? "" } }) };
+        });
+      const bytes = Buffer.byteLength(JSON.stringify(receipts), "utf8");
+      if (receipts.length > 0 && bytes <= 2 * 1_024 * 1_024) {
+        while (this.recoveredTaskReceipts.size >= 128 || this.recoveredTaskReceiptBytes + bytes > 2 * 1_024 * 1_024) {
+          const oldest = this.recoveredTaskReceipts.keys().next().value;
+          if (oldest === undefined) break;
+          this.recoveredTaskReceiptBytes -= this.recoveredTaskReceiptSizes.get(oldest) ?? 0;
+          this.recoveredTaskReceiptSizes.delete(oldest);
+          this.recoveredTaskReceipts.delete(oldest);
+        }
+        this.recoveredTaskReceipts.set(threadId, receipts);
+        this.recoveredTaskReceiptSizes.set(threadId, bytes);
+        this.recoveredTaskReceiptBytes += bytes;
+      }
+      return receipts;
+    } catch (error) {
+      this.noteIncompleteChildRecovery(`Child results are incomplete. Inspect the durable child journals. ${error instanceof Error ? error.message : String(error)}`, threadId);
+      emitWarning(this.session.eventLog, this.session.nextInternalSubId(), "subagent_receipt_recovery_failed",
+        `thread=${threadId.slice(0, 256)}: ${(error instanceof Error ? error.message : String(error)).slice(0, 1_024)}`);
+      return [];
+    }
+  }
+
+  snapshotNativeWorkers(parentThreadId: ThreadId): readonly NativeWorkerSnapshot[] {
+    const children = this.liveThreadSpawnChildren();
+    const pending = [parentThreadId];
+    const seen = new Set<ThreadId>(pending);
+    const result: NativeWorkerSnapshot[] = [];
+    for (let index = 0; index < pending.length; index++) {
+      for (const [id, metadata] of children.get(pending[index]!) ?? []) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const agent = this.live.get(id);
+        if (agent === undefined) continue;
+        pending.push(id);
+        const status = agent.status.value;
+        const statusName = typeof status === "string" ? status : status.status;
+        const terminal = terminalFromAgentStatus(status);
+        const destination = this.childProviderProjection(agent);
+        result.push({
+          agentId: id,
+          agentPath: agent.agentPath,
+          nickname: agent.nickname,
+          role: agent.role.name,
+          ...(destination !== undefined ? { provider: destination.provider, model: destination.model } : {}),
+          ...(metadata.executionPlan?.reasoningEffort !== undefined
+            ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
+          ...(metadata.lastTaskMessage !== undefined ? { prompt: metadata.lastTaskMessage } : {}),
+          status: statusName,
+          ...(typeof status === "object" && status !== null && status.status === "errored"
+            ? { error: status.error } : {}),
+          ...(terminal !== undefined ? { terminal } : {}),
+          toolUseCount: agent.toolCallCount,
+          tokenCount: agent.tokenUsage.totalTokens,
+          ...(agent.status.timing !== undefined ? { timing: { ...agent.status.timing } } : {}),
+        });
+      }
+    }
     return result;
   }
 
@@ -2227,6 +2769,7 @@ export class AgentControl {
     const storedMetadata =
       metadata ?? this.registry.agentMetadataForThread(childThreadId);
     if (!storedMetadata) return;
+    this.captureRecoverableChildIds();
     rolloutStore.createThreadSpawnEdge({
       childThreadId,
       parentThreadId,

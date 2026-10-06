@@ -220,6 +220,76 @@ export const AGENC_SONNET_4_6_CONFIG = {
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
+// The current lineup on platform.claude.com (2026-09-11). Provider ids on
+// Bedrock/Vertex/Foundry follow the documented spellings on the models
+// overview (Bedrock `anthropic.claude-<model>`, the others the API id).
+export const AGENC_FABLE_5_1_CONFIG = {
+  firstParty: 'claude-fable-5-1',
+  bedrock: 'us.anthropic.agenc-fable-5-1-v1',
+  vertex: 'claude-fable-5-1',
+  foundry: 'claude-fable-5-1',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.5-pro',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M3',
+} as const satisfies ModelConfig
+
+// Claude Opus 5.5 (released 2026-09-22): $4/$20 per MTok, 1M context, 128K
+// max output, always-on adaptive thinking with effort defaulting to medium.
+// The API, Google Cloud, Foundry and Claude Platform on AWS all use the API
+// id; the documented Bedrock id is `anthropic.claude-opus-5-5`, which the
+// bedrock value below spells in this file's inference-profile convention.
+export const AGENC_OPUS_5_5_CONFIG = {
+  firstParty: 'claude-opus-5-5',
+  bedrock: 'us.anthropic.agenc-opus-5-5-v1',
+  vertex: 'claude-opus-5-5',
+  foundry: 'claude-opus-5-5',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.5-pro',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M3',
+} as const satisfies ModelConfig
+
+export const AGENC_OPUS_5_CONFIG = {
+  firstParty: 'claude-opus-5',
+  bedrock: 'us.anthropic.agenc-opus-5-v1',
+  vertex: 'claude-opus-5',
+  foundry: 'claude-opus-5',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.5-pro',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M3',
+} as const satisfies ModelConfig
+
+export const AGENC_SONNET_5_CONFIG = {
+  firstParty: 'claude-sonnet-5',
+  bedrock: 'us.anthropic.agenc-sonnet-5-v1',
+  vertex: 'claude-sonnet-5',
+  foundry: 'claude-sonnet-5',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.0-flash',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M3',
+} as const satisfies ModelConfig
+
+// Official Sonnet 5.5 platform IDs (2026-09-29). Preserve the existing
+// cross-provider tier mappings and defaults; only Claude identities change.
+export const AGENC_SONNET_5_5_CONFIG = {
+  ...AGENC_SONNET_5_CONFIG,
+  firstParty: 'claude-sonnet-5-5',
+  bedrock: 'anthropic.claude-sonnet-5-5',
+  vertex: 'claude-sonnet-5-5',
+  foundry: 'claude-sonnet-5-5',
+} as const satisfies ModelConfig
+
 // @[MODEL LAUNCH]: Register the new config here.
 export const ALL_MODEL_CONFIGS = {
   haiku35: AGENC_3_5_HAIKU_CONFIG,
@@ -235,6 +305,11 @@ export const ALL_MODEL_CONFIGS = {
   opus46: AGENC_OPUS_4_6_CONFIG,
   opus47: AGENC_OPUS_4_7_CONFIG,
   opus48: AGENC_OPUS_4_8_CONFIG,
+  opus55: AGENC_OPUS_5_5_CONFIG,
+  opus5: AGENC_OPUS_5_CONFIG,
+  sonnet5: AGENC_SONNET_5_CONFIG,
+  sonnet55: AGENC_SONNET_5_5_CONFIG,
+  fable51: AGENC_FABLE_5_1_CONFIG,
   fable5: AGENC_FABLE_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 

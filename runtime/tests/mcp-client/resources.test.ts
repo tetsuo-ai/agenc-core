@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   MAX_RESOURCE_BYTES,
   MAX_RESOURCE_BLOB_INPUT_CHARS,
@@ -12,6 +15,9 @@ import {
   MAX_RESOURCE_URI_BYTES,
   createResourceBridge,
 } from "./resources.js";
+import { extensionForMimeType, persistBinaryContent } from "../utils/mcpOutputStorage.js";
+import { clearCurrentRuntimeSession, setCurrentRuntimeSession } from "../session/current-session.js";
+import type { Session } from "../session/session.js";
 
 function makeClient(overrides: {
   listResources?: ReturnType<typeof vi.fn>;
@@ -24,6 +30,106 @@ function makeClient(overrides: {
 }
 
 describe("createResourceBridge", () => {
+  it("keeps catalog and read MIME routing for a PDF saved with its real extension", async () => {
+    const uri = "resource://report";
+    const bytes = Buffer.from("%PDF-1.4\n");
+    const sessionDir = await mkdtemp(join(tmpdir(), "agenc-resource-pdf-"));
+    setCurrentRuntimeSession({ rolloutStore: { store: { sessionDir } } } as unknown as Session);
+    try {
+      for (const [index, secret] of ["application", "resource"].entries()) {
+        const bridge = await createResourceBridge(makeClient({
+          listResources: vi.fn().mockResolvedValue({ resources: [{ uri, mimeType: "application/pdf" }] }),
+          readResource: vi.fn().mockResolvedValue({ contents: [{ uri, mimeType: "application/pdf", blob: bytes.toString("base64") }] }),
+        }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+        const listed = (await bridge.listResources())[0]!;
+        const read = await bridge.readResource(listed.uri);
+        expect(listed.mimeType).toBe("application/pdf");
+        expect(read.contents[0]?.mimeType).toBe("application/pdf");
+        expect(extensionForMimeType(read.contents[0]?.mimeType)).toBe("pdf");
+        const persisted = await persistBinaryContent(Buffer.from(read.contents[0]!.blob!, "base64"), read.contents[0]?.mimeType, `pdf-${index}`);
+        expect(persisted).not.toHaveProperty("error");
+        if ("error" in persisted) throw new Error(persisted.error);
+        expect(persisted.filepath).toBe(join(sessionDir, "tool-results", `pdf-${index}.pdf`));
+        expect(await readFile(persisted.filepath)).toEqual(bytes);
+      }
+    } finally {
+      clearCurrentRuntimeSession();
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+  it("keeps a generated resource alias usable through repeated reads", async () => {
+    const uri = "test:resource";
+    const readResource = vi.fn(async () => ({ contents: [{ uri, text: "body" }] }));
+    const bridge = await createResourceBridge(makeClient({ listResources: vi.fn().mockResolvedValue({ resources: [{ uri }] }), readResource }), "srv", undefined, { sensitiveHeaders: { token: "resource" } });
+    const alias = (await bridge.listResources())[0]!.uri;
+    expect(alias).toMatch(/^agenc-redacted-resource:[a-f0-9]{64}$/);
+    expect((await bridge.readResource(alias)).contents[0]?.uri).toBe(alias);
+    expect((await bridge.readResource(alias)).contents[0]?.uri).toBe(alias);
+    expect(readResource).toHaveBeenCalledTimes(2);
+  });
+  it("redacts an alias-shaped plugin URI while preserving a bridge-issued alias", async () => {
+    const secret = "deadbeef";
+    const genuine = `file:///${secret}`;
+    const lookalike = `agenc-redacted-resource:${secret}${"a".repeat(56)}`;
+    const readResource = vi.fn(async ({ uri }: { uri: string }) => ({ contents: [{ uri, text: `body ${secret}` }] }));
+    const bridge = await createResourceBridge(makeClient({
+      listResources: vi.fn().mockResolvedValue({ resources: [{ uri: genuine }, { uri: lookalike }] }),
+      readResource,
+    }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+    const listed = await bridge.listResources();
+    expect(listed).toHaveLength(2);
+    expect(listed[0]!.uri).toMatch(/^agenc-redacted-resource:[a-f0-9]{64}$/);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+    expect((await bridge.readResource(listed[0]!.uri)).contents[0]?.uri).toBe(listed[0]!.uri);
+    expect((await bridge.readResource(listed[1]!.uri)).contents[0]?.uri).toBe(listed[1]!.uri);
+    expect(JSON.stringify(await bridge.readResource(listed[1]!.uri))).not.toContain(secret);
+    expect(readResource).toHaveBeenCalledWith({ uri: lookalike }, expect.anything());
+  });
+  it("redacts resource text before the entry cap cuts a secret", async () => {
+    const secret = "private-phrase";
+    const text = "x".repeat(MAX_RESOURCE_ENTRY_BYTES - 8) + secret;
+    const bridge = await createResourceBridge(makeClient({ readResource: vi.fn().mockResolvedValue({ contents: [{ uri: "resource://safe", text }] }) }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+    const result = await bridge.readResource("resource://safe");
+    expect(result.contents[0]).toMatchObject({ truncated: true });
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
+
+  it("keeps colliding resource aliases stable and returns the read resource identity", async () => {
+    const uris = ["file:///alpha-private", "file:///alpha-other"];
+    const readResource = vi.fn(async ({ uri }: { uri: string }) => ({ contents: [{ uri, text: uri }] }));
+    const bridge = await createResourceBridge(makeClient({ listResources: vi.fn().mockResolvedValue({ resources: uris.map(uri => ({ uri })) }), readResource }), "srv", undefined, { sensitiveHeaders: { token: "private", other: "other" } });
+    const first = await bridge.listResources();
+    expect((await bridge.listResources()).map(item => item.uri)).toEqual(first.map(item => item.uri));
+    const second = first[1]!;
+    const result = await bridge.readResource(second.uri);
+    expect(readResource).toHaveBeenCalledWith({ uri: uris[1] }, expect.anything());
+    expect(result.contents[0]?.uri).toBe(second.uri);
+  });
+
+  it("expires old aliases after the bounded catalog cache fills", async () => {
+    let page = 0;
+    const readResource = vi.fn();
+    const bridge = await createResourceBridge(makeClient({
+      listResources: vi.fn(async () => ({ resources: Array.from({ length: MAX_RESOURCE_DESCRIPTORS }, (_, i) => ({ uri: `resource://private-${page}-${i}` })) })),
+      readResource,
+    }), "srv", undefined, { sensitiveHeaders: { token: "private" } });
+    const oldAlias = (await bridge.listResources())[0]!.uri;
+    page += 1;
+    await bridge.listResources();
+    page += 1;
+    await bridge.listResources();
+    await expect(bridge.readResource(oldAlias)).rejects.toThrow(/alias expired/);
+    expect(readResource).not.toHaveBeenCalled();
+    page = 0;
+    expect((await bridge.listResources())[0]!.uri).toBe(oldAlias);
+  });
+
+  it("omits a binary block whose encoded payload contains a literal secret", async () => {
+    const bridge = await createResourceBridge(makeClient({ readResource: vi.fn().mockResolvedValue({ contents: [{ uri: "resource://blob", blob: "AAAA" }] }) }), "srv", undefined, { sensitiveHeaders: { token: "AAAA" } });
+    const result = await bridge.readResource("resource://blob");
+    expect(result.contents[0]).toMatchObject({ blob: "", truncated: true, bytesReturned: 0 });
+    expect(result.truncated).toBe(true);
+  });
   it("follows cursor pagination and namespaces every listed resource URI", async () => {
     const listResources = vi
       .fn()

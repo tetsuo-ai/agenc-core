@@ -3,10 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
 import type { AgenCBackgroundAgentSnapshot } from "../../src/app-server/background-agent-runner.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
 
 const timestamp = "2026-09-07T00:00:00.000Z";
 
 describe("daemon lifecycle lock boundaries", () => {
+  it("projects an agent-id alias synchronously while the lifecycle state lock is held", async () => {
+    const { manager, release } = await holdAgentLifecycleLock();
+    try {
+      expect(manager.peekRoutineSessionId("agent-a")).toBe("session-a");
+      expect(manager.peekRoutineSessionId("session-a")).toBe("session-a");
+    } finally {
+      await release();
+    }
+  });
+
   it.each(["stopAgent", "stopAll"] as const)(
     "%s still tears down a runner whose snapshot hangs",
     async (method) => {

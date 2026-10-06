@@ -16,6 +16,72 @@ import {
 } from "./media-test-helpers.js";
 
 describe("ImagineVideo catalog gate", () => {
+  it("keeps video available when Grok credentials arrive after registry construction", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-late-login-"));
+    let session: Session | null = null;
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "late-video" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "done",
+        video: { url: "https://vidgen.x.ai/late-video.mp4" },
+      })))
+      .mockResolvedValueOnce(new Response(Uint8Array.from([0x00, 0x00, 0x00, 0x18])));
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        agencHome: join(root, ".agenc-test-home"),
+        getSession: () => session,
+        env: {},
+      });
+      const tool = tools.find((candidate) => candidate.name === "ImagineVideo");
+      expect(tool).toBeDefined();
+      if (tool === undefined) throw new Error("ImagineVideo was not registered");
+      expect(tool.metadata?.deferred).toBe(true);
+      expect(tool.requiresApproval).toBe(true);
+      expect(tool.recoveryCategory).toBe("side-effecting");
+      const unconfigured = await tool.execute({ prompt: "one short video" });
+      expect(unconfigured.isError).toBe(true);
+      expect(unconfigured.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      // The same registry survives login; only the owning session changes.
+      const provider = createProvider("grok", {
+        apiKey: "late-session-oauth-bearer",
+        model: "grok-4.6",
+        baseURL: "https://api.x.ai/v1",
+      });
+      session = { services: { provider } } as unknown as Session;
+      const result = await tool.execute({
+        prompt: "one short video",
+        duration: 3,
+        resolution: "480p",
+      });
+      expect(result.isError).toBeUndefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(fetchImpl.mock.calls[0]?.[0])
+        .toBe("https://api.x.ai/v1/videos/generations");
+      expect(fetchImpl.mock.calls[0]?.[1]?.headers)
+        .toMatchObject({ authorization: "Bearer late-session-oauth-bearer" });
+      const { path, request_id } = JSON.parse(result.content) as {
+        path: string;
+        request_id: string;
+      };
+      expect(request_id).toBe("late-video");
+      expect(path.startsWith(join(root, ".agenc", "imagine"))).toBe(true);
+      expect(await readFile(path)).toEqual(Buffer.from([0x00, 0x00, 0x00, 0x18]));
+
+      session = null;
+      const unavailableAgain = await tool.execute({ prompt: "no credentials" });
+      expect(unavailableAgain.isError).toBe(true);
+      expect(unavailableAgain.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
   it("is registered for non-Grok sessions with independent xAI credentials", () => {
     expect(isModelFacingToolRegistered("ImagineVideo", {
       workspaceRoot: process.cwd(),
@@ -36,7 +102,7 @@ describe("ImagineVideo catalog gate", () => {
     expect(tools.some((t) => t.name === "ImagineVideo")).toBe(true);
   });
 
-  it("is not registered when the configured xAI media host is not direct", () => {
+  it("keeps an unusable non-direct xAI backend deferred and refuses execution", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -46,7 +112,14 @@ describe("ImagineVideo catalog gate", () => {
       },
     });
 
-    expect(tools.some((t) => t.name === "ImagineVideo")).toBe(false);
+    const tool = tools.find((candidate) => candidate.name === "ImagineVideo");
+    if (tool === undefined) throw new Error("ImagineVideo was not registered");
+    expect(tool.metadata?.deferred).toBe(true);
+    expect(tool.requiresApproval).toBe(true);
+    const result = await tool.execute({ prompt: "must not use proxy credential" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("must use a direct xAI host");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   it("is registered with a direct Grok factory bearer and no env key", async () => {
@@ -66,6 +139,35 @@ describe("ImagineVideo catalog gate", () => {
 });
 
 describe("ImagineVideo execute", () => {
+  it("uses a Grok session API key for video requests on its custom URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-gateway-"));
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "gateway-video" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "done", video: { url: "https://cdn.example.test/video.mp4" },
+      })))
+      .mockResolvedValueOnce(new Response(Uint8Array.from([0, 0, 0, 24])));
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a rocket", duration: 3, resolution: "480p" });
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example.test/v1/videos/generations");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: "Bearer gateway-api-key" });
+  });
+
   it("submits, polls, downloads mp4 with OAuth session bearer", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-vid-"));
     const provider = createProvider("grok", {
@@ -393,6 +495,70 @@ describe("ImagineVideo execute", () => {
     );
   });
 
+  /** Asserts the video request goes to `expectedUrl` bearing `expectedKey`. */
+  async function expectVideoRequestUses(
+    provider: ReturnType<typeof createProvider>,
+    env: Record<string, string>,
+    expectedUrl: string,
+    expectedKey: string,
+  ) {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "unavailable" }), { status: 503 })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env,
+      fetchImpl,
+    });
+
+    await tool.execute({ prompt: "a rotating cube" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expectedUrl,
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: `Bearer ${expectedKey}` }),
+      }),
+    );
+  }
+
+  it("sends the OpenAI video key to the session's configured URL", async () => {
+    const provider = createProvider("openai", {
+      apiKey: "session-key",
+      model: "gpt-6-astra",
+      baseURL: "https://custom.example/v1",
+    });
+    await expectVideoRequestUses(
+      provider, { OPENAI_API_KEY: "custom-key" },
+      "https://custom.example/v1/videos", "custom-key",
+    );
+  });
+
+  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
+    const provider = createProvider("openai", {
+      apiKey: "session-key",
+      model: "gpt-6-astra",
+      baseURL: "https://api.openai.com/v1",
+    });
+    await expectVideoRequestUses(
+      provider,
+      { OPENAI_API_KEY: "env-key", OPENAI_BASE_URL: "https://env-openai.example/v1" },
+      "https://env-openai.example/v1/videos", "env-key",
+    );
+  });
+
+  it("uses MINIMAX_BASE_URL before the MiniMax session's default factory URL", async () => {
+    const provider = createProvider("minimax", {
+      apiKey: "session-key",
+      model: "MiniMax-M2.5",
+      baseURL: "https://api.minimax.io/v1",
+    });
+    await expectVideoRequestUses(
+      provider,
+      { MINIMAX_API_KEY: "env-key", MINIMAX_BASE_URL: "https://env-minimax.example/v1" },
+      "https://env-minimax.example/v1/video_generation", "env-key",
+    );
+  });
+
   it("snaps a duration Sora does not offer and maps size from the frame", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-sora-snap-"));
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -562,6 +728,173 @@ describe("ImagineVideo execute", () => {
       duration: 6,
       resolution: "768P",
     });
+  });
+
+  it("generates with MiniMax H3 on the v2 task API and downloads from its CDN", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-h3-"));
+    let polls = 0;
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u === "https://api.minimax.io/v2/video_generation" && init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ task_id: "h3-task-1" }),
+        };
+      }
+      if (u === "https://api.minimax.io/v2/query/video_generation/h3-task-1") {
+        polls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            task: polls < 2
+              ? { model: "MiniMax-H3", status: "running" }
+              : {
+                  model: "MiniMax-H3",
+                  status: "succeeded",
+                  content: { url: "https://video-product.cdn.minimax.io/h3.mp4" },
+                  resolution: "768P",
+                  duration: 4,
+                  ratio: "16:9",
+                },
+          }),
+        };
+      }
+      if (u === "https://video-product.cdn.minimax.io/h3.mp4") {
+        return new Response(
+          Uint8Array.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    }) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () =>
+        ({
+          services: {
+            provider: createProvider("minimax", {
+              apiKey: "minimax-session-key",
+              model: "MiniMax-M3",
+            }),
+          },
+        }) as unknown as Session,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 5_000,
+    });
+
+    const result = await tool.execute({
+      prompt: "a lighthouse at dusk",
+      model: "MiniMax-H3",
+      duration: 4,
+      aspect_ratio: "16:9",
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      model: "MiniMax-H3",
+      request_id: "h3-task-1",
+      duration: 4,
+      resolution: "768P",
+      ratio: "16:9",
+      modality: "text",
+    });
+    expect((await readFile(parsed.path as string)).length).toBeGreaterThan(0);
+    const submit = (fetchImpl as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls[0]!;
+    const init = submit[1] as RequestInit;
+    expect((init.headers as Record<string, string>).authorization).toBe(
+      "Bearer isolated-minimax-key",
+    );
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: "MiniMax-H3",
+      content: [{ type: "text", text: "a lighthouse at dusk" }],
+      resolution: "768P",
+      duration: 4,
+      ratio: "16:9",
+    });
+  });
+
+  it("clamps H3-Max controls to what the model renders and names the drops", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith("/v2/video_generation")) {
+        return { ok: true, status: 200, json: async () => ({ task_id: "t" }) };
+      }
+      if (u.includes("/v2/query/video_generation/")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            task: {
+              status: "succeeded",
+              content: { url: "https://video-product.cdn.minimax.io/max.mp4" },
+            },
+          }),
+        };
+      }
+      return new Response(Uint8Array.from([0x00, 0x01]), { status: 200 });
+    }) as unknown as typeof fetch;
+    const root = await mkdtemp(join(tmpdir(), "imagine-h3-max-"));
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 5_000,
+    });
+
+    // 2K and a 4 second clip exist on H3 only; 4:3 is fine, "wide" is not.
+    const result = await tool.execute({
+      prompt: "x",
+      model: "MiniMax-H3-Max",
+      resolution: "2K",
+      duration: 2,
+      aspect_ratio: "wide",
+    });
+
+    expect(result.isError, String(result.content)).toBeUndefined();
+    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      model: "MiniMax-H3-Max",
+      resolution: "768P",
+      duration: 5,
+      ratio: "16:9",
+      ignoredControls: ["resolution", "aspect_ratio"],
+    });
+  });
+
+  it("surfaces the v2 error body when MiniMax rejects an H3 request", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 402,
+      json: async () => ({
+        type: "error",
+        error: {
+          type: "insufficient_balance_error",
+          message: "insufficient balance (1008)",
+        },
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => null,
+      env: { MINIMAX_API_KEY: "isolated-minimax-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "x", model: "MiniMax-H3" });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("insufficient balance (1008)");
   });
 
   it("refuses a MiniMax download that leaves MiniMax's hosts", async () => {

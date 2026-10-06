@@ -111,6 +111,23 @@ rejected on Windows. `head_limit: 0` removes user pagination only, not the hard
 record, decoded-output, 32 MiB rendered-output, 100,000 rendered-line/result,
 context, diagnostic, or 120-second process ceilings.
 
+`Glob` patterns are relative to `path` (or the workspace root) and mean what
+ripgrep's `--glob` means there. A pattern without `/` matches file names at any
+depth. A pattern with `/` must match the whole relative path: `*` and `?` stay
+inside one directory and a `**` segment spans directories. ripgrep lists the
+files whose names fit the pattern's last segment, newest first, so ignore rules
+stay in force. Glob reads that listing, checks each full path, and stops once
+it has a page of matches, so an old match behind many newer files is still
+found. The listing is read up to 64 MiB, and matching work is capped; a
+result cut short by either cap says it is truncated. Brace groups may nest 32
+levels deep.
+
+Three differences from ripgrep's `--glob` are deliberate. A leading `./` names
+the search root, so `./src/*.ts` means `src/*.ts` (ripgrep matches nothing for
+it). On Windows a backslash in a pattern is a path separator, never an escape.
+A leading `!` or `#` is an ordinary character, where ripgrep reads an
+exclusion or a comment.
+
 Search children do **not** inherit the session's workspace-write or network
 profile. `Grep`, `Glob`, and `Orient` (`Orient` via `runRipgrepFiles`) call
 `applyReadOnlyRuntimeSandboxToSpawn` (`tools/system/apply-runtime-sandbox.ts`).
@@ -124,7 +141,26 @@ AgenC cannot narrow a host-owned policy. The spawn uses `cwd: "."` and
 through an already-open directory descriptor instead of a live absolute
 pathname.
 
-On Landlock-fallback hosts this is why search still works while shell and
+On Linux with bubblewrap, a search with a narrow read profile can use an
+authenticated directory capability when an existing grant covers that whole
+directory. The launcher checks the held directory's device and inode, then
+mounts it read-only at a private path. It removes intersecting public-path
+grants rather than reopening the workspace name, and does not add full-disk
+read access. The capability expires when its directory helper closes.
+
+This narrow path currently refuses read-deny or glob policy entries,
+retained aliased read roots, and platform or launcher mounts overlapping the
+bound directory. Exact-file capabilities do not authorize a whole-directory
+mount. These unsupported shapes fail before the search payload runs; they
+are not retried with a weaker policy. Narrow descriptor-bound searches also
+require bubblewrap with `--ro-bind-fd`; the existing full-disk-read search
+path retains its Landlock fallback support. Retained mounts are checked for
+overlap using the same verified path snapshot used to plan mounts. Ordinary
+executable and platform dependency roots must remain trusted and outside
+workload write authority; those host mounts are not all descriptor-pinned.
+This change does not protect them from arbitrary external same-user mutation.
+
+For full-disk-read profiles on Landlock-fallback hosts, search still works while shell and
 workspace-write stdio MCP fail. The broker skips workspace-write Landlock
 pre-flight for `inherited_readonly` (that check would refuse the session
 profile, not the narrowed child). The planner then admits inherited-readonly
@@ -149,9 +185,75 @@ Legacy `system.*` utilities (not the primary edit surface):
 | --- | --- |
 | `exec_command` | **Canonical** shell (unified-exec) |
 | `write_stdin` | Write to a running unified-exec process |
-| `kill_process` | Kill a managed process |
+| `kill_process` | Stop managed sessions by `session_id`, `session_ids`, or `all: true` (this conversation's own live sessions). Every result lists the caller's remaining live sessions. |
+| `list_processes` | Read-only inventory of the sessions this conversation started (`status: live` by default, `all` to include exited-but-uncollected ones). Never another conversation's work; never a process-table scan. |
 | `system.bash` | Direct/shell fallback — **deferred** by default; prefer `exec_command` |
 | `PowerShell` | Registered only when `pwsh`/`powershell` is on `PATH` **and** a unified-exec manager is available; **deferred** |
+
+Background processes and services. `exec_command` stops every process a
+command leaves behind when the command returns (a trailing `&`, `nohup`,
+`setsid`, a daemon that forks) and says so in the result, on a line after the
+footer: `[note: this command left processes running ... detach: true]`. A
+process kept alive with `yield_time_ms` has a `session_id`, lives for the
+session, and is stopped by `closeAll` when the session ends. `detach: true`
+starts a service AgenC never stops: its own session, stdout and stderr in a
+log file under the session temp root, an early-exit wait of `yield_time_ms`
+(default 2 s) so a daemon that rejects its config still reports the error,
+then `running=true pid=<pid> detached=true log=<path>` in the footer. It needs
+the `danger-full-access` sandbox (`--dangerously-bypass-approvals-and-sandbox`
+or `sandbox_mode = "danger-full-access"`): a detached process escapes every
+containment a sandbox lease relies on, so under a sandbox the tool refuses it
+and points at `yield_time_ms`. It cannot be combined with `tty`, and
+`kill_process` does not know detached processes; stop one with `kill <pid>`.
+A detached service is not a managed session handle: it does not appear in
+`list_processes`, and `kill_process all: true` does not reach it.
+
+#### Recovering background work
+
+Recovery from hung or leftover work goes through the identities the manager
+already owns, not through the process table. Every yielded `exec_command`
+returns a `session_id` stamped with the owning conversation; `list_processes`
+enumerates that conversation's sessions and their state (`running`,
+`stopping`, `completed`, `failed`, `killed`); `kill_process` stops them by
+`session_id`, by `session_ids`, or with `all: true`, and every `kill_process`
+result carries `owned_live_sessions` so a `terminated: false` (the session had
+already exited — a benign race, not an error) points straight at the work
+that remains. The rules the manager enforces, shared by the single-id and
+bulk paths:
+
+- Owned-only: a conversation sees and bulk-stops only sessions it started.
+  Another conversation's session is refused with `owner_denied`; a batch of
+  `session_ids` is ownership-checked in full before any signal is sent, so a
+  refused batch has no effect.
+- Stale ids are harmless: an unknown or already-exited id reports
+  `terminated: false`; no signal is sent anywhere.
+- No command-line matching: nothing in this path reads `/proc`, `ps`, or a
+  command string to find a process. This matters because a filename or task
+  predicate applied to the process table also selects AgenC's own CLI (which
+  once carried the prompt in its argv) and its process brokers (which once
+  carried the shell payload in theirs). A Terminal-Bench run ended exactly
+  that way: the model's cleanup SIGKILLed the CLI and two brokers along with
+  its work ([#2477](https://github.com/tetsuo-ai/agenc-core/issues/2477)).
+  [#2494](https://github.com/tetsuo-ai/agenc-core/pull/2494) removed those
+  argv collisions (prompt over stdin, broker bootstrap over a private FD);
+  the managed path above removes the reason to scan at all.
+
+**What this does not guarantee.** Argv hygiene and managed cancellation are
+reliability mitigations. They are not an OS-enforced boundary. Under
+`danger-full-access` (and any mode where the agent's shell runs as the same
+UID as, or as root over, the AgenC process), arbitrary shell or Python the
+model runs can still `kill -9` the CLI, the daemon, or a process broker;
+`PR_SET_CHILD_SUBREAPER`, cgroups, `setsid`, `PR_SET_PDEATHSIG`, a PID
+denylist, command-string filters, and prompt instructions do not change who
+is permitted to signal whom. Preventing that requires OS-enforced separation
+of the controller from the workload (distinct users or namespaces with an
+explicit permission model), which AgenC does not currently provide; see
+[design/fail-closed-sandbox-execution.md](../design/fail-closed-sandbox-execution.md)
+for what the sandbox does isolate. When a broker is killed before it
+publishes cleanup proof, the run keeps its fail-closed diagnostic (`Linux
+process containment broker exited without cleanup proof` / `could not verify
+descendant process cleanup`) and closes execution authority; that error is
+deliberately never suppressed or reported as a successful cleanup.
 
 ### Search / discovery / code intel
 
@@ -197,12 +299,11 @@ its server-side native search through a separately authenticated Grok backend.
 
 | Name | Notes |
 | --- | --- |
-| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default**. `requiresUserInteraction()` is true, so bypass/allowlist/hooks cannot skip the picker. Malformed or unanswered calls are confirmed no-effect. |
+| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** in interactive sessions. Hidden in one-shot print mode (`agenc -p`, headless `-c`/`--resume`), where no human could answer. `requiresUserInteraction()` is true, so bypass/allowlist/hooks cannot skip the picker. Malformed or unanswered calls are confirmed no-effect. |
 | `request_user_input` | Elicitation / free-form user input |
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |
 | `install_ledger_wallet_cli` | Prompted install of the official wallet CLI under `AGENC_HOME` |
-| `EditorProposal` | Editor-turn reviewable edit proposal (workbench BUFFER). Request-scoped; [editor request bounds](../embedded-neovim-buffer.md#editor-request-bounds) |
 | `SendUserMessage` | Short progress message to the user |
 | `Sleep` | Sleep / yield; **deferred** by default |
 | `Monitor` | Canonical unified-exec background process monitor; **deferred** by default |
@@ -238,9 +339,15 @@ each host once and connects to that exact IP (no DNS-rebinding window); private,
 loopback, and cloud-metadata addresses are blocked by default (`[browser]
 allow_private_network` opts in for local-dev targets; metadata stays blocked
 regardless, in every address representation). Non-proxied WebRTC UDP is disabled
-so it cannot open a side channel around the proxy. The browser uses a dedicated profile under
-`<agenc_home>/browser/profile`, never the user's real profile, and launches
-lazily on first use. `snapshot` / `screenshot` / `get_text` / `tabs` are
+so it cannot open a side channel around the proxy. By default, root sessions
+use `<agenc_home>/browser/profiles/<key>`, where the key is a digest of the
+realpathed project trust root. Sessions in one project share logins; different
+projects are isolated. Child sessions use temporary profiles. A configured
+`profile_dir` is shared across projects. The old `<agenc_home>/browser/profile`
+is left unused. The browser never uses the user's real profile and launches
+lazily on first use. While one session's browser holds a persistent profile,
+another session targeting that profile gets a private temporary profile that
+is removed when it closes. `snapshot` / `screenshot` / `get_text` / `tabs` are
 read-only and auto-approved; `navigate` and acting actions prompt in default
 mode (`navigate` can be granted a persistent per-domain allow rule). Config:
 `[browser]` (`executable_path`, `headless`, `allow_private_network`,
@@ -290,13 +397,27 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 | `assign_task` | New task (triggers turn) |
 | `send_message` | Follow-up (no turn trigger) |
 | `list_agents` | Inspect agent tree |
-| `spawn_agents_on_csv` | Batch CSV agent jobs |
-| `report_agent_job_result` | Record CSV job item result |
-| `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page |
-| `read_csv_agent_job_result` | Read one bounded base64 result chunk |
-| `list_csv_job_reviews` | Bounded page of unknown-outcome CSV reviews |
-| `show_csv_job_review` | One bounded review record |
-| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence |
+| `spawn_agents_on_csv` | Batch CSV agent jobs (deferred) |
+| `report_agent_job_result` | Record CSV job item result (visible: row subagents call it) |
+| `inspect_csv_agent_job` | Read a bounded summary and keyset-paginated item page (deferred) |
+| `read_csv_agent_job_result` | Read one bounded base64 result chunk (deferred) |
+| `list_csv_job_reviews` | Bounded page of unknown-outcome CSV reviews (deferred) |
+| `show_csv_job_review` | One bounded review record (deferred) |
+| `resolve_csv_job_review` | Approval-gated operator resolution with canonical evidence (deferred) |
+
+The CSV job family is deferred (`metadata.deferred`) because a coding turn
+almost never touches it and its six schemas cost about 4 KB of every request.
+`system.searchTools` lists and loads them (`select:spawn_agents_on_csv`), and
+the loaded `spawn_agents_on_csv` description names its companion tools.
+`report_agent_job_result` stays visible because the row subagents a job spawns
+must call it without a discovery step.
+
+The `spawn_agent` description states only what its schema needs. The
+delegation rules (foreground vs background, parallel launches, how to brief an
+agent, never predicting a result) live in the static `# Subagents` system
+prompt section (`getAgentToolSection` in `runtime/src/prompts/system-prompt.ts`),
+which is emitted only when `spawn_agent` is in the catalog and rides the cached
+prefix once instead of the tool catalog of every request.
 
 ### MCP helpers (built-in) + bridge
 
@@ -320,14 +441,15 @@ Exact visibility is request-scoped and config-dependent. As coded in
 `buildToolRegistry` defaults:
 
 - **Typically advertised early:** `exec_command`, `write_stdin`, `kill_process`,
-  `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
+  `list_processes`, `FileRead`, `Edit`, `MultiEdit`, `Write`, `Glob`, `Grep`, `Orient`,
   `AskUserQuestion`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`,
   `system.searchTools`, plus non-deferred model-facing tools (web, multi-agent
-  v2, Skill, CSV jobs, Imagine when registered). Task* / Cron* / `WorkflowTool`
-  are **deferred**.
+  v2, Skill, `report_agent_job_result`, Imagine when registered). Task* /
+  Cron* / `WorkflowTool` are **deferred**.
 - **Deferred / discoverable examples:** `system.bash`, git/symbol `system.*`
-  intel tools, MCP tools when `deferMcpTools` is on, MCP resource helpers,
-  passthrough `StructuredOutput`, and other tools marked
+  intel tools, the CSV job family (`spawn_agents_on_csv` and its five
+  inspection/review tools), MCP tools when `deferMcpTools` is on, MCP resource
+  helpers, passthrough `StructuredOutput`, and other tools marked
   `metadata.deferred`.
 
 Coordinator mode further **allowlists** orchestration tools only — see
@@ -391,9 +513,96 @@ the RPC is refused with "requires explicit consent for this exact cwd"
 unless stored accept-bypass consent already matches.
 
 `--permission-mode bypassPermissions` is an explicit startup opt-in for the
-current session and workspace; it does not write durable consent. The
+current session and workspace; it does not write durable consent.
+`--bypass-approvals` is the same opt-in as a dedicated flag: approval prompts
+off, the configured OS sandbox kept (Seatbelt on macOS, bubblewrap or Landlock
+on Linux). It is the right default for unattended runs. When the host cannot
+sandbox at all (`probeSandboxExecutionStatus` reports `unavailable`, for
+example Windows or a Linux box without user namespaces and Landlock) the run
+would otherwise fail closed on its first tool call, so the flag degrades that
+session to `danger-full-access` and prints one stderr line naming the reason
+(`runtime/src/bin/bypass-approvals.ts`). The
 `--dangerously-bypass-approvals-and-sandbox` flag is the separate combined
-escape hatch for bypassed prompts and `danger-full-access`.
+escape hatch for bypassed prompts and `danger-full-access` on every host.
+Passing `--bypass-approvals` together with a different `--permission-mode` is
+an error.
+
+The SDK mirrors the split: `createSession({ bypassApprovals: true })` sends
+`permissionMode: "bypassPermissions"` and leaves the sandbox on, while
+`dangerouslyBypassApprovalsAndSandbox: true` remains the no-sandbox option.
+
+The shell write policy follows the same split. It refuses shell commands that
+write workspace files outside the generated roots (`build`, `dist`, `logs`,
+`.cache`, `tmp`, `coverage`; use Edit or Write), that remove or move files
+outside the workspace, the system temp directory, or a directory added with
+`--add-dir`, that remove protected paths (the workspace root, `/`, the home,
+`.git`, `.agenc`, `.agents`, the AgenC home, shell and git config files), and
+commands whose write targets it cannot determine (variables, globs, command
+substitution). Removals inside the workspace or an added directory run
+without a prompt in `bypassPermissions`, `acceptEdits` and `auto`, and after
+approval otherwise. When approvals are bypassed **and** no sandbox applies
+(`--dangerously-bypass-approvals-and-sandbox`, or `bypassPermissions` on a
+host that cannot sandbox) nothing but this policy would gate a shell mutation,
+so the two guards that only route a mutation to a prompt or the sandbox are
+lifted: undeterminable targets run, and removals outside the workspace are
+allowed. Workspace content writes still belong to Edit and Write, and the
+protected paths stay refused. `--bypass-approvals` alone keeps every guard;
+the sandbox is the boundary there. `exec_command`'s `workdir` follows the
+same rule: the workspace, a directory added with `--add-dir`, or anywhere
+under the full bypass. The policy is evaluated with the session's mode and
+sandbox at preflight as well as at execution (the dispatcher attaches a
+provisional runtime context before a tool's `preflight`), so the two phases
+decide alike.
+
+A refusal names only the editing tools the session has, read from the
+session's own tool registry, and prefers the ones in the model's tool list:
+an OpenAI Light session, which lists apply_patch, is pointed at apply_patch.
+When the session's editing tools are not listed yet, the refusal names them
+and says that `system.searchTools` with `select:` loads them. A session with
+none of Edit, Write, MultiEdit or apply_patch (the read-only `verification`,
+`Plan` and `scanner` subagents) is told it cannot change those workspace
+files, to keep scratch files under a generated directory such as `tmp/`, and
+to write each target as a literal path. The refusal never sends the model to
+a tool the session does not have.
+
+The file tools (`FileRead`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`)
+confine themselves to the workspace root plus the roots the permission layer
+signs onto their input. When the layer allows a path outside the cwd on its
+own, through `--add-dir`, an allow rule, or `bypassPermissions`, it hands the
+tool that path's directory the same way it does after an approval; before,
+such an allow ended in the tool's own `Path is outside allowed directories`
+(the half-bypass seen with Edit on `/etc/nginx/nginx.conf`). Under the full
+bypass the evaluator does not run at all, so the dispatcher does the same at
+dispatch time (`filesystemRootsForDispatch`): a `file_path` inside a directory
+the user added, or any `file_path` when the mode is `bypassPermissions` and
+the sandbox is `danger_full_access`, carries its signed directory; `Glob` and
+`Grep` get the search directory itself (`path`, or the directory an absolute
+Glob pattern starts with) under the same conditions. Subagent tool calls
+do not pass through the dispatcher, so the child tool path applies the same
+rule from the parent-owned permission context the child shares; before, a
+subagent under the full bypass with `--add-dir /` was refused on every path
+outside its workspace. The safety
+gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
+
+A file path is checked against the path rules in a fixed order: a matching
+`deny` rule first, then the protected-path safety gates on writes, then a
+matching `ask` rule, and only then the working-directory auto-allows (any read
+inside the workspace; a write inside it under `acceptEdits`) and a matching
+`allow` rule. A content-specific `ask` such as `FileRead(./.env)` or
+`Write(migrations/**)` therefore prompts even for a path the mode would
+otherwise approve on its own, and `bypassPermissions` does not turn that
+prompt into an allow; it lifts only the working-directory prompt. This holds
+for rules from every source, so a managed `permissions.ask` entry still
+prompts when user settings allow the same path.
+
+`auto` mode is the exception: path validation reports the `ask`, but the
+auto-mode pipeline, not the user, then decides it. A tool on the auto-mode
+safe allowlist (`FileRead`, `Grep`, `Glob`) is approved by that allowlist, so
+an allowlisted read such as `FileRead(./.env)` runs without a prompt even
+though an `ask` rule matches it. A write `ask` in `auto` goes to the auto-mode
+classifier, which can approve it. In `auto` mode a content-specific `ask` rule
+does not force a confirmation; use a `deny` rule for a path that must never be
+read or written without the user.
 
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
@@ -403,6 +612,32 @@ Shell tools reject deterministically invalid commands before asking for
 approval and recheck the command before execution. Approval cannot override
 protected-path or shell-write-policy refusals. Operations that need ordinary
 workspace deletion approval still use the configured permission mode.
+
+Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`, exact paths, `/**`
+prefixes and globs) and the working-directory containment check follow the
+case semantics of the volume that holds the target. Where the filesystem
+treats `C:/Work/Secret.txt` and `c:\work\SECRET.txt` as one file (default
+Windows and macOS volumes, or a case-insensitive mount elsewhere), a rule
+written either way governs both spellings, drive letter and separators
+included. Where they are two files (Linux, case-sensitive APFS) they stay
+distinct. The probe flips ASCII letters only and reads the directory entry,
+so a symlink or hard link is not a second spelling of the same name, and the
+comparison fold lowercases with Unicode `toLowerCase` only after that probe.
+A case-sensitive mount does not inherit its parent volume's folding. A name
+that does not exist yet inherits the nearest existing directory. An exact
+spelling still matches a wildcard. An allow rule folds a wildcard segment
+only when the directory that segment is matched inside is case-insensitive,
+and every directory after it is too, so one insensitive mount cannot widen
+the rule. A deny or ask rule folds that tail when any of those directories
+is case-insensitive, so a block is not missed when the insensitive volume
+sits above or below a case-sensitive one. The matcher defaults to that
+wider fold; allow passes the narrower one. Neither mode uses `process.cwd()`.
+On Windows a UNC
+path keeps its `//server/share` root and probes that share. On other
+platforms a leading `//` collapses the way any other repeated slash does.
+The platform default
+applies only when no existing directory on the path can be probed. Rule text
+and the decision recorded for audit keep their original spelling.
 
 **Internal-only** (valid runtime state, not CLI defaults):
 
@@ -495,6 +730,17 @@ Physical approval and receipt validation are described in
 - Network approval: `network-approval.ts`
 - Guardian / arbiter (reviewer circuit): `permissions/guardian/`
 
+Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`) name files, not
+spellings. A `deny` or `ask` rule is matched against the path as the tool call
+wrote it and against every place that path resolves to. The rule itself is
+tried as written and with the symlinks in its literal directory prefix
+resolved. A rule written through a symlinked directory therefore holds
+whichever way the path is spelled, and so does a relative rule whose folder
+links out of its source root. An `allow` rule matches only where the path
+resolves, and every place it resolves to must fall under the rule, so a link
+inside an allowed directory, or a dangling link or chain of links, does not
+carry the allow anywhere else (`runtime/src/permissions/path-validation.ts`).
+
 CLI: `agenc permissions …` and TUI `/permissions`.
 
 ## Sandbox
@@ -513,7 +759,7 @@ Native helpers:
 | --- | --- | --- |
 | `agenc-linux-sandbox` | `runtime/bin/agenc-linux-sandbox` → `dist/sandbox/linux-launcher/main.js` | Policy helper. Builds bwrap argv, or falls back to `agenc-landlock-run`. Must sit outside the writable workspace. Override path: `AGENC_LINUX_SANDBOX_EXE`. |
 | `agenc-landlock-run` | `runtime/native/agenc-landlock-run.c` | Self-restrict then exec. `--ro` / `--rw` / `--probe` / `--seccomp <fd>`. Exit 125 on failure. Same seccomp network filter as bwrap. Cannot express deny-inside-allow (writable project with read-only `.git`). |
-| `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation. Preferred tree-kill path is cgroup-v2; this is the fallback. |
+| `agenc-process-broker` | `runtime/native/agenc-process-broker.c` | Linux **lifecycle** subreaper (`PR_SET_CHILD_SUBREAPER`). Not filesystem isolation, and not a signal-permission boundary: it manages descendant lifetime and proves cleanup; it cannot stop a same-UID process from signalling the broker or the CLI (see [Recovering background work](#recovering-background-work)). Receives the target program/argv/env over a private bootstrap FD, not its command line. Preferred tree-kill path is cgroup-v2; this is the fallback. |
 | `agenc-process-job-broker.exe` | `runtime/native/agenc-process-job-broker.cs` | Windows **lifecycle** Job Object (`KILL_ON_JOB_CLOSE`). Not a restricted-token sandbox. |
 
 `npm run test:fast` typechecks these C/C# sources only. Use the kernel or

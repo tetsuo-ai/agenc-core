@@ -126,6 +126,20 @@ describe('BackgroundTasksPanel', () => {
     requestTeammateShutdownMock.mockClear()
   })
 
+  it('shows daemon process tail and stop failure in task detail', async () => {
+    appStateMock.state = { tasks: { managed: makeShellTask({
+      id: 'managed', outputFile: '', stopError: 'Stop failed: daemon disconnected',
+      daemonProcess: { projection: {}, sessionId: 'session', cwd: '/workspace', tty: false,
+        outputTail: 'server ready on loopback', outputBytes: 24, stop: async () => {} },
+    }) } }
+    terminalSizeMock.size = { columns: 148, rows: 50 }
+    const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+    const output = await renderToString(<BackgroundTasksPanel initialDetailTaskId="managed" />, 148)
+    expect(output).toContain('server ready on loopback')
+    expect(output).toContain('Stop failed: daemon disconnected')
+    expect(output).not.toContain('loading output tail')
+  })
+
   it('opens the requested task directly into a detail and action surface', async () => {
     appStateMock.state = {
       tasks: {

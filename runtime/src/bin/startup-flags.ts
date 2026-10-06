@@ -5,6 +5,15 @@ export const DANGEROUS_BYPASS_FLAG =
 
 export const AUTONOMOUS_FLAG = "--autonomous" as const;
 
+/**
+ * Skip approval prompts but keep the OS sandbox. Equivalent to
+ * `--permission-mode bypassPermissions`; when the host cannot sandbox at all
+ * the CLI falls back to full access with a stderr notice (see
+ * `bin/bypass-approvals.ts`). `--dangerously-bypass-approvals-and-sandbox`
+ * stays the explicit "no sandbox anywhere" opt-out.
+ */
+export const BYPASS_APPROVALS_FLAG = "--bypass-approvals" as const;
+
 const RETIRED_STARTUP_FLAG_REPLACEMENTS = Object.freeze({
   "--yolo": DANGEROUS_BYPASS_FLAG,
   "--allow-dangerously-skip-permissions": DANGEROUS_BYPASS_FLAG,

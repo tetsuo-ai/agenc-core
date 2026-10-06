@@ -233,28 +233,9 @@ async function compactionAwareProviderResponse(
   if (typeof firstContent === "string") {
     try {
       const payload = JSON.parse(firstContent) as {
-        readonly units?: ReadonlyArray<{
-          readonly messages: ReadonlyArray<{
-            readonly tool_call_id?: string;
-            readonly tool_result_sha256?: string;
-          }>;
-        }>;
-        readonly summaries?: ReadonlyArray<{
-          readonly body: {
-            readonly tool_pairs: ReadonlyArray<{
-              readonly tool_call_id: string;
-              readonly result_sha256: string;
-            }>;
-          };
-        }>;
-        readonly children?: ReadonlyArray<{
-          readonly body: {
-            readonly tool_pairs: ReadonlyArray<{
-              readonly tool_call_id: string;
-              readonly result_sha256: string;
-            }>;
-          };
-        }>;
+        readonly units?: unknown;
+        readonly summaries?: unknown;
+        readonly children?: unknown;
       };
       if (
         !Array.isArray(payload.units) &&
@@ -263,28 +244,12 @@ async function compactionAwareProviderResponse(
       ) {
         throw new Error("not a structured compaction request");
       }
-      const toolPairs =
-        payload.units?.flatMap((unit) =>
-          unit.messages
-            .filter(
-              (message) =>
-                message.tool_call_id !== undefined &&
-                message.tool_result_sha256 !== undefined,
-            )
-            .map((message) => ({
-              tool_call_id: message.tool_call_id!,
-              result_sha256: message.tool_result_sha256!,
-            })),
-        ) ??
-        payload.summaries?.flatMap((summary) => summary.body.tool_pairs) ??
-        payload.children?.flatMap((summary) => summary.body.tool_pairs) ??
-        [];
+      // The runtime pins every tool pair itself; the summary is prose only.
       return providerResponse(
         JSON.stringify({
           narrative: "Bounded summary.",
           facts: [],
           open_actions: [],
-          tool_pairs: toolPairs,
         }),
         "grok-4.5",
         128,

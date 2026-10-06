@@ -20,6 +20,11 @@
  * @module
  */
 
+import { isLightPrintRun } from "../../prompts/light-print.js";
+import { escalationStaysConfined } from "../../sandbox/escalation/confinement.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
+import { asRecord } from "../../utils/record.js";
+
 /** The denial classes this module recognizes. */
 export type ExecSandboxDenialKind = "network_bind";
 
@@ -96,9 +101,77 @@ export function execSandboxDenialNotice(params: {
 }
 
 /**
- * Approval policies under which asking a human to lift the sandbox can still
- * produce an answer. `never` cannot: the policy states that nobody is there.
+ * Signatures of "the OS refused this write": the sandbox's EPERM on macOS,
+ * a read-only mount under bubblewrap.
  */
-export function sandboxEscalationAvailable(approvalPolicy: string): boolean {
-  return approvalPolicy !== "never";
+const WRITE_DENIED_SIGNATURES: readonly RegExp[] = [
+  /operation not permitted/iu,
+  /read-only file system/iu,
+  /\bE(?:PERM|ROFS)\b/u,
+];
+
+/**
+ * The notice for a worktree child's command that failed on a refused write,
+ * or null. Its commands change files only inside the worktree and the temp
+ * folder, escalated or not, so the retry the model would try next (with
+ * sandbox_permissions) fails the same way. The text depends only on the
+ * worktree, so the repeated-failure guard still sees one failure.
+ */
+export function worktreeWriteDenialNotice(params: {
+  readonly output: string;
+  readonly exitCode: number | null;
+  readonly worktree: string;
+}): string | null {
+  if (params.exitCode === 0) return null;
+  if (!WRITE_DENIED_SIGNATURES.some((pattern) => pattern.test(params.output))) {
+    return null;
+  }
+  return (
+    `[sandbox] This agent works in its own git worktree (${params.worktree}). ` +
+    "Its commands change files only inside the worktree and in $TMPDIR: the OS " +
+    "sandbox refuses every other write, with or without sandbox_permissions, so " +
+    "escalating or retrying fails the same way. Work inside the worktree, and " +
+    "point a tool that writes elsewhere (a package cache, for example) at $TMPDIR."
+  );
+}
+
+/**
+ * Whether asking to lift the sandbox can still produce an answer for this
+ * call. Under the `never` policy nobody is there to answer, except in the
+ * bypass sessions whose prompt says a request is granted without asking
+ * (prompts/permissions-prompt.ts). Pass the call's sandbox mode and session so
+ * the notice and the prompt agree.
+ */
+export function sandboxEscalationAvailable(
+  approvalPolicy: string,
+  call?: { readonly sandboxMode?: string; readonly session?: unknown },
+): boolean {
+  if (approvalPolicy !== "never") return true;
+  return call?.sandboxMode === "workspace_write" &&
+    bypassGrantsSandboxEscalation(call.session);
+}
+
+/**
+ * Whether a bypassPermissions session is told that leaving the sandbox is
+ * granted without asking. It reads the mode the way the orchestrator does
+ * (tools/orchestrator.ts), which grants the request in that mode, and leaves
+ * out the sessions where the grant would not help or the prompt says
+ * otherwise: a scheduled routine never leaves its sandbox; a worktree or
+ * read-only delegation child stays confined (escalationStaysConfined); a
+ * Light print run's prompt tells the model not to escalate.
+ */
+export function bypassGrantsSandboxEscalation(session: unknown): boolean {
+  if (routineRunOptions(session) !== undefined) return false;
+  if (escalationStaysConfined(session)) return false;
+  const record = session as {
+    readonly permissionModeRegistry?: { readonly current?: () => unknown };
+    readonly services?: {
+      readonly runtimeOptions?: Parameters<typeof isLightPrintRun>[0];
+      readonly providerEnvironment?: Parameters<typeof isLightPrintRun>[1];
+    };
+  } | null | undefined;
+  if (isLightPrintRun(record?.services?.runtimeOptions, record?.services?.providerEnvironment)) {
+    return false;
+  }
+  return asRecord(record?.permissionModeRegistry?.current?.())?.mode === "bypassPermissions";
 }

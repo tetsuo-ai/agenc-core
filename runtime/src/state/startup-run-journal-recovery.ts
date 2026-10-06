@@ -1471,6 +1471,9 @@ function projectRunEvents(
         eventSequence: row.event_seq,
         reason: requireSuspensionReason(payload.reason),
         suspendedAt,
+        // The strict reader has already established settlement evidence for
+        // every intent. Unknown outcomes may await review after resume.
+        allowUnsettledEffects: true,
       });
       pendingStartupActivationResumeEventId = undefined;
       lifecycleBoundaryAt = suspendedAt;
@@ -1953,9 +1956,6 @@ function projectUnknownEffect(
   const callId = requireString(payload.callId, "callId");
   const toolName = requireString(payload.toolName, "toolName");
   const category = requireRecoveryCategory(payload.recoveryCategory);
-  if (category === "idempotent") {
-    throw invalidEvent(row, runId, "idempotent effect has unknown outcome");
-  }
   const existing = repository.getEffect(runId, stepId);
   if (
     existing === undefined ||
@@ -1993,14 +1993,16 @@ function projectUnknownEffect(
     },
     observedAt: recordedAt,
   });
-  recordInFlightToolCallUnknownOutcome(driver, {
-    sessionId: existing.sessionId,
-    agentId: runId,
-    toolCallId: callId,
-    toolName,
-    observedAt: recordedAt,
-    recoveryCategory: category,
-  });
+  if (category !== "idempotent") {
+    recordInFlightToolCallUnknownOutcome(driver, {
+      sessionId: existing.sessionId,
+      agentId: runId,
+      toolCallId: callId,
+      toolName,
+      observedAt: recordedAt,
+      recoveryCategory: category,
+    });
+  }
 }
 
 function projectEffectReview(
@@ -2355,14 +2357,14 @@ function requireRecoveryCategory(value: unknown): ToolRecoveryCategory {
 }
 
 function requireSuspensionReason(value: unknown): RunSuspensionReason {
-  if (value !== "daemon_shutdown_idle") {
+  if (value !== "daemon_shutdown_idle" && value !== "workflow_user_pause") {
     throw new TypeError("run suspension reason is invalid");
   }
   return value;
 }
 
 function requireResumeReason(value: unknown): RunResumeReason {
-  if (value !== "daemon_startup_restore" && value !== "explicit_continue") {
+  if (value !== "daemon_startup_restore" && value !== "explicit_continue" && value !== "workflow_user_resume") {
     throw new TypeError("run resume reason is invalid");
   }
   return value;

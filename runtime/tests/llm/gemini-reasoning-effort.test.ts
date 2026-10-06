@@ -7,6 +7,8 @@ import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoin
 import { resolveRegisteredModelCatalogEntry } from "../../src/llm/registry/model-catalog.js";
 import { resolveProviderModelCapabilities } from "../../src/llm/capabilities.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
+import { ModelMetadataResolver } from "../../src/llm/model-metadata.js";
+import type { AgenCConfig } from "../../src/utils/config.js";
 import { defaultConfig } from "../../src/config/schema.js";
 import { loadCanonicalConfig, loadCanonicalDaemonConfig } from "../../src/config/repository.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
@@ -15,8 +17,12 @@ import type { LLMChatOptions } from "../../src/llm/types.js";
 
 const MODEL_LEVELS = [
   ["gemini-3.1-pro-preview", ["low", "medium", "high"]],
+  ["gemini-3.8-flash", ["low", "medium", "high"]],
   ["gemini-3.7-flash", ["low", "medium", "high"]],
+  ["gemini-3.6-flash", ["minimal", "low", "medium", "high"]],
   ["gemini-3.5-flash", ["minimal", "low", "medium", "high"]],
+  ["gemini-3.5-flash-lite", ["minimal", "low", "medium", "high"]],
+  ["gemini-3.1-flash-lite", ["minimal", "low", "medium", "high"]],
   ["gemini-3-flash-preview", ["minimal", "low", "medium", "high"]],
   ["gemini-3-pro-preview", ["low", "high"]],
   ["gemini-2.5-pro", []],
@@ -43,6 +49,32 @@ describe("Gemini reasoning metadata", () => {
     expect(info.showInPicker).toBe(true);
     expect(info.defaultReasoningSummary).toBe("auto");
     expect((await manager.listModels()).some((entry) => entry.slug === model)).toBe(true);
+  });
+
+  // GET /v1beta/models (2026-09-26): inputTokenLimit 1,048,576 and
+  // outputTokenLimit 65,536 on every Gemini chat model listed.
+  test.each(MODEL_LEVELS)("plans %s against the API's 1,048,576 window and 65,536 output", async (model) => {
+    expect(resolveRegisteredModelCatalogEntry({ provider: "gemini", model })).toMatchObject({
+      contextWindow: 1_048_576,
+      maxContextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      maxOutputTokensUpperLimit: 65_536,
+    });
+    expect(new ModelMetadataResolver({ env: {} }).resolveSync({
+      provider: "gemini",
+      model,
+      config: {} as unknown as AgenCConfig,
+    })).toMatchObject({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      maxOutputTokensUpperLimit: 65_536,
+      source: "built_in_heuristic",
+      usedFallbackModelMetadata: false,
+    });
+    const manager = new StaticModelsManager({
+      config: { ...defaultConfig(), model_provider: "gemini", model },
+    });
+    expect((await manager.getModelInfo(model)).contextWindow).toBe(1_048_576);
   });
 
   test.each(["gemini-3.1-pro-preview-unverified", "gemini-3.5-flash-unverified"])("does not grant levels to %s", (model) => {

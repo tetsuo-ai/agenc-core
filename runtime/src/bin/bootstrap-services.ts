@@ -9,7 +9,6 @@ import type { ReviewDecision } from "../permissions/review-decision.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import {
   PermissionModeRegistry,
-  removeOverlyBroadShellAllowRules,
   type PendingPermissionAuthorityPublication,
 } from "../permissions/permission-mode.js";
 import {
@@ -138,6 +137,8 @@ interface BootstrapShellSnapshot {
 }
 
 export interface BootstrapSessionServicesOptions {
+  readonly deferThreadProjection?: (setup: () => Promise<void>) => void;
+  readonly flushStartupLogIndex?: () => void;
   readonly provider: LLMProvider;
   readonly providerName: string;
   readonly authBackend?: AuthBackend;
@@ -704,12 +705,22 @@ export function buildBootstrapSessionServices(
   const rolloutTrace = createRolloutTraceRecorder({
     threadId: opts.conversationId,
   });
-  const fileThreadStore = new FileThreadStore({
+  const createFileThreadStore = () => new FileThreadStore({
+    deferLogs: true,
     cwd: opts.workspaceRoot,
     agencHome: opts.agencHome,
     defaultModelProviderId: opts.providerName,
     projectRootMarkers: opts.configStore.current().project_root_markers,
   });
+  let resolvedFileThreadStore: FileThreadStore | undefined;
+  const fileThreadStore = opts.deferThreadProjection !== undefined ? new Proxy({} as FileThreadStore, {
+    get(_target, property) {
+      if (property === "close" && resolvedFileThreadStore === undefined) return () => {};
+      resolvedFileThreadStore ??= createFileThreadStore();
+      const value = Reflect.get(resolvedFileThreadStore, property);
+      return typeof value === "function" ? value.bind(resolvedFileThreadStore) : value;
+    },
+  }) : createFileThreadStore();
   const threadNameStore = new BootstrapThreadNameStore(fileThreadStore);
   const mcpConnectionManager = new BootstrapMcpConnectionManager(
     opts.mcpManager,
@@ -778,13 +789,7 @@ export function buildBootstrapSessionServices(
     const publication = permissionReloadTail.then(async () => {
       if (permissionReloadDisposed) return;
       await authorityPublication.publish((current) => {
-        let next = applyPermissionRulesSnapshot(current, snapshot);
-        if (
-          opts.env.USER_TYPE === "ant" &&
-          opts.env.AGENC_ENTRYPOINT !== "local-agent"
-        ) {
-          next = removeOverlyBroadShellAllowRules(next);
-        }
+        const next = applyPermissionRulesSnapshot(current, snapshot);
         return {
           next,
           result: () => undefined,
@@ -858,6 +863,9 @@ export function buildBootstrapSessionServices(
   });
 
   const services: SessionServices = {
+    ...(opts.flushStartupLogIndex !== undefined
+      ? { flushStartupLogIndex: opts.flushStartupLogIndex }
+      : {}),
     runtimeOptions: opts.runtimeOptions,
     hookExecutionAuthority,
     mcpConnectionManager,
@@ -988,6 +996,7 @@ export function buildBootstrapSessionServices(
     },
     bindRolloutStore: (binding: BootstrapRolloutBinding) => {
       rolloutRecorder.attach(binding.rolloutStore);
+      const projectThread = (): LiveThread => {
       const liveThread = binding.resume
         ? resumeLiveThread({
             threadId: binding.session.conversationId,
@@ -1017,6 +1026,19 @@ export function buildBootstrapSessionServices(
         providerName: opts.providerName,
       });
       return liveThread;
+      };
+      if (opts.deferThreadProjection !== undefined && !binding.resume) {
+        opts.deferThreadProjection(async () => {
+          binding.session.abortController.signal.throwIfAborted();
+          projectThread();
+        });
+        const pendingThread = createLiveThread({
+          threadId: binding.session.conversationId, rolloutStore: binding.rolloutStore,
+        });
+        (services as { liveThread?: LiveThread }).liveThread = pendingThread;
+        return pendingThread;
+      }
+      return projectThread();
     },
     shutdown: async () => {
       unsubscribeExecutionAdmission?.();

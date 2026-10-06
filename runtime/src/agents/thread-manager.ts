@@ -17,7 +17,7 @@ import {
   type InterAgentCommunication,
 } from "./mailbox.js";
 import type { MailboxMetadataBuilder } from "./mailbox-metadata.js";
-import type { AgentStatus } from "./status.js";
+import { turnIdFromAgentStatus, type AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
 import type { AgentControl, LiveAgent } from "./control.js";
@@ -225,9 +225,16 @@ export class AgenCThread implements ManagedThread {
 
   configSnapshot(): Record<string, unknown> | undefined {
     if (this.session) {
-      return threadConfigSnapshot(
+      const snapshot = threadConfigSnapshot(
         this.session.sessionConfiguration,
       ) as unknown as Record<string, unknown>;
+      return {
+        ...snapshot,
+        ...(this.live?.metadata.crossProvider !== undefined
+          ? { crossProvider: this.live.metadata.crossProvider } : {}),
+        ...(this.live?.metadata.executionPlan !== undefined
+          ? { executionPlan: this.live.metadata.executionPlan } : {}),
+      };
     }
     return this.live?.configSnapshot;
   }
@@ -678,12 +685,14 @@ async function submitToLiveAgent(
         }
       }
       return live.agentId;
-    case "interrupt":
+    case "interrupt": {
       if (!live.abortController.signal.aborted) {
         live.abortController.abort(op.reason ?? "interrupt");
       }
-      live.status.markInterrupted(live.agentId, op.reason ?? "interrupt");
+      const interruptedStatus = live.status.value;
+      live.status.markInterrupted(turnIdFromAgentStatus(interruptedStatus) ?? live.agentId, op.reason ?? "interrupt");
       return live.agentId;
+    }
     case "shutdown":
       const reason = op.reason ?? "shutdown";
       live.upInbox.close(reason);

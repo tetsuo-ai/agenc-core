@@ -49,13 +49,14 @@ export function createListAgentsTool(opts: MultiAgentV2Options): Tool {
           ? { pathPrefix: resolvedPathPrefix }
           : {}),
       }).map(toListedAgentJson),
+      ...(control.childResultRecoveryNotice === undefined ? {} : { recovery: control.childResultRecoveryNotice }),
     });
   };
 
   return {
     name: "list_agents",
     description:
-      "List live agents in the current root thread tree. Optionally filter by task-path prefix.",
+      "List live agents and recovered task results in the current root thread tree. Optionally filter by task-path prefix.",
     metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
     isReadOnly: true,
     recoveryCategory: "idempotent",

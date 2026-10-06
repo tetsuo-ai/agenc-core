@@ -2,6 +2,12 @@ import type { HomeContext } from '../../config/home.js'
 import { createMacOsKeychainStorage } from './macOsKeychainStorage.js'
 import { createLinuxSecretStorage } from './linuxSecretStorage.js'
 import { createWindowsCredentialStorage } from './windowsCredentialStorage.js'
+import { SecureStorageUnavailableError } from './unavailable.js'
+
+export {
+  isSecureStorageUnavailableMessage,
+  SecureStorageUnavailableError,
+} from './unavailable.js'
 
 /** Account identity and role metadata associated with the stored OAuth tokens. */
 export interface OAuthAccountMetadata {
@@ -117,6 +123,8 @@ export interface SecureStorageData {
   mcpXaaIdpConfig?: Record<string, { clientSecret: string }>
   trustedDeviceToken?: string
   pluginSecrets?: Record<string, Record<string, string>>
+  /** Version metadata is separate from credential payloads and ignored by older builds. */
+  pluginSecretFormats?: Record<string, Record<string, 'literal-v1' | 'typed-v1' | `typed-v2:${string}`>>
   /** OpenAI OAuth (Sign in with ChatGPT): the exchanged platform API
    * key plus the login tokens that produced it. */
   openAiOauth?: {
@@ -140,8 +148,11 @@ export interface SecureStorageData {
     lastRefreshFailureAt?: number
   }
   /** xAI OAuth (Sign in with X / Grok subscription) tokens. */
+  /** Revoked bearer hashes survive sign-out without retaining live tokens. */
+  xaiOauthRevokedAccessTokenHashes?: string[]
   xaiOauth?: {
     accessToken: string
+    previousAccessTokenHashes?: string[]
     refreshToken?: string
     idToken?: string
     expiresAt?: number
@@ -178,10 +189,14 @@ export interface SecureStorageMigrationIdentity {
 const unavailableSecureStorage: SecureStorage = {
   name: 'unavailable-secure-storage',
   read: () => {
-    throw new Error('Native secure storage is unavailable on this platform')
+    throw new SecureStorageUnavailableError(
+      'Native secure storage is unavailable on this platform',
+    )
   },
   readAsync: async () => {
-    throw new Error('Native secure storage is unavailable on this platform')
+    throw new SecureStorageUnavailableError(
+      'Native secure storage is unavailable on this platform',
+    )
   },
   update: () => ({
     success: false,

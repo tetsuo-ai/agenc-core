@@ -80,7 +80,9 @@ export function createSizeCappedFileLogSink(
 
   // Resume from the existing file's size so repeated short-lived starts do not
   // forget how close we already are to the cap.
-  let fd = openSync(path, "a");
+  // The sink lives in the AgenC home next to the cookie and the socket; keep
+  // it owner-only on creation regardless of the daemon's umask.
+  let fd = openSync(path, "a", 0o600);
   let currentBytes = 0;
   try {
     currentBytes = statSync(path).size;
@@ -99,11 +101,11 @@ export function createSizeCappedFileLogSink(
     } catch {
       // If rotation fails (e.g. cross-device), fall back to truncating by
       // reopening with "w" so growth is still bounded.
-      fd = openSync(path, "w");
+      fd = openSync(path, "w", 0o600);
       currentBytes = 0;
       return;
     }
-    fd = openSync(path, "a");
+    fd = openSync(path, "a", 0o600);
     currentBytes = 0;
   };
 

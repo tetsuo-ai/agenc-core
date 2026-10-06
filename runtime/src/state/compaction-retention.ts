@@ -15,7 +15,7 @@ import {
   CompactionTransactionError,
 } from "../services/compact/transaction-types.js";
 import {
-  canonicalizeJson,
+  canonicalizeSourceJson,
   sha256Hex,
 } from "../services/compact/summary-v1.js";
 
@@ -262,7 +262,7 @@ export class CompactionRetentionRepository {
           intent.source.source_bytes,
           intent.source.history_digest,
           canonicalSourceManifest(intent.source.active_history_refs),
-          canonicalizeJson(intent.selected_history_indexes),
+          canonicalizeSourceJson(intent.selected_history_indexes),
           intent.policy_digest,
           intent.configuration_digest,
           intent.accounting_ref,
@@ -970,15 +970,15 @@ export class CompactionRetentionRepository {
   }
 
   resetReconciliationCursor(sessionId: string, updatedAtMs: number): void {
+    // No row already means the beginning of the scan. Do not create a durable
+    // zero cursor merely because a fresh session has no pins to reconcile.
     this.driver
-      .prepareState<[string, number]>(
-        `INSERT INTO compaction_reconciliation_cursors (
-           cursor_name, created_at_ms, attempt_id, updated_at_ms
-         ) VALUES (?, 0, '', ?)
-         ON CONFLICT(cursor_name) DO UPDATE SET
-           created_at_ms = 0, attempt_id = '', updated_at_ms = excluded.updated_at_ms`,
+      .prepareState<[number, string]>(
+        `UPDATE compaction_reconciliation_cursors
+         SET created_at_ms = 0, attempt_id = '', updated_at_ms = ?
+         WHERE cursor_name = ?`,
       )
-      .run(sessionId, updatedAtMs);
+      .run(updatedAtMs, sessionId);
   }
 
   createDeferral(params: {
@@ -1196,8 +1196,8 @@ function assertIntentMatchesPin(
     pin.historyDigest !== intent.source.history_digest ||
     canonicalSourceManifest(pin.activeHistoryRefs) !==
       canonicalSourceManifest(intent.source.active_history_refs) ||
-    canonicalizeJson(pin.selectedHistoryIndexes) !==
-      canonicalizeJson(intent.selected_history_indexes) ||
+    canonicalizeSourceJson(pin.selectedHistoryIndexes) !==
+      canonicalizeSourceJson(intent.selected_history_indexes) ||
     pin.policyDigest !== intent.policy_digest ||
     pin.configurationDigest !== intent.configuration_digest ||
     pin.accountingRef !== intent.accounting_ref ||
@@ -1227,8 +1227,8 @@ function assertCommitMatchesPin(
     committed.source.history_digest !== pin.historyDigest ||
     canonicalSourceManifest(committed.source.active_history_refs) !==
       canonicalSourceManifest(pin.activeHistoryRefs) ||
-    canonicalizeJson(committed.selected_history_indexes) !==
-      canonicalizeJson(pin.selectedHistoryIndexes) ||
+    canonicalizeSourceJson(committed.selected_history_indexes) !==
+      canonicalizeSourceJson(pin.selectedHistoryIndexes) ||
     committed.policy_digest !== pin.policyDigest ||
     committed.configuration_digest !== pin.configurationDigest ||
     committed.accounting.accounting_ref !== pin.accountingRef
@@ -1243,7 +1243,7 @@ function assertCommitMatchesPin(
 function canonicalSourceManifest(
   refs: readonly CompactionActiveHistoryRefV1[],
 ): string {
-  return canonicalizeJson(refs);
+  return canonicalizeSourceJson(refs);
 }
 
 function parseSourceManifest(value: string): readonly CompactionActiveHistoryRefV1[] {

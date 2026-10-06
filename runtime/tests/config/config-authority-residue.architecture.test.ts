@@ -59,6 +59,9 @@ const retainedSecureStorageTerminologyPatterns = new Map<string, RegExp>([
     "secrets/sanitizer-wallet-c1.test.ts",
     /vault passphrase|vault-passphrase|AGENC_WALLET_VAULT_PASSPHRASE/iu,
   ],
+  // Same live secret name, exercised as a redaction fixture by the integer
+  // list suite. sanitizer.ts still carries a dedicated rule for it.
+  ["secrets/sanitizer-integer-lists.test.ts", /AGENC_WALLET_VAULT_PASSPHRASE/u],
   ["utils/secureStorage/platformStorage.test.ts", /PasswordVault/u],
 ]);
 
@@ -323,13 +326,13 @@ describe("configuration authority residue", () => {
       (path) => {
         const name = relative(SOURCE_ROOT, path);
         const content = readFileSync(path, "utf8");
-        if (retiredPreferenceEnv.test(content) && name !== "config/env.ts") {
+        if (retiredPreferenceEnv.test(content) && name !== "config/obsolete-environment.ts") {
           return [`${name}: retired preference env`];
         }
         if (
           retiredHooksAlias.test(content) &&
           !new Set([
-            "config/env.ts",
+            "config/obsolete-environment.ts",
             "config/retired-auth-migration.ts",
             "gateway/run.ts",
             "utils/secretEnv.ts",

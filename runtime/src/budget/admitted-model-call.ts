@@ -25,13 +25,21 @@ import { getContextWindowForModel } from "../utils/context.js";
 import {
   computeUsdCostWithResolution,
   DEFAULT_MODEL_COSTS,
+  conservativeModelCost,
+  hasManagedRoutePrice,
   resolveModelCostEntry,
+  selectCallRates,
   type ModelCostEntry,
   type ModelUsage,
 } from "../session/cost.js";
+import {
+  anthropicFastModeRequested,
+  anthropicSupportsFastMode,
+} from "../llm/providers/anthropic/fast-mode.js";
+import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-processing.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
-import { LLMManagedAdmissionError } from "../llm/errors.js";
+import { isLLMPreGenerationRejection, LLMManagedAdmissionError } from "../llm/errors.js";
 
 export interface AdmittedModelCallOptions {
   readonly session: Session;
@@ -182,12 +190,12 @@ export function providerLocalModelSlug(
   return model;
 }
 
-function pricedEntry(model: string, provider: string): ModelCostEntry | null {
+function pricedEntry(model: string, provider: string): ModelCostEntry {
   const resolved = resolveModelCostEntry(
     { model, provider },
     DEFAULT_MODEL_COSTS,
   );
-  if (resolved === null) return null;
+  if (resolved === null || resolved.entry.costEstimated) return conservativeModelCost();
   const entry = resolved.entry;
   // Entries explicitly declared localZeroCost are the registry's statement
   // that this provider bills nothing. Treating them as unpriced held every
@@ -204,18 +212,100 @@ function pricedEntry(model: string, provider: string): ModelCostEntry | null {
     entry.webSearchUsdPerRequest ?? 0,
   ];
   // A zero-rate entry without the explicit local label does not prove that an
-  // arbitrary provider/model alias is free. Keep hard USD caps fail-closed.
-  return rates.some((rate) => rate > 0) ? entry : null;
+  // arbitrary provider/model alias is free. Use the conservative estimate.
+  return rates.some((rate) => rate > 0) ? entry : conservativeModelCost();
 }
 
-function maximumTokenCostUsd(
+/**
+ * Anthropic fast mode rides the "priority" service tier on the models that
+ * accept it. Such a request may be served fast and billed at fast-mode
+ * rates, so its reservation has to cover those rates; a hard cap would
+ * otherwise flag a fast turn as a provider overrun.
+ */
+function requestsAnthropicFastMode(
+  model: string,
+  provider: string,
+  options: LLMChatOptions,
+): boolean {
+  return (
+    provider.trim().toLowerCase() === "anthropic" &&
+    anthropicFastModeRequested(options) &&
+    anthropicSupportsFastMode(model)
+  );
+}
+
+function isOpenAiProvider(provider: string): boolean {
+  return provider.trim().toLowerCase() === "openai";
+}
+
+/**
+ * OpenAI Fast mode is `service_tier: "priority"` (or "fast") and bills at
+ * the model's Fast rates when the response reports that tier.
+ */
+function requestsOpenAiFastMode(
+  provider: string,
+  options: LLMChatOptions,
+): boolean {
+  return isOpenAiProvider(provider) && options.serviceTier === "priority";
+}
+
+/**
+ * xAI priority processing is `service_tier: "priority"` on the Grok models
+ * with a Fast tier, sent only off the xAI sign-in route (the recorded
+ * `authMode`), and billed at 2x when the response reports that tier.
+ */
+function requestsXaiPriorityProcessing(
+  model: string,
+  provider: string,
+  options: LLMChatOptions,
+  factoryOptions: ProviderFactoryOptions,
+): boolean {
+  return (
+    provider.trim().toLowerCase() === "grok" &&
+    xaiSendsPriorityProcessing({
+      model,
+      serviceTier: options.serviceTier,
+      authMode: factoryOptions.extra?.authMode,
+    })
+  );
+}
+
+/**
+ * Reserve the most expensive documented outcome, or the registry ceiling
+ * when the model or requested tier is unpriced. Fast requests reserve fast
+ * rates. A reservation admits up to `inputTokens + outputTokens`
+ * before reconciliation counts a token overrun, so a price that depends on
+ * one request's input length (OpenAI long context above 272K) is taken at
+ * the tier that total can reach. Undocumented tiers use the registry ceiling.
+ */
+function reservationRates(
   model: string,
   provider: string,
   inputTokens: number,
   outputTokens: number,
   options: LLMChatOptions,
+  factoryOptions: ProviderFactoryOptions,
+): ModelCostEntry {
+  const standardEntry = pricedEntry(model, provider);
+  const fast =
+    requestsAnthropicFastMode(model, provider, options) ||
+    requestsOpenAiFastMode(provider, options) ||
+    (provider.trim().toLowerCase() === "minimax" &&
+      model.trim().toLowerCase() === "minimax-m3" && options.serviceTier === "priority") ||
+    requestsXaiPriorityProcessing(model, provider, options, factoryOptions);
+  const selected = selectCallRates(standardEntry, {
+    ...(fast ? { speed: "fast" as const } : {}),
+    singleCallInputTokens: inputTokens + outputTokens,
+  });
+  return selected.documented ? selected.rates : conservativeModelCost();
+}
+
+function maximumTokenCostUsd(
+  entry: Readonly<ModelCostEntry> | null,
+  inputTokens: number,
+  outputTokens: number,
+  options: LLMChatOptions,
 ): number | null {
-  const entry = pricedEntry(model, provider);
   if (entry === null) return null;
   const worstInputRate = Math.max(
     entry.inputUsdPer1K,
@@ -254,8 +344,8 @@ function usageCostUsd(
   provider: string,
   usage: LLMResponse["usage"],
   options: LLMChatOptions,
-): number | null {
-  if (pricedEntry(model, provider) === null) return null;
+): { costUsd: number; costEstimated?: boolean } | null {
+  const entry = pricedEntry(model, provider);
   if (
     paidServerToolNames(options).some(
       (name) => name !== "web_search" && name !== "x_search",
@@ -263,23 +353,49 @@ function usageCostUsd(
   ) {
     return null;
   }
+  const cachedInputTokens = usage.cachedInputTokens ?? 0;
+  // Chat Completions cannot report prompt-cache writes as their own field
+  // (usage.cacheWritesUnreported), so a real write there is indistinguishable
+  // from ordinary input and would otherwise be priced at the input rate
+  // instead of the model's higher cache-write rate. The reservation already
+  // assumes the worst case (maximumTokenCostUsd reserves every input token at
+  // the dearest of input/cached/cache-write rate), so reconciliation has to
+  // match that worst case here, or it releases too much of the reservation
+  // and a later call can be admitted past the real cumulative spend. Price
+  // every uncached input token as a cache write; models without a higher
+  // cache-write rate are unaffected and price exactly as before.
+  const reconstructedCacheWriteTokens =
+    usage.cacheWritesUnreported === true &&
+    entry.cacheCreationUsdPer1K !== undefined &&
+    entry.cacheCreationUsdPer1K > entry.inputUsdPer1K
+      ? Math.max(0, usage.promptTokens - cachedInputTokens)
+      : undefined;
   const modelUsage: ModelUsage = {
     model,
     provider,
     inputTokens: usage.promptTokens,
     outputTokens: usage.completionTokens,
-    cachedInputTokens: usage.cachedInputTokens ?? 0,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+    cachedInputTokens,
+    cacheCreationInputTokens:
+      reconstructedCacheWriteTokens ?? usage.cacheCreationInputTokens ?? 0,
     reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
     webSearchRequests: usage.webSearchRequests ?? 0,
     totalTokens: usage.totalTokens,
     turns: 1,
+    // One request: per-request rates such as OpenAI long context apply.
+    singleCall: true,
+    // Charge by the speed the provider reports it served, not the one
+    // requested: a fast request served at standard speed bills standard.
+    ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
   };
   const resolved = computeUsdCostWithResolution(
     modelUsage,
     DEFAULT_MODEL_COSTS,
   );
-  return resolved.known ? resolved.costUsd : null;
+  return {
+    costUsd: resolved.costUsd,
+    ...(resolved.costEstimated ? { costEstimated: true } : {}),
+  };
 }
 
 function reconciledTokenUsage(usage: LLMResponse["usage"]): {
@@ -370,10 +486,19 @@ export function fitOutputReservationToContext(
   accounting: Pick<TokenAccountingResult, "admissible" | "inputTokens" | "totalTokens">,
   contextWindowTokens: number,
   maxOutputTokens: number,
+  // Room the provider itself withholds before it will accept a request. A
+  // provider that declares nothing keeps the previous arithmetic exactly.
+  providerContextSafetyBufferTokens = 0,
 ): number | undefined {
   if (!accounting.admissible) return undefined;
-  if (accounting.totalTokens <= contextWindowTokens) return maxOutputTokens;
-  const roomLeftByPrompt = contextWindowTokens - accounting.inputTokens;
+  const providerBuffer = Number.isFinite(providerContextSafetyBufferTokens)
+    ? Math.max(0, Math.floor(providerContextSafetyBufferTokens))
+    : 0;
+  if (accounting.totalTokens + providerBuffer <= contextWindowTokens) {
+    return maxOutputTokens;
+  }
+  const roomLeftByPrompt =
+    contextWindowTokens - accounting.inputTokens - providerBuffer;
   return roomLeftByPrompt >= MIN_ADMISSIBLE_OUTPUT_TOKENS
     ? Math.min(maxOutputTokens, roomLeftByPrompt)
     : undefined;
@@ -457,6 +582,17 @@ export async function runAdmittedModelCall(
     usesConcreteExecutionIdentity && profile?.model?.trim()
       ? providerLocalModelSlug(profile.model.trim(), effectiveProvider)
       : requestedModel;
+  // A managed AgenC call is charged in AgenC credits at the gateway's price
+  // for the route it was admitted on, not at the concrete provider's public
+  // price. A route with its own `agenc:` price is reserved and settled at it.
+  // The gateway refuses a response whose model is not a reviewed id of the
+  // route, so a reported generation id never changes that price. Any other
+  // managed route keeps the concrete provider's price.
+  const managedRoutePriced =
+    requestedProvider === "agenc" &&
+    usesConcreteExecutionIdentity &&
+    hasManagedRoutePrice(effectiveModel);
+  const pricingProvider = managedRoutePriced ? "agenc" : effectiveProvider;
   const configuredMaxOutputTokens =
     positiveInteger(params.options.maxOutputTokens) ??
     positiveInteger(profile?.maxOutputTokens);
@@ -495,6 +631,14 @@ export async function runAdmittedModelCall(
     {
       ...params.options,
       model: effectiveModel,
+      // An omitted service_tier runs at the OpenAI project's default tier,
+      // which can be Fast (fast-mode guide). Under a hard USD cap the
+      // Standard reservation must bound the call, so name Standard.
+      ...(hasHardCostCap &&
+      isOpenAiProvider(effectiveProvider) &&
+      params.options.serviceTier === undefined
+        ? { serviceTier: "default" as const }
+        : {}),
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: configuredMaxOutputTokens }
         : {}),
@@ -515,6 +659,10 @@ export async function runAdmittedModelCall(
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
     model: effectiveModel,
+    // The usage this call reports calibrates later fallback estimates in the conversation.
+    ...(params.session.conversationId
+      ? { calibrationScope: params.session.conversationId }
+      : {}),
     messages: accountingProjection.messages,
     options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
@@ -557,6 +705,7 @@ export async function runAdmittedModelCall(
       // reply needs.
       const fittedOutputTokens = fitOutputReservationToContext(
         accountingResult, contextWindowTokens, maxOutputTokens,
+        profile?.contextSafetyBufferTokens ?? 0,
       );
       if (fittedOutputTokens === undefined) {
         accountingFailureReason = "context_window_exceeded";
@@ -593,9 +742,16 @@ export async function runAdmittedModelCall(
       : countedInputTokens;
   const unboundedPaidServerTool =
     hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
-  const maximumCost = maximumTokenCostUsd(
+  const reservedRates = reservationRates(
     effectiveModel,
-    effectiveProvider,
+    pricingProvider,
+    maxInputTokens,
+    admittedMaxOutputTokens,
+    accountingOptions,
+    providerFactoryOptions,
+  );
+  const maximumCost = maximumTokenCostUsd(
+    reservedRates,
     maxInputTokens,
     admittedMaxOutputTokens,
     accountingOptions,
@@ -609,7 +765,7 @@ export async function runAdmittedModelCall(
         : unboundedPaidServerTool
           ? "unbounded_provider_tool_under_hard_cap"
           : hasHardCostCap && maximumCost === null
-            ? "unpriced_model_under_hard_cap"
+            ? "unpriced_provider_tool_under_hard_cap"
             : undefined);
   if (client === undefined) {
     if (params.session.services.admissionRequired !== false) {
@@ -622,6 +778,15 @@ export async function runAdmittedModelCall(
       ...accountingOptions,
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
+        : {}),
+      // Warning only, and only when fitting actually took something away.
+      // The adapter would otherwise see the fitted value as the request and
+      // could not report the squeeze. Omitted when nothing was lowered, so a
+      // call that was never squeezed dispatches exactly the options it did
+      // before. Never widens the wire ceiling.
+      ...(configuredMaxOutputTokens !== undefined &&
+      admittedMaxOutputTokens < configuredMaxOutputTokens
+        ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
         : {}),
       ...(accountingResult !== undefined
         ? { accountedInputTokens: accountingResult.inputTokens }
@@ -666,6 +831,7 @@ export async function runAdmittedModelCall(
         maxInputTokens,
         maxOutputTokens: admittedMaxOutputTokens,
         maxCostUsd: maximumCost,
+        ...(reservedRates.costEstimated ? { costEstimated: true } : {}),
         ...(denialReason !== undefined ? { denialReason } : {}),
       },
       params.signal,
@@ -715,6 +881,13 @@ export async function runAdmittedModelCall(
       },
     });
     dispatched = true;
+    // The lease minimum can be lower than the admitted ceiling, so this is the
+    // figure actually dispatched and therefore the one a squeeze is measured
+    // against.
+    const dispatchedMaxOutputTokens = Math.min(
+      admittedMaxOutputTokens,
+      lease.request.estimate.maxOutputTokens,
+    );
     const response = await params.invoke({
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
@@ -729,10 +902,12 @@ export async function runAdmittedModelCall(
         : {}),
       // The admitted maximum is the provider-facing maximum. A caller cannot
       // raise it after reservation by mutating/rebuilding options.
-      maxOutputTokens: Math.min(
-        admittedMaxOutputTokens,
-        lease.request.estimate.maxOutputTokens,
-      ),
+      maxOutputTokens: dispatchedMaxOutputTokens,
+      // Warning only, as above, measured against what is actually dispatched.
+      ...(configuredMaxOutputTokens !== undefined &&
+      dispatchedMaxOutputTokens < configuredMaxOutputTokens
+        ? { requestedMaxOutputTokens: configuredMaxOutputTokens }
+        : {}),
       // The lease signal also carries parent cancellation, deadline expiry,
       // daemon shutdown, and restart recovery decisions.
       signal: lease.signal,
@@ -769,13 +944,13 @@ export async function runAdmittedModelCall(
       });
     }
     const actualModel = response.model || effectiveModel;
-    const actualCost = usageCostUsd(
-      actualModel,
-      effectiveProvider,
+    const actualPrice = usageCostUsd(
+      managedRoutePriced ? effectiveModel : actualModel,
+      pricingProvider,
       usage,
       params.options,
     );
-    if (actualCost === null) {
+    if (actualPrice === null) {
       if (hasHardCostCap) {
         // This is one durable transaction, not holdUnknown followed by a
         // separate cancellation: the dispatched reservation remains fully
@@ -803,12 +978,23 @@ export async function runAdmittedModelCall(
       tokenAccountingService.recordProviderUsage(
         accountingResult,
         reconciled.inputTokens,
+        // A provider-native server tool feeds its results (search pages, code
+        // output) back into this turn on the provider side, so the reported
+        // input exceeds anything this process could count. Learning from that
+        // ratio locked a grok-4.7 conversation's factor at the cap after two
+        // web searches (reported 58,887 and 62,442 against a query-sized
+        // count), and every later turn was then denied context_window_exceeded
+        // with the real prompt at 86k of a 500k window. Only the provider-native
+        // tools actually configured for this call count: a client tool that
+        // happens to be named web_search runs here and is counted normally.
+        { calibrate: providerNativeTools.length === 0 },
       );
     }
     const outcome = client.reconcile(reservationId, {
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,
-      costUsd: actualCost,
+      costUsd: actualPrice.costUsd,
+      ...(actualPrice.costEstimated ? { costEstimated: true } : {}),
     });
     settled = true;
     hitM4DurabilityFailpoint("after_model_response_commit");
@@ -826,9 +1012,12 @@ export async function runAdmittedModelCall(
     if (settled) {
       // Reconciliation/unknown-hold already reached an exactly-once terminal
       // state. Never overwrite it from a broad catch path.
-    } else if (dispatched && params.providerName === "agenc" && error instanceof LLMManagedAdmissionError) {
-      // The trusted gateway rejected this exact attempt before provider work.
-      // Keep unrelated unknown holds, but do not fabricate usage for this one.
+    } else if (dispatched && (
+      isLLMPreGenerationRejection(error, effectiveProvider) ||
+      (params.providerName === "agenc" && error instanceof LLMManagedAdmissionError)
+    )) {
+      // The adapter/gateway proved this exact attempt never generated. A plain
+      // rate-limit error or missing/partial usage is not sufficient evidence.
       client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
     } else if (dispatched) {
       client.holdUnknown(reservationId, "provider_call_failed_after_dispatch");

@@ -50,7 +50,6 @@ describe("syncCollabAgentEventToAppState coverage edges", () => {
       status: "killed",
       description: "agent/canceled 1",
       outputFile: "urn:agenc:task:agent%2Fcanceled%201:output",
-      endTime: 5000,
       // now(5000) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
       evictAfter: 1_805_000,
       notified: true,

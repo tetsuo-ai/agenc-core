@@ -546,12 +546,6 @@ vi.mock('../../utils/platform.js', () => ({
   getPlatform: () => harness.platform,
 }))
 
-vi.mock('../../utils/promptEditor.js', () => ({
-  editPromptInEditor: vi.fn(async () => {
-    if (harness.editPromptError) throw harness.editPromptError
-    return harness.editPromptResult
-  }),
-}))
 
 vi.mock('../input/processBashCommand.js', () => ({
   processBashCommand: vi.fn(async () => ({ messages: [] })),
@@ -735,7 +729,6 @@ vi.mock('../components/PromptInput/utils.js', async importOriginal => {
   >()
   return {
     ...actual,
-    isVimModeEnabled: () => false,
   }
 })
 
@@ -827,13 +820,11 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     setShowBashesDialog: vi.fn(),
     setStashedPrompt: vi.fn(),
     setToolPermissionContext: vi.fn(),
-    setVimMode: vi.fn(),
     showBashesDialog: false,
     stashedPrompt: undefined,
     submitCount: 0,
     toolPermissionContext: harness.appState.toolPermissionContext,
     verbose: false,
-    vimMode: 'INSERT',
     ...overrides,
   }
 }
@@ -982,33 +973,6 @@ describe('PromptInput coverage swarm row 001', () => {
       )
       expect(onInputChange).toHaveBeenCalledWith(
         expect.stringContaining(' @"/dragged/file x" '),
-      )
-    } finally {
-      await rendered.dispose()
-    }
-  })
-
-  test('reports external editor returned errors and thrown failures', async () => {
-    harness.editPromptResult = { content: null, error: 'editor exited' }
-    const rendered = await renderPromptInput({ input: 'draft' })
-
-    try {
-      await harness.keybindings['chat:externalEditor']?.()
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({
-          key: 'external-editor-error',
-          text: 'editor exited',
-        }),
-      )
-
-      harness.addNotification.mockClear()
-      harness.editPromptError = new Error('spawn failed')
-      await harness.keybindings['chat:externalEditor']?.()
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({
-          key: 'external-editor-error',
-          text: 'External editor failed: Error: spawn failed',
-        }),
       )
     } finally {
       await rendered.dispose()

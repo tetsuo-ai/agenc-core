@@ -10,7 +10,39 @@ import type { LLMMessage } from "../../../../src/llm/types.js";
 import { ModelMetadataResolver } from "../../../../src/llm/model-metadata.js";
 import { defaultConfig } from "../../../../src/config/schema.js";
 
-describe.each(AGENC_DEEPSEEK_MODELS)("AgenC $model promotion wire", ({ model }) => {
+describe.each(AGENC_DEEPSEEK_MODELS)("AgenC $model promotion wire", ({ model, vision }) => {
+  it.each([false, true])("delivers V4.1 user and tool images with preserved tool results (stream=%s)", async stream => {
+    const image = { type: "image_url" as const, image_url: { url: "data:image/png;base64,aW1hZ2U=" } };
+    const bodies: any[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return stream ? new Response('data: {"choices":[{"index":0,"delta":{"content":"seen"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
+        : Response.json({ choices: [{ message: { content: "seen" }, finish_reason: "stop" }] });
+    });
+    const authBackend: AuthBackend = {
+      kind: "remote", login: () => ({ authenticated: true }), logout: () => ({ authenticated: false }), whoami: () => ({ authenticated: true }), getSubscriptionTier: () => "free",
+      getLlmUsage: () => ({ managedModelsEnabled: true, subscriptionTier: "free", modelAllowance: { status: "active", duration: "promotion", allowedModelCount: 1 } }),
+      inferAgencModel: () => ({ provider: "openrouter", model }),
+      vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId, apiKey: "synthetic", baseUrl: "https://identity.example.test/v1" }),
+    };
+    const provider = createProvider("agenc", { model, tools: [], extra: { authBackend, sessionId: "synthetic", subscriptionTier: "free", fetchImpl } });
+    try {
+      expect(resolveRegisteredModelCatalogEntry({ provider: "agenc", model })?.inputModalities.includes("image")).toBe(vision);
+      const messages: LLMMessage[] = [
+        { role: "user", content: [{ type: "text", text: "Compare the upload and screenshot." }, image] },
+        { role: "assistant", content: "", toolCalls: [{ id: "call_capture", name: "capture", arguments: "{}" }] },
+        { role: "tool", toolCallId: "call_capture", toolName: "capture", content: [{ type: "text", text: "Screenshot taken." }, image] },
+      ];
+      const run = stream ? provider.chatStream(messages, () => {}, { reasoningEffort: "high" }) : provider.chat(messages, { reasoningEffort: "high" });
+      if (!vision) { await expect(run).rejects.toThrow("does not support image input"); expect(fetchImpl).not.toHaveBeenCalled(); return; }
+      expect((await run).content).toBe("seen");
+      const rows = bodies[0].messages;
+      expect(rows.filter((row: any) => row.role === "user").flatMap((row: any) => row.content).filter((part: any) => part.type === "image_url")).toEqual([image, image]);
+      expect(rows.find((row: any) => row.role === "tool")).toMatchObject({ tool_call_id: "call_capture", content: "Screenshot taken." });
+      expect(rows.at(-1).role).toBe("user");
+      expect(bodies[0].reasoning_effort).toBe("high");
+    } finally { await provider.dispose?.(); }
+  });
   it.each(["low", "high", "max"] as const)("reserves room for reasoning and tools at native %s effort while honoring explicit limits", reasoningEffort => {
     const config = { ...defaultConfig(), model_provider: "agenc", model, reasoning_effort: reasoningEffort };
     const resolver = new ModelMetadataResolver({ env: {} });

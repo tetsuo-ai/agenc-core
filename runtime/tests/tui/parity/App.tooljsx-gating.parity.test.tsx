@@ -106,12 +106,9 @@ describe("R3 toolJSX gating reaches the Messages animation gate", () => {
     );
   });
 
-  test("B3.5 pending permissions do not auto-focus the diff surface; diff review stays opt-in", () => {
+  test("B3.5 pending permissions render the head request in the overlay without auto-focusing anything else", () => {
     const source = readSource();
     expect(source).not.toMatch(/firstPermissionRequestId/);
-    expect(source).not.toMatch(
-      /permissionRequests[\s\S]{0,400}applyWorkbenchCommand[\s\S]{0,200}type:\s*["']openDiff["']/,
-    );
-    expect(source).toMatch(/<ApprovalSurfaceBridge\b[\s\S]{0,200}request\s*=\s*\{\s*permissionRequests\[0\]\s*\}/);
+    expect(source).toMatch(/<PermissionOverlay\b[\s\S]{0,200}request\s*=\s*\{\s*permissionRequests\[0\]\s*\}/);
   });
 });

@@ -25,6 +25,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 
 import { asRecord } from '../../utils/record.js'
+import { BUILT_IN_PROVIDER_BASE_URLS } from '../../llm/registry/provider-info.js'
+import { fetchTrustedTokenEndpoint } from '../../llm/trusted-token-endpoint.js'
 
 /** xAI's shared Grok-CLI OAuth client (public client, no secret). */
 export const XAI_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
@@ -98,6 +100,7 @@ export type XaiOauthErrorCode =
   | 'expired_token'
   | 'malformed_response'
   | 'callback_failed'
+  | 'cancelled'
   | 'timeout'
   | 'oauth_error'
 
@@ -115,10 +118,32 @@ export class XaiOauthError extends Error {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+function throwIfLoginCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new XaiOauthError('cancelled', 'xAI sign-in was cancelled.')
+  }
+}
+
+/** Keep one login attempt's cancellation attached to every request. */
+function loginFetch(fetchFn: FetchLike, signal?: AbortSignal): FetchLike {
+  if (signal === undefined) return fetchFn
+  return async (input, init) => {
+    throwIfLoginCancelled(signal)
+    try {
+      const response = await fetchFn(input, { ...init, signal })
+      throwIfLoginCancelled(signal)
+      return response
+    } catch (error) {
+      throwIfLoginCancelled(signal)
+      throw error
+    }
+  }
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new XaiOauthError('timeout', 'xAI login aborted'))
+      reject(new XaiOauthError('cancelled', 'xAI sign-in was cancelled.'))
       return
     }
     const timer = setTimeout(() => {
@@ -127,7 +152,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms)
     const onAbort = () => {
       clearTimeout(timer)
-      reject(new XaiOauthError('timeout', 'xAI login aborted'))
+      reject(new XaiOauthError('cancelled', 'xAI sign-in was cancelled.'))
     }
     signal?.addEventListener('abort', onAbort, { once: true })
   })
@@ -150,29 +175,20 @@ export function isTrustedXaiOauthEndpoint(url: string): boolean {
   return host === 'x.ai' || host.endsWith('.x.ai')
 }
 
-/**
- * Hosts the OAuth bearer may be sent to for INFERENCE: xAI's API
- * (`api.x.ai`, Hermes' choice) and the Grok Build CLI proxy
- * (`cli-chat-proxy.grok.com`, OpenClaw's choice). A custom base-URL
- * override outside these origins must never receive the subscription
- * bearer — that is a token-exfiltration vector, not a configuration.
- */
+/** The only inference base URL allowed to receive the xAI sign-in bearer. */
 export function isTrustedXaiOauthInferenceBaseUrl(url: string | undefined): boolean {
-  if (!url) return false
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return false
+  return url !== undefined &&
+    url.replace(/\/+$/u, '') === BUILT_IN_PROVIDER_BASE_URLS.grok
+}
+
+export function assertXaiOauthBaseUrl(baseURL: string | undefined): string {
+  if (baseURL !== undefined && !isTrustedXaiOauthInferenceBaseUrl(baseURL)) {
+    throw new Error(
+      'xAI sign-in credentials are bound to the first-party xAI API endpoint. ' +
+      'Select API-key mode to use a custom Grok base URL, or unset the base URL override.',
+    )
   }
-  if (parsed.protocol !== 'https:') return false
-  const host = parsed.hostname.toLowerCase()
-  return (
-    host === 'x.ai' ||
-    host.endsWith('.x.ai') ||
-    host === 'grok.com' ||
-    host.endsWith('.grok.com')
-  )
+  return BUILT_IN_PROVIDER_BASE_URLS.grok
 }
 
 function requireTrustedEndpoint(url: unknown, label: string): string {
@@ -286,14 +302,14 @@ async function postTokenEndpoint(
   }
   let attempt = 0
   for (;;) {
-    const res = await fetchFn(tokenEndpoint, {
+    const res = await fetchTrustedTokenEndpoint(tokenEndpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: body.toString(),
-    })
+    }, fetchFn)
     const text = await res.text().catch(() => '')
     if (
       options?.retryCloudflareChallenges === true &&
@@ -384,7 +400,7 @@ function parseTokenResponse(
   if (options.requireRefreshToken && refreshToken === undefined) {
     throw new XaiOauthError(
       'malformed_response',
-      'xAI token response had no refresh_token — the offline_access scope was ' +
+      'xAI token response had no refresh_token: the offline_access scope was ' +
         'rejected; sign in again and approve all requested permissions',
     )
   }
@@ -503,7 +519,8 @@ export async function pollXaiDeviceToken(params: {
   fetchImpl?: FetchLike
   signal?: AbortSignal
 }): Promise<XaiOauthTokens> {
-  const fetchFn = params.fetchImpl ?? fetch
+  const fetchFn = loginFetch(params.fetchImpl ?? fetch, params.signal)
+  throwIfLoginCancelled(params.signal)
   let intervalS = Math.max(MIN_DEVICE_POLL_INTERVAL_S, params.deviceCode.interval)
   // +3s margin past the server-declared expiry so a final in-flight approval
   // still lands.
@@ -519,6 +536,7 @@ export async function pollXaiDeviceToken(params: {
       }),
       fetchFn,
     )
+    throwIfLoginCancelled(params.signal)
     const err = typeof data.error === 'string' ? data.error : undefined
     if (err === undefined) {
       return parseTokenResponse(data, { requireRefreshToken: true })
@@ -576,22 +594,33 @@ export function waitForXaiLoopbackCallback(params: {
   state: string
   timeoutMs: number
   port?: number
+  signal?: AbortSignal
 }): { promise: Promise<XaiLoopbackResult>; close: () => void } {
   const port = params.port ?? XAI_OAUTH_REDIRECT_PORT
   let closeServer: () => void = () => {}
 
   const promise = new Promise<XaiLoopbackResult>((resolve, reject) => {
+    throwIfLoginCancelled(params.signal)
     let settled = false
-    const settle = (fn: () => void) => {
+    const settle = (fn: () => void, flushResponse = true) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      params.signal?.removeEventListener('abort', onAbort)
       fn()
-      // Delay close one tick so the response body flushes.
-      setImmediate(() => server.close())
+      // Give callback responses time to flush; cancellation closes immediately.
+      if (flushResponse) setImmediate(() => server.close())
+      else {
+        server.close()
+        server.closeAllConnections()
+      }
     }
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (settled || params.signal?.aborted) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' }).end('Sign-in is no longer pending')
+        return
+      }
       const origin = req.headers.origin
       if (typeof origin === 'string' && CALLBACK_ALLOWED_ORIGINS.has(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin)
@@ -655,12 +684,16 @@ export function waitForXaiLoopbackCallback(params: {
       settle(() => reject(new XaiOauthError('callback_failed', message)))
     })
 
-    server.listen(port, '127.0.0.1')
-    closeServer = () => {
+    const onAbort = () => {
       settle(() =>
-        reject(new XaiOauthError('timeout', 'xAI sign-in was cancelled.')),
+        reject(new XaiOauthError('cancelled', 'xAI sign-in was cancelled.')), false,
       )
     }
+    closeServer = onAbort
+    params.signal?.addEventListener('abort', onAbort, { once: true })
+    // An immediate cancellation can run before listen's asynchronous bind.
+    server.once('listening', () => { if (settled) server.close() })
+    server.listen(port, '127.0.0.1')
   })
 
   return { promise, close: () => closeServer() }
@@ -683,15 +716,22 @@ export async function runXaiBrowserLogin(params: {
   onStage?: (stage: 'callback_received' | 'exchanging_code') => void | Promise<void>
   timeoutMs?: number
   fetchImpl?: FetchLike
+  signal?: AbortSignal
 }): Promise<XaiBrowserLoginResult> {
-  const endpoints = await discoverXaiOauthEndpoints(params.fetchImpl)
+  const fetchFn = loginFetch(params.fetchImpl ?? fetch, params.signal)
+  throwIfLoginCancelled(params.signal)
+  const endpoints = await discoverXaiOauthEndpoints(fetchFn)
+  throwIfLoginCancelled(params.signal)
   const pkce = createXaiPkcePair()
   const state = createXaiOauthState()
   const nonce = createXaiOauthState()
   const callback = waitForXaiLoopbackCallback({
     state,
     timeoutMs: params.timeoutMs ?? DEFAULT_DEVICE_TIMEOUT_S * 1000,
+    ...(params.signal ? { signal: params.signal } : {}),
   })
+  // The listener may fail while the caller is still displaying/opening the URL.
+  void callback.promise.catch(() => {})
   try {
     const authorizeUrl = buildXaiAuthorizeUrl({
       authorizationEndpoint: endpoints.authorizationEndpoint,
@@ -700,16 +740,21 @@ export async function runXaiBrowserLogin(params: {
       nonce,
     })
     await params.onAuthorizeUrl(authorizeUrl)
+    throwIfLoginCancelled(params.signal)
     const { code } = await callback.promise
+    throwIfLoginCancelled(params.signal)
     await params.onStage?.('callback_received')
+    throwIfLoginCancelled(params.signal)
     await params.onStage?.('exchanging_code')
+    throwIfLoginCancelled(params.signal)
     const tokens = await exchangeXaiAuthorizationCode({
       tokenEndpoint: endpoints.tokenEndpoint,
       code,
       codeVerifier: pkce.verifier,
       codeChallenge: pkce.challenge,
-      ...(params.fetchImpl ? { fetchImpl: params.fetchImpl } : {}),
+      fetchImpl: fetchFn,
     })
+    throwIfLoginCancelled(params.signal)
     return {
       tokens,
       identity: xaiIdentityFromTokens(tokens),
@@ -717,6 +762,7 @@ export async function runXaiBrowserLogin(params: {
     }
   } catch (error) {
     callback.close()
+    throwIfLoginCancelled(params.signal)
     throw error
   }
 }
@@ -737,7 +783,10 @@ export async function runXaiDeviceLogin(params: {
   fetchImpl?: FetchLike
   signal?: AbortSignal
 }): Promise<XaiDeviceLoginResult> {
-  const endpoints = await discoverXaiOauthEndpoints(params.fetchImpl)
+  const fetchFn = loginFetch(params.fetchImpl ?? fetch, params.signal)
+  throwIfLoginCancelled(params.signal)
+  const endpoints = await discoverXaiOauthEndpoints(fetchFn)
+  throwIfLoginCancelled(params.signal)
   const deviceEndpoint =
     endpoints.deviceAuthorizationEndpoint ??
     XAI_OAUTH_FALLBACK_ENDPOINTS.deviceAuthorizationEndpoint
@@ -746,8 +795,9 @@ export async function runXaiDeviceLogin(params: {
   }
   const deviceCode = await requestXaiDeviceCode({
     deviceAuthorizationEndpoint: deviceEndpoint,
-    ...(params.fetchImpl ? { fetchImpl: params.fetchImpl } : {}),
+    fetchImpl: fetchFn,
   })
+  throwIfLoginCancelled(params.signal)
   await params.onUserCode({
     userCode: deviceCode.userCode,
     verificationUri: deviceCode.verificationUri,
@@ -755,6 +805,7 @@ export async function runXaiDeviceLogin(params: {
       ? { verificationUriComplete: deviceCode.verificationUriComplete }
       : {}),
   })
+  throwIfLoginCancelled(params.signal)
   const tokens = await pollXaiDeviceToken({
     tokenEndpoint: endpoints.tokenEndpoint,
     deviceCode,

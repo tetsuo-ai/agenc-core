@@ -10,7 +10,11 @@ import { getCwd } from 'src/utils/cwd.js'
 import { pathInAllowedWorkingPath } from 'src/utils/permissions/filesystem.js'
 import { setCwd } from 'src/utils/Shell.js'
 import { shouldMaintainProjectWorkingDir } from '../../utils/envUtils.js'
-import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
+import {
+  ImageDecoderUnavailableError,
+  maybeResizeAndDownsampleImageBuffer,
+  UndecodableImageError,
+} from '../../utils/imageResizer.js'
 import { getMaxOutputLength } from '../../utils/shell/outputLimits.js'
 import { countCharInString, plural } from '../../utils/stringUtils.js'
 /**
@@ -103,7 +107,8 @@ const MAX_IMAGE_FILE_SIZE = 20 * 1024 * 1024
  * resolution and poisons many-image requests (CC-304).
  *
  * Returns the re-encoded data URI on success, or null if the source didn't
- * parse as a data URI (caller decides whether to flip isImage).
+ * parse as a data URI or does not hold a decodable image (caller decides
+ * whether to flip isImage).
  */
 export async function resizeShellImageOutput(
   stdout: string,
@@ -120,11 +125,20 @@ export async function resizeShellImageOutput(
   if (!parsed) return null
   const buf = Buffer.from(parsed.data, 'base64')
   const ext = parsed.mediaType.split('/')[1] || 'png'
-  const resized = await maybeResizeAndDownsampleImageBuffer(
-    buf,
-    buf.length,
-    ext,
-  )
+  let resized
+  try {
+    resized = await maybeResizeAndDownsampleImageBuffer(buf, buf.length, ext)
+  } catch (error) {
+    // Bytes that are not an image, or that no decoder can check, stay text;
+    // sending them as an image could be refused on every later request.
+    if (
+      error instanceof UndecodableImageError ||
+      error instanceof ImageDecoderUnavailableError
+    ) {
+      return null
+    }
+    throw error
+  }
   return `data:image/${resized.mediaType};base64,${resized.buffer.toString('base64')}`
 }
 

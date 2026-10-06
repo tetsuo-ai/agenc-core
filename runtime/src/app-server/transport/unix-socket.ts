@@ -11,7 +11,6 @@
  *     local daemon socket surface.
  */
 
-import { createHash } from "node:crypto";
 import { lstat, mkdir, chmod, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, win32 } from "node:path";
@@ -24,33 +23,27 @@ import {
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
+import type { ResolveRoutineSessionId } from "../overload.js";
 import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
 import {
   loadAgenCNativePeerCredentialBinding,
   type AgenCNativePeerCredentialBinding,
 } from "./peer-credentials.js";
 
+import {
+  agenCDaemonLocalEndpoint,
+  assertAgenCUnixSocketPathLength,
+} from "../../../../packages/agenc-sdk/lib/local-endpoint.mjs";
+export { agenCDaemonLocalEndpoint } from "../../../../packages/agenc-sdk/lib/local-endpoint.mjs";
+
 const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
 const AGENC_DAEMON_SOCKET_MODE = 0o600;
 const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
 const AGENC_WINDOWS_NAMED_PIPE_ROOT = "\\\\.\\pipe\\";
-const AGENC_DAEMON_WINDOWS_PIPE_PREFIX = `${AGENC_WINDOWS_NAMED_PIPE_ROOT}agenc-daemon-`;
 
 export function isAgenCWindowsNamedPipePath(endpoint: string): boolean {
   return endpoint.toLowerCase().startsWith(AGENC_WINDOWS_NAMED_PIPE_ROOT);
-}
-
-export function agenCDaemonLocalEndpoint(
-  daemonHome: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (platform !== "win32") {
-    return join(daemonHome, "daemon.sock");
-  }
-  const canonicalHome = win32.resolve(daemonHome).toLowerCase();
-  const identity = createHash("sha256").update(canonicalHome).digest("hex");
-  return `${AGENC_DAEMON_WINDOWS_PIPE_PREFIX}${identity}`;
 }
 
 export function defaultAgenCDaemonSocketPath(
@@ -96,6 +89,7 @@ export interface AgenCUnixSocketServerOptions {
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
   readonly maxQueuedRequests?: number;
+  readonly resolveRoutineSessionId?: ResolveRoutineSessionId;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCUnixSocketMessageContext,
@@ -133,6 +127,9 @@ export class AgenCUnixSocketServer {
   #nativePeerCredentialBinding: AgenCNativePeerCredentialBinding | null = null;
   #boundSocketIdentity: AgenCUnixSocketPathIdentity | null = null;
   #nextConnectionId = 1;
+  #listening: Promise<string> | null = null;
+  #closing: Promise<void> | null = null;
+  #closeInProgress = false;
 
   constructor(options: AgenCUnixSocketServerOptions) {
     this.#options = options;
@@ -145,11 +142,21 @@ export class AgenCUnixSocketServer {
     );
   }
 
-  async listen(): Promise<string> {
-    if (this.#server !== null) {
-      throw new Error("AgenC Unix socket transport is already listening");
+  listen(): Promise<string> {
+    if (this.#closeInProgress) {
+      return Promise.reject(new Error("AgenC Unix socket transport is closing"));
     }
+    if (this.#server !== null || this.#listening !== null) {
+      return Promise.reject(new Error("AgenC Unix socket transport is already listening"));
+    }
+    this.#closing = null;
+    this.#listening = this.#listen().finally(() => {
+      this.#listening = null;
+    });
+    return this.#listening;
+  }
 
+  async #listen(): Promise<string> {
     if (
       this.#options.nativePeerCredentialAddonPath !== undefined &&
       this.#options.nativePeerCredentialBinding !== undefined
@@ -250,7 +257,23 @@ export class AgenCUnixSocketServer {
     return socketPath;
   }
 
-  async close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+  close(options: AgenCTransportCloseOptions = {}): Promise<void> {
+    if (this.#closing !== null) return this.#closing;
+    this.#closeInProgress = true;
+    const listening = this.#listening;
+    this.#closing = (async () => {
+      // Startup owns its listener until bind and path identity capture finish.
+      // Keep admission fenced while joining it, then release that generation.
+      if (listening !== null) await listening.catch(() => {});
+      await this.#close(options);
+    })().finally(() => {
+      this.#closeInProgress = false;
+      this.#closing = null;
+    });
+    return this.#closing;
+  }
+
+  async #close(options: AgenCTransportCloseOptions): Promise<void> {
     const server = this.#server;
     const boundSocketIdentity = this.#boundSocketIdentity;
     this.#server = null;
@@ -270,7 +293,7 @@ export class AgenCUnixSocketServer {
     if (server !== null) {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
-          if (error) {
+          if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
             reject(error);
             return;
           }
@@ -287,7 +310,7 @@ export class AgenCUnixSocketServer {
   }
 
   #acceptConnection(socket: Socket): void {
-    if (this.#server === null) {
+    if (this.#server === null || this.#closeInProgress) {
       socket.destroy();
       return;
     }
@@ -351,6 +374,7 @@ export class AgenCUnixSocketServer {
       input: socket,
       output: socket,
       maxQueuedRequests: this.#options.maxQueuedRequests,
+      resolveRoutineSessionId: this.#options.resolveRoutineSessionId,
       onMessage: async (message) => {
         // Parsed frames can still be queued behind an active request after
         // disconnect. They must never recreate a daemon connection or start
@@ -457,6 +481,7 @@ export class AgenCUnixSocketServer {
 export async function prepareAgenCUnixSocketPath(
   socketPath: string,
 ): Promise<void> {
+  assertAgenCUnixSocketPathLength(socketPath);
   await mkdir(dirname(socketPath), {
     recursive: true,
     mode: AGENC_DAEMON_SOCKET_DIR_MODE,

@@ -21,7 +21,6 @@ const fixture = vi.hoisted(() => ({
   queuedCommandsLength: 0,
   hasCommandsInQueue: false,
   overlayActive: false,
-  vimEnabled: false,
   keybindings: new Map<string, CapturedKeybinding>(),
   addNotification: vi.fn(),
   removeNotification: vi.fn(),
@@ -50,10 +49,6 @@ vi.mock('src/tui/state/AppState.js', () => ({
     fixture.state =
       typeof updater === 'function' ? updater(fixture.state) : updater
   },
-}))
-
-vi.mock('src/tui/components/PromptInput/utils.js', () => ({
-  isVimModeEnabled: () => fixture.vimEnabled,
 }))
 
 vi.mock('src/tui/context/notifications', () => ({
@@ -146,7 +141,6 @@ async function renderHandler(
     readonly isSearchingHistory?: boolean
     readonly popCommandFromQueue?: () => void
     readonly screen?: 'prompt' | 'transcript'
-    readonly vimMode?: 'INSERT' | 'NORMAL'
   } = {},
 ): Promise<void> {
   const { CancelRequestHandler } = await import(
@@ -176,7 +170,6 @@ describe('CancelRequestHandler coverage swarm 109', () => {
     fixture.queuedCommandsLength = 0
     fixture.hasCommandsInQueue = false
     fixture.overlayActive = false
-    fixture.vimEnabled = false
     fixture.keybindings.clear()
     vi.clearAllMocks()
   })
@@ -275,15 +268,13 @@ describe('CancelRequestHandler coverage swarm 109', () => {
     },
   )
 
-  // transcript screen and vim INSERT only claim Escape while AgenC is idle;
-  // during an active turn the interrupt keys stay live (98af9cb21).
+  // the transcript screen only claims Escape while AgenC is idle; during an
+  // active turn the interrupt keys stay live (98af9cb21).
   test.each([
-    ['transcript screen', { screen: 'transcript' as const }, false],
-    ['vim insert mode', { vimMode: 'INSERT' as const }, true],
+    ['transcript screen', { screen: 'transcript' as const }],
   ])(
     'keeps cancel keybindings active during an active turn despite %s',
-    async (_name, overrides, vimEnabled) => {
-      fixture.vimEnabled = vimEnabled
+    async (_name, overrides) => {
       const abortController = new AbortController()
 
       await renderHandler({
@@ -297,12 +288,10 @@ describe('CancelRequestHandler coverage swarm 109', () => {
   )
 
   test.each([
-    ['transcript screen', { screen: 'transcript' as const }, false],
-    ['vim insert mode', { vimMode: 'INSERT' as const }, true],
+    ['transcript screen', { screen: 'transcript' as const }],
   ])(
     'defers cancel keybindings to %s while idle even with queued commands',
-    async (_name, overrides, vimEnabled) => {
-      fixture.vimEnabled = vimEnabled
+    async (_name, overrides) => {
       fixture.queuedCommandsLength = 1
       fixture.hasCommandsInQueue = true
 

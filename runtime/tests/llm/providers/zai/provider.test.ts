@@ -24,6 +24,16 @@ import {
   sseResponse,
 } from "../openai-compatible-test-helpers.js";
 import { ZaiCodingPlanProvider, ZaiProvider } from "./index.js";
+import {
+  LLMInvalidResponseError,
+  LLMFundsError,
+  LLMProviderError,
+  LLMRateLimitError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
+import { StreamModelError } from "../../../phases/stream-model.js";
+import { isRetryableStreamError } from "../../../session/run-turn-stream-retry.js";
+import { FallbackTriggeredError, isTransientProviderError } from "../../../recovery/api-errors.js";
 
 const successfulChat = createSuccessfulChatResponse("chatcmpl_zai");
 
@@ -1095,7 +1105,7 @@ describe("ZaiProvider", () => {
       const error = await provider.chat([{ role: "user", content: "go" }])
         .then(() => undefined, (caught: unknown) => caught);
       expect(error).toMatchObject({
-        name: "LLMProviderError",
+        name: "LLMFundsError",
         providerName,
       });
       expect(error).not.toMatchObject({ name: "LLMRateLimitError" });
@@ -1254,4 +1264,219 @@ describe("ZaiProvider", () => {
       });
     },
   );
+});
+
+// A Terminal-Bench 4.0 GLM-5.3 trial (2026-09-14) solved its task, then lost the turn when the connection dropped
+// mid-reasoning: the strict SSE check filed the cut stream as a malformed, non-retryable response.
+describe("ZaiProvider stream cut before any terminal signal", () => {
+  const providerWith = (chunks: readonly string[]) => new ZaiProvider({
+    apiKey: "payg-test",
+    model: "glm-5.3",
+    tools: [ECHO_TOOL],
+    fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(sseResponse([...chunks])),
+  });
+  const failureOf = (chunks: readonly string[]) => providerWith(chunks)
+    .chatStream([{ role: "user", content: "go" }], () => undefined)
+    .then(() => undefined, (error: unknown) => error);
+  const reasoning = 'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"reasoning_content":"thinking about the task"}}]}\n\n';
+
+  test("a cut mid-reasoning with an unterminated fragment is a retryable truncated stream", async () => {
+    const error = await failureOf([reasoning, 'data: {"choices":[{"index":0,"delta":{"reasoning_con']);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/unterminated event before any finish_reason/);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a clean close mid-reasoning without [DONE] is a retryable truncated stream", async () => {
+    const error = await failureOf([reasoning]);
+    expect(error).toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/closed before any finish_reason/);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a cut after a tool call started stays a non-retryable invalid response", async () => {
+    const error = await failureOf([
+      'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.echo","arguments":{"text":"must not run"}}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_ca',
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("a cut inside the first tool call frame stays a non-retryable invalid response", async () => {
+    const error = await failureOf([
+      reasoning,
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","function":{"name":"system.ec',
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("a complete malformed frame is still a malformed stream, not a cut", async () => {
+    const error = await failureOf([reasoning, "data: {not-json}\n\n"]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test("an unterminated fragment after finish_reason still fails closed", async () => {
+    const error = await failureOf([
+      'data: {"model":"glm-5.3","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
+      "data: {unterminated",
+    ]);
+    expect(error).toBeInstanceOf(LLMInvalidResponseError);
+    expect(error).not.toBeInstanceOf(LLMStreamTruncatedError);
+    expect((error as Error).message).toMatch(/SSE stream ended with an unterminated event$/);
+  });
+});
+
+// Terminal-Bench 4.0, 2026-09-14: an exhausted Z.AI balance refused GLM-5.3 streaming requests with HTTP 429 and code
+// 1113 but no content-type header. The error body stayed text, the 1113 check missed it, and the turn retried a billing
+// refusal as a rate limit before waiting it out as a provider outage.
+describe("Z.AI billing refusal on a streaming request", () => {
+  const BILLING_BODY =
+    '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}';
+  // The streaming refusal as api.z.ai sends it: status 429 and no content-type header at all.
+  const refusal = (body: string) => {
+    const response = new Response(new TextEncoder().encode(body), { status: 429 });
+    expect(response.headers.get("content-type")).toBeNull();
+    return response;
+  };
+  const failureOf = (
+    provider: Pick<ZaiProvider, "chatStream">,
+    options?: { readonly singleWireAttempt?: boolean },
+  ) => provider
+    .chatStream([{ role: "user", content: "go" }], () => undefined, options)
+    .then(() => undefined, (error: unknown) => error);
+  const fallbackTo = { provider: "zai", model: "glm-5.3", targets: [{ provider: "deepseek", model: "deepseek-v4-pro" }] };
+
+  test.each([
+    ["zai", false],
+    ["zai", true],
+    ["zai-coding-plan", false],
+    ["zai-coding-plan", true],
+  ] as const)("%s (singleWireAttempt %s) ends on a terminal billing error after one request", async (providerName, singleWireAttempt) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = providerName === "zai"
+      ? new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl })
+      : new ZaiCodingPlanProvider({ apiKey: "coding-plan-test", model: "glm-5.3", fetchImpl });
+    const error = await failureOf(provider, { singleWireAttempt });
+    expect(error).toBeInstanceOf(LLMFundsError);
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(String(error)).toMatch(/code 1113.*billing/i);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+  });
+
+  test.each([
+    ["1302", "Rate limit reached for requests"],
+    ["1305", "The service may be temporarily overloaded, please try again later"],
+  ])("a 429 with code %s, which clears on its own, stays a retryable rate limit", async (code, message) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal(JSON.stringify({ error: { code, message } })));
+    const error = await failureOf(new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }));
+    expect(error).toBeInstanceOf(LLMRateLimitError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  // The GLM Coding Plan refuses with the same shape once a usage window is spent or the plan does not cover the call,
+  // and those limits reset hours or days later. Retried as rate limits, each would have waited out a provider outage.
+  const planProvider = (fetchImpl: typeof fetch) =>
+    new ZaiCodingPlanProvider({ apiKey: "coding-plan-test", model: "glm-5.3", fetchImpl });
+
+  test.each([
+    ["1308", "Usage limit reached for 5 hour. Your limit will reset at 2026-09-15 01:46:49"],
+    ["1309", "Your GLM Coding Plan package has expired and is temporarily unavailable. You can resume using it after renewing the subscription on the official website."],
+    ["1310", "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-20 08:21:49"],
+    ["1311", "Your current subscription plan does not yet include access to glm-5.3"],
+    ["1313", "Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited."],
+    ["1314", "Your enterprise package has expired. Please contact your enterprise administrator."],
+    ["1315", "This API Key is limited to enterprise coding package scenarios. Please go to the official website to replace the API Key."],
+    ["1316", "Usage limit reached for the past 5 hours. Insufficient balance for extra usage. Resets at 2026-09-15 01:46:49."],
+    ["1317", "Usage limit reached for the past 7 days. Insufficient balance for extra usage. Resets at 2026-09-20 08:21:49."],
+    ["1318", "Usage limit reached for the past 5 hours. Extra usage is not available due to monthly spend limit. Resets at 2026-09-15 01:46:49."],
+    ["1319", "Usage limit reached for the past 7 days. Extra usage is not available due to monthly spend limit. Resets at 2026-09-20 08:21:49."],
+    ["1320", "Usage limit reached for the past 5 hours. Extra usage is not available due to monthly spend limit. Resets at 2026-09-15 01:46:49."],
+    ["1321", "Usage limit reached for the past 7 days. Extra usage is not available due to monthly spend limit. Resets at 2026-09-20 08:21:49."],
+  ])("plan refusal code %s ends on a terminal error that keeps Z.AI's reason, after one request", async (code, message) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal(JSON.stringify({ error: { code, message } })));
+    const error = await failureOf(planProvider(fetchImpl));
+    expect(error).toBeInstanceOf(LLMFundsError);
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(isTransientProviderError(error)).toBe(false);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
+    expect(String(error)).toContain(
+      `Z.AI code ${code} refuses the request for the account's plan or quota: ${message.replace(/\.$/, "")}. `,
+    );
+  });
+
+  test("a plan refusal on the Pay-As-You-Go provider is terminal too, even on a single wire attempt", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal('{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-20 08:21:49"}}'));
+    const error = await failureOf(
+      new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }),
+      { singleWireAttempt: true },
+    );
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test("a plan refusal keeps Z.AI's reason on one bounded line", async () => {
+    const detail = `Usage limit reached for the past 5 hours.\n\tResets at 2026-09-15 01:46:49.${" More.".repeat(80)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      refusal(JSON.stringify({ error: { code: "1316", message: detail } })));
+    const message = String(await failureOf(planProvider(fetchImpl)));
+    expect(message).toContain("plan or quota: Usage limit reached for the past 5 hours. Resets at 2026-09-15 01:46:49.");
+    expect(message).not.toMatch(/[\n\t]/);
+    expect(message.length).toBeLessThan(700);
+  });
+
+  test("a plan refusal without a message still names its code", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal('{"error":{"code":"1317"}}'));
+    const error = await failureOf(planProvider(fetchImpl));
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(String(error)).toContain(
+      "Z.AI code 1317 refuses the request for the account's plan or quota. This is not a transient rate limit",
+    );
+  });
+
+  test("a plain-text 429 stays a retryable rate limit", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal("Too Many Requests"));
+    const error = await failureOf(new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl }));
+    expect(error).toBeInstanceOf(LLMRateLimitError);
+    expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+  });
+
+  test("a configured fallback that does not name 429 leaves the refusal terminal after one request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = createProvider("zai", {
+      apiKey: "payg-test",
+      model: "glm-5.3",
+      extra: { fetchImpl, providerFallback: fallbackTo },
+    });
+    const error = await failureOf(provider);
+    expect(error).toBeInstanceOf(LLMProviderError);
+    expect(error).not.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test("a configured fallback on 429 still hands the refused request to its target", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => refusal(BILLING_BODY));
+    const provider = createProvider("zai", {
+      apiKey: "payg-test",
+      model: "glm-5.3",
+      extra: { fetchImpl, providerFallback: { ...fallbackTo, statuses: [429], maxFailures: 1 } },
+    });
+    const error = await failureOf(provider);
+    expect(error).toBeInstanceOf(FallbackTriggeredError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
 });

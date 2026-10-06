@@ -13,7 +13,7 @@ classifier, command plan, and local pitfalls are in
 [Fast `test:fast` checks](#fast-testfast-checks).
 
 `.github/workflows/platform-tests.yml` is manual. It retains the four full-suite
-shards and the Linux kernel, PowerShell, Neovim, macOS, and Windows jobs for
+shards and the Linux kernel, PowerShell, macOS, and Windows jobs for
 release candidates and changes that depend on those platforms. A normal PR does
 not need a full-suite receipt, a GitHub App check, or a platform-matrix run.
 
@@ -1051,24 +1051,7 @@ default suite, and runs an exact three-file allowlist. The Node tripwire remains
 active, while the native PowerShell subprocess is restricted to local
 fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
 postcondition; this narrow lane is not an OS egress boundary.
-The `neovim` matrix is five runners (`linux-x64`, `linux-arm64`, `darwin-x64`,
-`darwin-arm64`, `win-x64`) with digest-pinned Neovim. Lifecycle requires **18**
-tests in one file (`buffer-neovim-lifecycle.real-neovim.test.ts`). Provider and
-observed-descendant require **65** tests in three files on all five runners.
-Linux and Darwin also run the two hosted PTY scenarios with
-`node runtime/scripts/check-tui-e2e/runner.mjs --platform "$AGENC_NEOVIM_SLUG"`
-and expect `2/2 passed`. Do not add those scenarios back to `win-x64`.
-GitHub's hosted Windows ConPTY path has produced nondeterministic synthetic-input
-failures on unrelated changes. The registry
-(`runtime/scripts/check-tui-e2e/platform-scenarios.mjs`) and
-`selectPlatformScenarios()` reject `win-x64`. Reproduce the Unix pair locally
-with `--platform linux-x64` (or `linux-arm64` / `darwin-x64` /
-`darwin-arm64`). `--platform win-x64` fails closed. The full local BUFFER
-PTY set remains
-`npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim`.
-Windows still runs the 18-test lifecycle suite, the 68-test
-provider/observed-descendant set (including Job Object tree cleanup), and
-post-job leak assertions.
+Windows also runs post-job leak assertions.
 The `macos-native` job first runs the 79-test red-probe runner contract in a
 separate invocation capped at one worker. A failed invocation preserves its
 console log and JSON report, including phase diagnostics, for one day. This
@@ -1373,7 +1356,7 @@ General GitHub-hosted suite execution remains rejected because it spends remote
 runner time without strengthening the local hermetic boundary. Narrow
 exceptions cover capabilities Linux cannot otherwise prove: untagged candidate
 builders and PR lanes run exact macOS and Windows native probes, while the PR
-`powershell` and `neovim` lanes run exact pinned-runtime allowlists. None repeat
+`powershell` lane runs an exact pinned-runtime allowlist. None repeat
 the complete local plan. The current policy keeps broad merge verification local
 and records evidence in the PR. The optional App design would add authenticated
 exact-SHA enforcement without moving that complete plan to GitHub, but that

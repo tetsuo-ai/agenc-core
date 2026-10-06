@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { phaseEventToProgressEvent } from "../../src/app-server/background-agent-runner.js";
+import { terminalResultFromThread } from "../../src/app-server/background-agent-runner/turn-lifecycle.js";
 
 const usage = { inputTokens: 1, outputTokens: 2, totalTokens: 3 } as never;
 
@@ -14,21 +15,17 @@ function turnComplete(stopReason: string, content = ""): never {
 }
 
 describe("stop-reason mapping decides turn versus run scope", () => {
-  test("bounded stops end the turn, never the run", () => {
-    for (const reason of [
-      "no_progress",
-      "max_turns",
-      "max_budget_usd",
-      "compact_failed",
-      "editor_request_failed",
-    ]) {
-      const mapped = phaseEventToProgressEvent(turnComplete(reason));
-      expect(mapped?.kind, reason).toBe("turn_complete");
-      expect(
-        (mapped as { finalMessage?: string }).finalMessage,
-        reason,
-      ).toBeTruthy();
-    }
+
+  test("serializes string and object terminal thread statuses", () => {
+    const active = { lastActiveAt: "2026-09-23T10:00:00.000Z",
+      thread: { totalTokenUsage: () => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0 }) },
+      bootstrap: { session: { services: {} } } } as never;
+    expect(terminalResultFromThread(active, "run-1", "shutdown")).toMatchObject({
+      status: "cancelled", stopReason: "shutdown", finishedAt: "2026-09-23T10:00:00.000Z",
+    });
+    expect(terminalResultFromThread(active, "run-1", {
+      status: "completed", turnId: "turn-1", lastMessage: "done", endedAtMs: 1_000,
+    })).toMatchObject({ status: "completed", finalMessage: "done", finishedAt: "1970-01-01T00:00:01.000Z" });
   });
 
   test("compact_failed prefers the skip message over leftover assistant text", () => {
@@ -48,21 +45,6 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     );
   });
 
-  test("editor_request_failed prefers the scoped failure over leftover assistant text", () => {
-    const mapped = phaseEventToProgressEvent({
-      type: "turn_complete",
-      content: "Prompt is too long: 200000 tokens > 128000",
-      usage,
-      stopReason: "editor_request_failed",
-      error: new Error("editor_interaction_recovery_blocked: context_window"),
-      turnId: "turn-1",
-    } as never);
-    expect(mapped?.kind).toBe("turn_complete");
-    expect((mapped as { finalMessage?: string }).finalMessage).toContain(
-      "editor_interaction_recovery_blocked",
-    );
-  });
-
   test("the backstop's own message travels as the turn's final message", () => {
     const mapped = phaseEventToProgressEvent(
       turnComplete("no_progress", "Turn stopped by the no-progress backstop."),
@@ -70,6 +52,12 @@ describe("stop-reason mapping decides turn versus run scope", () => {
     expect((mapped as { finalMessage?: string }).finalMessage).toBe(
       "Turn stopped by the no-progress backstop.",
     );
+  });
+
+  test("effect_review_required names the review the operator must run (#2501)", () => {
+    const mapped = phaseEventToProgressEvent(turnComplete("effect_review_required"));
+    expect(mapped?.kind).toBe("turn_complete");
+    expect((mapped as { finalMessage?: string }).finalMessage).toContain("/resolve");
   });
 
   test("a turn error ends the turn with the failure spelled out, never the run", () => {

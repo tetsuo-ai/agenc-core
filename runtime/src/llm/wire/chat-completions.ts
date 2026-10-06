@@ -5,6 +5,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { isKnownEmptyProviderReasoning } from "../types.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -18,24 +20,33 @@ import {
   buildStructuredOutputTextFormat,
   parseStructuredOutputText,
 } from "../structured-output.js";
+import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   applyToolResultImagePolicyForWire,
   coerceUsage,
   collectRequestMetrics,
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCallsStrict,
+  openAiServedSpeed,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   serializeProviderToolArguments,
+  splitSystemPromptOnDynamicBoundary,
   toOpenAIMessageContent,
   toOpenAIToolMessageContent,
   withEndpointMarkers,
   withSerializedMetrics,
+  withoutVolatileBoundary,
 } from "./shared.js";
 import { toChatCompletionsTools } from "./tools.js";
+import {
+  afterLeadingSetupReminders,
+  sessionTailReminder,
+} from "./shared-prefix-tail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
@@ -48,6 +59,7 @@ import {
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
 import { applyZaiImageInputContract } from "./zai-contract.js";
+import { applyQwenKimiImageInputContract } from "./qwen-contract.js";
 import {
   applyKimiImageInputContract,
   assertKimiRequestPayloadSize,
@@ -76,6 +88,13 @@ export interface ChatCompletionsRequestOptions {
    * sent).
    */
   readonly providerCapabilityHints?: ChatCompletionsCapabilityHints;
+  /**
+   * The session's shared-prefix switch (`AGENC_SHARED_PREFIX_TAIL`), read by
+   * the adapter from the session environment. Only a provider whose hints set
+   * `sharesPromptPrefixAcrossSessions` uses the layout; `false` turns it off
+   * and `undefined` leaves it on.
+   */
+  readonly sharedPrefixTail?: boolean;
 }
 
 export type ChatCompletionsMaxTokenField =
@@ -115,10 +134,11 @@ function assertToolDefinitionLimit(
 function systemPromptParts(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
+  optionPromptOverride?: string,
 ): readonly string[] {
   const parts: string[] = [];
-  const optionPrompt = options?.systemPrompt?.trim();
-  if (optionPrompt) parts.push(optionPrompt);
+  const optionPrompt = (optionPromptOverride ?? options?.systemPrompt)?.trim();
+  if (optionPrompt) parts.push(withoutVolatileBoundary(optionPrompt));
   for (const message of messages) {
     if (message.role !== "system" && message.role !== "developer") continue;
     const text = messageTextContent(message.content).trim();
@@ -159,7 +179,10 @@ function reasoningToolContinuation(
     if (
       assistant?.role !== "assistant" ||
       !assistant.toolCalls?.length ||
-      !assistant.providerReasoningContent ||
+      typeof assistant.providerReasoningContent !== "string" ||
+      (assistant.providerReasoningContent.length === 0 && !isKnownEmptyProviderReasoning(
+        assistant.providerReasoningContent, assistant.providerReasoningProvenance,
+      )) ||
       assistant.providerReasoningProvenance === undefined
     ) {
       return undefined;
@@ -182,15 +205,21 @@ function reasoningToolContinuation(
       return undefined;
     }
     index += 1;
-    for (const toolCallId of toolCallIds) {
+    // Parallel tools may finish in a different order from the assistant's
+    // calls. Match this contiguous batch by ID without reordering messages or
+    // reasoning blocks; every call must still have exactly one result.
+    const pendingToolCallIds = new Set(toolCallIds);
+    while (pendingToolCallIds.size > 0) {
       const result = messages[index];
+      const resultId = result?.toolCallId?.trim();
       if (
         result?.role !== "tool" ||
-        result.toolCallId?.trim() !== toolCallId
+        resultId === undefined ||
+        !pendingToolCallIds.delete(resultId)
       ) {
         return undefined;
       }
-      seenToolCallIds.add(toolCallId);
+      seenToolCallIds.add(resultId);
       index += 1;
     }
     groups.push({
@@ -256,6 +285,12 @@ function reasoningHistoryFingerprint(
   return JSON.stringify(comparable);
 }
 
+/** Efforts that turn MiniMax-M3's two-position thinking switch off. */
+const MINIMAX_THINKING_OFF_EFFORTS: ReadonlySet<string> = new Set([
+  "minimal",
+  "low",
+]);
+
 function toChatCompletionsMessages(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
@@ -269,8 +304,10 @@ function toChatCompletionsMessages(
   reasoningContinuation?: ReasoningToolContinuation,
   allowsFullReasoningHistoryReplay = true,
   requiresStrictToolResultSequence = false,
-  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
+  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global" | "qwen_kimi",
   acceptsDirectImageInput?: boolean,
+  sessionTailAfterSetup = false,
+  usesThinkingContentBlocks = false,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
   // reasoning replay plan. Keeping a single projection prevents boundary or
@@ -289,14 +326,35 @@ function toChatCompletionsMessages(
     imageSafeMessages = applyZaiImageInputContract(normalized);
   } else if (imageInputContract === "kimi_global") {
     imageSafeMessages = applyKimiImageInputContract(normalized);
+  } else if (imageInputContract === "qwen_kimi") {
+    imageSafeMessages = applyQwenKimiImageInputContract(normalized);
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }
+  // Kimi's global wire accepts image arrays in tool results. Keep those
+  // intact; other unspecified Chat Completions wires strip unsupported images.
+  const defaultToolResultImagePolicy =
+    imageInputContract === "kimi_global" ? undefined : "strip";
   const prepared = applyToolResultImagePolicyForWire(
     imageSafeMessages,
-    toolResultImagePolicy,
+    toolResultImagePolicy ?? defaultToolResultImagePolicy,
   );
-  let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
+  // Shared-prefix placement: the static head leads and the session tail
+  // follows the setup reminders (see shared-prefix-tail.ts).
+  const split = sessionTailAfterSetup
+    ? splitSystemPromptOnDynamicBoundary(options?.systemPrompt)
+    : undefined;
+  // With session-tail caching on, the split returns the session-fixed part
+  // and the per-request part separately; both follow the setup reminders.
+  const tailParts = [split?.sessionSuffix, split?.dynamicSuffix].filter(
+    (part): part is string => part !== undefined && part.length > 0,
+  );
+  const sessionTail = tailParts.length > 0 ? tailParts.join("\n\n") : undefined;
+  let systemPrompt = systemPromptParts(
+    prepared,
+    options,
+    sessionTail !== undefined ? split?.staticPrefix ?? "" : undefined,
+  ).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {
     systemPrompt =
       systemPrompt.length > 0 ? `${systemPrompt}\n${systemSuffix}` : systemSuffix;
@@ -311,7 +369,10 @@ function toChatCompletionsMessages(
     if (
       !replaysReasoningContent ||
       !allowsFullReasoningHistoryReplay ||
-      !message.providerReasoningContent ||
+      (!message.providerReasoningContent && !(message.toolCalls?.length &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        ))) ||
       reasoningContentProvenance === undefined ||
       message.providerReasoningProvenance === undefined
     ) {
@@ -338,6 +399,15 @@ function toChatCompletionsMessages(
       ? message.providerReasoningContent
       : undefined;
   };
+  const assistantContent = (content: unknown, reasoning: string | undefined): unknown =>
+    usesThinkingContentBlocks && reasoning !== undefined
+      ? [
+          { type: "thinking", thinking: [{ type: "text", text: reasoning }] },
+          ...(typeof content === "string" && content.length > 0
+            ? [{ type: "text", text: content }]
+            : Array.isArray(content) ? content : []),
+        ]
+      : content;
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
@@ -352,8 +422,8 @@ function toChatCompletionsMessages(
       const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
         role: "assistant",
-        content: messageTextContent(message.content),
-        ...(providerReasoningContent !== undefined
+        content: assistantContent(messageTextContent(message.content), providerReasoningContent),
+        ...(!usesThinkingContentBlocks && providerReasoningContent !== undefined
           ? { [reasoningContentField]: providerReasoningContent }
           : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
@@ -374,12 +444,21 @@ function toChatCompletionsMessages(
     const providerReasoningContent = replayReasoningContent(message);
     wireMessages.push({
       role: message.role,
-      content: toOpenAIMessageContent(message.content),
-      ...(message.role === "assistant" &&
+      content: message.role === "assistant"
+        ? assistantContent(toOpenAIMessageContent(message.content), providerReasoningContent)
+        : toOpenAIMessageContent(message.content),
+      ...(!usesThinkingContentBlocks && message.role === "assistant" &&
       providerReasoningContent !== undefined
         ? { [reasoningContentField]: providerReasoningContent }
         : {}),
     });
+  }
+  if (sessionTail !== undefined) {
+    wireMessages.splice(
+      afterLeadingSetupReminders(wireMessages),
+      0,
+      sessionTailReminder(sessionTail),
+    );
   }
   return wireMessages;
 }
@@ -484,6 +563,12 @@ function projectRuntimeContextIntoToolResults(
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
+  const promptOptions = input.options?.responseDetailOverride === undefined
+    ? input.options
+    : {
+        ...input.options,
+        systemPrompt: withResponseDetailSystemPrompt(input.options.systemPrompt, input.options.responseDetailOverride),
+      };
   const maxTokenField = input.maxTokenField ?? "max_tokens";
   const requestedMaxTokens =
     positiveInteger(input.maxTokens) ??
@@ -565,7 +650,7 @@ export function buildChatCompletionsRequest(
     stream: false,
     messages: toChatCompletionsMessages(
       normalizedMessages,
-      input.options,
+      promptOptions,
       systemSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
       input.providerCapabilityHints?.replaysReasoningContent === true,
@@ -577,6 +662,9 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
       input.providerCapabilityHints?.imageInputContract,
       input.providerCapabilityHints?.acceptsDirectImageInput,
+      input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
+        input.sharedPrefixTail !== false,
+      input.providerCapabilityHints?.usesThinkingContentBlocks === true,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -641,22 +729,39 @@ export function buildChatCompletionsRequest(
     body.preserve_thinking = true;
   }
   if (input.providerCapabilityHints?.thinkingConfig !== undefined) {
+    const thinkingConfig = input.providerCapabilityHints.thinkingConfig;
     const keepsAdjacentToolReasoning = reasoningContinuation !== undefined;
     body.thinking = {
-      type: input.providerCapabilityHints.thinkingConfig.type,
-      ...(input.providerCapabilityHints.thinkingConfig.keep !== undefined
-        ? { keep: input.providerCapabilityHints.thinkingConfig.keep }
+      // MiniMax-M3's switch has two positions: a low effort answers without
+      // thinking, every other effort keeps the provider's adaptive default.
+      type: thinkingConfig.allowsRecoveryDisable === true && input.options?.disableThinkingForRecovery === true
+        ? "disabled"
+        : thinkingConfig.type === "adaptive"
+          ? MINIMAX_THINKING_OFF_EFFORTS.has(input.options?.reasoningEffort ?? "")
+            ? "disabled"
+            : "adaptive"
+          : thinkingConfig.type,
+      ...(thinkingConfig.keep !== undefined
+        ? { keep: thinkingConfig.keep }
         : {}),
-      ...(input.providerCapabilityHints.thinkingConfig.clearThinking !==
-          undefined
+      ...(thinkingConfig.clearThinking !== undefined
         ? {
             clear_thinking:
               keepsAdjacentToolReasoning
                 ? false
-                : input.providerCapabilityHints.thinkingConfig.clearThinking,
+                : thinkingConfig.clearThinking,
           }
         : {}),
     };
+  }
+  if (input.providerCapabilityHints?.reasoningSplit === true) {
+    body.reasoning_split = true;
+  }
+  if (tools.length > 0 && input.providerCapabilityHints?.enablesToolStreaming === true) {
+    body.tool_stream = true;
+  }
+  if (input.providerCapabilityHints?.clearsThinkingAfterHistoryChange === true) {
+    body.clear_thinking = !allowsFullReasoningHistoryReplay;
   }
   if (
     input.options?.parallelToolCalls !== undefined &&
@@ -668,7 +773,14 @@ export function buildChatCompletionsRequest(
   }
   if (
     input.options?.temperature !== undefined &&
-    input.providerCapabilityHints?.acceptsTemperature !== false
+    input.providerCapabilityHints?.acceptsTemperature !== false &&
+    !(
+      input.providerCapabilityHints?.gatesTemperatureOnOpenAiReasoning === true &&
+      !openAiAcceptsSamplingTemperature(
+        input.model,
+        input.options.reasoningEffort,
+      )
+    )
   ) {
     body.temperature = input.options.temperature;
   }
@@ -701,13 +813,21 @@ export function buildChatCompletionsRequest(
         input.options.reasoningEffort,
       ))
   ) {
-    body.reasoning_effort = input.options.reasoningEffort;
+    if (input.providerCapabilityHints?.reasoningEffortEnvelope === "openrouter") {
+      body.reasoning = { effort: input.options.reasoningEffort };
+    } else {
+      body.reasoning_effort = input.options.reasoningEffort;
+    }
   }
   if (
     input.options?.serviceTier !== undefined &&
     input.providerCapabilityHints?.acceptsServiceTier !== false
   ) {
-    body.service_tier = input.options.serviceTier;
+    const tierMap = input.providerCapabilityHints?.serviceTierMap;
+    const tier = tierMap === undefined
+      ? input.options.serviceTier
+      : tierMap[input.options.serviceTier];
+    if (tier !== undefined) body.service_tier = tier;
   }
   if (usesZaiJsonObject) {
     body.response_format = { type: "json_object" };
@@ -778,6 +898,10 @@ export function parseChatCompletionsResponse(
   model: string,
   response: Record<string, unknown>,
   request: ChatCompletionsRequestOptions,
+  reconstruction?: {
+    readonly discardedReasoningContent: boolean;
+    readonly conflictingReasoningModel: boolean;
+  },
 ): LLMResponse {
   // Keep hashed aliases request-scoped. Meta's auto-only compatibility
   // contract strips the complete tool catalog when callers select `none`;
@@ -826,12 +950,15 @@ export function parseChatCompletionsResponse(
     (request.providerCapabilityHints.rejectsPartialToolCalls === true ||
       finishReason === "stop" ||
       finishReason === "tool_calls") &&
-    choice.finish_reason !== "tool_calls"
+    choice.finish_reason !== "tool_calls" &&
+    // An output-limit cutoff is a known truncation: its tool calls are dropped
+    // below and the turn takes max-output recovery.
+    choice.finish_reason !== "length"
   ) {
     throw new LLMInvalidResponseError(
       request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
         "zai",
-      "Tool calls arrived without finish_reason=tool_calls",
+      `Tool calls arrived without finish_reason=tool_calls (received ${JSON.stringify(choice.finish_reason ?? null)})`,
     );
   }
   if (
@@ -845,6 +972,18 @@ export function parseChatCompletionsResponse(
       `Missing or unsupported finish_reason ${JSON.stringify(choice.finish_reason)}`,
     );
   }
+  const incompleteToolCalls = finishReason === "length" && Array.isArray(message.tool_calls)
+    ? message.tool_calls.flatMap((raw: unknown, index: number) => {
+      if (raw === null || typeof raw !== "object") return [];
+      const call = raw as { id?: unknown; function?: { name?: unknown } };
+      const name = typeof call.function?.name === "string"
+        ? decodeMcpToolNameFromWire(call.function.name, advertisedToolNames) : "";
+      if (!name || name.length > 256) return [];
+      const rawId = typeof call.id === "string" && call.id.length > 0 ? call.id : `incomplete-${index}`;
+      const id = request.toolCallIdNamespace === undefined ? rawId
+        : "call_" + createHash("sha256").update(request.toolCallIdNamespace).update("\0").update(rawId).digest("hex").slice(0, 32);
+      return [{ id, name }];
+    }) : [];
   const acceptsToolCalls =
     finishReason === "stop" || finishReason === "tool_calls";
   const wireToolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
@@ -897,12 +1036,29 @@ export function parseChatCompletionsResponse(
     "reasoning_content";
   const fallbackReasoningField = request.providerCapabilityHints?.reasoningContentFallbackField;
   const rawProviderReasoningContent = message[reasoningContentField] ??
-    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined);
+    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined) ??
+    (request.providerCapabilityHints?.usesThinkingContentBlocks === true && Array.isArray(message.content)
+      ? thinkingTextFromContentBlocks(message.content)
+      : undefined);
   const providerReasoningContent =
     typeof rawProviderReasoningContent === "string" &&
       rawProviderReasoningContent.length > 0
       ? rawProviderReasoningContent
-      : undefined;
+      // Establish known-empty only at the successful provider-response boundary.
+      // A missing history field, truncated call or discarded stream fragment
+      // must never acquire this representation during replay or recovery.
+      : request.providerCapabilityHints
+          ?.replaysReasoningContent === true &&
+          reconstruction?.discardedReasoningContent !== true &&
+          reconstruction?.conflictingReasoningModel !== true &&
+          finishReason === "tool_calls" && toolCalls.length > 0 &&
+          (rawProviderReasoningContent === undefined || rawProviderReasoningContent === "") &&
+          (response.model === undefined ||
+            (typeof response.model === "string" &&
+              response.model.trim().toLowerCase() === model.trim().toLowerCase())) &&
+          isKnownEmptyProviderReasoning("", request.providerCapabilityHints.reasoningContentProvenance)
+        ? ""
+        : undefined;
   const rawContent =
     typeof message.content === "string"
       ? message.content
@@ -955,7 +1111,7 @@ export function parseChatCompletionsResponse(
 
   return {
     content,
-    ...(providerReasoningContent !== undefined || inlineThinking.length > 0
+    ...((providerReasoningContent?.length ?? 0) > 0 || inlineThinking.length > 0
       ? {
           thinking: Object.freeze([
             Object.freeze({
@@ -981,6 +1137,7 @@ export function parseChatCompletionsResponse(
         }
       : {}),
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     usage: coerceUsage({
       promptTokens: usageRecord.prompt_tokens,
       completionTokens: usageRecord.completion_tokens,
@@ -989,6 +1146,18 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
+      // Unlike Responses' input_tokens_details.cache_write_tokens, Chat
+      // Completions has no field for prompt-cache writes: a real cache write
+      // is folded into prompt_tokens with no way to tell it apart from
+      // ordinary input. Flag it so budget reconciliation
+      // (admitted-model-call.ts) does not under-price it as ordinary input on
+      // models that bill cache writes above the input rate.
+      cacheWritesUnreported: true,
+      // Only providers documented to take service_tier report the tier that
+      // served the request; Fast mode bills at its own rates.
+      ...(request.providerCapabilityHints?.acceptsServiceTier === true
+        ? { speed: openAiServedSpeed(response.service_tier) }
+        : {}),
     }),
     model:
       typeof response.model === "string" ? response.model : model,

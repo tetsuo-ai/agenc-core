@@ -1,6 +1,6 @@
+export { compactCommand, contextCommand } from "./session-compact-commands.js";
 import {
   safeExecute,
-  type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
@@ -29,6 +29,8 @@ import {
   type AgenCRuntimeMessage,
 } from "../session/runtime-message-conversion.js";
 import type { Session } from "../session/session.js";
+import type { SessionSnapshotResult } from "../app-server/protocol/index.js";
+import { configuredContextWindow, contextUsagePercentage, projectResidentContextUsage } from "../session/resident-context-usage.js";
 import { getSessionPermissionInstructions } from "../session/permission-instructions.js";
 import { isAuthenticatedCompactionBoundary } from "../session/compaction-history-marker.js";
 import {
@@ -51,7 +53,7 @@ import {
   getAutoCompactThresholdForEnvironment,
   getEffectiveContextWindowSizeForEnvironment,
   isAutoCompactEnabledForEnvironment,
-} from "../services/compact/autoCompact.js";
+} from "../services/compact/thresholds.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
@@ -66,7 +68,6 @@ import {
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
-import { openCompactStatusModal } from "./compact-menu.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
 import { providerEnvironmentFromCommandContext } from "./config-context.js";
 
@@ -133,14 +134,10 @@ function daemonCompactFn(ctx: SlashCommandContext): DaemonCompactFn | null {
   return typeof fn === "function" ? fn.bind(ctx.session) : null;
 }
 
-export const compactCommand: SlashCommand = {
-  name: "compact",
-  description: "Compact the current conversation",
-  supportedSurfaces: ["runtime", "daemon-tui"],
-  immediate: true,
-  supportsNonInteractive: true,
-  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
+export function executeCompactCommand(
+  ctx: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  return safeExecute(async () => {
       await ensureNoActiveTurn(ctx);
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
@@ -182,7 +179,8 @@ export const compactCommand: SlashCommand = {
           allocated.message,
         );
         if (
-          openCompactStatusModal(ctx, {
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./compact-menu.js")).openCompactStatusModal(ctx, {
             message: allocated.message,
             contextText,
           })
@@ -200,18 +198,13 @@ export const compactCommand: SlashCommand = {
         kind: "compact",
         text: result.displayText,
       };
-    }),
-};
+    });
+}
 
-export const contextCommand: SlashCommand = {
-  name: "context",
-  aliases: ["ctx"],
-  description: "Show current context usage",
-  supportedSurfaces: ["runtime", "daemon-tui"],
-  immediate: true,
-  supportsNonInteractive: true,
-  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
+export function executeContextCommand(
+  ctx: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  return safeExecute(async () => {
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
         const text = await buildFallbackContextUsageText(ctx, allocated.message);
@@ -233,8 +226,8 @@ export const contextCommand: SlashCommand = {
         kind: "text",
         text: result.text,
       };
-    }),
-};
+    });
+}
 
 async function openContextUsageModal(
   ctx: SlashCommandContext,
@@ -257,8 +250,11 @@ async function buildFallbackContextUsageText(
   const tools = readFallbackTools(ctx.session);
   const messages = readFallbackMessages(ctx.session);
   const config = ctx.configStore?.current() ?? ctx.session.services.configStore?.current?.();
-  const model = readFallbackModel(ctx, config);
-  const contextWindowTokens = readFallbackContextWindow(config);
+  const resident = snapshot?.contextBreakdown;
+  const model = resident?.model ?? readFallbackModel(ctx, config);
+  const contextWindowTokens = resident && resident.windowTokens > 0
+    ? resident.windowTokens
+    : configuredContextWindow(config);
   const estimated = computeContextUsageBreakdown({
     messages,
     tools,
@@ -267,41 +263,28 @@ async function buildFallbackContextUsageText(
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
   });
-  const totalFromEvents = snapshot?.tokenUsage?.totalTokens;
-  const breakdown =
-    typeof totalFromEvents === "number" && Number.isFinite(totalFromEvents)
-      ? {
-          ...estimated,
-          messagesTokens: Math.max(0, totalFromEvents - estimated.toolsTokens),
-          totalUsed: totalFromEvents,
-          freeUntilCompact: Math.max(0, estimated.compactionThreshold - totalFromEvents),
-          freeUntilHardLimit: Math.max(0, estimated.hardLimit - totalFromEvents),
-        }
-      : estimated;
+  const breakdown = resident ? {
+    ...estimated,
+    ...projectResidentContextUsage(resident, {
+      providerEnvironment: providerEnvironmentFromCommandContext(ctx),
+      ...(model !== undefined ? { model } : {}),
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+    }),
+  } : estimated;
   return [
     formatContextUsageReport(breakdown),
-    `  • estimate: ${reason}`,
+    `  • estimate: ${resident ? "daemon resident context" : reason}`,
   ].join("\n");
 }
 
 async function readDaemonTokenSnapshot(
   ctx: SlashCommandContext,
-): Promise<{ readonly tokenUsage?: {
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly totalTokens?: number;
-  readonly costUsd?: number;
-} } | null> {
+): Promise<Partial<Pick<SessionSnapshotResult,
+  "tokenUsage" | "contextBreakdown" | "cacheStats"
+>> | null> {
   const getDaemonSnapshot = (
     ctx.session as unknown as {
-      getDaemonSessionSnapshot?: () => Promise<{
-        readonly tokenUsage?: {
-          readonly inputTokens?: number;
-          readonly outputTokens?: number;
-          readonly totalTokens?: number;
-          readonly costUsd?: number;
-        };
-      }>;
+      getDaemonSessionSnapshot?: () => ReturnType<typeof readDaemonTokenSnapshot>;
     }
   ).getDaemonSessionSnapshot;
   if (typeof getDaemonSnapshot !== "function") return null;
@@ -317,9 +300,13 @@ function readSessionTokenUsage(
   snapshot: Awaited<ReturnType<typeof readDaemonTokenSnapshot>>,
 ): ContextUsageInputs["sessionTokenUsage"] | undefined {
   if (snapshot?.tokenUsage?.totalTokens !== undefined) {
+    const cache = snapshot.cacheStats;
     return {
-      promptTokens: snapshot.tokenUsage.inputTokens ?? snapshot.tokenUsage.totalTokens,
-      cachedInputTokens: 0,
+      promptTokens: cache?.cacheTotalInputTokens ?? snapshot.tokenUsage.inputTokens ?? 0,
+      ...(cache !== undefined ? {
+        cachedInputTokens: cache.cacheReadInputTokens,
+        cacheCreationInputTokens: cache.cacheCreationInputTokens,
+      } : {}),
     };
   }
   const unsafePeek = (session as unknown as {
@@ -367,19 +354,6 @@ function readFallbackModel(
   return config?.model;
 }
 
-function readFallbackContextWindow(
-  config: {
-    readonly model_provider?: string;
-    readonly providers?: Readonly<Record<string, { readonly context_window_tokens?: number }>>;
-  } | undefined,
-): number | undefined {
-  const provider = config?.model_provider;
-  if (!provider) return undefined;
-  const contextWindow = config?.providers?.[provider]?.context_window_tokens;
-  return typeof contextWindow === "number" && contextWindow > 0
-    ? contextWindow
-    : undefined;
-}
 
 async function ensureNoActiveTurn(ctx: SlashCommandContext): Promise<void> {
   const activeTurn = (ctx.session as unknown as {
@@ -683,6 +657,7 @@ async function runManualCompact(params: {
   readonly ctx: TurnContext;
   readonly customInstructions?: string;
 }): Promise<AgenCManualCompactResult> {
+  await params.session.settleInterruptedTurnHandoff();
   const sourceMessages = params.session.snapshotHistoryMessages();
   const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
   if (messages.length === 0) {
@@ -1120,6 +1095,8 @@ interface ContextUsageBreakdown {
   readonly autoCompactEnabled: boolean;
   readonly messagesTokens: number;
   readonly toolsTokens: number;
+  readonly systemTokens?: number;
+  readonly fileTokens?: number;
   readonly totalUsed: number;
   readonly freeUntilCompact: number;
   readonly freeUntilHardLimit: number;
@@ -1241,14 +1218,18 @@ function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
   const used = breakdown.totalUsed.toLocaleString();
   const hard = breakdown.hardLimit.toLocaleString();
   const threshold = breakdown.compactionThreshold.toLocaleString();
-  const usedPct = breakdown.hardLimit > 0
-    ? Math.min(100, Math.round((breakdown.totalUsed / breakdown.hardLimit) * 100))
-    : 0;
+  const usedPct = contextUsagePercentage(breakdown.totalUsed, breakdown.hardLimit);
   const lines: string[] = [
     `Context: ${used} / ${hard} tokens (${usedPct}% of hard limit)`,
     `  • messages: ${breakdown.messagesTokens.toLocaleString()} tokens`,
     `  • tool catalog: ${breakdown.toolsTokens.toLocaleString()} tokens`,
   ];
+  if (breakdown.systemTokens !== undefined) {
+    lines.push(`  • system: ${breakdown.systemTokens.toLocaleString()} tokens`);
+  }
+  if (breakdown.fileTokens !== undefined) {
+    lines.push(`  • files: ${breakdown.fileTokens.toLocaleString()} tokens`);
+  }
   if (breakdown.autoCompactEnabled) {
     lines.push(
       `  • compaction threshold: ${threshold} tokens (${breakdown.freeUntilCompact.toLocaleString()} until auto-compact fires)`,

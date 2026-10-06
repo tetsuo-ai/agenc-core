@@ -14,15 +14,28 @@ import {
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { MISTRAL_MODEL_CATALOG, resolveMistralChatModel } from "./mistral-models.js";
+import { BEDROCK_CONVERSE_MODELS } from "./bedrock-converse-models.js";
+import { GROQ_MODELS } from "./groq-models.js";
+import { OLLAMA_CLOUD_MODELS } from "./ollama-cloud-models.js";
+import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
+import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import { OPENROUTER_MODELS } from "./openrouter-models.js";
+import { OPENROUTER_MODEL_IDS } from "./openrouter-model-ids.js";
+import { frozenLazyArray } from "./catalog-array.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
+import { QWEN_CURRENT_MODEL_CATALOG } from "./qwen-current-models.js";
 import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
 } from "./gemini-thinking-models.js";
+import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
+import { anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -77,6 +90,15 @@ const OPENAI_REASONING_LEVELS = Object.freeze([
   "medium",
   "high",
   "xhigh",
+] as const satisfies readonly ReasoningEffort[]);
+// GPT-5 predates the xhigh tier: the Responses API answers "'xhigh' is not
+// supported with the 'gpt-5' model. Supported values are: 'minimal', 'low',
+// 'medium', 'high'" (probed 2026-09-11; developers.openai.com/api/docs/models/gpt-5).
+const OPENAI_GPT5_REASONING_LEVELS = Object.freeze([
+  "minimal",
+  "low",
+  "medium",
+  "high",
 ] as const satisfies readonly ReasoningEffort[]);
 const TEXT_IMAGE_MODALITIES = Object.freeze([
   "text",
@@ -185,23 +207,212 @@ interface ZaiChatModelSpec {
   readonly model: string;
   readonly displayName: string;
   readonly vision: boolean;
+  readonly payGoOnly?: boolean;
+  readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
+  readonly reasoningLevels?: readonly ReasoningEffort[];
+  readonly defaultReasoningLevel?: ReasoningEffort;
   readonly priority: number;
 }
 
-const ZAI_CHAT_MODELS = Object.freeze([
+const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
   {
     model: "glm-5.3",
     displayName: "GLM-5.3",
     vision: false,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
     priority: 0,
   },
   {
     model: "glm-5.3-flash",
     displayName: "GLM-5.3 Flash",
     vision: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
     priority: 1,
   },
+  {
+    model: "glm-5.3-flashx",
+    displayName: "GLM-5.3 FlashX",
+    vision: true,
+    payGoOnly: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    priority: 2,
+  },
+  // Older canonical PAYG deployments remain in the live model list. Coding Plan
+  // aliases instead route to 5.3/5.3-Flash; do not advertise the old metadata there.
+  // Sources: docs.z.ai/guides/llm/glm-4.5 through glm-5.2 (2026-09-29).
+  // Rounded 128K/200K contexts and 96K outputs have no exact hosted integer;
+  // leave those fields absent rather than infer decimal or binary ceilings.
+  {
+    model: "glm-5.2",
+    displayName: "GLM-5.2",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningLevel: "max",
+    priority: 3,
+  },
+  {
+    model: "glm-5.1",
+    displayName: "GLM-5.1",
+    vision: false,
+    payGoOnly: true,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 4,
+  },
+  {
+    model: "glm-5-turbo",
+    displayName: "GLM-5 Turbo",
+    vision: false,
+    payGoOnly: true,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 5,
+  },
+  {
+    model: "glm-5",
+    displayName: "GLM-5",
+    vision: false,
+    payGoOnly: true,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 6,
+  },
+  {
+    model: "glm-4.7",
+    displayName: "GLM-4.7",
+    vision: false,
+    payGoOnly: true,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 7,
+  },
+  {
+    model: "glm-4.6",
+    displayName: "GLM-4.6",
+    vision: false,
+    payGoOnly: true,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 8,
+  },
+  {
+    model: "glm-4.5",
+    displayName: "GLM-4.5",
+    vision: false,
+    payGoOnly: true,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 9,
+  },
+  {
+    model: "glm-4.5-air",
+    displayName: "GLM-4.5 Air",
+    vision: false,
+    payGoOnly: true,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 10,
+  },
 ] as const satisfies readonly ZaiChatModelSpec[]);
+
+interface MinimaxChatModelSpec {
+  readonly model: string;
+  readonly displayName: string;
+  readonly contextWindow: number;
+  readonly vision: boolean;
+  /** Only MiniMax-M3 exposes the `thinking` switch; M2.x always think. */
+  readonly thinkingSwitch: boolean;
+  readonly priority: number;
+}
+
+/**
+ * MiniMax-M3's `thinking` control on the OpenAI-compatible route has two
+ * positions, `disabled` and `adaptive` (adaptive when the field is omitted).
+ * The effort dial spells them `low` and `high`; there is no depth between.
+ */
+const MINIMAX_M3_REASONING_LEVELS = Object.freeze([
+  "low",
+  "high",
+] as const satisfies readonly ReasoningEffort[]);
+
+const MINIMAX_MAX_OUTPUT_TOKENS = 131_072;
+
+/**
+ * The chat models MiniMax documents for its OpenAI-compatible route
+ * (platform.minimax.io, 2026-09-11). M3 takes image input and has the
+ * thinking switch; the M2 generations are text-only and always think.
+ */
+const MINIMAX_CHAT_MODELS = Object.freeze([
+  {
+    model: "MiniMax-M3",
+    displayName: "MiniMax M3",
+    contextWindow: 1_000_000,
+    vision: true,
+    thinkingSwitch: true,
+    priority: 0,
+  },
+  {
+    model: "MiniMax-M2.7",
+    displayName: "MiniMax M2.7",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 1,
+  },
+  {
+    model: "MiniMax-M2.7-highspeed",
+    displayName: "MiniMax M2.7 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 2,
+  },
+  {
+    model: "MiniMax-M2.5",
+    displayName: "MiniMax M2.5",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 3,
+  },
+  {
+    model: "MiniMax-M2.5-highspeed",
+    displayName: "MiniMax M2.5 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 4,
+  },
+  {
+    model: "MiniMax-M2.1",
+    displayName: "MiniMax M2.1",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 5,
+  },
+  {
+    model: "MiniMax-M2.1-highspeed",
+    displayName: "MiniMax M2.1 Highspeed",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 6,
+  },
+  {
+    model: "MiniMax-M2",
+    displayName: "MiniMax M2",
+    contextWindow: 204_800,
+    vision: false,
+    thinkingSwitch: false,
+    priority: 7,
+  },
+] as const satisfies readonly MinimaxChatModelSpec[]);
 
 const QWEN_CLOUD_PROVIDER_IDS = Object.freeze([
   "qwen",
@@ -247,7 +458,7 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     model: "qwen3.7-plus",
     displayName: "Qwen3.7 Plus",
     contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
+    maxOutputTokens: 131_072,
     vision: true,
     priority: 3,
   },
@@ -255,7 +466,7 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     model: "qwen3.7-flash",
     displayName: "Qwen3.7 Flash",
     contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
+    maxOutputTokens: 131_072,
     vision: true,
     payGoOnly: true,
     priority: 4,
@@ -295,6 +506,33 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     payGoOnly: true,
     priority: 8,
   },
+  {
+    model: "qwen3.8-27b",
+    displayName: "Qwen3.8 27B",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    payGoOnly: true,
+    priority: 9,
+  },
+  {
+    model: "qwen3.8-2.4t-a95b",
+    displayName: "Qwen3.8 2.4T A95B",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: false,
+    payGoOnly: true,
+    priority: 10,
+  },
+  {
+    model: "qwen3.8-omni-flash",
+    displayName: "Qwen3.8 Omni Flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    payGoOnly: true,
+    priority: 11,
+  },
 ] as const satisfies readonly QwenCloudChatModelSpec[]);
 
 function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
@@ -308,7 +546,7 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           model.payGoOnly !== true,
       )
       .map((model) => {
-        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash)$/i.test(
+        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash|omni-flash|27b|2\.4t-a95b)$/i.test(
           model.model,
         );
         return Object.freeze({
@@ -335,7 +573,9 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           webSearchToolType: "none" as const,
           supportsReasoningSummaries: false,
           defaultReasoningSummary: "none" as const,
-          supportedReasoningLevels: supportsReasoningEffort
+          supportedReasoningLevels: model.model === "qwen3.8-omni-flash"
+            ? Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const)
+            : supportsReasoningEffort
             ? QWEN_38_REASONING_LEVELS
             : NO_REASONING_LEVELS,
           ...(supportsReasoningEffort
@@ -351,13 +591,15 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
 
 function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
   return ZAI_PROVIDER_IDS.flatMap((provider) =>
-    ZAI_CHAT_MODELS.map((model) => Object.freeze({
+    ZAI_CHAT_MODELS.filter((model) => provider === "zai" || !model.payGoOnly).map((model) => Object.freeze({
       provider,
       model: model.model,
       displayName: model.displayName,
-      contextWindow: 1_000_000,
-      maxContextWindow: 1_000_000,
-      maxOutputTokens: 131_072,
+      ...(model.contextWindow === undefined ? {} : {
+        contextWindow: model.contextWindow,
+        maxContextWindow: model.contextWindow,
+      }),
+      ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
       inputModalities: model.vision
         ? TEXT_IMAGE_MODALITIES
         : TEXT_MODALITIES,
@@ -372,13 +614,50 @@ function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
       webSearchToolType: "none" as const,
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none" as const,
-      supportedReasoningLevels: ZAI_GLM_53_REASONING_LEVELS,
-      defaultReasoningLevel: "max" as const,
+      supportedReasoningLevels: model.reasoningLevels ?? ZAI_GLM_53_REASONING_LEVELS,
+      ...(model.reasoningLevels === undefined
+        ? { defaultReasoningLevel: "max" as const }
+        : model.defaultReasoningLevel !== undefined
+          ? { defaultReasoningLevel: model.defaultReasoningLevel }
+          : {}),
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: model.priority,
       visibility: "list" as const,
     })),
   );
+}
+
+function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return MINIMAX_CHAT_MODELS.map((model) => Object.freeze({
+    provider: "minimax",
+    model: model.model,
+    displayName: model.displayName,
+    contextWindow: model.contextWindow,
+    maxContextWindow: model.contextWindow,
+    maxOutputTokens: MINIMAX_MAX_OUTPUT_TOKENS,
+    // https://platform.minimax.io/docs/api-reference/text-chat-openai
+    // Exact API maxima, separate from AgenC's existing output reservation.
+    maxOutputTokensUpperLimit: model.model === "MiniMax-M3" ? 524_288 : 204_800,
+    inputModalities: model.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+    supportsToolUse: true,
+    supportsParallelToolCalls: false,
+    // MiniMax documents no response_format contract on this route.
+    supportsStructuredOutput: false,
+    supportsSearchTool: false,
+    supportsVerbosity: false,
+    webSearchToolType: "none" as const,
+    supportsReasoningSummaries: false,
+    defaultReasoningSummary: "none" as const,
+    supportedReasoningLevels: model.thinkingSwitch
+      ? MINIMAX_M3_REASONING_LEVELS
+      : NO_REASONING_LEVELS,
+    ...(model.thinkingSwitch
+      ? { defaultReasoningLevel: "high" as const }
+      : {}),
+    additionalSpeedTiers: model.model === "MiniMax-M3" ? FAST_SPEED_TIER : NO_ADDITIONAL_SPEED_TIERS,
+    priority: model.priority,
+    visibility: "list" as const,
+  }));
 }
 
 function kimiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
@@ -430,11 +709,11 @@ const GROK_REASONING_LEVELS = Object.freeze([
   "high",
 ] as const satisfies readonly ReasoningEffort[]);
 /**
- * Grok 4.6 adds `xhigh` on top of the levels every earlier Grok exposes.
+ * Grok 4.6 and 4.7 expose the documented `xhigh` depth tier.
  * Reusing GROK_REASONING_LEVELS would silently drop the level xAI documents,
  * leaving the highest effort tier unreachable from the picker.
  */
-const GROK_4_6_REASONING_LEVELS = Object.freeze([
+const GROK_4_6_AND_4_7_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "high",
@@ -459,12 +738,25 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
   }),
 });
 
+// Every Gemini chat model GET /v1beta/models lists (2026-09-26) reports
+// inputTokenLimit 1,048,576 and outputTokenLimit 65,536, as each model page on
+// ai.google.dev/gemini-api/docs/models does. Without these a Flash model took
+// its window from a public catalog download when one answered in time and the
+// 128K / 32K fallback otherwise; 3.1 Pro only matched through the
+// OpenAI-compatible table's gemini-3.1-pro prefix.
+const GEMINI_CONTEXT_WINDOW = 1_048_576;
+const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+
 const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze(
     GEMINI_THINKING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "gemini",
       model: entry.model,
       displayName: entry.model,
+      contextWindow: entry.contextWindow ?? GEMINI_CONTEXT_WINDOW,
+      maxContextWindow: entry.contextWindow ?? GEMINI_CONTEXT_WINDOW,
+      maxOutputTokens: entry.maxOutputTokens ?? GEMINI_MAX_OUTPUT_TOKENS,
+      maxOutputTokensUpperLimit: entry.maxOutputTokens ?? GEMINI_MAX_OUTPUT_TOKENS,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
@@ -482,8 +774,144 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     })),
   );
 
-export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
+// Claude Opus 5.5 (platform.claude.com model page, effort and pricing docs,
+// 2026-09-22): 1M context, 128K max output, all five effort levels with
+// medium as the API default. The default output reservation is 64K, the
+// starting point the Opus 5.5 guidance gives for agentic turns, since
+// always-on thinking counts toward max_tokens. Fast mode is not a
+// catalog tier: the registry derives it from the Anthropic fast-mode list.
+const ANTHROPIC_OPUS_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  provider: "anthropic",
+  model: "claude-opus-5-5",
+  displayName: "Claude Opus 5.5",
+  contextWindow: 1_000_000,
+  maxContextWindow: 1_000_000,
+  maxOutputTokens: 64_000,
+  maxOutputTokensUpperLimit: 128_000,
+  inputModalities: TEXT_IMAGE_MODALITIES,
+  supportsToolUse: true,
+  supportsParallelToolCalls: true,
+  supportsStructuredOutput: true,
+  supportsStructuredOutputWithTools: true,
+  supportsSearchTool: false,
+  supportsVerbosity: false,
+  webSearchToolType: "none",
+  supportsReasoningSummaries: false,
+  defaultReasoningSummary: "auto",
+  supportedReasoningLevels: Object.freeze([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ] as const satisfies readonly ReasoningEffort[]),
+  defaultReasoningLevel: "medium",
+  additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  priority: 0,
+  visibility: "list",
+});
+
+// Official model pages and authenticated Models API, checked 2026-09-29:
+// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+// https://platform.claude.com/docs/en/models/haiku-4-5/overview
+// Keep AgenC's 64K default output reservation separate from the API limit.
+const ANTHROPIC_SONNET_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model: "claude-sonnet-5-5",
+  displayName: "Claude Sonnet 5.5",
+  defaultReasoningLevel: "high",
+  priority: 1,
+});
+
+const ANTHROPIC_HAIKU_4_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model: "claude-haiku-4-5-20251001",
+  displayName: "Claude Haiku 4.5",
+  contextWindow: 200_000,
+  maxContextWindow: 200_000,
+  maxOutputTokensUpperLimit: 64_000,
+  // Manual extended thinking exists, but this model rejects the effort
+  // parameter. A visible model does not have to expose an effort dial.
+  supportedReasoningLevels: NO_REASONING_LEVELS,
+  defaultReasoningLevel: undefined,
+  priority: 3,
+});
+
+// Already-supported Claude models previously inherited the generic 200K /
+// 64K fallback. Models API limits and each official overview now anchor
+// their metadata too. Keep older uncurated variants out of derived pickers.
+const ANTHROPIC_EXISTING_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
+  ["claude-fable-5-1", "Claude Fable 5.1", 2],
+  ["claude-sonnet-5", "Claude Sonnet 5", 4],
+  ["claude-fable-5", "Claude Fable 5", 5],
+  ["claude-opus-5", "Claude Opus 5", 6],
+  ["claude-opus-4-8", "Claude Opus 4.8", 7],
+  ["claude-opus-4-7", "Claude Opus 4.7", 8],
+] as const).map(([model, displayName, priority]) => Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model,
+  displayName,
+  defaultReasoningLevel: "high" as const,
+  priority,
+}));
+
+const ANTHROPIC_UNCURATED_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
+  { model: "claude-opus-4-6", displayName: "Claude Opus 4.6", contextWindow: 1_000_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
+    supportedReasoningLevels: ["low", "medium", "high", "max"], defaultReasoningLevel: "high" },
+  { model: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", contextWindow: 1_000_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
+    supportedReasoningLevels: ["low", "medium", "high", "max"], defaultReasoningLevel: "high" },
+  { model: "claude-opus-4-5-20251101", displayName: "Claude Opus 4.5", contextWindow: 200_000,
+    maxContextWindow: 200_000, maxOutputTokensUpperLimit: 64_000,
+    supportedReasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" },
+  // The overview's default is 200K; the Models API advertises the 1M
+  // maximum. The ordinary route keeps the documented default window.
+  { model: "claude-sonnet-4-5-20250929", displayName: "Claude Sonnet 4.5", contextWindow: 200_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 64_000,
+    supportedReasoningLevels: [], defaultReasoningLevel: undefined },
+] as const).map((entry) => Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  ...entry,
+  supportedReasoningLevels: Object.freeze(entry.supportedReasoningLevels),
+  visibility: "none" as const,
+}));
+
+let openRouterCatalog: readonly RegisteredModelCatalogEntry[] | undefined;
+function openRouterCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
+  return openRouterCatalog ??= Object.freeze(OPENROUTER_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+      provider: "openrouter",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.context,
+      maxContextWindow: entry.context,
+      ...(entry.output !== undefined ? { maxOutputTokens: entry.output } : {}),
+      inputModalities: entry.modalities,
+      supportsToolUse: true,
+      supportsParallelToolCalls: entry.parameters.includes("parallel_tool_calls"),
+      supportsStructuredOutput: entry.parameters.includes("structured_outputs"),
+      supportsSearchTool: false,
+      supportsVerbosity: entry.parameters.includes("verbosity"),
+      webSearchToolType: "none",
+      supportsReasoningSummaries: entry.parameters.includes("include_reasoning"),
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...(entry.defaultEffort !== undefined ? { defaultReasoningLevel: entry.defaultEffort } : {}),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: index + 100,
+      visibility: "list",
+    })));
+}
+
+const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ...MISTRAL_MODEL_CATALOG,
+    ANTHROPIC_OPUS_5_5_ENTRY,
+    ANTHROPIC_SONNET_5_5_ENTRY,
+    ANTHROPIC_HAIKU_4_5_ENTRY,
+    ...ANTHROPIC_EXISTING_ENTRIES,
+    ...ANTHROPIC_UNCURATED_ENTRIES,
+    ...NVIDIA_CURRENT_MODEL_CATALOG,
     ...GEMINI_MODEL_CATALOG.filter((entry) =>
       GEMINI_THINKING_MODELS.some((model) => model.curated && model.model === entry.model)
     ),
@@ -505,11 +933,15 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: entry.efforts,
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      ...(entry.defaultEffort !== undefined ? { defaultReasoningLevel: entry.defaultEffort } : {}),
+      // Every GPT-5.6 and GPT-6 row has a fast-mode price on the OpenAI
+      // pricing page (service_tier priority, 2x standard rates).
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: index,
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
+    ...QWEN_CURRENT_MODEL_CATALOG,
     ...[...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES].map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "deepseek",
       model: entry.model,
@@ -547,8 +979,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       maxOutputTokens: 64_000,
       maxOutputTokensUpperLimit: 384_000,
       maxOutputTokensCappedDefault: true,
-      // Managed image admission needs a separately reviewed backend contract.
-      inputModalities: TEXT_MODALITIES,
+      // V4.1 supports inline images under the reviewed managed gateway policy.
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
       supportsStructuredOutput: true,
@@ -635,8 +1067,76 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 0,
       visibility: "list",
     },
+    ...GROQ_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "groq",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.contextWindow,
+      maxContextWindow: entry.contextWindow,
+      maxOutputTokens: entry.maxOutputTokens,
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: entry.parallel,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...(entry.defaultEffort === undefined ? {} : { defaultReasoningLevel: entry.defaultEffort }),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
+    ...BEDROCK_CONVERSE_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "amazon-bedrock",
+      model: entry.model,
+      displayName: entry.label,
+      // AWS cards use rounded K/M values. Do not turn those into exact limits.
+      // The current Converse adapter serializes text only, even for vision models.
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
+    ...OLLAMA_CLOUD_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "ollama-cloud",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.contextWindow,
+      maxContextWindow: entry.contextWindow,
+      maxOutputTokens: 16_384,
+      maxOutputTokensUpperLimit: 32_768,
+      maxOutputTokensCappedDefault: true,
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+      supportsToolUse: entry.tools,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...("defaultEffort" in entry ? { defaultReasoningLevel: entry.defaultEffort } : {}),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
     ...zaiCatalogEntries(),
     ...kimiCatalogEntries(),
+    ...minimaxCatalogEntries(),
     {
       provider: "cerebras",
       model: "qwen-3.8-27b",
@@ -686,7 +1186,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningLevel: "none",
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 2,
-      visibility: "list",
+      // Dedicated deployments remain usable, but shared inference retired 2026-09-03.
+      visibility: "none",
     },
     {
       provider: "meta",
@@ -809,7 +1310,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5",
       displayName: "GPT-5",
       contextWindow: 272_000,
-      maxContextWindow: 272_000,
+      maxContextWindow: 400_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -820,7 +1323,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: OPENAI_GPT5_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
       additionalSpeedTiers: FAST_SPEED_TIER,
       priority: -1,
@@ -831,7 +1334,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5.5",
       displayName: "GPT-5.5",
       contextWindow: 272_000,
-      maxContextWindow: 272_000,
+      maxContextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -842,7 +1347,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: ["none", ...OPENAI_REASONING_LEVELS],
       defaultReasoningLevel: "medium",
       additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 0,
@@ -853,7 +1358,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5.4",
       displayName: "gpt-5.4",
       contextWindow: 272_000,
-      maxContextWindow: 1_000_000,
+      maxContextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -864,7 +1371,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: ["none", ...OPENAI_REASONING_LEVELS],
       defaultReasoningLevel: "xhigh",
       additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 2,
@@ -875,7 +1382,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5.4-mini",
       displayName: "GPT-5.4-Mini",
       contextWindow: 272_000,
-      maxContextWindow: 272_000,
+      maxContextWindow: 400_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -886,9 +1395,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: ["none", ...OPENAI_REASONING_LEVELS],
       defaultReasoningLevel: "medium",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 4,
       visibility: "list",
     },
@@ -897,7 +1406,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5.3-codex",
       displayName: "gpt-5.3-codex",
       contextWindow: 272_000,
-      maxContextWindow: 272_000,
+      maxContextWindow: 400_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -910,7 +1421,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: OPENAI_REASONING_LEVELS,
       defaultReasoningLevel: "medium",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 6,
       visibility: "list",
     },
@@ -919,7 +1430,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       model: "gpt-5.2",
       displayName: "gpt-5.2",
       contextWindow: 272_000,
-      maxContextWindow: 272_000,
+      maxContextWindow: 400_000,
+      maxOutputTokens: 128_000,
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: true,
@@ -930,9 +1443,9 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "text",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "auto",
-      supportedReasoningLevels: OPENAI_REASONING_LEVELS,
+      supportedReasoningLevels: ["none", ...OPENAI_REASONING_LEVELS],
       defaultReasoningLevel: "medium",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 10,
       visibility: "list",
     },
@@ -958,6 +1471,32 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "hide",
     },
     {
+      // https://docs.x.ai/developers/grok-4-7 (2026-09-21).
+      // No model output cap; native tools use provider-native-search.ts.
+      provider: "grok",
+      model: "grok-4.7",
+      displayName: "Grok 4.7",
+      contextWindow: 500_000,
+      maxContextWindow: 500_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
+      defaultReasoningLevel: "high",
+      // The Fast tier is xAI priority processing (service_tier "priority",
+      // 2x every token rate), not the Grok 4.7 Fast model, which xAI serves
+      // only in Cursor and Grok Build. See providers/grok/priority-processing.ts.
+      additionalSpeedTiers: FAST_SPEED_TIER,
+      priority: 28,
+      visibility: "list",
+    },
+    {
       provider: "grok",
       model: "grok-4.6",
       displayName: "Grok 4.6",
@@ -972,9 +1511,10 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "none",
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: GROK_4_6_REASONING_LEVELS,
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
       defaultReasoningLevel: "high",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      // xAI priority processing, priced at 2x its $2 / $0.50 / $6 rates.
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 29,
       visibility: "list",
     },
@@ -1137,14 +1677,48 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 35,
       visibility: "list",
     },
+    ...OPENAI_CURRENT_MODEL_CATALOG,
   ]);
+
+// Names, ordering and provider authority do not require capability/pricing rows.
+const OPENROUTER_INDEX = OPENROUTER_MODEL_IDS.map((model, index) => ({ model, index }));
+const REGISTERED_MODEL_PROVIDERS = Object.freeze([
+  ...new Set([...(OPENROUTER_MODEL_IDS.length > 0 ? ["openrouter"] : []), ...NON_OPENROUTER_MODEL_CATALOG.map(entry => entry.provider)]),
+]);
+
+export function registeredModelCatalogProviderIds(): readonly string[] {
+  return REGISTERED_MODEL_PROVIDERS;
+}
+
+export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = frozenLazyArray(
+  OPENROUTER_MODEL_IDS.length + NON_OPENROUTER_MODEL_CATALOG.length,
+  index => index < OPENROUTER_MODEL_IDS.length
+    ? openRouterCatalogEntries()[index]!
+    : NON_OPENROUTER_MODEL_CATALOG[index - OPENROUTER_MODEL_IDS.length]!,
+);
+
+/**
+ * The registered Claude rows, keyed by the canonical id the shared parser
+ * (utils/model/claudeModelId.ts) reads from each row.
+ */
+const CLAUDE_CATALOG_ROWS: ReadonlyMap<string, RegisteredModelCatalogEntry> =
+  new Map(
+    NON_OPENROUTER_MODEL_CATALOG.flatMap((entry) => {
+      const id = entry.provider === "anthropic"
+        ? parseClaudeModelId(entry.model)
+        : undefined;
+      return id === undefined ? [] : [[id.canonical, entry] as const];
+    }),
+  );
 
 export function listRegisteredModelCatalogEntries(
   provider?: string,
 ): readonly RegisteredModelCatalogEntry[] {
   const normalizedProvider = normalizeId(provider ?? "");
   return Object.freeze(
-    REGISTERED_MODEL_CATALOG.filter(
+    (normalizedProvider.length === 0 ? REGISTERED_MODEL_CATALOG
+      : normalizedProvider === "openrouter" ? openRouterCatalogEntries()
+      : NON_OPENROUTER_MODEL_CATALOG).filter(
       (entry) =>
         normalizedProvider.length === 0 ||
         normalizeId(entry.provider) === normalizedProvider,
@@ -1159,13 +1733,46 @@ export function resolveRegisteredModelCatalogEntry(input: {
   const provider = modelCatalogProviderIdentity(input.provider);
   const model = input.model?.trim() ?? "";
   if (provider.length === 0 || model.length === 0) return undefined;
+  if (provider === "openrouter") {
+    const match = findExactModel(model, OPENROUTER_INDEX) ??
+      findNamespacedSuffix(model, OPENROUTER_INDEX, true) ??
+      findNamespacedSuffix(model, OPENROUTER_INDEX) ??
+      findLongestPrefix(model, OPENROUTER_INDEX);
+    return match === undefined ? undefined : openRouterCatalogEntries()[match.index];
+  }
   if (provider === "gemini") {
     return findExactModel(
       resolveGeminiThinkingModel(model)?.model ?? "",
       GEMINI_MODEL_CATALOG,
     );
   }
-  const candidates = REGISTERED_MODEL_CATALOG.filter(
+  if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
+  // PAYG hosted/vendor models are distinct deployments. Do not give an
+  // unlisted variant another route's limits or reasoning enum.
+  if (provider === "qwen") {
+    const exact = NON_OPENROUTER_MODEL_CATALOG.find((entry) => entry.provider === "qwen" && normalizeId(entry.model) === normalizeId(model));
+    if (exact !== undefined) return exact;
+    if (QWEN_CURRENT_MODEL_CATALOG.some((entry) => normalizeId(model).startsWith(normalizeId(entry.model)))) return undefined;
+  }
+  // PAYG-only deployments must not inherit metadata from a Coding Plan alias.
+  if (provider === "zai-coding-plan" && ZAI_CHAT_MODELS.some(
+    (entry) => entry.payGoOnly && entry.model === model.toLowerCase(),
+  )) return undefined;
+  if (provider === "mistral") {
+    const canonical = resolveMistralChatModel(model)?.model;
+    return canonical === undefined ? undefined : findExactModel(canonical, MISTRAL_MODEL_CATALOG);
+  }
+  if (provider === "amazon-bedrock") {
+    const documented = findExactModel(
+      model,
+      NON_OPENROUTER_MODEL_CATALOG.filter((entry) => entry.provider === provider),
+    );
+    const claude = resolveBedrockCatalogEntry(model);
+    // Native Anthropic picker policy must not hide a separately reviewed AWS ID.
+    return claude === undefined ? documented : documented === undefined ? claude
+      : Object.freeze({ ...claude, visibility: documented.visibility });
+  }
+  const candidates = NON_OPENROUTER_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
   const exact = findExactModel(model, candidates) ??
@@ -1230,8 +1837,11 @@ export function resolveModelCatalogMetadata(input: {
  * entry here surfaces the model in every flat-catalog consumer.
  */
 export function deriveFlatCatalog(): Readonly<Record<string, readonly string[]>> {
-  const byProvider = new Map<string, RegisteredModelCatalogEntry[]>();
-  for (const entry of REGISTERED_MODEL_CATALOG) {
+  const byProvider = new Map<string, Pick<RegisteredModelCatalogEntry, "model" | "priority">[]>();
+  if (OPENROUTER_MODEL_IDS.length > 0) {
+    byProvider.set("openrouter", OPENROUTER_MODEL_IDS.map((model, index) => ({ model, priority: index + 100 })));
+  }
+  for (const entry of NON_OPENROUTER_MODEL_CATALOG) {
     if (entry.visibility === "none") continue;
     const key = modelCatalogProviderIdentity(entry.provider);
     const list = byProvider.get(key);
@@ -1271,19 +1881,100 @@ export function resolveModelCapabilityHints(input: {
   };
 }
 
-function findExactModel(
+/**
+ * Anthropic rows resolve through the shared Claude id parser, the same
+ * reading pricing and the wire use, and never by prefix. Every Claude API
+ * spelling the parser reads (dated, dotted `claude-opus-5.5`, `anthropic/`
+ * qualified, `[1m]`) finds the one row of its canonical model. An id the
+ * parser rejects (`claude-opus-5-5-fast`, `-preview`) or a canonical model
+ * with no row (`claude-opus-5-50`) finds nothing rather than a neighbour.
+ * Bedrock and Vertex spellings are not Anthropic-provider ids.
+ */
+function resolveAnthropicCatalogEntry(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
 ): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "anthropic") return undefined;
+  return CLAUDE_CATALOG_ROWS.get(id.canonical);
+}
+
+/**
+ * Bedrock ids of a registered Claude model (`anthropic.claude-opus-5-5`,
+ * the geo and `global.` inference profiles, their `-v1:0` versions and
+ * ARNs) resolve through the same parser to that model's Bedrock contract.
+ * Other Bedrock ids, including Claude models without a row, have none.
+ */
+function resolveBedrockCatalogEntry(
+  model: string,
+): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "bedrock") return undefined;
+  const row = CLAUDE_CATALOG_ROWS.get(id.canonical);
+  return row === undefined ? undefined : bedrockClaudeCatalogEntry(row, model);
+}
+
+/**
+ * A registered Claude row as AgenC's Amazon Bedrock provider serves it
+ * through Converse. The context and output limits are the model's (the AWS
+ * model card for Opus 5.5 gives the same 1M context and 128K output as the
+ * Claude API). The Converse adapter sends text and tools only, and Bedrock
+ * serves these models no structured output, web search or fast mode, so
+ * those stay off. Effort levels carry over only for the always-on family,
+ * whose effort the adapter sends as `output_config.effort` inside
+ * `additionalModelRequestFields`.
+ */
+function bedrockClaudeCatalogEntry(
+  row: RegisteredModelCatalogEntry,
+  model: string,
+): RegisteredModelCatalogEntry {
+  const { defaultReasoningLevel, ...contract } = row;
+  const levels = isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
+    ? row.supportedReasoningLevels
+    : NO_REASONING_LEVELS;
+  return Object.freeze({
+    ...contract,
+    provider: "amazon-bedrock",
+    model,
+    inputModalities: TEXT_MODALITIES,
+    supportsParallelToolCalls: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsSearchTool: false,
+    webSearchToolType: "none",
+    supportedReasoningLevels: levels,
+    ...(defaultReasoningLevel !== undefined &&
+    levels.includes(defaultReasoningLevel)
+      ? { defaultReasoningLevel }
+      : {}),
+    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  });
+}
+
+/**
+ * The effort levels the Bedrock Converse adapter sends for `model`: those
+ * of its registered Bedrock contract, so session validation, spawn_agent
+ * and the wire agree. A model without one gets no effort field.
+ */
+export function bedrockConverseEffortLevels(
+  model: string,
+): readonly ReasoningEffort[] {
+  return resolveBedrockCatalogEntry(model)?.supportedReasoningLevels ??
+    NO_REASONING_LEVELS;
+}
+
+function findExactModel<T extends { readonly model: string }>(
+  model: string,
+  candidates: readonly T[],
+): T | undefined {
   const normalized = normalizeId(model);
   return candidates.find((entry) => normalizeId(entry.model) === normalized);
 }
 
-function findNamespacedSuffix(
+function findNamespacedSuffix<T extends { readonly model: string }>(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
+  candidates: readonly T[],
   exactOnly = false,
-): RegisteredModelCatalogEntry | undefined {
+): T | undefined {
   const [namespace, suffix, extra] = model.split("/");
   if (extra !== undefined || suffix === undefined) return undefined;
   if (!/^\w+$/.test(namespace)) return undefined;
@@ -1291,10 +1982,10 @@ function findNamespacedSuffix(
     (exactOnly ? undefined : findLongestPrefix(suffix, candidates));
 }
 
-function findLongestPrefix(
+function findLongestPrefix<T extends { readonly model: string }>(
   model: string,
-  candidates: readonly RegisteredModelCatalogEntry[],
-): RegisteredModelCatalogEntry | undefined {
+  candidates: readonly T[],
+): T | undefined {
   const normalized = normalizeId(model);
   return candidates
     .filter((entry) => {

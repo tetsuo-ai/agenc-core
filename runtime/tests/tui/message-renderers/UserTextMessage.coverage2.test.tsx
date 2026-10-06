@@ -32,7 +32,7 @@ describe('UserTextMessage coverage2', () => {
       { columns: 100, rows: 24 },
     )
 
-    expect(output).toContain('MCP')
+    expect(output).toContain('● mcp')
     expect(output).toContain('linear')
     expect(output).toContain('listIssues')
     expect(output).toContain('sync requested')

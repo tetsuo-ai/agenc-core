@@ -21,6 +21,32 @@ import {
 import { llmMessageToResponseItem } from "./message-history-conversion.js";
 
 describe("rollout-reconstruction", () => {
+  test("clear retires legacy compaction context before a fresh turn establishes its own", () => {
+    const context = {
+      turnId: "new-turn", model: "new-model", cwd: "/workspace",
+      approvalPolicy: "on-request", sandboxPolicy: "workspace-write",
+    };
+    const result = reconstructFromRollout([
+      { type: "response_item", payload: { role: "user", content: "old request" } },
+      { type: "compacted", payload: { message: "old summary" } },
+      { type: "event_msg", payload: {
+        id: "clear", msg: { type: "history_cleared", payload: { timestamp: 1 } },
+      } },
+      { type: "event_msg", payload: {
+        id: "start", msg: { type: "turn_started", payload: { turnId: "new-turn" } },
+      } },
+      { type: "turn_context", payload: context },
+      { type: "response_item", payload: { role: "user", content: "new request" } },
+      { type: "event_msg", payload: {
+        id: "complete", msg: { type: "turn_complete", payload: { turnId: "new-turn" } },
+      } },
+    ]);
+    expect(result.history).toEqual([{ role: "user", content: "new request" }]);
+    expect(result.state.lastCompaction).toBeUndefined();
+    expect(result.referenceContextItem).toEqual(context);
+    expect(result.previousTurnSettings).toMatchObject({ model: "new-model" });
+  });
+
   test("replays response_items into history", () => {
     const items: RolloutItem[] = [
       {

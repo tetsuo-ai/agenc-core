@@ -8,7 +8,6 @@ import { createRoot } from '../../../src/tui/ink.ts'
 import { AppStateProvider } from '../../../src/tui/state/AppState.tsx'
 import { maskTextWithVisibleEdges } from '../../../src/utils/TextCursor.ts'
 import TextInput from '../../../src/tui/components/TextInput.tsx'
-import VimTextInput from '../../../src/tui/components/VimTextInput.tsx'
 import { runWithCanonicalRuntimeAuthority } from '../../helpers/canonical-runtime-authority.bun.ts'
 
 const SYNC_START = '\x1B[?2026h'
@@ -124,56 +123,6 @@ function DelayedControlledTextInput(): React.ReactNode {
   )
 }
 
-function DelayedControlledVimTextInput(): React.ReactNode {
-  const [value, setValue] = React.useState('')
-  const [cursorOffset, setCursorOffset] = React.useState(0)
-  const valueTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const offsetTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  React.useEffect(() => {
-    return () => {
-      if (valueTimerRef.current) {
-        clearTimeout(valueTimerRef.current)
-      }
-      if (offsetTimerRef.current) {
-        clearTimeout(offsetTimerRef.current)
-      }
-    }
-  }, [])
-
-  return (
-    <AppStateProvider>
-      <VimTextInput
-        value={value}
-        onChange={nextValue => {
-          if (valueTimerRef.current) {
-            clearTimeout(valueTimerRef.current)
-          }
-          valueTimerRef.current = setTimeout(() => {
-            setValue(nextValue)
-          }, 200)
-        }}
-        onSubmit={() => {}}
-        placeholder="Type here..."
-        columns={60}
-        cursorOffset={cursorOffset}
-        onChangeCursorOffset={nextOffset => {
-          if (offsetTimerRef.current) {
-            clearTimeout(offsetTimerRef.current)
-          }
-          offsetTimerRef.current = setTimeout(() => {
-            setCursorOffset(nextOffset)
-          }, 200)
-        }}
-        initialMode="INSERT"
-        focus
-        showCursor
-        multiline
-      />
-    </AppStateProvider>
-  )
-}
-
 test('TextInput renders typed characters before delayed parent value commits', async () => {
   await runWithCanonicalRuntimeAuthority(async () => {
     const { stdout, stdin, getOutput } = createTestStreams()
@@ -208,37 +157,4 @@ test('maskTextWithVisibleEdges preserves only the first and last three chars', (
     'sk-************678',
   )
   expect(maskTextWithVisibleEdges('abcdef', '*')).toBe('******')
-})
-
-test('VimTextInput preserves rapid typed characters before delayed parent value commits', async () => {
-  await runWithCanonicalRuntimeAuthority(async () => {
-    const { stdout, stdin, getOutput } = createTestStreams()
-    const root = await createRoot({
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      patchConsole: false,
-    })
-
-    root.render(<DelayedControlledVimTextInput />)
-
-    await Bun.sleep(50)
-    stdin.write('a')
-    await Bun.sleep(25)
-    stdin.write('s')
-    await Bun.sleep(25)
-    stdin.write('d')
-    await Bun.sleep(25)
-    stdin.write('f')
-    await Bun.sleep(25)
-
-    const output = stripAnsi(extractLastFrame(getOutput()))
-
-    root.unmount()
-    stdin.end()
-    stdout.end()
-    await Bun.sleep(25)
-
-    expect(output).toContain('asdf')
-    expect(output).not.toContain('Type here...')
-  })
 })

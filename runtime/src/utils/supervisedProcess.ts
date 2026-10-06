@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -16,14 +16,22 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   rmdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
+import { ProcessBrokerV3StatusDecoder, PROCESS_BROKER_V3_CAPABILITY, type ProcessBrokerV3Outcome } from "./process-broker-protocol-v3.js";
+import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
+import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
+import { isSignalablePid } from "./child-signal.js";
 
 import {
   resolveTrustedWindowsSystemExecutable,
@@ -90,6 +98,13 @@ export interface SupervisedProcessOptions {
   readonly settleBackstopMs?: number;
   /** Select the Linux containment backend explicitly for deterministic tests. */
   readonly linuxContainment?: "auto" | "subreaper";
+  /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
+  readonly directBwrap?: {
+    readonly protocol?: "v3";
+    readonly prepare: () => PreparedDirectBwrap | undefined;
+    readonly validateAdmission: () => void;
+    readonly signal: AbortSignal;
+  };
   /**
    * Test-only settlement that replaces real process cleanup. Production
    * callers must omit this; prepared-spawn authority tests use it to enter
@@ -107,6 +122,7 @@ export interface SupervisedProcessOptions {
 }
 
 export interface SupervisedProcessResult {
+  readonly commandOutcome?: ProcessBrokerV3Outcome;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stdout: Buffer;
@@ -376,6 +392,7 @@ let config;
 try {
   const chunk = Buffer.alloc(65536);
   const parts = [];
+  let totalBytes = 0;
   let terminated = false;
   while (!terminated) {
     let bytes;
@@ -389,6 +406,8 @@ try {
       throw error;
     }
     if (bytes === 0) break;
+    totalBytes += bytes;
+    if (totalBytes > 2 * 1024 * 1024) throw new Error('oversized containment handoff');
     const part = Buffer.from(chunk.subarray(0, bytes));
     const newline = part.indexOf(0x0a);
     if (newline === -1) {
@@ -494,6 +513,50 @@ type LinuxCgroupBoundary = {
 const linuxCgroupBoundaries = new WeakMap<object, LinuxCgroupBoundary>();
 const windowsJobBoundaries = new WeakSet<object>();
 const posixOwnerWatchdogs = new WeakMap<object, ChildProcess>();
+/**
+ * Contained launches that were abandoned before the command started: the
+ * gate was killed while it still held the command because its owner
+ * watchdog never confirmed. The supervisor reports these as spawn errors
+ * with this reason, not as a command that ran and was killed with no output.
+ */
+const containedLaunchFailures = new WeakMap<object, Error>();
+
+/**
+ * How long a contained command waits for its owner watchdog before the
+ * launch is abandoned. The command has not started while it waits, so a
+ * longer wait costs only time. On macOS the watchdog is a fresh Node process
+ * that snapshots the whole process table before it reports ready; on a busy
+ * or swapping machine that took more than the old 2 s, and every command
+ * launched then was killed before it ran (a Goal's worktree step reported
+ * its base commit as missing).
+ */
+const CONTAINED_WATCHDOG_READY_TIMEOUT_MS = 15_000;
+let containedWatchdogReadyTimeoutMs = CONTAINED_WATCHDOG_READY_TIMEOUT_MS;
+
+/** Tests only: shorten the watchdog readiness deadline. Returns a restore function. */
+export function setContainedWatchdogReadyTimeoutForTesting(ms: number): () => void {
+  const previous = containedWatchdogReadyTimeoutMs;
+  containedWatchdogReadyTimeoutMs = ms;
+  return () => {
+    containedWatchdogReadyTimeoutMs = previous;
+  };
+}
+
+/**
+ * Arm a readiness deadline that cannot beat a readiness reply that already
+ * arrived. libuv runs expired timers before it polls for I/O, so after this
+ * event loop was blocked past the deadline, a plain timer fired first and
+ * abandoned a launch whose watchdog had long since answered. Deciding one
+ * turn later lets the poll phase deliver that reply first; `onExpired` must
+ * do nothing once the launch was released.
+ */
+function armReadinessDeadline(onExpired: () => void): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(() => {
+    setImmediate(onExpired);
+  }, containedWatchdogReadyTimeoutMs);
+  timer.unref?.();
+  return timer;
+}
 
 type LinuxSubreaperControlSignal = "SIGTERM" | "SIGUSR2";
 
@@ -508,9 +571,57 @@ type LinuxSubreaperBoundary = {
   verified: boolean;
   pendingSignal?: LinuxSubreaperControlSignal;
   protocolError?: Error;
+  readonly outcomeDecoder?: ProcessBrokerV3StatusDecoder;
+  commandOutcome?: ProcessBrokerV3Outcome;
 };
 
 const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
+
+/** Available only after transport EOF AND independently proven tree cleanup. */
+export function containedProcessCommandOutcome(child: ProcessTreeChild): ProcessBrokerV3Outcome | undefined {
+  const boundary = linuxSubreaperBoundaries.get(child);
+  return boundary?.closed && boundary.verified && boundary.protocolError === undefined
+    ? boundary.commandOutcome : undefined;
+}
+
+/**
+ * Allow an exited child's native cleanup proof to drain before verification.
+ * A complete subreaper proof ends the wait immediately; missing proof and
+ * other containment backends retain the bounded settlement window. Resolution
+ * is only a scheduling signal, never cleanup authority: callers must still
+ * run terminateProcessTreeAndReport and handle its failure.
+ */
+export function waitForContainedProcessSettlement(
+  child: ChildProcessWithoutNullStreams,
+): Promise<void> {
+  const boundary = linuxSubreaperBoundaries.get(child);
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      child.removeListener("close", onClose);
+      resolve();
+    };
+    const onClose = (): void => {
+      if (
+        boundary?.closed === true &&
+        boundary.ready &&
+        boundary.verified &&
+        boundary.protocolError === undefined
+      ) {
+        finish();
+      }
+    };
+    const timer = setTimeout(finish, 20);
+    timer.unref?.();
+    if (boundary !== undefined) {
+      // spawnContainedProcess registered its close listener first, so all
+      // status bytes and boundary flags are settled before this listener runs.
+      child.once("close", onClose);
+      onClose(); // Also handle a child that closed before subscription.
+    }
+  });
+}
+
 let compiledLinuxSubreaperBroker: string | undefined;
 let compiledLinuxSubreaperBrokerRoot: string | undefined;
 let compiledWindowsJobBroker: string | undefined;
@@ -549,7 +660,37 @@ export interface ContainedProcessSpawnOptions {
   readonly argv0?: string;
   /** Select the deterministic Linux subreaper boundary even when cgroup v2 is available. */
   readonly linuxContainment?: "auto" | "subreaper";
+  /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
+  readonly directBwrap?: {
+    readonly protocol?: "v3";
+    readonly prepare: () => PreparedDirectBwrap | undefined;
+    readonly validateAdmission: () => void;
+    readonly signal: AbortSignal;
+  };
 }
+
+/** What `terminateProcessTreeAndWait` found when it went to stop a tree. */
+export interface TerminateProcessTreeOutcome {
+  readonly commandOutcome?: ProcessBrokerV3Outcome;
+  readonly residualProcessesObserved?: boolean;
+  /**
+   * True when processes the command had left behind (a shell `&` job, nohup,
+   * setsid, or a daemon that forked away from its leader) were stopped:
+   * either the tree still had a live member when cleanup began, or the
+   * Linux subreaper broker reports that it stopped residual descendants
+   * itself when the leader exited. False when the tree was already gone on
+   * its own. The Windows `taskkill` path cannot tell the two apart and
+   * reports false.
+   */
+  readonly residualProcessesTerminated: boolean;
+}
+
+const TREE_ALREADY_GONE: TerminateProcessTreeOutcome = Object.freeze({
+  residualProcessesTerminated: false,
+});
+const RESIDUE_TERMINATED: TerminateProcessTreeOutcome = Object.freeze({
+  residualProcessesTerminated: true,
+});
 
 export interface TerminateProcessTreeOptions {
   readonly terminateGraceMs?: number;
@@ -573,12 +714,16 @@ export function serializePosixProcessGatePayload(
   for (const [name, value] of Object.entries(options.env)) {
     if (value !== undefined) environment.push([name, String(value)]);
   }
-  return `${JSON.stringify({
+  const payload = `${JSON.stringify({
     program,
     argv0: options.argv0 ?? program,
     args,
     environment,
   })}\n`;
+  if (Buffer.byteLength(payload) > 2 * 1024 * 1024) {
+    throw new Error("process gate payload exceeds 2 MiB");
+  }
+  return payload;
 }
 
 function trustedPosixBootstrapEnvironment(
@@ -606,6 +751,7 @@ export function spawnContainedProcess(
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
 ): ChildProcessWithoutNullStreams {
+  assertSpawnableWorkingDirectory(options.cwd);
   if (process.platform === "win32") {
     return spawnWindowsJobContainedProcess(program, args, options);
   }
@@ -614,6 +760,29 @@ export function spawnContainedProcess(
       ? createPrivateLinuxCgroup()
       : null;
   if (process.platform === "linux" && cgroupPath === null) {
+    if (options.directBwrap !== undefined) {
+      const brokerPath = resolveLinuxSubreaperBroker();
+      const brokerContext = describeDirectBroker(brokerPath, options.cwd, options.directBwrap.protocol);
+      if (brokerContext !== undefined) {
+        const plan = options.directBwrap.prepare();
+        if (plan !== undefined) {
+          const handoff = consumeDirectBwrapPlan(plan);
+          let dispatched = false;
+          try {
+            if (directArtifactMatchesBroker(handoff, brokerPath, options.directBwrap.protocol) && handoff.isCurrent() && directBrokerContext(brokerPath, options.cwd) === brokerContext) {
+              options.directBwrap.validateAdmission();
+              options.directBwrap.signal.throwIfAborted();
+              dispatched = true;
+              return spawnLinuxSubreaperContainedProcess(program, args, options, {
+                ...handoff, brokerPath, brokerContext,
+              });
+            }
+          } finally {
+            if (!dispatched) handoff.dispose();
+          }
+        }
+      }
+    }
     return spawnLinuxSubreaperContainedProcess(program, args, options);
   }
 
@@ -654,15 +823,14 @@ export function spawnContainedProcess(
     // surface ECONNRESET on this private stream. It is not a user-visible I/O
     // failure and must not become an unhandled process-level exception.
     gate.on("error", () => {});
-    launchPosixOwnerWatchdog(child, gate, gatePayload, options.cwd, cgroupPath);
+    launchPosixOwnerWatchdog(child, gate, gatePayload, cgroupPath);
     return child;
   } catch (error) {
     if (child !== undefined) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The gated wrapper never reached the target process.
-      }
+      // A failed spawn still emits its error on the next tick; with no
+      // listener that is an uncaught exception in the daemon.
+      child.on("error", () => {});
+      safeKill(child, "SIGKILL");
     }
     if (cgroupPath !== null) removeEmptyLinuxCgroup(cgroupPath);
     throw error;
@@ -677,24 +845,81 @@ export function spawnContainedProcess(
  * subreaper before it starts the command. Orphaned descendants are therefore
  * reparented to that unique broker and cannot escape its forced cleanup.
  */
+const directBrokerCapabilities = new Set<string>();
+function directBrokerContext(broker: string, cwd: string): string | undefined {
+  if (!isTrustedLinuxSubreaperBroker(broker)) return undefined;
+  try {
+    const binary = statSync(broker, { bigint: true });
+    const directory = statSync(cwd, { bigint: true });
+    const context = {
+      program: realpathSync(broker),
+      binary: [binary.dev, binary.ino, binary.size, binary.mode, binary.uid,
+        binary.gid, binary.mtimeNs, binary.ctimeNs].map(String),
+      cwd: [realpathSync(cwd), String(directory.dev), String(directory.ino)],
+      uid: process.getuid?.(), gid: process.getgid?.(), groups: process.getgroups?.(),
+      namespaces: ["user", "mnt", "net", "pid"].map(name => readlinkSync(`/proc/self/ns/${name}`)),
+      mounts: readFileSync("/proc/self/mountinfo", "utf8"),
+    };
+    return createHash("sha256").update(JSON.stringify(context)).digest("hex");
+  } catch { return undefined; }
+}
+function directArtifactMatchesBroker(handoff: DirectBwrapHandoff, broker: string, protocol?: "v3"): boolean {
+  if (protocol !== "v3") return handoff.namespaceInitArtifact === undefined;
+  try {
+    return handoff.namespaceInitArtifact === join(dirname(realpathSync(broker)), "agenc-namespace-init-entry") &&
+      handoff.payload.subarray(0, 4).equals(Buffer.from("AGB3"));
+  } catch { return false; }
+}
+
+function describeDirectBroker(broker: string, cwd: string, protocol?: "v3"): string | undefined {
+  const context = directBrokerContext(broker, cwd);
+  if (context === undefined) return undefined;
+  const cacheKey = `${protocol ?? "v2"}:${context}`;
+  if (directBrokerCapabilities.has(cacheKey)) return context;
+  try {
+    const description = execFileSync(broker, [protocol === "v3" ? "--describe-protocol-v3" : "--describe-protocol"], {
+      cwd, env: trustedPosixBootstrapEnvironment(), encoding: "utf8",
+      timeout: 3_000, maxBuffer: 256, killSignal: "SIGKILL",
+    });
+    if (description !== (protocol === "v3" ? PROCESS_BROKER_V3_CAPABILITY : PROCESS_BROKER_V2_CAPABILITY) + "\n" ||
+        directBrokerContext(broker, cwd) !== context) return undefined;
+    if (directBrokerCapabilities.size >= 64) directBrokerCapabilities.clear();
+    directBrokerCapabilities.add(cacheKey);
+    return context;
+  } catch { return undefined; }
+}
+
 function spawnLinuxSubreaperContainedProcess(
   program: string,
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
+  direct?: DirectBwrapHandoff & { readonly brokerPath: string; readonly brokerContext: string },
 ): ChildProcessWithoutNullStreams {
-  const brokerPath = resolveLinuxSubreaperBroker();
-  const child = spawn(
+  const brokerPath = direct?.brokerPath ?? resolveLinuxSubreaperBroker();
+  const payload = direct?.payload ?? serializeProcessBrokerPayload(program, args, options);
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(
     brokerPath,
-    [program, options.argv0 ?? program, ...args],
+    direct === undefined ? [] : [direct.namespaceInitArtifact === undefined ? "--bootstrap-v2" : "--bootstrap-v3"],
     {
       cwd: options.cwd,
-      env: options.env,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      env: trustedPosixBootstrapEnvironment(),
+      stdio: direct?.sourceFd === undefined
+        ? ["pipe", "pipe", "pipe", "pipe", "pipe"]
+        : ["pipe", "pipe", "pipe", "pipe", "pipe", direct.sourceFd],
       detached: true,
       windowsHide: true,
     },
   ) as ChildProcessWithoutNullStreams;
+  } catch (error) {
+    direct?.dispose();
+    throw error;
+  }
+  let disposalError: Error | undefined;
+  try { direct?.dispose(); } catch (error) { disposalError = toError(error); }
   if (child.pid === undefined || child.pid <= 1) {
+    child.on("error", () => {});
     safeKill(child, "SIGKILL");
     throw new Error(
       "Linux process containment broker did not publish a safe pid",
@@ -714,6 +939,14 @@ function spawnLinuxSubreaperContainedProcess(
   }
   const readableStatus = status as Readable;
   const nativeKill = child.kill.bind(child);
+  const bootstrap = child.stdio[4] as Writable | null;
+  let handoffCommitted = false;
+  let frameWithheld = false;
+  const withholdFrame = (): boolean => {
+    frameWithheld = true;
+    bootstrap?.destroy();
+    return nativeKill("SIGKILL");
+  };
   const boundary: LinuxSubreaperBoundary = {
     status: readableStatus,
     nativeKill,
@@ -723,12 +956,16 @@ function spawnLinuxSubreaperContainedProcess(
     ready: false,
     residual: false,
     verified: false,
+    ...(direct?.namespaceInitArtifact === undefined ? {} : { outcomeDecoder: new ProcessBrokerV3StatusDecoder() }),
   };
   linuxSubreaperBoundaries.set(child, boundary);
   child.kill = ((signal?: NodeJS.Signals | number): boolean => {
     const translated = normalizeLinuxSubreaperControlSignal(signal);
     if (translated === 0) {
       return nativeKill(0);
+    }
+    if (direct !== undefined && !handoffCommitted && linuxSubreaperControlSignalPriority(translated) > 0) {
+      return withholdFrame();
     }
     if (
       !boundary.ready &&
@@ -759,7 +996,7 @@ function spawnLinuxSubreaperContainedProcess(
   });
   readableStatus.once("end", () => {
     consumeBufferedLinuxSubreaperStatus(boundary);
-    settleLinuxSubreaperStatus(boundary);
+    settleLinuxSubreaperStatus(boundary, true);
   });
   readableStatus.once("close", () => {
     consumeBufferedLinuxSubreaperStatus(boundary);
@@ -769,6 +1006,43 @@ function spawnLinuxSubreaperContainedProcess(
     boundary.processClosed = true;
     boundary.closed = boundary.statusClosed;
   });
+  if (bootstrap === null || typeof bootstrap?.end !== "function") {
+    nativeKill("SIGKILL");
+    throw new Error("Linux process containment broker bootstrap FD is unavailable");
+  }
+  bootstrap.on("error", (error) => {
+    // A failed preflight can close FD 4 before the owner writes. The status
+    // channel establishes whether launch and cleanup occurred; don't replace
+    // its deterministic failure with a scheduling-dependent pipe error.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPIPE" || code === "ECONNRESET") return;
+    boundary.protocolError ??= toError(error);
+  });
+  if (direct === undefined) {
+    bootstrap.end(payload);
+    return child;
+  }
+  const admission = options.directBwrap!;
+  const cancel = (): void => { child.kill("SIGTERM"); };
+  admission.signal.addEventListener("abort", cancel, { once: true });
+  child.once("close", () => admission.signal.removeEventListener("abort", cancel));
+  try {
+    if (disposalError !== undefined) throw disposalError;
+    admission.validateAdmission();
+    admission.signal.throwIfAborted();
+    if (!directArtifactMatchesBroker(direct, brokerPath, options.directBwrap?.protocol) || !direct.isCurrent() || directBrokerContext(brokerPath, options.cwd) !== direct.brokerContext) {
+      throw new Error("direct sandbox identity changed before handoff");
+    }
+    if (frameWithheld) throw new Error("direct sandbox handoff was cancelled");
+    // Publication is irreversible even if end() buffers, partially writes or
+    // throws. Keep the owned child/proof listeners on every committed failure.
+    handoffCommitted = true;
+    bootstrap.end(payload);
+  } catch (error) {
+    boundary.protocolError ??= toError(error);
+    if (!handoffCommitted) withholdFrame();
+    else bootstrap.destroy(toError(error));
+  }
   return child;
 }
 
@@ -776,6 +1050,18 @@ function consumeLinuxSubreaperStatus(
   boundary: LinuxSubreaperBoundary,
   chunk: Buffer,
 ): void {
+  if (boundary.outcomeDecoder !== undefined) {
+    if (boundary.protocolError !== undefined) return;
+    try {
+      if (boundary.outcomeDecoder.push(chunk)) {
+        boundary.ready = true;
+        const pendingSignal = boundary.pendingSignal;
+        boundary.pendingSignal = undefined;
+        if (pendingSignal !== undefined) boundary.nativeKill(pendingSignal);
+      }
+    } catch (error) { boundary.protocolError = toError(error); }
+    return;
+  }
   for (const byte of chunk) {
     if (byte === 0x53) {
       if (boundary.ready || boundary.residual || boundary.verified) {
@@ -869,9 +1155,17 @@ function normalizeLinuxSubreaperControlSignal(
   );
 }
 
-function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary): void {
+function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary, eof = false): void {
   if (boundary.statusClosed) return;
   boundary.statusClosed = true;
+  if (boundary.outcomeDecoder !== undefined && boundary.protocolError === undefined) {
+    try {
+      if (!eof) throw new Error("AGB3 status closed without EOF");
+      const completion = boundary.outcomeDecoder.finish();
+      boundary.verified = completion.cleanupProven;
+      boundary.commandOutcome = completion.outcome;
+    } catch (error) { boundary.protocolError = toError(error); }
+  }
   if (!boundary.ready) {
     boundary.protocolError ??= new Error(
       "Linux process containment broker exited before readiness",
@@ -1002,7 +1296,6 @@ function launchPosixOwnerWatchdog(
   child: ChildProcessWithoutNullStreams,
   gate: Writable,
   gatePayload: string,
-  cwd: string,
   cgroupPath: string | null,
 ): void {
   if (cgroupPath !== null && process.platform === "linux") {
@@ -1025,7 +1318,10 @@ function launchPosixOwnerWatchdog(
     process.execPath,
     ["-e", POSIX_OWNER_WATCHDOG_SCRIPT],
     {
-      cwd,
+      // The watchdog uses only absolute paths. Starting it in the command's
+      // directory let a directory removed after the gate spawn fail it, and
+      // fail() then reported the never-run command as SIGKILLed.
+      cwd: "/",
       env: trustedPosixBootstrapEnvironment({
         AGENC_PROCESS_WATCHDOG_CONFIG: config,
       }),
@@ -1034,8 +1330,12 @@ function launchPosixOwnerWatchdog(
       windowsHide: true,
     },
   );
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen before touching it. fail() below acts on errors
+  // once the readiness pipe is wired.
+  watchdog.on("error", () => {});
   posixOwnerWatchdogs.set(child, watchdog);
-  const readiness = watchdog.stdio[3];
+  const readiness = watchdog.stdio?.[3];
   if (
     readiness === undefined ||
     readiness === null ||
@@ -1054,21 +1354,26 @@ function launchPosixOwnerWatchdog(
     watchdog.unref();
     gate.end(gatePayload);
   };
-  const fail = (): void => {
+  const fail = (why: string): void => {
     if (released) return;
     released = true;
     clearTimeout(startupTimer);
     readiness.removeAllListeners();
+    containedLaunchFailures.set(
+      child,
+      new Error(`the command did not start: its process watchdog ${why}`),
+    );
     safeKill(child, "SIGKILL");
     gate.destroy();
   };
-  const startupTimer = setTimeout(fail, 2_000);
-  startupTimer.unref?.();
+  const startupTimer = armReadinessDeadline(() =>
+    fail(`was not ready within ${containedWatchdogReadyTimeoutMs} ms`),
+  );
   readiness.once("data", release);
-  readiness.once("error", fail);
-  watchdog.once("error", fail);
+  readiness.once("error", () => fail("readiness pipe failed"));
+  watchdog.once("error", () => fail("could not be started"));
   watchdog.once("exit", () => {
-    if (!released) fail();
+    if (!released) fail("exited before it was ready");
   });
 }
 
@@ -1089,16 +1394,15 @@ function launchLinuxCgroupOwnerWatchdog(
 ): void {
   const state = getLinuxCgroupOwnerWatchdog();
   const id = `${process.pid}-${++linuxCgroupWatchdogRegistrationSequence}`;
-  const timer = setTimeout(() => {
+  const timer = armReadinessDeadline(() => {
     failLinuxCgroupWatchdogRegistration(
       state,
       id,
       new Error(
-        `contained process watchdog registration timed out for ${cgroupPath}`,
+        `contained process watchdog registration timed out after ${containedWatchdogReadyTimeoutMs} ms for ${cgroupPath}`,
       ),
     );
-  }, 2_000);
-  timer.unref?.();
+  });
   state.pending.set(id, { child, gate, gatePayload, timer });
   linuxCgroupWatchdogRegistrations.set(child, { state, id });
 
@@ -1141,7 +1445,25 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     stdoutBuffer: "",
     failed: false,
   };
-  linuxCgroupOwnerWatchdog = state;
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen first, and publish the singleton only once it is
+  // set up: a published broken watchdog would be reused by every contained
+  // command started in the meantime.
+  child.once("error", (error) => {
+    failLinuxCgroupOwnerWatchdog(state, error);
+  });
+  if (
+    child.pid === undefined ||
+    child.stdin === null ||
+    child.stdin === undefined ||
+    child.stdout === null ||
+    child.stdout === undefined ||
+    child.stderr === null ||
+    child.stderr === undefined
+  ) {
+    state.failed = true;
+    throw new Error("contained process watchdog could not be started");
+  }
   child.unref();
   unrefProcessPipe(child.stdin);
   unrefProcessPipe(child.stdout);
@@ -1152,9 +1474,6 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     handleLinuxCgroupWatchdogOutput(state, chunk);
   });
   child.stdin.on("error", (error) => {
-    failLinuxCgroupOwnerWatchdog(state, error);
-  });
-  child.once("error", (error) => {
     failLinuxCgroupOwnerWatchdog(state, error);
   });
   child.once("exit", (code, signal) => {
@@ -1168,6 +1487,7 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
       ),
     );
   });
+  linuxCgroupOwnerWatchdog = state;
   return state;
 }
 
@@ -1205,12 +1525,16 @@ function handleLinuxCgroupWatchdogOutput(
 function failLinuxCgroupWatchdogRegistration(
   state: LinuxCgroupWatchdogState,
   id: string,
-  _error: unknown,
+  error: unknown,
 ): void {
   const pending = state.pending.get(id);
   if (pending === undefined) return;
   state.pending.delete(id);
   clearTimeout(pending.timer);
+  containedLaunchFailures.set(
+    pending.child,
+    new Error(`the command did not start: ${toError(error).message}`),
+  );
   linuxCgroupWatchdogRegistrations.delete(pending.child);
   const boundary = linuxCgroupBoundaries.get(pending.child);
   if (boundary !== undefined) signalLinuxCgroup(boundary, "SIGKILL");
@@ -1652,6 +1976,7 @@ function runSupervisedProcessCommand(
         cwd: command.cwd,
         env: command.env,
         ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+        ...(options.directBwrap === undefined ? {} : { directBwrap: options.directBwrap }),
         ...(options.linuxContainment !== undefined
           ? { linuxContainment: options.linuxContainment }
           : {}),
@@ -1748,6 +2073,16 @@ function runSupervisedProcessCommand(
         processError ??= brokerBoundary.protocolError;
         processTreeCleanupProven = false;
       }
+      const commandOutcome = containedProcessCommandOutcome(child);
+      if (commandOutcome?.kind === "reported") {
+        exitCode = commandOutcome.result.kind === "exit" ? commandOutcome.result.code : 128 + commandOutcome.result.signal;
+        exitSignal = null;
+      } else if (commandOutcome !== undefined) {
+        exitCode = null;
+        exitSignal = null;
+        if (commandOutcome.kind === "aborted") stopReason ??= "aborted";
+        else processError ??= new Error("Command outcome unavailable after dispatch; cleanup is complete. Do not replay automatically.");
+      }
       const resolveResult = (): void => {
         resolve({
           exitCode,
@@ -1758,6 +2093,7 @@ function runSupervisedProcessCommand(
           forced,
           backstopExpired,
           processTreeCleanupProven,
+          ...(commandOutcome === undefined ? {} : { commandOutcome }),
           ...(processError !== undefined ? { error: processError } : {}),
           ...(processStarted !== undefined ? { processStarted } : {}),
         });
@@ -1861,12 +2197,20 @@ function runSupervisedProcessCommand(
       exitCode = code;
       exitSignal = signal;
       closed = true;
+      // The launch was abandoned before the command started: say so, instead
+      // of reporting a command that ran and was killed with no output.
+      const launchFailure = containedLaunchFailures.get(child);
+      if (launchFailure !== undefined && stopReason === undefined) {
+        processError ??= launchFailure;
+        requestStop("spawn_error");
+      }
       if (stopReason !== undefined) {
         maybeFinish();
         return;
       }
       // An authoritative boundary already decided; no need to observe again.
-      if (linuxSubreaperBoundaries.get(child)?.residual === true) {
+      if (linuxSubreaperBoundaries.get(child)?.residual === true ||
+          containedProcessCommandOutcome(child)?.residual === "observed") {
         stopReason = "residual_process";
         maybeFinish();
         return;
@@ -1960,7 +2304,7 @@ export function isProcessTreeAlive(
   // walking `/proc/1` adopts the whole container/host namespace. Apply the
   // guard before every native ownership boundary so corrupt handles remain
   // direct-child-only on every platform.
-  if (child.pid !== undefined && child.pid <= 1) {
+  if (child.pid !== undefined && !isSignalablePid(child.pid)) {
     return child.exitCode === null && child.signalCode === null;
   }
   if (linuxSubreaperBoundaries.has(child)) {
@@ -1982,6 +2326,9 @@ export function isProcessTreeAlive(
     captureProcessTreeDescendants(child);
   }
   const ownedDescendantAlive = ownedBoundaryHasLiveMember(child);
+  // The leader was reaped and its pid now belongs to another process: a
+  // group with that id is not ours, so only recorded descendants count.
+  if (processIdReused(child)) return ownedDescendantAlive;
   if (process.platform === "linux") {
     const procState = linuxProcessGroupHasLiveMember(child.pid);
     if (procState === true) return true;
@@ -2015,8 +2362,7 @@ export function captureProcessTreeDescendants(
 ): void {
   const rootPid = child.pid;
   if (
-    rootPid === undefined ||
-    rootPid <= 1 ||
+    !isSignalablePid(rootPid) ||
     process.platform === "win32" ||
     linuxSubreaperBoundaries.has(child)
   ) {
@@ -2025,6 +2371,9 @@ export function captureProcessTreeDescendants(
 
   const snapshot = readNativeProcessSnapshot();
   let boundary = ownedProcessBoundaries.get(child);
+  // Once the leader has been reaped its pid may belong to another process.
+  // Only identities recorded while it was ours can still be matched.
+  const reaped = leaderReaped(child);
   if (snapshot === undefined) {
     boundary ??= {
       rootPid,
@@ -2040,6 +2389,7 @@ export function captureProcessTreeDescendants(
   }
 
   if (boundary === undefined) {
+    if (reaped) return;
     const root = snapshot.records.get(rootPid);
     if (root === undefined && snapshot.complete) return;
     boundary = {
@@ -2053,7 +2403,7 @@ export function captureProcessTreeDescendants(
   } else if (!snapshot.complete) {
     boundary.snapshotComplete = false;
   }
-  extendOwnedProcessBoundary(boundary, snapshot);
+  extendOwnedProcessBoundary(boundary, snapshot, !reaped);
 }
 
 /**
@@ -2066,10 +2416,23 @@ export async function terminateProcessTreeAndWait(
   child: ProcessTreeChild,
   options: TerminateProcessTreeOptions = {},
 ): Promise<void> {
+  await terminateProcessTreeAndReport(child, options);
+}
+
+/**
+ * `terminateProcessTreeAndWait` that also says whether it found anything to
+ * stop. The unified exec manager uses it to tell the model when a command
+ * left processes behind that the containment then ended.
+ */
+export async function terminateProcessTreeAndReport(
+  child: ProcessTreeChild,
+  options: TerminateProcessTreeOptions = {},
+): Promise<TerminateProcessTreeOutcome> {
   // Never pass an invalid synthetic root to taskkill, a Job Object, a cgroup,
-  // process-table discovery, or POSIX negative-PID signalling.
-  if (child.pid !== undefined && child.pid <= 1) {
-    if (!isProcessTreeAlive(child)) return;
+  // process-table discovery, or POSIX negative-PID signalling. Such a root is
+  // not signalled at all (see safeKill); it only settles if it exits.
+  if (child.pid !== undefined && !isSignalablePid(child.pid)) {
+    if (!isProcessTreeAlive(child)) return TREE_ALREADY_GONE;
     safeKill(child, "SIGTERM");
     if (
       await waitForProcessTreeExit(
@@ -2077,7 +2440,7 @@ export async function terminateProcessTreeAndWait(
         options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS,
       )
     ) {
-      return;
+      return RESIDUE_TERMINATED;
     }
     safeKill(child, "SIGKILL");
     if (
@@ -2086,14 +2449,14 @@ export async function terminateProcessTreeAndWait(
         options.killGraceMs ?? DEFAULT_SETTLE_BACKSTOP_MS,
       )
     ) {
-      return;
+      return RESIDUE_TERMINATED;
     }
     throw new Error(
       `${options.label ?? "process"} invalid process root survived forced shutdown`,
     );
   }
   if (windowsJobBoundaries.has(child)) {
-    if (!isProcessTreeAlive(child)) return;
+    if (!isProcessTreeAlive(child)) return TREE_ALREADY_GONE;
     safeKill(child, "SIGTERM");
     if (
       await waitForProcessTreeExit(
@@ -2101,7 +2464,7 @@ export async function terminateProcessTreeAndWait(
         options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS,
       )
     ) {
-      return;
+      return RESIDUE_TERMINATED;
     }
     safeKill(child, "SIGKILL");
     if (
@@ -2110,7 +2473,7 @@ export async function terminateProcessTreeAndWait(
         options.killGraceMs ?? DEFAULT_SETTLE_BACKSTOP_MS,
       )
     ) {
-      return;
+      return RESIDUE_TERMINATED;
     }
     throw new Error(
       `${options.label ?? "process"} Windows Job Object broker survived forced shutdown`,
@@ -2123,7 +2486,7 @@ export async function terminateProcessTreeAndWait(
   // infer tree cleanup from the leader alone.
   if (process.platform === "win32" && child.pid !== undefined) {
     await terminateWindowsProcessTree(child.pid, options);
-    return;
+    return TREE_ALREADY_GONE;
   }
   if (!linuxCgroupBoundaries.has(child)) {
     captureProcessTreeDescendants(child);
@@ -2131,7 +2494,10 @@ export async function terminateProcessTreeAndWait(
   if (!isProcessTreeAlive(child)) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return;
+    // The subreaper broker stops orphaned descendants on its own when the
+    // leader exits and has closed by the time settlement looks, so the tree
+    // reads as gone here; its residual flag is the record that it did.
+    return completedTreeOutcome(child, linuxSubreaperBoundaries.get(child)?.residual === true);
   }
   signalProcessTree(child, "SIGTERM");
   if (
@@ -2142,7 +2508,7 @@ export async function terminateProcessTreeAndWait(
   ) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return;
+    return completedTreeOutcome(child, true);
   }
   signalProcessTree(child, "SIGKILL");
   if (
@@ -2153,7 +2519,7 @@ export async function terminateProcessTreeAndWait(
   ) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return;
+    return completedTreeOutcome(child, true);
   }
   const survivors = liveOwnedBoundaryPids(child)
     .filter((pid) => pid !== child.pid)
@@ -2165,6 +2531,13 @@ export async function terminateProcessTreeAndWait(
         ? ""
         : `; live descendants: ${survivors.join(", ")}`),
   );
+}
+
+function completedTreeOutcome(child: ProcessTreeChild, legacyTerminated: boolean): TerminateProcessTreeOutcome {
+  const commandOutcome = containedProcessCommandOutcome(child);
+  if (commandOutcome === undefined) return legacyTerminated ? RESIDUE_TERMINATED : TREE_ALREADY_GONE;
+  return { residualProcessesTerminated: false, commandOutcome,
+    ...(commandOutcome.residual === "observed" ? { residualProcessesObserved: true } : {}) };
 }
 
 async function terminateWindowsProcessTree(
@@ -2515,9 +2888,10 @@ function readPsProcessSnapshot(): NativeProcessSnapshot | undefined {
 function extendOwnedProcessBoundary(
   boundary: OwnedProcessBoundary,
   snapshot: NativeProcessSnapshot,
+  adoptRoot: boolean,
 ): void {
   const root = snapshot.records.get(boundary.rootPid);
-  if (boundary.identities.size === 0 && root !== undefined) {
+  if (adoptRoot && boundary.identities.size === 0 && root !== undefined) {
     boundary.identities.set(nativeProcessIdentity(root), root);
   }
 
@@ -2675,10 +3049,10 @@ export function signalProcessTree(
   child: Pick<ChildProcess, "pid" | "kill">,
   signal: "SIGTERM" | "SIGKILL",
 ): void {
-  if (child.pid !== undefined && child.pid <= 1) {
-    safeKill(child, signal);
-    return;
-  }
+  // No pid (a spawn that failed), 0, -1, 1 or a non-integer: there is no
+  // process of ours to reach, and any signal could hit this process's
+  // group, every process of the user, or init.
+  if (!isSignalablePid(child.pid)) return;
   if (linuxSubreaperBoundaries.has(child)) {
     safeKill(child, signal === "SIGKILL" ? "SIGUSR2" : signal);
     return;
@@ -2692,18 +3066,20 @@ export function signalProcessTree(
     signalLinuxCgroup(cgroupBoundary, signal);
     return;
   }
-  if (child.pid === undefined) {
-    safeKill(child, signal);
-    return;
-  }
   if (process.platform !== "win32") {
     captureProcessTreeDescendants(child);
     signalOwnedDescendants(child, signal);
+    // The leader was reaped and its pid now belongs to another process:
+    // neither the pid nor -pid is ours. Recorded descendants were matched by
+    // identity above.
+    if (processIdReused(child)) return;
     try {
       process.kill(-child.pid, signal);
       return;
     } catch {
-      safeKill(child, signal);
+      // No group with that id. Only a leader that has not been reaped may
+      // still be signalled directly; a reaped one may have been replaced.
+      if (!leaderReaped(child)) safeKill(child, signal);
       return;
     }
   }
@@ -2732,6 +3108,40 @@ export function signalProcessTree(
   killer.once("close", (code) => {
     if (code !== 0) fallback();
   });
+}
+
+/**
+ * Whether the leader this handle started has been reaped. Node sets exitCode
+ * or signalCode only after waiting for the process, and the PTY handles do
+ * the same when node-pty reports an exit. From then on the kernel may hand
+ * the pid to an unrelated process.
+ */
+function leaderReaped(child: object): boolean {
+  const state = child as {
+    readonly exitCode?: number | null;
+    readonly signalCode?: NodeJS.Signals | null;
+  };
+  return (
+    (state.exitCode !== undefined && state.exitCode !== null) ||
+    (state.signalCode !== undefined && state.signalCode !== null)
+  );
+}
+
+/**
+ * Whether the handle's pid now belongs to a process it did not start: the
+ * leader was reaped and a live process holds the pid. The kernel does not
+ * hand out a pid that is still in use as a process group id, so while no
+ * process holds it, a group with that id is still the leader's own.
+ */
+function processIdReused(child: Pick<ChildProcess, "pid">): boolean {
+  if (!leaderReaped(child) || !isSignalablePid(child.pid)) return false;
+  try {
+    process.kill(child.pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists and belongs to another user.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function signalOwnedDescendants(
@@ -2779,13 +3189,36 @@ function trustedWindowsTaskkill(): TrustedWindowsTaskkill | undefined {
 }
 
 function safeKill(
-  child: Pick<ChildProcessWithoutNullStreams, "kill">,
+  child: Pick<ChildProcessWithoutNullStreams, "kill" | "pid">,
   signal: NodeJS.Signals,
 ): void {
+  // A child whose spawn failed has no pid, but its open handle still routes
+  // kill() to pid 0, which signals this process's own group: that SIGKILLed
+  // the daemon and everything it spawned. There is nothing to signal. Pid 1
+  // (init) and non-integers are refused too: a handle's kill() is not always
+  // bound to a real child (node-pty's is process.kill(this.pid)).
+  if (!isSignalablePid(child.pid)) return;
   try {
     child.kill(signal);
   } catch {
     // The process has already exited.
+  }
+}
+
+/**
+ * Spawning in a missing directory fails with ENOENT while the child handle
+ * stays open without a pid (see safeKill). A model asked for a `workdir` its
+ * own command was about to create; refuse that before anything is spawned.
+ */
+function assertSpawnableWorkingDirectory(cwd: string): void {
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    throw new Error(`working directory does not exist: ${cwd}`);
   }
 }
 

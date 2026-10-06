@@ -9,7 +9,7 @@ import type { RGBColor as RGBColorType, SpinnerMode } from './types.js'
 
 /**
  * Single source of truth for the plain-language phase label of a streaming
- * turn. Both the workbench title-bar indicator and the composer status line
+ * turn. Both the header indicator and the composer status line
  * read this so they always agree (e.g. the title bar showing "responding…"
  * while the status line shows a different word is a known confusion bug).
  *

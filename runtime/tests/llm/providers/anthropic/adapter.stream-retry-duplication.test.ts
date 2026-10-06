@@ -1,5 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { AnthropicProvider } from "./adapter.js";
+import {
+  createAnthropicFallbackProvider,
+  sseResponse,
+  sseResponseThenError,
+  withDeterministicFallbackTimers,
+} from "./stream-test-helpers.js";
 
 /**
  * Regression coverage for audit issue #10: the Anthropic adapter's outer catch
@@ -13,49 +19,6 @@ import { AnthropicProvider } from "./adapter.js";
  * a partial response (`finishReason: "error"`, `partial: true`) when content
  * was already streamed.
  */
-
-/** An SSE response whose body emits `frames`, then errors the stream. */
-function sseResponseThenError(frames: string[], error: Error): Response {
-  const encoder = new TextEncoder();
-  // Enqueue the frames on the first pull and error only on the next pull, so
-  // the reader actually receives (and the adapter processes) the buffered
-  // frames before the transport error surfaces. Erroring synchronously in the
-  // same tick as the enqueue discards the queued chunk under the WHATWG
-  // ReadableStream semantics, which would defeat the partial-content coverage.
-  let emitted = false;
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (!emitted) {
-        for (const frame of frames) {
-          controller.enqueue(encoder.encode(frame));
-        }
-        emitted = true;
-        return;
-      }
-      controller.error(error);
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
-function sseResponse(frames: string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const frame of frames) {
-        controller.enqueue(encoder.encode(frame));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
 
 const TEXT_DELTA =
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';
@@ -74,17 +37,7 @@ describe("AnthropicProvider stream retry duplication (audit #10)", () => {
           sseResponseThenError([TEXT_DELTA], new Error("overloaded_error")),
         )
       );
-      const provider = new AnthropicProvider({
-        apiKey: "anthropic-test",
-        model: "claude-3-7-sonnet",
-        fetchImpl,
-        providerFallback: {
-          provider: "anthropic",
-          model: "claude-3-7-sonnet",
-          targets: [{ provider: "grok", model: "grok-4-fast" }],
-          maxFailures: 5,
-        },
-      });
+      const provider = createAnthropicFallbackProvider(fetchImpl);
 
       const textChunks: string[] = [];
       const response = await provider.chatStream(
@@ -103,6 +56,64 @@ describe("AnthropicProvider stream retry duplication (audit #10)", () => {
       expect(response.finishReason).toBe("error");
       expect(response.partial).toBe(true);
       expect(response.error).toBeInstanceOf(Error);
+    },
+  );
+
+  test(
+    "re-throws a transport fault that cuts a text-only stream so the turn re-samples it",
+    async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+        Promise.resolve(
+          sseResponseThenError(
+            [TEXT_DELTA],
+            Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+          ),
+        ),
+      );
+      const provider = new AnthropicProvider({
+        apiKey: "anthropic-test",
+        model: "claude-3-7-sonnet",
+        fetchImpl,
+      });
+      const textChunks: string[] = [];
+
+      await expect(
+        provider.chatStream([{ role: "user", content: "hello" }], (chunk) => {
+          if (chunk.content) textChunks.push(chunk.content);
+        }),
+      ).rejects.toThrow(/socket hang up/);
+      // No in-band retry and no replay: the turn's reconnect ladder re-samples.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(textChunks).toEqual(["partial"]);
+    },
+  );
+
+  test(
+    "keeps the partial response when a transport fault follows a streamed tool block",
+    async () => {
+      const toolStart =
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"exec_command","input":{}}}\n\n';
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+        Promise.resolve(
+          sseResponseThenError(
+            [TEXT_DELTA, toolStart],
+            Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+          ),
+        ),
+      );
+      const provider = new AnthropicProvider({
+        apiKey: "anthropic-test",
+        model: "claude-3-7-sonnet",
+        fetchImpl,
+      });
+
+      const response = await provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      expect(response.finishReason).toBe("error");
+      expect(response.partial).toBe(true);
+      expect(response.content).toBe("partial");
     },
   );
 
@@ -131,21 +142,8 @@ describe("AnthropicProvider stream retry duplication (audit #10)", () => {
         );
       });
 
-      vi.useFakeTimers();
-      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
-      try {
-        const provider = new AnthropicProvider({
-          apiKey: "anthropic-test",
-          model: "claude-3-7-sonnet",
-          fetchImpl,
-          providerFallback: {
-            provider: "anthropic",
-            model: "claude-3-7-sonnet",
-            targets: [{ provider: "grok", model: "grok-4-fast" }],
-            maxFailures: 5,
-          },
-        });
-
+      await withDeterministicFallbackTimers(async () => {
+        const provider = createAnthropicFallbackProvider(fetchImpl);
         const textChunks: string[] = [];
         const pending = provider.chatStream(
           [{ role: "user", content: "hello" }],
@@ -164,10 +162,7 @@ describe("AnthropicProvider stream retry duplication (audit #10)", () => {
         expect(response.content).toBe("recovered");
         expect(response.finishReason).toBe("stop");
         expect(response.partial).toBeFalsy();
-      } finally {
-        randomSpy.mockRestore();
-        vi.useRealTimers();
-      }
+      });
     },
   );
 });

@@ -33,28 +33,6 @@ describe("default keybindings", () => {
       enter: "autocomplete:confirm",
       tab: "autocomplete:accept",
     });
-
-    // Click-to-focus panes must offer esc as the way back to the composer —
-    // without it keyboard focus is trapped (no visible escape hatch).
-    expect(bindingsFor("Explorer")).toMatchObject({
-      escape: "explorer:backToComposer",
-    });
-    expect(bindingsFor("Agents")).toMatchObject({
-      escape: "agents:backToComposer",
-    });
-    // The buffer editor is the same trap: with no vim command pending, esc
-    // bubbles out of the store and lands on this binding.
-    expect(bindingsFor("Buffer")).toMatchObject({
-      escape: "workbench:focusComposer",
-    });
-    expect(bindingsFor("BufferHost")).toMatchObject({
-      "ctrl+s": "buffer:save",
-      "ctrl+x": "buffer:passthrough",
-      "ctrl+k": "buffer:passthrough",
-      "ctrl+g": "buffer:passthrough",
-      "ctrl+r": "buffer:passthrough",
-    });
-    expect(bindingsFor("BufferHost")).not.toHaveProperty("escape");
   });
 
   test("enables user customization in AgenC without remote feature gates", () => {

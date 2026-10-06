@@ -22,7 +22,10 @@
  * turn is not executed again. Nothing about the call or the runtime has
  * changed, so the result cannot change either; re-running it only burns a
  * model round trip. That case is refused before dispatch with a plain
- * explanation and ends the turn after the batch.
+ * explanation telling the model to change approach. The first refusal lets
+ * the turn continue, because an unattended session can only act on that
+ * advice by sampling again; a second refusal of the same call means the
+ * advice did not land, and the turn ends after the batch.
  *
  * @module
  */
@@ -64,6 +67,15 @@ export const REPEATED_FAILURE_BLOCK_THRESHOLD = 3;
 
 /** Metadata marker on the synthetic refusal so it never counts as a failure. */
 export const REPEATED_FAILURE_BLOCKED_METADATA_KEY = "repeatedFailingCallBlocked";
+
+/**
+ * Model sample the refusal belongs to. The turn ends on a refusal that
+ * repeats one from an EARLIER sample, so the opportunity to change approach
+ * is one sampling generation, not one result row: a model output carrying
+ * the same failing call twice is refused twice inside the same generation
+ * and still gets its sample.
+ */
+export const REPEATED_FAILURE_SAMPLE_METADATA_KEY = "repeatedFailingCallSample";
 
 /** Cap on the last error quoted inside the refusal. */
 const LAST_ERROR_PREVIEW_CHARS = 300;
@@ -218,17 +230,67 @@ function blockedCallMessage(
   call: LLMToolCall,
   count: number,
   lastError: string,
+  endsTurn: boolean,
+  nonRetryable: boolean,
 ): string {
   const preview =
     lastError.length > LAST_ERROR_PREVIEW_CHARS
       ? `${lastError.slice(0, LAST_ERROR_PREVIEW_CHARS)}…`
       : lastError;
+  const consequence = endsTurn
+    ? "This is the second refusal of the same call, so the turn stops here."
+    : "Take a different action now: change the arguments, use another tool, " +
+      "work around what is failing, or finish with what you have. Issuing " +
+      "this same call again stops the turn.";
+  if (nonRetryable) {
+    return (
+      `This exact ${call.name} call was refused as not retryable with the same arguments. ` +
+      `${consequence} Last error: ${preview}`
+    );
+  }
   return (
     `This exact ${call.name} call already failed ${count} times with the ` +
     "same error in this turn and will not run again. The error is not going " +
-    "to change; stop retrying, and if you cannot proceed without it, tell " +
-    `the user. Last error: ${preview}`
+    `to change. ${consequence} Last error: ${preview}`
   );
+}
+
+function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean {
+  const key = canonicalCallKey(call);
+  for (let index = state.completedToolResults.length - 1; index >= 0; index -= 1) {
+    const record = state.completedToolResults[index]!;
+    if (completedRecordKey(record) !== key) continue;
+    if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] === true) continue;
+    return record.isError && record.metadata?.retryable === false;
+  }
+  return false;
+}
+
+/**
+ * Whether this exact call was already refused in an EARLIER model sample.
+ * The first refusal hands the model the message above and lets it sample
+ * again, which is the only way an unattended session can act on the advice.
+ * A refusal recorded before the current sample means the advice did not
+ * land, so the turn ends. Refusals from the current sample do not count:
+ * `executeTools` records each refusal as it goes, so a model output that
+ * repeats the same failing call twice would otherwise consume the
+ * opportunity inside the batch that created it, before the model could read
+ * anything. A refusal without a recorded sample predates this turn's
+ * batch (a resumed turn, a legacy record) and counts as earlier.
+ */
+function refusedInEarlierSample(state: TurnState, call: LLMToolCall): boolean {
+  const key = canonicalCallKey(call);
+  const currentSample = state.modelSampleOrdinal;
+  for (const record of state.completedToolResults) {
+    if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] !== true) {
+      continue;
+    }
+    if (completedRecordKey(record) !== key) continue;
+    if (record.metadata?.[REPEATED_FAILURE_SAMPLE_METADATA_KEY] !== currentSample) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -261,9 +323,8 @@ export function isRepeatedFailingCall(
   state: TurnState,
   call: LLMToolCall,
 ): boolean {
-  return (
-    identicalFailureRun(state, call).count >= REPEATED_FAILURE_BLOCK_THRESHOLD
-  );
+  const count = identicalFailureRun(state, call).count;
+  return count >= (lastFailureIsNonRetryable(state, call) ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD);
 }
 
 /**
@@ -283,22 +344,27 @@ export function blockRepeatedFailingCall(
   call: LLMToolCall,
 ): ToolDispatchResult | null {
   const { count, lastError } = identicalFailureRun(state, call);
-  if (count < REPEATED_FAILURE_BLOCK_THRESHOLD) return null;
-  const message = blockedCallMessage(call, count, lastError);
+  const nonRetryable = lastFailureIsNonRetryable(state, call);
+  if (count < (nonRetryable ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD)) return null;
+  const endsTurn = refusedInEarlierSample(state, call);
+  const message = blockedCallMessage(call, count, lastError, endsTurn, nonRetryable);
   emitWarning(
     session.eventLog,
     session.nextInternalSubId(),
     "repeated_failing_call_blocked",
-    `${call.name} refused: identical call failed ${count} times with the same error in this turn`,
+    `${call.name} refused: identical call failed ${count} times with the same error in this turn` +
+      (endsTurn ? "; refused twice, stopping the turn" : "; the model may change approach"),
   );
   return {
-    content: JSON.stringify({ error: message }),
+    content: JSON.stringify({ error: message, ...(nonRetryable ? { retryable: false } : {}) }),
     isError: true,
     metadata: {
       [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
+      [REPEATED_FAILURE_SAMPLE_METADATA_KEY]: state.modelSampleOrdinal,
       repeatedFailures: count,
+      ...(nonRetryable ? { retryable: false } : {}),
     },
-    preventContinuation: true,
+    ...(endsTurn ? { preventContinuation: true } : {}),
   };
 }
 

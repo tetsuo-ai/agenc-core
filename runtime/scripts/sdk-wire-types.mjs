@@ -7,6 +7,7 @@ const PUBLIC_WIRE_ROOTS = [
   "AGENC_DAEMON_PROTOCOL_VERSION",
   "AGENC_DAEMON_METHODS",
   "AGENC_DAEMON_NOTIFICATION_METHODS",
+  "AGENC_DAEMON_CLIENT_ENV_KEYS",
   "AgenCDaemonRequest",
   "AgenCDaemonResultByMethod",
   "AgenCDaemonNotificationParamsByMethod",

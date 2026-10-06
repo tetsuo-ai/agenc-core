@@ -12,7 +12,6 @@ import {
 } from "./text-document.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
-import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const PROPERTY_CASE_COUNT = 600;
 const SCALING_SMALL_LINE_COUNT = 20_000;
@@ -116,10 +115,6 @@ function measuredAdversarialSearch(lineCount: number): number {
   expect(seekSequence(lines, pattern, 0, false, { budget })).toBeNull();
   return budget.used;
 }
-
-afterEach(() => {
-  workspaceMutationCoordinators.clearForTests();
-});
 
 describe("apply_patch linear parser, matcher, and output builder", () => {
   test("matches a naive tier-priority oracle across randomized corpora", () => {

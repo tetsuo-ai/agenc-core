@@ -105,6 +105,12 @@ export interface RegisterAgentThreadTaskOptions {
   readonly prompt?: string;
   readonly onStop?: (thread: AgentThreadTaskHandle, reason: string) => Promise<void> | void;
   readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
+  /**
+   * Register the agent path as an alias of the task (default true). A caller
+   * whose path is still held by another live task registers the task by its
+   * id alone rather than losing the registration.
+   */
+  readonly registerAgentPathAlias?: boolean;
   /** Immutable hook authority owned by the parent session. */
   readonly runtimeOptions?: HookRuntimeAuthority;
   /**
@@ -158,12 +164,20 @@ export function observeAgentThreadTask(
     });
     if (signature === lastSignature) return;
     lastSignature = signature;
-    onSnapshot(projected);
-    if (isTerminalTaskStatus(projected.status)) unsubscribe();
+    try {
+      onSnapshot(projected);
+    } finally {
+      if (isTerminalTaskStatus(projected.status)) unsubscribe();
+    }
   };
   unsubscribe = lifecycle.subscribe(threadId, forward);
   const current = lifecycle.get(threadId);
-  if (current !== undefined) forward(current);
+  try {
+    if (current !== undefined) forward(current);
+  } catch (error) {
+    unsubscribe();
+    throw error;
+  }
   return unsubscribe;
 }
 
@@ -236,7 +250,9 @@ export function registerAgentThreadTask(
     description,
     source: "agent_thread",
     toolUseId: opts.toolUseId,
-    ...(agentPath !== undefined ? { aliases: [agentPath] } : {}),
+    ...(agentPath !== undefined && opts.registerAgentPathAlias !== false
+      ? { aliases: [agentPath] }
+      : {}),
     ...(thread.live.abortController !== undefined
       ? { abortController: thread.live.abortController }
       : {}),

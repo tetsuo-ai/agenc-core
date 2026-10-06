@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   AgenCWebSocketServer as PublicAgenCWebSocketServer,
@@ -8,6 +8,8 @@ import {
   parseJsonObjectPayload as publicParseJsonObjectPayload,
 } from "../index.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
+import { assertAliasControlDispatch, blockedControlHandler } from "./transport-contract-helpers.js";
 import {
   AgenCWebSocketServer,
   type AgenCWebSocketMessageContext,
@@ -86,6 +88,47 @@ async function rejectedUpgradeStatus(
 }
 
 describe("AgenC websocket app-server transport", () => {
+  it("keeps a causal routine write on another connection in that connection's FIFO", async () => {
+    const events: string[] = [];
+    let releaseTurn!: () => void;
+    let releaseHead!: () => void;
+    let enteredTurn!: () => void;
+    let enteredHead!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const headDone = new Promise<void>((resolve) => { releaseHead = resolve; });
+    const turnStarted = new Promise<void>((resolve) => { enteredTurn = resolve; });
+    const headStarted = new Promise<void>((resolve) => { enteredHead = resolve; });
+    const server = new AgenCWebSocketServer({ onMessage: async (message) => {
+      if (message.method === "message.stream") { enteredTurn(); await turnDone; }
+      else if (message.method === "routine.get") {
+        events.push("routine.get"); enteredHead(); await headDone;
+      } else events.push(String(message.method));
+    } });
+    const address = await server.listen();
+    const turnClient = new WebSocket(address.url);
+    const otherClient = new WebSocket(address.url);
+    try {
+      await Promise.all([once(turnClient, "open"), once(otherClient, "open")]);
+      turnClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "message.stream",
+        params: { sessionId: "shared-session" } }));
+      await turnStarted;
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "routine.get" }));
+      await headStarted;
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "routine.update",
+        params: { permissionAuthority: { kind: "session", sessionId: "shared-session", toolCallId: "running-call" } } }));
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 3, method: "routine.delete" }));
+      await delay(40);
+      expect(events).toEqual(["routine.get"]);
+      releaseHead();
+      await vi.waitFor(() => expect(events).toEqual(["routine.get", "routine.update", "routine.delete"]));
+    } finally {
+      releaseHead(); releaseTurn();
+      turnClient.close(); otherClient.close();
+      await Promise.all([nextClose(turnClient), nextClose(otherClient)]);
+      await server.close();
+    }
+  });
+
   it("accepts JSON-RPC objects over a websocket and sends responses", async () => {
     const server = new AgenCWebSocketServer({
       onMessage: async (message, connection) => {
@@ -236,25 +279,11 @@ describe("AgenC websocket app-server transport", () => {
     // until that request completed, defeating cancellation. Control messages
     // must dispatch off-chain so cancel runs while the target is still in
     // flight, while normal requests stay FIFO (guarded by the test above).
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "session.partialCompactFromMessage", "long", "request.cancel", "cancel",
+    );
     const server = new AgenCWebSocketServer({
-      onMessage: async (message) => {
-        if (message.method === "session.partialCompactFromMessage") {
-          events.push("long:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("long:end");
-        } else if (message.method === "request.cancel") {
-          events.push("cancel");
-        }
-      },
+      onMessage,
     });
 
     const address = await server.listen();
@@ -279,26 +308,39 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
-  it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+  it("dispatches an alias write, controls and priority work while the scheduling state lock is held", async () => {
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const enteredTurn = new Promise<void>((resolve) => { turnStarted = resolve; });
+    let heldLock: Awaited<ReturnType<typeof holdAgentLifecycleLock>> | undefined;
     const server = new AgenCWebSocketServer({
+      resolveRoutineSessionId: (id) => heldLock?.manager.peekRoutineSessionId(id),
       onMessage: async (message) => {
-        if (message.method === "message.stream") {
-          events.push("stream:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("stream:end");
-        } else if (message.method === "session.cancelTurn") {
-          events.push("turn:cancel");
-        }
+        seen.push(String(message.method));
+        if (message.method === "message.stream") { turnStarted(); await turnDone; }
       },
+    });
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    const send = (id: number, method: string, params: object = {}) => client.send(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }));
+    try {
+      await assertAliasControlDispatch(send, enteredTurn, seen, (lock) => { heldLock = lock; });
+    } finally {
+      await heldLock?.release(); releaseTurn(); client.close(); await nextClose(client); await server.close();
+    }
+  });
+
+  it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "message.stream", "stream", "session.cancelTurn", "turn:cancel",
+    );
+    const server = new AgenCWebSocketServer({
+      onMessage,
     });
 
     const address = await server.listen();

@@ -432,7 +432,7 @@ function HookEditModal({
           {field.label}
         </ThemedText>,
         <ThemedText key="value" color={active ? "text" : "subtle"} wrap="truncate-middle">
-          {`${field.value || "—"}${active && field.editable && field.key !== "enabled" ? "█" : ""}`}
+          {`${field.value || "not set"}${active && field.editable && field.key !== "enabled" ? "█" : ""}`}
         </ThemedText>,
       ]}
       preview={
@@ -800,13 +800,13 @@ function HooksMenuView({
               {hook.matcher ?? "(all)"}
             </ThemedText>,
             <ThemedText key="enabled" color={hook.enabled && !runtime.isExecutionSuppressed() ? "success" : "inactive"} wrap="truncate-end">
-              {realHook ? hookEnabledText(runtime, hook) : "—"}
+              {realHook ? hookEnabledText(runtime, hook) : ""}
             </ThemedText>,
             <ThemedText key="command" color="text2" wrap="truncate-middle">
               {hook.command.command}
             </ThemedText>,
             <ThemedText key="source" color={diagColor(diag)} wrap="truncate-end">
-              {realHook ? compactPath(hook.sourcePath) : "—"}
+              {realHook ? compactPath(hook.sourcePath) : ""}
             </ThemedText>,
           ];
         }}

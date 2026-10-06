@@ -194,12 +194,30 @@ function isSensitiveTraceKey(key: string | undefined): boolean {
   return TRACE_SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
+/**
+ * Usage counters such as `input_tokens`, `cached_tokens` and
+ * `max_output_tokens` contain "token" but hold counts, not credentials. A
+ * number under a key that ends in "tokens", and the `*_tokens_details`
+ * object around such numbers, stay readable so a trace can be priced.
+ */
+function isTokenCountField(key: string | undefined, value: unknown): boolean {
+  if (!key) return false;
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (normalized.endsWith("tokens")) {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  return normalized.endsWith("tokensdetails") &&
+    value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function redactProviderTraceValue(
   value: unknown,
   key?: string,
   seen: WeakSet<object> = new WeakSet(),
 ): unknown {
-  if (isSensitiveTraceKey(key)) return TRACE_REDACTED_VALUE;
+  if (isSensitiveTraceKey(key) && !isTokenCountField(key, value)) {
+    return TRACE_REDACTED_VALUE;
+  }
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return "[Circular]";
   seen.add(value);
@@ -433,15 +451,33 @@ export function isContinuationRetrievalFailure(error: unknown): boolean {
 
 function sanitizeSchema(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.slice(0, 64).map((item) => sanitizeSchema(item));
+    return value.map((item) => sanitizeSchema(item));
   }
   if (value && typeof value === "object") {
     const input = value as Record<string, unknown>;
     const output: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(input)) {
       if (TOOL_METADATA_KEYS.has(key)) continue;
+      // These keys contain maps of user-defined property names, not schema
+      // keywords. A tool may have an argument named `description` or `title`;
+      // dropping it here removes that argument from the model's contract.
+      if ((key === "properties" || key === "patternProperties" ||
+        key === "$defs" || key === "definitions" || key === "dependentSchemas") &&
+        field !== null && typeof field === "object" && !Array.isArray(field)) {
+        output[key] = Object.fromEntries(
+          Object.entries(field as Record<string, unknown>).map(([name, schema]) =>
+            [name, sanitizeSchema(schema)]),
+        );
+        continue;
+      }
       if (key === "enum" && Array.isArray(field)) {
-        output[key] = field.slice(0, 64);
+        // Enum members are literal values, not schema nodes.
+        output[key] = field;
+        continue;
+      }
+      if (key === "const") {
+        // A const payload is a literal JSON value, not another schema node.
+        output[key] = field;
         continue;
       }
       output[key] = sanitizeSchema(field);

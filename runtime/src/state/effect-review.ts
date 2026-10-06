@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   OfflineRolloutSourceMissingError,
   withPinnedOfflineRolloutLease,
@@ -16,15 +17,98 @@ import { stableStringify } from "../utils/stableStringify.js";
 import {
   canonicalizeEffectReviewResolution,
   StateRunDurabilityRepository,
+  type DurableRunEffect,
   type RunJournalBinding,
 } from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { resolveUnknownOutcomeEffect } from "./unknown-outcome-gate.js";
 
+/**
+ * The exact recorded attempt a reviewer saw: the effect's run and step, and
+ * the canonical `effect_unknown_outcome` event with its journal sequence.
+ * Several attempts can share one tool call id (a retry after a confirmed
+ * no-effect review), so the call id alone does not name the record.
+ */
+export interface EffectReviewExpectedAttempt {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly unknownEventId: string;
+  readonly unknownSequence: number;
+}
+
 export interface ResolveDurableEffectReviewOptions {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly resolution: EffectReviewResolution;
+  /**
+   * When present, the review settles only this exact attempt. A request
+   * whose attempt no longer matches the durable record is refused with
+   * `EffectReviewStaleError` before anything is appended.
+   */
+  readonly expectedAttempt?: EffectReviewExpectedAttempt;
+}
+
+/**
+ * The review request no longer matches the record it was made for: the
+ * expected attempt is missing or differs from the durable projection, or the
+ * attempt already carries a different terminal review.
+ */
+export class EffectReviewStaleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EffectReviewStaleError";
+  }
+}
+
+function copyExpectedAttempt(
+  attempt: EffectReviewExpectedAttempt | undefined,
+): EffectReviewExpectedAttempt | undefined {
+  if (attempt === undefined) return undefined;
+  return Object.freeze({
+    runId: attempt.runId,
+    stepId: attempt.stepId,
+    unknownEventId: attempt.unknownEventId,
+    unknownSequence: attempt.unknownSequence,
+  });
+}
+
+/**
+ * Pick the durable effect a review settles. Without an expected attempt this
+ * keeps the protocol 1.0 through 1.19 rule (the pending attempt for the call
+ * id, else the newest). With one, only that exact unknown-outcome record
+ * qualifies, and any mismatch is refused before a review is appended.
+ */
+function selectReviewEffect(
+  repository: StateRunDurabilityRepository,
+  options: ResolveDurableEffectReviewOptions,
+): DurableRunEffect | undefined {
+  const expected = options.expectedAttempt;
+  if (expected === undefined) {
+    return repository.getEffectBySessionCall(
+      options.sessionId,
+      options.toolCallId,
+    );
+  }
+  const effect = repository.getEffect(expected.runId, expected.stepId);
+  if (
+    effect === undefined ||
+    effect.sessionId !== options.sessionId ||
+    effect.callId !== options.toolCallId
+  ) {
+    throw new EffectReviewStaleError(
+      `tool call ${options.toolCallId} has no recorded attempt ${expected.runId}/${expected.stepId} in this session`,
+    );
+  }
+  if (
+    effect.outcome !== "unknown_outcome" ||
+    effect.resultEventId !== expected.unknownEventId ||
+    effect.resultSequence !== expected.unknownSequence
+  ) {
+    throw new EffectReviewStaleError(
+      `run ${effect.runId} step ${effect.stepId} no longer matches the reviewed unknown outcome ${expected.unknownEventId} at sequence ${String(expected.unknownSequence)}`,
+    );
+  }
+  return effect;
 }
 
 export interface LiveEffectReviewJournal {
@@ -111,6 +195,35 @@ export function createOperatorEffectReviewResolution(options: {
 }
 
 /**
+ * Evidence for an operator who attests an outcome from their own knowledge
+ * and holds no separate evidence document. The attestation itself is the
+ * operator evidence: the reference names the session and call, and the digest
+ * covers the canonical statement (who attested which disposition, when), so
+ * the review remains distinguishable from document-backed evidence.
+ */
+export function createOperatorAttestationEvidence(options: {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly disposition: EffectReviewDisposition;
+  readonly actorId: string;
+  readonly attestedAt: string;
+}): { readonly evidenceRef: string; readonly evidenceSha256: string } {
+  const statement = JSON.stringify({
+    version: 1,
+    kind: "operator_attestation",
+    sessionId: options.sessionId,
+    toolCallId: options.toolCallId,
+    disposition: options.disposition,
+    actorId: options.actorId,
+    attestedAt: options.attestedAt,
+  });
+  return {
+    evidenceRef: `operator-attestation:${options.sessionId}:${options.toolCallId}`,
+    evidenceSha256: createHash("sha256").update(statement, "utf8").digest("hex"),
+  };
+}
+
+/**
  * Resolve the legacy recovery gate and, when present, the v15 effect review in
  * one fail-closed workflow. Durable reviews append evidence to the canonical
  * rollout under its single-writer lease before either SQLite projection moves.
@@ -119,10 +232,12 @@ export function resolveDurableEffectReview(
   driver: StateSqliteDriver,
   options: ResolveDurableEffectReviewOptions,
 ): ResolveDurableEffectReviewResult {
+  const expectedAttempt = copyExpectedAttempt(options.expectedAttempt);
   const canonicalOptions = {
     sessionId: options.sessionId,
     toolCallId: options.toolCallId,
     resolution: canonicalizeEffectReviewResolution(options.resolution),
+    ...(expectedAttempt !== undefined ? { expectedAttempt } : {}),
   };
   return driver.transactionImmediate(() =>
     resolveDurableEffectReviewLocked(driver, canonicalOptions),
@@ -134,10 +249,7 @@ function resolveDurableEffectReviewLocked(
   options: ResolveDurableEffectReviewOptions,
 ): ResolveDurableEffectReviewResult {
   const repository = new StateRunDurabilityRepository(driver);
-  const effect = repository.getEffectBySessionCall(
-    options.sessionId,
-    options.toolCallId,
-  );
+  const effect = selectReviewEffect(repository, options);
   if (effect === undefined) {
     return options.resolution.workflowStatus !== "pending" &&
       resolveUnknownOutcomeEffect(driver, options)
@@ -155,7 +267,7 @@ function resolveDurableEffectReviewLocked(
     effect.review !== undefined &&
     reviewIdentity(effect.review) !== reviewIdentity(options.resolution)
   ) {
-    throw new Error(
+    throw new EffectReviewStaleError(
       `run ${effect.runId} step ${effect.stepId} already has a different review resolution`,
     );
   }
@@ -265,16 +377,15 @@ export function resolveLiveDurableEffectReview(
   journal: LiveEffectReviewJournal,
 ): ResolveDurableEffectReviewResult {
   const resolution = canonicalizeEffectReviewResolution(options.resolution);
+  const expectedAttempt = copyExpectedAttempt(options.expectedAttempt);
   const canonicalOptions = {
     sessionId: options.sessionId,
     toolCallId: options.toolCallId,
     resolution,
+    ...(expectedAttempt !== undefined ? { expectedAttempt } : {}),
   };
   const repository = new StateRunDurabilityRepository(driver);
-  const effect = repository.getEffectBySessionCall(
-    canonicalOptions.sessionId,
-    canonicalOptions.toolCallId,
-  );
+  const effect = selectReviewEffect(repository, canonicalOptions);
   if (effect === undefined) {
     return resolution.workflowStatus !== "pending" &&
       resolveUnknownOutcomeEffect(driver, canonicalOptions)
@@ -293,7 +404,7 @@ export function resolveLiveDurableEffectReview(
     effect.review !== undefined &&
     reviewIdentity(effect.review) !== reviewIdentity(resolution)
   ) {
-    throw new Error(
+    throw new EffectReviewStaleError(
       `run ${effect.runId} step ${effect.stepId} already has a different review resolution`,
     );
   }

@@ -50,6 +50,27 @@ function makeDelegateProvider(model: string): LLMProvider {
 }
 
 describe("AgenCProvider", () => {
+  it.each(["gemini", "openai", "grok"] as const)("uses the concrete %s route for response detail", async (concrete) => {
+    const delegate = makeDelegateProvider("managed-model");
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => ({ kind: "api-key", provider, sessionId, apiKey: "managed-key" }),
+      inferAgencModel: () => ({ provider: concrete, model: "managed-model" }),
+      getSubscriptionTier: () => "team",
+    };
+    const provider = new AgenCProvider({ authBackend, sessionId: "detail-route", model: "agenc:managed",
+      providerFactory: () => delegate });
+    await provider.chat([{ role: "user", content: "hello" }], {
+      systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+      responseDetailOverride: "low", modelVerbosity: "low",
+    });
+    const options = vi.mocked(delegate.chat).mock.calls[0]?.[1];
+    expect(options?.systemPrompt?.startsWith("STATIC_HEAD")).toBe(true);
+    expect(options?.systemPrompt?.includes("# Response Detail")).toBe(concrete !== "openai");
+    expect(options?.modelVerbosity).toBe("low");
+  });
   it("uses the registry model when direct construction receives an empty model", async () => {
     const inferAgencModel = vi.fn(() => ({
       provider: "grok" as const,
@@ -82,82 +103,6 @@ describe("AgenCProvider", () => {
         requestedModel: BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc,
       }),
     );
-  });
-
-  it("forks an independently-owned, tool-free editor prediction route", async () => {
-    const authBackend: AuthBackend = {
-      login: () => ({ authenticated: true, provider: "remote" }),
-      logout: () => ({ authenticated: false }),
-      whoami: () => ({ authenticated: true, provider: "remote" }),
-      vendKey: (provider, sessionId) => ({
-        kind: "api-key",
-        provider,
-        sessionId,
-        apiKey: "prediction-key",
-      }),
-      inferAgencModel: () => ({
-        provider: "grok",
-        model: "grok-prediction",
-      }),
-      getLlmUsage: () => ({
-        managedModelsEnabled: true,
-        modelAllowance: {
-          allowedModelCount: 1,
-          duration: "month",
-          status: "active",
-        },
-        subscriptionTier: "team",
-      }),
-      getSubscriptionTier: () => "team",
-    };
-    const dispose = vi.fn(async () => {});
-    const delegate = {
-      ...makeDelegateProvider("grok-prediction"),
-      dispose,
-    };
-    const providerFactory = vi.fn(() => delegate);
-    const primary = new AgenCProvider({
-      authBackend,
-      sessionId: "session-prediction",
-      model: "agenc",
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: "must_not_leak",
-            description: "primary agent tool",
-            parameters: { type: "object" },
-          },
-        },
-      ],
-      providerFactory,
-    });
-
-    const prediction = await primary.forkForCodePrediction({
-      model: "agenc:fast",
-      timeoutMs: 2_500,
-      maxOutputTokens: 256,
-    });
-    expect(prediction).not.toBe(primary);
-    await expect(
-      prediction.chat([{ role: "user", content: "complete" }], {
-        tools: [],
-        toolChoice: "none",
-        singleWireAttempt: true,
-      }),
-    ).resolves.toMatchObject({
-      content: "ok",
-      model: "grok-prediction",
-    });
-    expect(providerFactory).toHaveBeenCalledWith(
-      "grok",
-      expect.objectContaining({
-        tools: [],
-        timeoutMs: 2_500,
-      }),
-    );
-    await prediction.dispose?.();
-    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it("routes hosted model aliases through AuthBackend inference and key vending", async () => {

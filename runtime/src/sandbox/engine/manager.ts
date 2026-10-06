@@ -49,6 +49,8 @@ import {
   type SandboxPolicy as CompatibilitySandboxPolicy,
 } from "../../permissions/sandbox.js";
 import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
+import { readBoundReadOnlyCwdCapability } from "../bound-readonly-cwd.js";
+import { narrowBoundReadOnlyProfile } from "./bound-readonly-profile.js";
 
 export class SandboxManager {
   selectInitial(options: {
@@ -139,13 +141,15 @@ export class SandboxManager {
             "inherited read-only cwd requires command cwd to be exactly '.'",
           );
         }
-        if (inheritedReadOnlyCwd && !hasFullDiskReadAccess(fileSystem)) {
-          throw new SandboxTransformError(
-            "invalid_inherited_cwd",
-            "inherited read-only cwd requires a permission profile with full disk read access",
-          );
+        const boundReadOnlyCwd = inheritedReadOnlyCwd && !hasFullDiskReadAccess(fileSystem)
+          ? readBoundReadOnlyCwdCapability(request.command.cwdCapability)
+          : undefined;
+        if (boundReadOnlyCwd !== undefined && (networkPolicyEnabled(network) || allowProxyNetwork)) {
+          throw new Error("narrow inherited cwd requires a network-disabled search child");
         }
-        const linuxPermissionProfile: PermissionProfile = inheritedReadOnlyCwd
+        const linuxPermissionProfile: PermissionProfile = boundReadOnlyCwd !== undefined
+          ? narrowBoundReadOnlyProfile(effectiveProfile, boundReadOnlyCwd, request.sandboxPolicyCwd, request.sessionTempRoot)
+          : inheritedReadOnlyCwd
           ? {
               ...effectiveProfile,
               fileSystem: restrictedFileSystemPolicy(
@@ -205,6 +209,7 @@ export class SandboxManager {
             allowProxyNetwork,
             request.sessionTempRoot,
             inheritedReadOnlyCwd,
+            boundReadOnlyCwd,
           ),
         ];
         // A normal argv0 avoids commandExec's PTY argv0 compatibility wrapper,

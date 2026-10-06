@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { SecureStorageUnavailableError } from "../../../src/utils/secureStorage/unavailable.js";
 import {
   createLinuxSecretStorage,
 } from "../../../src/utils/secureStorage/linuxSecretStorage.ts";
-import { createWindowsCredentialStorage } from "../../../src/utils/secureStorage/windowsCredentialStorage.ts";
+import {
+  clearWindowsCredentialReadCache,
+  createWindowsCredentialStorage,
+} from "../../../src/utils/secureStorage/windowsCredentialStorage.ts";
 import { createMacOsKeychainStorage } from "../../../src/utils/secureStorage/macOsKeychainStorage.ts";
 import {
   clearKeychainCache,
@@ -11,7 +15,8 @@ import {
   CREDENTIALS_SERVICE_SUFFIX,
 } from "../../../src/utils/secureStorage/macOsKeychainHelpers.ts";
 import { resolveHomeContext } from "../../../src/config/home.ts";
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 type ExecaSyncOptions = {
@@ -80,6 +85,7 @@ describe("Secure Storage Platform Implementations", () => {
     process.env = { ...originalEnv };
     delete process.env.AGENC_HOME;
     clearKeychainCache();
+    clearWindowsCredentialReadCache();
     mockExecaSync.mockReset();
     mockExecaSync.mockImplementation(() => ({ exitCode: 0, stdout: "" }));
   });
@@ -238,7 +244,7 @@ describe("Secure Storage Platform Implementations", () => {
         {
           AGENC_HOME: "/tmp/bound-native-secure-storage",
           USER: "captured-user",
-          USER_TYPE: "ant",
+          AGENC_OAUTH_DEV_ENDPOINTS: "1",
           USE_LOCAL_OAUTH: "1",
         },
         { platformHome: homedir() },
@@ -399,6 +405,86 @@ describe("Secure Storage Platform Implementations", () => {
         createWindowsCredentialStorage(defaultHome(), mockExecaSync).read(),
       ).toThrow(/invalid JSON/);
       expect(mockExecaSync).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Windows DPAPI read cache", () => {
+    const decrypted = { exitCode: 0, stdout: JSON.stringify(testData) };
+
+    test("repeated reads of an unchanged record decrypt once per process", () => {
+      mockExecaSync.mockImplementation(() => decrypted);
+      const home = defaultHome();
+
+      const first = createWindowsCredentialStorage(home, mockExecaSync).read();
+      const second = createWindowsCredentialStorage(home, mockExecaSync).read();
+
+      expect(first).toEqual(testData);
+      expect(second).toEqual(testData);
+      expect(mockExecaSync).toHaveBeenCalledTimes(1);
+    });
+
+    test("an absent record is cached as absent until the file appears", () => {
+      const root = mkdtempSync(join(tmpdir(), "agenc-dpapi-cache-"));
+      try {
+        const home = relocatedHome(root);
+        mockExecaSync.mockImplementation(() => ({ exitCode: 2, stdout: "" }));
+
+        expect(createWindowsCredentialStorage(home, mockExecaSync).read()).toBeNull();
+        expect(createWindowsCredentialStorage(home, mockExecaSync).read()).toBeNull();
+        expect(mockExecaSync).toHaveBeenCalledTimes(1);
+
+        const safeResourceName = getSecureStorageServiceName(
+          home,
+          CREDENTIALS_SERVICE_SUFFIX,
+        ).replace(/[^a-zA-Z0-9._-]/g, "_");
+        writeFileSync(join(root, `${safeResourceName}.secure.dpapi`), "AAAA");
+        mockExecaSync.mockImplementation(() => decrypted);
+
+        expect(createWindowsCredentialStorage(home, mockExecaSync).read()).toEqual(testData);
+        expect(mockExecaSync).toHaveBeenCalledTimes(2);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test("readFresh bypasses the cache and refreshes it", () => {
+      mockExecaSync.mockImplementation(() => decrypted);
+      const storage = createWindowsCredentialStorage(defaultHome(), mockExecaSync);
+
+      expect(storage.read()).toEqual(testData);
+      const fresh = { exitCode: 0, stdout: JSON.stringify({ mcpOAuth: {} }) };
+      mockExecaSync.mockImplementation(() => fresh);
+      expect(storage.readFresh?.()).toEqual({ mcpOAuth: {} });
+      expect(storage.read()).toEqual({ mcpOAuth: {} });
+      expect(mockExecaSync).toHaveBeenCalledTimes(2);
+    });
+
+    test("update and delete drop the cached record", () => {
+      mockExecaSync.mockImplementation(() => decrypted);
+      const storage = createWindowsCredentialStorage(defaultHome(), mockExecaSync);
+
+      expect(storage.read()).toEqual(testData);
+      expect(storage.update(testData)).toEqual({ success: true });
+      storage.read();
+      expect(mockExecaSync).toHaveBeenCalledTimes(3);
+
+      expect(storage.delete()).toBe(true);
+      storage.read();
+      expect(mockExecaSync).toHaveBeenCalledTimes(5);
+    });
+
+    test("backend failures are never cached", () => {
+      mockExecaSync.mockImplementationOnce(() => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "Access denied",
+      }));
+      const storage = createWindowsCredentialStorage(defaultHome(), mockExecaSync);
+
+      expect(() => storage.read()).toThrow(/Access denied/u);
+      mockExecaSync.mockImplementation(() => decrypted);
+      expect(storage.read()).toEqual(testData);
+      expect(mockExecaSync).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -642,6 +728,34 @@ describe("Secure Storage Platform Implementations", () => {
       })
       expect(getExecaCall(0)[0]).toBe("/usr/libexec/agenc-keychain-helper")
       expect(getExecaCall(0)[1][0]).toBe("read")
+    });
+  });
+
+  describe("Linux Secret Service unavailability", () => {
+    test("a missing libsecret or session bus is unavailable, not an unreadable record", () => {
+      const storage = createLinuxSecretStorage(defaultHome(), mockExecaSync);
+      for (const stderr of [
+        "Secret Service is unavailable: libsecret-1.so.0: cannot open shared object file: No such file or directory",
+        "Secret Service session initialization failed: Cannot spawn a message bus without a machine-id: Unable to load /var/lib/dbus/machine-id",
+        "Secret Service helper could not load secret_service_open_sync: symbol unavailable",
+      ]) {
+        mockExecaSync.mockReturnValueOnce({ exitCode: 1, stdout: "", stderr });
+        expect(() => storage.read()).toThrow(SecureStorageUnavailableError);
+      }
+    });
+
+    test("other helper failures stay ordinary read errors", () => {
+      const storage = createLinuxSecretStorage(defaultHome(), mockExecaSync);
+      mockExecaSync.mockReturnValueOnce({ exitCode: 1, stdout: "", stderr: "Access denied" });
+      let caught: unknown;
+      try {
+        storage.read();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(SecureStorageUnavailableError);
+      expect((caught as Error).message).toBe("Access denied");
     });
   });
 

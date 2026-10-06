@@ -5,8 +5,11 @@ type OauthEnvironment = Readonly<Record<string, string | undefined>>
 // Default to prod config, override with test/staging if enabled
 type OauthConfigType = 'prod' | 'staging' | 'local'
 
+// The local and staging OAuth endpoints are for developing the hosted
+// backend. They stay behind an explicit opt-in so no ordinary environment
+// can point sign-in at a different host by accident.
 function getOauthConfigType(environment: OauthEnvironment): OauthConfigType {
-  if (environment.USER_TYPE === 'ant') {
+  if (isEnvTruthy(environment.AGENC_OAUTH_DEV_ENDPOINTS)) {
     if (isEnvTruthy(environment.USE_LOCAL_OAUTH)) {
       return 'local'
     }

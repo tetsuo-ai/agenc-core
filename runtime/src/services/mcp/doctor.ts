@@ -464,6 +464,7 @@ async function getLiveCheck(
       case 'disabled':
         return { attempted: true, result: 'disabled', durationMs }
       case 'pending':
+      case 'stopped':
         return { attempted: true, result: 'pending', durationMs }
       case 'failed':
         return {

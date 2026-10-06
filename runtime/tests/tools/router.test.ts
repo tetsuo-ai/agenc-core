@@ -12,66 +12,22 @@ import {
 import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
 import type { Tool } from "./types.js";
+import {
+  EFFECT_REVIEW_BLOCK_STOP,
+  poisonLiveEffect,
+} from "../budget/effect-settlement-supervisor.js";
 import { EventLog } from "../session/event-log.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
-import {
-  sha256,
-  workspaceMutationCoordinators,
-} from "../workspace/mutation-coordinator.js";
 
-const coherenceTemporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
 const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 afterEach(async () => {
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
-  workspaceMutationCoordinators.clearForTests();
-  await Promise.all(
-    coherenceTemporaryPaths
-      .splice(0)
-      .map((path) => rm(path, { recursive: true, force: true })),
-  );
 });
-
-async function createProtectedEditorWorkspace(): Promise<{
-  readonly workspaceRoot: string;
-}> {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), "agenc-router-editor-workspace-"),
-  );
-  const agencHome = await mkdtemp(join(tmpdir(), "agenc-router-editor-home-"));
-  coherenceTemporaryPaths.push(workspaceRoot, agencHome);
-  process.env.AGENC_HOME = agencHome;
-  const path = join(workspaceRoot, "loaded.ts");
-  const content = "export const loaded = true;\n";
-  await writeFile(path, content);
-  const coordinator = workspaceMutationCoordinators.getOrCreate(workspaceRoot);
-  const lease = coordinator.acquire({
-    workspaceRoot,
-    editorInstanceId: "router-test-editor",
-  });
-  coordinator.sync({
-    workspaceRoot,
-    editorInstanceId: "router-test-editor",
-    leaseToken: lease.leaseToken,
-    epoch: lease.epoch,
-    sequence: 0,
-    buffers: [
-      {
-        path,
-        bufferHandle: 1,
-        changedtick: 1,
-        contentSha256: sha256(content),
-        dirty: false,
-      },
-    ],
-  });
-  await coordinator.flushQuarantinePersistence();
-  return { workspaceRoot };
-}
 
 const readTool: Tool = {
   name: "FileRead",
@@ -116,109 +72,6 @@ function makeInvocation(toolName: ToolName, callId = "c0"): ToolInvocation {
 }
 
 describe("ToolRouter", () => {
-  test("blocks uncoordinated external tools at the pre-dispatch protected-authority barrier", async () => {
-    const { workspaceRoot } = await createProtectedEditorWorkspace();
-    const execute = vi.fn(async () => ({ content: "mutated" }));
-    const router = new ToolRouter([
-      {
-        tool: {
-          name: "mcp.repo.rewrite",
-          description: "",
-          inputSchema: {},
-          metadata: { source: "mcp", mutating: true },
-          execute,
-        },
-        supportsParallelToolCalls: false,
-      },
-    ]);
-
-    const result = await router.dispatchModelToolCall(
-      {
-        id: "call-editor-external",
-        name: "mcp.repo.rewrite",
-        arguments: "{}",
-      },
-      {
-        session: {
-          eventLog: new EventLog(),
-          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
-          cwd: workspaceRoot,
-        } as never,
-        turn: { subId: "turn-editor-external", cwd: workspaceRoot } as never,
-        tracker: {
-          appendFileDiff: () => {},
-          snapshot: () => [],
-          clear: () => {},
-        },
-        approvalPolicy: "never",
-        sandboxMode: "danger_full_access",
-      },
-    );
-
-    expect(result).toMatchObject({
-      isError: true,
-      metadata: { editorWorkspaceCoherenceDenied: true },
-    });
-    expect(result.content).toBe(
-      "<tool_use_error>Tool 'mcp.repo.rewrite' is blocked while this workspace has protected Editor authority</tool_use_error>",
-    );
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  test("suppresses executable extension hooks for coordinated editor writes", async () => {
-    const { workspaceRoot } = await createProtectedEditorWorkspace();
-    const execute = vi.fn(async () => ({ content: "original" }));
-    const preHook = vi.fn(async () => ({
-      kind: "continue" as const,
-      args: { rewrittenByHook: true },
-    }));
-    const postHook = vi.fn(async () => ({
-      kind: "rewrite" as const,
-      result: { content: "rewritten" },
-    }));
-    const router = new ToolRouter([
-      {
-        tool: {
-          name: "Write",
-          description: "",
-          inputSchema: {},
-          metadata: { source: "builtin", mutating: true },
-          recoveryCategory: "side-effecting",
-          execute,
-        },
-        supportsParallelToolCalls: false,
-      },
-    ]);
-
-    const result = await router.dispatchModelToolCall(
-      { id: "call-editor-write", name: "Write", arguments: "{}" },
-      {
-        session: {
-          eventLog: new EventLog(),
-          services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
-          cwd: workspaceRoot,
-        } as never,
-        turn: { subId: "turn-editor-write", cwd: workspaceRoot } as never,
-        tracker: {
-          appendFileDiff: () => {},
-          snapshot: () => [],
-          clear: () => {},
-        },
-        approvalPolicy: "never",
-        sandboxMode: "danger_full_access",
-        preHooks: [preHook],
-        postHooks: [postHook],
-      },
-    );
-
-    expect(result.content).toBe("original");
-    expect(result.isError).toBeFalsy();
-    expect(execute).toHaveBeenCalledWith(
-      expect.not.objectContaining({ rewrittenByHook: true }),
-    );
-    expect(preHook).not.toHaveBeenCalled();
-    expect(postHook).not.toHaveBeenCalled();
-  });
 
   test("@ledger turn fails closed for every non-read-only model tool except the Ledger handoff", async () => {
     const readExecute = vi.fn(async () => ({ content: "read-ok" }));
@@ -1750,5 +1603,101 @@ describe("createDiffConsumer", () => {
     expect(typeof consumer.record).toBe("function");
     expect(typeof consumer.compare).toBe("function");
     expect(consumer.toolName).toBe("Edit");
+  });
+});
+
+describe("live-effect gate refusals through the router (#2501)", () => {
+  const poison = {
+    callId: "call-poisoned",
+    toolName: "Write",
+    runId: "conv-test",
+    stepId: "tool:conv-test:call-poisoned",
+  };
+
+  function sideEffectingRouter(execute: () => Promise<{ content: string }>) {
+    return new ToolRouter([
+      {
+        tool: {
+          name: "mutate_probe",
+          description: "",
+          inputSchema: { type: "object" },
+          recoveryCategory: "side-effecting",
+          execute,
+        } as never,
+        supportsParallelToolCalls: false,
+      },
+    ]);
+  }
+
+  function dispatchOptions(session: object) {
+    return {
+      session: session as never,
+      turn: { subId: "turn-gate" } as never,
+      tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+      approvalPolicy: "never" as const,
+      sandboxMode: "danger_full_access" as const,
+    };
+  }
+
+  test("an unattended session gets a turn-ending refusal on the first blocked call", async () => {
+    const execute = vi.fn(async () => ({ content: "mutated" }));
+    const router = sideEffectingRouter(execute);
+    const session = {
+      eventLog: new EventLog(),
+      services: {
+        admissionRequired: false,
+        runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      },
+    };
+    poisonLiveEffect(session, poison);
+
+    const result = await router.dispatchModelToolCall(
+      { id: "call-1", name: "mutate_probe", arguments: "{}" },
+      dispatchOptions(session),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: true,
+      preventContinuation: true,
+      metadata: {
+        effectReviewBlocked: { callIds: ["call-poisoned"], refusals: 1 },
+        effectReviewStop: { explanation: expect.stringContaining("this turn stops now") },
+      },
+    });
+    expect(result.content).toContain("nobody attached");
+  });
+
+  test("an interactive session is refused plainly until the streak limit, whatever the arguments", async () => {
+    const execute = vi.fn(async () => ({ content: "mutated" }));
+    const router = sideEffectingRouter(execute);
+    const session = {
+      eventLog: new EventLog(),
+      services: { admissionRequired: false, runtimeOptions: TEST_RUNTIME_OPTIONS },
+    };
+    poisonLiveEffect(session, poison);
+
+    const results = [];
+    for (let attempt = 1; attempt <= EFFECT_REVIEW_BLOCK_STOP; attempt += 1) {
+      results.push(
+        await router.dispatchModelToolCall(
+          { id: `call-${attempt}`, name: "mutate_probe", arguments: JSON.stringify({ attempt }) },
+          dispatchOptions(session),
+        ),
+      );
+    }
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(results.map((result) => result.preventContinuation ?? false)).toEqual([false, false, true]);
+    expect(results.map((result) => result.metadata?.effectReviewBlocked)).toEqual([
+      { callIds: ["call-poisoned"], refusals: 1 },
+      { callIds: ["call-poisoned"], refusals: 2 },
+      { callIds: ["call-poisoned"], refusals: 3 },
+    ]);
+    expect(results[0]?.metadata).not.toHaveProperty("effectReviewStop");
+    expect(results[0]?.content).toContain("ask the user to run");
+    expect(results[2]?.metadata).toMatchObject({
+      effectReviewStop: { explanation: expect.stringContaining("refused 3 times in a row") },
+    });
   });
 });

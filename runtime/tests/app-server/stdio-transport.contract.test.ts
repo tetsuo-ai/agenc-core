@@ -1,7 +1,10 @@
 import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { isDaemonCausalRoutineMessage } from "./overload.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
+import { assertAliasControlDispatch, blockedControlHandler } from "./transport-contract-helpers.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
@@ -33,6 +36,193 @@ const RESPONSIVE_CONTROL_METHODS = [
 ] as const;
 
 describe("AgenC stdio transport", () => {
+  it("keeps a routine write on another connection behind that connection's FIFO head", async () => {
+    const turnInput = new PassThrough();
+    const turnOutput = new PassThrough();
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const turnEntered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const turnTransport = new AgenCStdioTransport({ input: turnInput, output: turnOutput,
+      onMessage: async () => { turnStarted(); await turnDone; },
+    });
+    turnTransport.start();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseHead!: () => void;
+    let headStarted!: () => void;
+    const headDone = new Promise<void>((resolve) => { releaseHead = resolve; });
+    const started = new Promise<void>((resolve) => { headStarted = resolve; });
+    const transport = new AgenCStdioTransport({ input, output, onMessage: async (message) => {
+      events.push(String(message.method));
+      if (message.method === "routine.get") {
+        headStarted();
+        await headDone;
+      }
+    } });
+    transport.start();
+    try {
+      turnInput.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"session-on-other-connection"}}\n');
+      await turnEntered;
+      input.write('{"jsonrpc":"2.0","id":1,"method":"routine.get"}\n');
+      await started;
+      input.write(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "routine.update", params: {
+        permissionAuthority: { kind: "session", sessionId: "session-on-other-connection", toolCallId: "running-call" },
+      } }) + "\n");
+      input.write('{"jsonrpc":"2.0","id":3,"method":"routine.delete"}\n');
+      await delay(20);
+      expect(events).toEqual(["routine.get"]);
+      releaseHead();
+      await vi.waitFor(() => expect(events).toEqual(["routine.get", "routine.update", "routine.delete"]));
+    } finally { releaseHead(); releaseTurn(); await transport.close(); await turnTransport.close(); }
+  });
+
+  it("serializes a tool's bypassed updates and its later delete", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseTurn!: () => void;
+    let releaseFirstUpdate!: () => void;
+    let turnStarted!: () => void;
+    let firstUpdateStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const firstUpdateDone = new Promise<void>((resolve) => { releaseFirstUpdate = resolve; });
+    const turnEntered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const firstUpdateEntered = new Promise<void>((resolve) => { firstUpdateStarted = resolve; });
+    const transport = new AgenCStdioTransport({ input, output, onMessage: async (message) => {
+      if (message.method === "message.stream") {
+        events.push("turn:start"); turnStarted(); await turnDone; events.push("turn:end");
+      } else if (message.id === 2) {
+        events.push("first:start"); firstUpdateStarted(); await firstUpdateDone; events.push("first:end");
+      } else {
+        events.push(String(message.method));
+      }
+    } });
+    transport.start();
+    const update = (id: number) => JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id,
+      method: "routine.update", params: { permissionAuthority: {
+        kind: "session", sessionId: "s", toolCallId: "call",
+      } },
+    }) + "\n";
+    try {
+      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"s"}}\n');
+      await turnEntered;
+      input.write(update(2));
+      await firstUpdateEntered;
+      input.write(update(3));
+      input.write('{"jsonrpc":"2.0","id":4,"method":"routine.delete"}\n');
+      await delay(20);
+      expect(events).toEqual(["turn:start", "first:start"]);
+      releaseFirstUpdate();
+      await vi.waitFor(() => expect(events).toContain("routine.update"));
+      releaseTurn();
+      await vi.waitFor(() => expect(events).toEqual([
+        "turn:start", "first:start", "first:end", "routine.update", "turn:end", "routine.delete",
+      ]));
+    } finally { releaseFirstUpdate(); releaseTurn(); await transport.close(); }
+  });
+
+  // Desktop runs turns with message.send; both methods stream a session's turn.
+  it.each(["message.stream", "message.send"])("resolves an aliased %s head before placing later requests", async (turnMethod) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const entered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const transport = new AgenCStdioTransport({
+      input, output,
+      resolveRoutineSessionId: (id) =>
+        id === "agent-a" || id === "session-a" ? "session-a" : undefined,
+      onMessage: async (message) => {
+        seen.push(String(message.id));
+        if (message.id === 1) { turnStarted(); await turnDone; }
+      },
+    });
+    transport.start();
+    const send = (id: number, method: string, params: object) => input.write(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }) + "\n");
+    try {
+      send(1, turnMethod, { sessionId: "agent-a" });
+      await entered;
+      send(2, "routine.create", { permissionAuthority: { kind: "session", sessionId: "session-a", toolCallId: "call" } });
+      send(3, "routine.get", {});
+      await vi.waitFor(() => expect(seen).toEqual(["1", "2"]));
+      releaseTurn();
+      await vi.waitFor(() => expect(seen).toEqual(["1", "2", "3"]));
+    } finally { releaseTurn(); await transport.close(); }
+  });
+
+  it("dispatches an alias write, controls and priority work while the scheduling state lock is held", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const enteredTurn = new Promise<void>((resolve) => { turnStarted = resolve; });
+    let heldLock: Awaited<ReturnType<typeof holdAgentLifecycleLock>> | undefined;
+    const transport = new AgenCStdioTransport({
+      input, output,
+      resolveRoutineSessionId: (id) => heldLock?.manager.peekRoutineSessionId(id),
+      onMessage: async (message) => {
+        seen.push(String(message.method));
+        if (message.method === "message.stream") { turnStarted(); await turnDone; }
+      },
+    });
+    transport.start();
+    const send = (id: number, method: string, params: object = {}) => input.write(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }) + "\n");
+    try {
+      await assertAliasControlDispatch(send, enteredTurn, seen, (lock) => { heldLock = lock; });
+    } finally { await heldLock?.release(); releaseTurn(); await transport.close(); }
+  });
+
+  it.each(["message.stream", "message.send"])("answers a tool call's routine.create during a blocked %s turn while ordinary work stays queued", async (turnMethod) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    const responses: number[] = [];
+    output.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").trim().split("\n")) responses.push(JSON.parse(line).id as number);
+    });
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const turnFinished = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    let transport!: AgenCStdioTransport;
+    transport = new AgenCStdioTransport({
+      input, output,
+      onMessage: async (message) => {
+        events.push(`${message.method}:start`);
+        if (message.method === turnMethod) {
+          turnStarted();
+          await turnFinished;
+        }
+        await transport.send({ jsonrpc: JSON_RPC_VERSION, id: message.id!, result: {} });
+        events.push(`${message.method}:end`);
+      },
+    });
+    transport.start();
+    try {
+      input.write(`{"jsonrpc":"2.0","id":1,"method":"${turnMethod}","params":{"sessionId":"s"}}\n`);
+      await started;
+      input.write('{"jsonrpc":"2.0","id":2,"method":"routine.create","params":{"permissionAuthority":{"kind":"session","sessionId":"s","toolCallId":"call"}}}\n');
+      input.write('{"jsonrpc":"2.0","id":3,"method":"session.clear"}\n');
+      input.write('{"jsonrpc":"2.0","id":4,"method":"routine.get"}\n');
+      await vi.waitFor(() => expect(responses).toEqual([2]), { timeout: 2_000 });
+      expect(events).toEqual([`${turnMethod}:start`, "routine.create:start", "routine.create:end"]);
+      releaseTurn();
+      await vi.waitFor(() => expect(responses).toEqual([2, 1, 3, 4]), { timeout: 2_000 });
+    } finally {
+      releaseTurn();
+      await transport.close();
+    }
+  });
   it("encodes one compact JSON message per newline", () => {
     const line = encodeJsonLine({
       jsonrpc: JSON_RPC_VERSION,
@@ -247,7 +437,7 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
-  it("does not let a priority request overtake connection initialization", async () => {
+  it.each(["health.ping", "routine.create"])("does not let %s overtake connection initialization", async (method) => {
     const input = new PassThrough();
     const output = new PassThrough();
     const events: string[] = [];
@@ -272,7 +462,13 @@ describe("AgenC stdio transport", () => {
     input.write(
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0"}}\n',
     );
-    input.write('{"jsonrpc":"2.0","id":2,"method":"health.ping"}\n');
+    const following = { jsonrpc: "2.0", id: 2, method,
+      ...(method === "routine.create" ? { params: { permissionAuthority: {
+        kind: "session", sessionId: "s", toolCallId: "call",
+      } } } : {}),
+    };
+    if (method === "routine.create") expect(isDaemonCausalRoutineMessage(following)).toBe(true);
+    input.write(JSON.stringify(following) + "\n");
     await delay(20);
     expect(events).toEqual(["initialize:start"]);
 
@@ -281,7 +477,7 @@ describe("AgenC stdio transport", () => {
     expect(events).toEqual([
       "initialize:start",
       "initialize:end",
-      "health.ping",
+      method,
     ]);
     await transport.close();
   });
@@ -294,28 +490,14 @@ describe("AgenC stdio transport", () => {
     // flight, while normal requests stay FIFO (guarded by the test above).
     const input = new PassThrough();
     const output = new PassThrough();
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "session.partialCompactFromMessage", "long", "request.cancel", "cancel",
+    );
 
     const transport = new AgenCStdioTransport({
       input,
       output,
-      onMessage: async (message) => {
-        if (message.method === "session.partialCompactFromMessage") {
-          events.push("long:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("long:end");
-        } else if (message.method === "request.cancel") {
-          events.push("cancel");
-        }
-      },
+      onMessage,
     });
     transport.start();
 
@@ -339,28 +521,14 @@ describe("AgenC stdio transport", () => {
   it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "message.stream", "stream", "session.cancelTurn", "turn:cancel",
+    );
 
     const transport = new AgenCStdioTransport({
       input,
       output,
-      onMessage: async (message) => {
-        if (message.method === "message.stream") {
-          events.push("stream:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("stream:end");
-        } else if (message.method === "session.cancelTurn") {
-          events.push("turn:cancel");
-        }
-      },
+      onMessage,
     });
     transport.start();
 

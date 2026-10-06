@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { helpCommand } from "./help.js";
 import { helloCommand } from "./hello.js";
+import { goalCommand } from "./goal.js";
 import { statusCommand } from "./status.js";
 import { costCommand } from "./cost.js";
 import { diffCommand } from "./diff.js";
@@ -36,7 +37,7 @@ import { coordinatorCommand } from "./coordinator.js";
 import { memorySlashCommand } from "./memory/slash.js";
 import { pluginsCommand } from "./plugins.js";
 import { protocolCommands } from "./protocol.js";
-import { compactCommand, contextCommand } from "./session-compact.js";
+import { compactCommand, contextCommand } from "./session-compact-commands.js";
 import {
   compactRetainCommand,
   compactRollbackCommand,
@@ -162,6 +163,7 @@ export function buildDefaultRegistry(
     helpCommand,
     helloCommand,
     statusCommand,
+    goalCommand,
     ...authCommands,
     ...xaiAuthCommands,
     ...openaiAuthCommands,

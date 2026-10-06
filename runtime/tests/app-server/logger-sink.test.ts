@@ -88,4 +88,23 @@ describe("size-capped rotating file log sink", () => {
 
     sink.close();
   });
+  it.skipIf(process.platform === "win32")(
+    "creates the log file owner-only under a permissive umask",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-log-sink-mode-"));
+      const previousUmask = process.umask(0o007);
+      try {
+        const path = join(dir, "daemon.log");
+        const sink = createSizeCappedFileLogSink({ path, maxBytes: 64 });
+        sink.write("a".repeat(100));
+        // Past the cap: rotation reopens the active file, which must stay 0600.
+        sink.write("b".repeat(100));
+        sink.close();
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+      } finally {
+        process.umask(previousUmask);
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

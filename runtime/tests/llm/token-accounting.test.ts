@@ -16,6 +16,8 @@ import {
   TOKEN_COUNT_CACHE_MAX_ENTRIES,
   TOKEN_COUNT_CACHE_TTL_MS,
   TOKEN_COUNT_PROVIDER_TIMEOUT_MS,
+  TOKEN_ACCOUNTING_CALIBRATION_HEADROOM,
+  TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR,
   TOKEN_ACCOUNTING_METRICS_MAX_PARTITIONS,
   TOKEN_ACCOUNTING_MAX_INLINE_IMAGE_TOKENS,
   TOKEN_FALLBACK_MARGIN_RATIO,
@@ -1245,5 +1247,116 @@ describe("validation, context enforcement, and telemetry", () => {
     expect(snapshot).toContainEqual(
       expect.objectContaining({ provider: "other", model: "other" }),
     );
+  });
+});
+
+// Terminal-Bench 4.0, 2026-09-14: DeepSeek reported 660,625 prompt tokens against a 519,792-token fallback estimate, so
+// the next request kept a 384,000-token output reservation and overflowed the 1,048,576-token window.
+describe("provider-usage calibration of the conservative fallback", () => {
+  const scoped = (
+    scope: string | undefined,
+    overrides: Partial<Parameters<typeof createTokenAccountingRequest>[0]> = {},
+  ) => accountingRequest("calibration probe ".repeat(40), {
+    ...(scope !== undefined ? { calibrationScope: scope } : {}),
+    ...overrides,
+  });
+
+  async function learn(service: TokenAccountingService, scope: string, ratio: number) {
+    const first = await service.count(scoped(scope));
+    service.recordProviderUsage(first, Math.ceil(first.inputTokens * ratio));
+    return first;
+  }
+
+  test("a scoped undercount raises later fallback estimates in that scope only", async () => {
+    const service = new TokenAccountingService();
+    const first = await learn(service, "conversation-a", 1.271);
+    expect(first.calibration).toBeUndefined();
+    const factor = Math.ceil(first.inputTokens * 1.271) / first.inputTokens;
+
+    const next = await service.count(scoped("conversation-a"));
+
+    expect(next.source).toBe("conservative_fallback");
+    expect(next.confidence).toBe(first.confidence);
+    expect(next.calibration).toEqual({
+      factor,
+      basisInputTokens: first.inputTokens,
+      headroom: TOKEN_ACCOUNTING_CALIBRATION_HEADROOM,
+    });
+    expect(next.inputTokens).toBe(
+      Math.ceil(first.inputTokens * factor * TOKEN_ACCOUNTING_CALIBRATION_HEADROOM),
+    );
+    expect(next.reservedOutputTokens).toBe(first.reservedOutputTokens);
+    expect(next.totalTokens).toBe(next.inputTokens + next.reservedOutputTokens);
+    for (const other of [
+      scoped("conversation-b"),
+      scoped(undefined),
+      scoped("conversation-a", { model: "other-model" }),
+      scoped("conversation-a", { provider: "other-provider" }),
+      scoped("conversation-a", { endpointIdentity: "https://other.example/v1" }),
+    ]) {
+      expect((await service.count(other)).calibration).toBeUndefined();
+    }
+  });
+
+  test("native counts, and the cache they fill, are never scaled", async () => {
+    const service = new TokenAccountingService();
+    await learn(service, "conversation-a", 2);
+    const countTokens = vi.fn(async () => completeCount(321));
+    const native = capability(countTokens);
+
+    const inA = await service.count(scoped("conversation-a"), { capability: native });
+    const inB = await service.count(scoped("conversation-b"), { capability: native });
+
+    expect(inA).toMatchObject({ source: "provider_native", inputTokens: 321 });
+    expect(inA.calibration).toBeUndefined();
+    expect(inB).toMatchObject({ source: "provider_native", inputTokens: 321, cacheStatus: "hit" });
+    expect(inB.calibration).toBeUndefined();
+    expect(countTokens).toHaveBeenCalledOnce();
+  });
+
+  test("the factor is measured against the basis, never falls, and stops at the cap", async () => {
+    const service = new TokenAccountingService();
+    const first = await learn(service, "conversation-a", 1.5);
+    const factorAt = (ratio: number) => Math.ceil(first.inputTokens * ratio) / first.inputTokens;
+
+    // Usage reported against a scaled estimate is still divided by the unscaled basis, so factors do not compound.
+    const scaled = await service.count(scoped("conversation-a"));
+    service.recordProviderUsage(scaled, Math.ceil(first.inputTokens * 1.6));
+    expect((await service.count(scoped("conversation-a"))).calibration?.factor).toBe(factorAt(1.6));
+
+    const overcounted = await service.count(scoped("conversation-a"));
+    service.recordProviderUsage(overcounted, first.inputTokens);
+    expect((await service.count(scoped("conversation-a"))).calibration?.factor).toBe(factorAt(1.6));
+
+    const wild = await service.count(scoped("conversation-a"));
+    service.recordProviderUsage(wild, first.inputTokens * 10);
+    expect((await service.count(scoped("conversation-a"))).calibration?.factor)
+      .toBe(TOKEN_ACCOUNTING_CALIBRATION_MAX_FACTOR);
+  });
+
+  test("zero, negative, fractional, unbounded or unscoped usage teaches nothing", async () => {
+    const service = new TokenAccountingService();
+    for (const reported of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      service.recordProviderUsage(await service.count(scoped("conversation-a")), reported);
+    }
+    const unscoped = await service.count(scoped(undefined));
+    service.recordProviderUsage(unscoped, unscoped.inputTokens * 3);
+
+    expect((await service.count(scoped("conversation-a"))).calibration).toBeUndefined();
+    expect((await service.count(scoped(undefined))).calibration).toBeUndefined();
+  });
+
+  test("an evicted scope, a restarted service or a cleared one falls back to the plain estimate", async () => {
+    const service = new TokenAccountingService({ calibrationMaxScopes: 2 });
+    await learn(service, "conversation-a", 1.5);
+    await learn(service, "conversation-b", 1.5);
+    await learn(service, "conversation-c", 1.5);
+
+    expect((await service.count(scoped("conversation-a"))).calibration).toBeUndefined();
+    expect((await service.count(scoped("conversation-c"))).calibration).toBeDefined();
+    expect((await new TokenAccountingService().count(scoped("conversation-c"))).calibration)
+      .toBeUndefined();
+    service.clear();
+    expect((await service.count(scoped("conversation-c"))).calibration).toBeUndefined();
   });
 });

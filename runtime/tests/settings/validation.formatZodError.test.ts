@@ -3,6 +3,75 @@ import { z } from 'zod/v4'
 
 import { formatZodError } from 'src/utils/settings/validation.js'
 import { getValidationTip } from 'src/utils/settings/validationTips.js'
+import { validatePermissionsConfig } from '../../src/config/schema.js'
+import { parseRuleString, serializeRuleValue } from '../../src/permissions/rules.js'
+import { PermissionRuleSchema, validatePermissionRule } from '../../src/utils/settings/permissionValidation.js'
+
+describe('permission array validation guidance', () => {
+  it.each(['allow', 'deny'] as const)('prints valid %s rule examples', (behavior) => {
+    const tip = getValidationTip({
+      path: `permissions.${behavior}`,
+      code: 'invalid_type',
+      expected: 'array',
+      received: 'string',
+    })
+    const arrays = [...tip!.suggestion!.matchAll(/\[[^\]]+\]/g)]
+    expect(arrays.length).toBeGreaterThan(0)
+    for (const [array] of arrays) {
+      const examples: string[] = JSON.parse(array)
+      expect(examples.length).toBeGreaterThan(0)
+      for (const rule of examples) {
+        const parsed = parseRuleString(rule)
+        expect(parsed, rule).not.toBeNull()
+        expect(serializeRuleValue(parsed!), rule).toBe(rule)
+        expect(validatePermissionRule(rule), rule).toEqual({ valid: true })
+      }
+      expect(validatePermissionsConfig({ [behavior]: examples })![behavior])
+        .toEqual(examples)
+    }
+  })
+})
+
+describe('permission rule validation guidance', () => {
+  it.each([
+    'system.bash(npm:* run)',
+    'exec_command(npm:* run)',
+    'system.bash(:*)',
+    'exec_command(:*)',
+    'FileRead()',
+    'web_fetch()',
+    'FileRead(src:*)',
+    'FileRead(fi*le)',
+    'mcp__server__tool(pattern)',
+    'WebSearch(typescript*)',
+    'web_fetch(https://example.com)',
+    'web_fetch(example.com)',
+  ])('prints valid correction examples for %s', (invalidRule) => {
+    const result = PermissionRuleSchema().safeParse(invalidRule)
+    expect(result.success).toBe(false)
+    if (result.success) return
+    const examplesText = result.error.issues[0]!.message.split('Examples: ')[1]
+    expect(examplesText).toBeDefined()
+    const examples = examplesText!.split(', ').map(example => example.split(' - ')[0]!)
+    expect(examples.length).toBeGreaterThan(0)
+    for (const rule of examples) {
+      const parsed = parseRuleString(rule)
+      expect(parsed, rule).not.toBeNull()
+      expect(serializeRuleValue(parsed!), rule).toBe(rule)
+      expect(validatePermissionRule(rule), rule).toEqual({ valid: true })
+    }
+    expect(validatePermissionsConfig({ allow: examples })!.allow).toEqual(examples)
+  })
+
+  it.each(['Read()', 'Bash()'])('does not recommend removed names for %s', (rule) => {
+    expect(validatePermissionRule(rule)).toMatchObject({
+      valid: false,
+      error: 'Empty parentheses',
+      suggestion: 'Use the canonical tool name or run agenc config migrate',
+    })
+    expect(validatePermissionRule(rule).examples).toBeUndefined()
+  })
+})
 
 describe('formatZodError too_small handling', () => {
   it('keeps the "Number must be ..." phrasing for numeric origins', () => {

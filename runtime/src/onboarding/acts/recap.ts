@@ -105,14 +105,14 @@ export async function runRecap(options: {
     `  Identity:   ${
       summary.personaWorkspace !== undefined
         ? `${summary.personaWorkspace} (${summary.personaFiles.join(", ") || "no persona files yet"})`
-        : "not set up — agenc onboard identity"
+        : "not set up (agenc onboard identity)"
     }`,
   );
   io.say(
     `  Channels:   ${
       summary.channels.length > 0
         ? `${summary.channels.join(", ")} (pairing-gated)`
-        : "none — agenc onboard channel"
+        : "none (agenc onboard channel)"
     }`,
   );
   io.say(
@@ -130,7 +130,7 @@ export async function runRecap(options: {
   if (securityAuditExitCode(report) === 0) {
     io.say("  Security audit: all checks passed.");
   } else {
-    io.say(`  Security audit: ${critical} critical finding(s) — details:`);
+    io.say(`  Security audit: ${critical} critical finding(s):`);
     for (const finding of report.findings) {
       if (finding.severity === "critical") {
         io.say(`    ✗ ${finding.title}`);

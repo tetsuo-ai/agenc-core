@@ -4,8 +4,9 @@ import {
   isDaemonControlMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
-} from "./overload.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+  isDaemonCausalRoutineMessage,
+} from "../../src/app-server/overload.js";
+import { JSON_RPC_VERSION, type JsonObject } from "../../src/app-server/protocol/index.js";
 
 function request(method: string): JsonObject {
   return {
@@ -16,10 +17,13 @@ function request(method: string): JsonObject {
 }
 
 describe("AgenC daemon overload control messages", () => {
-  it("classifies only abort controls as daemon control messages", () => {
+  it("classifies stop and pause controls as daemon control messages", () => {
     expect(isDaemonControlMessage(request("request.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("run.cancel"))).toBe(true);
+    expect(isDaemonControlMessage(request("run.pause"))).toBe(true);
+    expect(isDaemonControlMessage(request("run.resume"))).toBe(false);
     expect(isDaemonControlMessage(request("session.cancelTurn"))).toBe(true);
+    expect(isDaemonControlMessage(request("session.processes.stop"))).toBe(true);
     expect(isDaemonControlMessage(request("tool.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("commandExec.terminate"))).toBe(true);
 
@@ -36,6 +40,7 @@ describe("AgenC daemon overload control messages", () => {
     for (const method of [
       "request.cancel",
       "run.cancel",
+      "run.pause",
       "session.cancelTurn",
       "tool.cancel",
       "commandExec.terminate",
@@ -47,6 +52,7 @@ describe("AgenC daemon overload control messages", () => {
     }
 
     expect(isDaemonPreemptiveMessage(request("message.send"))).toBe(false);
+    expect(isDaemonPreemptiveMessage(request("run.resume"))).toBe(false);
     expect(isDaemonPreemptiveMessage({ jsonrpc: JSON_RPC_VERSION })).toBe(false);
     expect(isDaemonPreemptiveMessage({ method: 1 })).toBe(false);
   });
@@ -61,6 +67,7 @@ describe("AgenC daemon overload control messages", () => {
       "run.evidence",
       "session.list",
       "session.snapshot",
+      "session.processes.list",
       "session.hooks.status",
       "health.ping",
       "health.ready",
@@ -73,6 +80,37 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonPriorityMessage(request("agent.attach"))).toBe(false);
     expect(isDaemonPriorityMessage(request("session.attach"))).toBe(false);
     expect(isDaemonPriorityMessage(request("message.stream"))).toBe(false);
+  });
+
+  it("lets an effect review overtake the turn it unblocks on the same connection", () => {
+    // Desktop reviews on the session's turn connection, which it must be
+    // attached to; a review queued behind the refused turn would wait on it.
+    const review = request("session.resolveToolCall");
+    expect(isDaemonPriorityMessage(review)).toBe(true);
+    expect(isDaemonPreemptiveMessage(review)).toBe(false);
+    expect(isDaemonControlMessage(review)).toBe(false);
+  });
+
+  it("keeps routines in the ordinary FIFO except writes naming a live tool call", () => {
+    for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel"]) {
+      expect(isDaemonPriorityMessage(request(method))).toBe(false);
+      expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
+      expect(isDaemonControlMessage(request(method))).toBe(false);
+    }
+    for (const method of ["routine.create", "routine.update"]) {
+      const causal = { ...request(method), params: { permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" } } };
+      expect(isDaemonCausalRoutineMessage(causal)).toBe(true);
+      expect(isDaemonPriorityMessage(causal)).toBe(true);
+    }
+    expect(isDaemonCausalRoutineMessage(request("routine.delete"))).toBe(false);
+    const limiter = new AgenCDaemonConnectionLimiter({ maxInFlightRequests: 1 });
+    const turn = limiter.tryStart(request("message.stream"), 0);
+    expect(turn.admitted).toBe(true);
+    expect(limiter.tryStart(request("routine.create"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+    turn.release();
   });
 
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {
@@ -98,7 +136,7 @@ describe("AgenC daemon overload control messages", () => {
     });
   });
 
-  it("admits abort controls even when normal requests are over limit", () => {
+  it("admits stop and pause controls even when normal requests are over limit", () => {
     const limiter = new AgenCDaemonConnectionLimiter({
       maxInFlightRequests: 1,
       requestRatePerSecond: 1,
@@ -108,6 +146,15 @@ describe("AgenC daemon overload control messages", () => {
     expect(first.admitted).toBe(true);
 
     expect(limiter.tryStart(request("health.ping"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+
+    const causalRoutine = { ...request("routine.create"), params: {
+      permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" },
+    } };
+    expect(isDaemonCausalRoutineMessage(causalRoutine)).toBe(true);
+    expect(limiter.tryStart(causalRoutine, 0)).toMatchObject({
       admitted: false,
       response: {
         error: {
@@ -119,8 +166,18 @@ describe("AgenC daemon overload control messages", () => {
     expect(limiter.tryStart(request("session.cancelTurn"), 0)).toMatchObject({
       admitted: true,
     });
+    expect(limiter.tryStart(request("session.processes.stop"), 0)).toMatchObject({
+      admitted: true,
+    });
     expect(limiter.tryStart(request("run.cancel"), 0)).toMatchObject({
       admitted: true,
+    });
+    expect(limiter.tryStart(request("run.pause"), 0)).toMatchObject({
+      admitted: true,
+    });
+    expect(limiter.tryStart(request("run.resume"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
     });
     expect(limiter.tryStart(request("tool.cancel"), 0)).toMatchObject({
       admitted: true,

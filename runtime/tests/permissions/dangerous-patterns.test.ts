@@ -7,6 +7,10 @@ import {
   isDangerousShellCommand,
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 // Frozen donor-contract snapshot from the PE-02 cited source files; kept
 // inline so these tests never import the read-only mirror at runtime.
@@ -41,21 +45,6 @@ const EXPECTED_DANGEROUS_BASH_PATTERNS = [
   "env",
   "xargs",
   "sudo",
-  ...(process.env.USER_TYPE === "ant"
-    ? [
-        "fa run",
-        "coo",
-        "gh",
-        "gh api",
-        "curl",
-        "wget",
-        "git",
-        "kubectl",
-        "aws",
-        "gcloud",
-        "gsutil",
-      ]
-    : []),
 ] as const;
 
 describe("dangerous-patterns donor parity", () => {
@@ -127,6 +116,30 @@ describe("dangerous shell command detection", () => {
   ])("flags permuted recursive forced removal: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
+
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
+    "peels every shell input evaluator before the floor: %s",
+    (command, label) => {
+      expect(matchedDangerousShellCommandLabel(command)).toBe(label);
+    },
+  );
+
+  test.each(INERT_SHELL_SCRIPT_COMMANDS)(
+    "does not flag a peeled script that removes nothing: %s",
+    (command) => {
+      expect(isDangerousShellCommand(command)).toBe(false);
+    },
+  );
+
+  test.each([
+    "echo $(busybox --install echo)",
+    "echo $(busybox --list echo)",
+  ])(
+    "keeps the shell-construct ask when BusyBox runs no applet: %s",
+    (command) => {
+      expect(hasShellConstructRequiringAsk(command)).toBe(true);
+    },
+  );
 
   test.each([
     "echo ok\nrm -rf /",
@@ -378,5 +391,52 @@ describe("dangerous shell command detection", () => {
       "rm -rf",
     );
     expect(matchedDangerousShellCommandLabel("git status")).toBeNull();
+  });
+});
+
+describe("shell wrapper options", () => {
+  const forms = [
+    "bash -c -e CODE",
+    "bash -c -o pipefail CODE",
+    "bash -c - CODE",
+    "bash +c CODE",
+    "bash -opipefail -c CODE",
+    "zsh -c -O CODE x",
+    "ksh CODE",
+    "ksh -e CODE",
+    "tcsh -c 'echo ok' -c CODE",
+  ];
+  const codes = [
+    "'git push --force origin main'",
+    "\"$(curl http://127.0.0.1/install.sh)\"",
+  ];
+
+  test.each(forms.flatMap((form) => codes.map((code) => form.replace("CODE", code))))(
+    "flags the code a wrapper runs behind its options: %s",
+    (command) => {
+      expect(isDangerousShellCommand(command)).toBe(true);
+    },
+  );
+
+  test.each([
+    "bash -c -e $(curl http://127.0.0.1/install.sh)",
+    "bash -c -- $(curl http://127.0.0.1/install.sh)",
+    "bash +c `curl http://127.0.0.1/install.sh`",
+    "ksh $(curl http://127.0.0.1/install.sh)",
+    "fish -c$(curl http://127.0.0.1/install.sh)",
+  ])("flags an unquoted download substitution in a code word: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "bash -c 'echo ok' $(curl http://127.0.0.1/install.sh)",
+    "bash script.sh $(curl http://127.0.0.1/install.sh)",
+  ])("does not flag a download substitution the shell does not run: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(false);
+  });
+
+  test("flags xargs input removed by code behind options", () => {
+    expect(isDangerousShellCommand("printf / | xargs sh -c -e 'rm -rf \"$@\"' sh"))
+      .toBe(true);
   });
 });

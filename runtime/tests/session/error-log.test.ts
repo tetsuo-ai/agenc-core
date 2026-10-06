@@ -16,6 +16,20 @@ describe("ErrorLogSidecar", () => {
     if (project) rmSync(project, { recursive: true, force: true });
   });
 
+  test("ignores late events after idempotent stop without reopening a writer", async () => {
+    const sidecar = new ErrorLogSidecar({ projectDir: project, sessionId: "ended" });
+    await sidecar.start();
+    await sidecar.stop();
+    await sidecar.stop();
+    sidecar.onEvent({
+      id: "late",
+      seq: 1,
+      msg: { type: "error", payload: { cause: "late", message: "late write" } },
+    });
+    sidecar.flushNow();
+    expect(readdirSync(join(project, "errors"))).toHaveLength(0);
+  });
+
   test("writes error event to dated JSONL file", async () => {
     const sidecar = new ErrorLogSidecar({
       projectDir: project,

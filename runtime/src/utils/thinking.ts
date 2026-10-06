@@ -2,7 +2,6 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getCanonicalName } from './model/model.js'
-import { resolveAntModel } from './model/antModels.js'
 import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
@@ -30,8 +29,7 @@ const OPEN_TO_CLOSE: Record<string, string> = {
 }
 
 /**
- * Build-time gate (feature) + runtime gate (GrowthBook). The build flag
- * controls code inclusion in external builds; the GB flag controls rollout.
+ * Build-time gate (feature). The build flag controls code inclusion.
  */
 export function isUltrathinkEnabled(): boolean {
   if (!feature('ULTRATHINK')) {
@@ -166,11 +164,6 @@ export function modelSupportsThinking(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (process.env.USER_TYPE === 'ant') {
-    if (resolveAntModel(model.toLowerCase())) {
-      return true
-    }
-  }
   // IMPORTANT: Do not change thinking support without notifying the model
   // launch DRI and research. This can greatly affect model quality and bashing.
   const canonical = getCanonicalName(model)
@@ -208,15 +201,22 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  // Claude Fable 5: thinking is ALWAYS ON server-side. Omitting the
-  // `thinking` param runs adaptive thinking and `{type: 'adaptive'}` is the
-  // only explicit config the API accepts (`disabled`/budget_tokens 400) —
-  // provider docs, verified 2026-07-08.
+  // Claude Fable 5 and Opus 5.5: thinking is ALWAYS ON server-side. Omitting
+  // the `thinking` param runs adaptive thinking and `{type: 'adaptive'}` is
+  // the only explicit config the API accepts (`disabled`/budget_tokens 400);
+  // provider docs, verified 2026-07-08 (Opus 5.5: 2026-09-22).
   if (isAlwaysOnThinkingAnthropicModel(canonical)) {
     return true
   }
   // Supported by a subset of AgenC 4 models
-  if (canonical.includes('opus-4-8') || canonical.includes('opus-4-7') || canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
+  if (
+    canonical.includes('opus-5') ||
+    canonical.includes('sonnet-5') ||
+    canonical.includes('opus-4-8') ||
+    canonical.includes('opus-4-7') ||
+    canonical.includes('opus-4-6') ||
+    canonical.includes('sonnet-4-6')
+  ) {
     return true
   }
   // Exclude any other known compatibility models (allowlist above catches 4-6 variants first)

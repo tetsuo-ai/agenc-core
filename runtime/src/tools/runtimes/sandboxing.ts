@@ -4,6 +4,7 @@ import {
   externalFileSystemPolicy,
   canReadPathWithCwd,
   canWritePathWithCwd,
+  canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
@@ -28,13 +29,19 @@ import {
   matchesSessionPlanFile,
   sessionPlanFileAuthority,
 } from "../../planning/session-plan-authority.js";
+import { isDurableMemoryWritePath } from "../../permissions/path-validation.js";
 import type { SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { ToolRuntimeAttemptContext } from "./context.js";
 import { analyzeApplyPatchRuntimeWrites } from "./apply-patch.js";
 import { resolveRuntimePathTarget } from "./paths.js";
 import { analyzeShellRuntimeAccess } from "./shell.js";
+import { isSessionCronMemoryMutation } from "./session-cron.js";
+import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
+import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -51,6 +58,8 @@ interface WriteAnalysis {
   readonly targets: readonly string[];
   readonly indeterminate: boolean;
   readonly knownSafeWhenTargetless: boolean;
+  /** Targets the tool declared through ToolMetadata.fixedWriteTargets. */
+  readonly declared?: readonly string[];
 }
 
 export interface RuntimePlatformSandboxStatus {
@@ -276,6 +285,26 @@ export function permissionProfileForRuntimeContext(
   context: ToolRuntimeAttemptContext,
   options: RuntimeSandboxProfileOptions,
 ): PermissionProfile {
+  const profile = basePermissionProfileForRuntimeContext(context, options);
+  if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) return profile;
+  const session = context.invocation.session as {
+    readonly services?: {
+      readonly configStore?: { readonly homeContext?: { readonly path?: string } };
+      readonly runtimeOptions?: { readonly sessionTempRoot?: string };
+    };
+  } | undefined;
+  const temp = session?.services?.runtimeOptions?.sessionTempRoot;
+  if (typeof temp !== "string" || !path.isAbsolute(temp)) {
+    throw new Error("[sandbox_surface_uncovered] authenticated runtime session has no absolute captured temp-root authority");
+  }
+  return protectAgencHomeUnderWritableRoot(profile,
+    sandboxAgencHome(session?.services?.configStore?.homeContext?.path), options.cwd, temp);
+}
+
+function basePermissionProfileForRuntimeContext(
+  context: ToolRuntimeAttemptContext,
+  options: RuntimeSandboxProfileOptions,
+): PermissionProfile {
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
     return applyRuntimeAdditionalPermissions(
       permissionProfileForSandboxMode(context.sandboxMode, options),
@@ -293,10 +322,49 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  return protectDesktopAuthority(
+  const protectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  );
+  )));
+  return routineRunOptions(context.invocation.session) === undefined
+    ? protectedProfile
+    : confineRoutineProfile(protectedProfile);
+}
+
+/**
+ * A scheduled routine's shell writes only inside its workspace. Every write
+ * entry except the workspace itself (the project root) is dropped: the
+ * session temp root, configured extra writable folders and granted
+ * additional permissions alike (reads stay as they were). Dropping rather
+ * than downgrading keeps a downgraded entry from reading as a read-only
+ * carve-out inside the workspace. The run's scratch folder is inside the
+ * workspace and needs no writable root of its own; a separate root there
+ * could be swapped for a link, and roots are resolved when the sandbox starts.
+ */
+export function confineRoutineProfile(profile: PermissionProfile): PermissionProfile {
+  const fileSystem = profile.fileSystem;
+  if (fileSystem.kind !== "restricted") return profile;
+  const entries = fileSystem.entries.filter((entry): boolean =>
+    entry.access !== "write" ||
+    (entry.path.kind === "special" &&
+      entry.path.value.kind === "project_roots" &&
+      entry.path.value.subpath === undefined));
+  return { ...profile, fileSystem: { ...fileSystem, entries } };
+}
+
+/**
+ * The TMPDIR a shell command in this session gets: a routine run's scratch
+ * folder inside its workspace (or the workspace itself when it has none),
+ * otherwise the session temp root.
+ */
+export function runtimeChildTempRoot(
+  context: ToolRuntimeAttemptContext,
+  sessionTempRoot: string,
+  workspaceRoot: string,
+): string {
+  const routine = routineRunOptions(context.invocation.session);
+  if (routine === undefined) return sessionTempRoot;
+  return routine.scratchRoot ?? workspaceRoot;
 }
 
 function runtimeDesktopAuthorityRoot(context: ToolRuntimeAttemptContext): string {
@@ -396,9 +464,23 @@ export function enforceRuntimeSandboxAttempt(
     return;
   }
   if (!toolMayMutate(input.tool)) return;
-  const writes = analyzeWrites(input.tool, input.args, cwd);
+  const writes = isSessionCronMemoryMutation(input.tool, input.args, input.context)
+    ? { targets: [], indeterminate: false, knownSafeWhenTargetless: false }
+    : analyzeWrites(input.tool, input.args, cwd);
   const authorityRoot = runtimeDesktopAuthorityRoot(input.context);
+  const cronAuthorityRoots = cronLockAuthorityRoots();
+  const socketAuthorityRoots = daemonSocketAuthorityRoots();
   for (const target of writes.targets) {
+    if (socketAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
+      throw new SandboxDeniedError("Daemon sockets are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
+    if (cronAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
+      throw new SandboxDeniedError("Cron locks are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
     if (overlapsDesktopAuthority(target, authorityRoot)) {
       throw new SandboxDeniedError("Desktop authority records are reserved for the native host", {
         denial: "filesystem", target, policy,
@@ -433,6 +515,12 @@ export function enforceRuntimeSandboxAttempt(
     );
   }
 
+  // Only the existing file-tool plan/memory and fixed runtime-output exceptions
+  // may bypass the home reservation. Evaluate them against the original profile
+  // so operator denies and the other non-grantable reservations still win.
+  const fileToolProfile = shellAccess === null
+    ? basePermissionProfileForRuntimeContext(input.context, { cwd })
+    : profile;
   for (const target of writes.targets) {
     if (
       !canWritePathWithCwd(
@@ -442,8 +530,12 @@ export function enforceRuntimeSandboxAttempt(
         sessionTempRoot,
       ) &&
       !(shellAccess === null &&
-        isActiveSessionPlanFile(input.context, target) &&
-        planFilePolicyAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot))
+        (isActiveSessionPlanFile(input.context, target) ||
+          isDurableMemoryWritePath(target)) &&
+        agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
+      !(shellAccess === null &&
+        (writes.declared ?? []).includes(target) &&
+        canWriteRuntimeOwnedPathWithCwd(fileToolProfile.fileSystem, target, cwd, sessionTempRoot))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
@@ -457,7 +549,14 @@ export function enforceRuntimeSandboxAttempt(
   }
 }
 
-function planFilePolicyAllowsWrite(
+/**
+ * Whether a restricted policy admits a write to one of the AgenC-home paths
+ * the file tools may take outside the workspace: the owning session's plan
+ * file and the durable memory roots. The root read entry is treated as a
+ * write entry so the target's own deny entries still decide. Shell writes
+ * never reach this: `shellAccess === null` gates the callers.
+ */
+export function agencHomeCarveOutAllowsWrite(
   policy: EngineFileSystemSandboxPolicy,
   target: string,
   cwd: string,
@@ -565,11 +664,15 @@ function analyzeWrites(
       knownSafeWhenTargetless: false,
     };
   }
-  const targets = writeTargets(args, cwd);
+  const declared = (tool.metadata?.fixedWriteTargets?.() ?? []).map(
+    (target) => resolveRuntimePathTarget(target, cwd),
+  );
+  const targets = [...new Set([...writeTargets(args, cwd), ...declared])];
   return {
     targets,
     indeterminate: targets.length === 0,
     knownSafeWhenTargetless: false,
+    declared,
   };
 }
 

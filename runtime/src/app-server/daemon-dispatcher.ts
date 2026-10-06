@@ -1,3 +1,6 @@
+import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
+import { promoteOneShotRun } from "../durability/one-shot-durability.js";
+import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
 /**
  * JSON-RPC request dispatcher for the local AgenC daemon.
  *
@@ -7,19 +10,37 @@
  * land.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { PluginSettingsService } from "../plugins/settings-service.js";
+import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
-import { WhisperError, type WhisperService } from "../audio/whisper.js";
+import type { WhisperService } from "../audio/whisper.js";
+import { WhisperError } from "../audio/whisper-error.js";
 import { RemoteError, REMOTE_METHODS, type RemoteMethod } from "../remote/types.js";
 import type { RemoteAccessBoundary } from "../remote/access.js";
 import type { RemoteService } from "../remote/service.js";
 import type { OwnerTelegramService } from "../gateway/owner-telegram.js";
 import { OWNER_TELEGRAM_METHODS, type OwnerTelegramMethod } from "../gateway/owner-telegram-types.js";
 import { RoutineError, type RoutineService } from "../routines/service.js";
+import {
+  LEGACY_ROUTINE_GRANT,
+  LEGACY_ROUTINE_PERMISSION_MODES,
+  ROUTINE_OPERATOR_CAPABILITY,
+  ROUTINE_PERMISSION_MODES_CAPABILITY,
+  legacyRoutineMode,
+  resolveRoutinePermissionGrant,
+  takeRoutinePermissionAuthority,
+  type RoutinePermissionGrant,
+} from "../routines/permission-authority.js";
+import type { RoutinePermissionAuthority } from "../routines/types.js";
 import type { RoutineUpdatedEvent } from "../routines/types.js";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
 import { DaemonOperationTimeoutError } from "./operation-deadline.js";
+import {
+  StartupSessionRestoreAbandonedError,
+  type AgenCDaemonStartupRestoreGate,
+} from "./startup-session-restores.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -31,44 +52,39 @@ import {
   type AgenCDaemonSessionManager,
 } from "./session-lifecycle.js";
 import {
-  AgenCFuzzyFileSearchService,
   FuzzyFileSearchBoundaryError,
   MAX_FUZZY_QUERY_CODEPOINTS,
   MAX_FUZZY_RAW_ROOTS,
   MAX_FUZZY_RESULTS,
   MAX_FUZZY_FILE_ROOTS_UTF8_BYTES,
   MAX_FUZZY_FILE_ROOT_UTF8_BYTES,
-  type AgenCFuzzyFileSearch,
-} from "./fuzzy-file-search.js";
+} from "./fuzzy-file-search-boundary.js";
+import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
+import { createLazyFuzzyFileSearch } from "./lazy-fuzzy-file-search.js";
 import {
   FuzzyBoundaryError,
   validateFuzzyCandidate,
   validateFuzzyQuery,
-} from "../search/fuzzy-match.js";
+} from "../search/fuzzy-boundary.js";
 import {
   AgenCCommandExecService,
   type AgenCCommandExec,
 } from "./command-exec.js";
-import {
-  AgenCDaemonHealthService,
-  type AgenCHealthStateCounter,
-} from "./health.js";
+import type { AgenCHealthStateCounter } from "./health.js";
+import { createLazyDaemonHealth, type AgenCDaemonHealthHandlers } from "./lazy-health.js";
 import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
-import {
-  AgenCRealtimeRpcService,
-  type AgenCRealtimeRpcHandlers,
-} from "./realtime.js";
+import type { AgenCRealtimeRpcHandlers } from "./realtime.js";
+import { createLazyRealtimeRpcService } from "./lazy-realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
+  daemonCausalRoutineHead,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
-import {
-  AgenCDaemonRunInspectionError,
-  type AgenCDaemonRunInspectionService,
-} from "./run-inspection.js";
+import { AgenCDaemonRunInspectionError } from "./run-inspection-error.js";
+import type { AgenCDaemonRunInspectionHandlers } from "./lazy-run-inspection.js";
 import {
   AgenCCsvJobReviewError,
   type AgenCCsvJobReviewService,
@@ -88,19 +104,20 @@ import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
+import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
-  assertWorkspaceEditorProposalResponseFitsFrame,
-  assertWorkspaceEditorProposalStatusResponseFitsFrame,
-  canonicalWorkspaceRoot,
-  type WorkspaceMutationCoordinator,
-  type WorkspaceMutationCoordinatorRegistry,
-} from "../workspace/mutation-coordinator.js";
-import {
+  AGENC_PRINT_INVOKE_CAPABILITY,
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
+  AGENC_RUN_START_LIGHT_MODE_CAPABILITY,
+  AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY,
+  AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
   MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
@@ -116,6 +133,10 @@ import {
   type RunResultParams,
   type RunStatusParams,
   type RunCancelParams,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunStartParams,
   type RunStartResult,
   type CsvJobReviewListParams,
@@ -144,12 +165,15 @@ import {
   type MessageSendParams,
   type MessageStreamParams,
   type PermissionListParams,
+  type ProjectTrustStatusParams,
   type RequestCancelParams,
   type RequestId,
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionTranscriptV2Params,
+  type SessionArtifactReadParams,
+  type SessionResolveToolCallAttestationParams,
   type SessionResolveToolCallEvidenceParams,
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
@@ -158,28 +182,10 @@ import {
   type SessionMcpAddServerParams,
   type SessionMcpServerConfig,
   type SessionMcpServerByNameParams,
-  type WorkspaceEditorAcquireParams,
-  type WorkspaceEditorBufferSync,
-  type WorkspaceEditorChangesListParams,
-  type WorkspaceEditorHeartbeatParams,
-  type WorkspaceEditorCancelPredictionParams,
-  type WorkspaceEditorPredictParams,
-  type WorkspaceEditorPredictionDiagnostic,
-  type WorkspaceEditorPredictionFeedbackParams,
-  type WorkspaceEditorPredictionRelatedBuffer,
-  type WorkspaceEditorProposalApplyParams,
-  type WorkspaceEditorProposalParams,
-  type WorkspaceEditorProposalStatusParams,
-  type WorkspaceEditorReleaseParams,
-  type WorkspaceEditorRecoveredTopologyListParams,
-  type WorkspaceEditorRecoveredTopologyResolveParams,
-  type WorkspaceEditorStaleAuthorityEntry,
-  type WorkspaceEditorSyncParams,
-  type WorkspaceEditorTopologyCompleteParams,
-  type WorkspaceEditorTopologyFinalizeParams,
-  type WorkspaceEditorTopologyReserveParams,
-  type WorkspaceEditorTopologyTarget,
   type SessionSnapshotParams,
+  type SessionGoalParams,
+  type SessionProcessesListParams,
+  type SessionProcessesStopParams,
   type SessionTranscriptParams,
   type SessionCreateParams,
   type SessionDetachParams,
@@ -212,8 +218,7 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
-import type { CodePredictionService } from "../services/code-prediction/service.js";
+import { AgenCDaemonWorkflowControlError } from "./workflow/run-control-service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -222,7 +227,11 @@ import type { CodePredictionService } from "../services/code-prediction/service.
  * implementations.
  */
 export interface AgenCDaemonWorkflowStartService {
+  readonly supportsContinuation?: true;
   startRun(params: RunStartParams): Promise<RunStartResult>;
+  /** Advertised only when a durable control implementation is wired. */
+  pauseRun?(params: RunPauseParams): Promise<RunPauseResult>;
+  resumeRun?(params: RunResumeParams): Promise<RunResumeResult>;
   /**
    * Closes a workflow run's projection when run.cancel finds no live
    * pipeline for it. Optional: older wirings without it keep the previous
@@ -278,12 +287,19 @@ const THREAD_REALTIME_VOICES = [
 const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
-  "workspace.editor.topology.recovered.resolve": 1,
+  "print.invoke": 30, "print.admit": 30, "print.ack": 30, "print.cancel": 30,
   "session.transcript.v2": 2,
+  "session.artifact.read": 18,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
   "session.statusLine.execute": 11,
+  "session.processes.list": 13,
+  "session.processes.stop": 13,
+  "session.goal": 14,
+  "project.trustStatus": 16,
+  "project.trust": 16,
+  "routine.session.prepare.respond": 17,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -305,6 +321,7 @@ export const COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC =
   "commandExec.start is disabled: daemon command execution has no session-bound run/step admission identity; use an ordinary admitted session tool until command execution admission is implemented";
 
 interface AgenCDaemonServerCapabilityInputs {
+  readonly printHome: string | undefined;
   readonly whisper: WhisperService | undefined;
   readonly agentManager: AgenCDaemonDispatcherOptions["agentManager"];
   readonly initializeAuthenticator: AgenCDaemonDispatcherOptions["initializeAuthenticator"];
@@ -315,16 +332,17 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
   readonly daemonIdentity: AgenCDaemonDispatcherOptions["daemonIdentity"];
-  readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health: AgenCDaemonHealthHandlers;
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
-  readonly remote: RemoteService | undefined;
-  readonly ownerTelegram: OwnerTelegramService | undefined;
+  readonly routinePreparation?: RoutineSessionPreparation;
+  readonly remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
-  readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
-  readonly workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
+  readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly pluginSettings: PluginSettingsService | undefined;
 }
 
 function buildServerCapabilities(
@@ -337,6 +355,10 @@ function buildServerCapabilities(
     ...Object.fromEntries(OWNER_TELEGRAM_METHODS.map((method) => [method, inputs.ownerTelegram !== undefined && inputs.initializeAuthenticator !== undefined])) as Record<OwnerTelegramMethod, boolean>,
     initialize: true,
     "request.cancel": true,
+    "print.invoke": inputs.printHome !== undefined,
+    "print.admit": inputs.printHome !== undefined,
+    "print.ack": inputs.printHome !== undefined,
+    "print.cancel": inputs.printHome !== undefined,
     "audio.whisper.status": inputs.whisper !== undefined,
     "audio.whisper.install": inputs.whisper !== undefined,
     "audio.whisper.transcribe": inputs.whisper !== undefined,
@@ -350,6 +372,8 @@ function buildServerCapabilities(
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
+    "run.pause": hasMethod(inputs.workflow, "pauseRun"),
+    "run.resume": hasMethod(inputs.workflow, "resumeRun"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
     "routine.capabilities": inputs.routines !== undefined,
     "routine.list": inputs.routines !== undefined,
@@ -360,6 +384,7 @@ function buildServerCapabilities(
     "routine.run": inputs.routines !== undefined,
     "routine.runs": inputs.routines !== undefined,
     "routine.cancel": inputs.routines !== undefined,
+    "routine.session.prepare.respond": inputs.routinePreparation !== undefined,
     "csvJob.review.list": hasMethod(inputs.csvJobReview, "list"),
     "csvJob.review.show": hasMethod(inputs.csvJobReview, "show"),
     "csvJob.review.resolve": hasMethod(inputs.csvJobReview, "resolve"),
@@ -370,8 +395,11 @@ function buildServerCapabilities(
     "session.terminate": hasMethod(sessionManager, "terminateSession"),
     "session.clear": hasMethod(agentManager, "clearSessionHistory"),
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
+    "session.processes.list": hasMethod(agentManager, "listSessionProcesses"),
+    "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
+    "session.artifact.read": hasMethod(agentManager, "readSessionArtifact"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
       agentManager,
@@ -379,6 +407,9 @@ function buildServerCapabilities(
     ),
     "session.mcp.status": hasMethod(agentManager, "getMcpStatusForSession"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
+    "plugin.settings.get": inputs.pluginSettings !== undefined,
+    "plugin.settings.set": inputs.pluginSettings !== undefined,
+    "plugin.settings.reset": inputs.pluginSettings !== undefined,
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
     "thread/realtime/start":
@@ -393,6 +424,13 @@ function buildServerCapabilities(
     "tool.cancel": hasMethod(agentManager, "cancelTool"),
     "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
     "permission.list": hasMethod(agentManager, "listPermissions"),
+    // Same gate as remote.*: trust widens what sessions may do in a project.
+    "project.trustStatus":
+      inputs.projectTrust !== undefined &&
+      inputs.initializeAuthenticator !== undefined,
+    "project.trust":
+      inputs.projectTrust !== undefined &&
+      inputs.initializeAuthenticator !== undefined,
     "fs.fuzzy_search": hasMethod(inputs.fuzzyFileSearch, "search"),
     "commandExec.start":
       inputs.allowUnadmittedCommandExecStart &&
@@ -413,39 +451,6 @@ function buildServerCapabilities(
     "auth.login": inputs.authHandlers !== undefined,
     "auth.whoami": inputs.authHandlers !== undefined,
     "auth.logout": inputs.authHandlers !== undefined,
-    "workspace.editor.acquire": inputs.workspaceMutations !== undefined,
-    "workspace.editor.sync": inputs.workspaceMutations !== undefined,
-    "workspace.editor.staleAuthority.refresh":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.heartbeat": inputs.workspaceMutations !== undefined,
-    "workspace.editor.release": inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.reserve":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.complete":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.release":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.recovered.list":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.topology.recovered.resolve":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.get": inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.status":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.apply":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.proposal.discard":
-      inputs.workspaceMutations !== undefined,
-    "workspace.editor.changes.list": inputs.workspaceMutations !== undefined,
-    "workspace.editor.predict": hasMethod(inputs.codePrediction, "complete"),
-    "workspace.editor.cancelPrediction": hasMethod(
-      inputs.codePrediction,
-      "cancel",
-    ),
-    "workspace.editor.predictionFeedback": hasMethod(
-      inputs.codePrediction,
-      "feedback",
-    ),
     "session.partialCompactFromMessage": hasMethod(
       agentManager,
       "partialCompactFromMessage",
@@ -483,6 +488,7 @@ function buildServerCapabilities(
       agentManager,
       "setSessionHooksDisabled",
     ),
+    "session.goal": hasMethod(agentManager, "updateSessionGoal"),
     "session.applyConfig": hasMethod(agentManager, "applyConfigToSession"),
     "session.mcp.reconnectServer": hasMethod(
       agentManager,
@@ -509,9 +515,14 @@ function buildServerCapabilities(
   }
 
   return Object.freeze({
+    ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
+    ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
+    ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
+    ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
+    ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -522,16 +533,9 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
   );
 }
 
-function requiresWorkspaceMutationRegistry(method: string): boolean {
-  return (
-    method.startsWith("workspace.editor.") &&
-    method !== "workspace.editor.predict" &&
-    method !== "workspace.editor.cancelPrediction" &&
-    method !== "workspace.editor.predictionFeedback"
-  );
-}
-
 export interface AgenCDaemonDispatcherOptions {
+  /** Canonical daemon home enabling resident print on authenticated Unix connections. */
+  readonly printHome?: string;
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
     | "approveTool"
@@ -545,6 +549,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -568,10 +573,15 @@ export interface AgenCDaemonDispatcherOptions {
     | "cancelRunTree"
     | "streamAgentMessage"
   > & {
+    readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
+    readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
+    readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
+    readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -590,13 +600,15 @@ export interface AgenCDaemonDispatcherOptions {
     | "removeClientIfUnused"
     | "terminateSession"
     | "removeClient"
-  >;
+    | "attachedClientIds"
+  > & Partial<Pick<AgenCDaemonClientMultiplexer, "deliveryHoldsSession">>;
   readonly sessionManager?: Pick<
     AgenCDaemonSessionManager,
     | "attachSession"
     | "createSession"
     | "detachSession"
     | "listSessions"
+    | "getSession"
     | "terminateSession"
   >;
   readonly createMessageId?: () => string;
@@ -615,27 +627,30 @@ export interface AgenCDaemonDispatcherOptions {
       | { readonly shuttingDown: true; readonly instanceId: string }
       | Promise<{ readonly shuttingDown: true; readonly instanceId: string }>;
   };
-  readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health?: AgenCDaemonHealthHandlers;
   readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly whisper?: WhisperService;
-  readonly runInspection?: Pick<
-    AgenCDaemonRunInspectionService,
-    "status" | "result" | "replay" | "evidence"
-  >;
+  readonly runInspection?: AgenCDaemonRunInspectionHandlers;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
-  readonly remote?: RemoteService;
-  readonly ownerTelegram?: OwnerTelegramService;
+  readonly routinePreparation?: RoutineSessionPreparation;
+  readonly remote?: Pick<RemoteService, "handle" | "stop">;
+  readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
-  readonly codePrediction?: Pick<
-    CodePredictionService,
-    "complete" | "cancel" | "feedback"
-  >;
-  /** Home-bound mutation registry captured by daemon startup. */
-  readonly workspaceMutations?: WorkspaceMutationCoordinatorRegistry;
+  /**
+   * Project trust resolved the way sessions resolve it. Answered only on
+   * authenticated local connections, like `remote.*`.
+   */
+  readonly projectTrust?: AgenCDaemonProjectTrustService;
+  readonly pluginSettings?: PluginSettingsService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
+  /**
+   * Sessions open at the daemon's last shutdown that it still restores in
+   * the background. A request naming one waits for its restore to settle.
+   */
+  readonly startupRestores?: AgenCDaemonStartupRestoreGate;
   readonly now?: () => string;
 }
 
@@ -666,6 +681,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -689,10 +705,15 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "cancelRunTree"
     | "streamAgentMessage"
   > & {
+    readonly listSessionProcesses?: AgenCDaemonAgentManager["listSessionProcesses"];
+    readonly stopSessionProcess?: AgenCDaemonAgentManager["stopSessionProcess"];
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
     readonly getSessionHooksStatus?: AgenCDaemonAgentManager["getSessionHooksStatus"];
     readonly executeSessionStatusLine?: AgenCDaemonAgentManager["executeSessionStatusLine"];
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
+    readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
+    readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -703,7 +724,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #daemonIdentity: DaemonInstanceIdentity | undefined;
   readonly #clientMultiplexer:
-    | Pick<
+    | (Pick<
         AgenCDaemonClientMultiplexer,
         | "attachClientToSession"
         | "broadcastSessionEvent"
@@ -714,7 +735,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "removeClientIfUnused"
         | "terminateSession"
         | "removeClient"
-      >
+        | "attachedClientIds"
+      > & Partial<Pick<AgenCDaemonClientMultiplexer, "deliveryHoldsSession">>)
     | undefined;
   readonly #sessionManager:
     | Pick<
@@ -723,6 +745,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "createSession"
         | "detachSession"
         | "listSessions"
+        | "getSession"
         | "terminateSession"
       >
     | undefined;
@@ -744,25 +767,30 @@ export class AgenCDaemonJsonRpcDispatcher {
             }>;
       }
     | undefined;
-  readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly #health: AgenCDaemonHealthHandlers;
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #whisper: WhisperService | undefined;
   readonly #runInspection:
-    | Pick<
-        AgenCDaemonRunInspectionService,
-        "status" | "result" | "replay" | "evidence"
-      >
+    | AgenCDaemonRunInspectionHandlers
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
-  readonly #remote: RemoteService | undefined;
-  readonly #ownerTelegram: OwnerTelegramService | undefined;
+  readonly #routinePreparation: RoutineSessionPreparation | undefined;
+  readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
-  readonly #codePrediction:
-    Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
-  readonly #workspaceMutations: WorkspaceMutationCoordinatorRegistry | undefined;
+  readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly #pluginSettings: PluginSettingsService | undefined;
+  readonly #startupRestores: AgenCDaemonStartupRestoreGate | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
+  readonly #printHome: string | undefined;
+  readonly #prints = new Map<AgenCDaemonJsonRpcConnection, PrintInvocation>();
+  #printsClosed = false;
+  readonly #printAgents = new Map<AgenCDaemonJsonRpcConnection, Set<{
+    agentId?: string;
+    stop(): Promise<void>;
+  }>>();
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -774,7 +802,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${randomUUID()}`);
     this.#fuzzyFileSearch =
-      options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+      options.fuzzyFileSearch ?? createLazyFuzzyFileSearch();
     this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
     this.#fuzzyAllowedRoots = Object.freeze([
       ...(options.fuzzyAllowedRoots ?? []),
@@ -785,25 +813,29 @@ export class AgenCDaemonJsonRpcDispatcher {
       TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
     this.#health =
       options.health ??
-      new AgenCDaemonHealthService({
+      createLazyDaemonHealth({
         stateCounter: options.healthStateCounter,
       });
-    this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
+    this.#realtime = options.realtime ?? createLazyRealtimeRpcService();
     this.#whisper = options.whisper;
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
     this.#routines = options.routines;
+    this.#routinePreparation = options.routinePreparation;
     this.#remote = options.remote;
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
-    this.#codePrediction = options.codePrediction;
-    this.#workspaceMutations = options.workspaceMutations;
+    this.#projectTrust = options.projectTrust;
+    this.#pluginSettings = options.pluginSettings;
+    this.#startupRestores = options.startupRestores;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
         : undefined;
     this.#daemonControl = options.daemonControl;
+    this.#printHome = options.printHome;
     this.#serverCapabilities = buildServerCapabilities({
+      printHome: options.printHome,
       agentManager: this.#agentManager,
       authHandlers: this.#authHandlers,
       allowUnadmittedCommandExecStart: this.#allowUnadmittedCommandExecStart,
@@ -819,11 +851,12 @@ export class AgenCDaemonJsonRpcDispatcher {
       sessionManager: this.#sessionManager,
       workflow: this.#workflow,
       routines: this.#routines,
+      routinePreparation: this.#routinePreparation,
       remote: this.#remote,
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
-      codePrediction: this.#codePrediction,
-      workspaceMutations: this.#workspaceMutations,
+      projectTrust: this.#projectTrust,
+      pluginSettings: this.#pluginSettings,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -835,6 +868,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   }
 
   async close(): Promise<void> {
+    this.#printsClosed = true;
+    await Promise.all([
+      ...[...this.#prints.values()].map(invocation => invocation.close()),
+      ...[...this.#printAgents.keys()].map(connection => connection.close()),
+    ]);
+    this.#prints.clear();
     for (const unsubscribe of this.#routineSubscriptions.values()) unsubscribe();
     this.#routineSubscriptions.clear();
     if (this.#ownsFuzzyFileSearch) await this.#fuzzyFileSearch.close?.();
@@ -854,6 +893,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       connection.cancelAllInFlightRequests("connection closed");
       // One failed detach must not strand the other clients or command jobs.
       const cleanup = await Promise.allSettled([
+        this.#prints.get(connection)?.close(),
+        ...[...(this.#printAgents.get(connection) ?? [])].map(owner => owner.stop()),
         ...connection.trackedClientIds.map(async (clientId) => {
           try {
             await this.#clientMultiplexer?.removeClient(clientId, connection.cancellationScope);
@@ -865,6 +906,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         }),
         this.#commandExec.closeConnection(connection.cancellationScope),
       ]);
+      this.#prints.delete(connection);
+      this.#printAgents.delete(connection);
       const failures = cleanup.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason), "daemon connection cleanup failed");
@@ -890,6 +933,9 @@ export class AgenCDaemonJsonRpcDispatcher {
     if (connection.remoteAccess) {
       try {
         const params = objectParams(message.params);
+        // The boundary reads the sessions a request names before any handler
+        // runs, so a session still restoring must be restored first.
+        await this.#waitForStartupRestores(message.method, params, INERT_ABORT_SIGNAL);
         await connection.remoteAccess.authorize(message.method, params);
         connection.assertOpen();
         if (message.method !== "initialize" && !connection.initialized) throw new RemoteError("CONNECTION_NOT_INITIALIZED");
@@ -916,13 +962,28 @@ export class AgenCDaemonJsonRpcDispatcher {
           });
         }
         try {
+          const availableCapabilities = connection.localUnix ? this.#serverCapabilities : {
+            ...this.#serverCapabilities,
+            [AGENC_PRINT_INVOKE_CAPABILITY]: false,
+            [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
+              ...this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
+              "print.invoke": false, "print.admit": false, "print.ack": false, "print.cancel": false,
+            },
+          };
           const initializeParams = validateInitializeParams(connection.remoteAccess ? { protocol: params.protocol, capabilities: {} } : params);
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...this.#serverCapabilities,
-              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
-            } : this.#serverCapabilities,
+              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
+              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(availableCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
+              // Match the filtered routine methods in this remote-access view.
+              ...(availableCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
+                ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
+              ...(availableCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
+              ...(availableCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
+            } : availableCapabilities,
           );
           if (!negotiated.supported) {
             return errorResponse(id, -32000, "Unsupported protocol version", {
@@ -979,10 +1040,12 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if ((REMOTE_METHODS as readonly string[]).includes(method)) {
         if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
       }
       if ((OWNER_TELEGRAM_METHODS as readonly string[]).includes(method)) {
         if (!this.#ownerTelegram || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#ownerTelegram.handle(method as OwnerTelegramMethod, params));
       }
 
@@ -995,11 +1058,11 @@ export class AgenCDaemonJsonRpcDispatcher {
         return methodNotImplementedResponse(id, method);
       }
 
-      if (
-        requiresWorkspaceMutationRegistry(method) &&
-        this.#workspaceMutations === undefined
-      ) {
-        return methodNotImplementedResponse(id, method);
+      if (method.startsWith("print.")) {
+        if (this.#printHome === undefined || !connection.localUnix || connection.remoteAccess !== undefined ||
+            connection.initializeState?.clientCapabilities[AGENC_PRINT_INVOKE_CAPABILITY] !== true ||
+            connection.rawSendNotification === undefined) return methodNotImplementedResponse(id, method);
+        return await this.#dispatchPrint(connection, id, method, params);
       }
 
       if (method === "request.cancel") {
@@ -1011,7 +1074,7 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if (methodSupportsRequestCancellation(method)) {
         return await connection.runCancellableRequest(id, (signal) =>
-          this.#dispatchKnownMethod(connection, id, method, params, signal),
+          this.#dispatchKnownMethod(connection, id, method, params, signal, message),
         );
       }
 
@@ -1021,10 +1084,207 @@ export class AgenCDaemonJsonRpcDispatcher {
         method,
         params,
         INERT_ABORT_SIGNAL,
+        message,
       );
     } catch (error) {
       return mapDispatchError(id, error);
     }
+  }
+
+  /**
+   * Who vouches for a routine's permission mode. A session authority is read
+   * from that live session's own permission registry through the agent
+   * manager, and only a connection that holds that session may name it. The
+   * operator authority needs a local connection that declared
+   * routine.operator.v1 and holds no session. The request never states the
+   * mode it is granted.
+   */
+  async #routinePermissionGrant(
+    connection: AgenCDaemonJsonRpcConnection,
+    authority: RoutinePermissionAuthority | undefined,
+    priorityHeadSessionId?: string,
+  ): Promise<RoutinePermissionGrant> {
+    if (priorityHeadSessionId !== undefined &&
+        (authority?.kind !== "session" || authority.toolCallId === undefined)) {
+      throw new RoutineError("ROUTINE_PERMISSION_DENIED", "A bypassed routine write requires its executing session tool call.");
+    }
+    if (authority === undefined) return LEGACY_ROUTINE_GRANT;
+    const agentManager = this.#agentManager;
+    const multiplexer = this.#clientMultiplexer;
+    const deliveryKey = connection.cancellationScope;
+    const declaredOperator =
+      connection.initializeState?.clientCapabilities[ROUTINE_OPERATOR_CAPABILITY] === true &&
+      connection.remoteAccess === undefined;
+    // Only multiplexed attachments exist on a connection, so a daemon without
+    // a multiplexer has no session held anywhere.
+    const operator = declaredOperator &&
+      !(await (multiplexer?.deliveryHoldsSession?.(deliveryKey) ?? Promise.resolve(false)));
+    return await resolveRoutinePermissionGrant(authority, {
+      operator,
+      async liveSession(sessionId) {
+        if (agentManager.getLiveSessionPermission === undefined) return undefined;
+        return await agentManager.getLiveSessionPermission(sessionId, priorityHeadSessionId);
+      },
+      async holdsSession(liveSessionId) {
+        if (multiplexer?.deliveryHoldsSession === undefined) return false;
+        return await multiplexer.deliveryHoldsSession(deliveryKey, liveSessionId);
+      },
+      async executingToolCall(liveSessionId, toolCallId) {
+        // A tool's routine write is part of the turn already streaming on this
+        // connection. Judge it using the session's mode now, like that tool's
+        // other effects. Queued permission changes and attach/detach apply
+        // after the turn under the connection's ordinary FIFO.
+        return (await agentManager.isLiveSessionToolCallExecuting?.(liveSessionId, toolCallId)) === true;
+      },
+    });
+  }
+
+  #forgetPrintAgent(agentId: string): void {
+    for (const [connection, owners] of this.#printAgents) {
+      for (const owner of owners) if (owner.agentId === agentId) owners.delete(owner);
+      if (owners.size === 0) this.#printAgents.delete(connection);
+    }
+  }
+
+  async #createConnectionAgent(
+    connection: AgenCDaemonJsonRpcConnection,
+    params: AgentCreateParams,
+    signal: AbortSignal,
+  ) {
+    // Resident print already owns its invocation. Ordinary fresh print must
+    // also remain owned after agent.create's request waiter has completed.
+    // Interactive, resumed and detached agent APIs keep their existing lifetime.
+    const owned = !connection.printUsed && params.resumeSessionId === undefined &&
+      params.resumeRolloutPath === undefined && params.runtimeOptions?.nonInteractive === true &&
+      params.metadata?.source === "agenc.prompt" && params.metadata?.mode === "one-shot";
+    if (!owned) return this.#agentManager.createAgent(params, { signal });
+    connection.assertOpen();
+    const created = this.#agentManager.createAgent(params, { signal });
+    let stopping: Promise<void> | undefined;
+    const owners = this.#printAgents.get(connection) ?? new Set();
+    const owner: { agentId?: string; stop(): Promise<void> } = {
+      stop: () => stopping ??= created.then(async result => {
+        await this.#agentManager.stopAgent({ agentId: result.agentId, reason: "one_shot_cancelled" });
+      }, () => {}).finally(() => {
+        owners.delete(owner);
+        if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      }),
+    };
+    owners.add(owner);
+    this.#printAgents.set(connection, owners);
+    try {
+      const result = await created;
+      owner.agentId = result.agentId;
+      // A non-cooperative or already-finishing create can resolve after close.
+      // Join its normal stop, never discard a late-created agent.
+      if (connection.closed || signal.aborted) {
+        await owner.stop();
+        throw new AgenCDaemonConnectionClosedError();
+      }
+      return result;
+    } catch (error) {
+      owners.delete(owner);
+      if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      throw error;
+    }
+  }
+
+  async #dispatchPrint(connection: AgenCDaemonJsonRpcConnection, id: RequestId, method: AgenCDaemonKnownMethod, params: JsonObject): Promise<AgenCDaemonResponse> {
+    if (method === "print.invoke") {
+      if (this.#printsClosed) throw invalidParams("daemon print service is closed");
+      if (connection.printUsed || connection.trackedClientIds.length > 0) throw invalidParams("print invocation requires a fresh connection");
+      const request = validatePrintInvokeParams(params);
+      connection.printUsed = true;
+      const invocation = new PrintInvocation({
+        home: this.#printHome!,
+        send: message => connection.rawSendNotification!(message),
+        request: async (nestedMethod, nestedParams, signal = INERT_ABORT_SIGNAL) => {
+          // Calls are local but keep canonical validators, restore gates,
+          // attachment ownership and this exact authenticated connection.
+          const allowed = ["agent.create", "agent.attach", "agent.stop", "session.snapshot", "session.goal", "session.cancelTurn", "tool.deny", "message.stream"];
+          if (!allowed.includes(nestedMethod)) throw invalidParams("unsupported resident print operation");
+          if (nestedMethod !== "agent.stop") { connection.assertOpen(); signal.throwIfAborted(); }
+          if (connection.initializeState?.serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY][nestedMethod] !== true) return methodNotImplementedResponse(id, nestedMethod);
+          try {
+            // Await the actual operation, including cancelled create cleanup;
+            // do not race and discard a late-created owned agent.
+            return await this.#dispatchKnownMethod(connection, `print-${request.invocationId}-${randomUUID()}`, nestedMethod, nestedParams, signal, { jsonrpc: "2.0", method: nestedMethod, params: nestedParams });
+          } catch (error) { return mapDispatchError(id, error); }
+        },
+      }, request);
+      this.#prints.set(connection, invocation);
+      connection.printEventSink = event => invocation.event(event);
+      try { return successResponse(id, await invocation.run()); }
+      finally { connection.printEventSink = undefined; this.#prints.delete(connection); }
+    }
+    const invocation = this.#prints.get(connection);
+    if (invocation === undefined || params.invocationId !== invocation.invocationId) throw invalidParams("unknown print invocation");
+    if (method === "print.admit") {
+      if (Object.keys(params).some(key => !["invocationId", "challenge"].includes(key)) || typeof params.challenge !== "string") throw invalidParams("invalid print admission");
+      invocation.admit(params.challenge);
+    } else if (method === "print.ack") {
+      if (Object.keys(params).some(key => !["invocationId", "sequence"].includes(key)) || !Number.isSafeInteger(params.sequence)) throw invalidParams("invalid print acknowledgment");
+      invocation.acknowledge(params.sequence as number);
+    } else if (method === "print.cancel") {
+      if (Object.keys(params).some(key => !["invocationId", "reason", "signal", "stream"].includes(key)) ||
+          !["signal", "broken_pipe"].includes(params.reason as string) ||
+          (params.reason === "signal" && !["SIGINT", "SIGTERM", "SIGHUP"].includes(params.signal as string)) ||
+          (params.stream !== undefined && params.stream !== "stdout" && params.stream !== "stderr")) throw invalidParams("invalid print cancellation");
+      invocation.cancel({ ...params, exitCode: params.reason === "broken_pipe" || params.signal === "SIGTERM" ? 0 : 130 });
+    } else return methodNotImplementedResponse(id, method);
+    return successResponse(id, { ok: true });
+  }
+
+  /**
+   * Whether this connection negotiated the wider routine contract. Without it
+   * a connection keeps the original one exactly: two modes, no authority, and
+   * no routine it could not describe.
+   */
+  #routineV2(connection: AgenCDaemonJsonRpcConnection): boolean {
+    return connection.initializeState?.clientCapabilities[ROUTINE_PERMISSION_MODES_CAPABILITY] === true;
+  }
+
+  /**
+   * For a connection on the original contract, a routine in a mode it cannot
+   * describe does not exist: reading, running or changing it answers exactly
+   * what a missing routine answers.
+   */
+  #assertRoutineVisible(connection: AgenCDaemonJsonRpcConnection, params: JsonObject): void {
+    if (this.#routineV2(connection) || this.#routines === undefined) return;
+    if (typeof params.id !== "string") return;
+    let mode: unknown;
+    try { mode = this.#routines.get({ id: params.id }).routine.permissionMode; }
+    catch { return; }
+    if (!legacyRoutineMode(mode)) throw new RoutineError("ROUTINE_NOT_FOUND", "Routine was not found.");
+  }
+
+  /** Split the request-only authority off only where the contract has one. */
+  #routineRequest(connection: AgenCDaemonJsonRpcConnection, params: JsonObject): { readonly params: unknown; readonly authority: RoutinePermissionAuthority | undefined } {
+    // On the original contract the field is unknown, and the service refuses
+    // it the way it refuses any unsupported parameter.
+    if (!this.#routineV2(connection)) return { params, authority: undefined };
+    return takeRoutinePermissionAuthority(params);
+  }
+
+  /**
+   * Wait until every session this request names that the daemon is still
+   * restoring from its last shutdown has settled. The request then runs as it
+   * would have once startup finished. Most requests name none and do not
+   * wait at all.
+   */
+  async #waitForStartupRestores(
+    method: string,
+    params: JsonObject,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring === undefined) return;
+    await restoring;
+    signal.throwIfAborted();
   }
 
   async #dispatchKnownMethod(
@@ -1033,7 +1293,16 @@ export class AgenCDaemonJsonRpcDispatcher {
     method: AgenCDaemonKnownMethod,
     params: JsonObject,
     signal: AbortSignal,
+    message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
+    // Every method that takes a session, agent, run or thread id reaches its
+    // handler through here. Waiting before the switch covers all of them,
+    // including ones added later, and the handler then runs unchanged.
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring !== undefined) {
+      await restoring;
+      signal.throwIfAborted();
+    }
     switch (method) {
       case "audio.whisper.status":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
@@ -1044,40 +1313,61 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "audio.whisper.transcribe":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
         return successResponse(id, await this.#whisper.transcribe(params, signal));
-      case "routine.capabilities":
+      case "routine.session.prepare.respond":
+        if (!this.#routinePreparation || connection.remoteAccess || connection.initializeState?.clientCapabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] !== true) return methodNotImplementedResponse(id, method);
+        return successResponse(id, this.#routinePreparation.respond(params as never, true));
+      case "routine.capabilities": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.capabilities(params));
-      case "routine.list":
+        const capabilities = this.#routines.capabilities(params);
+        return successResponse(id, this.#routineV2(connection)
+          ? capabilities
+          : { ...capabilities, permissionModes: [...LEGACY_ROUTINE_PERMISSION_MODES] });
+      }
+      case "routine.list": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.list(params));
+        const listed = this.#routines.list(params);
+        return successResponse(id, this.#routineV2(connection)
+          ? listed
+          : { routines: listed.routines.filter((routine) => legacyRoutineMode(routine.permissionMode)) });
+      }
       case "routine.get":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.get(params));
-      case "routine.create":
+      case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.create(params));
-      case "routine.update":
+        const request = this.#routineRequest(connection, params);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
+        return successResponse(id, this.#routines.create(request.params, grant));
+      }
+      case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
-        return successResponse(id, this.#routines.update(params));
+        const request = this.#routineRequest(connection, params);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
+        // Checked after the grant's await so nothing interleaves before the update.
+        this.#assertRoutineVisible(connection, params);
+        return successResponse(id, this.#routines.update(request.params, grant));
+      }
       case "routine.delete":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.delete(params));
       case "routine.run":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.run(params));
       case "routine.runs":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.runs(params));
       case "routine.cancel":
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
+        this.#assertRoutineVisible(connection, params);
         return successResponse(id, await this.#routines.cancel(params));
       case "agent.create":
         return successResponse(
           id,
-          await this.#agentManager.createAgent(
-            validateAgentCreateParams(params),
-            { signal },
-          ),
+          await this.#createConnectionAgent(connection, validateAgentCreateParams(params), signal),
         );
       case "agent.list":
         return successResponse(
@@ -1086,11 +1376,12 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "agent.attach":
         return this.#attachAgent(id, connection, params);
-      case "agent.stop":
-        return successResponse(
-          id,
-          await this.#agentManager.stopAgent(validateAgentStopParams(params)),
-        );
+      case "agent.stop": {
+        const request = validateAgentStopParams(params);
+        const result = await this.#agentManager.stopAgent(request);
+        this.#forgetPrintAgent(request.agentId);
+        return successResponse(id, result);
+      }
       case "agent.logs":
         return successResponse(
           id,
@@ -1104,7 +1395,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.status(validateRunStatusParams(params)),
+          await this.#runInspection.status(validateRunStatusParams(params), signal),
         );
       case "run.result":
         if (this.#runInspection === undefined) {
@@ -1112,7 +1403,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.result(validateRunResultParams(params)),
+          await this.#runInspection.result(validateRunResultParams(params), signal),
         );
       case "run.replay":
         if (this.#runInspection === undefined) {
@@ -1120,7 +1411,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.replay(validateRunReplayParams(params)),
+          await this.#runInspection.replay(validateRunReplayParams(params), signal),
         );
       case "run.evidence":
         if (this.#runInspection === undefined) {
@@ -1128,7 +1419,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.evidence(validateRunEvidenceParams(params)),
+          await this.#runInspection.evidence(validateRunEvidenceParams(params), signal),
         );
       case "run.cancel": {
         const cancelParams = validateRunCancelParams(params);
@@ -1142,14 +1433,29 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
         return successResponse(id, result);
       }
-      case "run.start":
+      case "run.pause":
+        if (this.#workflow?.pauseRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.pauseRun(validateRunPauseParams(params)));
+      case "run.resume":
+        if (this.#workflow?.resumeRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.resumeRun(validateRunResumeParams(params)));
+      case "run.start": {
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);
         }
+        const startParams = validateRunStartParams(params);
+        if (startParams.continuation !== undefined && this.#workflow.supportsContinuation !== true) {
+          throw invalidParams("This daemon does not support completed Goal continuation.");
+        }
         return successResponse(
           id,
-          await this.#workflow.startRun(validateRunStartParams(params)),
+          await this.#workflow.startRun(startParams),
         );
+      }
       case "csvJob.review.list":
         if (this.#csvJobReview === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -1219,6 +1525,20 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionSnapshotParams(params),
           ),
         );
+      case "session.processes.list":
+        if (this.#agentManager.listSessionProcesses === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#agentManager.listSessionProcesses(
+          validateSessionProcessesListParams(params),
+        ));
+      case "session.processes.stop":
+        if (this.#agentManager.stopSessionProcess === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#agentManager.stopSessionProcess(
+          validateSessionProcessesStopParams(params),
+        ));
       case "session.transcript":
         return successResponse(
           id,
@@ -1227,12 +1547,63 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "session.transcript.v2":
-        return successResponse(
-          id,
-          await this.#agentManager.getSessionTranscriptV2(
+        {
+          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
+          const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
-          ),
-        );
+            { includeCompleteMessages: clientMinor < 18 },
+          );
+          if (clientMinor >= 18) return successResponse(id, transcript);
+          // Protocol 1.17 has no artifact RPC. Restore complete messages only
+          // while the serialized reply still fits this connection's frame.
+          const maxLegacyBytes = connection.remoteAccess === undefined
+            ? 16 * 1024 * 1024
+            : 1024 * 1024;
+          const messages: Array<(typeof transcript.messages)[number]> = [];
+          const legacyEvents = transcript.events?.filter(event => event.type !== "tool_call_completed");
+          const emptyResponse = successResponse(id, { ...transcript, messages, events: legacyEvents });
+          const emptyPayload = JSON.stringify(emptyResponse);
+          const remote = connection.remoteAccess !== undefined;
+          let measuredBytes = Buffer.byteLength(remote
+            ? JSON.stringify({ t: "data", cid: connection.remoteCid ?? "", payload: emptyPayload })
+            : emptyPayload, "utf8");
+          const addMessage = (message: (typeof transcript.messages)[number]): void => {
+            const part = `${messages.length > 0 ? "," : ""}${JSON.stringify(message)}`;
+            // The remote relay quotes and escapes the JSON payload once more.
+            // Measure that one message's contribution without constructing the
+            // complete reply or relay envelope.
+            measuredBytes += Buffer.byteLength(remote ? JSON.stringify(part).slice(1, -1) : part, "utf8");
+            if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+            messages.push(message);
+          };
+          if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+          for (const { textArtifact, ...message } of transcript.messages) {
+            if (textArtifact === undefined) {
+              addMessage(message);
+              continue;
+            }
+            if (textArtifact.size > maxLegacyBytes - measuredBytes) throw new Error("legacy transcript exceeds transport limit");
+            const chunks: Buffer[] = [];
+            let offset = 0;
+            while (offset < textArtifact.size) {
+              const chunk = await this.#agentManager.readSessionArtifact({ sessionId: transcript.sessionId, id: textArtifact.id, offset, length: 256 * 1024 });
+              const data = Buffer.from(chunk.data, "base64");
+              if (chunk.id !== textArtifact.id || chunk.size !== textArtifact.size || chunk.offset !== offset || data.length === 0 || offset + data.length > textArtifact.size || chunk.nextOffset !== (offset + data.length < textArtifact.size ? offset + data.length : null)) {
+                throw new Error("legacy transcript artifact changed during read");
+              }
+              chunks.push(data);
+              offset += data.length;
+            }
+            const bytes = Buffer.concat(chunks, offset);
+            if (createHash("sha256").update(bytes).digest("hex") !== textArtifact.digest) throw new Error("legacy transcript artifact digest mismatch");
+            addMessage({ ...message, text: bytes.toString("utf8") });
+          }
+          return emptyResponse;
+        }
+      case "session.artifact.read":
+        {
+          return successResponse(id, await this.#agentManager.readSessionArtifact(validateSessionArtifactReadParams(params)));
+        }
       case "session.cancelTurn":
         return successResponse(
           id,
@@ -1241,12 +1612,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "session.resolveToolCall":
-        return successResponse(
-          id,
-          await this.#agentManager.resolveSessionToolCall(
-            validateSessionResolveToolCallParams(params),
-          ),
-        );
+        return this.#resolveSessionToolCall(id, connection, params);
       case "session.mcp.status":
         return successResponse(
           id,
@@ -1261,6 +1627,21 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionMcpAddServerParams(params),
           ),
         );
+      case "plugin.settings.get":
+      case "plugin.settings.set":
+      case "plugin.settings.reset": {
+        if (connection.remoteAccess !== undefined || this.#pluginSettings === undefined) return methodNotImplementedResponse(id, method);
+        const validated = validateObjectShape(params, {
+          methodName: method,
+          stringFields: ["pluginId"],
+          ...(method === "plugin.settings.set" ? { objectFields: ["values"] } : {}),
+        });
+        validateRequiredString(validated, method, "pluginId");
+        if (method === "plugin.settings.get") return successResponse(id, await this.#pluginSettings.get({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (method === "plugin.settings.reset") return successResponse(id, await this.#pluginSettings.reset({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (validated.values === undefined || typeof validated.values !== "object" || Array.isArray(validated.values)) throw invalidParams("plugin.settings.set values must be an object");
+        return successResponse(id, await this.#pluginSettings.set({ pluginId: validated.pluginId as string, values: validated.values as Record<string, string | number | boolean | string[]> }) as unknown as PluginSettingsResult);
+      }
       case "session.mcp.reconnectServer":
         return successResponse(
           id,
@@ -1291,176 +1672,6 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
-      case "workspace.editor.acquire":
-        return internalSuccessResponse(
-          id,
-          await acquireWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorAcquireParams(params),
-          ),
-        );
-      case "workspace.editor.sync":
-        return internalSuccessResponse(
-          id,
-          await syncWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorSyncParams(params),
-          ),
-        );
-      case "workspace.editor.staleAuthority.refresh":
-        return internalSuccessResponse(
-          id,
-          await refreshWorkspaceEditorStaleAuthority(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.staleAuthority.refresh",
-            ),
-          ),
-        );
-      case "workspace.editor.heartbeat":
-        return internalSuccessResponse(
-          id,
-          await heartbeatWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.heartbeat",
-            ),
-          ),
-        );
-      case "workspace.editor.release":
-        return internalSuccessResponse(
-          id,
-          await releaseWorkspaceEditor(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorReleaseParams(params),
-          ),
-        );
-      case "workspace.editor.topology.reserve":
-        return internalSuccessResponse(
-          id,
-          await reserveWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyReserveParams(params),
-          ),
-        );
-      case "workspace.editor.topology.complete":
-        return internalSuccessResponse(
-          id,
-          await completeWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyCompleteParams(params),
-          ),
-        );
-      case "workspace.editor.topology.release":
-        return internalSuccessResponse(
-          id,
-          await releaseWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorTopologyFinalizeParams(
-              params,
-              "workspace.editor.topology.release",
-            ),
-          ),
-        );
-      case "workspace.editor.topology.recovered.list":
-        return internalSuccessResponse(
-          id,
-          await listRecoveredWorkspaceEditorTopologies(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorHeartbeatParams(
-              params,
-              "workspace.editor.topology.recovered.list",
-            ),
-          ),
-        );
-      case "workspace.editor.topology.recovered.resolve":
-        return internalSuccessResponse(
-          id,
-          await resolveRecoveredWorkspaceEditorTopology(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorRecoveredTopologyResolveParams(params),
-          ),
-        );
-      case "workspace.editor.proposal.get": {
-        const proposal = await inspectWorkspaceEditorProposal(
-          this.#workspaceMutations!,
-          validateWorkspaceEditorProposalParams(
-            params,
-            "workspace.editor.proposal.get",
-          ),
-          id,
-        );
-        return internalSuccessResponse(id, proposal);
-      }
-      case "workspace.editor.proposal.status":
-        return internalSuccessResponse(
-          id,
-          await statusWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalStatusParams(params),
-            id,
-          ),
-        );
-      case "workspace.editor.proposal.apply":
-        return internalSuccessResponse(
-          id,
-          await applyWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalApplyParams(params),
-          ),
-        );
-      case "workspace.editor.proposal.discard":
-        return internalSuccessResponse(
-          id,
-          await discardWorkspaceEditorProposal(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorProposalParams(
-              params,
-              "workspace.editor.proposal.discard",
-            ),
-          ),
-        );
-      case "workspace.editor.changes.list":
-        return internalSuccessResponse(
-          id,
-          await listWorkspaceEditorChanges(
-            this.#workspaceMutations!,
-            validateWorkspaceEditorChangesListParams(params),
-          ),
-        );
-      case "workspace.editor.predict":
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        return internalSuccessResponse(
-          id,
-          await this.#codePrediction.complete(
-            validateWorkspaceEditorPredictParams(params),
-            signal,
-          ),
-        );
-      case "workspace.editor.cancelPrediction": {
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        const validated = validateWorkspaceEditorCancelPredictionParams(params);
-        return internalSuccessResponse(id, {
-          ...(validated.requestId !== undefined
-            ? { requestId: validated.requestId }
-            : {}),
-          cancelled: this.#codePrediction.cancel(validated),
-        });
-      }
-      case "workspace.editor.predictionFeedback":
-        if (this.#codePrediction === undefined) {
-          return methodNotImplementedResponse(id, method);
-        }
-        this.#codePrediction.feedback(
-          validateWorkspaceEditorPredictionFeedbackParams(params),
-        );
-        return internalSuccessResponse(id, { recorded: true });
       case "session.partialCompactFromMessage":
         return successResponse(
           id,
@@ -1574,6 +1785,16 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.setSessionHooksDisabled(
             validateSessionHooksSetDisabledParams(params),
+          ),
+        );
+      case "session.goal":
+        if (this.#agentManager.updateSessionGoal === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#agentManager.updateSessionGoal(
+            validateSessionGoalParams(params),
           ),
         );
       case "session.applyConfig":
@@ -1737,15 +1958,18 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "health.ping":
-        return successResponse(id, this.#health.ping());
+        return successResponse(id, await this.#health.ping());
       case "health.ready":
-        return successResponse(id, this.#health.ready());
+        return successResponse(id, await this.#health.ready());
       case "health.stats":
         return successResponse(id, await this.#health.stats());
       case "daemon.reload":
         return this.#reloadDaemonConfig(id);
       case "daemon.shutdown":
         return this.#shutdownDaemon(id, validateDaemonShutdownParams(params));
+      case "project.trustStatus":
+      case "project.trust":
+        return this.#dispatchProjectTrust(id, method, connection, params);
       case "auth.login":
       case "auth.whoami":
       case "auth.logout":
@@ -1800,6 +2024,31 @@ export class AgenCDaemonJsonRpcDispatcher {
     );
   }
 
+  /**
+   * Trust widens what every session in a project may do, so these methods
+   * follow the strictest existing gate, the one `remote.*` and `telegram.*`
+   * use: an authenticated local connection only. A browser or relay
+   * connection is also refused earlier by its RemoteAccessBoundary allowlist.
+   */
+  async #dispatchProjectTrust(
+    id: RequestId,
+    method: "project.trustStatus" | "project.trust",
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (
+      this.#projectTrust === undefined ||
+      this.#initializeAuthenticator === undefined ||
+      connection.remoteAccess !== undefined
+    ) {
+      return methodNotImplementedResponse(id, method);
+    }
+    const validated = validateProjectTrustParams(params, method);
+    return method === "project.trust"
+      ? successResponse(id, await this.#projectTrust.trust(validated))
+      : successResponse(id, this.#projectTrust.status(validated));
+  }
+
   async #dispatchAuthMethod(
     id: RequestId,
     method: "auth.login" | "auth.whoami" | "auth.logout",
@@ -1836,6 +2085,43 @@ export class AgenCDaemonJsonRpcDispatcher {
     return successResponse(id, result);
   }
 
+  /**
+   * A review lifts the session's mutation gate, so it must come from a
+   * client this connection attached to that very session: another local
+   * client that only knows the ids cannot clear someone else's gate. The
+   * recorded reviewer is derived from the connection, never from the body.
+   * Remote connections never reach this method (see remote/access.ts).
+   */
+  async #resolveSessionToolCall(
+    id: RequestId,
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    const validated = validateSessionResolveToolCallParams(params);
+    const attachedClientIds =
+      this.#clientMultiplexer === undefined
+        ? []
+        : await this.#clientMultiplexer.attachedClientIds(validated.sessionId);
+    const ownClientId = connection.trackedClientIds.find((clientId) =>
+      attachedClientIds.includes(clientId),
+    );
+    if (connection.remoteAccess !== undefined || ownClientId === undefined) {
+      return errorResponse(
+        id,
+        -32000,
+        `session.resolveToolCall requires a client attached to session ${validated.sessionId} on this connection`,
+        { code: "SESSION_NOT_ATTACHED" },
+      );
+    }
+    return successResponse(
+      id,
+      await this.#agentManager.resolveSessionToolCall({
+        ...validated,
+        reviewer: trustedReviewer(connection.daemonSocketIdentity, ownClientId),
+      }),
+    );
+  }
+
   async #createSession(
     id: RequestId,
     params: JsonObject,
@@ -1860,6 +2146,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       return methodNotImplementedResponse(id, "session.attach");
     }
     const attachParams = validateSessionAttachParams(params);
+    const attachedSession = await this.#sessionManager.getSession(attachParams.sessionId);
+    if (attachedSession !== null) promoteOneShotRun(attachedSession.agentId);
     const multiplexedResult = await this.#attachTrackedClientToSession(
       connection,
       attachParams.clientId,
@@ -1952,6 +2240,10 @@ export class AgenCDaemonJsonRpcDispatcher {
         } catch { closed = true; pending.clear(); }
         finally { sending = false; }
       };
+      // Every client gets every invalidation: it carries only an id and a
+      // reason. A client on the original contract that re-reads a routine it
+      // cannot describe is told it does not exist, which is how a routine
+      // that became wider leaves its view.
       const unsubscribe = this.#routines.onUpdated((event) => {
         if (closed) return;
         if (!pending.has(event.id) && pending.size >= 100) pending.delete(pending.keys().next().value!);
@@ -1963,8 +2255,18 @@ export class AgenCDaemonJsonRpcDispatcher {
       capabilities[LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY] === true;
     const receivesMobileStatus =
       capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
+    // Registered so the daemon can count it as able to show a pending
+    // approval it never received live; it gets no extra notifications.
+    const preparesRoutineSession = capabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] === true;
+    const listsPendingApprovals =
+      capabilities[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true;
+    // Registered so a session attach on this connection counts as able to
+    // answer cross-provider consent (hasAttachedClientWithCapability).
+    const answersCrossProviderConsent =
+      capabilities[AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus) ||
+      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals &&
+        !preparesRoutineSession && !answersCrossProviderConsent) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {
@@ -2149,6 +2451,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...displayUserMessageFromMetadata(
             "message.stream",
             streamParams.metadata,
@@ -2225,7 +2528,11 @@ export class AgenCDaemonJsonRpcDispatcher {
       });
     }
     const onAbort = (): void => {
-      void cancelTurn();
+      // The request waiter owns its cancellation result. This legacy runner
+      // interruption may fail after that waiter or its connection has closed
+      // (for example, the session was retired). Observe the best-effort task so
+      // its failure cannot become an unhandled rejection for the whole daemon.
+      void cancelTurn().catch(() => {});
     };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
@@ -2243,8 +2550,12 @@ export class AgenCDaemonJsonRpcDispatcher {
 }
 
 export interface AgenCDaemonJsonRpcConnectionOptions {
+  /** Set only by the authenticated Unix server; never read from wire params. */
+  readonly localUnix?: boolean;
   /** In-process browser authority. No JSON-RPC field can populate this. */
   readonly remoteAccess?: RemoteAccessBoundary;
+  /** Remote peer identity used in the relay's outbound JSON envelope. */
+  readonly remoteCid?: string;
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
   readonly overloadLimits?: AgenCDaemonOverloadLimitOptions;
 }
@@ -2252,7 +2563,11 @@ export interface AgenCDaemonJsonRpcConnectionOptions {
 let nextConnectionId = 0;
 
 export class AgenCDaemonJsonRpcConnection {
+  readonly localUnix: boolean;
+  printUsed = false;
+  printEventSink: ((event: JsonObject) => Promise<void>) | undefined;
   readonly remoteAccess: RemoteAccessBoundary | undefined;
+  readonly remoteCid: string | undefined;
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
   readonly #sendNotification:
     ((message: JsonObject) => void | Promise<void>) | undefined;
@@ -2271,7 +2586,9 @@ export class AgenCDaemonJsonRpcConnection {
     options: AgenCDaemonJsonRpcConnectionOptions = {},
   ) {
     this.#dispatcher = dispatcher;
+    this.localUnix = options.localUnix === true;
     this.remoteAccess = options.remoteAccess;
+    this.remoteCid = options.remoteCid;
     this.#sendNotification = options.sendNotification;
     this.#limiter = new AgenCDaemonConnectionLimiter(options.overloadLimits);
     nextConnectionId += 1;
@@ -2335,6 +2652,10 @@ export class AgenCDaemonJsonRpcConnection {
 
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
+    return this.printEventSink ?? this.#sendNotification;
+  }
+
+  get rawSendNotification(): ((message: JsonObject) => void | Promise<void>) | undefined {
     return this.#sendNotification;
   }
 
@@ -2442,6 +2763,9 @@ export class AgenCDaemonJsonRpcConnection {
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     if (this.#closed) return mapDispatchError(requestIdFromMessage(message), new AgenCDaemonConnectionClosedError());
+    if (this.printUsed && !["print.invoke", "print.admit", "print.ack", "print.cancel", "health.ping"].includes(String(message.method))) {
+      return errorResponse(requestIdFromMessage(message), -32600, "print connection is reserved for its invocation");
+    }
     const admission = this.#limiter.tryStart(message);
     if (!admission.admitted) {
       return admission.response!;
@@ -2516,7 +2840,6 @@ function methodSupportsRequestCancellation(
     method === "session.rewindConversationToMessage" ||
     method === "session.shell.execute" ||
     method === "session.statusLine.execute" ||
-    method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
   );
@@ -2614,6 +2937,7 @@ function negotiateInitializeProtocol(
   const negotiatedCapabilities = capabilitiesChanged
     ? ({
         ...serverCapabilities,
+        ...(clientProtocol.minor < 30 ? { [AGENC_PRINT_INVOKE_CAPABILITY]: false } : {}),
         [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
       } satisfies AgenCDaemonServerCapabilities)
     : serverCapabilities;
@@ -2700,7 +3024,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "metadata",
       "envOverrides",
       "runtimeOptions",
-      "initialEditorInteraction",
       "resumeSourceProof",
     ],
     valueFields: [
@@ -2819,8 +3142,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     validated.resumeSessionId !== undefined &&
     (validated.initialContent !== undefined ||
       validated.deferInitialTurn !== undefined ||
-      validated.initialDisplayUserMessage !== undefined ||
-      validated.initialEditorInteraction !== undefined)
+      validated.initialDisplayUserMessage !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'resumeSessionId' cannot be combined with initial turn content or metadata",
@@ -2837,8 +3159,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   if (
     validated.deferInitialTurn === true &&
     (validated.initialContent !== undefined ||
-      validated.initialDisplayUserMessage !== undefined ||
-      validated.initialEditorInteraction !== undefined)
+      validated.initialDisplayUserMessage !== undefined)
   ) {
     throw invalidParams(
       "agent.create param 'deferInitialTurn' cannot be combined with initial turn content or metadata",
@@ -2853,14 +3174,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "agent.create param 'initialDisplayUserMessage' must be a string or null",
     );
   }
-  const initialEditorInteraction =
-    validated.initialEditorInteraction === undefined
-      ? undefined
-      : validateEditorInteractionMetadata(
-          "agent.create",
-          validated.initialEditorInteraction,
-          "param 'initialEditorInteraction'",
-        );
   if (validated.permissionMode !== undefined) {
     const value = validated.permissionMode;
     if (
@@ -2876,23 +3189,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       );
     }
   }
-  let envOverrides: Record<string, string>;
-  if (validated.envOverrides !== undefined) {
-    validateStringRecord(
-      validated.envOverrides as JsonObject,
-      "agent.create",
-      "envOverrides",
-    );
-  }
-  try {
-    envOverrides = normalizeDaemonClientEnvOverrides(
-      validated.envOverrides as Record<string, string> | undefined,
-    );
-  } catch (error) {
-    throw invalidParams(
-      `agent.create param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  const envOverrides = validateClientEnvOverrides(validated.envOverrides, "agent.create");
   if (validated.runtimeOptions === undefined) {
     throw invalidParams("agent.create requires runtimeOptions");
   }
@@ -2911,9 +3208,6 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     envOverrides,
     runtimeOptions,
     ...(addDirs !== undefined ? { addDirs } : {}),
-    ...(initialEditorInteraction !== undefined
-      ? { initialEditorInteraction }
-      : {}),
   } as AgentCreateParams;
 }
 
@@ -2937,6 +3231,7 @@ function validateAgentAttachParams(params: JsonObject): AgentAttachParams {
   const validated = validateObjectShape(params, {
     methodName: "agent.attach",
     stringFields: ["agentId", "clientId"],
+    booleanFields: ["oneShotOutput"],
   });
   if (
     typeof validated.agentId !== "string" ||
@@ -2965,6 +3260,64 @@ function validateRunCancelParams(params: JsonObject): RunCancelParams {
   return validated as RunCancelParams;
 }
 
+function validateClientEnvOverrides(value: unknown, methodName: string): Record<string, string> {
+  if (value !== undefined) {
+    validateStringRecord(
+      value as JsonObject,
+      methodName,
+      "envOverrides",
+    );
+  }
+  try {
+    return normalizeDaemonClientEnvOverrides(
+      value as Record<string, string> | undefined,
+    );
+  } catch (error) {
+    throw invalidParams(
+      `${methodName} param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function validateWorkflowControlId(
+  params: JsonObject,
+  methodName: "run.pause" | "run.resume",
+  field: "runId" | "requestId" | "suspensionId",
+  maxLength: number,
+): void {
+  const value = params[field];
+  if (typeof value !== "string" || value.length > maxLength ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:#-]*$/.test(value)) {
+    throw invalidParams(`${methodName} param '${field}' must be a 1..${maxLength} character identifier`);
+  }
+}
+
+function validateRunPauseParams(params: JsonObject): RunPauseParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.pause",
+    stringFields: ["runId", "requestId"],
+  });
+  validateWorkflowControlId(validated, "run.pause", "runId", 256);
+  validateWorkflowControlId(validated, "run.pause", "requestId", 128);
+  return validated as RunPauseParams;
+}
+
+function validateRunResumeParams(params: JsonObject): RunResumeParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.resume",
+    stringFields: ["runId", "suspensionId"],
+    objectFields: ["envOverrides"],
+  });
+  validateWorkflowControlId(validated, "run.resume", "runId", 256);
+  validateWorkflowControlId(validated, "run.resume", "suspensionId", 512);
+  return {
+    ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.resume") }
+      : {}),
+  } as RunResumeParams;
+}
+
 function validateRunStartParams(params: JsonObject): RunStartParams {
   const validated = validateObjectShape(params, {
     methodName: "run.start",
@@ -2978,10 +3331,24 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
       "permissionMode",
     ],
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
+    booleanFields: ["lightMode"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
+    objectFields: ["envOverrides", "continuation"],
   });
   validateRequiredString(validated, "run.start", "goal");
+  if (validated.continuation !== undefined) {
+    const continuation = validated.continuation as JsonObject;
+    validateObjectShape(continuation, { methodName: "run.start.continuation", stringFields: ["sourceRunId", "requestId"] });
+    validateRequiredString(continuation, "run.start.continuation", "sourceRunId");
+    if (typeof continuation.sourceRunId !== "string" || continuation.sourceRunId.length > 256
+      || typeof continuation.requestId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(continuation.requestId)) {
+      throw invalidParams("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (validated.maxCostUsd === undefined || typeof validated.deadlineAt !== "string" || !Number.isFinite(Date.parse(validated.deadlineAt))) {
+      throw invalidParams("Continue requires an explicit additional cost limit and deadline.");
+    }
+  }
   let cwd: string | undefined;
   if (validated.cwd !== undefined) {
     // Same DAE-02 discipline as agent.create/session.create: an absolute,
@@ -3058,6 +3425,9 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
   }
   return {
     ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.start") }
+      : {}),
     ...(cwd !== undefined ? { cwd } : {}),
   } as RunStartParams;
 }
@@ -3365,6 +3735,24 @@ function validateSessionSnapshotParams(
   return validated as SessionSnapshotParams;
 }
 
+function validateSessionProcessesListParams(params: JsonObject): SessionProcessesListParams {
+  const methodName = "session.processes.list";
+  const validated = validateObjectShape(params, { methodName, stringFields: ["sessionId"] });
+  validateRequiredString(validated, methodName, "sessionId");
+  return validated as SessionProcessesListParams;
+}
+
+function validateSessionProcessesStopParams(params: JsonObject): SessionProcessesStopParams {
+  const methodName = "session.processes.stop";
+  const validated = validateObjectShape(params, { methodName, stringFields: ["sessionId", "taskId"] });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredString(validated, methodName, "taskId");
+  if (typeof validated.taskId === "string" && validated.taskId.length > 128) {
+    throw invalidParams(`${methodName}.taskId must be at most 128 characters`);
+  }
+  return validated as SessionProcessesStopParams;
+}
+
 function validateSessionTranscriptParams(
   params: JsonObject,
 ): SessionTranscriptParams {
@@ -3387,6 +3775,16 @@ function validateSessionTranscriptV2Params(
   return validated as SessionTranscriptV2Params;
 }
 
+function validateSessionArtifactReadParams(params: JsonObject): SessionArtifactReadParams {
+  const validated = validateObjectShape(params, { methodName: "session.artifact.read", stringFields: ["sessionId", "id"], numberFields: ["offset", "length"] });
+  validateRequiredString(validated, "session.artifact.read", "sessionId");
+  validateRequiredString(validated, "session.artifact.read", "id");
+  if (typeof validated.id !== "string" || !/^[a-f0-9]{64}$/u.test(validated.id)) throw invalidParams("session.artifact.read.id must be a SHA-256 digest");
+  if (validated.offset !== undefined && (typeof validated.offset !== "number" || !Number.isSafeInteger(validated.offset) || validated.offset < 0 || validated.offset > 32 * 1024 * 1024)) throw invalidParams("session.artifact.read.offset is invalid");
+  if (validated.length !== undefined && (typeof validated.length !== "number" || !Number.isSafeInteger(validated.length) || validated.length < 1 || validated.length > 512 * 1024)) throw invalidParams("session.artifact.read.length is invalid");
+  return validated as SessionArtifactReadParams;
+}
+
 function validateSessionCancelTurnParams(
   params: JsonObject,
 ): SessionCancelTurnParams {
@@ -3396,6 +3794,21 @@ function validateSessionCancelTurnParams(
   });
   validateRequiredString(validated, "session.cancelTurn", "sessionId");
   return validated as SessionCancelTurnParams;
+}
+
+/**
+ * The reviewer recorded for an operator review: the verified local user when
+ * the transport proved one, plus the attached client id this connection
+ * registered. A request body cannot choose it.
+ */
+function trustedReviewer(
+  identity: AuthDaemonSocketIdentity | undefined,
+  clientId: string,
+): string {
+  const uid = identity?.peerUid ?? identity?.privateSocketOwnerUid;
+  return typeof uid === "number"
+    ? `local-user:uid=${uid}:client=${clientId}`
+    : `local-client:${clientId}`;
 }
 
 function validateSessionResolveToolCallParams(
@@ -3409,16 +3822,24 @@ function validateSessionResolveToolCallParams(
       "disposition",
       "evidenceRef",
       "evidenceSha256",
+      "attestation",
       "reviewer",
     ],
+    objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
   const hasEvidenceFields = [
     "disposition",
     "evidenceRef",
     "evidenceSha256",
+    "attestation",
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
+    if (Object.prototype.hasOwnProperty.call(validated, "attempt")) {
+      throw invalidParams(
+        "session.resolveToolCall attempt requires a disposition with evidence or an operator attestation",
+      );
+    }
     if (validated.toolCallId !== undefined) {
       validateRequiredString(
         validated,
@@ -3432,12 +3853,35 @@ function validateSessionResolveToolCallParams(
     return validated as SessionResolveToolCallLegacyParams;
   }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
-  validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
-  validateRequiredString(
+  validateSessionResolveToolCallAttempt(validated);
+  const attesting = Object.prototype.hasOwnProperty.call(
     validated,
-    "session.resolveToolCall",
-    "evidenceSha256",
+    "attestation",
   );
+  if (attesting) {
+    // An attestation is the operator's own statement; it never travels
+    // with a separate evidence document, so the two shapes cannot mix.
+    if (validated.attestation !== "operator") {
+      throw invalidParams(
+        "session.resolveToolCall attestation must be operator",
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(validated, "evidenceRef") ||
+      Object.prototype.hasOwnProperty.call(validated, "evidenceSha256")
+    ) {
+      throw invalidParams(
+        "session.resolveToolCall takes either an operator attestation or evidenceRef and evidenceSha256, not both",
+      );
+    }
+  } else {
+    validateRequiredString(validated, "session.resolveToolCall", "evidenceRef");
+    validateRequiredString(
+      validated,
+      "session.resolveToolCall",
+      "evidenceSha256",
+    );
+  }
   const disposition = validated.disposition;
   if (
     disposition !== "confirmed_committed" &&
@@ -3448,12 +3892,41 @@ function validateSessionResolveToolCallParams(
       "session.resolveToolCall disposition must be confirmed_committed, confirmed_no_effect, or remains_unknown",
     );
   }
+  if (attesting) {
+    return validated as SessionResolveToolCallAttestationParams;
+  }
   if (!/^[0-9a-f]{64}$/u.test(String(validated.evidenceSha256))) {
     throw invalidParams(
       "session.resolveToolCall evidenceSha256 must be lowercase sha256",
     );
   }
   return validated as SessionResolveToolCallEvidenceParams;
+}
+
+function validateSessionResolveToolCallAttempt(validated: JsonObject): void {
+  if (!Object.prototype.hasOwnProperty.call(validated, "attempt")) return;
+  const attempt = validated.attempt;
+  if (!isPlainJsonObject(attempt)) {
+    throw invalidParams("session.resolveToolCall attempt must be an object");
+  }
+  validateObjectShape(attempt, {
+    methodName: "session.resolveToolCall.attempt",
+    stringFields: ["runId", "stepId", "unknownEventId"],
+    numberFields: ["unknownSequence"],
+  });
+  for (const field of ["runId", "stepId", "unknownEventId"] as const) {
+    validateRequiredString(attempt, "session.resolveToolCall.attempt", field);
+  }
+  const sequence = attempt.unknownSequence;
+  if (
+    typeof sequence !== "number" ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0
+  ) {
+    throw invalidParams(
+      "session.resolveToolCall attempt.unknownSequence must be a positive integer",
+    );
+  }
 }
 
 function validateSessionMcpAddServerParams(
@@ -3511,6 +3984,7 @@ function validateSessionMcpStatusParams(
   const validated = validateObjectShape(params, {
     methodName: "session.mcp.status",
     stringFields: ["sessionId"],
+    booleanFields: ["includeStoppedState"],
   });
   validateRequiredString(validated, "session.mcp.status", "sessionId");
   return validated as SessionMcpStatusParams;
@@ -3660,22 +4134,13 @@ function validateSessionStatusLineExecuteParams(
   validateRequiredString(validated, methodName, "sessionId");
   validateMaximumUtf8Bytes(validated.sessionId, methodName, "sessionId", 1_024);
   if (validated.presentation !== undefined) {
-    const presentation = validateObjectShape(
+    validateObjectShape(
       validated.presentation as JsonObject,
       {
         methodName: `${methodName}.presentation`,
-        stringFields: ["vimMode"],
+        stringFields: [],
       },
     );
-    if (
-      presentation.vimMode !== undefined &&
-      presentation.vimMode !== "NORMAL" &&
-      presentation.vimMode !== "INSERT"
-    ) {
-      throw invalidParams(
-        `${methodName}.presentation vimMode must be NORMAL or INSERT`,
-      );
-    }
   }
   return validated as SessionStatusLineExecuteParams;
 }
@@ -3919,19 +4384,105 @@ function validateSessionHooksSetDisabledParams(
   return validated as SessionHooksSetDisabledParams;
 }
 
+const SESSION_GOAL_ACTIONS = ["get", "set", "clear", "pause", "resume"] as const;
+
+function validateSessionGoalParams(params: JsonObject): SessionGoalParams {
+  const methodName = "session.goal";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "action"],
+    valueFields: ["request"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  const action = validated.action;
+  if (
+    typeof action !== "string" ||
+    !(SESSION_GOAL_ACTIONS as readonly string[]).includes(action)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'action' must be one of ${SESSION_GOAL_ACTIONS.join(", ")}`,
+    );
+  }
+  const request = validated.request;
+  if (action !== "set") {
+    if (request !== undefined) {
+      throw invalidParams(`${methodName} param 'request' is only valid with action 'set'`);
+    }
+    return validated as SessionGoalParams;
+  }
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw invalidParams(`${methodName} action 'set' requires an object param 'request'`);
+  }
+  const record = request as Record<string, unknown>;
+  if (typeof record.objective !== "string" || record.objective.trim().length === 0) {
+    throw invalidParams(`${methodName} request.objective must be a non-empty string`);
+  }
+  if (record.objective.length > 4_000) {
+    throw invalidParams(`${methodName} request.objective exceeds 4000 characters`);
+  }
+  if (typeof record.noVerify !== "boolean") {
+    throw invalidParams(`${methodName} request.noVerify must be a boolean`);
+  }
+  const verify = record.verify;
+  if (
+    !Array.isArray(verify) ||
+    verify.length > 8 ||
+    !verify.every(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>).label === "string" &&
+        typeof (entry as Record<string, unknown>).script === "string" &&
+        ((entry as Record<string, unknown>).script as string).trim().length > 0 &&
+        ((entry as Record<string, unknown>).script as string).length <= 2_000,
+    )
+  ) {
+    throw invalidParams(
+      `${methodName} request.verify must be at most 8 {label, script} commands`,
+    );
+  }
+  if (
+    record.maxRounds !== undefined &&
+    (!Number.isInteger(record.maxRounds) ||
+      (record.maxRounds as number) < 1 ||
+      (record.maxRounds as number) > 100)
+  ) {
+    throw invalidParams(`${methodName} request.maxRounds must be an integer from 1 to 100`);
+  }
+  if (
+    record.maxCostUsd !== undefined &&
+    (typeof record.maxCostUsd !== "number" ||
+      !Number.isFinite(record.maxCostUsd) ||
+      record.maxCostUsd <= 0)
+  ) {
+    throw invalidParams(`${methodName} request.maxCostUsd must be a positive number`);
+  }
+  return validated as SessionGoalParams;
+}
+
 function validateSessionApplyConfigParams(
   params: JsonObject,
 ): SessionApplyConfigParams {
   const validated = validateObjectShape(params, {
     methodName: "session.applyConfig",
     stringFields: ["sessionId", "profile", "reasoningEffort"],
-    valueFields: ["reload"],
+    valueFields: ["reload", "modelVerbosity"],
   });
   validateRequiredString(validated, "session.applyConfig", "sessionId");
   if (validated.reasoningEffort !== undefined &&
     (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'none'].includes(String(validated.reasoningEffort)) ||
       validated.profile !== undefined || validated.reload !== undefined)) {
     throw invalidParams("session.applyConfig reasoningEffort must be a native effort and cannot be combined with reload or profile");
+  }
+  if (validated.modelVerbosity !== undefined &&
+    (validated.modelVerbosity !== null &&
+      (typeof validated.modelVerbosity !== "string" ||
+        !["low", "medium", "high"].includes(validated.modelVerbosity)))) {
+    throw invalidParams("session.applyConfig modelVerbosity must be low, medium, high, or null");
+  }
+  if (validated.modelVerbosity !== undefined &&
+    (validated.profile !== undefined || validated.reload !== undefined)) {
+    throw invalidParams("session.applyConfig modelVerbosity cannot be combined with reload or profile");
   }
   if (validated.reload !== undefined && typeof validated.reload !== "boolean") {
     throw invalidParams("session.applyConfig param 'reload' must be a boolean");
@@ -3959,7 +4510,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
     objectFields: ["metadata"],
-    valueFields: ["content"],
+    valueFields: ["content", "exactOutput"],
   });
   if (
     typeof validated.sessionId !== "string" ||
@@ -3970,6 +4521,9 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   validateMessageContent("message.stream", "content", validated.content);
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
+  }
+  if (validated.exactOutput !== undefined && typeof validated.exactOutput !== "boolean") {
+    throw invalidParams("message.stream param exactOutput must be a boolean");
   }
   return validated as MessageStreamParams;
 }
@@ -4262,12 +4816,10 @@ function displayUserMessageFromMetadata(
   metadata: JsonObject | undefined,
 ): {
   readonly displayUserMessage?: string | null;
-  readonly editorInteraction?: SessionEditorInteraction;
 } {
   if (metadata === undefined) return {};
   const result: {
     displayUserMessage?: string | null;
-    editorInteraction?: SessionEditorInteraction;
   } = {};
   if ("displayUserMessage" in metadata) {
     const value = metadata.displayUserMessage;
@@ -4278,160 +4830,7 @@ function displayUserMessageFromMetadata(
     }
     result.displayUserMessage = value;
   }
-  if ("editorInteraction" in metadata) {
-    result.editorInteraction = validateEditorInteractionMetadata(
-      methodName,
-      metadata.editorInteraction,
-    );
-  }
   return result;
-}
-
-function validateEditorInteractionMetadata(
-  methodName: "agent.create" | "message.send" | "message.stream",
-  value: JsonValue | undefined,
-  field = "metadata 'editorInteraction'",
-): SessionEditorInteraction {
-  const prefix = `${methodName} ${field}`;
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(`${prefix} must be an object`);
-  }
-  const interactionId = requiredBoundedMetadataString(
-    value.interactionId,
-    `${prefix}.interactionId`,
-  );
-  const editorInstanceId = requiredBoundedMetadataString(
-    value.editorInstanceId,
-    `${prefix}.editorInstanceId`,
-  );
-  const kind = value.kind;
-  if (
-    kind !== "ask" &&
-    kind !== "explain" &&
-    kind !== "fix" &&
-    kind !== "edit" &&
-    kind !== "refactor"
-  ) {
-    throw invalidParams(
-      `${prefix}.kind must be ask, explain, fix, edit, or refactor`,
-    );
-  }
-  const policy = value.policy;
-  if (policy !== "read_only" && policy !== "proposal_only") {
-    throw invalidParams(`${prefix}.policy must be read_only or proposal_only`);
-  }
-  const expectedPolicy =
-    kind === "ask" || kind === "explain" ? "read_only" : "proposal_only";
-  if (policy !== expectedPolicy) {
-    throw invalidParams(
-      `${prefix}.policy must be ${expectedPolicy} for ${kind}`,
-    );
-  }
-  const bufferHandle = positiveSafeIntegerMetadata(
-    value.bufferHandle,
-    `${prefix}.bufferHandle`,
-  );
-  const changedtick = nonNegativeSafeIntegerMetadata(
-    value.changedtick,
-    `${prefix}.changedtick`,
-  );
-  if (
-    typeof value.contentSha256 !== "string" ||
-    !/^[a-f0-9]{64}$/u.test(value.contentSha256)
-  ) {
-    throw invalidParams(
-      `${prefix}.contentSha256 must be a lowercase SHA-256 hex digest`,
-    );
-  }
-  if (value.path !== undefined && typeof value.path !== "string") {
-    throw invalidParams(`${prefix}.path must be a string when provided`);
-  }
-  if (!isPlainJsonObject(value.range)) {
-    throw invalidParams(`${prefix}.range must be an object`);
-  }
-  const start = editorInteractionPosition(
-    value.range.start,
-    `${prefix}.range.start`,
-  );
-  const end = editorInteractionPosition(value.range.end, `${prefix}.range.end`);
-  if (
-    end.line < start.line ||
-    (end.line === start.line && end.column < start.column)
-  ) {
-    throw invalidParams(`${prefix}.range must not be inverted`);
-  }
-  const selectionMode = value.selectionMode;
-  if (
-    selectionMode !== undefined &&
-    selectionMode !== "character" &&
-    selectionMode !== "line" &&
-    selectionMode !== "block"
-  ) {
-    throw invalidParams(
-      `${prefix}.selectionMode must be character, line, or block when provided`,
-    );
-  }
-  return {
-    interactionId,
-    kind,
-    policy,
-    editorInstanceId,
-    bufferHandle,
-    changedtick,
-    contentSha256: value.contentSha256,
-    ...(value.path !== undefined ? { path: value.path } : {}),
-    range: { start, end },
-    ...(selectionMode !== undefined ? { selectionMode } : {}),
-  };
-}
-
-function requiredBoundedMetadataString(
-  value: JsonValue | undefined,
-  field: string,
-): string {
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0 ||
-    value.length > 256
-  ) {
-    throw invalidParams(
-      `${field} must be a non-empty string of at most 256 characters`,
-    );
-  }
-  return value;
-}
-
-function positiveSafeIntegerMetadata(
-  value: JsonValue | undefined,
-  field: string,
-): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
-    throw invalidParams(`${field} must be a positive safe integer`);
-  }
-  return value as number;
-}
-
-function nonNegativeSafeIntegerMetadata(
-  value: JsonValue | undefined,
-  field: string,
-): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw invalidParams(`${field} must be a non-negative safe integer`);
-  }
-  return value as number;
-}
-
-function editorInteractionPosition(
-  value: JsonValue | undefined,
-  field: string,
-): { readonly line: number; readonly column: number } {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(`${field} must be an object`);
-  }
-  return {
-    line: positiveSafeIntegerMetadata(value.line, `${field}.line`),
-    column: nonNegativeSafeIntegerMetadata(value.column, `${field}.column`),
-  };
 }
 
 function isValidMessageContentBlock(block: unknown): boolean {
@@ -4449,12 +4848,15 @@ function isValidMessageContentBlock(block: unknown): boolean {
 function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   const validated = validateObjectShape(params, {
     methodName: "tool.approve",
-    stringFields: ["sessionId", "requestId", "scope"],
+    stringFields: ["sessionId", "requestId", "scope", "approvalKind"],
     objectFields: ["exitPlan", "askUserQuestionInput"],
     valueFields: ["allowAllToolsForSession"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");
   validateRequiredString(validated, "tool.approve", "requestId");
+  if (validated.approvalKind !== undefined && validated.approvalKind !== "cross_provider_spawn") {
+    throw invalidParams("tool.approve param 'approvalKind' must be cross_provider_spawn");
+  }
   if (
     validated.scope !== undefined &&
     validated.scope !== "once" &&
@@ -4485,1074 +4887,6 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
     validateExitPlanApprovalPayload(validated.exitPlan as JsonObject);
   }
   return validated as ToolApproveParams;
-}
-
-function validateWorkspaceEditorAcquireParams(
-  params: JsonObject,
-): WorkspaceEditorAcquireParams {
-  const validated = validateObjectShape(params, {
-    methodName: "workspace.editor.acquire",
-    stringFields: ["workspaceRoot", "editorInstanceId"],
-    valueFields: ["takeover", "requireUnprotectedWorkspace"],
-  });
-  validateRequiredString(
-    validated,
-    "workspace.editor.acquire",
-    "workspaceRoot",
-  );
-  validateRequiredString(
-    validated,
-    "workspace.editor.acquire",
-    "editorInstanceId",
-  );
-  if (
-    validated.takeover !== undefined &&
-    typeof validated.takeover !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.acquire param 'takeover' must be a boolean",
-    );
-  }
-  if (
-    validated.requireUnprotectedWorkspace !== undefined &&
-    typeof validated.requireUnprotectedWorkspace !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.acquire param 'requireUnprotectedWorkspace' must be a boolean",
-    );
-  }
-  return validated as WorkspaceEditorAcquireParams;
-}
-
-function validateWorkspaceEditorSyncParams(
-  params: JsonObject,
-): WorkspaceEditorSyncParams {
-  const validated = validateObjectShape(params, {
-    methodName: "workspace.editor.sync",
-    stringFields: ["workspaceRoot", "editorInstanceId", "leaseToken"],
-    numberFields: ["epoch", "sequence"],
-    valueFields: ["buffers", "abandonStaleAuthority"],
-  });
-  for (const field of [
-    "workspaceRoot",
-    "editorInstanceId",
-    "leaseToken",
-  ] as const) {
-    validateRequiredString(validated, "workspace.editor.sync", field);
-  }
-  for (const field of ["epoch", "sequence"] as const) {
-    if (
-      !Number.isSafeInteger(validated[field]) ||
-      (validated[field] as number) < 0
-    ) {
-      throw invalidParams(
-        `workspace.editor.sync param '${field}' must be a non-negative safe integer`,
-      );
-    }
-  }
-  if (!Array.isArray(validated.buffers)) {
-    throw invalidParams(
-      "workspace.editor.sync param 'buffers' must be an array",
-    );
-  }
-  const buffers = validated.buffers.map((value, index) =>
-    validateWorkspaceEditorBuffer(value, index),
-  );
-  const abandonStaleAuthority =
-    validated.abandonStaleAuthority === undefined
-      ? undefined
-      : validateWorkspaceEditorStaleAuthorityEntries(
-          validated.abandonStaleAuthority,
-        );
-  return {
-    ...validated,
-    buffers,
-    ...(abandonStaleAuthority !== undefined ? { abandonStaleAuthority } : {}),
-  } as unknown as WorkspaceEditorSyncParams;
-}
-
-function validateWorkspaceEditorStaleAuthorityEntries(
-  value: unknown,
-): readonly WorkspaceEditorStaleAuthorityEntry[] {
-  const field = "workspace.editor.sync param 'abandonStaleAuthority'";
-  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
-    throw invalidParams(`${field} must contain between 1 and 512 entries`);
-  }
-  return value.map((candidate, index) => {
-    const methodName = `workspace.editor.sync.abandonStaleAuthority[${index}]`;
-    if (!isPlainJsonObject(candidate)) {
-      throw invalidParams(`${methodName} must be an object`);
-    }
-    const validated = validateObjectShape(candidate, {
-      methodName,
-      stringFields: [
-        "path",
-        "editorContentSha256",
-        "editorInstanceId",
-        "editorState",
-        "diskState",
-        "diskContentSha256",
-      ],
-      numberFields: [
-        "editorContentBytes",
-        "changedtick",
-        "epoch",
-        "diskContentBytes",
-      ],
-    });
-    for (const required of [
-      "path",
-      "editorContentSha256",
-      "editorInstanceId",
-      "editorState",
-      "diskState",
-    ] as const) {
-      validateRequiredString(validated, methodName, required);
-    }
-    if (!/^[a-f0-9]{64}$/u.test(validated.editorContentSha256 as string)) {
-      throw invalidParams(
-        `${methodName} param 'editorContentSha256' must be a SHA-256 digest`,
-      );
-    }
-    if (
-      validated.editorState !== "dirty" &&
-      validated.editorState !== "clean"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'editorState' must be dirty or clean`,
-      );
-    }
-    for (const numberField of [
-      "editorContentBytes",
-      "changedtick",
-      "epoch",
-    ] as const) {
-      if (
-        !Number.isSafeInteger(validated[numberField]) ||
-        (validated[numberField] as number) < (numberField === "epoch" ? 1 : 0)
-      ) {
-        throw invalidParams(
-          `${methodName} param '${numberField}' must be a ${numberField === "epoch" ? "positive" : "non-negative"} safe integer`,
-        );
-      }
-    }
-    if (validated.diskState === "content") {
-      if (
-        typeof validated.diskContentSha256 !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(validated.diskContentSha256) ||
-        !Number.isSafeInteger(validated.diskContentBytes) ||
-        (validated.diskContentBytes as number) < 0
-      ) {
-        throw invalidParams(
-          `${methodName} content disk state requires a SHA-256 digest and non-negative byte length`,
-        );
-      }
-    } else if (
-      validated.diskState !== "missing" &&
-      validated.diskState !== "unavailable"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'diskState' must be content, missing, or unavailable`,
-      );
-    } else if (
-      validated.diskContentSha256 !== undefined ||
-      validated.diskContentBytes !== undefined
-    ) {
-      throw invalidParams(
-        `${methodName} non-content disk state must not include disk content evidence`,
-      );
-    }
-    return validated as WorkspaceEditorStaleAuthorityEntry;
-  });
-}
-
-function validateWorkspaceEditorBuffer(
-  value: unknown,
-  index: number,
-): WorkspaceEditorBufferSync {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(
-      `workspace.editor.sync param 'buffers[${index}]' must be an object`,
-    );
-  }
-  const methodName = `workspace.editor.sync.buffers[${index}]`;
-  const validated = validateObjectShape(value, {
-    methodName,
-    stringFields: ["path", "contentSha256", "content"],
-    numberFields: ["bufferHandle", "changedtick", "contentBytes"],
-    valueFields: ["dirty"],
-  });
-  validateRequiredString(validated, methodName, "path");
-  validateRequiredString(validated, methodName, "contentSha256");
-  for (const field of [
-    "bufferHandle",
-    "changedtick",
-    "contentBytes",
-  ] as const) {
-    if (
-      !Number.isSafeInteger(validated[field]) ||
-      (validated[field] as number) < 0
-    ) {
-      throw invalidParams(
-        `${methodName} param '${field}' must be a non-negative safe integer`,
-      );
-    }
-  }
-  if (typeof validated.dirty !== "boolean") {
-    throw invalidParams(`${methodName} param 'dirty' must be a boolean`);
-  }
-  return validated as WorkspaceEditorBufferSync;
-}
-
-function validateWorkspaceEditorHeartbeatParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.staleAuthority.refresh"
-    | "workspace.editor.heartbeat"
-    | "workspace.editor.release"
-    | "workspace.editor.proposal.get"
-    | "workspace.editor.proposal.status"
-    | "workspace.editor.proposal.apply"
-    | "workspace.editor.proposal.discard"
-    | "workspace.editor.changes.list"
-    | "workspace.editor.topology.reserve"
-    | "workspace.editor.topology.complete"
-    | "workspace.editor.topology.release"
-    | "workspace.editor.topology.recovered.list"
-    | "workspace.editor.topology.recovered.resolve",
-  extraStringFields: readonly string[] = [],
-  extraNumberFields: readonly string[] = [],
-  extraValueFields: readonly string[] = [],
-): WorkspaceEditorHeartbeatParams {
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: [
-      "workspaceRoot",
-      "editorInstanceId",
-      "leaseToken",
-      ...extraStringFields,
-    ],
-    numberFields: ["epoch", ...extraNumberFields],
-    valueFields: [
-      ...(methodName === "workspace.editor.release" ? ["abandonDirty"] : []),
-      ...extraValueFields,
-    ],
-  });
-  for (const field of [
-    "workspaceRoot",
-    "editorInstanceId",
-    "leaseToken",
-  ] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    !Number.isSafeInteger(validated.epoch) ||
-    (validated.epoch as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'epoch' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorHeartbeatParams;
-}
-
-function validateWorkspaceEditorTopologyReserveParams(
-  params: JsonObject,
-): WorkspaceEditorTopologyReserveParams {
-  const methodName = "workspace.editor.topology.reserve";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    [],
-    [],
-    ["targets"],
-  );
-  if (!Array.isArray(validated.targets) || validated.targets.length === 0) {
-    throw invalidParams(
-      `${methodName} param 'targets' must be a non-empty array`,
-    );
-  }
-  if (validated.targets.length > 4) {
-    throw invalidParams(
-      `${methodName} param 'targets' must contain at most 4 paths`,
-    );
-  }
-  const targets = validated.targets.map((target, index) =>
-    validateWorkspaceEditorTopologyTarget(target, index),
-  );
-  return {
-    ...validated,
-    targets,
-  } as unknown as WorkspaceEditorTopologyReserveParams;
-}
-
-function validateWorkspaceEditorTopologyTarget(
-  value: unknown,
-  index: number,
-): WorkspaceEditorTopologyTarget {
-  if (!isPlainJsonObject(value)) {
-    throw invalidParams(
-      `workspace.editor.topology.reserve param 'targets[${index}]' must be an object`,
-    );
-  }
-  const methodName = `workspace.editor.topology.reserve.targets[${index}]`;
-  const validated = validateObjectShape(value, {
-    methodName,
-    stringFields: ["path"],
-    valueFields: ["includeDescendants", "allowOwnedClean"],
-  });
-  validateRequiredString(validated, methodName, "path");
-  for (const field of ["includeDescendants", "allowOwnedClean"] as const) {
-    if (
-      validated[field] !== undefined &&
-      typeof validated[field] !== "boolean"
-    ) {
-      throw invalidParams(`${methodName} param '${field}' must be a boolean`);
-    }
-  }
-  return validated as WorkspaceEditorTopologyTarget;
-}
-
-function validateWorkspaceEditorTopologyFinalizeParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.topology.complete"
-    | "workspace.editor.topology.release"
-    | "workspace.editor.topology.recovered.resolve",
-  extraStringFields: readonly string[] = [],
-): WorkspaceEditorTopologyFinalizeParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    ["tokenId", ...extraStringFields],
-    ["sequence"],
-    ["buffers"],
-  );
-  validateRequiredString(validated, methodName, "tokenId");
-  if (
-    !Number.isSafeInteger(validated.sequence) ||
-    (validated.sequence as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'sequence' must be a non-negative safe integer`,
-    );
-  }
-  if (!Array.isArray(validated.buffers)) {
-    throw invalidParams(`${methodName} param 'buffers' must be an array`);
-  }
-  const buffers = validated.buffers.map((buffer, index) =>
-    validateWorkspaceEditorBuffer(buffer, index),
-  );
-  return {
-    ...validated,
-    buffers,
-  } as unknown as WorkspaceEditorTopologyFinalizeParams;
-}
-
-function validateWorkspaceEditorTopologyCompleteParams(
-  params: JsonObject,
-): WorkspaceEditorTopologyCompleteParams {
-  const methodName = "workspace.editor.topology.complete";
-  const validated = validateWorkspaceEditorTopologyFinalizeParams(
-    params,
-    methodName,
-    ["status"],
-  );
-  if (
-    validated.status !== "applied" &&
-    validated.status !== "unknown_outcome"
-  ) {
-    throw invalidParams(
-      `${methodName} param 'status' must be applied or unknown_outcome`,
-    );
-  }
-  return validated as WorkspaceEditorTopologyCompleteParams;
-}
-
-function validateWorkspaceEditorRecoveredTopologyResolveParams(
-  params: JsonObject,
-): WorkspaceEditorRecoveredTopologyResolveParams {
-  return validateWorkspaceEditorTopologyFinalizeParams(
-    params,
-    "workspace.editor.topology.recovered.resolve",
-  );
-}
-
-function validateWorkspaceEditorReleaseParams(
-  params: JsonObject,
-): WorkspaceEditorReleaseParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    "workspace.editor.release",
-  ) as WorkspaceEditorReleaseParams;
-  if (
-    validated.abandonDirty !== undefined &&
-    typeof validated.abandonDirty !== "boolean"
-  ) {
-    throw invalidParams(
-      "workspace.editor.release param 'abandonDirty' must be a boolean",
-    );
-  }
-  return validated;
-}
-
-function validateWorkspaceEditorProposalParams(
-  params: JsonObject,
-  methodName:
-    | "workspace.editor.proposal.get"
-    | "workspace.editor.proposal.status"
-    | "workspace.editor.proposal.discard",
-): WorkspaceEditorProposalParams {
-  const validated = validateWorkspaceEditorHeartbeatParams(params, methodName, [
-    "proposalId",
-  ]);
-  validateRequiredString(validated, methodName, "proposalId");
-  return validated as unknown as WorkspaceEditorProposalParams;
-}
-
-function validateWorkspaceEditorProposalStatusParams(
-  params: JsonObject,
-): WorkspaceEditorProposalStatusParams {
-  return validateWorkspaceEditorProposalParams(
-    params,
-    "workspace.editor.proposal.status",
-  );
-}
-
-function validateWorkspaceEditorProposalApplyParams(
-  params: JsonObject,
-): WorkspaceEditorProposalApplyParams {
-  const methodName = "workspace.editor.proposal.apply";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    ["proposalId", "contentSha256", "content"],
-    ["changedtick"],
-  );
-  for (const field of ["proposalId", "contentSha256"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (typeof validated.content !== "string") {
-    throw invalidParams(`${methodName} param 'content' must be a string`);
-  }
-  if (
-    !Number.isSafeInteger(validated.changedtick) ||
-    (validated.changedtick as number) < 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'changedtick' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorProposalApplyParams;
-}
-
-function validateWorkspaceEditorChangesListParams(
-  params: JsonObject,
-): WorkspaceEditorChangesListParams {
-  const methodName = "workspace.editor.changes.list";
-  const validated = validateWorkspaceEditorHeartbeatParams(
-    params,
-    methodName,
-    [],
-    ["afterSequence"],
-  );
-  if (
-    validated.afterSequence !== undefined &&
-    (!Number.isSafeInteger(validated.afterSequence) ||
-      (validated.afterSequence as number) < 0)
-  ) {
-    throw invalidParams(
-      `${methodName} param 'afterSequence' must be a non-negative safe integer`,
-    );
-  }
-  return validated as unknown as WorkspaceEditorChangesListParams;
-}
-
-function validateWorkspaceEditorPredictParams(
-  params: JsonObject,
-): WorkspaceEditorPredictParams {
-  const methodName = "workspace.editor.predict";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: [
-      "requestId",
-      "sessionId",
-      "editorInstanceId",
-      "path",
-      "language",
-      "prefix",
-      "suffix",
-      "header",
-      "latestIntent",
-    ],
-    numberFields: ["bufferHandle", "generation", "changedtick", "fileBytes"],
-    objectFields: ["cursor"],
-    valueFields: ["diagnostics", "relatedBuffers"],
-  });
-  for (const field of [
-    "requestId",
-    "sessionId",
-    "editorInstanceId",
-    "path",
-  ] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  for (const field of ["prefix", "suffix"] as const) {
-    if (typeof validated[field] !== "string") {
-      throw invalidParams(`${methodName} param '${field}' must be a string`);
-    }
-  }
-  for (const field of ["language"] as const) {
-    const value = validated[field];
-    if (typeof value === "string" && value.trim().length === 0) {
-      throw invalidParams(
-        `${methodName} param '${field}' must be non-empty when provided`,
-      );
-    }
-  }
-  if (
-    !Number.isSafeInteger(validated.bufferHandle) ||
-    (validated.bufferHandle as number) <= 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'bufferHandle' must be a positive safe integer`,
-    );
-  }
-  for (const field of ["generation", "changedtick"] as const) {
-    validatePredictionNonNegativeInteger(validated[field], methodName, field);
-  }
-  if (validated.fileBytes === undefined) {
-    throw invalidParams(`${methodName} param 'fileBytes' is required`);
-  }
-  validatePredictionNonNegativeInteger(
-    validated.fileBytes,
-    methodName,
-    "fileBytes",
-  );
-  const transmittedContextBytes =
-    Buffer.byteLength(validated.prefix as string, "utf8") +
-    Buffer.byteLength(validated.suffix as string, "utf8");
-  if ((validated.fileBytes as number) < transmittedContextBytes) {
-    throw invalidParams(
-      `${methodName} param 'fileBytes' must cover the transmitted prefix and suffix`,
-    );
-  }
-  const cursor = validated.cursor as JsonObject;
-  validatePredictionNonNegativeInteger(cursor.line, methodName, "cursor.line");
-  validatePredictionNonNegativeInteger(
-    cursor.byteColumn,
-    methodName,
-    "cursor.byteColumn",
-  );
-  const diagnostics = validateWorkspaceEditorPredictionDiagnostics(
-    validated.diagnostics,
-    methodName,
-  );
-  const relatedBuffers = validateWorkspaceEditorPredictionRelatedBuffers(
-    validated.relatedBuffers,
-    methodName,
-  );
-  return {
-    ...validated,
-    cursor: {
-      line: cursor.line as number,
-      byteColumn: cursor.byteColumn as number,
-    },
-    ...(diagnostics !== undefined ? { diagnostics } : {}),
-    ...(relatedBuffers !== undefined ? { relatedBuffers } : {}),
-  } as WorkspaceEditorPredictParams;
-}
-
-function validatePredictionNonNegativeInteger(
-  value: JsonValue | undefined,
-  methodName: string,
-  field: string,
-): void {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw invalidParams(
-      `${methodName} param '${field}' must be a non-negative safe integer`,
-    );
-  }
-}
-
-function validateWorkspaceEditorPredictionDiagnostics(
-  value: JsonValue | undefined,
-  methodName: string,
-): readonly WorkspaceEditorPredictionDiagnostic[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > 8) {
-    throw invalidParams(
-      `${methodName} param 'diagnostics' must be an array of at most 8 entries`,
-    );
-  }
-  return value.map((entry, index) => {
-    if (!isPlainJsonObject(entry)) {
-      throw invalidParams(
-        `${methodName} param 'diagnostics[${index}]' must be an object`,
-      );
-    }
-    const item = validateObjectShape(entry, {
-      methodName: `${methodName}.diagnostics[${index}]`,
-      stringFields: ["message", "severity"],
-    });
-    validateRequiredString(item, methodName, "message");
-    if (
-      item.severity !== undefined &&
-      item.severity !== "error" &&
-      item.severity !== "warning" &&
-      item.severity !== "information" &&
-      item.severity !== "hint"
-    ) {
-      throw invalidParams(
-        `${methodName} param 'diagnostics[${index}].severity' is invalid`,
-      );
-    }
-    return item as WorkspaceEditorPredictionDiagnostic;
-  });
-}
-
-function validateWorkspaceEditorPredictionRelatedBuffers(
-  value: JsonValue | undefined,
-  methodName: string,
-): readonly WorkspaceEditorPredictionRelatedBuffer[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > 2) {
-    throw invalidParams(
-      `${methodName} param 'relatedBuffers' must be an array of at most 2 entries`,
-    );
-  }
-  return value.map((entry, index) => {
-    if (!isPlainJsonObject(entry)) {
-      throw invalidParams(
-        `${methodName} param 'relatedBuffers[${index}]' must be an object`,
-      );
-    }
-    const item = validateObjectShape(entry, {
-      methodName: `${methodName}.relatedBuffers[${index}]`,
-      stringFields: ["path", "language", "content"],
-    });
-    validateRequiredString(item, methodName, "path");
-    if (typeof item.content !== "string") {
-      throw invalidParams(
-        `${methodName} param 'relatedBuffers[${index}].content' must be a string`,
-      );
-    }
-    return item as WorkspaceEditorPredictionRelatedBuffer;
-  });
-}
-
-function validateWorkspaceEditorCancelPredictionParams(
-  params: JsonObject,
-): WorkspaceEditorCancelPredictionParams {
-  const methodName = "workspace.editor.cancelPrediction";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: ["sessionId", "editorInstanceId", "requestId"],
-  });
-  for (const field of ["sessionId", "editorInstanceId"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    typeof validated.requestId === "string" &&
-    validated.requestId.trim().length === 0
-  ) {
-    throw invalidParams(
-      `${methodName} param 'requestId' must be non-empty when provided`,
-    );
-  }
-  return validated as WorkspaceEditorCancelPredictionParams;
-}
-
-function validateWorkspaceEditorPredictionFeedbackParams(
-  params: JsonObject,
-): WorkspaceEditorPredictionFeedbackParams {
-  const methodName = "workspace.editor.predictionFeedback";
-  const validated = validateObjectShape(params, {
-    methodName,
-    stringFields: ["sessionId", "editorInstanceId", "requestId", "kind"],
-    numberFields: ["acceptedCharacters", "latencyMs"],
-  });
-  for (const field of ["sessionId", "editorInstanceId", "requestId"] as const) {
-    validateRequiredString(validated, methodName, field);
-  }
-  if (
-    validated.kind !== "displayed" &&
-    validated.kind !== "accepted" &&
-    validated.kind !== "partially_accepted" &&
-    validated.kind !== "dismissed"
-  ) {
-    throw invalidParams(`${methodName} param 'kind' is invalid`);
-  }
-  for (const field of ["acceptedCharacters", "latencyMs"] as const) {
-    if (validated[field] !== undefined) {
-      validatePredictionNonNegativeInteger(validated[field], methodName, field);
-    }
-  }
-  if (
-    validated.acceptedCharacters !== undefined &&
-    validated.kind !== "accepted" &&
-    validated.kind !== "partially_accepted"
-  ) {
-    throw invalidParams(
-      `${methodName} param 'acceptedCharacters' requires accepted feedback`,
-    );
-  }
-  return validated as WorkspaceEditorPredictionFeedbackParams;
-}
-
-async function acquireWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorAcquireParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const lease = workspaceMutations.acquireEditor(workspaceRoot, {
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      ...(params.takeover !== undefined ? { takeover: params.takeover } : {}),
-      ...(params.requireUnprotectedWorkspace !== undefined
-        ? {
-            requireUnprotectedWorkspace: params.requireUnprotectedWorkspace,
-          }
-        : {}),
-    });
-    // A stale-authority transaction commits its replacement quarantine before
-    // projecting terminal audit entries. If that append failed, acquiring the
-    // same in-process coordinator is the client's retry boundary: do not
-    // acknowledge the lease until the append-once outbox is durably drained.
-    await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .flushPendingAuditOutbox();
-    return lease;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function syncWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorSyncParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const input = {
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      sequence: params.sequence,
-      buffers: params.buffers,
-      ...(params.abandonStaleAuthority !== undefined
-        ? { abandonStaleAuthority: params.abandonStaleAuthority }
-        : {}),
-    };
-    if (params.abandonStaleAuthority !== undefined) {
-      return await coordinator.syncAbandoningStaleAuthority(input);
-    }
-    const result = coordinator.sync(input);
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    // A rejected synchronization can still have recorded a durable topology
-    // contention. Do not let the client retry after the fence disappears
-    // until that record is safely on disk.
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function refreshWorkspaceEditorStaleAuthority(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorHeartbeatParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .refreshStaleAuthority({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function heartbeatWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorHeartbeatParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return workspaceMutations.getOrCreate(workspaceRoot).heartbeat({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-    });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function releaseWorkspaceEditor(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorReleaseParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const result = await coordinator.release({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      ...(params.abandonDirty !== undefined
-        ? { abandonDirty: params.abandonDirty }
-        : {}),
-    });
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function reserveWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyReserveParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const token = await coordinator.reserveEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      targets: params.targets,
-      source: "editor",
-    });
-    return {
-      tokenId: token.tokenId,
-      targets: token.targets,
-    };
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function completeWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyCompleteParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.completeEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-      status: params.status,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function releaseWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorTopologyFinalizeParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.releaseEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function listRecoveredWorkspaceEditorTopologies(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorRecoveredTopologyListParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return {
-      mutations: coordinator.listRecoveredEditorTopologyMutations({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-      }),
-    };
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function resolveRecoveredWorkspaceEditorTopology(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorRecoveredTopologyResolveParams,
-) {
-  let coordinator: WorkspaceMutationCoordinator | null = null;
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    return await coordinator.resolveRecoveredEditorTopologyMutation({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      tokenId: params.tokenId,
-      sequence: params.sequence,
-      buffers: params.buffers,
-    });
-  } catch (error) {
-    await coordinator?.flushQuarantinePersistence().catch(() => {});
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function inspectWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalParams,
-  requestId: RequestId,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const proposal = workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .inspectProposal({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-    // Admission sizes against the daemon's numeric request IDs. Recheck with
-    // the actual caller-provided ID so a larger custom envelope cannot turn a
-    // valid proposal into an oversized success frame.
-    assertWorkspaceEditorProposalResponseFitsFrame(proposal, requestId);
-    return proposal;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function statusWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalStatusParams,
-  requestId: RequestId,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const status = await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .proposalStatus({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-    assertWorkspaceEditorProposalStatusResponseFitsFrame(status, requestId);
-    return status;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function applyWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalApplyParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .applyProposal({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-        changedtick: params.changedtick,
-        contentSha256: params.contentSha256,
-        content: params.content,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function discardWorkspaceEditorProposal(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorProposalParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    return await workspaceMutations
-      .getOrCreate(workspaceRoot)
-      .discardProposalForEditor({
-        workspaceRoot,
-        editorInstanceId: params.editorInstanceId,
-        leaseToken: params.leaseToken,
-        epoch: params.epoch,
-        proposalId: params.proposalId,
-      });
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function listWorkspaceEditorChanges(
-  workspaceMutations: WorkspaceMutationCoordinatorRegistry,
-  params: WorkspaceEditorChangesListParams,
-) {
-  try {
-    const workspaceRoot = await canonicalWorkspaceRoot(params.workspaceRoot);
-    const coordinator = workspaceMutations.getOrCreate(workspaceRoot);
-    const result = coordinator.listChanges({
-      workspaceRoot,
-      editorInstanceId: params.editorInstanceId,
-      leaseToken: params.leaseToken,
-      epoch: params.epoch,
-      ...(params.afterSequence !== undefined
-        ? { afterSequence: params.afterSequence }
-        : {}),
-    });
-    // `afterSequence` acknowledges the prior delivery. Do not confirm that
-    // acknowledgement to the Editor until the pruned durable queue is synced.
-    await coordinator.flushQuarantinePersistence();
-    return result;
-  } catch (error) {
-    throw invalidParams(error instanceof Error ? error.message : String(error));
-  }
 }
 
 function validateExitPlanApprovalPayload(exitPlan: JsonObject): void {
@@ -5688,6 +5022,24 @@ function validateThreadRealtimeTransport(value: unknown): void {
   );
 }
 
+/** An absolute, existing directory, normalized like an `agent.create` cwd. */
+function validateProjectTrustParams(
+  params: JsonObject,
+  methodName: "project.trustStatus" | "project.trust",
+): ProjectTrustStatusParams {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["cwd"],
+  });
+  validateRequiredString(validated, methodName, "cwd");
+  try {
+    return { cwd: requireAbsoluteWorkspaceCwd(validated.cwd, methodName) };
+  } catch (error) {
+    if (error instanceof WorkspaceCwdError) throw invalidParams(error.message);
+    throw error;
+  }
+}
+
 function validateRequiredString(
   params: JsonObject,
   methodName: string,
@@ -5790,6 +5142,7 @@ function validateObjectShape(
   options: {
     readonly methodName: string;
     readonly stringFields?: readonly string[];
+    readonly booleanFields?: readonly string[];
     readonly numberFields?: readonly string[];
     readonly stringArrayFields?: readonly string[];
     readonly objectFields?: readonly string[];
@@ -5798,6 +5151,7 @@ function validateObjectShape(
 ): JsonObject {
   const allowed = new Set([
     ...(options.stringFields ?? []),
+    ...(options.booleanFields ?? []),
     ...(options.numberFields ?? []),
     ...(options.stringArrayFields ?? []),
     ...(options.objectFields ?? []),
@@ -5814,6 +5168,9 @@ function validateObjectShape(
       throw invalidParams(
         `${options.methodName} param '${key}' must be a string`,
       );
+    }
+    if (options.booleanFields?.includes(key) && typeof value !== "boolean") {
+      throw invalidParams(`${options.methodName} param '${key}' must be a boolean`);
     }
     if (options.numberFields?.includes(key) && typeof value !== "number") {
       throw invalidParams(
@@ -5895,6 +5252,10 @@ function mapDispatchError(
   if (error instanceof AgenCDaemonConnectionClosedError) {
     return errorResponse(id, -32000, error.message, { code: "CONNECTION_CLOSED" });
   }
+  // The answer a request gets when it arrives during shutdown.
+  if (error instanceof StartupSessionRestoreAbandonedError) {
+    return errorResponse(id, -32000, error.message);
+  }
   if (error instanceof WhisperError) return errorResponse(id, error.code === "WHISPER_INVALID_ARGUMENT" ? -32602 : -32000, error.message, { code: error.code });
   if (error instanceof RemoteError) return errorResponse(id, -32000, error.code, { code: error.code });
   if (error instanceof RoutineError) return errorResponse(id, -32602, error.message, { code: error.code });
@@ -5926,6 +5287,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonWorkflowControlError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCCsvJobReviewError) {

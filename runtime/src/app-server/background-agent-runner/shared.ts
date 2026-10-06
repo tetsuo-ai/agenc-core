@@ -3,6 +3,7 @@
  * Split out of background-agent-runner.ts as a pure move.
  */
 
+import type { AgenCSessionEventDelivery } from "../approval-delivery.js";
 import { createHash } from "node:crypto";
 import type {
   BootstrapLocalRuntimeSessionOptions,
@@ -26,13 +27,7 @@ import type {
   McpSurfaceSnapshot,
 } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
-import type {
-  SessionEditorInteraction,
-  SessionSubmitOptions,
-} from "../../session/autonomous-mode.js";
-import type {
-  CodePredictionSource,
-} from "../../services/code-prediction/types.js";
+import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -51,6 +46,10 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionGoalParams,
+  SessionGoalResult,
+  SessionProcessesListResult,
+  SessionProcessesStopResult,
   SessionTranscriptResult,
   SessionTranscriptV2Result,
   SessionHookConfigShape,
@@ -64,7 +63,7 @@ import type {
   SessionStatusLineExecuteResult,
 } from "../protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "../realtime.js";
-import type { AgenCRealtimeCallClient } from "../realtime-transport.js";
+import type { AgenCRealtimeCallClientLike } from "../realtime-transport.js";
 import type {
   RealtimeTransportConnection,
   RealtimeTransportRequest,
@@ -98,7 +97,6 @@ export interface AgenCBackgroundAgentStartParams {
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
-  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
@@ -122,6 +120,8 @@ export interface AgenCBackgroundAgentStartParams {
 export interface AgenCBackgroundAgentStartResult {
   readonly agentId: string;
   readonly agentPath?: string;
+  /** Internal runtime incarnation identity; never serialized to clients. */
+  readonly runtimeGenerationId?: string;
   /** Internal pre-publication rollback token; never serialized to clients. */
   readonly restoreAttemptId?: string;
   readonly startedAt: string;
@@ -201,6 +201,8 @@ export interface AgenCBackgroundAgentReplayToolResult {
 export interface AgenCBackgroundAgentSnapshot {
   readonly status: DaemonAgentStatus;
   readonly lastActiveAt: string;
+  /** Identifies the runtime that observed this snapshot, independently of run epoch. */
+  readonly runtimeGenerationId?: string;
   readonly metadata?: JsonObject;
   /** Live daemon-owned session authority, captured after its durable commit. */
   readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
@@ -273,15 +275,21 @@ export interface AgenCBackgroundAgentTurnCancellationResult {
 
 export interface AgenCBackgroundAgentSessionEventBinding {
   readonly sessionId: string;
-  readonly emit: (event: JsonObject) => void | Promise<void>;
+  /** Resolves to the daemon's delivery result when it has one. */
+  readonly emit: (
+    event: JsonObject,
+  ) =>
+    | void
+    | AgenCSessionEventDelivery
+    | Promise<void | AgenCSessionEventDelivery>;
 }
 
 export interface AgenCBackgroundAgentMessageParams {
+  readonly exactOutput?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
-  readonly editorInteraction?: SessionEditorInteraction;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
@@ -440,6 +448,7 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 export interface AgenCBackgroundAgentApplyConfigParams {
   readonly sessionId: string;
   readonly reasoningEffort?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly profile?: string;
   readonly reload?: boolean;
 }
@@ -449,6 +458,7 @@ export interface AgenCBackgroundAgentApplyConfigResult {
   readonly provider?: string;
   readonly model?: string;
   readonly runtimeSettingsEventId?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly summary: string;
 }
 
@@ -495,7 +505,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<AgenCBackgroundAgentCancellationPreparation>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
   /** Daemon-owned one-shot invocation: derive its final outcome from a settled message. */
-  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined>;
+  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined>;
   /** Daemon-only shutdown disposition; caller prose cannot select suspension. */
   suspendIdleAgentForDaemonShutdown?(
     agentId: string,
@@ -513,15 +523,15 @@ export interface AgenCBackgroundAgentRunner {
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionShellExecuteResult>;
+  updateAgentSessionGoal?(
+    agentId: string,
+    params: SessionGoalParams,
+  ): Promise<SessionGoalResult>;
   executeAgentStatusLine?(
     agentId: string,
     params: SessionStatusLineExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionStatusLineExecuteResult>;
-  /** Resolve the live route without exposing the primary provider to callers. */
-  resolveCodePredictionSource?(
-    agentId: string,
-  ): Promise<CodePredictionSource> | CodePredictionSource;
   clearAgentSession?(
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,
@@ -530,13 +540,18 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
   ): Promise<SessionSnapshotResult>;
+  listAgentSessionProcesses?(agentId: string): Promise<SessionProcessesListResult>;
+  stopAgentSessionProcess?(
+    agentId: string,
+    taskId: string,
+  ): Promise<SessionProcessesStopResult>;
   getAgentSessionTranscript?(
     agentId: string,
     params: { readonly sessionId: string },
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,
@@ -648,6 +663,15 @@ export interface AgenCBackgroundAgentRunner {
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
   listPermissions?(agentId: string): Promise<PermissionListResult | null>;
+  /**
+   * The CURRENT permission mode in a runnable agent's own permission
+   * registry, or null when the agent has no live runtime. The routine
+   * service reads a session's mode through this so a routine the session
+   * creates can never carry a wider one.
+   */
+  getAgentPermissionMode?(agentId: string): Promise<string | null>;
+  /** True only while this call is executing in the agent's active turn. */
+  isAgentToolCallExecuting?(agentId: string, toolCallId: string): boolean | Promise<boolean>;
   resolveRealtimeThread?(
     threadId: string,
   ):
@@ -672,8 +696,15 @@ interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
   readonly control: AgentControl;
   readonly thread: ManagedThread;
+  /** Recovered conversation to republish after review releases a deferred turn. */
+  reapplyRecoveredHistoryAfterReview?: () => Promise<void>;
+  deferredDurableResumePendingReview?: boolean;
+  deferredDurableResumeStarting?: boolean;
+  deferredDurableResumeReviewBarrier?: Promise<void>;
+  releaseDeferredDurableResumeReviewBarrier?: () => void;
   status: DaemonAgentStatus;
   readonly startedAt: string;
+  readonly runtimeGenerationId: string;
   /** Opaque generation proof retained only until publication succeeds/fails. */
   readonly restoreAttemptId?: string;
   /** Current canonical lifecycle epoch, recovered from run_reopened events. */
@@ -689,6 +720,7 @@ interface ActiveBackgroundAgent {
     readonly eventId: string;
     readonly reason: "daemon_shutdown_idle";
     readonly suspendedAt: string;
+    readonly interruptedTurnId?: string;
   };
   /** Closes every runner ingress route before idle state is observed. */
   ingressClosed?: boolean;
@@ -803,6 +835,7 @@ interface AgentTerminalUsage {
   readonly costUsd: number;
   /** False when historical coverage or a per-model price is incomplete. */
   readonly costKnown: boolean;
+  readonly costEstimated?: boolean;
 }
 
 function positiveSequence(value: unknown): number | undefined {
@@ -846,7 +879,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly realtimeCallClient?: AgenCRealtimeCallClient;
+  readonly realtimeCallClient?: AgenCRealtimeCallClientLike;
   readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
   readonly onActiveAgentTerminated?: (
     agentId: string,

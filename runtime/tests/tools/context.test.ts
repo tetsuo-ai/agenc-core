@@ -62,7 +62,7 @@ describe("ToolOutput variants", () => {
     expect(successForLogging(out)).toBe(true);
   });
 
-  test("function variant: from_content joins text + image parts", () => {
+  test("function variant: from_content keeps images out of flat text", () => {
     const out = functionToolOutputFromContent({
       callId: "c1",
       toolName,
@@ -76,7 +76,7 @@ describe("ToolOutput variants", () => {
       durationMs: 2,
     });
     expect(out.variant?.kind).toBe("function");
-    expect(toText(out)).toBe("alphahttps://img/x.png-beta");
+    expect(toText(out)).toBe("alpha-beta");
   });
 
   test("function variant: legacy functionToolOutput still works and exposes .content", () => {
@@ -383,14 +383,14 @@ describe("sanitizeOriginalImageDetail", () => {
 });
 
 describe("contentItemsToText", () => {
-  test("joins text and image_url parts", () => {
+  test("keeps image URLs out of flattened tool text", () => {
     expect(
       contentItemsToText([
         { type: "input_text", text: "a" },
         { type: "input_image", image_url: "x" },
         { type: "input_text", text: "b" },
       ]),
-    ).toBe("axb");
+    ).toBe("ab");
   });
 });
 
@@ -407,7 +407,7 @@ describe("codeModeResult", () => {
     expect(codeModeResult(out)).toBe("hi");
   });
 
-  test("function content items join non-empty text and image URLs with newlines", () => {
+  test("function code-mode content omits image URLs", () => {
     const out = functionToolOutputFromContent({
       callId: "c1",
       toolName,
@@ -423,14 +423,14 @@ describe("codeModeResult", () => {
       durationMs: 0,
     });
 
-    expect(codeModeResult(out)).toBe("line 1\nhttps://img/x.png\nline 2");
+    expect(codeModeResult(out)).toBe("line 1\nline 2");
     expect(
       contentItemsToCodeModeResult([
         { type: "input_text", text: "a" },
         { type: "input_image", image_url: "x" },
         { type: "input_text", text: "b" },
       ]),
-    ).toBe("a\nx\nb");
+    ).toBe("a\nb");
   });
 
   test("mcp result stays as the raw call-tool result", () => {

@@ -124,6 +124,8 @@ export interface MemoryIndexGenerationStatus {
 export interface MemoryIndexRefreshResult {
   readonly kind: "complete" | "refresh_pending" | "degraded";
   readonly roots: readonly MemoryIndexGenerationStatus[];
+  /** A complete generation newly started after this refresh began, per root. */
+  readonly freshGeneration?: readonly boolean[];
 }
 
 export type MemoryFullCorpusQueryResult =
@@ -570,6 +572,10 @@ export class PersistentMemoryIndex {
       throwIfAborted(refreshSignal);
       for (const root of roots) this.#upsertRoot(root);
       this.#ensureWatchers(roots);
+      const priorGenerations = roots.map((root) => ({
+        staging: this.#stagingGeneration(root.rootId) !== null,
+        currentId: this.#currentGeneration(root)?.generation.id ?? null,
+      }));
       const deadline =
         this.#buildNow() +
         (options.explicit
@@ -610,18 +616,28 @@ export class PersistentMemoryIndex {
         this.#unusedRootsCleaned = true;
         this.cleanupUnusedRoots();
       }
+      const freshGeneration = statuses.map((status, index) =>
+        !priorGenerations[index]!.staging &&
+        status.state === "complete" &&
+        status.generationId !== null &&
+        status.generationId !== priorGenerations[index]!.currentId,
+      );
       if (
         statuses.every(
           (status) =>
             status.state === "complete" && status.watcherHealth === "healthy",
         )
       ) {
-        return { kind: "complete", roots: statuses };
+        return {
+          kind: "complete",
+          roots: statuses,
+          freshGeneration,
+        };
       }
       if (statuses.some((status) => status.state === "refresh_pending")) {
-        return { kind: "refresh_pending", roots: statuses };
+        return { kind: "refresh_pending", roots: statuses, freshGeneration };
       }
-      return { kind: "degraded", roots: statuses };
+      return { kind: "degraded", roots: statuses, freshGeneration };
     } catch (error) {
       if (signal.aborted) throw abortReason(signal);
       if (this.#closeController.signal.aborted) {

@@ -1,10 +1,12 @@
 import { z } from "zod/v4";
+import { markEffectBoundaryNotCrossed } from "../effect-boundary.js";
 import { getProjectRoot } from "../../bootstrap/state.js";
 import type { ValidationResult } from "../Tool.js";
 import { buildTool, type ToolDef } from "../Tool.js";
 import {
   getCronFilePath,
   listAllCronTasks,
+  listSessionCronTasks,
   removeCronTasks,
 } from "../../utils/cronTasks.js";
 import { lazySchema } from "../../utils/lazySchema.js";
@@ -67,7 +69,21 @@ export const CronDeleteTool = buildTool({
         errorCode: 3,
       };
     }
-    const tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    let tasks;
+    try {
+      tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === "DESCRIPTOR_UNSUPPORTED" &&
+          listSessionCronTasks(conversationId).some((task) => task.id === input.id)) {
+        tasks = listSessionCronTasks(conversationId);
+      } else {
+        if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
+          evidenceRef: "tool:CronDelete:validation-read",
+          evidenceMaterial: error.message,
+        });
+        throw error;
+      }
+    }
     const task = tasks.find((t) => t.id === input.id);
     if (!task) {
       return {

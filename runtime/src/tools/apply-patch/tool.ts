@@ -13,6 +13,7 @@
  */
 
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import type { PermissionResult } from "../../permissions/types.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
@@ -20,11 +21,9 @@ import {
   plainTextErrorToolResult as errorResult,
   validationErrorToolResult,
 } from "../results.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
-import { WorkspaceMutationRejectedError } from "../../workspace/mutation-coordinator.js";
 import type { ApplyPatchHunk } from "./types.js";
 import {
   ApplyPatchInputError,
@@ -133,6 +132,13 @@ function permissionForPatch(
     };
   }
 
+  // Resolved once: the lookup canonicalizes AGENC_HOME, and a patch can
+  // carry many targets. `execute` applies the owning session's plan file
+  // through `safePathAllowingSessionPlanFile`; without the same authority
+  // here the permission layer asked to approve a patch the tool would then
+  // apply anyway (#2131).
+  const planFileAuthority = sessionPlanFileAuthority(context.session);
+
   for (const hunk of hunks) {
     for (const target of pathsForHunk(hunk)) {
       const result = checkToolPathPermission({
@@ -143,6 +149,7 @@ function permissionForPatch(
         context: context.getAppState().toolPermissionContext,
         operationType: target.operationType,
         extraWorkingDirectories: allowedPaths,
+        planFileAuthority,
       });
       if (result.behavior !== "allow") return result;
     }
@@ -245,18 +252,6 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         // the session until an operator runs /resolve (#2190). That includes
         // planning-phase ApplyPatchRuntimeError (unread file, missing path,
         // allowlist). A failure after the mutation boundary stays undecided.
-        if (error instanceof WorkspaceMutationRejectedError) {
-          // Admission refused the proposal before any byte was written.
-          return {
-            ...error.toolResult,
-            effectDisposition: createToolEffectDispositionEvidence({
-              disposition: "confirmed_no_effect",
-              evidenceKind: "boundary_not_crossed",
-              evidenceRef: "tool:apply_patch:admission-rejected",
-              evidenceMaterial: error.toolResult.content,
-            }),
-          };
-        }
         if (
           error instanceof ApplyPatchParseError ||
           error instanceof ApplyPatchInputError

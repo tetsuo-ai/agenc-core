@@ -40,11 +40,14 @@ describe("sandbox execution ingress architecture", () => {
       productionMethodCalls(["prepareSpawn", "runtimeSandbox", "forkForCwd", "forkForReadOnlyInspection"]),
     ).toEqual([
       "agents/delegate.ts:forkForCwd",
+      // Goal plans inspect the owned workflow checkout through a scoped broker.
+      "agents/delegate.ts:forkForCwd",
       "agents/delegate.ts:forkForCwd",
       "agents/run-agent.ts:forkForCwd",
       "agents/run-agent.ts:forkForReadOnlyInspection",
       "agents/run-agent.ts:runtimeSandbox",
       "agents/worktree.ts:prepareSpawn",
+      "agents/worktree.ts:runtimeSandbox",
       "app-server/workflow/session-adapters.ts:forkForCwd",
       "app-server/workflow/session-adapters.ts:prepareSpawn",
       "browser/cdp.ts:prepareSpawn",

@@ -1,15 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import {
-  getCronFilePath,
   mutateCronFile,
   nextCronRunMs,
   readCronFile,
   type CronFile,
   type CronTask,
 } from "../utils/cronTasks.js";
-import { acquireLocalSqliteLock } from "../utils/sqlite-lock.js";
+import { acquireCronStorageLock, withCronStorage } from "../utils/cron-storage.js";
 import {
   CRON_DELIVERY_LEASE_MS,
   CRON_DELIVERY_RETRY_BASE_MS,
@@ -25,6 +22,8 @@ import {
 export type CronDeliveryPhase = "model" | "channel" | "webhook";
 
 export interface CronOccurrenceClaim {
+  /** Runtime-only binding to the workspace that owns the execution stripe. */
+  readonly workspaceIdentity: string;
   readonly key: string;
   readonly token: string;
   readonly task: CronTask;
@@ -101,35 +100,33 @@ export class CronDeliveryOutboxStore {
     now: () => number,
     operation: (claim: CronOccurrenceClaim) => Promise<void>,
   ): Promise<void> {
-    const directory = dirname(getCronFilePath(this.workspaceDir));
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const canonicalDirectory = await realpath(directory);
-    const stripe = createHash("sha256").update(taskId).digest()[0]! % 16;
-    const release = await acquireLocalSqliteLock(
-      join(canonicalDirectory, `cron-delivery-${stripe}.lock.sqlite`),
-      { timeoutMs: 1_000, label: "cron occurrence execution" },
-    );
-    try {
-      const claim = await this.claim(taskId, now());
-      if (claim === undefined) return;
+    await withCronStorage(this.workspaceDir, true, async (storage) => {
+      const stripe = createHash("sha256").update(taskId).digest()[0]! % 16;
+      const release = await acquireCronStorageLock(storage, stripe,
+        { timeoutMs: 1_000, label: "cron occurrence execution" });
       try {
-        await operation(claim);
+        const claim = await this.claim(taskId, now(), storage.workspaceIdentity);
+        if (claim === undefined) return;
+        try {
+          await operation(claim);
+        } finally {
+          await mutateCronFile(this.workspaceDir, (state) => {
+            const entry = state.deliveryOutbox?.occurrences.find(
+              (candidate) => candidate.key === claim.key,
+            );
+            if (entry?.lease?.token === claim.token) delete entry.lease;
+          }, storage.workspaceIdentity);
+        }
       } finally {
-        await mutateCronFile(this.workspaceDir, (state) => {
-          const entry = state.deliveryOutbox?.occurrences.find(
-            (candidate) => candidate.key === claim.key,
-          );
-          if (entry?.lease?.token === claim.token) delete entry.lease;
-        });
+        release();
       }
-    } finally {
-      release();
-    }
+    });
   }
 
   private async claim(
     taskId: string,
     now: number,
+    workspaceIdentity: string,
   ): Promise<CronOccurrenceClaim | undefined> {
     return mutateCronFile(this.workspaceDir, (state) => {
       const task = state.tasks.find((candidate) => candidate.id === taskId);
@@ -185,12 +182,13 @@ export class CronDeliveryOutboxStore {
       const token = randomUUID();
       entry.lease = { token, expiresAt: now + CRON_DELIVERY_LEASE_MS };
       return {
+        workspaceIdentity,
         key: entry.key,
         token,
         task: structuredClone(task),
         occurrence: structuredClone(entry),
       };
-    });
+    }, workspaceIdentity);
   }
 
   private async update(
@@ -216,7 +214,7 @@ export class CronDeliveryOutboxStore {
       }
       mutate(entry, task, state);
       return structuredClone(entry);
-    });
+    }, claim.workspaceIdentity);
   }
 
   async beginAttempt(

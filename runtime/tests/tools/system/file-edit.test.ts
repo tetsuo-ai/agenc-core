@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -64,7 +65,6 @@ import {
   setPlanSlug,
 } from "../../planning/plan-files.js";
 import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
-import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const SESSION_ID = "edit-tool-test-session";
 
@@ -114,7 +114,6 @@ describe("Edit tool", () => {
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
-    workspaceMutationCoordinators.clearForTests();
     clearSessionReadState(SESSION_ID, tmpdir());
     clearAllPlanSlugs();
   });
@@ -124,6 +123,61 @@ describe("Edit tool", () => {
     const tool = createFileEditTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Edit");
     expect(tool.metadata?.mutating).toBe(true);
+  });
+
+  test("a verified rollback after a post-write fault settles as no-effect (#2500)", async () => {
+    const file = await seedReadFile(root, "rolled-back.txt", "alpha\nbeta\n");
+    const tool = createFileEditTool({
+      allowedPaths: [root],
+      __testWrite: async ({ write }) => {
+        await write();
+        throw new Error("post-write fault");
+      },
+    });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    expect(result.isError).toBe(true);
+    expectPreMutationNoEffect(result);
+    expect(result.effectDisposition).toMatchObject({
+      evidenceRef: "tool:Edit:rollback_verified",
+    });
+    expect(String(result.content)).toContain(
+      "restored to its original contents",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha\nbeta\n");
+  });
+
+  test("a refused exclusive create (EACCES) settles as no-effect with diagnostics (#2500)", async () => {
+    const sealed = join(root, "sealed");
+    await mkdir(sealed);
+    await chmod(sealed, 0o555);
+    if (process.getuid?.() === 0) {
+      await chmod(sealed, 0o755);
+      return;
+    }
+    try {
+      const tool = createFileMultiEditTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        file_path: join(sealed, "new.txt"),
+        edits: [{ old_string: "", new_string: "never lands\n" }],
+        [SESSION_ID_ARG]: SESSION_ID,
+      });
+      expect(result.isError).toBe(true);
+      expectPreMutationNoEffect(result);
+      expect(result.effectDisposition).toMatchObject({
+        evidenceRef: "tool:MultiEdit:original_state_verified",
+      });
+      // The create path writes through a plain Node callback, not the bound
+      // helper, so the errno is present but the helper's uid/mode context is not.
+      expect(String(result.content)).toContain("EACCES");
+      expect(String(result.content)).toContain("No bytes were written");
+    } finally {
+      await chmod(sealed, 0o755);
+    }
   });
 
   test("exposes the AgenC multi-edit tool name", () => {
@@ -143,10 +197,10 @@ describe("Edit tool", () => {
     });
   });
 
-  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+  test("does not treat /root filesystem paths as an agent namespace", async () => {
     const edit = createFileEditTool({ allowedPaths: [root] });
     const editResult = await edit.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/input.json",
       old_string: "alpha",
       new_string: "beta",
       cwd: root,
@@ -154,20 +208,20 @@ describe("Edit tool", () => {
     });
 
     expect(editResult.isError).toBe(true);
-    expect(String(editResult.content)).toContain("agent namespace");
-    expect(String(editResult.content)).toContain('"game.py"');
+    expect(String(editResult.content)).not.toContain("agent namespace");
+    expect(String(editResult.content)).not.toContain('"data/input.json"');
 
     const multi = createFileMultiEditTool({ allowedPaths: [root] });
     const multiResult = await multi.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/input.json",
       edits: [{ old_string: "alpha", new_string: "beta" }],
       cwd: root,
       [SESSION_ID_ARG]: SESSION_ID,
     });
 
     expect(multiResult.isError).toBe(true);
-    expect(String(multiResult.content)).toContain("agent namespace");
-    expect(String(multiResult.content)).toContain('"game.py"');
+    expect(String(multiResult.content)).not.toContain("agent namespace");
+    expect(String(multiResult.content)).not.toContain('"data/input.json"');
   });
 
   test("successful edit on a previously-read file", async () => {
@@ -233,7 +287,9 @@ describe("Edit tool", () => {
         file_path: planPath,
         old_string: "Verify allowlist",
         new_string: "Verify plan edits",
-        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID })),
+        ...signedSessionPlanFileArgs(
+          planFileAuthorityFromContext({ agencHome, sessionId: SESSION_ID }),
+        ),
         [SESSION_ID_ARG]: SESSION_ID,
         [SESSION_ID_SIG_ARG]: signSessionId(SESSION_ID),
         [SESSION_AGENC_HOME_ARG]: agencHome,
@@ -443,71 +499,6 @@ describe("Edit tool", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("Created file");
     await expect(readFile(file, "utf8")).resolves.toBe("fresh content\n");
-  });
-
-  test("Edit and MultiEdit report a completed create with failed audit truthfully", async () => {
-    const agencHome = await mkdtemp(join(tmpdir(), "agenc-edit-audit-home-"));
-    const configStore = new ConfigStore({
-      home: agencHome,
-      env: {},
-      cwd: root,
-      projectRoot: root,
-      projectTrusted: false,
-    });
-
-    const editPath = join(root, "edit-created.txt");
-    const multiEditPath = join(root, "multi-edit-created.txt");
-    try {
-      await runWithCanonicalSettingsAuthority(configStore, async () => {
-        workspaceMutationCoordinators.clearForTests();
-        workspaceMutationCoordinators.getOrCreate(root);
-        const workspaceKey = createHash("sha256")
-          .update(root)
-          .digest("hex")
-          .slice(0, 32);
-        await mkdir(
-          join(
-            agencHome,
-            "workspace-mutations",
-            workspaceKey,
-            "ledger-v1.jsonl",
-          ),
-          { recursive: true },
-        );
-
-        const edit = createFileEditTool({ allowedPaths: [root] });
-        const editResult = await edit.execute({
-          file_path: editPath,
-          old_string: "",
-          new_string: "created by Edit\n",
-          [SESSION_ID_ARG]: SESSION_ID,
-        });
-        const multiEdit = createFileMultiEditTool({ allowedPaths: [root] });
-        const multiEditResult = await multiEdit.execute({
-          file_path: multiEditPath,
-          edits: [{ old_string: "", new_string: "created by MultiEdit\n" }],
-          [SESSION_ID_ARG]: SESSION_ID,
-        });
-
-        for (const result of [editResult, multiEditResult]) {
-          expect(result.isError).toBe(true);
-          expect(String(result.content)).toContain(
-            "Disk mutation completed for",
-          );
-          expect(String(result.content)).toContain("outcome is marked unknown");
-          expect(String(result.content)).not.toContain("Failed to create file");
-        }
-        await expect(readFile(editPath, "utf8")).resolves.toBe(
-          "created by Edit\n",
-        );
-        await expect(readFile(multiEditPath, "utf8")).resolves.toBe(
-          "created by MultiEdit\n",
-        );
-      });
-    } finally {
-      workspaceMutationCoordinators.clearForTests();
-      await rm(agencHome, { recursive: true, force: true });
-    }
   });
 
   test("empty old_string on an existing nonempty file is rejected", async () => {

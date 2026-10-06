@@ -18,8 +18,13 @@ import {
   SANDBOX_PERMISSION_INPUT_PROPERTIES,
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
+import { sandboxEscalationAvailable } from "./exec-sandbox-denial.js";
+import { execNetworkFailureNotice } from "./exec-network-failure.js";
 
 export interface WriteStdinToolConfig {
+  readonly lightMode?: boolean;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -226,18 +231,54 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const stillAlive =
           output.exitCode === null && output.process_id !== undefined;
         const isError =
+          output.command_outcome !== undefined ||
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
+        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
+        const runtimeContext = readToolRuntimeContext(args);
+        const notice = execNetworkFailureNotice({
+          output: execContent,
+          exitCode: output.exitCode,
+          runtimeSandbox,
+          escalationAvailable: runtimeContext !== undefined &&
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
+        });
         return {
-          content: formatUnifiedExecToolContent(output),
+          content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
+          // Ordinary terminal receipts settle this call without claiming
+          // command success. Missing authenticated outcomes remain unknown
+          // even when descendant cleanup has independently completed.
+          effectDisposition: createToolEffectDispositionEvidence({
+            disposition: output.command_outcome === undefined ? "confirmed_committed" : "remains_unknown",
+            evidenceKind: "provider_receipt",
+            evidenceRef: stillAlive
+              ? "tool:system.write-stdin:process-yield"
+              : "tool:system.write-stdin:process-exit",
+            evidenceMaterial: JSON.stringify({
+              sessionId,
+              chars,
+              exitCode: output.exitCode,
+              commandOutcome: output.command_outcome ?? "reported",
+              processId: output.process_id ?? null,
+              timedOut: output.timedOut,
+              durationMs: output.durationMs,
+            }),
+          }),
           metadata: {
             sessionId,
+            exitCode: output.exitCode,
+            timedOut: output.timedOut,
             ...(output.process_id !== undefined
               ? { processId: output.process_id }
               : {}),
             durationMs: output.durationMs,
+            ...(output.command_outcome === undefined ? {} : { commandOutcome: output.command_outcome }),
+            ...(output.residual_processes_observed === true ? { residualProcessesObserved: true } : {}),
           },
         };
       } catch (error) {

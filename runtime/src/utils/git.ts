@@ -1,9 +1,9 @@
 import { createHash } from 'crypto'
-import { readFileSync, realpathSync, statSync } from 'fs'
+import { readFileSync, realpathSync } from 'fs'
 import { open, readFile, realpath, stat } from 'fs/promises'
 import spawn from 'cross-spawn'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { hasBinaryExtension, isBinaryContent } from '../constants/files.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -20,6 +20,7 @@ import {
   isShallowClone as isShallowCloneFs,
   resolveGitDir,
 } from './git/gitFilesystem.js'
+import { isBareGitDirectory, isValidGitMarker } from './git/gitRootMarker.js'
 import { logError } from './log.js'
 import { memoizeWithLRU } from './memoize.js'
 import { whichSync } from './which.js'
@@ -32,48 +33,26 @@ const findGitRootImpl = memoizeWithLRU(
     logForDiagnosticsNoPII('info', 'find_git_root_started')
 
     let current = resolve(startPath)
-    const root = current.substring(0, current.indexOf(sep) + 1) || sep
     let statCount = 0
 
-    while (current !== root) {
-      try {
-        const gitPath = join(current, '.git')
-        statCount++
-        const stat = statSync(gitPath)
-        // .git can be a directory (regular repo) or file (worktree/submodule)
-        if (stat.isDirectory() || stat.isFile()) {
-          logForDiagnosticsNoPII('info', 'find_git_root_completed', {
-            duration_ms: Date.now() - startTime,
-            stat_count: statCount,
-            found: true,
-          })
-          return current
-        }
-      } catch {
-        // .git doesn't exist at this level, continue up
+    while (true) {
+      statCount++
+      if (
+        isValidGitMarker(join(current, '.git')) ||
+        isBareGitDirectory(current)
+      ) {
+        logForDiagnosticsNoPII('info', 'find_git_root_completed', {
+          duration_ms: Date.now() - startTime,
+          stat_count: statCount,
+          found: true,
+        })
+        return current
       }
       const parent = dirname(current)
       if (parent === current) {
         break
       }
       current = parent
-    }
-
-    // Check root directory as well
-    try {
-      const gitPath = join(root, '.git')
-      statCount++
-      const stat = statSync(gitPath)
-      if (stat.isDirectory() || stat.isFile()) {
-        logForDiagnosticsNoPII('info', 'find_git_root_completed', {
-          duration_ms: Date.now() - startTime,
-          stat_count: statCount,
-          found: true,
-        })
-        return root
-      }
-    } catch {
-      // .git doesn't exist at root
     }
 
     logForDiagnosticsNoPII('info', 'find_git_root_completed', {
@@ -89,8 +68,9 @@ const findGitRootImpl = memoizeWithLRU(
 
 /**
  * Find the git root by walking up the directory tree.
- * Looks for a .git directory or file (worktrees/submodules use a file).
- * Returns the directory containing .git, or null if not found.
+ * Looks for a valid `.git` directory or `gitdir:` file, or a bare git directory.
+ * Empty, malformed, and dangling `.git` markers are skipped.
+ * Returns the directory containing `.git` (or the bare git dir), or null.
  *
  * Memoized per startPath with an LRU cache (max 50 entries) to prevent
  * unbounded growth — gitDiff calls this with dirname(file), so editing many

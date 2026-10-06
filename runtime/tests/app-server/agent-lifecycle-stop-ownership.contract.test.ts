@@ -1,12 +1,93 @@
 import { setImmediate } from "node:timers/promises";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
+import { AgenCDaemonSnapshotPolicyRegistry } from "../../src/app-server/daemon-cli.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import type { AgenCBackgroundAgentTerminalSnapshot } from "../../src/app-server/background-agent-runner.js";
 
 const timestamp = "2026-09-10T00:00:00.000Z";
 
 describe("daemon agent stop ownership", () => {
+  it.skipIf(process.platform === "win32")("keeps snapshot handles through Stop during an active turn, then closes them", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-stop-fd-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-stop-fd-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const registry = new AgenCDaemonSnapshotPolicyRegistry({
+      agencHome: home, defaultCwd: cwd, onError: (error) => { throw error; },
+    });
+    const baseline = readdirSync("/dev/fd").length;
+    const entered = Promise.withResolvers<void>();
+    const finishTurn = Promise.withResolvers<void>();
+    const terminal: AgenCBackgroundAgentTerminalSnapshot = {
+      openedAt: timestamp, epoch: 1, eventId: "stop-terminal",
+      rolloutPath: join(cwd, "stop-rollout.jsonl"),
+      result: {
+        runId: "stop-run", status: "cancelled", exitCode: null,
+        stopReason: "operator", finalMessage: null, usage: null,
+        lastSequence: null, finishedAt: timestamp,
+      },
+    };
+    const sessions = new AgenCDaemonSessionManager();
+    let manager!: AgenCDaemonAgentManager;
+    manager = new AgenCDaemonAgentManager({
+      agencHome: home,
+      sessionManager: sessions,
+      runner: {
+        startAgent: vi.fn(),
+        stopAgent: async () => {
+          entered.resolve();
+          await finishTurn.promise;
+          await manager.handleRunnerTerminated("stop-run", {
+            status: "stopped", lastActiveAt: timestamp, terminal,
+          });
+        },
+      },
+      recordRunTerminal: (record) => registry.recordRunTerminal(record),
+      recordAgentStatusTransition: (transition) => registry.recordAgentStatusTransition(transition),
+      terminateSession: async (params) => {
+        try { await sessions.terminateSession(params); }
+        finally { registry.releaseSession(params.sessionId); }
+      },
+    });
+    try {
+      registry.recordAgentRun({
+        id: "stop-run", objective: "active turn", status: "running",
+        startedAt: timestamp, lastActiveAt: timestamp,
+        currentSessionId: "stop-run", cwd,
+      });
+      await sessions.restoreSession({ sessionId: "stop-run", agentId: "stop-run" });
+      await manager.restoreAgent({
+        agentId: "stop-run", objective: "active turn",
+        sessionIds: ["stop-run"], runtimeAvailable: true,
+      });
+      const stopping = manager.stopAgent({ agentId: "stop-run", reason: "operator" });
+      await entered.promise;
+      expect((await sessions.getSession("stop-run")).status).not.toBe("closed");
+      finishTurn.resolve();
+      await stopping;
+      expect(readdirSync("/dev/fd").length).toBeLessThanOrEqual(baseline + 2);
+      const driver = openStateDatabases({ cwd, agencHome: home });
+      try {
+        const row = driver.prepareState<[string], { tool_state_json: string }>(
+          `SELECT tool_state_json FROM session_state_snapshots WHERE session_id = ?
+           ORDER BY snapshot_at DESC LIMIT 1`,
+        ).get("stop-run");
+        expect(JSON.parse(row!.tool_state_json).statusTransitions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ status: "stopped" })]),
+        );
+      } finally { driver.close(); }
+    } finally {
+      finishTurn.resolve();
+      registry.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it.each(["agent.stop", "daemon shutdown"] as const)(
     "%s waits for the existing teardown owner", async (operation) => {
       const entered = Promise.withResolvers<void>();

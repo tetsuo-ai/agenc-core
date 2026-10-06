@@ -7,7 +7,8 @@
  * Nothing here touches a network or spawns a model.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -25,6 +26,7 @@ import {
   type WorkflowChildOutcome,
   type WorkflowEvidenceLedger,
   type WorkflowRunJournal,
+  type WorkflowRunSessionPolicy,
   type WorkflowSpawnKind,
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
@@ -244,6 +246,7 @@ class MemoryLedger implements WorkflowEvidenceLedger {
 }
 
 class FakeWorktrees implements WorkflowWorktreeBroker {
+  async validateContinuation(): Promise<void> {}
   provisions = 0;
   readonly patchText = "diff --git a/f b/f\n--- a/f\n+++ b/f\n+x\n";
 
@@ -301,6 +304,8 @@ class FakeWorktrees implements WorkflowWorktreeBroker {
   }
 
   async cleanup(): Promise<void> {}
+
+  async discard(): Promise<void> {}
 }
 
 class FakeSpawner implements WorkflowAgentSpawner {
@@ -312,7 +317,7 @@ class FakeSpawner implements WorkflowAgentSpawner {
       input.kind === "verify_agent"
         ? "checked everything\nVERDICT: PASS"
         : input.kind === "plan"
-          ? "PLAN: make the edit"
+          ? 'PLAN: make the edit\n```agenc-verification\n["npm test"]\n```'
           : "done";
     return {
       status: "completed",
@@ -372,12 +377,14 @@ interface Harness {
 }
 
 let harness: Harness;
+let seenOverrides: Readonly<Record<string, string>> | undefined;
+let seenPolicies: (WorkflowRunSessionPolicy | undefined)[];
 
 function makeHarness(): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-home-"));
   const repoDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-repo-"));
   const nonGitDir = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-plain-"));
-  mkdirSync(join(repoDir, ".git"));
+  execFileSync("git", ["init", "-q"], { cwd: repoDir });
   const driver = openStateDatabases({ cwd: repoDir, agencHome: home });
   const repo = new StateRunDurabilityRepository(driver);
   const admission = new FakeAdmission();
@@ -388,7 +395,7 @@ function makeHarness(): Harness {
   const recorded: WorkflowStartedRunRecord[] = [];
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
-    journal: { open: async (runId) => new TestJournal(repo, runId) },
+    journal: { open: async (runId, context) => { seenOverrides = context?.envOverrides; seenPolicies.push(context?.policy); return new TestJournal(repo, runId); } },
     admission: ({ runId }) => {
       admission.scope.runId = runId;
       return admission;
@@ -476,6 +483,7 @@ async function dispatchRunStart(
 }
 
 beforeEach(() => {
+  seenPolicies = [];
   harness = makeHarness();
 });
 
@@ -488,8 +496,50 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("daemon dispatcher — run.start", () => {
+  it("advertises continuation only with the implemented feature and rejects unsupported requests", async () => {
+    const { initialize } = await initializedConnection();
+    expect((initialize as unknown as { result: { capabilities: JsonObject } }).result.capabilities["workflow.continuation.v1"]).toBe(true);
+    const legacy = new AgenCDaemonJsonRpcDispatcher({ agentManager: new AgenCDaemonAgentManager(),
+      workflow: { startRun: async () => { throw new Error("must not start a plain Goal"); } } });
+    const connection = legacy.createConnection();
+    const initialized = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "init", method: "initialize", params: { protocol: { version: "1.0.0" } } });
+    expect((initialized as unknown as { result: { capabilities: JsonObject } }).result.capabilities).not.toHaveProperty("workflow.continuation.v1");
+    const response = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "continue", method: "run.start",
+      params: startParams({ continuation: { sourceRunId: "old-run", requestId: "retry" }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" }) });
+    expect(response).toMatchObject({ error: { code: -32602, message: expect.stringContaining("does not support") } });
+  });
+
+  it("routes a continuation once and never re-registers its completed rail row on retry", async () => {
+    const source = await dispatchRunStart(startParams());
+    await harness.controller.awaitRun(source.result!.runId);
+    const params = startParams({ goal: "Add the next feature", continuation: { sourceRunId: source.result!.runId, requestId: "feature-next" },
+      maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" });
+    const continued = await dispatchRunStart(params);
+    expect(continued.error).toBeUndefined();
+    await harness.controller.awaitRun(continued.result!.runId);
+    expect(continued.result).toMatchObject({ continuationOf: { sourceRunId: source.result!.runId, sourceHeadCommit: HEAD_COMMIT } });
+    const registered = harness.recorded.length;
+    const retry = await dispatchRunStart(params);
+    expect(retry.result).toMatchObject({ runId: continued.result!.runId, replayed: true });
+    expect(harness.recorded).toHaveLength(registered);
+    const changed = await dispatchRunStart({ ...params, maxCostUsd: 2 });
+    expect(changed.error).toMatchObject({ message: expect.stringContaining("different instructions") });
+  });
+
+  it.each([
+    { continuation: { sourceRunId: "source", requestId: "request" } },
+    { continuation: { sourceRunId: "source", requestId: "request" }, maxCostUsd: 1 },
+    { continuation: { sourceRunId: "source", requestId: "bad request" }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+    { continuation: { sourceRunId: "source", requestId: "request", sourceHeadCommit: HEAD_COMMIT }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+  ])("rejects invalid continuation transport before creating a run: %j", async continuation => {
+    const response = await dispatchRunStart(startParams(continuation));
+    expect(response.error?.code).toBe(-32602);
+    expect(harness.recorded).toEqual([]);
+  });
+
   it("advertises the run.start capability exactly when the workflow seam exists", async () => {
     const { initialize } = await initializedConnection();
+    expect((initialize as unknown as { result: { capabilities: JsonObject } }).result.capabilities["run.start.lightMode"]).toBe(true);
     const capabilities = (
       initialize as unknown as {
         result: { capabilities: { "daemon.methods": Record<string, boolean> } };
@@ -512,6 +562,7 @@ describe("daemon dispatcher — run.start", () => {
     expect(
       bareInitialize.result.capabilities["daemon.methods"]["run.start"],
     ).toBe(false);
+    expect((bareInitialize.result.capabilities as JsonObject)["run.start.lightMode"]).toBeUndefined();
     const unimplemented = (await bareConnection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
       id: "start",
@@ -554,6 +605,49 @@ describe("daemon dispatcher — run.start", () => {
     });
   });
 
+  it("freezes Light mode for a Goal and keeps omitted mode standard", async () => {
+    const light = await dispatchRunStart(startParams({ lightMode: true }));
+    expect(light.error).toBeUndefined();
+    expect(light.result?.lightMode).toBe(true);
+    expect(seenPolicies[0]?.lightMode).toBe(true);
+    await harness.controller.awaitRun(light.result!.runId);
+    const lightSpec = (harness.repo.getEffect(light.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
+    expect(lightSpec.lightMode).toBe(true);
+    expect(harness.recorded[0]?.metadata?.lightMode).toBe(true);
+
+    const standard = await dispatchRunStart(startParams());
+    expect(standard.error).toBeUndefined();
+    expect(standard.result?.lightMode).toBe(false);
+    expect(seenPolicies[1]?.lightMode).toBeUndefined();
+    await harness.controller.awaitRun(standard.result!.runId);
+    const standardSpec = (harness.repo.getEffect(standard.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
+    expect(standardSpec.lightMode).toBeUndefined();
+  });
+
+  it("rejects a non-boolean Light mode before opening a run", async () => {
+    const response = await dispatchRunStart(startParams({ lightMode: "true" }));
+    expect(response.error?.code).toBe(-32602);
+    expect(seenPolicies).toEqual([]);
+  });
+
+  it("inherits a source Goal's Light mode for continuations, with an explicit override", async () => {
+    const source = await dispatchRunStart(startParams({ lightMode: true }));
+    await harness.controller.awaitRun(source.result!.runId);
+    const continuation = { sourceRunId: source.result!.runId, requestId: "light-inherit" };
+    const inherited = await dispatchRunStart(startParams({ continuation, maxCostUsd: 1,
+      deadlineAt: "2099-01-01T00:00:00.000Z" }));
+    expect(inherited.error).toBeUndefined();
+    expect(inherited.result?.lightMode).toBe(true);
+    expect(seenPolicies[1]?.lightMode).toBe(true);
+    await harness.controller.awaitRun(inherited.result!.runId);
+    const overridden = await dispatchRunStart(startParams({ continuation: { ...continuation, requestId: "light-override" },
+      lightMode: false, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" }));
+    expect(overridden.error).toBeUndefined();
+    expect(overridden.result?.lightMode).toBe(false);
+    expect(seenPolicies[2]?.lightMode).toBe(false);
+    await harness.controller.awaitRun(overridden.result!.runId);
+  });
+
   it("rejects a missing or empty goal with a typed INVALID_ARGUMENT error", async () => {
     const missing = await dispatchRunStart({
       cwd: harness.repoDir,
@@ -593,23 +687,17 @@ describe("daemon dispatcher — run.start", () => {
     );
   });
 
-  it("surfaces the controller's at-least-one-verification policy faithfully", async () => {
-    const omitted = await dispatchRunStart(
-      startParams({ requiredVerification: undefined }),
-    );
-    expect(omitted.error).toMatchObject({
-      code: -32602,
-      data: { code: "INVALID_ARGUMENT" },
+  it.each([undefined, []])("accepts planner-selected verification when client checks are %s", async (requiredVerification) => {
+    const { result, error } = await dispatchRunStart(startParams({ requiredVerification }));
+    expect(error).toBeUndefined();
+    expect(result).toBeDefined();
+    await harness.controller.awaitRun(result!.runId);
+    expect(harness.repo.getCurrentTerminalResult(result!.runId)).toMatchObject({ status: "completed" });
+    expect(harness.repo.getEffect(result!.runId, "workflow.intake")?.evidence).toMatchObject({
+      spec: { requiredVerification: [] },
     });
-    expect(String((omitted.error as { message?: unknown }).message)).toContain(
-      "at least one verification command",
-    );
-    const empty = await dispatchRunStart(
-      startParams({ requiredVerification: [] }),
-    );
-    expect(empty.error).toMatchObject({
-      code: -32602,
-      data: { code: "INVALID_ARGUMENT" },
+    expect(harness.repo.getEffect(result!.runId, "workflow.plan")?.evidence).toMatchObject({
+      requiredVerification: [{ label: "npm test", script: "npm test" }],
     });
   });
 
@@ -626,5 +714,31 @@ describe("daemon dispatcher — run.start", () => {
       startParams({ permissionMode: "yolo" }),
     );
     expect(badMode.error).toMatchObject({ code: -32602 });
+  });
+});
+
+
+describe("run.start credential authority", () => {
+  const secret = "goal-current-credential-sentinel-7a132";
+  it("passes ephemeral bootstrap context and never persists the snapshot", async () => {
+    const { result, error } = await dispatchRunStart({ ...startParams(), envOverrides: { DEEPSEEK_API_KEY: secret } });
+    expect(error).toBeUndefined();
+    expect(seenOverrides?.DEEPSEEK_API_KEY).toBe(secret);
+    expect(seenOverrides?.OPENAI_API_KEY).toBe("");
+    await harness.controller.awaitRun(result!.runId);
+    expect(harness.repo.getCurrentTerminalResult(result!.runId)?.status).toBe("completed");
+    const scan = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) scan(path);
+        else if (entry.isFile()) expect(readFileSync(path).includes(Buffer.from(secret)), path).toBe(false);
+      }
+    };
+    scan(harness.home); scan(harness.repoDir);
+    expect(JSON.stringify([harness.recorded, harness.warnings, result])).not.toContain(secret);
+  });
+  it.each([{ NOT_ALLOWED: "value" }, { DEEPSEEK_API_KEY: 42 }, [], "secret", null])("rejects invalid overrides: %j", async (envOverrides) => {
+    const { error, result } = await dispatchRunStart({ ...startParams(), envOverrides } as JsonObject);
+    expect(result).toBeUndefined(); expect(error?.code).toBe(-32602); expect(harness.recorded).toEqual([]);
   });
 });

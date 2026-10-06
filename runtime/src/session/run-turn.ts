@@ -41,6 +41,7 @@
  */
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
+import { isLightPrintRun } from "../prompts/light-print.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -60,7 +61,10 @@ import {
   LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
 } from "../elicitation/ledger-wallet-cli.js";
 import { startCodeModeTurnWorker } from "../tools/code-mode/turn-host.js";
-import { createTurnFailedEvent } from "../contracts/turn-terminal.js";
+import {
+  APPROVAL_DENIED_ABORT_REASON,
+  createTurnFailedEvent,
+} from "../contracts/turn-terminal.js";
 import {
   createTokenAccountingConfigurationRevision,
   createTokenAccountingRequest,
@@ -82,6 +86,30 @@ import {
   continuationNudge,
   injectNudgeMessage,
 } from "../phases/continuation-nudge.js";
+import {
+  CONTEXT_IMAGE_BUDGET_ENV,
+  boundContextImageBytes,
+  resolveContextImageBudgetBytes,
+} from "./query-image-budget.js";
+import {
+  imageRoute,
+  pruneRejectedImages,
+  rejectedImagesFor,
+  rememberRequestImageRoute,
+  withholdImagesForModel,
+  withholdUndecodableToolImages,
+  type ModelImagePolicy,
+} from "./query-image-safety.js";
+import { resolveImageInputSupport } from "../llm/capabilities.js";
+import { readProviderConfig } from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
+import {
+  completionGate,
+  planCompletionGateForTurn,
+} from "../phases/completion-gate.js";
+import { goalGate, goalGateApplies } from "../phases/goal-gate.js";
+import { buildGoalKickoffMessage } from "../goal/goal.js";
+import { getSessionGoal } from "../goal/session-goal.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
@@ -93,13 +121,16 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
   type LiveInstructionPolicy,
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import {
+  appendVolatileInstructions,
+  sessionTailCacheEnabled,
+} from "./session-tail-cache.js";
 import { projectRetainedAttachments } from "./attachment-retention.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
@@ -109,13 +140,17 @@ import {
   type StreamModelRequestContract,
 } from "../phases/stream-model.js";
 import {
-  isMediaTooLargeMessage,
   isPartialProviderResponseError,
   isTransientProviderError,
-  isWithheld413Message,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import { waitForProviderRetry } from "../recovery/provider-wait.js";
+import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
+import {
+  STREAM_RETRY_WINDOW_MS,
+  STREAM_STALL_RETRY_BUDGET_MS,
+  StreamProgressError,
+} from "../llm/stream-progress.js";
 import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
@@ -129,7 +164,7 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
-  llmMessageToCheckpointResponseItem,
+  createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
 import {
@@ -142,8 +177,22 @@ import type {
   SessionTaskAbortContext,
   SessionTaskRunContext,
   RunningTask,
+  TurnAbortReason,
 } from "./tasks.js";
 import { emitError, emitWarning } from "./event-log.js";
+import {
+  DEADLINE_REACHED_CAUSE,
+  DEADLINE_REACHED_MESSAGE,
+  armRunDeadline,
+  claimDeadlineReserveAnnouncement,
+  deadlineRemainingMs,
+  deadlineReserveReminder,
+  deadlineTurnReminder,
+  formatRemainingDuration,
+  isDeadlineAbort,
+  projectToolResultTimeRemaining,
+  runDeadlineOf,
+} from "./run-deadline.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
 import {
   advanceModelSampleOrdinal,
@@ -174,11 +223,6 @@ import {
   resolveBehavioralConfig,
   type BehavioralConfig,
 } from "./behavioral-backstop.js";
-import {
-  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
-} from "./editor-interaction.js";
-import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import {
   buildPersonalitySpecUpdateMessage,
@@ -207,6 +251,7 @@ import {
   isRetryableStreamError,
   streamRetryErrorStatus,
   streamRetryNoticeMessage,
+  isStreamProgressStop,
   suppressInterruptedStreamToolHistory,
   type InterruptedStreamHistoryState,
 } from "./run-turn-stream-retry.js";
@@ -217,7 +262,6 @@ import {
 } from "./run-turn-query-messages.js";
 import {
   extractLastUserText,
-  insertContextMessagesBeforeCurrentUser,
   placeRetainedAttachments,
 } from "./run-turn-attachments.js";
 import {
@@ -234,6 +278,7 @@ import {
   runAutoCompact,
   runPreSamplingCompact,
 } from "./run-turn-compaction.js";
+import { compactionExhaustedReasonText } from "../services/compact/ladder.js";
 
 // Declarations that moved to the run-turn-* sibling modules. Re-exported so
 // every importer of run-turn.js keeps its surface.
@@ -241,9 +286,6 @@ export {
   streamRetryNoticeMessage,
   isRetryableStreamError,
 } from "./run-turn-stream-retry.js";
-export {
-  EDITOR_INTERACTION_MAX_QUERY_TOKENS,
-} from "./run-turn-query-messages.js";
 export {
   insertContextMessagesAfterLeadingSystem,
   insertContextMessagesBeforeCurrentUser,
@@ -263,7 +305,13 @@ export type {
   AutoCompactImpl,
 } from "./run-turn-compaction.js";
 
+import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
+
 export interface RunTurnOptions {
+  /** Explicit output contract; never inferred from user prose. */
+  readonly exactOutput?: boolean;
+  /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
+  readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
   /** Classifies a supplemental prompt without allowing it to replace core instructions. */
   readonly systemPromptTrust?: "trusted_internal" | "workspace_role";
@@ -365,10 +413,40 @@ class RegularTurnTask implements SessionTask {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-export {
-  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
-} from "./editor-interaction.js";
+/**
+ * The transcript text for a turn the user ended by denying approval. It
+ * says what was denied and, for a denied unsandboxed retry, that the call
+ * had already run once inside the sandbox.
+ */
+function approvalDeniedExplanation(
+  denied: readonly { readonly toolName: string; readonly metadata?: Record<string, unknown> }[],
+): string {
+  const names = (stage: "before_execution" | "sandbox_escalation") => [
+    ...new Set(
+      denied
+        .filter((result) =>
+          (result.metadata?.approvalDeniedStage === "sandbox_escalation") ===
+          (stage === "sandbox_escalation"))
+        .map((result) => result.toolName),
+    ),
+  ];
+  const sentences: string[] = [];
+  const beforeExecution = names("before_execution");
+  if (beforeExecution.length > 0) {
+    sentences.push(
+      `Approval was denied for ${beforeExecution.join(", ")}. The turn stopped without running the denied action.`,
+    );
+  }
+  const retried = names("sandbox_escalation");
+  if (retried.length > 0) {
+    sentences.push(
+      `Approval was denied to run ${retried.join(", ")} again without the sandbox. ` +
+        `${retried.join(", ")} already ran once inside the sandbox, which blocked it; ` +
+        "anything that attempt changed before the block remains, and the turn stopped without the unsandboxed retry.",
+    );
+  }
+  return sentences.join(" ");
+}
 
 function mergeSignals(
   a: AbortSignal | undefined,
@@ -476,6 +554,8 @@ function terminalToStopReason(
     case "max_budget_usd":
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
+    case "effect_review_required":
+    case "deadline_reached":
       return reason;
     default:
       return "error";
@@ -501,8 +581,7 @@ function emitTurnWarning(
   session: Session,
   cause:
     | typeof PRE_SAMPLING_COMPACT_FAILED_CAUSE
-    | typeof MID_TURN_COMPACT_FAILED_CAUSE
-    | EditorRequestFailureCause,
+    | typeof MID_TURN_COMPACT_FAILED_CAUSE,
   message: string,
 ): void {
   session.emit({
@@ -527,33 +606,6 @@ function compactFailedTurnComplete(
     content,
     usage,
     stopReason: "compact_failed",
-    error,
-  };
-}
-
-const EDITOR_INTERACTION_LIMIT_CAUSE = "editor_interaction_limit";
-const EDITOR_PROPOSAL_MISSING_CAUSE = "editor_proposal_missing";
-const EDITOR_RECOVERY_BLOCKED_CAUSE = "editor_interaction_recovery_blocked";
-
-type EditorRequestFailureCause =
-  | typeof EDITOR_INTERACTION_LIMIT_CAUSE
-  | typeof EDITOR_PROPOSAL_MISSING_CAUSE
-  | typeof EDITOR_RECOVERY_BLOCKED_CAUSE;
-
-function isEditorRecoveryBlockedError(error: Error): boolean {
-  return error.message.startsWith(`${EDITOR_RECOVERY_BLOCKED_CAUSE}:`);
-}
-
-function editorRequestFailedTurnComplete(
-  content: string,
-  usage: LLMUsage,
-  error: Error,
-): Extract<PhaseEvent, { type: "turn_complete" }> {
-  return {
-    type: "turn_complete",
-    content,
-    usage,
-    stopReason: "editor_request_failed",
     error,
   };
 }
@@ -624,10 +676,6 @@ function launchTerminalPostSampling(
   querySource: string,
   signal?: AbortSignal,
 ): void {
-  // MagicDocs and session-memory post-sampling can launch background work
-  // that writes outside the active buffer proposal. Editor turns never
-  // inherit those ordinary Agent-side effects.
-  if (ctx.editorInteraction !== undefined) return;
   launchMagicDocsPostSampling(state, session, querySource, signal);
   launchSessionMemoryPostSampling(state, session, ctx, querySource, signal);
 }
@@ -654,6 +702,153 @@ type PreparedSamplingRequestBoundary =
       readonly kind: "terminal";
       readonly result: SamplingRequestResult;
     };
+
+/**
+ * What the registry knows about image input for the model this request goes
+ * to: the same provider and model the stream phase dispatches to, including
+ * a pending fallback model, with any configured capability override.
+ */
+function modelImagePolicy(
+  session: Session,
+  ctx: TurnContext,
+  state: TurnState,
+  config: AgenCConfig,
+): ModelImagePolicy {
+  const provider = session.services.provider.name;
+  const requested =
+    state.pendingAdmissionFallback?.toModel ??
+    session.config?.model ??
+    ctx.config.model ??
+    ctx.modelInfo.slug;
+  const model = providerLocalModelSlug(requested ?? "", provider);
+  let overrides: Parameters<typeof resolveImageInputSupport>[0]["overrides"];
+  try {
+    overrides = readProviderConfig(config, provider)?.capability_overrides;
+  } catch {
+    overrides = undefined;
+  }
+  return {
+    imageInput: resolveImageInputSupport({ provider, model, overrides }),
+    modelLabel: `${provider}/${model}`,
+    route: imageRoute(provider, model),
+  };
+}
+
+/** One warning per distinct outcome within a turn, like the image budget's. */
+function reportWithheldImages(
+  session: Session,
+  state: TurnState,
+  counts: {
+    readonly unsupported: number;
+    readonly rejected: number;
+    readonly undecodable: number;
+  },
+): void {
+  const total = counts.unsupported + counts.rejected + counts.undecodable;
+  const tracked = state as TurnState & { contextImagesWithheld?: string };
+  if (total === 0) {
+    tracked.contextImagesWithheld = undefined;
+    return;
+  }
+  const signature = `${counts.unsupported}:${counts.rejected}:${counts.undecodable}`;
+  if (tracked.contextImagesWithheld === signature) return;
+  tracked.contextImagesWithheld = signature;
+  const reasons = [
+    counts.unsupported > 0
+      ? `${counts.unsupported} the model cannot view`
+      : undefined,
+    counts.undecodable > 0
+      ? `${counts.undecodable} not a valid image`
+      : undefined,
+    counts.rejected > 0
+      ? `${counts.rejected} refused earlier by the provider`
+      : undefined,
+  ].filter((reason): reason is string => reason !== undefined);
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "context_images_withheld",
+        message:
+          `${total} image(s) replaced by a text note in the request: ` +
+          reasons.join(", "),
+      },
+    },
+  });
+}
+
+function projectSamplingImages(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  currentConfig: AgenCConfig,
+): void {
+  // Leave out every image the selected model must not receive: all of them
+  // when the registry knows the model is text-only, and any image this
+  // provider and model refused earlier in this session. Before the byte
+  // budget, so the budget counts only images that are sent.
+  const imagePolicy = modelImagePolicy(
+    session,
+    ctx,
+    state,
+    currentConfig,
+  );
+  rememberRequestImageRoute(state, imagePolicy.route);
+  // A refusal matters only while its image can be sent again.
+  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
+  const withheldForModel = withholdImagesForModel(
+    state.messagesForQuery,
+    imagePolicy,
+    rejectedImagesFor(session, imagePolicy.route),
+  );
+  state.messagesForQuery = withheldForModel.messages;
+
+  // Bound the fully assembled query, including fresh image mentions from
+  // attachment producers. Durable history and retained attachments keep
+  // every image; only this request projection changes.
+  const imageBudgetBytes = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  const boundedImages = boundContextImageBytes(
+    state.messagesForQuery,
+    imageBudgetBytes,
+  );
+  if (boundedImages.omitted > 0) {
+    state.messagesForQuery = boundedImages.messages;
+    const tracked = state as TurnState & { contextImagesOmitted?: number };
+    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
+      tracked.contextImagesOmitted = boundedImages.omitted;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "context_images_omitted",
+            message:
+              `${boundedImages.omitted} inline image(s) left out of the request: ` +
+              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
+              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+          },
+        },
+      });
+    }
+  }
+
+  // A tool-result image whose bytes are not a complete image is refused by
+  // every provider, and because tool results are replayed, by every request
+  // after it. After the budget, so only images still on the wire are decoded.
+  const withheldUndecodable = withholdUndecodableToolImages(
+    state.messagesForQuery,
+  );
+  state.messagesForQuery = withheldUndecodable.messages;
+  reportWithheldImages(session, state, {
+    unsupported: withheldForModel.unsupported,
+    rejected: withheldForModel.rejected,
+    undecodable: withheldUndecodable.undecodable,
+  });
+}
 
 async function prepareSamplingRequestBoundary(
   state: TurnState,
@@ -719,28 +914,18 @@ async function prepareSamplingRequestBoundary(
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   // Retained attachments first: producers see what the model already has in
   // front of it, and the bytes sent on earlier requests keep their place.
-  // Editor interactions project one immutable revision and stay out of it.
-  const retention =
-    ctx.editorInteraction === undefined
-      ? getAttachmentTrackingState(session).retainedAttachments
-      : undefined;
-  if (retention !== undefined) {
-    state.messagesForQuery = projectRetainedAttachments(
-      state.messagesForQuery,
-      retention,
-      permissionContext.mode,
-    ).messages;
-  }
+  state.messagesForQuery = projectRetainedAttachments(
+    state.messagesForQuery,
+    getAttachmentTrackingState(session).retainedAttachments,
+    permissionContext.mode,
+  ).messages;
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
-  if (ctx.editorInteraction === undefined) {
-    discoverDirectMcpToolMentions(session, userInput);
-  }
+  discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
-    ...(ctx.editorInteraction !== undefined
-      ? { effectsPolicy: "local_read_only" as const }
-      : {}),
     sessionKey: session,
+    lightMode: session.services.runtimeOptions?.lightMode === true,
+    lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -785,33 +970,32 @@ async function prepareSamplingRequestBoundary(
     );
     const attachmentMessages = attachmentsToMessages(attachments);
     if (attachmentMessages.length > 0) {
-      state.messagesForQuery =
-        retention === undefined
-          ? insertContextMessagesBeforeCurrentUser(
-              state.messagesForQuery,
-              attachmentMessages,
-            )
-          : placeRetainedAttachments(state, retention, attachmentMessages);
+      state.messagesForQuery = placeRetainedAttachments(
+        state,
+        getAttachmentTrackingState(session).retainedAttachments,
+        attachmentMessages,
+      );
     }
   }
-  if (retention !== undefined) state.attachmentsAnchoredForTurn = true;
+  state.attachmentsAnchoredForTurn = true;
+
+  projectSamplingImages(state, samplingContext, session, currentConfig);
+
+  // Remaining run budget on each tool result (#2503), fixed when the result
+  // completed so its bytes never change between requests. Projection only.
+  if (runDeadlineOf(session) !== undefined) {
+    state.messagesForQuery = projectToolResultTimeRemaining(
+      state.messagesForQuery,
+      session,
+    );
+  }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
-    trackingState: getAttachmentTrackingState(session),
-    turnId: ctx.subId,
-    subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
 
   return {
     kind: "request",
     samplingContext,
-    request: snapshotSamplingRequestContract({
-      ...request,
-      ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
-    }),
+    request: snapshotSamplingRequestContract(request),
   };
 }
 
@@ -838,6 +1022,7 @@ async function tryRunSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
   assistantOutputSink?: AssistantOutputStreamSink,
+  stallRetryStarted = false,
 ): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -921,49 +1106,22 @@ async function tryRunSamplingRequest(
     events.push({ type: "assistant_text", content: assistantText });
   }
 
-  if (ctx.editorInteraction !== undefined) {
-    // Editor turns are bounded to the canonical model -> trusted read/proposal
-    // tool loop. Agent recovery strategies may compact or rewrite messages,
-    // inject continuation prompts, run hooks, or switch the shared route; none
-    // of those mutations are valid inside an immutable Editor interaction.
-    //
-    // Do retain runSamplingRequest's outer reconnect wrapper: a transient
-    // same-model transport retry replays the already-snapshotted request and
-    // therefore does not change the prompt, model, or tool surface.
-    state.pendingBudgetDecision = undefined;
-    const lastAssistant = state.assistantMessages.at(-1);
-    const blockedRecovery =
-      state.pendingTextToolCallCorrection !== undefined
-        ? "text_tool_call_correction"
-        : state.transition !== undefined
-        ? `transition:${state.transition.reason}`
-        : lastAssistant !== undefined && isWithheld413Message(lastAssistant)
-          ? "context_window"
-          : lastAssistant !== undefined && isMediaTooLargeMessage(lastAssistant)
-            ? "media_too_large"
-            : lastAssistant !== undefined &&
-                isWithheldMaxOutputTokens(lastAssistant)
-              ? "max_output_tokens"
-              : null;
-    if (blockedRecovery !== null) {
-      state.transition = undefined;
-      streamModelError ??= new StreamModelError(
-        new Error(`editor_interaction_recovery_blocked: ${blockedRecovery}`),
-      );
-    }
-  } else {
-    // Phase 3: post-sample recovery. Always runs — even on stream
-    // error — so the ladder can decide between recovery vs terminal.
-    await postSampleRecovery(state, ctx, session, signal);
+  // Phase 3: post-sample recovery. Always runs — even on stream
+  // error — so the ladder can decide between recovery vs terminal.
+  // Progress stops have their own one-retry bound. No fallback trigger may
+  // swallow them or errors from their retry and restart the recovery ladder.
+  if (streamModelError && (stallRetryStarted || isStreamProgressStop(streamModelError))) {
+    throw streamModelError;
+  }
+  await postSampleRecovery(state, ctx, session, signal);
 
-    // If recovery applied a transition (any of I-10's triggers fired),
-    // swallow the stream error and let the outer loop re-enter
-    // PrepareContext.
-    if (state.transition !== undefined) {
-      (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
-        undefined;
-      streamModelError = null;
-    }
+  // If recovery applied a transition (any of I-10's triggers fired),
+  // swallow the stream error and let the outer loop re-enter
+  // PrepareContext.
+  if (state.transition !== undefined) {
+    (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
+      undefined;
+    streamModelError = null;
   }
 
   // Still-unrecovered stream error → bubble for runSamplingRequest's
@@ -981,13 +1139,21 @@ async function tryRunSamplingRequest(
     discardExecutorForMaxOutputTokens(session, state, { appendCompletedHistory: true });
   }
 
-  // Phase 4: continuation nudge. Editor interactions never inject an
-  // Agent-side nudge/resample; their provider response is accepted as-is or
-  // failed closed by the Editor contract.
-  if (ctx.editorInteraction === undefined && !unrecoveredMaxOutputTokens &&
+  // Phase 4: continuation nudge.
+  if (!unrecoveredMaxOutputTokens &&
       state.textToolCallCorrectionFailure === undefined &&
       state.transition?.reason !== "text_tool_call_correction") {
     await continuationNudge(state, ctx, session, signal);
+    // Phase 4b: the non-interactive completion gate judges a tool-free final
+    // answer only when the nudge left the sample alone.
+    if (state.transition === undefined) {
+      // Phase 4c: an active `/goal` governs the answer instead. The two
+      // never both act, so the model gets one request, not two.
+      const governedByGoal = await goalGate(state, ctx, session, signal);
+      if (!governedByGoal) {
+        await completionGate(state, ctx, session, signal);
+      }
+    }
   }
 
   return {
@@ -1048,9 +1214,8 @@ async function runSamplingRequest(
   querySource: string,
   assistantOutputSink?: AssistantOutputStreamSink,
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
+  beforeOutageRetry?: () => void,
 ): Promise<SamplingRequestResult> {
-  const trackingState = getAttachmentTrackingState(session);
-  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
   let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
@@ -1061,9 +1226,6 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
   if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
-    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
-      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
-    }
     prepared = await prepareSamplingRequestBoundary(
       state, ctx, session, signal, events, querySource,
     );
@@ -1078,100 +1240,131 @@ async function runSamplingRequest(
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
   let outageRetries = 0;
-  for (;;) {
-    let retryBlocked = false;
-    const outcome = await reconnectWithBackoff<SamplingRequestResult>({
-      session,
-      signal,
-      // One initial provider call plus the five recovery-ladder reservations.
-      // The reservation hook remains authoritative when another recovery path
-      // has already consumed part of the shared A1 ladder.
-      maxAttempts: MAX_RECOVERY_REENTRIES + 1,
-      attempt: () =>
-        tryRunSamplingRequest(
-          state,
-          samplingContext,
-          session,
-          request,
-          signal,
-          events,
-          assistantOutputSink,
-        ),
-      isTransient: isTransientSamplingError,
-      onTransientRetry: async (attempt, err) => {
-        const blockedReason = interruptedStreamRetryBlockReason(state, session);
-        if (blockedReason !== null) {
-          retryBlocked = true;
-          suppressInterruptedStreamToolHistory(state);
-          cancelQueuedInterruptedTools(state);
+  let stallRetryStarted = false;
+  const stallRetryController = new AbortController();
+  signal = AbortSignal.any([signal, stallRetryController.signal]);
+  let stallRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    for (;;) {
+      let retryBlocked = false;
+      const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+        session,
+        signal,
+        // One initial provider call plus the five recovery-ladder reservations.
+        // The reservation hook remains authoritative when another recovery path
+        // has already consumed part of the shared A1 ladder.
+        maxAttempts: MAX_RECOVERY_REENTRIES + 1,
+        giveUpMs: STREAM_RETRY_WINDOW_MS,
+        attempt: () =>
+          tryRunSamplingRequest(
+            state,
+            samplingContext,
+            session,
+            request,
+            signal,
+            events,
+            assistantOutputSink,
+            stallRetryStarted,
+          ),
+        isTransient: isTransientSamplingError,
+        onTransientRetry: async (attempt, err) => {
+          // A stopped stream gets at most one new physical request, including
+          // when that retry fails for a different transient reason.
+          if (stallRetryStarted) return false;
+          const progressStop = isStreamProgressStop(err);
+          const blockedReason = interruptedStreamRetryBlockReason(state, session);
+          if (blockedReason !== null) {
+            retryBlocked = true;
+            suppressInterruptedStreamToolHistory(state);
+            cancelQueuedInterruptedTools(state);
+            emitError(session, session.nextInternalSubId(), {
+              cause: "stream_disconnected",
+              message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+              provider: session.services.provider.name,
+              status: streamRetryErrorStatus(err),
+              streamError: true,
+            });
+            return false;
+          }
+          const reservation = await reserveRecoveryReentry(session, state, {
+            triggerName: "reconnect",
+          });
+          if (reservation.kind !== "reserved") {
+            // The fast ladder is spent. Whether the turn now waits for the
+            // provider or ends is decided below, once the outcome is known.
+            return false;
+          }
+          cleanupInterruptedStreamAttempt(state, session, err);
+          if (progressStop) {
+            stallRetryStarted = true;
+            session.resetProviderIncrementalState();
+            stallRetryTimer = setTimeout(() => {
+              stallRetryController.abort(new StreamProgressError(
+                session.services.provider.name, "stream_retry_budget",
+              ));
+            }, STREAM_STALL_RETRY_BUDGET_MS);
+            stallRetryTimer.unref?.();
+          }
           emitError(session, session.nextInternalSubId(), {
             cause: "stream_disconnected",
-            message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+            message: streamRetryNoticeMessage(
+              err,
+              progressStop ? 1 : attempt,
+              progressStop ? 2 : MAX_RECOVERY_REENTRIES + 1,
+            ),
             provider: session.services.provider.name,
             status: streamRetryErrorStatus(err),
             streamError: true,
           });
-          return false;
-        }
-        const reservation = await reserveRecoveryReentry(session, state, {
-          triggerName: "reconnect",
-        });
-        if (reservation.kind !== "reserved") {
-          // The fast ladder is spent. Whether the turn now waits for the
-          // provider or ends is decided below, once the outcome is known.
-          return false;
-        }
-        cleanupInterruptedStreamAttempt(state, session, err);
-        emitError(session, session.nextInternalSubId(), {
-          cause: "stream_disconnected",
-          message: streamRetryNoticeMessage(
-            err,
-            attempt,
-            MAX_RECOVERY_REENTRIES + 1,
-          ),
-          provider: session.services.provider.name,
-          status: streamRetryErrorStatus(err),
-          streamError: true,
-        });
-        return true;
-      },
-    });
+          return true;
+        },
+      });
 
-    if (outcome.kind === "ok") return outcome.value;
-    if (outcome.kind === "aborted") {
-      throw samplingAbortError(signal, outcome.reason);
-    }
-    // The fast ladder is exhausted. A provider that is down for minutes is
-    // not the turn's fault (#2212): wait with a slow backoff and try again,
-    // within the operator's patience, unless retrying is unsafe.
-    const lastError = outcome.lastError;
-    const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
-    const canWait =
-      !retryBlocked &&
-      outage.waitMs > 0 &&
-      waitedMs + delayMs <= outage.waitMs &&
-      isTransientSamplingError(lastError);
-    if (!canWait) {
-      if (!retryBlocked) {
-        suppressInterruptedStreamToolHistory(state);
-        cancelQueuedInterruptedTools(state);
+      if (outcome.kind === "ok") return outcome.value;
+      if (outcome.kind === "aborted") {
+        throw samplingAbortError(signal, outcome.reason);
       }
-      if (lastError instanceof Error) throw lastError;
-      throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      // The fast ladder is exhausted. A provider that is down for minutes is
+      // not the turn's fault (#2212): wait with a slow backoff and try again,
+      // within the operator's patience, unless retrying is unsafe.
+      const lastError = outcome.lastError;
+      const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
+      const canWait =
+        !retryBlocked &&
+        !stallRetryStarted &&
+        !isStreamProgressStop(lastError) &&
+        outage.waitMs > 0 &&
+        waitedMs + delayMs <= outage.waitMs &&
+        isTransientSamplingError(lastError);
+      if (!canWait) {
+        if (!retryBlocked) {
+          suppressInterruptedStreamToolHistory(state);
+          cancelQueuedInterruptedTools(state);
+        }
+        if (lastError instanceof Error) throw lastError;
+        throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      }
+      outageRetries += 1;
+      waitedMs += delayMs;
+      cleanupInterruptedStreamAttempt(state, session, lastError);
+      const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+      await waitForProviderRetry({
+        session,
+        cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+        message: rateLimitNotice ??
+          (`${session.services.provider.name} is unavailable. ` +
+            `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+            `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+        delayMs,
+        wait: () => abortableSleep(delayMs, signal),
+      });
+      if (signal.aborted) throw samplingAbortError(signal, "aborted");
+      // The fast recovery counter remains spent. This is a new physical sample,
+      // so persist a distinct identity without reusing its unknown reservation.
+      beforeOutageRetry?.();
     }
-    outageRetries += 1;
-    waitedMs += delayMs;
-    cleanupInterruptedStreamAttempt(state, session, lastError);
-    emitWarning(
-      session.eventLog,
-      session.nextInternalSubId(),
-      "provider_outage_wait",
-      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
-        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
-        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
-    );
-    await abortableSleep(delayMs, signal);
-    if (signal.aborted) throw samplingAbortError(signal, "aborted");
+  } finally {
+    clearTimeout(stallRetryTimer);
   }
 }
 
@@ -1217,6 +1410,8 @@ async function preparedRequestFitsContext(
   const accounting = await tokenAccountingService.count(createTokenAccountingRequest({
     provider: providerName,
     model,
+    // Same scope as admission, so the compaction preflight and the admitted request see one calibrated estimate.
+    ...(session.conversationId ? { calibrationScope: session.conversationId } : {}),
     messages: accountingProjection.messages,
     options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
@@ -1240,7 +1435,10 @@ async function preparedRequestFitsContext(
   // Admission may lower the output ceiling while retaining every input token.
   // Checking the nominal ceiling here would force compaction on requests the
   // actual provider boundary can safely admit, notably small Ollama windows.
-  return fitOutputReservationToContext(accounting, window, maxOutputTokens) !== undefined;
+  return fitOutputReservationToContext(
+    accounting, window, maxOutputTokens,
+    profile?.contextSafetyBufferTokens ?? 0,
+  ) !== undefined;
 }
 
 function isTransientSamplingError(err: unknown): boolean {
@@ -1263,9 +1461,16 @@ function samplingAbortError(signal: AbortSignal, fallback: unknown): StreamModel
   );
 }
 
-function errorSummary(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+function turnSignalAbortReason(reason: unknown): TurnAbortReason {
+  switch (reason) {
+    case "daemon_shutdown":
+    case "interrupted":
+    case "replaced":
+    case "review_ended":
+      return reason;
+    default:
+      return "interrupted";
+  }
 }
 
 /**
@@ -1411,6 +1616,7 @@ export async function drainInFlight(
           toolName,
           result.content,
           classifyUntrustedToolResult(toolName, registryTool),
+          session.services.runtimeOptions?.lightMode === true,
         );
         // Emit the tool_call_completed event so rollouts + observers
         // close the turn boundary with the synthetic result (I-8).
@@ -1499,6 +1705,55 @@ const EMPTY_RESPONSE_RETRY_TEXT =
   "Your previous response contained no visible final answer. " +
   "Return the final answer now in the assistant output channel.";
 
+/**
+ * Backoff before each empty-response retry of an unattended run (`agenc -p`),
+ * one entry per retry (#2502). A reasoning provider that answers with an
+ * empty sample twice in a row is usually a transient hiccup: Terminal-Bench
+ * `vf2-speedup-networkx__Kama2MQ` lost 3.4 hours of work to one. Nobody
+ * attached can press enter again, so the runtime waits and re-samples, and
+ * from the second retry rebinds the provider conversation so a stuck
+ * server-side continuation is not reused (as the reconnect ladder does).
+ */
+export const EMPTY_RESPONSE_RETRY_DELAYS_MS: readonly number[] = [2_000, 8_000, 30_000];
+/** An attended session keeps one immediate retry; the user can prompt again. */
+const EMPTY_RESPONSE_INTERACTIVE_RETRIES = 1;
+export const EMPTY_RESPONSE_RETRY_CAUSE = "empty_response_retry";
+
+type EmptyResponseRetryDelaysGlobal = typeof globalThis & {
+  __agencRunTurnEmptyResponseRetryDelays?: readonly number[] | null;
+};
+
+/** Test seam: override the unattended backoff ladder (null restores it). */
+export function setEmptyResponseRetryDelaysForTests(
+  delays: readonly number[] | null,
+): void {
+  (globalThis as EmptyResponseRetryDelaysGlobal).__agencRunTurnEmptyResponseRetryDelays =
+    delays;
+}
+
+function emptyResponseRetryDelays(): readonly number[] {
+  return (
+    (globalThis as EmptyResponseRetryDelaysGlobal).__agencRunTurnEmptyResponseRetryDelays ??
+    EMPTY_RESPONSE_RETRY_DELAYS_MS
+  );
+}
+
+function sessionIsUnattended(session: Session): boolean {
+  return session.services?.runtimeOptions?.nonInteractive === true;
+}
+
+function emptyResponseRetryLimit(session: Session): number {
+  return sessionIsUnattended(session)
+    ? emptyResponseRetryDelays().length
+    : EMPTY_RESPONSE_INTERACTIVE_RETRIES;
+}
+
+function emptyResponseExhaustedMessage(retries: number): string {
+  return retries === 1
+    ? "The model returned no assistant output after a retry."
+    : `The model returned no assistant output after ${retries} retries.`;
+}
+
 function injectEmptyResponseRetryMessage(state: TurnState): void {
   state.messages.push({
     role: "user",
@@ -1539,6 +1794,7 @@ export async function* runTurnKernel(
   userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
+  session.rolloutStore?.assertModelExecutionAllowed?.();
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
@@ -1598,10 +1854,14 @@ export async function* runTurnKernel(
           "Turn stopped at the cost limit before completing the task. Send a new prompt to continue.",
         no_progress:
           content || "Turn stopped because no further progress was being made.",
+        effect_review_required:
+          content ||
+          "Turn stopped: a tool effect has an unknown outcome and needs operator review (/resolve). Side-effecting tools stay blocked until it is resolved.",
+        deadline_reached: DEADLINE_REACHED_MESSAGE,
         compact_failed:
           "Turn stopped because compaction could not shrink the context.",
-        empty_response: "The model returned no assistant output after a retry.",
-        editor_request_failed: "The editor request did not complete.",
+        empty_response:
+          content || "The model returned no assistant output after a retry.",
         error: "The turn failed before completing the task.",
       };
       emitTurnFailed(
@@ -1660,7 +1920,7 @@ export async function* runTurnKernel(
   };
   session.bindProviderConversation();
 
-  const pendingInputOwnership = pendingInputOwnershipForTurn(ctx);
+  const pendingInputOwnership = pendingInputOwnershipForTurn();
   const pendingInputMessages =
     typeof session.drainPendingInputMessages === "function"
       ? session.drainPendingInputMessages(pendingInputOwnership)
@@ -1754,6 +2014,7 @@ export async function* runTurnKernel(
         ...(ledgerRootTurnGuidance !== undefined
           ? { ledgerRootTurnGuidance }
           : {}),
+        ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
         signalCleanups,
       },
     );
@@ -1788,13 +2049,15 @@ interface RunTurnKernelCommons {
     error?: unknown,
   ) => void;
   readonly emitTurnAborted: (reason: string) => void;
-  readonly emitTurnFailed: (message: string) => void;
+  readonly emitTurnFailed: (message: string, code?: string) => void;
   readonly referenceContextItem: TurnContextItem;
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
   /** Trusted, non-durable system guidance scoped to an exact root @ledger turn. */
   readonly ledgerRootTurnGuidance?: string;
+  /** Display text of the root human turn; undefined for every other turn kind. */
+  readonly rootHumanTurnText?: string;
   // Disposers for the merged abort signals built inside the kernel. The
   // outer `runTurnKernel` finally invokes these so listeners on long-lived
   // signals (the session-level abort) are removed on every turn exit.
@@ -1853,8 +2116,18 @@ async function* runTurnKernelInner(
     ...referenceContextItem,
     instructionEvidence: instructionEnvelope.evidence,
   };
+  // With session-tail caching on, per-turn guidance rides after the volatile
+  // marker so the session-fixed part of the prompt stays byte-identical
+  // across turns and remains in the provider's cached prefix.
+  const volatileTurnGuidance =
+    commons.ledgerRootTurnGuidance !== undefined &&
+    sessionTailCacheEnabled(
+      session.services.userShell?.childEnvironment ??
+        session.services.providerEnvironment,
+      ctx.modelProviderId,
+    );
   const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined
+    commons.ledgerRootTurnGuidance === undefined || volatileTurnGuidance
       ? instructionEnvelope.text
       : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
           .filter(
@@ -1862,13 +2135,16 @@ async function* runTurnKernelInner(
               typeof value === "string" && value.length > 0,
           )
           .join("\n\n");
-  const effectiveSystemPrompt =
+  const resolvedSystemPrompt =
     systemPromptWithTrustedTurnGuidance.length > 0
       ? resolveModelInstructionsForTurn(
           ctx,
           systemPromptWithTrustedTurnGuidance,
         )
       : "";
+  const effectiveSystemPrompt = volatileTurnGuidance
+    ? appendVolatileInstructions(resolvedSystemPrompt, [commons.ledgerRootTurnGuidance!])
+    : resolvedSystemPrompt;
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt.length > 0
       ? { ...opts, systemPrompt: effectiveSystemPrompt }
@@ -1948,6 +2224,9 @@ async function* runTurnKernelInner(
   // allowing an in-flight admission row to reattach after restart.
   if (opts.resume !== undefined) {
     state.messages = [...priorFull];
+    const lastUserIndex = state.messages.findLastIndex((message) => message.role === "user");
+    const completedToolResults = state.messages.slice(lastUserIndex + 1)
+      .filter((message) => message.role === "tool").length;
     // The reconstructed prefix is already on disk → anchor the persist
     // cursor at its length so it is not re-persisted.
     persistedMessageCount = state.messages.length;
@@ -1979,8 +2258,37 @@ async function* runTurnKernelInner(
           : {}),
       });
     }
+    state.messages.push({
+      role: "developer",
+      content: `The previous turn was interrupted by an app or daemon restart. ${completedToolResults} completed tool result(s) from that turn are already recorded in the conversation. Continue the unfinished user request from the recorded state and pending plan. Check the workspace before further writes. Do not repeat completed work. A tool without a settled result may have executed; check its outcome before any side-effecting retry.`,
+      runtimeOnly: { excludeFromDurableHistory: true },
+    });
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
     restoreModelSampleResumePrompt(state);
+    // The request in flight at shutdown owns its original admission row.
+    // A continuation is a new physical request, even when the old row is
+    // held_unknown, so reserve its next identity before dispatch.
+    advanceModelSampleOrdinal(state);
+  }
+  // Phase 4b eligibility is a per-turn decision; the checkpointed round
+  // counter restored above keeps a resumed turn's verification loop bounded.
+  state.completionGate = planCompletionGateForTurn({
+    ctx,
+    session,
+    isRootHumanTurn: commons.rootHumanTurnText !== undefined,
+    taskText: commons.rootHumanTurnText,
+    exactOutput: opts.exactOutput,
+  });
+  // Phase 4c: restate an active goal at the top of every root human turn. The
+  // goal is session state, not conversation, so a compacted history or a
+  // fresh user prompt still starts from the objective verbatim (goal drift
+  // grows with context length, arXiv:2505.02709).
+  if (commons.rootHumanTurnText !== undefined) {
+    const liveGoal = getSessionGoal(session);
+    if (goalGateApplies(ctx, session, liveGoal)) {
+      const tracking = getAttachmentTrackingState(session);
+      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
+    }
   }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
@@ -2001,6 +2309,11 @@ async function* runTurnKernelInner(
       : state.messages.length;
   const onCompactionReplacedHistory = (durableCount: number): void => {
     if (rolloutPersistenceActive()) persistedMessageCount = durableCount;
+    // The replacement is already durable. Seal any unsent image turn carried
+    // across a pre-request compact, then fsync a checkpoint for this exact
+    // prefix before the compaction ladder can await its next tier.
+    persistNewResponseItems();
+    emitTurnCheckpoint("iteration", { force: true });
   };
   const persistTurnRolloutBaseline = (): void => {
     if (rolloutPersistenceSuspended()) return;
@@ -2062,13 +2375,11 @@ async function* runTurnKernelInner(
     // it below — from growing ~linearly with turn count, while leaving the
     // most-recent-N tool results full and the disk rollout untouched.
     // See session-history-memory fix above.
-    if (ctx.editorInteraction === undefined) {
-      boundInMemoryToolResultContent(
-        state.messages,
-        persistedMessageCount,
-        state.messagesForQuery,
-      );
-    }
+    boundInMemoryToolResultContent(
+      state.messages,
+      persistedMessageCount,
+      state.messagesForQuery,
+    );
     const durableHistory = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message));
@@ -2126,10 +2437,12 @@ async function* runTurnKernelInner(
   // rollout) — only the cursor + content hash + the resumable TurnState
   // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
   const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
+  const projectCheckpointMessage = createCheckpointResponseItemProjector();
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
-  let checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
+  let checkpointedModelSampleOrdinal =
+    opts.resume === undefined ? state.modelSampleOrdinal : state.modelSampleOrdinal - 1;
   const emitTurnCheckpoint = (
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},
@@ -2161,7 +2474,7 @@ async function* runTurnKernelInner(
     const durablePrefix = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => llmMessageToCheckpointResponseItem(message));
+      .map((message) => projectCheckpointMessage(message));
     for (const message of durablePrefix) requireSealedToolResult(message);
     const prefixHash = computeCheckpointPrefixHashV3(
       durablePrefix,
@@ -2311,26 +2624,6 @@ async function* runTurnKernelInner(
       },
     });
   };
-  try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onAdvisoryRefusal: deferCompactionRefusal,
-    });
-  } catch (error) {
-    const underlying = compactFailureError(error);
-    emitTurnWarning(
-      session,
-      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
-      underlying.message,
-    );
-    // Pre-compact failure ends the turn; the daemon session must stay
-    // promptable.
-    await syncSessionState();
-    emitTurnComplete("", "compact_failed", underlying);
-    const terminal: Terminal = { reason: "completed", error: underlying };
-    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
-    return terminal;
-  }
-
   // Merge external opts.signal, the session-level abort, and the
   // task-local abort from `spawnTask`. `startTask` gives the running
   // task its own abort controller, which `abortAllTasks` trips; the
@@ -2348,7 +2641,47 @@ async function* runTurnKernelInner(
   // first merge can leave a listener on the long-lived session signal.
   // Hand the disposers to the outer kernel's finally so they run on every
   // exit path (completed, aborted, error, abandoned generator).
-  commons.signalCleanups.push(mergedSession.dispose, mergedTask.dispose);
+  commons.signalCleanups.push(
+    mergedSession.dispose,
+    mergedTask.dispose,
+  );
+  try {
+    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+      onAdvisoryRefusal: deferCompactionRefusal,
+      onDurableHistoryReplaced: onCompactionReplacedHistory,
+    });
+  } catch (error) {
+    const underlying = compactFailureError(error);
+    if (signal.aborted) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnAborted(turnSignalAbortReason(signal.reason));
+      const terminal: Terminal = { reason: "cancelled" };
+      yield {
+        type: "turn_complete",
+        content: "",
+        usage: EMPTY_SYNTHETIC_USAGE,
+        stopReason: "cancelled",
+        error: underlying,
+      };
+      return terminal;
+    }
+    emitTurnWarning(
+      session,
+      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
+      underlying.message,
+    );
+    // Pre-compact failure ends the turn; the daemon session must stay
+    // promptable.
+    await syncSessionState();
+    emitTurnComplete("", "compact_failed", underlying);
+    const terminal: Terminal = { reason: "completed", error: underlying };
+    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
+    return terminal;
+  }
+  // Keep the deadline's existing start point after pre-request compaction.
+  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
+  let deadlineTurnReminderInjected = false;
 
   let usage: LLMUsage = {
     promptTokens: 0,
@@ -2358,46 +2691,47 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
+  const stepTrail = new StepLimitTrail();
+  const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
-  let editorSamplingIterations = 0;
-  const finishEditorInteractionLimit = async (
-    limitKind: "sampling_iterations" | "tool_calls",
-    limit: number,
-    observed: number,
-  ): Promise<{
+  // The deadline stop (#2503): a bounded failure, not a cancellation, so the
+  // turn reports `turn_failed deadline_reached` and the print-mode CLI exits
+  // with its own code instead of the one for an operator interrupt.
+  const finishDeadlineReached = (error?: Error): {
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
-  }> => {
-    // Pair any model-emitted tool calls without dispatching them so the
-    // transcript remains structurally valid at the fail-closed boundary.
-    await drainInFlight(state, ctx, session);
-    const cause = EDITOR_INTERACTION_LIMIT_CAUSE;
-    const message =
-      `Editor interaction stopped at the request-scoped ${limitKind} ` +
-      `limit (${limit}; observed ${observed}). No additional tools ran and ` +
-      "no buffer changes were applied.";
-    const error = new Error(`${cause}: ${message}`);
-    emitTurnWarning(session, cause, message);
-    await syncSessionState();
-    emitTurnComplete(message, "editor_request_failed", error);
+  } => {
+    emitWarning(
+      session.eventLog,
+      session.nextInternalSubId(),
+      DEADLINE_REACHED_CAUSE,
+      DEADLINE_REACHED_MESSAGE,
+    );
+    emitTurnComplete(DEADLINE_REACHED_MESSAGE, "deadline_reached");
     return {
-      terminal: { reason: "completed", error },
-      event: editorRequestFailedTurnComplete(message, usage, error),
+      terminal: { reason: "deadline_reached" },
+      event: {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "deadline_reached",
+        ...(error !== undefined ? { error } : {}),
+      },
     };
   };
-  const finishCancelledIfAborted = async (): Promise<{
+  const finishCancelledIfAborted = async (
+    error?: Error,
+    abortReason?: TurnAbortReason,
+  ): Promise<{
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
   } | null> => {
     if (!signal.aborted) return null;
     await drainInFlight(state, ctx, session);
     await syncSessionState();
-    emitTurnAborted(
-      String(
-        (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
-      ),
-    );
+    if (abortReason === undefined && isDeadlineAbort(signal)) return finishDeadlineReached();
+    emitTurnAborted(abortReason ?? turnSignalAbortReason(signal.reason));
     return {
       terminal: { reason: "cancelled" },
       event: {
@@ -2405,6 +2739,7 @@ async function* runTurnKernelInner(
         content: lastContent,
         usage,
         stopReason: "cancelled",
+        ...(error !== undefined ? { error } : {}),
       },
     };
   };
@@ -2453,34 +2788,6 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    if (
-      ctx.editorInteraction !== undefined &&
-      editorSamplingIterations >= EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS
-    ) {
-      const limited = await finishEditorInteractionLimit(
-        "sampling_iterations",
-        EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-        editorSamplingIterations,
-      );
-      yield limited.event;
-      return limited.terminal;
-    }
-
-    const maxTurns = resolveMaxTurns(ctx);
-    if (state.turnCount > maxTurns) {
-      await drainInFlight(state, ctx, session);
-      await syncSessionState();
-      emitTurnComplete(lastContent, "max_turns");
-      const terminal: Terminal = { reason: "max_turns" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "max_turns",
-      };
-      return terminal;
-    }
-
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
     const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
     if (
@@ -2504,6 +2811,79 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
+    // A cross-provider allocation covers the final sample too. Reserve one
+    // of its calls without widening the consented allocation.
+    const maxTurns = Math.min(resolveMaxTurns(ctx),
+      opts.stepLimitWrapup?.maxModelCalls !== undefined
+        ? Math.max(0, opts.stepLimitWrapup.maxModelCalls - 1) : Infinity);
+    if (state.turnCount > maxTurns) {
+      await drainInFlight(state, ctx, session);
+      if (opts.stepLimitWrapup !== undefined) {
+        state.messages.push({ role: "user", content: STEP_LIMIT_WRAPUP_INSTRUCTION,
+          runtimeOnly: { excludeFromDurableHistory: true } });
+        await prepareAgenCTurnContext(state, ctx, session, turnQuerySource, signal);
+        state.messagesForQuery = projectRetainedAttachments(
+          state.messagesForQuery,
+          getAttachmentTrackingState(session).retainedAttachments,
+          session.permissionModeRegistry.current().mode,
+        ).messages;
+        projectSamplingImages(state, ctx, session, session.services.configStore!.current());
+        const wrapped = await stepLimitWrapup({ session, ctx,
+          request: buildSamplingRequestContract(state, session, ctx), signal,
+          fallback: stepTrail.fallback(lastContent) });
+        const cancelled = await finishCancelledIfAborted();
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        opts.assistantOutputSink?.reset();
+        opts.assistantOutputSink?.writeCanonicalDelta(wrapped.text);
+        lastContent = wrapped.text;
+        if (wrapped.usage) usage = cumulativeUsage(usage, wrapped.usage);
+        state.messages.push({ role: "assistant", content: lastContent });
+        session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: lastContent },
+        } });
+        yield { type: "assistant_text", content: lastContent };
+      }
+      await syncSessionState();
+      emitTurnComplete(lastContent, "max_turns");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
+      return { reason: "max_turns" };
+    }
+    if (opts.stepLimitWrapup !== undefined && !stepReminders.has(state.turnCount)) {
+      const reminder = stepLimitReminder(state.turnCount - 1, maxTurns);
+      if (reminder) {
+        state.messages.push(reminder);
+        stepReminders.add(state.turnCount);
+      }
+    }
+
+    // Run deadline (#2503): tell the model its remaining budget once per
+    // turn, and once per run when the reserve begins. Runtime-only messages:
+    // they never reach durable history, and a resumed turn gets fresh ones.
+    const runDeadline = runDeadlineOf(session);
+    if (runDeadline !== undefined) {
+      const remainingMs = deadlineRemainingMs(runDeadline);
+      if (!deadlineTurnReminderInjected) {
+        state.messages.push(deadlineTurnReminder(remainingMs));
+        deadlineTurnReminderInjected = true;
+      }
+      if (
+        remainingMs <= runDeadline.reserveMs &&
+        claimDeadlineReserveAnnouncement(session)
+      ) {
+        state.messages.push(deadlineReserveReminder(remainingMs));
+        emitWarning(
+          session.eventLog,
+          session.nextInternalSubId(),
+          "deadline_reserve",
+          `Deadline reserve entered: ${formatRemainingDuration(remainingMs)} remain; ` +
+            "the model was told to restore its best verified state and finish.",
+        );
+      }
+    }
+
     // Behavioral backstop (goal #3): the SECOND whole-turn backstop —
     // a result-aware, NON-BLOCKING watchdog for semantic non-termination
     // (every tool settles fine but the loop spins making no progress).
@@ -2513,69 +2893,67 @@ async function* runTurnKernelInner(
     // awaited). A `warn` injects a one-shot nudge and continues; a
     // `terminate` finalizes the turn with the honest `no_progress`
     // terminal — never a fabricated success.
-    if (ctx.editorInteraction === undefined) {
-      const observerTrip = state.behavioralObserverTrip;
-      const decision =
-        behavioralCfg.enabled && observerTrip !== undefined
-          ? ({ kind: "terminate", trip: observerTrip } as const)
-          : evaluateBehavioralBackstop(
-              state,
-              usage,
-              turnStartedAt,
-              behavioralCfg,
-            );
+    const observerTrip = state.behavioralObserverTrip;
+    const decision =
+      behavioralCfg.enabled && observerTrip !== undefined
+        ? ({ kind: "terminate", trip: observerTrip } as const)
+        : evaluateBehavioralBackstop(
+            state,
+            usage,
+            turnStartedAt,
+            behavioralCfg,
+          );
 
-      if (decision.kind === "warn") {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "no_progress_warning",
-              message: decision.detail,
-            },
+    if (decision.kind === "warn") {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "no_progress_warning",
+            message: decision.detail,
           },
+        },
+      });
+      if (
+        decision.injectNudge &&
+        !state.behavioralNudgeIssued &&
+        decision.nudgeText !== undefined
+      ) {
+        state.messages.push({
+          role: "user",
+          content: `<system-reminder>${decision.nudgeText}</system-reminder>`,
         });
-        if (
-          decision.injectNudge &&
-          !state.behavioralNudgeIssued &&
-          decision.nudgeText !== undefined
-        ) {
-          state.messages.push({
-            role: "user",
-            content: `<system-reminder>${decision.nudgeText}</system-reminder>`,
-          });
-          state.behavioralNudgeIssued = true;
-        }
-        // fall through — loop continues (Wink course-correction)
-      } else if (decision.kind === "terminate") {
-        const explanation = decision.trip.userMessage; // honest, specific cause
-        state.messages.push({ role: "assistant", content: explanation });
-        lastContent = explanation;
-
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "no_progress_detected",
-              message: decision.trip.detail,
-            },
-          },
-        });
-
-        await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
-        await syncSessionState(); // persist history + rollout
-        emitTurnComplete(lastContent, "no_progress");
-        const terminal: Terminal = { reason: "no_progress" };
-        yield {
-          type: "turn_complete",
-          content: lastContent,
-          usage,
-          stopReason: "no_progress",
-        };
-        return terminal;
+        state.behavioralNudgeIssued = true;
       }
+      // fall through — loop continues (Wink course-correction)
+    } else if (decision.kind === "terminate") {
+      const explanation = decision.trip.userMessage; // honest, specific cause
+      state.messages.push({ role: "assistant", content: explanation });
+      lastContent = explanation;
+
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "no_progress_detected",
+            message: decision.trip.detail,
+          },
+        },
+      });
+
+      await drainInFlight(state, ctx, session); // pair orphan tool_use → tool_result
+      await syncSessionState(); // persist history + rollout
+      emitTurnComplete(lastContent, "no_progress");
+      const terminal: Terminal = { reason: "no_progress" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "no_progress",
+      };
+      return terminal;
     }
 
     // I-13: pending provider switch — complete this turn cleanly so
@@ -2614,9 +2992,6 @@ async function* runTurnKernelInner(
     // `token_limit_reached && needs_follow_up` check.
     let modelNeedsFollowUp = false;
     try {
-      if (ctx.editorInteraction !== undefined) {
-        editorSamplingIterations += 1;
-      }
       const consumedCorrection = currentTextToolCallCorrectionPrompt(state);
       const result = await runSamplingRequest(
         state,
@@ -2653,12 +3028,21 @@ async function* runTurnKernelInner(
             },
           );
           if (!compacted) {
+            const tiers = state.compactionLadder?.tiersAttempted ?? [];
             throw new DeferredCompactionError(
-              "Compaction could not shrink the context enough for the next request and reserved output.",
+              "Compaction could not shrink the context enough for the next request and reserved output." +
+                (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
+                (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
             );
           }
           session.bindProviderConversation();
           return false;
+        },
+        () => {
+          advanceModelSampleOrdinal(state);
+          persistNewResponseItems();
+          emitTurnCheckpoint("iteration", { force: true });
+          checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
         },
       );
       for (const ev of pending) {
@@ -2716,13 +3100,12 @@ async function* runTurnKernelInner(
         // T6 gap #119: cancelled-with-error still gets `turn_aborted`
         // so rollout reconstruction sees a closed turn boundary.
         await syncSessionState();
-        emitTurnAborted(
-          String(
-            (signal as AbortSignal & { reason?: unknown }).reason ??
-              underlying.message ??
-              "cancelled",
-          ),
-        );
+        if (isDeadlineAbort(signal)) {
+          const stopped = finishDeadlineReached(underlying);
+          yield stopped.event;
+          return stopped.terminal;
+        }
+        emitTurnAborted(turnSignalAbortReason(signal.reason));
         const terminal: Terminal = { reason: "cancelled" };
         yield {
           type: "turn_complete",
@@ -2739,34 +3122,17 @@ async function* runTurnKernelInner(
         yield compactFailedTurnComplete(lastContent, usage, underlying);
         return { reason: "completed", error: underlying };
       }
-      // Editor turns refuse Agent recovery (compact / resample / route
-      // switch). A withheld 413, oversized media, or max-output-tokens
-      // result is request-scoped: the Explain/Edit ends, but mapping
-      // that to stopReason "error" latched keep-alive daemon runs.
-      if (
-        ctx.editorInteraction !== undefined &&
-        isEditorRecoveryBlockedError(underlying)
-      ) {
-        const content =
-          lastContent.length > 0 ? lastContent : underlying.message;
-        emitTurnWarning(
-          session,
-          EDITOR_RECOVERY_BLOCKED_CAUSE,
-          underlying.message,
-        );
-        await syncSessionState();
-        emitTurnComplete(content, "editor_request_failed", underlying);
-        const terminal: Terminal = { reason: "completed", error: underlying };
-        yield editorRequestFailedTurnComplete(content, usage, underlying);
-        return terminal;
-      }
       await syncSessionState();
       emitTurnFailed(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
           : "turn failed",
+        underlying instanceof StreamProgressError ? underlying.reason : undefined,
       );
-      const terminal: Terminal = { reason: "completed", error: underlying };
+      const terminal: Terminal = {
+        reason: underlying instanceof StreamProgressError ? "model_error" : "completed",
+        error: underlying,
+      };
       yield {
         type: "turn_complete",
         content: lastContent,
@@ -2836,7 +3202,7 @@ async function* runTurnKernelInner(
     // carried by `before_last_user_message` through runAutoCompact →
     // autoCompactIfNeeded → compactConversation/session-memory compact.
     const hasPendingInput = session.hasPendingInput(
-      pendingInputOwnershipForTurn(ctx),
+      pendingInputOwnershipForTurn(),
     );
     const pendingAssistantToolCalls =
       state.assistantMessages.at(-1)?.toolCalls.length ?? 0;
@@ -2893,7 +3259,6 @@ async function* runTurnKernelInner(
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (
-      ctx.editorInteraction === undefined &&
       tokenLimitReached &&
       !deferredCompaction &&
       needsFollowUpForCompact &&
@@ -2916,6 +3281,13 @@ async function* runTurnKernelInner(
           },
         );
       } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
         // Mid-turn compact failure: end
         // the turn with a warning plus compact_failed so rollout
         // reducers see a closed boundary without killing the run.
@@ -2941,7 +3313,12 @@ async function* runTurnKernelInner(
         // loop — that would spin forever with unchanged state. Surface
         // the token-limit condition as a per-turn compact_failed.
         await drainInFlight(state, ctx, session);
-        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        const reasonText = compactionExhaustedReasonText({
+          tiersAttempted: state.compactionLadder?.tiersAttempted ?? [],
+          lastSamplePromptTokens: totalUsageTokens,
+          limit: autoCompactLimit,
+          interactive: session.services?.runtimeOptions?.nonInteractive !== true,
+        });
         emitTurnWarning(
           session,
           MID_TURN_COMPACT_FAILED_CAUSE,
@@ -2975,43 +3352,44 @@ async function* runTurnKernelInner(
     if (assistantText.length > 0) lastContent = assistantText;
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
-      const hasValidatedEditorProposal = state.completedToolResults.some(
-        (result) =>
-          result.toolName === EDITOR_PROPOSAL_TOOL_NAME &&
-          result.isError !== true &&
-          typeof result.metadata?.editorProposal === "object" &&
-          result.metadata.editorProposal !== null,
-      );
-      if (
-        ctx.editorInteraction?.policy === "proposal_only" &&
-        !hasValidatedEditorProposal
-      ) {
-        const cause = EDITOR_PROPOSAL_MISSING_CAUSE;
-        lastContent =
-          "Editor edit request incomplete: the model did not return a valid " +
-          "EditorProposal. No buffer changes were made.";
-        const error = new Error(`${cause}: ${lastContent}`);
-        emitTurnWarning(session, cause, lastContent);
-        await syncSessionState();
-        emitTurnComplete(lastContent, "editor_request_failed", error);
-        const terminal: Terminal = { reason: "completed", error };
-        yield editorRequestFailedTurnComplete(lastContent, usage, error);
-        return terminal;
-      }
       // Reasoning providers can occasionally complete a response after
       // emitting only a reasoning-summary block and no assistant output. A
       // successful empty turn is indistinguishable from a hung terminal to a
-      // user. Retry once under normal admission/cost accounting with an
-      // ephemeral nudge; keep the bound at one so a broken provider cannot
-      // create an unbounded sampling loop.
+      // user. Retry under normal admission/cost accounting with an ephemeral
+      // nudge: once, immediately, when a user is attached; through the
+      // bounded backoff ladder when nobody is (#2502). The bound keeps a
+      // broken provider from creating an unbounded sampling loop. The retry
+      // happens before commit(), so it never consumes a maxTurns iteration.
       if (
-        ctx.editorInteraction === undefined &&
         assistantText.length === 0 &&
-        emptyResponseRetryCount === 0
+        emptyResponseRetryCount < emptyResponseRetryLimit(session)
       ) {
         emptyResponseRetryCount += 1;
-        injectEmptyResponseRetryMessage(state);
-        state.modelSampleResumePrompt = "empty_response";
+        const unattended = sessionIsUnattended(session);
+        const delayMs = unattended
+          ? (emptyResponseRetryDelays()[emptyResponseRetryCount - 1] ?? 0)
+          : 0;
+        const rebind = emptyResponseRetryCount >= 2;
+        emitWarning(
+          session.eventLog,
+          session.nextInternalSubId(),
+          EMPTY_RESPONSE_RETRY_CAUSE,
+          `The model returned no assistant output; retry ${emptyResponseRetryCount}/` +
+            `${emptyResponseRetryLimit(session)}` +
+            (delayMs > 0 ? ` in ${Math.round(delayMs / 1000)} s` : "") +
+            (rebind ? " with a fresh provider conversation" : ""),
+        );
+        // Rebinding the same conversation id alone keeps the stale continuation
+        // (last request, response id and output); reset it so the retry does
+        // not resume a stuck server-side continuation.
+        if (rebind) session.resetProviderIncrementalState();
+        // An abort during the wait is picked up at the loop head, which ends
+        // the turn as cancelled rather than sampling again.
+        if (delayMs > 0) await abortableSleep(delayMs, signal);
+        if (!signal.aborted) {
+          injectEmptyResponseRetryMessage(state);
+          state.modelSampleResumePrompt = "empty_response";
+        }
         continue;
       }
       await commit(state, ctx, session, signal, {
@@ -3026,6 +3404,9 @@ async function* runTurnKernelInner(
       const stopReason =
         assistantText.length === 0 ? "empty_response" : "completed";
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
+      if (stopReason === "empty_response") {
+        lastContent = emptyResponseExhaustedMessage(emptyResponseRetryCount);
+      }
       emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: "completed" };
       yield {
@@ -3061,6 +3442,7 @@ async function* runTurnKernelInner(
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
+        stepTrail.record(toolCall);
         const event: PhaseEvent = { type: "tool_call", toolCall };
         yield event;
       }
@@ -3084,14 +3466,12 @@ async function* runTurnKernelInner(
       // re-entries and compaction iterations are never recorded — a
       // structural false-positive guard for free. Synchronous mutation
       // of TurnState fields; no await, no I/O.
-      if (ctx.editorInteraction === undefined) {
-        recordBehavioralStep(
-          state,
-          lastAssistant,
-          completedByCallId,
-          behavioralCfg,
-        );
-      }
+      recordBehavioralStep(
+        state,
+        lastAssistant,
+        completedByCallId,
+        behavioralCfg,
+      );
       // Index user records by their tool-call id rather than by position:
       // results return in completion order (not toolCalls order), attachment
       // records (no toolCallId) are appended onto `toolResults` after the tool
@@ -3127,21 +3507,11 @@ async function* runTurnKernelInner(
         };
       }
     }
-    if (
-      ctx.editorInteraction !== undefined &&
-      state.editorToolCallLimitExceeded
-    ) {
-      const limited = await finishEditorInteractionLimit(
-        "tool_calls",
-        EDITOR_INTERACTION_MAX_TOOL_CALLS,
-        state.editorToolCallsAdmitted + state.editorToolCallLimitDeniedIds.size,
-      );
-      yield limited.event;
-      return limited.terminal;
-    }
     const workflowApprovalFailure = isWorkflowApprovalSession(session)
       ? state.completedToolResults
-          .filter((result) => result.isError === true)
+          // A person's denial ends the turn as their stop, below, in a
+          // workflow too. Only an automatic refusal is a workflow failure.
+          .filter((result) => result.isError === true && result.metadata?.approvalDenied !== true)
           .map((result) => workflowApprovalFailureFromMetadata(result.metadata?.approvalFailure))
           .find((failure) => failure !== undefined)
       : undefined;
@@ -3160,19 +3530,24 @@ async function* runTurnKernelInner(
       );
       if (approvalDeniedTools.length > 0) {
         session.markStoppedByUser();
-        const toolNames = [...new Set(approvalDeniedTools.map((result) => result.toolName))];
-        lastContent = `Approval was denied for ${toolNames.join(", ")}. The turn stopped without running the denied action.`;
+        lastContent = approvalDeniedExplanation(approvalDeniedTools);
         const reasons = [...new Set(approvalDeniedTools.flatMap((result) => {
           const failure = result.metadata?.approvalFailure;
           if (typeof failure !== "object" || failure === null || !("reason" in failure)) return [];
           return typeof failure.reason === "string" && failure.reason.trim().length > 0 ? [failure.reason] : [];
         }))];
         if (reasons.length > 0) lastContent += ` ${reasons.join("\n")}`;
+        // A denial the user made is their decision, not a failure: the turn
+        // stops the way a user Stop does (the session already holds as
+        // stopped by the user) and waits for the next prompt. A call denied
+        // before execution never ran; a denied unsandboxed retry keeps the
+        // effect records of the sandboxed attempt that did run. The stable
+        // reason lets clients say what was denied instead of "errored".
         const error = new Error(lastContent);
         state.messages.push({ role: "assistant", content: lastContent });
         await syncSessionState();
-        emitTurnComplete(lastContent, "error", error);
-        yield { type: "turn_complete", content: lastContent, usage, stopReason: "error", error };
+        emitTurnAborted(APPROVAL_DENIED_ABORT_REASON);
+        yield { type: "turn_complete", content: lastContent, usage, stopReason: "cancelled", error };
         return { reason: "aborted_tools", error };
       }
       await commit(state, ctx, session, signal, {
@@ -3183,21 +3558,38 @@ async function* runTurnKernelInner(
       // backstop would: the explanation goes into the transcript and the
       // terminal is the bounded `no_progress`, so hooks and subagents do
       // not mistake the halt for a completed turn.
-      const noProgressStop =
-        state.transition === undefined ? state.noProgressStop : undefined;
-      if (noProgressStop !== undefined) {
+      // The live-effect gate refusing a call nobody can review now is the
+      // other bounded tool-phase stop (`effect_review_required`, #2501); it
+      // is reported the same way and never as a completed answer.
+      const boundedStop =
+        state.transition !== undefined
+          ? undefined
+          : state.effectReviewStop !== undefined
+            ? {
+                stopReason: "effect_review_required" as const,
+                cause: "effect_review_required",
+                explanation: state.effectReviewStop.explanation,
+              }
+            : state.noProgressStop !== undefined
+              ? {
+                  stopReason: "no_progress" as const,
+                  cause: "no_progress_detected",
+                  explanation: state.noProgressStop.explanation,
+                }
+              : undefined;
+      if (boundedStop !== undefined) {
         state.messages.push({
           role: "assistant",
-          content: noProgressStop.explanation,
+          content: boundedStop.explanation,
         });
-        lastContent = noProgressStop.explanation;
+        lastContent = boundedStop.explanation;
         session.emit({
           id: session.nextInternalSubId(),
           msg: {
             type: "warning",
             payload: {
-              cause: "no_progress_detected",
-              message: noProgressStop.explanation,
+              cause: boundedStop.cause,
+              message: boundedStop.explanation,
             },
           },
         });
@@ -3208,7 +3600,7 @@ async function* runTurnKernelInner(
         continue;
       }
       launchTerminalPostSampling(state, session, ctx, turnQuerySource, signal);
-      const stopReason = noProgressStop !== undefined ? "no_progress" : "completed";
+      const stopReason = boundedStop?.stopReason ?? "completed";
       emitTurnComplete(lastContent, stopReason);
       const terminal: Terminal = { reason: stopReason };
       yield {
@@ -3243,7 +3635,6 @@ async function* runTurnKernelInner(
         getActiveContextTokenUsage(session, ctx, state),
       ) >= postToolAutoCompactLimit;
     if (
-      ctx.editorInteraction === undefined &&
       postToolTokenLimitReached &&
       !deferredCompaction &&
       (state.needsFollowUp || state.toolResults.length > 0)
@@ -3253,20 +3644,32 @@ async function* runTurnKernelInner(
       // the transaction can summarize them along with everything else,
       // instead of finding them unmapped and refusing to compact.
       persistNewResponseItems();
-      const midTurnCompacted = await runAutoCompact(
-        session,
-        ctx,
-        "before_last_user_message",
-        "context_limit",
-        "in_turn",
-        state,
-        {
-          querySource: turnQuerySource,
-          durableMessageCount: compactionDurableCount(),
-          onDurableHistoryReplaced: onCompactionReplacedHistory,
-          onAdvisoryRefusal: deferCompactionRefusal,
-        },
-      );
+      let midTurnCompacted: boolean;
+      try {
+        midTurnCompacted = await runAutoCompact(
+          session,
+          ctx,
+          "before_last_user_message",
+          "context_limit",
+          "in_turn",
+          state,
+          {
+            querySource: turnQuerySource,
+            durableMessageCount: compactionDurableCount(),
+            onDurableHistoryReplaced: onCompactionReplacedHistory,
+            onAdvisoryRefusal: deferCompactionRefusal,
+          },
+        );
+      } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        throw error;
+      }
       if (midTurnCompacted) {
         session.bindProviderConversation();
         continue;
@@ -3277,7 +3680,12 @@ async function* runTurnKernelInner(
           state.lastResponseUsage?.promptTokens ?? 0,
           getActiveContextTokenUsage(session, ctx, state),
         );
-        const reasonText = `mid_turn_compact_skipped: lastSamplePromptTokens=${postToolUsageTokens} limit=${postToolAutoCompactLimit}`;
+        const reasonText = compactionExhaustedReasonText({
+          tiersAttempted: state.compactionLadder?.tiersAttempted ?? [],
+          lastSamplePromptTokens: postToolUsageTokens,
+          limit: postToolAutoCompactLimit,
+          interactive: session.services?.runtimeOptions?.nonInteractive !== true,
+        });
         emitTurnWarning(session, MID_TURN_COMPACT_FAILED_CAUSE, reasonText);
         await syncSessionState();
         const underlying = new Error(reasonText);
@@ -3301,11 +3709,7 @@ async function* runTurnKernelInner(
     iterationIndex += 1;
     emitTurnCheckpoint("iteration");
 
-    if (ctx.editorInteraction !== undefined) {
-      // A token-target continuation is an Agent workflow loop. The Editor
-      // request remains bounded even when the shared session owns a tracker.
-      state.pendingBudgetDecision = undefined;
-    } else if (state.pendingBudgetDecision?.kind === "stop") {
+    if (state.pendingBudgetDecision?.kind === "stop") {
       await applyPendingBudgetContinuation(state, ctx, session, signal);
       if (state.transition !== undefined) {
         state.transition = undefined;
@@ -3330,6 +3734,8 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        exactOutput?: boolean;
+        stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3351,6 +3757,8 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      exactOutput: opts.exactOutput,
+      stepLimitWrapup: opts.stepLimitWrapup,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,

@@ -204,7 +204,7 @@ describe("remote descriptor credential storage", () => {
     const homePath = await mkdtemp(join(tmpdir(), "agenc-fd-oauth-stores-"));
     const prodHome = resolveSecureStorageHome({ HOME: homePath }, homePath);
     const localHome = resolveSecureStorageHome(
-      { HOME: homePath, USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" },
+      { HOME: homePath, AGENC_OAUTH_DEV_ENDPOINTS: "1", USE_LOCAL_OAUTH: "1" },
       homePath,
     );
     const customHome = resolveSecureStorageHome(

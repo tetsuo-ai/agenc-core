@@ -27,7 +27,6 @@ import {
 import { getTranscriptPath } from './sessionStorage.js'
 import { readTranscriptForLoad } from './sessionStoragePortable.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
-import { isUndercover } from './undercover.js'
 import { getSelectedProviderEnvironment } from './model/providers.js'
 import { isSessionRemoteMode } from '../session/runtime-options.js'
 
@@ -54,10 +53,6 @@ export type AttributionTexts = {
  */
 export function getAttributionTexts(): AttributionTexts {
   const environment = getSelectedProviderEnvironment()
-  if (environment.USER_TYPE === 'ant' && isUndercover()) {
-    return { commit: '', pr: '' }
-  }
-
   if (isSessionRemoteMode()) {
     const remoteSessionId = environment.AGENC_REMOTE_SESSION_ID
     if (remoteSessionId) {
@@ -283,10 +278,6 @@ export async function getEnhancedPRAttribution(
   getAppState: () => AppState,
 ): Promise<string> {
   const environment = getSelectedProviderEnvironment()
-  if (environment.USER_TYPE === 'ant' && isUndercover()) {
-    return ''
-  }
-
   if (isSessionRemoteMode()) {
     const remoteSessionId = environment.AGENC_REMOTE_SESSION_ID
     if (remoteSessionId) {

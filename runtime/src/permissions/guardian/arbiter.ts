@@ -246,6 +246,8 @@ export interface ApprovalCtx {
   /** Canonical identity of this permission occurrence, not the tool invocation. */
   readonly requestEventId?: string;
   readonly toolName: string;
+  /** Consent is a human data-transfer decision, outside tool permission modes. */
+  readonly approvalKind?: "cross_provider_spawn";
   readonly turnId: string;
   /** True when the resolver is also the tool's per-call input channel. */
   readonly requiresUserInteraction?: boolean;
@@ -553,7 +555,8 @@ async function resolveApproval(
     !requiresUserInteraction &&
     opts.guardianApprovalReviewer !== undefined &&
     shouldRouteApprovalToGuardian(opts.ctx);
-  if (shouldUseGuardian || opts.resolver) {
+  const defer = opts.ctx.invocation.session.services.deferInteractiveApprovals;
+  if (shouldUseGuardian || opts.resolver || defer !== undefined) {
     if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
       return {
         decision: { kind: "abort" },
@@ -606,6 +609,11 @@ async function resolveApproval(
               ? { reason: result.reason }
               : {}),
         };
+      }
+      if (defer !== undefined) {
+        defer(opts.ctx.toolName);
+        return { decision: { kind: "abort" }, source: "aborted",
+          reason: "background_maintenance_requires_approval" };
       }
       const decision = await opts.resolver!.request({
         ...opts.ctx,
@@ -708,8 +716,13 @@ function beginDurableApprovalJournal(
         payload: {
           callId: opts.ctx.callId,
           toolName: opts.ctx.toolName,
+          ...(opts.ctx.approvalKind !== undefined ? { kind: opts.ctx.approvalKind } : {}),
+          ...(opts.ctx.approvalKind === "cross_provider_spawn"
+            ? { crossProvider: input as unknown as import("../../app-server/protocol/index.js").CrossProviderSpawnDisclosure }
+            : {}),
           turnId: opts.ctx.turnId,
-          permissions: ["tool.use"],
+          permissions: opts.ctx.approvalKind === "cross_provider_spawn"
+            ? ["cross_provider_spawn"] : ["tool.use"],
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),
@@ -749,6 +762,9 @@ function appendDurableApprovalDecision(
           decision: result.decision.kind,
           source: result.source,
           ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          ...(result.decision.kind === "denied" && result.source === "resolver"
+            ? { decidedBy: result.decision.decidedBy ?? "runtime" }
+            : {}),
           recordedAt: new Date().toISOString(),
         },
       },

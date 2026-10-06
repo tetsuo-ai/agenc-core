@@ -1,5 +1,12 @@
+import path from "node:path";
+
 import { displayPathRelativeToBase } from "../pathDisplay.js";
-import { normalizeWorkspacePathForReferences } from "../workbench/pathReferences.js";
+
+function normalizeWorkspacePath(value: string): string {
+  const slashPath = value.replace(/\\/gu, "/");
+  if (!slashPath) return slashPath;
+  return path.posix.normalize(slashPath).replace(/\/+$/u, "");
+}
 
 export interface RipgrepMatch {
   readonly file: string;
@@ -47,7 +54,7 @@ function stripJsonLineTerminator(text: string): string {
 }
 
 export function normalizeRipgrepMatchPath(rawFile: string, cwd: string): string {
-  const file = normalizeWorkspacePathForReferences(rawFile);
-  const base = normalizeWorkspacePathForReferences(cwd);
+  const file = normalizeWorkspacePath(rawFile);
+  const base = normalizeWorkspacePath(cwd);
   return displayPathRelativeToBase(base, file);
 }

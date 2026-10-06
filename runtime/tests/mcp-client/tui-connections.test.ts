@@ -172,4 +172,17 @@ describe("projectMcpManagerToConnections (TUI MCP picker wiring)", () => {
       },
     });
   });
+
+  it("redacts projected command diagnostics without changing structural fields", () => {
+    const got = projectMcpManagerToConnections({
+      getConfiguredServers: () => [{ name: 'files', command: 'stdio', env: { TOKEN: 'stdio' } }],
+      isConnected: () => false,
+      getConnectionState: () => ({ type: 'failed', error: 'Could not start stdio' }),
+    }, value => value.replaceAll('stdio', '[REDACTED]'));
+    expect(got[0]).toMatchObject({
+      type: 'failed',
+      error: 'Could not start [REDACTED]',
+      config: { type: 'stdio', command: '[REDACTED]', env: { TOKEN: '[REDACTED]' } },
+    });
+  });
 });

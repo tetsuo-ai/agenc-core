@@ -59,6 +59,8 @@ async function bundledRegistrySkills(): Promise<readonly SkillListingEntry[]> {
  */
 export const skillListingProducer: AttachmentProducer = async (opts, tracking) => {
   if (opts.subagentDepth > 0) return [];
+  if (opts.lightMode === true &&
+      !opts.loadedTools.some(tool => tool.function.name === "Skill")) return [];
   if (!opts.skillsManager) return [];
   if (opts.signal.aborted) return [];
   const listingPresent = opts.messages.some((message) =>

@@ -14,6 +14,7 @@ import type {
 } from "../../types.js";
 import {
   LLMAuthenticationError,
+  LLMInvalidResponseError,
   LLMProviderError,
   mapLLMError,
 } from "../../errors.js";
@@ -22,14 +23,20 @@ import {
   ProviderHttpError,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
-import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
+import {
+  isFallbackTriggeredError,
+  isResampleableStreamInterruption,
+} from "../../../recovery/api-errors.js";
 import {
   assertNonEmptyApiKey,
   buildBearerAuthHeaders,
 } from "../../auth/bearer.js";
 import {
   buildAnthropicMessagesRequest,
+  markAnthropicReasoningIncludedInCompletion,
   parseAnthropicMessagesResponse,
+  readAnthropicReasoningOutputTokens,
+  readAnthropicThinkingTokenDetails,
 } from "../../wire/messages-anthropic.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { coerceUsage } from "../../wire/shared.js";
@@ -42,6 +49,7 @@ import {
 import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
+import { ANTHROPIC_FAST_MODE_BETA_HEADER } from "./fast-mode.js";
 import {
   createTokenAccountingConfigurationRevision,
   type ProviderNativeTokenCountResult,
@@ -54,6 +62,7 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   providerApiKeyEnvironmentLabel,
@@ -69,9 +78,14 @@ interface AnthropicUsageAccumulator {
   readonly input_tokens: number;
   readonly output_tokens: number;
   readonly reported: boolean;
+  /** `usage.speed` ("fast" or "standard") when the API reports it. */
+  readonly speed?: string;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
   readonly reasoning_output_tokens?: number;
+  readonly output_tokens_details?: {
+    readonly thinking_tokens: unknown;
+  };
   readonly server_tool_use?: {
     readonly web_search_requests?: number;
   };
@@ -94,6 +108,18 @@ function resolveMaxTokens(
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+function preferDefined<Key extends string, Value>(
+  key: Key,
+  primary: Value | undefined,
+  fallback: Value | undefined,
+): Partial<Record<Key, Value>> {
+  const chosen = primary ?? fallback;
+  if (chosen === undefined) return {};
+  const defined: Partial<Record<Key, Value>> = {};
+  defined[key] = chosen;
+  return defined;
 }
 
 function mergeAnthropicUsage(
@@ -119,8 +145,18 @@ function mergeAnthropicUsage(
       Number.isFinite(record.input_tokens)) ||
     (typeof record.output_tokens === "number" &&
       Number.isFinite(record.output_tokens));
+  const thinkingDetails = readAnthropicThinkingTokenDetails(record);
+  const reasoningOutputTokens =
+    typeof record.reasoning_output_tokens === "number"
+      ? record.reasoning_output_tokens
+      : undefined;
   return {
     reported,
+    ...(typeof record.speed === "string"
+      ? { speed: record.speed }
+      : usage.speed !== undefined
+        ? { speed: usage.speed }
+        : {}),
     input_tokens:
       typeof record.input_tokens === "number" &&
       Number.isFinite(record.input_tokens) &&
@@ -141,16 +177,23 @@ function mergeAnthropicUsage(
       : usage.cache_creation_input_tokens !== undefined
         ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
         : {}),
-    ...(typeof record.reasoning_output_tokens === "number"
-      ? { reasoning_output_tokens: record.reasoning_output_tokens }
-      : usage.reasoning_output_tokens !== undefined
-        ? { reasoning_output_tokens: usage.reasoning_output_tokens }
-        : {}),
-    ...(webSearchRequests !== undefined
-      ? { server_tool_use: { web_search_requests: webSearchRequests } }
-      : usage.server_tool_use !== undefined
-        ? { server_tool_use: usage.server_tool_use }
-        : {}),
+    ...preferDefined(
+      "reasoning_output_tokens",
+      reasoningOutputTokens,
+      usage.reasoning_output_tokens,
+    ),
+    ...preferDefined(
+      "output_tokens_details",
+      thinkingDetails,
+      usage.output_tokens_details,
+    ),
+    ...preferDefined(
+      "server_tool_use",
+      webSearchRequests !== undefined
+        ? { web_search_requests: webSearchRequests }
+        : undefined,
+      usage.server_tool_use,
+    ),
   };
 }
 
@@ -166,6 +209,93 @@ function parseToolInputObject(
   } catch {
     return null;
   }
+}
+
+interface AnthropicThinkingBlockState {
+  text: string;
+  signature: string;
+  redacted: boolean;
+}
+
+interface AnthropicCompletedThinkingBlock {
+  text: string;
+  signature?: string;
+  redacted: boolean;
+}
+
+function hasEmittedAnthropicStreamOutput(
+  content: string,
+  completedToolCalls: { readonly length: number },
+  toolBlocks: { readonly size: number },
+  thinkingBlocks: { readonly size: number },
+  completedThinkingBlocks: { readonly length: number },
+): boolean {
+  return (
+    content.length > 0 ||
+    completedToolCalls.length > 0 ||
+    toolBlocks.size > 0 ||
+    thinkingBlocks.size > 0 ||
+    completedThinkingBlocks.length > 0
+  );
+}
+
+function completeThinkingBlock(
+  index: number,
+  block: AnthropicThinkingBlockState,
+  completedThinkingBlocks: AnthropicCompletedThinkingBlock[],
+  onChunk: StreamProgressCallback,
+): void {
+  completedThinkingBlocks.push({
+    text: block.text,
+    ...(block.signature.length > 0 ? { signature: block.signature } : {}),
+    redacted: block.redacted,
+  });
+  onChunk({
+    content: "",
+    done: false,
+    thinkingBlockStop: { index },
+  });
+}
+
+function finalizeOpenThinkingBlocks(
+  thinkingBlocks: Map<number, AnthropicThinkingBlockState>,
+  completedThinkingBlocks: AnthropicCompletedThinkingBlock[],
+  onChunk: StreamProgressCallback,
+): void {
+  for (const [index, block] of thinkingBlocks) {
+    completeThinkingBlock(index, block, completedThinkingBlocks, onChunk);
+  }
+  thinkingBlocks.clear();
+}
+
+function isAnthropicStreamAbort(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  // Caller aborts only. stream-model's watchdog aborts options.signal, so
+  // this rethrow still lets that path convert to stream_idle. client-session's
+  // per-attempt idle watchdog never aborts options.signal; its
+  // "provider stream timed out" / "stream idle for Nms" text is not an abort
+  // here. Treating that text as transient for the #2463 ladder would be a
+  // classifier change in api-errors.ts, not this check.
+  if (signal?.aborted === true) return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return error.name === "AbortError" || code === "ABORT_ERR";
+}
+
+function thinkingFromCompletedBlocks(
+  completedThinkingBlocks: readonly AnthropicCompletedThinkingBlock[],
+): LLMResponse["thinking"] {
+  if (completedThinkingBlocks.length === 0) {
+    return undefined;
+  }
+  return completedThinkingBlocks.map((block) => ({
+    text: block.text,
+    ...(block.signature !== undefined ? { signature: block.signature } : {}),
+    redacted: block.redacted,
+    kind: "thinking" as const,
+  }));
 }
 
 function anthropicStreamFallbackCandidate(
@@ -197,6 +327,8 @@ export class AnthropicProvider implements LLMProvider {
 
   private readonly config: AnthropicProviderConfig;
   private readonly client: ProviderHttpClient;
+  /** Beta headers every request carries; fast mode adds its own per request. */
+  private readonly betaHeaderValues: readonly string[];
 
   constructor(config: AnthropicProviderConfig) {
     this.config = config;
@@ -229,6 +361,7 @@ export class AnthropicProvider implements LLMProvider {
     if (config.contextManagement) {
       betaHeaders.add(CONTEXT_MANAGEMENT_BETA_HEADER);
     }
+    this.betaHeaderValues = Object.freeze([...betaHeaders]);
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.anthropic,
@@ -264,6 +397,39 @@ export class AnthropicProvider implements LLMProvider {
     });
   }
 
+  /**
+   * Per-request headers for a shaped Messages body. Fast mode is a beta:
+   * the `anthropic-beta` header must list `fast-mode-2026-02-01` alongside
+   * the betas the client always sends, so the merged value replaces the
+   * default header only on requests that carry `speed: "fast"`.
+   */
+  private requestHeadersFor(
+    body: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, string>> {
+    if (body.speed !== "fast") return {};
+    return {
+      "anthropic-beta": [...this.betaHeaderValues, ANTHROPIC_FAST_MODE_BETA_HEADER].join(","),
+    };
+  }
+
+  /**
+   * A request asked for fast mode; say so when the API served standard speed
+   * (rate limit, capacity, or an organization without preview access), since
+   * the turn then runs at standard speed and price without any other signal.
+   */
+  private noteServedSpeed(
+    body: Readonly<Record<string, unknown>>,
+    servedSpeed: unknown,
+  ): void {
+    if (body.speed !== "fast" || servedSpeed === "fast") return;
+    this.config.emitWarning?.({
+      cause: "fast_mode_not_applied",
+      message: `${this.name}/${String(body.model)} asked for fast mode but was served at ${
+        typeof servedSpeed === "string" ? servedSpeed : "standard"
+      } speed`,
+    });
+  }
+
   private async countRequestTokens(
     request: TokenAccountingRequest,
     signal: AbortSignal,
@@ -284,6 +450,8 @@ export class AnthropicProvider implements LLMProvider {
     const {
       max_tokens: _maxTokens,
       stream: _stream,
+      // Fast mode is an inference-time setting; the counter does not take it.
+      speed: _speed,
       ...countBody
     } = inferenceBody;
     const session = this.client.createTurnSession({ wireApi: "custom" });
@@ -327,6 +495,7 @@ export class AnthropicProvider implements LLMProvider {
     consecutiveFailures: number,
     model: string = this.config.model,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
@@ -399,6 +568,7 @@ export class AnthropicProvider implements LLMProvider {
       const response = await session.requestJson<Record<string, unknown>>({
         api: "messages",
         method: "POST",
+        headers: this.requestHeadersFor(request),
         body: request,
         timeoutMs,
         signal: options?.signal,
@@ -408,6 +578,13 @@ export class AnthropicProvider implements LLMProvider {
         ),
         singleWireAttempt: options?.singleWireAttempt,
       });
+      const responseUsage = response.data.usage;
+      this.noteServedSpeed(
+        request,
+        responseUsage && typeof responseUsage === "object"
+          ? (responseUsage as Record<string, unknown>).speed
+          : undefined,
+      );
       return parseAnthropicMessagesResponse(model, response.data, {
         model,
         messages,
@@ -460,8 +637,9 @@ export class AnthropicProvider implements LLMProvider {
     streamAttempts: while (true) {
       let content = "";
       let model = requestModel;
-      let finishReason: LLMResponse["finishReason"] = "stop";
+      let stopReason = "end_turn";
       let sawMessageStop = false;
+      let sawFinalMessageDelta = false;
       let usage: AnthropicUsageAccumulator = {
         input_tokens: 0,
         output_tokens: 0,
@@ -485,11 +663,22 @@ export class AnthropicProvider implements LLMProvider {
         signature?: string;
         redacted: boolean;
       }> = [];
+      const streamHasEmittedOutput = () =>
+        hasEmittedAnthropicStreamOutput(
+          content,
+          completedToolCalls,
+          toolBlocks,
+          thinkingBlocks,
+          completedThinkingBlocks,
+        );
     try {
       const response = await session.requestStream({
         api: "messages",
         method: "POST",
-        headers: { accept: "text/event-stream" },
+        headers: {
+          accept: "text/event-stream",
+          ...this.requestHeadersFor(request),
+        },
         body: request,
         timeoutMs,
         signal: options?.signal,
@@ -675,7 +864,10 @@ export class AnthropicProvider implements LLMProvider {
               completedToolCall.arguments,
             );
             if (!parsedInput) {
-              throw new LLMProviderError(
+              // Malformed tool_use JSON is a protocol error, not a transport
+              // fault. It must rethrow even after thinking was forwarded so
+              // the turn does not persist a partial that hides the bad block.
+              throw new LLMInvalidResponseError(
                 this.name,
                 `Provider stream emitted invalid tool_use JSON for ${completedToolCall.name || completedToolCall.id}`,
               );
@@ -695,18 +887,12 @@ export class AnthropicProvider implements LLMProvider {
           }
           const thinkingBlock = thinkingBlocks.get(index);
           if (thinkingBlock) {
-            completedThinkingBlocks.push({
-              text: thinkingBlock.text,
-              ...(thinkingBlock.signature.length > 0
-                ? { signature: thinkingBlock.signature }
-                : {}),
-              redacted: thinkingBlock.redacted,
-            });
-            onChunk({
-              content: "",
-              done: false,
-              thinkingBlockStop: { index },
-            });
+            completeThinkingBlock(
+              index,
+              thinkingBlock,
+              completedThinkingBlocks,
+              onChunk,
+            );
             thinkingBlocks.delete(index);
           }
           continue;
@@ -718,23 +904,9 @@ export class AnthropicProvider implements LLMProvider {
               ? (event.data.delta as Record<string, unknown>)
               : {};
           usage = mergeAnthropicUsage(usage, event.data.usage);
-          switch (String(delta.stop_reason ?? "")) {
-            case "tool_use":
-              finishReason = "tool_calls";
-              break;
-            case "max_tokens":
-              finishReason = "length";
-              break;
-            case "content_filter":
-            case "refusal":
-              finishReason = "content_filter";
-              break;
-            case "error":
-              finishReason = "error";
-              break;
-            default:
-              finishReason = "stop";
-              break;
+          if (typeof delta.stop_reason === "string") {
+            stopReason = delta.stop_reason;
+            sawFinalMessageDelta = true;
           }
           continue;
         }
@@ -753,11 +925,7 @@ export class AnthropicProvider implements LLMProvider {
             typeof errorRecord.message === "string"
               ? errorRecord.message
               : "Provider stream failed";
-          if (
-            content.length === 0 &&
-            completedToolCalls.length === 0 &&
-            toolBlocks.size === 0
-          ) {
+          if (!streamHasEmittedOutput()) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               anthropicStreamFallbackCandidate(errorRecord, message),
               consecutiveFallbackFailures,
@@ -822,21 +990,13 @@ export class AnthropicProvider implements LLMProvider {
                 }];
               }),
             ],
-            stop_reason:
-              finishReason === "tool_calls"
-                ? "tool_use"
-                : finishReason === "length"
-                  ? "max_tokens"
-                  : finishReason === "content_filter"
-                    ? "content_filter"
-                    : finishReason === "error"
-                      ? "error"
-                      : "end_turn",
+            stop_reason: stopReason,
             usage,
           },
           requestOptions,
         ),
       );
+      this.noteServedSpeed(request, usage.speed);
       const finalResponse: LLMResponse = {
         ...parsed,
         usage: {
@@ -860,16 +1020,15 @@ export class AnthropicProvider implements LLMProvider {
         throw error;
       }
       // Only retry the stream from scratch when nothing has been emitted to the
-      // consumer yet. Once partial text or tool calls have been forwarded via
-      // onChunk, re-running the attempt would replay (and thus duplicate) the
-      // already-rendered output and inflate mid-stream token estimates, so we
+      // consumer yet. Once partial text, tool calls, or thinking events have
+      // been forwarded via onChunk, re-running the attempt would replay (and
+      // thus duplicate) the already-rendered output, leave thinking
+      // start/stop unbalanced, and inflate mid-stream token estimates, so we
       // surface a partial response instead (mirrors the in-stream `error`
-      // branch and the grok adapter).
-      const hasEmittedOutput =
-        content.length > 0 ||
-        completedToolCalls.length > 0 ||
-        toolBlocks.size > 0;
-      if (!hasEmittedOutput) {
+      // branch and the grok adapter). Thinking is model-visible: a
+      // transparent retry after a thinking start/delta is the same class of
+      // bug as retrying after text (#2107).
+      if (!streamHasEmittedOutput()) {
         const fallbackDecision = this.evaluateConfiguredFallback(
           error,
           consecutiveFallbackFailures,
@@ -888,11 +1047,46 @@ export class AnthropicProvider implements LLMProvider {
         }
       }
       consecutiveFallbackFailures = 0;
+      // Close any thinking block the consumer already opened so failure
+      // paths stay start/stop balanced even when we rethrow.
+      finalizeOpenThinkingBlocks(
+        thinkingBlocks,
+        completedThinkingBlocks,
+        onChunk,
+      );
       if (error instanceof ProviderHttpError && error.status === 401) {
         throw new LLMAuthenticationError(this.name, error.status);
       }
       const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
-      if (content.length > 0) {
+      const streamedToolCount = toolBlocks.size + completedToolCalls.length;
+      const thinking = thinkingFromCompletedBlocks(completedThinkingBlocks);
+      // What the #2463 reconnect ladder can re-sample: a transient transport
+      // fault that has not streamed a tool call (`isResampleableStreamInterruption`).
+      // Nothing executed, and stream-model closes thinking displays before the
+      // next attempt, so thinking already forwarded to the consumer does not
+      // by itself make the fault unreproducible. #2107 is the in-adapter
+      // fallback above: `streamHasEmittedOutput()` refuses that restart once
+      // thinking was delivered, because a second `onChunk` pass would duplicate
+      // it. Once the final message_delta arrives, preserve its usage in a
+      // partial even for transient faults to avoid re-sampling billed output.
+      // Otherwise, a partial is only for a fault the ladder cannot re-sample
+      // when user-visible text or thinking was already delivered. Rethrowing a
+      // non-transient fault would drop that content, and a streamed tool call
+      // may already have been dispatched. A caller abort (options.signal or
+      // AbortError) rethrows so stream-model can turn its own watchdog abort
+      // into `stream_idle`. client-session's per-attempt idle timeout does not
+      // abort options.signal, so delivered text still becomes a partial.
+      // Protocol errors (invalid tool_use JSON) rethrow even after text or
+      // thinking.
+      const deliveredVisibleContent =
+        content.length > 0 || thinking !== undefined;
+      const shouldSurfacePartial =
+        deliveredVisibleContent &&
+        !isAnthropicStreamAbort(error, options?.signal) &&
+        !(error instanceof LLMInvalidResponseError) &&
+        (sawFinalMessageDelta ||
+          !isResampleableStreamInterruption(mappedError, streamedToolCount));
+      if (shouldSurfacePartial) {
         const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
           (toolCall) => {
             if (!parseToolInputObject(toolCall.arguments)) return [];
@@ -913,17 +1107,20 @@ export class AnthropicProvider implements LLMProvider {
         return {
           content,
           toolCalls: partialToolCalls,
-          usage: coerceUsage({
+          usage: markAnthropicReasoningIncludedInCompletion(coerceUsage({
             promptTokens: usage.input_tokens,
             completionTokens: usage.output_tokens,
             cachedInputTokens: usage.cache_read_input_tokens,
             cacheCreationInputTokens: usage.cache_creation_input_tokens,
-            reasoningOutputTokens: usage.reasoning_output_tokens,
+            reasoningOutputTokens: readAnthropicReasoningOutputTokens({
+              ...usage,
+            }),
             webSearchRequests: usage.server_tool_use?.web_search_requests,
             availability: "unknown",
             provenance: "synthetic",
-          }),
+          })),
           model,
+          ...(thinking !== undefined ? { thinking } : {}),
           finishReason: "error",
           error: mappedError,
           partial: true,

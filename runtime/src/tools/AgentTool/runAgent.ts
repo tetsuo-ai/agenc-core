@@ -8,12 +8,8 @@ import { canonicalAgentRoleName } from 'src/agents/role-presentation.js'
 import { assertAgentRoleWorkspaceMatches } from 'src/agents/role.js'
 import type { EffortValue } from '../../utils/effort.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
-import {
-  type Command,
-  getCommand,
-  getSkillToolCommands,
-  hasCommand,
-} from '../../commands.js'
+import type { Command } from '../../commands.js'
+import { getCommand, hasCommand } from '../../commands/lookup.js'
 import {
   assembleSubagentSystemPrompt,
   DEFAULT_AGENT_PROMPT,
@@ -26,11 +22,6 @@ import { transitionPermissionMode } from '../../permissions/permission-mode.js'
 import type { ToolPermissionContext as CanonicalToolPermissionContext } from '../../permissions/types.js'
 import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
-import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
-import {
-  connectToServer,
-  fetchToolsForClient,
-} from '../../services/mcp/client.js'
 import { getApprovedMcpConfigByName } from '../../services/mcp/config.js'
 import type {
   MCPServerConnection,
@@ -56,9 +47,8 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../../types/message.js'
-import { createAttachmentMessage } from '../../utils/attachments.js'
+import { createAttachmentMessage } from '../../utils/attachment-message.js'
 import { AbortError } from '../../utils/errors.js'
-import { getDisplayPath } from '../../utils/file.js'
 import {
   cloneFileStateCache,
   createFileStateCacheWithSizeLimit,
@@ -219,6 +209,9 @@ async function initializeAgentMcpServers(
 
     // Connect to the server. Inline frontmatter MCP servers are owned by this
     // agent run, so they can safely use the active session sampler.
+    const { connectToServer, fetchToolsForClient } = await import(
+      '../../services/mcp/client.js'
+    )
     const client = await connectToServer(
       name,
       config,
@@ -475,13 +468,6 @@ export async function* runAgent({
     // owns a fresh spawn reservation and must durably commit that edge.
     spawnAdmission.markDispatched()
     spawnAdmission.commit()
-  }
-
-  // Log API calls path for subagents (internal-only)
-  if (process.env.USER_TYPE === 'ant') {
-    logForDebugging(
-      `[Subagent ${agentDefinition.agentType}] API calls: ${getDisplayPath(getDumpPromptsPath(agentId))}`,
-    )
   }
 
   // Handle message forking for context sharing
@@ -749,6 +735,7 @@ export async function* runAgent({
     ? []
     : agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
+    const { getSkillToolCommands } = await import('../../commands.js')
     const allSkills = await getSkillToolCommands(
       getProjectRoot(),
       null,

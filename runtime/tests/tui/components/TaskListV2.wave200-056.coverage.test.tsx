@@ -196,7 +196,9 @@ describe("TaskListV2 recent completion coverage", () => {
       expect(recentOutput).toContain("Freshly completed setup");
       expect(recentOutput).toContain("Active dependency");
       expect(recentOutput).toContain("Blocked integration");
-      expect(recentOutput).toContain("blocked by #2, #10");
+      // Two open blockers read as a plural step count, not as id slugs.
+      expect(recentOutput).toContain("Blocked integration › waiting on 2 steps");
+      expect(recentOutput).not.toMatch(/#\d/);
       expect(recentOutput).toContain("+1 in progress, 2 pending, 1 completed");
       expect(recentOutput).not.toContain("Hidden running");
 

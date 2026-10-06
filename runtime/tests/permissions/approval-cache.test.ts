@@ -271,6 +271,14 @@ describe("SessionApprovalCache", () => {
     expect(hasSessionApproval(ctx, { toolName: "FileRead" })).toBe(true);
   });
 
+  test("snapshots session rule strings in code-unit order", () => {
+    const cache = new SessionApprovalCache();
+    cache.approveTool("äTool");
+    cache.approveTool("zTool");
+
+    expect(cache.snapshot().ruleStrings).toEqual(["zTool", "äTool"]);
+  });
+
   test("normalizes escaped pattern content from context", () => {
     const ctx = createEmptyToolPermissionContext({
       alwaysAllowRules: { session: ["system.bash(echo \\(hi\\))"] },
@@ -413,6 +421,30 @@ describe("buildShellApprovalKey", () => {
       sandbox_permissions: ["fs", "net"],
       additional_permissions: ["bar", "foo"],
     });
+    expect(canonicalJsonKey(a)).toBe(canonicalJsonKey(b));
+  });
+
+  test("canonicalizes object keys and permission names by code unit, not locale", () => {
+    // "ä" would sort before "z" under de collation. Session approvals hash these.
+    expect(canonicalJsonKey({ ä: 1, z: 2 })).toBe(canonicalJsonKey({ z: 2, ä: 1 }));
+    expect(canonicalJsonKey({ ä: 1, z: 2 })).toContain('["z"');
+    expect(canonicalJsonKey({ ä: 1, z: 2 }).indexOf('["z"'))
+      .toBeLessThan(canonicalJsonKey({ ä: 1, z: 2 }).indexOf('["ä"'));
+
+    const a = buildShellApprovalKey({
+      command: ["bash", "-lc", "ls"],
+      cwd: "/repo",
+      sandbox_permissions: ["ä", "z"],
+      additional_permissions: ["ä", "z"],
+    });
+    const b = buildShellApprovalKey({
+      command: ["bash", "-lc", "ls"],
+      cwd: "/repo",
+      sandbox_permissions: ["z", "ä"],
+      additional_permissions: ["z", "ä"],
+    });
+    expect(a.sandbox_permissions).toEqual(["z", "ä"]);
+    expect(a.additional_permissions).toEqual(["z", "ä"]);
     expect(canonicalJsonKey(a)).toBe(canonicalJsonKey(b));
   });
 

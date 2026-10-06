@@ -220,10 +220,11 @@ describe("durable checkpoint reader", () => {
     ).toThrowError(/unversioned fields/);
   });
 
-  it("reads editor-quota and admission-fallback slice fields that the writer persists", () => {
+  it("reads admission-fallback slice fields and ignores the retired editor quota", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     const resumableState = {
       ...(legacy.resumableState as Record<string, unknown>),
+      completionGateRound: 2,
       editorToolCallsAdmitted: 3,
       pendingAdmissionFallback: {
         fromModel: "gemini-3.1-pro",
@@ -246,7 +247,7 @@ describe("durable checkpoint reader", () => {
       checkpoint: {
         checkpointVersion: 3,
         resumableState: {
-          editorToolCallsAdmitted: 3,
+          completionGateRound: 2,
           pendingAdmissionFallback: {
             fromModel: "gemini-3.1-pro",
             toModel: "gemini-flash",
@@ -299,7 +300,8 @@ describe("durable checkpoint reader", () => {
       role: "user",
       content: "resume this turn",
     });
-    source.editorToolCallsAdmitted = 3;
+    source.reasoningOnlyRecoveryPending = true;
+    source.reasoningOnlyRecoveryCount = 2;
     source.textToolCallCorrectionCount = 2;
     source.textToolCallCorrection = { toolName: "mcp.qa.lookup", reason: "not_advertised" };
     source.modelSampleResumePrompt = "text_tool_call_correction";
@@ -328,7 +330,12 @@ describe("durable checkpoint reader", () => {
       content: "resume this turn",
     });
     restoreFromCheckpoint(restored, readable.checkpoint.resumableState);
-    expect(restored.editorToolCallsAdmitted).toBe(3);
+    expect(restored.reasoningOnlyRecoveryPending).toBe(true);
+    expect(restored.reasoningOnlyRecoveryCount).toBe(2);
+    for (const bad of [-1, 0.5, "2", null]) {
+      expect(() => readTurnCheckpoint({ ...event, resumableState: { ...event.resumableState, reasoningOnlyRecoveryCount: bad } })).toThrow(/reasoningOnlyRecoveryCount/);
+    }
+    expect(() => readTurnCheckpoint({ ...event, resumableState: { ...event.resumableState, reasoningOnlyRecoveryPending: "true" } })).toThrow(/reasoningOnlyRecoveryPending/);
     expect(restored.textToolCallCorrectionCount).toBe(2);
     expect(restored.textToolCallCorrection).toEqual(source.textToolCallCorrection);
     expect(restored.modelSampleResumePrompt).toBe("text_tool_call_correction");
@@ -352,10 +359,6 @@ describe("durable checkpoint reader", () => {
         state: { ...resumableState, planToolRequiredRetryCount: -1 },
         reason:
           /planToolRequiredRetryCount must be a non-negative safe integer/,
-      },
-      {
-        state: { ...resumableState, editorToolCallsAdmitted: -1 },
-        reason: /editorToolCallsAdmitted must be a non-negative safe integer/,
       },
       {
         state: { ...resumableState, modelSampleResumePrompt: "retry_anyway" },
@@ -1095,7 +1098,6 @@ describe("legacy durable checkpoint upgrade planner", () => {
       checkpointVersion: 4,
       prefixHashVersion: 3,
       resumableState: {
-        editorToolCallsAdmitted: 2,
         pendingAdmissionFallback: {
           fromModel: "grok-4.5",
           toModel: "gemini-3.1-pro",
@@ -1182,7 +1184,6 @@ describe("legacy durable checkpoint upgrade planner", () => {
       checkpointVersion: 4,
       prefixHashVersion: 3,
       resumableState: {
-        editorToolCallsAdmitted: 2,
         pendingAdmissionFallback: {
           fromProvider: "grok",
           toProvider: "gemini",
@@ -1660,6 +1661,50 @@ describe("legacy durable checkpoint upgrade planner", () => {
           upgradedItems: expect.objectContaining({ length: responseCount }),
         },
       });
+    },
+  );
+
+  it.each(["none", "before", "after"] as const)(
+    "validates checkpoint histories across clear without hiding corruption (%s)",
+    (tampered) => {
+      const before: ToolResultIntegrityResponseItem[] = [
+        { role: "user", content: "old request" },
+        { role: "assistant", content: "old answer" },
+      ];
+      const after: ToolResultIntegrityResponseItem[] = [
+        { role: "user", content: "new request" },
+        { role: "assistant", content: "new answer" },
+      ];
+      const oldCheckpoint = v4CheckpointForHistory(before);
+      const newCheckpoint = v4CheckpointForHistory(after);
+      if (tampered === "before") before[0] = { role: "user", content: "altered old request" };
+      if (tampered === "after") after[0] = { role: "user", content: "altered new request" };
+      const items: RolloutItem[] = [
+        ...before.map((payload) => ({ type: "response_item" as const, payload })),
+        checkpointItem(oldCheckpoint),
+        { type: "event_msg", payload: {
+          id: "clear", msg: { type: "history_cleared", payload: { timestamp: 1 } },
+        } },
+        ...after.map((payload) => ({ type: "response_item" as const, payload })),
+        checkpointItem({ ...newCheckpoint, checkpointSeq: 2 }),
+      ];
+      const result = planLegacyDurableCheckpointUpgrade({
+        items, runId: "clear-run", projection,
+        projectionId: `clear-${tampered}`, sourceKey: `clear-${tampered}`,
+      });
+      if (tampered === "none") {
+        expect(result).toMatchObject({
+          status: "planned", plan: { changed: false, checkpointsValidated: 2 },
+        });
+        if (result.status === "planned") expect(result.plan.upgradedItems).toEqual(items);
+      } else {
+        expect(result).toMatchObject({
+          status: "invalid", failure: {
+            itemIndex: tampered === "before" ? 2 : 6,
+            cause: { code: "checkpoint_prefix_digest_mismatch" },
+          },
+        });
+      }
     },
   );
 

@@ -143,12 +143,6 @@ export function createPlanModeStreamState(turnId: string): PlanModeStreamState {
 export function isPlanMode(ctx: TurnContext): boolean {
   // Editor interactions are request-scoped read/proposal operations, not
   // Agent workflow turns. They may be launched while the shared workspace
-  // session remains in Plan mode, but must not inherit Plan's parser,
-  // required-tool choice, or finalization machinery. Keep the underlying
-  // permission configuration untouched so returning to the Agent surface
-  // resumes the exact mode the user selected.
-  if (ctx.editorInteraction !== undefined) return false;
-
   return ctx.permissionMode === "plan";
 }
 

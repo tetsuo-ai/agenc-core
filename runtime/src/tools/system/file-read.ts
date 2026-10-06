@@ -51,7 +51,6 @@ import {
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
-import { readToolRuntimeContext } from "../runtimes/context.js";
 import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
   recordSessionRead,
@@ -60,11 +59,11 @@ import {
   withSignedAllowedRoots,
 } from "./filesystem.js";
 import {
-  agentNamespacePathHint,
-  denyAgentNamespacePath,
-  isAgentNamespacePath,
+  FILE_TOOL_PATH_SCHEMA,
+  FILE_TOOL_PATH_USAGE,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 import {
   parsePDFPageRange as parseSharedPDFPageRange,
@@ -72,22 +71,19 @@ import {
 } from "../../utils/pdfPageRange.js";
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
-import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
+import {
+  ImageDecoderUnavailableError,
+  maybeResizeAndDownsampleImageBuffer,
+  UndecodableImageError,
+} from "../../utils/imageResizer.js";
+import { imageFormatLabel } from "../../utils/image-validation.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
-import {
-  workspaceAuthoritativeRead,
-  workspaceHasProtectedEditorPaths,
-  type WorkspaceAuthoritativeRead,
-} from "../../workspace/mutation-coordinator.js";
-import {
-  bindWorkspaceFileReadCapability,
-  WorkspaceBoundReadFileTooLargeError,
-  type WorkspaceBoundFileReadCapability,
-  type WorkspaceBoundReadFile,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceBoundFileReadCapability, type WorkspaceBoundReadFile } from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceBoundReadFileTooLargeError } from "../../workspace/file-mutation-evidence.js";
+import { bindWorkspaceFileReadCapability } from "../../workspace/lazy-file-mutation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -110,7 +106,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
-const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
+export const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
 
 /** Default output cap for image reads in bytes. */
 const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -128,7 +124,7 @@ const PDF_SUBPROCESS_TIMEOUT_MS = 120_000;
 const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 
 /** Default upper line count when no explicit `limit` is supplied. */
-const DEFAULT_LINE_LIMIT = 2000;
+export const DEFAULT_LINE_LIMIT = 2000;
 
 /** Image extensions the tool will accept and emit as multimodal output. */
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
@@ -291,15 +287,21 @@ export function clearFileReadListenersForTests(): void {
  * Image / PDF / notebook mentions are kept so the model knows the
  * tool's capability surface.
  */
-const FILE_READ_DESCRIPTION = `Reads a file from the local filesystem. You can access any file directly by using this tool.
+function resultFormatLine(sparse: boolean): string {
+  return sparse
+    ? "Results give the line number as N→ before the first line, every tenth line and the last line; other lines appear as they are, so count from the nearest number"
+    : "Results are returned using cat -n format, with line numbers starting at 1";
+}
+
+const fileReadDescription = (sparse: boolean): string => `Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
 - Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
-- Results are returned using cat -n format, with line numbers starting at 1
+- ${resultFormatLine(sparse)}
 - This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
 - This tool can read Jupyter notebook files (.ipynb) and returns cells with their source, text outputs, errors, and embedded visual outputs.
@@ -314,6 +316,7 @@ Usage:
 
 /** Tool factory configuration. */
 export interface FileReadToolConfig {
+  readonly lightMode?: boolean;
   /**
    * Allowed path prefixes (required — no default). Same shape as the
    * filesystem-tool config so the parent can pass through the workspace
@@ -322,6 +325,11 @@ export interface FileReadToolConfig {
   readonly allowedPaths: readonly string[];
   /** Token cap for text reads (default: 25k). */
   readonly maxTokens?: number;
+  /**
+   * Number only the first line of a read, every tenth line and the last line
+   * (the session's `AGENC_SPARSE_LINE_NUMBERS`). Default: every line.
+   */
+  readonly sparseLineNumbers?: boolean;
   /** Raw byte cap for text reads (default: 256 KB). */
   readonly maxTextBytes?: number;
   /** Raw byte cap for image reads (default: 10 MB). */
@@ -400,8 +408,8 @@ function hasBinaryExtension(filePath: string): boolean {
 }
 
 /** Produce the runtime `cat -n` style numbered output. */
-function formatNumbered(content: string, startLine: number): string {
-  return addLineNumbers({ content, startLine });
+function formatNumbered(content: string, startLine: number, sparse: boolean): string {
+  return addLineNumbers({ content, startLine, sparse });
 }
 
 function notifyFileReadListeners(event: FileReadEvent): void {
@@ -437,9 +445,11 @@ function sliceLines(
     totalLines === 0 || startLine > totalLines
       ? []
       : lines.slice(startLine - 1, endLine);
-  const explicitWindow = offset > 1 || limit !== undefined;
-  const isPartial =
-    explicitWindow || !(startLine === 1 && selected.length === totalLines);
+  // A window the caller asked for is still a full view when it covered
+  // every line: models that fill optional fields send offset 1 with a large
+  // limit, and treating that as partial left NotebookEdit and other
+  // full-read gates refusing a file that was read whole.
+  const isPartial = !(startLine === 1 && selected.length === totalLines);
   return {
     content: selected.join("\n"),
     startLine,
@@ -604,9 +614,6 @@ async function resolveAndCheck(
     typeof args.cwd === "string" && args.cwd.trim().length > 0
       ? args.cwd
       : (config.allowedPaths[0] ?? process.cwd());
-  if (isAgentNamespacePath(rawPath)) {
-    return { err: errorResult(agentNamespacePathHint(rawPath, cwdArg)) };
-  }
   const absolute = isAbsolute(rawPath) ? rawPath : resolve(cwdArg, rawPath);
   const safe = await safePathAllowingSessionPlanFile(
     absolute,
@@ -627,6 +634,7 @@ interface TextReadOpts {
   readonly readGuard?: () => void;
   readonly maxTextBytes: number;
   readonly maxTokens: number;
+  readonly sparseLineNumbers: boolean;
   readonly offset: number;
   readonly limit: number | undefined;
   readonly displayPath: string;
@@ -636,14 +644,11 @@ async function readTextFile(
   resolvedPath: ResolvedPath,
   opts: TextReadOpts,
   sessionId: string | undefined,
-  editorRead: WorkspaceAuthoritativeRead | null,
   boundRead?: WorkspaceBoundFileReadCapability,
   notifyListeners = true,
 ): Promise<ToolResult> {
   const rawFileStats =
-    editorRead === null && boundRead === undefined
-      ? await stat(resolvedPath.canonical)
-      : null;
+    boundRead === undefined ? await stat(resolvedPath.canonical) : null;
   if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
@@ -656,7 +661,7 @@ async function readTextFile(
   let boundWindow:
     | Awaited<ReturnType<WorkspaceBoundFileReadCapability["readTextWindow"]>>
     | undefined;
-  if (editorRead === null && boundRead !== undefined) {
+  if (boundRead !== undefined) {
     if (explicitWindow) {
       try {
         boundWindow = await boundRead.readTextWindow(
@@ -692,12 +697,7 @@ async function readTextFile(
     }
   }
   const authoritativeBytes =
-    editorRead !== null
-      ? Buffer.byteLength(editorRead.content, "utf8")
-      : (boundWindow?.stats.size ??
-        boundFile?.stats.size ??
-        fileStats?.size ??
-        0);
+    boundWindow?.stats.size ?? boundFile?.stats.size ?? fileStats?.size ?? 0;
   opts.readGuard?.();
   if (!explicitWindow && authoritativeBytes > opts.maxTextBytes) {
     return errorResult(
@@ -707,7 +707,6 @@ async function readTextFile(
     );
   }
   const shouldStreamWindow =
-    editorRead === null &&
     boundRead === undefined &&
     explicitWindow &&
     authoritativeBytes > opts.maxTextBytes;
@@ -716,9 +715,7 @@ async function readTextFile(
     boundFile?.content ??
     (shouldStreamWindow
       ? await readInitialBytes(resolvedPath.canonical, 8192)
-      : editorRead === null
-        ? await readFile(resolvedPath.canonical)
-        : Buffer.from(editorRead.content, "utf8"));
+      : await readFile(resolvedPath.canonical));
   if (isBinaryContent(binarySample)) {
     return errorResult(
       "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
@@ -816,7 +813,7 @@ async function readTextFile(
   }
 
   return {
-    content: formatNumbered(sliced.content, sliced.startLine),
+    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers),
     metadata: {
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
@@ -1031,18 +1028,15 @@ async function readNotebookFile(
   resolvedPath: ResolvedPath,
   opts: NotebookReadOpts,
   sessionId: string | undefined,
-  editorRead: WorkspaceAuthoritativeRead | null,
   boundRead?: WorkspaceBoundFileReadCapability,
 ): Promise<ToolResult> {
   const rawFileStats =
-    editorRead === null && boundRead === undefined
-      ? await stat(resolvedPath.canonical)
-      : null;
+    boundRead === undefined ? await stat(resolvedPath.canonical) : null;
   if (rawFileStats !== null && !rawFileStats.isFile()) {
     return errorResult("Path is not a regular file");
   }
   let boundFile: WorkspaceBoundReadFile | undefined;
-  if (editorRead === null && boundRead !== undefined) {
+  if (boundRead !== undefined) {
     try {
       boundFile = await boundRead.readFile(opts.maxNotebookBytes);
     } catch (error) {
@@ -1059,7 +1053,6 @@ async function readNotebookFile(
   const fileStats = boundFile?.stats ?? rawFileStats;
   opts.readGuard?.();
   const rawText =
-    editorRead?.content ??
     boundFile?.content.toString("utf8") ??
     (await readFile(resolvedPath.canonical, "utf8"));
   const rawBytes = Buffer.byteLength(rawText, "utf8");
@@ -1128,7 +1121,7 @@ async function readNotebookFile(
     };
   }
 
-  const numbered = formatNumbered(sliced.content, sliced.startLine);
+  const numbered = formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers);
   const selectedImages = rendered.ok.images.filter(
     (image) =>
       image.lineNumber >= sliced.startLine &&
@@ -1173,6 +1166,7 @@ interface PDFReadOpts {
   readonly maxPdfBytes: number;
   readonly pages: unknown;
   readonly maxTokens: number;
+  readonly sparseLineNumbers: boolean;
   readonly offset: number;
   readonly limit: number | undefined;
 }
@@ -1268,7 +1262,10 @@ async function readPDFFile(
     );
   }
 
-  const isPartial = parsedRange !== null || sliced.isPartial;
+  // A PDF snapshot's raw content is extracted text, not the file's bytes,
+  // so an explicit window never promotes it to a full raw read.
+  const explicitWindow = opts.offset > 1 || opts.limit !== undefined;
+  const isPartial = parsedRange !== null || sliced.isPartial || explicitWindow;
 
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
@@ -1278,12 +1275,12 @@ async function readPDFFile(
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: isPartial ? "partial" : "full",
-    ...(sliced.isPartial
+    ...(sliced.isPartial || explicitWindow
       ? { readOffset: sliced.startLine }
       : parsedRange
         ? { readOffset: selectedRange?.firstPage ?? 1 }
         : {}),
-    ...(sliced.isPartial && opts.limit !== undefined
+    ...((sliced.isPartial || explicitWindow) && opts.limit !== undefined
       ? { readLimit: opts.limit }
       : parsedRange && selectedRange && selectedRange.lastPage !== Infinity
         ? { readLimit: pageRangeLength(selectedRange) }
@@ -1334,6 +1331,7 @@ async function readPDFFile(
     content: `Read PDF ${opts.displayPath} (${rangeLabel})\n\n${formatNumbered(
       sliced.content,
       sliced.startLine,
+      opts.sparseLineNumbers,
     )}`,
     metadata: {
       filePath: opts.displayPath,
@@ -1348,6 +1346,49 @@ async function readPDFFile(
       isPartial,
     },
   };
+}
+
+/** The text line that accompanies every image FileRead returns. */
+export function fileReadImageSummary(
+  displayPath: string,
+  sizeBytes: number,
+  mime: string,
+): string {
+  return `Read image ${displayPath} (${formatBytes(sizeBytes)}, ${mime})`;
+}
+
+const FILE_READ_IMAGE_SUMMARY =
+  /^Read image (.+) \(\d+(?:\.\d+)?(?:B|KB|MB), image\/[a-z0-9.+-]+\)$/u;
+
+/** The path named by a {@link fileReadImageSummary} line, if `text` is one. */
+export function parseFileReadImageSummary(text: string): string | undefined {
+  return FILE_READ_IMAGE_SUMMARY.exec(text.trim())?.[1];
+}
+
+/**
+ * The tool result for an image file that cannot be sent to a model. It is an
+ * ordinary failed read: the model learns why, and the turn continues.
+ */
+function unattachableImageMessage(
+  displayPath: string,
+  sizeBytes: number,
+  error: unknown,
+): string {
+  const size = formatBytes(sizeBytes);
+  if (error instanceof ImageDecoderUnavailableError) {
+    return `${displayPath} (${size}) was not attached: no image decoder is available (sharp is not installed), so the image cannot be checked.`;
+  }
+  if (error instanceof UndecodableImageError) {
+    const inspect = "Use a shell command such as xxd to inspect its bytes.";
+    return error.format === undefined
+      ? `${displayPath} does not contain a PNG, JPEG, GIF or WebP image, so it was not attached. The file is ${size}. ${inspect}`
+      : `${displayPath} is not a valid ${imageFormatLabel(error.format)} image, so it was not attached: ${error.reason}. The file is ${size}. ${inspect}`;
+  }
+  const detail =
+    error instanceof Error && error.message.trim().length > 0
+      ? error.message.trim()
+      : String(error);
+  return `${displayPath} (${size}) could not be attached as an image: ${detail}`;
 }
 
 async function readImageFile(
@@ -1388,10 +1429,10 @@ async function readImageFile(
   // encoding — a raw screenshot over ~3.7MB, or a small-but-high-DPI PNG over
   // 1568px, is otherwise emitted verbatim and rejected by the API with a 400 on
   // the common "read this screenshot" path. Mirrors BashTool/utils.ts and the MCP
-  // image path. Falls back to the original bytes if the image cannot be processed.
+  // image path.
   const declaredMime =
     IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
-  let mime = declaredMime;
+  let mime: string;
   let base64: string;
   try {
     const extForResize = declaredMime.startsWith("image/")
@@ -1404,9 +1445,14 @@ async function readImageFile(
     );
     mime = `image/${resized.mediaType}`;
     base64 = resized.buffer.toString("base64");
-  } catch {
-    // Unprocessable image (unknown format, corrupt) — emit the original bytes.
-    base64 = rawBuffer.toString("base64");
+  } catch (error) {
+    // Never emit bytes the resizer refused. A provider answers an image it
+    // cannot decode (a 16-byte file holding only a PNG signature) with an
+    // HTTP 400, and because the tool result is replayed, every later request
+    // in the session failed the same way.
+    return errorResult(
+      unattachableImageMessage(opts.displayPath, rawBuffer.length, error),
+    );
   }
 
   // Record the read with no text content (binary). Use `viewKind: "full"`
@@ -1431,16 +1477,14 @@ async function readImageFile(
   // URLs verbatim. The text body remains a brief summary so the runtime
   // envelope is never empty.
   const dataUrl = `data:${mime};base64,${base64}`;
+  const summary = fileReadImageSummary(opts.displayPath, fileStats.size, mime);
   const contentItems: FunctionCallOutputContentItem[] = [
-    {
-      type: "input_text",
-      text: `Read image ${opts.displayPath} (${formatBytes(fileStats.size)}, ${mime})`,
-    },
+    { type: "input_text", text: summary },
     { type: "input_image", image_url: dataUrl },
   ];
 
   return {
-    content: `Read image ${opts.displayPath} (${formatBytes(fileStats.size)}, ${mime})`,
+    content: summary,
     contentItems,
     metadata: {
       filePath: opts.displayPath,
@@ -1459,6 +1503,7 @@ interface FileReadInput extends ToolExecutionInjectedArgs {
   readonly offset?: unknown;
   readonly limit?: unknown;
   readonly pages?: unknown;
+  readonly dense_line_numbers?: unknown;
   readonly cwd?: unknown;
   readonly __agencSessionId?: unknown;
 }
@@ -1470,10 +1515,11 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
   const maxNotebookBytes =
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
+  const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
   return {
     name: FILE_READ_TOOL_NAME,
-    description: FILE_READ_DESCRIPTION,
+    description: fileReadDescription(sparseLineNumbers),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1491,8 +1537,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       properties: {
         file_path: {
           type: "string",
-          description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+          description: FILE_TOOL_PATH_SCHEMA,
         },
         offset: {
           anyOf: [
@@ -1510,6 +1555,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           description:
             "Optional. Max number of lines to return. Numeric strings are accepted.",
         },
+        ...(config.lightMode === true ? { dense_line_numbers: {
+          type: "boolean", description: "Number every line in this read instead of sparse numbering.",
+        } } : {}),
         pages: {
           type: "string",
           description: "Optional. Page range for PDF files (e.g. '1-5').",
@@ -1531,9 +1579,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
           : (config.allowedPaths[0] ?? process.cwd());
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       const decision = checkToolPathPermission({
         toolName: FILE_READ_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -1542,6 +1587,12 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         context: context.getAppState().toolPermissionContext,
         operationType: "read",
         extraWorkingDirectories: config.allowedPaths,
+        // `execute` already reads the owning session's plan file through
+        // `safePathAllowingSessionPlanFile`. Without the same authority here
+        // the permission layer asked to approve a read the tool would then
+        // perform anyway, and a print-mode run (which auto-denies requests)
+        // could not read the plan file it was told to keep (#2131).
+        planFileAuthority: sessionPlanFileAuthority(context.session),
       });
       if (decision.behavior !== "allow") return decision;
 
@@ -1597,7 +1648,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           !readOnlyDelegationReadPathAllowed(rawArgs, resolved.absolute) ||
           !readOnlyDelegationReadPathAllowed(rawArgs, resolved.canonical)
         ) {
-          throw new Error("Access denied: file is outside delegated read authority");
+          throw new Error(
+            "Access denied: file is outside delegated read authority",
+          );
         }
       };
       const finalizeRead = async (
@@ -1618,16 +1671,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             "PDF extraction is unavailable under delegated read authority because the external PDF helper cannot use a held file descriptor portably.",
           );
         }
-        const trustedEditorInteraction =
-          readToolRuntimeContext(rawArgs)?.invocation.turn.editorInteraction !==
-          undefined;
-        const editorRead = workspaceAuthoritativeRead(resolved.canonical);
-        const protectedByEditor =
-          guardedRead ||
-          trustedEditorInteraction ||
-          workspaceHasProtectedEditorPaths(resolved.canonical);
-        const needsDiskCapability = isImage || isPdf || editorRead === null;
-        if (protectedByEditor && needsDiskCapability) {
+        if (guardedRead) {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
         }
         await config.__testAfterFinalPathCheck?.();
@@ -1644,11 +1688,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           );
         }
         if (isPdf) {
-          if (boundRead !== undefined) {
-            return errorResult(
-              "PDF extraction is unavailable while Editor owns this workspace because the external Poppler process cannot consume AgenC's held file descriptor portably. Close Editor or copy the PDF outside the protected workspace before reading it.",
-            );
-          }
           return await readPDFFile(
             resolved,
             {
@@ -1656,6 +1695,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxPdfBytes,
               pages: args.pages,
               maxTokens,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
             },
@@ -1670,6 +1710,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               {
                 maxTextBytes,
                 maxTokens,
+                sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
                 offset,
                 limit,
                 displayPath: filePath,
@@ -1678,7 +1719,6 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
                 readGuard,
               },
               sessionId,
-              editorRead,
               boundRead,
             ),
           );
@@ -1689,15 +1729,15 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             {
               maxTextBytes,
               maxTokens,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
               displayPath: filePath,
               readGuard,
             },
             sessionId,
-            editorRead,
             boundRead,
-            !trustedEditorInteraction,
+            true,
           ),
         );
       } catch (err) {

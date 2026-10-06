@@ -30,7 +30,7 @@ export function isReadOnlyCoordinationName(name: string): boolean {
 export function readOnlyDelegationToolAvailable(tool: ReadOnlyDelegationTool): boolean {
   return hasTrustedBuiltinImplementation(tool) && (
     COORDINATION_TOOLS.has(tool.name) || NATIVE_INSPECTION_TOOLS.has(tool.name) ||
-    ["exec_command", "system.bash", "write_stdin", "kill_process"].includes(tool.name)
+    ["exec_command", "system.bash", "write_stdin", "kill_process", "list_processes"].includes(tool.name)
   );
 }
 
@@ -40,7 +40,7 @@ export function readOnlyDelegationPathAllowed(session: Session, target: string):
   const inheritedContext = { ...currentContext, alwaysDenyRules: { session: session.services.readOnlyDelegation?.deniedRules ?? [] } };
   const broker = session.services.sandboxExecutionBroker;
   const profile = broker?.executionAuthority?.().permissionProfile;
-  if (profile?.fileSystem.entries.some((entry) => entry.access === "none" && entry.path.kind === "glob" && matchPathRuleContent(resolve(broker!.cwd, entry.path.pattern), resolved))) return false;
+  if (profile?.fileSystem.entries.some((entry) => entry.access === "none" && entry.path.kind === "glob" && matchPathRuleContent(resolve(broker!.cwd, entry.path.pattern), resolved, undefined, "wide"))) return false;
   return (profile === undefined || canReadPathWithCwd(profile.fileSystem, resolved, broker!.cwd, broker!.sessionTempRoot)) &&
     [currentContext, inheritedContext].every((context) => isPathAllowed(resolved, context, "read", session.sessionConfiguration.cwd).allowed);
 }

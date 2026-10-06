@@ -7,7 +7,6 @@ const originalEnv = {
   AGENC_REPL: process.env.AGENC_REPL,
   AGENC_REPL_MODE: process.env.AGENC_REPL_MODE,
   AGENC_VERIFY_PLAN: process.env.AGENC_VERIFY_PLAN,
-  USER_TYPE: process.env.USER_TYPE,
 };
 
 afterEach(() => {
@@ -51,7 +50,6 @@ describe("null-stub tool cleanup", () => {
   test("REPL mode remains disabled after removing the executable tool", () => {
     process.env.AGENC_REPL_MODE = "1";
     process.env.AGENC_ENTRYPOINT = "cli";
-    process.env.USER_TYPE = "ant";
     const source = readFileSync(projectPath("src/tools/REPLTool/constants.ts"), "utf8");
 
     expect(source).toMatch(/isReplModeEnabled\(\): boolean \{\s*return false\s*\}/s);

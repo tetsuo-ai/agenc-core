@@ -14,6 +14,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { parse as parseShellWords } from "shell-quote";
+import { splitCommand } from "../shell-command/parser.js";
+import { readShellWrapperCode } from "../utils/shell/wrapper-options.js";
 
 import type { RunStepIdentity } from "../contracts/run-contracts.js";
 import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
@@ -36,10 +39,85 @@ export interface WorkflowCommandRunner {
     readonly cwd: string;
     /** Optional operator-supplied deadline. Omitted means unbounded. */
     readonly timeoutMs?: number;
+    /** Owning admission cancellation; the runner must settle process cleanup. */
+    readonly signal?: AbortSignal;
   }): Promise<WorkflowCommandResult>;
 }
 
 const EXCERPT_BYTES = 4_096;
+
+/** Reject obvious placeholder checks, not arbitrary shell programs. The verifier
+ * still has to establish that an accepted command actually tests the goal. */
+export function isTrivialVerificationCommand(script: string, depth = 0): boolean {
+  if (depth > 8) return false;
+  return splitCommand(script).every((part) => {
+    let tokens;
+    try {
+      tokens = parseShellWords(part, (name) => `$${name}`)
+        .filter((token) => typeof token === "string" || !("comment" in token));
+    } catch {
+      return false;
+    }
+    if (tokens.length === 0) return true;
+    // Output redirection doesn't turn a constant message into a check.
+    const redirect = tokens.findIndex((token) =>
+      typeof token !== "string" && "op" in token && [">", ">>", "<"].includes(token.op));
+    if (redirect >= 0) tokens = tokens.slice(0, redirect);
+    if (!tokens.every((token): token is string => typeof token === "string")) return false;
+    const words = [...tokens];
+    while (/^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();
+    if (words[0] === "command" || words[0] === "builtin") words.shift();
+    // A shell wrapper proves nothing when all the code it may run proves
+    // nothing, whatever its options (`bash -ec true`, `sh -c -- true`).
+    const shell = (words[0] ?? "").split(/[\\/]/u).at(-1)!.toLowerCase().replace(/\.exe$/u, "");
+    const wrapped = readShellWrapperCode(shell, words.slice(1));
+    if (wrapped !== undefined && wrapped.length > 0) {
+      return wrapped.every((code) => isTrivialVerificationCommand(code, depth + 1));
+    }
+    const command = (words[0] ?? "").split("/").at(-1);
+    return command === "true" || command === ":" || command === "echo" || command === "printf" ||
+      (command === "exit" && (words.length === 1 || (words.length === 2 && /^0+$/.test(words[1]!))));
+  });
+}
+
+/** The plan message is already delivered through the child terminal protocol.
+ * Keep a single explicit block so prose cannot silently become shell commands. */
+export function plannedVerification(message: string): readonly { label: string; script: string }[] {
+  const blocks = [...message.matchAll(/^```agenc-verification\s*\n([\s\S]*?)^```\s*$/gm)];
+  if (blocks.length !== 1) throw new TypeError("The plan must contain exactly one agenc-verification block");
+  const scripts: unknown = JSON.parse(blocks[0]![1]!);
+  if (!Array.isArray(scripts) || scripts.length === 0 || scripts.length > 20 ||
+      scripts.some((script) => typeof script !== "string" || script.length > 4096 || isTrivialVerificationCommand(script))) {
+    throw new TypeError("The plan must name concrete verification commands, not placeholders");
+  }
+  if (new Set(scripts).size !== scripts.length) throw new TypeError("The plan repeats a verification command");
+  for (const script of scripts) {
+    if (hasLegacyBacktickSubstitution(script)) {
+      throw new TypeError("A planned check contains shell backtick substitution. Put literal backticks inside single quotes, escape them, or plan a test file and invoke it. Keep the same acceptance criteria.");
+    }
+  }
+  return Object.freeze(scripts.map((script: string) => Object.freeze({ label: script, script })));
+}
+
+/** A conservative authoring lint for generated checks, not a shell security
+ * boundary. Legacy substitution commonly corrupts inline Markdown assertions.
+ * Complex shell programs should live in a planned test file. Client-supplied
+ * checks are never rewritten or subjected to this planner-only restriction. */
+function hasLegacyBacktickSubstitution(script: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < script.length; index++) {
+    const char = script[index];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      continue;
+    }
+    if (char === "\\") { index++; continue; }
+    if (char === "`") return true;
+    if (char === '"') quote = quote === '"' ? undefined : '"';
+    else if (char === "'" && quote === undefined) quote = "'";
+  }
+  return false;
+}
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -150,11 +228,41 @@ export async function runRequiredVerification(opts: {
   return { records, excerpts, testResult, allPassed };
 }
 
+/**
+ * A required command as a model prompt names it: its exact script as a
+ * Markdown code span. The label never appears. `label` is a display name
+ * for people (run evidence, failure messages) and `script` is the command.
+ * A verifier that was shown only `- verify: exit 0` ran `verify` as a
+ * command, got 127, and failed a change whose `npm test` had passed.
+ */
+export function formatVerificationCommand(script: string): string {
+  // A code span needs a fence longer than any backtick run inside it, and a
+  // space of padding when the script starts or ends with a backtick.
+  let longestRun = 0;
+  for (const run of script.match(/`+/g) ?? []) {
+    longestRun = Math.max(longestRun, run.length);
+  }
+  const fence = "`".repeat(longestRun + 1);
+  const pad = script.startsWith("`") || script.endsWith("`") ? " " : "";
+  return `${fence}${pad}${script}${pad}${fence}`;
+}
+
+/** One recorded command result for a model prompt: "`npm test`: exit 0". */
+export function formatVerificationResult(
+  record: Pick<VerifiedChangeCommandRecord, "script" | "exitCode" | "timedOut">,
+): string {
+  return (
+    `${formatVerificationCommand(record.script)}: exit ${record.exitCode}` +
+    (record.timedOut ? " (timed out)" : "")
+  );
+}
+
 export type VerificationVerdict = "PASS" | "FAIL" | "PARTIAL";
 
 /**
  * Parse the adversarial verification agent's terminal `VERDICT:` line
- * (VERIFICATION_SYSTEM_PROMPT contract). The LAST verdict line wins; a
+ * (VERIFICATION_SYSTEM_PROMPT contract), allowing balanced bold markup. Only
+ * whole verdict lines count. The LAST verdict line wins; a
  * missing or malformed verdict is `undefined` and callers MUST treat it as
  * a failure — never as an implicit pass.
  */
@@ -163,8 +271,15 @@ export function parseVerificationVerdict(
 ): VerificationVerdict | undefined {
   let verdict: VerificationVerdict | undefined;
   for (const line of text.split("\n")) {
-    const match = /^\s*VERDICT:\s*(PASS|FAIL|PARTIAL)\b/.exec(line.trim());
-    if (match !== null) verdict = match[1] as VerificationVerdict;
+    // Accept balanced bold around the whole line or the verdict value. Keep
+    // anchors after unwrapping so prose, partial words and malformed markup
+    // cannot become a passing verdict.
+    const trimmed = line.trim();
+    const plain = trimmed.startsWith("**") && trimmed.endsWith("**")
+      ? trimmed.slice(2, -2)
+      : trimmed;
+    const match = /^VERDICT:[ \t]*(?:\*\*(PASS|FAIL|PARTIAL)\*\*|(PASS|FAIL|PARTIAL))$/.exec(plain);
+    if (match !== null) verdict = (match[1] ?? match[2]) as VerificationVerdict;
   }
   return verdict;
 }

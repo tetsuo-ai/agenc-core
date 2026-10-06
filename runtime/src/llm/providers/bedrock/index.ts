@@ -28,6 +28,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import { coerceUsage } from "../../wire/shared.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -35,11 +36,29 @@ import {
   type ProviderTokenCountCapability,
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
+import {
+  isOpaqueBedrockModelArn,
+  parseClaudeModelId,
+  resolveBedrockModelIdentity,
+} from "../../../utils/model/claudeModelId.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnThinking.js";
+import {
+  anthropicAcceptsSamplingParameters,
+  anthropicEffort,
+  anthropicSupportsBetweenToolsThinking,
+} from "../../../utils/model/anthropicThinkingControl.js";
+import { bedrockConverseEffortLevels } from "../../registry/model-catalog.js";
 import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
+import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
@@ -54,6 +73,12 @@ export interface BedrockProviderConfig extends LLMProviderConfig {
   readonly baseURL?: string;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => Date;
+  /**
+   * The config's `modelOverrides` (canonical Claude id to provider id). A
+   * model id that names no model, such as an application inference profile
+   * ARN, resolves through it to the Claude model it serves.
+   */
+  readonly modelOverrides?: Readonly<Record<string, string>>;
 }
 
 interface BedrockCredentials {
@@ -103,6 +128,7 @@ interface BedrockRequest {
     }[];
     readonly toolChoice?: BedrockToolChoice;
   };
+  readonly additionalModelRequestFields?: Readonly<Record<string, unknown>>;
 }
 
 type BedrockToolChoice =
@@ -391,6 +417,7 @@ function toBedrockToolChoice(
 function buildToolConfig(
   tools: readonly LLMTool[],
   toolChoice: LLMToolChoice | undefined,
+  forbidForcedToolChoice = false,
 ): BedrockRequest["toolConfig"] | undefined {
   if (tools.length === 0 || toolChoice === "none") return undefined;
   if (
@@ -401,7 +428,13 @@ function buildToolConfig(
       `amazon-bedrock provider toolChoice references unavailable tool: ${toolChoice.name}`,
     );
   }
-  const bedrockToolChoice = toBedrockToolChoice(toolChoice);
+  // Forced tool use (`any` / `tool`) is a 400 on the always-on Claude family;
+  // offer the tools with `auto` instead, as the Messages wire does.
+  const bedrockToolChoice =
+    forbidForcedToolChoice &&
+      (toolChoice === "required" || typeof toolChoice === "object")
+      ? { auto: {} }
+      : toBedrockToolChoice(toolChoice);
   createProviderToolNameWireLookup(
     tools.map((tool) => tool.function.name),
   );
@@ -436,12 +469,66 @@ function requestTools(
   );
 }
 
+interface ClaudeConverseContract {
+  readonly dropSampling: boolean;
+  readonly forbidForcedToolChoice: boolean;
+  readonly additionalModelRequestFields?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The Claude request contract on the Converse path, from the helpers the
+ * Messages wire uses. Sampling parameters stay off Claude models that reject
+ * them. The always-on family (Fable/Mythos 5, Opus 5.5) is never forced onto
+ * a tool and thinks without a `thinking` field. Effort travels as
+ * `output_config.effort` inside `additionalModelRequestFields`, the Converse
+ * field AWS documents for Claude effort (Bedrock user guide, adaptive
+ * thinking, checked 2026-09-22), and only at the levels of the model's
+ * registered Bedrock contract, which session and spawn_agent validation
+ * read too. Other Claude models get no new thinking or effort fields here,
+ * and non-Claude models are untouched.
+ *
+ * The contract follows the model, not its spelling: an id that names no
+ * model (an application inference profile, provisioned or custom model
+ * ARN) resolves through the configured `modelOverrides` to the Claude model
+ * it serves. One that cannot be resolved gets the strict always-on rules,
+ * no sampling parameters and no forced tool, and no effort field, because
+ * sending too little is safe while a field the model rejects is a 400.
+ */
+function claudeConverseContract(
+  model: string,
+  options: LLMChatOptions | undefined,
+  modelOverrides: BedrockProviderConfig["modelOverrides"],
+): ClaudeConverseContract {
+  const identity = resolveBedrockModelIdentity(model, modelOverrides);
+  if (parseClaudeModelId(identity) === undefined) {
+    return isOpaqueBedrockModelArn(identity)
+      ? { dropSampling: true, forbidForcedToolChoice: true }
+      : { dropSampling: false, forbidForcedToolChoice: false };
+  }
+  const effort = anthropicEffort(options?.reasoningEffort);
+  const sendEffort =
+    effort !== undefined && bedrockConverseEffortLevels(identity).includes(effort);
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(identity);
+  const thinking = betweenToolsThinking && options?.reasoningEffort === "none"
+    ? { thinking: { type: "between_tools" } }
+    : {};
+  return {
+    dropSampling: !anthropicAcceptsSamplingParameters(identity),
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity) || betweenToolsThinking,
+    ...(sendEffort || Object.keys(thinking).length > 0
+      ? { additionalModelRequestFields: { ...thinking, ...(sendEffort ? { output_config: { effort } } : {}) } }
+      : {}),
+  };
+}
+
 function buildRequest(
   config: BedrockProviderConfig,
+  model: string,
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
 ): BedrockRequest {
   validateAgentInvocationMessageSequence(messages);
+  const contract = claudeConverseContract(model, options, config.modelOverrides);
   const built = buildMessages(messages);
   const systemPrompt = firstNonEmpty(options?.systemPrompt, config.systemPrompt);
   const system = [
@@ -458,13 +545,19 @@ function buildRequest(
       Number.isFinite(config.temperature)
     ? config.temperature
     : undefined;
-  const temperature = optionTemperature ?? configTemperature;
+  const temperature = contract.dropSampling
+    ? undefined
+    : optionTemperature ?? configTemperature;
   const stopSequences = options?.stopSequences !== undefined &&
       options.stopSequences.length > 0
     ? [...options.stopSequences]
     : undefined;
   const tools = requestTools(config, options);
-  const toolConfig = buildToolConfig(tools, options?.toolChoice);
+  const toolConfig = buildToolConfig(
+    tools,
+    options?.toolChoice,
+    contract.forbidForcedToolChoice,
+  );
 
   return {
     messages: built.messages,
@@ -479,6 +572,9 @@ function buildRequest(
       }
       : {}),
     ...(toolConfig !== undefined ? { toolConfig } : {}),
+    ...(contract.additionalModelRequestFields !== undefined
+      ? { additionalModelRequestFields: contract.additionalModelRequestFields }
+      : {}),
   };
 }
 
@@ -708,11 +804,22 @@ async function* bedrockEventStreamPayloads(
         continue;
       }
       const text = decoder.decode(payload).trim();
-      yield text.length === 0 ? {} : JSON.parse(text);
+      if (text.length === 0) {
+        yield {};
+        continue;
+      }
+      yield parseProviderJson(
+        BEDROCK_PROVIDER_ID,
+        text,
+        "Amazon Bedrock stream event",
+      );
     }
   }
   if (pending.length > 0) {
-    throw new Error("Amazon Bedrock stream ended with a partial event frame");
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with a partial event frame",
+    );
   }
 }
 
@@ -753,7 +860,10 @@ async function parseStreamResponse(params: {
   let content = "";
   let stopReason: string | undefined;
   let usage: BedrockResponse["usage"] | undefined;
+  let sawMessageStop = false;
+  const openStartedBlocks = new Set<number>();
   const toolBlocks = new Map<number, BedrockStreamToolBlock>();
+  const reasoningBlocks = new Set<number>();
   const toolCalls: LLMToolCall[] = [];
 
   for await (const rawEvent of bedrockEventStreamPayloads(params.body)) {
@@ -770,6 +880,9 @@ async function parseStreamResponse(params: {
       const index = numericField(startEvent, "contentBlockIndex") ?? -1;
       const start = isRecord(startEvent.start) ? startEvent.start : {};
       const toolUse = isRecord(start.toolUse) ? start.toolUse : null;
+      if (index >= 0) {
+        openStartedBlocks.add(index);
+      }
       if (index >= 0 && toolUse !== null) {
         const id = String(toolUse.toolUseId ?? "");
         // Decode the encoded wire name back to the internal-registry
@@ -804,6 +917,11 @@ async function parseStreamResponse(params: {
     if (deltaEvent !== null) {
       const index = numericField(deltaEvent, "contentBlockIndex") ?? -1;
       const delta = isRecord(deltaEvent.delta) ? deltaEvent.delta : {};
+      const reasoning = isRecord(delta.reasoningContent) ? delta.reasoningContent : null;
+      if (index >= 0 && typeof reasoning?.text === "string" && reasoning.text.length > 0) {
+        reasoningBlocks.add(index);
+        params.onChunk({ content: "", done: false, thinkingDelta: { delta: reasoning.text, index } });
+      }
       if (typeof delta.text === "string" && delta.text.length > 0) {
         content += delta.text;
         params.onChunk({ content: delta.text, done: false });
@@ -833,6 +951,12 @@ async function parseStreamResponse(params: {
       : null;
     if (stopEvent !== null) {
       const index = numericField(stopEvent, "contentBlockIndex") ?? -1;
+      if (index >= 0) {
+        openStartedBlocks.delete(index);
+      }
+      if (reasoningBlocks.delete(index)) {
+        params.onChunk({ content: "", done: false, thinkingBlockStop: { index } });
+      }
       const block = toolBlocks.get(index);
       if (block !== undefined) {
         const toolCall = parseCompletedToolCall(block);
@@ -847,6 +971,7 @@ async function parseStreamResponse(params: {
       ? rawEvent.messageStop
       : null;
     if (messageStop !== null) {
+      sawMessageStop = true;
       stopReason =
         typeof messageStop.stopReason === "string"
           ? messageStop.stopReason
@@ -860,6 +985,18 @@ async function parseStreamResponse(params: {
     }
   }
 
+  if (!sawMessageStop) {
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream closed before a messageStop event",
+    );
+  }
+  if (openStartedBlocks.size > 0 || toolBlocks.size > 0) {
+    throw new LLMInvalidResponseError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with an open content or tool block",
+    );
+  }
   const response: LLMResponse = {
     content,
     toolCalls,
@@ -898,6 +1035,23 @@ function errorMessageFromBody(body: unknown): string {
   return "request failed";
 }
 
+/** An HTTP refusal from a Bedrock request, including the provider's response metadata. */
+export class BedrockHttpError extends LLMProviderError {
+  readonly status: number;
+  readonly body: unknown;
+  readonly headers: Headers;
+
+  constructor(operation: string, response: Response, body: unknown) {
+    super(BEDROCK_PROVIDER_ID,
+      `Amazon Bedrock ${operation} failed (HTTP ${response.status}): ${errorMessageFromBody(body)}`,
+      response.status);
+    this.name = "BedrockHttpError";
+    this.status = response.status;
+    this.body = body;
+    this.headers = new Headers(response.headers);
+  }
+}
+
 function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
   const accessKeyId = firstNonEmpty(config.accessKeyId);
   const secretAccessKey = firstNonEmpty(config.secretAccessKey);
@@ -906,7 +1060,7 @@ function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
       providerCredentialEnvironmentLabel("amazon-bedrock") ??
       "the required AWS SigV4 credential fields";
     throw new Error(
-      `amazon-bedrock provider requires AWS credentials — set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
+      `amazon-bedrock provider requires AWS credentials: set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
     );
   }
   return {
@@ -1004,9 +1158,12 @@ export class BedrockProvider implements LLMProvider {
     }
     const inferenceRequest = buildRequest(
       this.config,
+      model,
       accountingRequest.messages,
       accountingRequest.options,
     );
+    // CountTokens takes the Converse input fields, including
+    // additionalModelRequestFields (API reference, ConverseTokensRequest).
     const countInput = {
       messages: inferenceRequest.messages,
       ...(inferenceRequest.system !== undefined
@@ -1014,6 +1171,12 @@ export class BedrockProvider implements LLMProvider {
         : {}),
       ...(inferenceRequest.toolConfig !== undefined
         ? { toolConfig: inferenceRequest.toolConfig }
+        : {}),
+      ...(inferenceRequest.additionalModelRequestFields !== undefined
+        ? {
+          additionalModelRequestFields:
+            inferenceRequest.additionalModelRequestFields,
+        }
         : {}),
     };
     const body = JSON.stringify({ input: { converse: countInput } });
@@ -1026,17 +1189,15 @@ export class BedrockProvider implements LLMProvider {
       now: this.config.now?.() ?? new Date(),
       operation: "count-tokens",
     });
-    const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+    const response = await fetchProviderRequest(signed.url, {
       method: "POST",
       headers: signed.headers,
       body: signed.body,
       signal,
-    });
+    }, this.config.fetchImpl ?? fetch);
     const parsed = await readJsonResponse(response);
     if (!response.ok) {
-      throw new Error(
-        `Amazon Bedrock token count failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-      );
+      throw new BedrockHttpError("token count", response, parsed);
     }
     const inputTokens = isRecord(parsed)
       ? numericField(parsed, "inputTokens")
@@ -1075,7 +1236,7 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const tools = requestTools(this.config, options);
-    const request = buildRequest(this.config, messages, options);
+    const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
       ? []
       : tools.map((tool) => tool.function.name);
@@ -1097,17 +1258,15 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       const parsed = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(
-          `Amazon Bedrock request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-        );
+        throw new BedrockHttpError("request", response, parsed);
       }
       return parseResponse(
         model,
@@ -1130,7 +1289,7 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const tools = requestTools(this.config, options);
-    const request = buildRequest(this.config, messages, options);
+    const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
       ? []
       : tools.map((tool) => tool.function.name);
@@ -1154,17 +1313,15 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       if (!response.ok) {
         const parsed = await readJsonResponse(response);
-        throw new Error(
-          `Amazon Bedrock stream request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-        );
+        throw new BedrockHttpError("stream request", response, parsed);
       }
       return await parseStreamResponse({
         body: response.body,

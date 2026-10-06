@@ -24,6 +24,7 @@
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import { monotonicMs } from "./_deps/monotonic.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import type { ChildTerminalOutcome } from "./child-terminal.js";
 
 export type AgentStatus =
   | { readonly status: "pending_init" }
@@ -39,18 +40,21 @@ export type AgentStatus =
       readonly status: "idle";
       readonly turnId: string;
       readonly endedAtMs: number;
+      readonly terminal?: ChildTerminalOutcome;
     }
   | {
       readonly status: "completed";
       readonly turnId: string;
       readonly endedAtMs: number;
       readonly lastMessage?: string;
+      readonly terminal?: ChildTerminalOutcome;
     }
   | {
       readonly status: "errored";
       readonly turnId: string;
       readonly endedAtMs: number;
       readonly error: string;
+      readonly terminal?: ChildTerminalOutcome;
     }
   | { readonly status: "shutdown"; readonly endedAtMs: number }
   | { readonly status: "not_found" }
@@ -59,6 +63,7 @@ export type AgentStatus =
       readonly turnId: string;
       readonly endedAtMs: number;
       readonly reason: string;
+      readonly terminal?: ChildTerminalOutcome;
     };
 
 export type AgentStatusJson =
@@ -68,8 +73,19 @@ export type AgentStatusJson =
   | "interrupted"
   | "shutdown"
   | "not_found"
-  | { readonly completed: string | null }
-  | { readonly errored: string };
+  | { readonly completed: string | null; readonly terminal?: ChildTerminalOutcome }
+  | { readonly errored: string; readonly terminal?: ChildTerminalOutcome };
+
+/** Status projections may be a wire string or an object. */
+export function terminalFromAgentStatus(status: unknown): ChildTerminalOutcome | undefined {
+  if (status === null || typeof status !== "object" || !("terminal" in status)) return undefined;
+  return (status as { readonly terminal?: ChildTerminalOutcome }).terminal;
+}
+
+export function turnIdFromAgentStatus(status: unknown): string | undefined {
+  if (status === null || typeof status !== "object" || !("turnId" in status)) return undefined;
+  return typeof status.turnId === "string" ? status.turnId : undefined;
+}
 
 const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "completed",
@@ -85,8 +101,10 @@ const IRREVERSIBLE_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "not_found",
 ]);
 
-export function isFinal(status: AgentStatus): boolean {
-  return FINAL_STATES.has(status.status);
+export function isFinal(status: AgentStatus | AgentStatusJson): boolean {
+  if (typeof status === "string") return FINAL_STATES.has(status as AgentStatus["status"]);
+  if ("status" in status) return FINAL_STATES.has(status.status);
+  return "completed" in status || "errored" in status;
 }
 
 /**
@@ -150,7 +168,9 @@ export function agentStatusFromEvent(event: {
   };
 }
 
-export function toAgentStatusJson(status: AgentStatus): AgentStatusJson {
+export function toAgentStatusJson(status: AgentStatus | AgentStatusJson): AgentStatusJson {
+  if (typeof status === "string") return status;
+  if (!("status" in status)) return status;
   switch (status.status) {
     case "pending_init":
       return "pending_init";
@@ -161,9 +181,9 @@ export function toAgentStatusJson(status: AgentStatus): AgentStatusJson {
     case "interrupted":
       return "interrupted";
     case "completed":
-      return { completed: status.lastMessage ?? null };
+      return { completed: status.lastMessage ?? null, ...(status.terminal ? { terminal: status.terminal } : {}) };
     case "errored":
-      return { errored: status.error };
+      return { errored: status.error, ...(status.terminal ? { terminal: status.terminal } : {}) };
     case "shutdown":
       return "shutdown";
     case "not_found":
@@ -172,6 +192,7 @@ export function toAgentStatusJson(status: AgentStatus): AgentStatusJson {
 }
 
 export function formatSubagentNotification(params: {
+  readonly resultRef?: { readonly agent_id: string; readonly turn_id: string };
   readonly agentPath: string;
   readonly status: AgentStatus;
   readonly durableOutcomeRef?: {
@@ -181,6 +202,15 @@ export function formatSubagentNotification(params: {
     readonly task_id?: string;
     readonly rollout_path?: string;
   };
+  readonly durableAdmissionRef?: {
+    readonly projection_id: string;
+    readonly agent_id: string;
+    readonly turn_id: string;
+    readonly task_id?: string;
+    readonly rollout_path?: string;
+    readonly event_id: string;
+    readonly spawn_edge_id?: string;
+  };
   readonly receipt?: {
     readonly lifecycle: "turn";
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
@@ -189,6 +219,7 @@ export function formatSubagentNotification(params: {
     readonly tool_call_count: number;
     readonly message?: string;
     readonly reason?: string;
+    readonly terminal?: ChildTerminalOutcome;
     readonly worktree?: {
       readonly state:
         | "committed_clean"
@@ -211,17 +242,21 @@ export function formatSubagentNotification(params: {
 }): string {
   const payload = JSON.stringify({
     agent_path: params.agentPath,
+    ...(params.resultRef === undefined ? {} : { result_ref: params.resultRef }),
     status: toAgentStatusJson(params.status),
     ...(params.receipt !== undefined ? { receipt: params.receipt } : {}),
     ...(params.durableOutcomeRef !== undefined
       ? { durable_outcome_ref: params.durableOutcomeRef }
       : {}),
+    ...(params.durableAdmissionRef !== undefined
+      ? { durable_admission_ref: params.durableAdmissionRef }
+      : {}),
   })
-    // Keep model-controlled prose from terminating the outer framing. JSON
-    // Unicode escapes preserve the exact decoded value for real parsers.
-    .replaceAll("<", "\\u003c")
-    .replaceAll(">", "\\u003e")
-    .replaceAll("&", "\\u0026");
+    // Match the result-page transport: protect framing delimiters and
+    // Unicode from ordinary tool-result sanitization without changing the
+    // decoded inline answer (including ZWJ emoji and invisible characters).
+    .replace(/[<=>&\u007f-\uffff]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return `<subagent_notification>\n${payload}\n</subagent_notification>`;
 }
 
@@ -229,8 +264,16 @@ export function formatSubagentNotification(params: {
  * Per-agent status tracker. Subscribers receive a replay of the
  * current state + every subsequent mutation.
  */
+export type NativeWorkerTiming = {
+  readonly turnId: string;
+  /** Unix milliseconds recorded when this assignment starts executing. */
+  readonly startedAt: number;
+  readonly endedAt?: number;
+};
+
 export class AgentStatusTracker {
   readonly subject: BehaviorSubject<AgentStatus>;
+  private runTiming: NativeWorkerTiming | undefined;
 
   constructor(initial: AgentStatus = { status: "pending_init" }) {
     this.subject = new BehaviorSubject<AgentStatus>(initial);
@@ -240,29 +283,36 @@ export class AgentStatusTracker {
     return this.subject.value;
   }
 
+  get timing(): NativeWorkerTiming | undefined {
+    return this.runTiming;
+  }
+
   markRunning(turnId: string): void {
     this.set({ status: "running", turnId, startedAtMs: monotonicMs() });
   }
 
-  markIdle(turnId: string): void {
-    this.set({ status: "idle", turnId, endedAtMs: monotonicMs() });
+  markIdle(turnId: string, terminal?: ChildTerminalOutcome): void {
+    this.set({ status: "idle", turnId, endedAtMs: monotonicMs(),
+      ...(terminal !== undefined ? { terminal } : {}) });
   }
 
-  markCompleted(turnId: string, lastMessage?: string): void {
+  markCompleted(turnId: string, lastMessage?: string, terminal?: ChildTerminalOutcome): void {
     this.set({
       status: "completed",
       turnId,
       endedAtMs: monotonicMs(),
       ...(lastMessage !== undefined ? { lastMessage } : {}),
+      ...(terminal !== undefined ? { terminal } : {}),
     });
   }
 
-  markErrored(turnId: string, error: string): void {
+  markErrored(turnId: string, error: string, terminal?: ChildTerminalOutcome): void {
     this.set({
       status: "errored",
       turnId,
       endedAtMs: monotonicMs(),
       error,
+      ...(terminal !== undefined ? { terminal } : {}),
     });
   }
 
@@ -272,7 +322,7 @@ export class AgentStatusTracker {
    * than reopening normal completed agents for reuse.
    */
   markDurabilityErrored(turnId: string, error: string): void {
-    this.subject.next({
+    this.publish({
       status: "errored",
       turnId,
       endedAtMs: monotonicMs(),
@@ -280,12 +330,13 @@ export class AgentStatusTracker {
     });
   }
 
-  markInterrupted(turnId: string, reason: string): void {
+  markInterrupted(turnId: string, reason: string, terminal?: ChildTerminalOutcome): void {
     this.set({
       status: "interrupted",
       turnId,
       endedAtMs: monotonicMs(),
       reason,
+      ...(terminal !== undefined ? { terminal } : {}),
     });
   }
 
@@ -309,6 +360,27 @@ export class AgentStatusTracker {
     // Only irreversible states are sticky. Control-plane admission separately
     // enforces idle-only reuse, so a completed live handle cannot accept work.
     if (IRREVERSIBLE_STATES.has(this.subject.value.status)) return;
+    this.publish(status);
+  }
+
+  private publish(status: AgentStatus): void {
+    const timing = this.runTiming;
+    if (status.status === "running") {
+      this.runTiming = {
+        turnId: status.turnId,
+        // run-agent marks one turn running both before and inside its loop.
+        startedAt: timing?.turnId === status.turnId ? timing.startedAt : Date.now(),
+      };
+    } else if (timing !== undefined) {
+      const statusTurnId = turnIdFromAgentStatus(status);
+      if (statusTurnId !== undefined && statusTurnId !== timing.turnId) {
+        this.runTiming = undefined;
+      } else {
+        // Idle, repeated terminal notifications and later shutdown all retain
+        // the first settled endpoint of the actual execution interval.
+        this.runTiming = { ...timing, endedAt: timing.endedAt ?? Date.now() };
+      }
+    }
     this.subject.next(status);
   }
 }

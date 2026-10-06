@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { normalizePromptCacheKey } from "./prompt-cache-key.js";
 import type { ProviderModelCapabilities } from "./capabilities.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 
@@ -225,6 +226,9 @@ export function prepareResponsesContinuationRequest(
       : state.conversationId?.trim() || undefined;
   if (promptCacheKey) {
     snapshot.prompt_cache_key = promptCacheKey;
+  }
+  if (typeof snapshot.prompt_cache_key === "string") {
+    snapshot.prompt_cache_key = normalizePromptCacheKey(snapshot.prompt_cache_key);
   }
 
   const request = cloneJsonRecord(snapshot);

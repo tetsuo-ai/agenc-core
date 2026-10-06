@@ -223,7 +223,7 @@ const MANIFEST_IO_POLICY = Object.freeze({
   hardLinks: "allow",
   privateDirectory: false,
   privateFile: false,
-  unavailableAlias: "identity-checked-path",
+  unavailableAlias: "reject",
 } satisfies ConfinedIoPolicy);
 
 const MANIFEST_IO_ERROR_CODES = {

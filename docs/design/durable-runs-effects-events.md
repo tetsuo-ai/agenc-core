@@ -85,7 +85,12 @@ The tables store transition state and journal coordinates, not duplicate event
 payloads. Journal bindings retain historical source paths so an archive or
 reopen does not erase provenance. Bounds may expand monotonically; retiring a
 range requires a recorded `retention`, `compaction`, or
-`corruption_truncated` gap.
+`corruption_truncated` gap. The daemon's session-directory sweep retires
+bindings with reason `retention` before it removes the files; a
+`run_effects` row still `review_status = pending` keeps that session on
+disk. If the journal is already gone, startup quarantines the run instead
+of refusing to start. See
+[session rollout retention](../reference/daemon.md#session-rollout-retention).
 
 ## Lifecycle epochs and terminal results
 
@@ -212,7 +217,21 @@ daemon restarted.
 
 Two operator paths settle a projected `unknown_outcome` review. For a
 `completed`, `failed`, or `cancelled` terminal, resume first and then use
-`/resolve` or `session.resolveToolCall` in the live session.
+`/resolve` or `session.resolveToolCall` in the live session. Clients address
+the live path by their daemon session id; the daemon reviews the owning
+agent's conversation, which keys the durable effect rows. The live path
+accepts either an evidence reference with its SHA-256 or
+`attestation: "operator"`, which records the operator's own statement as
+`operator_evidence` (`operator-attestation:<session>:<call-id>` plus the
+SHA-256 of the canonical attestation). The daemon accepts
+`session.resolveToolCall` only from a local connection that has a client
+attached to that session, refuses anything else with `SESSION_NOT_ATTACHED`,
+and records the reviewer from that attachment and the verified transport
+identity (`local-user:uid=<uid>:client=<client-id>`, or
+`local-client:<client-id>` when the transport proved no uid). A `reviewer`
+in the request body is ignored. Remote connections cannot call the method.
+The request uses the connection's priority lane, so it does not wait behind
+the turn it unblocks.
 
 The offline CLI still works after the session is stopped:
 
@@ -258,6 +277,20 @@ required, and no automatic replay occurs.
 | Active suspension with mismatched state or unresolved effects | Refused | Repair or reconcile the durable evidence before another resume attempt. |
 | Non-terminal open epoch | Continued in the same epoch | Crash recovery applies its evidence gates; this is not a lifecycle retry. |
 
+The gate refusal is bounded. `assertNoLiveUnknownEffect` counts
+side-effecting refusals since the last review; the router turns the third
+consecutive refusal (`EFFECT_REVIEW_BLOCK_STOP`) into a turn-ending result,
+and a run with `runtimeOptions.nonInteractive` (print mode) ends on the first
+one, since nobody attached will run `/resolve`. Either way the turn stops with
+the bounded `effect_review_required` reason: a `turn_failed` with that code,
+an `effect_review_required` warning carrying the refusal text, no
+`turn_complete`. The daemon keeps the session promptable so the operator can
+review and continue; the print-mode CLI exits 3 with a stderr marker naming
+the offline review command. The counter resets when the poison is resolved
+or cleared. Arguments may differ between refused calls; the exact-repeat
+backstop never saw the livelock this replaces (Terminal-Bench trial
+`risk-scorer-replay__ViaB4mm`: one refused `Write`, then 3.5 hours of retries).
+
 A cancelled epoch is a settled terminal outcome. An explicit resume reopens
 it under a new epoch exactly like a completed run. An `unknown_outcome`
 terminal stays refused by the public resume path after review resolution; the
@@ -275,6 +308,33 @@ ExitPlanMode "You are not in plan mode" check and other argument or mode
 checks. A bare `isError` from a non-idempotent tool still poisons the mutation
 gate. ExitPlanMode deliberately keeps a bare error after a possible plan-file
 write so a genuine mid-flight failure remains `unknown_outcome`.
+
+An MCP `tools/call` that the server answered, with or without `isError`,
+settles as `confirmed_committed` with a `provider_receipt`
+(`mcp-response:<server>:<tool>:<call-id>`), the same way a shell command that
+exited is settled by its process exit. The answer proves the call finished on
+the server; it never claims `confirmed_no_effect`, so the call is not retried
+as if it changed nothing. `readOnlyHint` and other server annotations are not
+consulted: they are untrusted hints. A lost connection, a local deadline, a
+JSON-RPC error (the SDK cannot tell a server error response from a locally
+raised one) or a user stop before any answer produce no receipt and stay
+`unknown_outcome`.
+
+The workspace file tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) run
+through the identity-bound mutation transaction, which already re-verifies
+the target after a failure. Its verdict now travels with the rethrown error
+(`markWorkspaceMutationNoEffect` in `file-mutation-transaction.ts`) so the
+tool result attests `confirmed_no_effect` / `boundary_not_crossed` with an
+evidence reference of `tool:<Tool>:pre_effect` (refused before the boundary,
+such as `EEXIST` or a changed path identity), `tool:<Tool>:original_state_verified`
+(the helper failed with `EACCES`, `EROFS`, `ENOSPC` or similar before any
+byte landed and the original state re-verified), or
+`tool:<Tool>:rollback_verified` (bytes landed, the backup was restored and
+re-verified). The helper's failure message carries the errno with the
+caller's uid/gid and the target's and parent's mode and owner so a
+permission refusal is diagnosable from the journal. A failure whose
+post-state could not be verified stays a bare error and still poisons the
+gate.
 
 The live dispatcher marks the effect boundary before `tool.execute()`, so
 `close_agent`, `assign_task`, and `send_message` attest the same
@@ -295,6 +355,8 @@ Operator detail:
 | `/resolve` says there is no live session | Resume first only for a settled `completed`, `failed`, or `cancelled` terminal. For an `unknown_outcome` terminal, use the offline command to record review evidence; that does not make the same session resumable. |
 | Offline `resolve-tool-call` reports `not_found` for a dangling intent | Expected. A raw intent has no `unknown_outcome` settlement to review and needs recovery classification or evidence repair rather than a review disposition. |
 | "You are not in plan mode" blocked later mutations | Fixed: that refusal now attests `confirmed_no_effect`. A leftover poison is an older journal. |
+| A `Write` / `Edit` that failed with `EACCES`, `EROFS` or `ENOSPC` blocked later mutations | Fixed: the transaction's verified no-effect verdict now reaches the tool result (`tool:<Tool>:original_state_verified`). A leftover poison is an older journal, or a failure whose post-state could not be verified (the message says "outcome is unknown"). |
+| Print-mode run exits 3 with "needs operator review" | The turn stopped with `effect_review_required` after a genuine unknown outcome. Run the offline `resolve-tool-call` named in the marker, then re-run; the run did not livelock retrying blocked tools. |
 | `close_agent` / `assign_task` / `send_message` argument or identity refusal blocked later FileWrite / Bash / spawn | Current pre-dispatch refusals and the four typed `assign_task` admission guards attest `tool:agents.v2:validation`. A leftover poison is an older journal or an unclassified shutdown, assignment, or mailbox-delivery path. |
 | Retained session refuses with a createdAt mismatch of a few milliseconds | Current code allows 5s. A larger gap, or a model/provider/objective mismatch, is still a hard refuse. |
 | Interrupted turn starts over instead of continuing from its last checkpoint | See [In-turn checkpoint resume](#in-turn-checkpoint-resume) and check the recorded resume-gate failure reason. |
@@ -323,8 +385,10 @@ The slice always carries `turnCount`, `recoveryReentryCount`,
 `stopHookBlockingCount`, `planToolRequiredRetryCount`, and
 `modelSampleOrdinal`. It optionally stores `modelSampleResumePrompt` as
 `continuation_nudge` or `empty_response`. It also stores
-`editorToolCallsAdmitted` after an editor admission and
-`pendingAdmissionFallback` while a provider swap awaits admission. The
+`editorToolCallsAdmitted` after an editor admission,
+`pendingAdmissionFallback` while a provider swap awaits admission, and
+`completionGateRound` once the non-interactive completion gate has injected
+a verification request (so a resumed turn cannot restart the bounded loop). The
 reader validates those fields before `restoreFromCheckpoint` applies them.
 Crash recovery can restore the runtime-only state and derive the same next
 sample step ID from the checkpointed ordinal. See
@@ -334,6 +398,17 @@ sample step ID from the checkpointed ordinal. See
 continues that turn only when every gate holds. A gate rejection may open a
 fresh turn only when no provider state changed or compensation proved that the
 original state was restored. The existing checkpoint remains unchanged.
+
+Daemon restart automatically continues a root checkpointed turn only when
+every descendant edge is closed and its outcome is durably recorded as
+terminal. A root whose workers finished earlier remains eligible. Otherwise
+bootstrap follows the ordinary path: it closes dangling calls, does not
+restore descendant sessions, and waits for an explicit new root turn.
+Resuming turns with workers remains follow-up work.
+Bootstrap reconciles durable effect acknowledgements before pairing the
+checkpoint's dangling calls. It leaves unknown outcomes unresolved. A retry
+placeholder written by an older bootstrap is not effect evidence; automatic
+continuation defers when one follows the checkpoint.
 
 When the checkpoint carries `pendingAdmissionFallback`, resume first prepares
 that fallback's provider and model as one route. Publication covers the
@@ -446,11 +521,6 @@ open.
 - Required counters are non-negative safe integers: `turnCount`,
   `recoveryReentryCount`, `maxOutputTokensRecoveryCount`,
   `continuationNudgeCount`, and `stopHookBlockingCount`.
-- `editorToolCallsAdmitted` is omitted when `0`. When present it is a
-  non-negative safe integer. The live editor cap is
-  `EDITOR_INTERACTION_MAX_TOOL_CALLS` (`32` in
-  `runtime/src/session/editor-interaction.ts`). Operator bounds:
-  [editor request bounds](../embedded-neovim-buffer.md#editor-request-bounds).
 - `pendingAdmissionFallback` requires `fromModel`, `toModel`, and `reason`.
   `fromProvider` and `toProvider` are optional. Each string is non-empty and
   at most `4096` UTF-8 bytes (`MAX_CHECKPOINT_FALLBACK_TEXT_BYTES`). Extra

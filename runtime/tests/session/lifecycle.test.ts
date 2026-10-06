@@ -3,7 +3,7 @@ import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
 } from "./lifecycle.js";
-import { mkSession } from "../fixtures.js";
+import { mkCtx, mkSession } from "../fixtures.js";
 import {
   executeExtractMemories,
   initExtractMemories,
@@ -33,7 +33,8 @@ describe("shutdownSessionLifecycle", () => {
   it("aborts the session controller first (I-7 quiesce)", async () => {
     const session = stubSession();
     await shutdownSessionLifecycle({ session });
-    expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
+    expect(session.abortController.abort).toHaveBeenCalledWith("daemon_shutdown");
+    expect(session.abortAllTasks).toHaveBeenCalledWith("daemon_shutdown");
   });
 
   it("lets an in-flight memory extraction finish before quiescing the controller", async () => {
@@ -59,7 +60,7 @@ describe("shutdownSessionLifecycle", () => {
         { role: "assistant", content: "ok" },
       ],
       completedToolResults: [],
-      ctx: { cwd: "/tmp", depth: 0, sessionSource: "cli_main" } as unknown as TurnContext,
+      ctx: mkCtx({ sandboxPolicy: { value: "danger_full_access" } }),
       session: {
         conversationId: "lifecycle-extraction",
         services: { runtimeOptions: resolveAgentRuntimeOptions({}) },
@@ -76,7 +77,7 @@ describe("shutdownSessionLifecycle", () => {
     resolveChild();
     await extraction;
     await shutdown;
-    expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
+    expect(session.abortController.abort).toHaveBeenCalledWith("daemon_shutdown");
     expect(session.shutdown).toHaveBeenCalledOnce();
   });
 
@@ -94,6 +95,23 @@ describe("shutdownSessionLifecycle", () => {
       agentControl: agentControl as any,
     });
     expect(order).toEqual(["agents", "session"]);
+  });
+
+  it("passes daemon suspension to descendants instead of terminal session shutdown", async () => {
+    const session = stubSession();
+    const agentControl = { shutdownAll: vi.fn().mockResolvedValue(undefined) };
+    await shutdownSessionLifecycle({ session, agentControl: agentControl as any });
+    expect(agentControl.shutdownAll).toHaveBeenCalledWith("daemon_shutdown");
+  });
+
+  it("cancels the root task and descendants terminally for an explicit stop", async () => {
+    const session = stubSession();
+    const agentControl = { shutdownAll: vi.fn().mockResolvedValue(undefined) };
+    await shutdownSessionLifecycle({ session, agentControl: agentControl as any,
+      shutdownReason: "session_shutdown" });
+    expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
+    expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
+    expect(agentControl.shutdownAll).toHaveBeenCalledWith("session_shutdown");
   });
 
   it("drains the active task before Session runs its close-boundary finalizer", async () => {

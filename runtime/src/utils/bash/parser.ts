@@ -59,7 +59,7 @@ export async function parseCommand(
   // Gate: internal-only until pentest. External builds fall back to compatibility
   // regex/shell-quote path. Guarding the whole body inside the positive
   // branch lets Bun DCE the NAPI import AND keeps telemetry honest — we
-  // only fire tengu_tree_sitter_load when a load was genuinely attempted.
+  // only fire the tree-sitter load event when a load was genuinely attempted.
   if (feature('TREE_SITTER_BASH')) {
     await ensureParserInitialized()
     const mod = getParserModule()

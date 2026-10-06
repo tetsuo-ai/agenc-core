@@ -4,33 +4,19 @@ import type {
   ContentBlockParam,
   MessageParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import {
-  SSEClientTransport,
-  type SSEClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/sse.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import {
-  StreamableHTTPClientTransport,
-  type StreamableHTTPClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import {
-  createFetchWithInit,
-  type FetchLike,
-  type Transport,
+import type { SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js'
+import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import type { StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type {
+  FetchLike,
+  Transport,
 } from '@modelcontextprotocol/sdk/shared/transport.js'
-import {
-  CallToolResultSchema,
-  ElicitRequestSchema,
-  type ElicitRequestURLParams,
-  type ElicitResult,
-  ErrorCode,
-  ListResourcesResultSchema,
-  type ListToolsResult,
-  ListToolsResultSchema,
-  McpError,
-  type PromptMessage,
-  type ResourceLink,
+import type {
+  ElicitRequestURLParams,
+  ElicitResult,
+  ListToolsResult,
+  PromptMessage,
+  ResourceLink,
 } from '@modelcontextprotocol/sdk/types.js'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
@@ -45,7 +31,7 @@ import {
   type Tool,
   type ToolCallProgress,
 } from '../../tools/Tool.js'
-import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
+import type { MCPProgress } from '../../tools/MCPTool/MCPTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { AbortError, isAbortError } from '../../utils/errors.js'
 import {
@@ -64,7 +50,11 @@ import { quote as quoteShellArgs } from '../../utils/bash/shellQuote.js'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
-import { logMCPDebug, logMCPError } from '../../utils/log.js'
+import { logMCPDebug as emitMCPDebug, logMCPError as emitMCPError } from '../../utils/log.js'
+import {
+  redactLiteralSecrets,
+  redactLiteralSecretsHoldingPrefix,
+} from '../../utils/redact-literal-secrets.js'
 import {
   getBinaryBlobSavedMessage,
   getFormatDescription,
@@ -91,26 +81,17 @@ import {
 } from '../../utils/proxy.js'
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
-import {
-  subprocessEnv,
-  withChildTempAuthority,
-} from '../../utils/subprocessEnv.js'
+import { withChildTempAuthority } from '../../utils/subprocessEnv.js'
 import {
   isPersistError,
   persistToolResult,
 } from '../../utils/toolResultStorage.js'
-import {
-  type ElicitationWaitingState,
-  runElicitationHooks,
-  runElicitationResultHooks,
-} from './elicitationHandler.js'
+import type { ElicitationWaitingState } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
 import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForCollapse.js'
 import { sleep } from '../../utils/sleep.js'
-import { AgenCAuthProvider, wrapFetchWithStepUpDetection } from './auth.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import {
   buildModelFacingMcpToolDescription,
@@ -121,6 +102,7 @@ import {
   sanitizeOptionalMcpModelFacingText,
 } from '../../mcp-client/model-facing-sanitization.js'
 import { normalizeMcpToolOutput } from '../../mcp-client/tool-output.js'
+import { createStdioMCPEnvironment } from '../../mcp-client/transports/stdio.js'
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
@@ -133,6 +115,10 @@ import type {
   ServerResource,
 } from './types.js'
 
+// Wrappers, not aliases: reading the imports at call time keeps modules that
+// mock utils/log.js without these exports loadable.
+const logMCPDebug = (...args: Parameters<typeof emitMCPDebug>): ReturnType<typeof emitMCPDebug> => emitMCPDebug(...args)
+const logMCPError = (...args: Parameters<typeof emitMCPError>): ReturnType<typeof emitMCPError> => emitMCPError(...args)
 
 /**
  * Custom error class to indicate that an MCP tool call failed due to
@@ -237,14 +223,8 @@ function getMcpToolTimeoutMs(
 
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
 
-// Lazy: toolRendering.tsx pulls React/ink; only needed when AgenC-in-Chrome MCP server is connected
-/* eslint-disable @typescript-eslint/no-require-imports */
-const agencInChromeToolRendering =
-  (): typeof import('../../utils/agencInChrome/toolRendering.js') =>
-    require('../../utils/agencInChrome/toolRendering.js')
-
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { StringDecoder } from 'node:string_decoder'
 
 /** Return the canonical needs-auth connection result for remote transports. */
 function handleRemoteAuthFailure(
@@ -611,7 +591,35 @@ export const connectToServer = memoize(
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer: InProcessMcpServer | undefined
+    const pluginSecrets = (serverRef.pluginSecretValues ?? []).filter(secret => secret.length >= 4)
+    const redactConnectionText = (value: string): string => redactLiteralSecrets(value, pluginSecrets)
+    const logMCPDebug = (serverName: string, message: string): void =>
+      emitMCPDebug(serverName, redactConnectionText(message))
+    const logMCPError = (serverName: string, error: unknown): void => {
+      if (pluginSecrets.length === 0) {
+        emitMCPError(serverName, error)
+        return
+      }
+      emitMCPError(serverName, redactConnectionText(
+        error instanceof Error ? error.stack ?? error.message : String(error),
+      ))
+    }
     try {
+      const [
+        { Client }, { SSEClientTransport }, { StdioClientTransport },
+        { StreamableHTTPClientTransport }, { createFetchWithInit },
+        { ElicitRequestSchema }, { UnauthorizedError },
+        { AgenCAuthProvider, wrapFetchWithStepUpDetection },
+      ] = await Promise.all([
+        import('@modelcontextprotocol/sdk/client/index.js'),
+        import('@modelcontextprotocol/sdk/client/sse.js'),
+        import('@modelcontextprotocol/sdk/client/stdio.js'),
+        import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+        import('@modelcontextprotocol/sdk/shared/transport.js'),
+        import('@modelcontextprotocol/sdk/types.js'),
+        import('@modelcontextprotocol/sdk/client/auth.js'),
+        import('./auth.js'),
+      ])
       let transport
       const credentialHome =
         serverRef.type === 'sse' ||
@@ -978,10 +986,11 @@ export const connectToServer = memoize(
           args: finalArgs,
           ...(serverRef.cwd !== undefined ? { cwd: serverRef.cwd } : {}),
           env: withChildTempAuthority(
-            {
-              ...subprocessEnv({ ...environment }),
-              ...serverRef.env,
-            },
+            createStdioMCPEnvironment(
+              serverRef.env,
+              serverRef.env_vars,
+              environment,
+            ),
             mcpSessionTempRoot(options),
           ),
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
@@ -994,7 +1003,28 @@ export const connectToServer = memoize(
       // outputs emitted during the connection start (this can be useful for debugging failed connections).
       // Store handler reference for cleanup to prevent memory leaks
       let stderrHandler: ((data: Buffer) => void) | undefined
+      let stderrEndHandler: (() => void) | undefined
       let stderrOutput = ''
+      // Pipe chunks can split a multibyte character; decode incrementally so
+      // a saved secret stays intact for redaction when the text is logged.
+      const stderrDecoder = new StringDecoder('utf8')
+      let stderrFinished = false
+      const logAccumulatedStderr = (final: boolean): void => {
+        if (stderrFinished) return
+        const { redacted, pending } = redactLiteralSecretsHoldingPrefix(stderrOutput, pluginSecrets)
+        if (final) {
+          stderrFinished = true
+          // A pending UTF-8 byte can follow a secret prefix. End the decoder
+          // only after deciding whether that decoded prefix must be hidden.
+          const decoderTail = stderrDecoder.end()
+          const finalText = redacted + (pending ? '[REDACTED]' : '') + redactConnectionText(decoderTail)
+          if (finalText) logMCPError(name, `Server stderr: ${finalText}`)
+          stderrOutput = ''
+        } else {
+          stderrOutput = pending
+          if (redacted) logMCPError(name, `Server stderr: ${redacted}`)
+        }
+      }
       if (serverRef.type === 'stdio' || !serverRef.type) {
         const stdioTransport = transport as StdioClientTransport
         if (stdioTransport.stderr) {
@@ -1002,13 +1032,15 @@ export const connectToServer = memoize(
             // Cap stderr accumulation to prevent unbounded memory growth
             if (stderrOutput.length < 64 * 1024 * 1024) {
               try {
-                stderrOutput += data.toString()
+                stderrOutput += stderrDecoder.write(data)
               } catch {
                 // Ignore errors from exceeding max string length
               }
             }
           }
           stdioTransport.stderr.on('data', stderrHandler)
+          stderrEndHandler = () => logAccumulatedStderr(true)
+          stdioTransport.stderr.on('end', stderrEndHandler)
         }
       }
 
@@ -1104,10 +1136,7 @@ export const connectToServer = memoize(
 
       try {
         await Promise.race([connectPromise, timeoutPromise])
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-          stderrOutput = '' // Release accumulated string to prevent memory growth
-        }
+        logAccumulatedStderr(false)
         const elapsed = Date.now() - connectStartTime
         logMCPDebug(
           name,
@@ -1173,9 +1202,7 @@ export const connectToServer = memoize(
         } else {
           await cleanupFailedConnection(transport)
         }
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-        }
+        logAccumulatedStderr(true)
         throw error
       }
 
@@ -1435,7 +1462,9 @@ export const connectToServer = memoize(
         if (stderrHandler && (serverRef.type === 'stdio' || !serverRef.type)) {
           const stdioTransport = transport as StdioClientTransport
           stdioTransport.stderr?.off('data', stderrHandler)
+          if (stderrEndHandler) stdioTransport.stderr?.off('end', stderrEndHandler)
         }
+        logAccumulatedStderr(true)
 
         // For stdio transports, explicitly terminate the child process with proper signals
         // NOTE: StdioClientTransport.close() only sends an abort signal, but many MCP servers
@@ -1619,7 +1648,7 @@ export const connectToServer = memoize(
         name,
         type: 'failed' as const,
         config: serverRef,
-        error: errorMessage(error),
+        error: redactConnectionText(errorMessage(error)),
       }
     }
   },
@@ -1729,6 +1758,8 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
+      const { ListToolsResultSchema } = await import('@modelcontextprotocol/sdk/types.js')
+
       // Retry tool list fetch up to 2 times on transient failures.
       // Without retry, a single timeout during tools/list makes all MCP tools
       // silently disappear from the model's context until the next reconnect.
@@ -1755,6 +1786,19 @@ export const fetchToolsForClient = memoizeWithLRU(
       if (!result) {
         throw lastError ?? new Error('tools/list failed after 3 attempts')
       }
+
+      if (result.tools.length === 0) return []
+
+      // The tool definition includes terminal renderers. Load it only when a
+      // connected server actually supplies tools, inside the existing failure
+      // boundary for tool discovery.
+      const { MCPTool } = await import('../../tools/MCPTool/MCPTool.js')
+
+      const chromeToolRendering =
+        isAgenCInChromeMCPServer(client.name) &&
+        (client.config.type === 'stdio' || !client.config.type)
+          ? await import('../../utils/agencInChrome/toolRendering.js')
+          : undefined
 
       // Keep the protocol identity byte-for-byte intact for tools/call. Only
       // fields exposed to the model or UI pass through the shared metadata
@@ -1980,11 +2024,8 @@ export const fetchToolsForClient = memoizeWithLRU(
               const displayName = modelFacingTitle || modelFacingRawToolName
               return `${client.name} - ${displayName} (MCP)`
             },
-            ...(isAgenCInChromeMCPServer(client.name) &&
-              (client.config.type === 'stdio' || !client.config.type)
-              ? agencInChromeToolRendering().getAgenCInChromeMCPToolOverrides(
-                tool.name,
-              )
+            ...(chromeToolRendering
+              ? chromeToolRendering.getAgenCInChromeMCPToolOverrides(tool.name)
               : {}),
           }
         })
@@ -2007,6 +2048,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
+      const { ListResourcesResultSchema } = await import('@modelcontextprotocol/sdk/types.js')
       const result = await client.client.request(
         { method: 'resources/list' },
         ListResourcesResultSchema,
@@ -2032,6 +2074,8 @@ export const fetchResourcesForClient = memoizeWithLRU(
 )
 
 
+export { callIdeRpc } from './ideRpc.js'
+
 /**
  * Call an IDE tool directly as an RPC
  * @param toolName The name of the tool to call
@@ -2039,7 +2083,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
  * @param client The IDE client to use for the RPC call
  * @returns The result of the tool call
  */
-export async function callIdeRpc(
+export async function callIdeRpcWithLoadedClient(
   toolName: string,
   args: Record<string, unknown>,
   client: ConnectedMCPServer,
@@ -2405,6 +2449,7 @@ export async function callMCPToolWithUrlElicitationRetry({
     signal: AbortSignal,
   ) => Promise<ElicitResult>
 }): Promise<MCPToolCallResult> {
+  const { McpError, ErrorCode } = await import('@modelcontextprotocol/sdk/types.js')
   const MAX_URL_ELICITATION_RETRIES = 3
   for (let attempt = 0; ; attempt++) {
     // Check abort signal before each attempt — without this, a cancelled
@@ -2484,6 +2529,7 @@ export async function callMCPToolWithUrlElicitationRetry({
         const { elicitationId } = elicitation
 
         // Run elicitation hooks — they can resolve URL elicitations programmatically
+        const { runElicitationHooks, runElicitationResultHooks } = await import('./elicitationHandler.js')
         const hookResponse = await runElicitationHooks(
           serverName,
           elicitation,
@@ -2608,6 +2654,10 @@ async function callMCPTool({
   _meta?: Record<string, unknown>
   structuredContent?: Record<string, unknown>
 }> {
+  const [{ CallToolResultSchema }, { UnauthorizedError }] = await Promise.all([
+    import('@modelcontextprotocol/sdk/types.js'),
+    import('@modelcontextprotocol/sdk/client/auth.js'),
+  ])
   const { client, name, config, homeContext } = connectedServer
   const { environment, runtimeOptions } = mcpConnectionAuthority(connectedServer)
   const toolStartTime = Date.now()

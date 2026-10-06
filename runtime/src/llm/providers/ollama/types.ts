@@ -20,4 +20,5 @@ export interface OllamaProviderConfig extends Omit<LLMProviderConfig, "model"> {
   numCtx?: number;
   /** Number of GPU layers */
   numGpu?: number;
+  readonly fetchImpl?: typeof fetch;
 }

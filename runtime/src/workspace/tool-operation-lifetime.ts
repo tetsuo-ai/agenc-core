@@ -14,9 +14,10 @@ const operationLifetimeStorage =
   new AsyncLocalStorage<WorkspaceOperationLifetimeContext>();
 
 /**
- * Keep a workspace fence alive across a supervised process that outlives the
- * tool call which created it. Callers must invoke the returned release exactly
- * once when that process/task reaches a terminal state.
+ * Keep a tool operation's process containment alive across a supervised
+ * process that outlives the tool call which created it. Callers must invoke
+ * the returned release exactly once when that process/task reaches a
+ * terminal state.
  */
 export function retainCurrentWorkspaceOperation(): () => void {
   return operationLifetimeStorage.getStore()?.retain() ?? (() => {});

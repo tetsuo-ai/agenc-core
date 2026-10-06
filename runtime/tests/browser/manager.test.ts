@@ -14,8 +14,8 @@
  *    the dir name contains the pid → the not-predictable assertion → red.
  */
 
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   existsSync,
@@ -65,6 +65,13 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
         terminationSeam.failuresRemaining -= 1;
         throw new Error("injected process-tree cleanup failure");
       }
+      // A fake EventEmitter has no OS process to signal. Keep manager cleanup
+      // assertions independent of the platform supervisor; the real-tree
+      // cases below exercise that supervisor with actual child processes.
+      if ((args[0] as { syntheticBrowserChild?: boolean }).syntheticBrowserChild) {
+        args[0].kill("SIGTERM");
+        return;
+      }
       await actual.terminateProcessTreeAndWait(...args);
     },
   };
@@ -96,6 +103,14 @@ function track(mgr: BrowserManager): BrowserManager {
   return mgr;
 }
 
+beforeEach(() => {
+  // The hermetic macOS runner cannot bind loopback sockets. These tests
+  // exercise manager lifecycle with a fake child, not proxy networking.
+  if (process.platform === "darwin") {
+    vi.spyOn(BrowserProxy.prototype, "start").mockResolvedValue(4321);
+  }
+});
+
 afterEach(async () => {
   terminationSeam.failuresRemaining = 0;
   while (managers.length > 0) {
@@ -104,9 +119,11 @@ afterEach(async () => {
   await closeAllBrowserManagers().catch(() => {});
   terminationSeam.calls = [];
   launchBrowserMock.mockReset();
+  vi.restoreAllMocks();
 });
 
 interface FakeChild extends EventEmitter {
+  syntheticBrowserChild: true;
   kill(signal?: string): boolean;
   exitCode: number | null;
   signalCode: string | null;
@@ -115,6 +132,7 @@ interface FakeChild extends EventEmitter {
 
 function makeFakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
+  child.syntheticBrowserChild = true;
   child.exitCode = null;
   child.signalCode = null;
   child.killed = false;
@@ -248,7 +266,7 @@ describe("BrowserManager launch failure", () => {
         policy: { ...BASE_POLICY, profileDir: "/dev/null/nope" },
       }),
     );
-    await expect(mgr.page()).rejects.toBeTruthy();
+    await expect(mgr.newTab()).rejects.toBeTruthy();
     expect(stopSpy).toHaveBeenCalled();
     expect(launchBrowserMock).not.toHaveBeenCalled();
     stopSpy.mockRestore();
@@ -256,7 +274,19 @@ describe("BrowserManager launch failure", () => {
 });
 
 describe("BrowserManager shutdown/launch race", () => {
-  const testPosix = process.platform === "win32" ? test.skip : test;
+  const darwinProcessTableUnavailable = process.platform === "darwin" &&
+    spawnSync("/bin/ps", ["-axo", "pid=,ppid=,state=,lstart="], {
+      stdio: "ignore",
+    }).status !== 0;
+  // The supervisor needs a readable process table to prove descendant cleanup.
+  // A restricted macOS runner may deny /bin/ps; the same tests run on a Mac
+  // with process-table access and on Linux.
+  const testPosix = process.platform === "win32" || darwinProcessTableUnavailable
+    ? test.skip
+    : test;
+  const processTableSkipReason = darwinProcessTableUnavailable
+    ? " [skipped on macOS: sandbox denies /bin/ps process-table access]"
+    : "";
 
   test("closeAll tears down a browser that finished launching mid-shutdown", async () => {
     const child = makeFakeChild();
@@ -268,8 +298,8 @@ describe("BrowserManager shutdown/launch race", () => {
     );
 
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    // Trigger launch; page() parks on the pending launchBrowser.
-    const launchTriggered = mgr.page().catch(() => {});
+    // Trigger launch; newTab() parks on the pending launchBrowser.
+    const launchTriggered = mgr.newTab().catch(() => {});
     await tick(); // let #launch reach the launchBrowser await
 
     // Shutdown races the in-flight launch.
@@ -284,7 +314,7 @@ describe("BrowserManager shutdown/launch race", () => {
   });
 
   testPosix(
-    "closeAll kills a TERM-resistant descendant before returning",
+    `closeAll kills a TERM-resistant descendant before returning${processTableSkipReason}`,
     async () => {
       const tree = spawnTermResistantTree();
       const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
@@ -293,7 +323,7 @@ describe("BrowserManager shutdown/launch race", () => {
           child: tree.child,
           connection: makeFakeConnection(),
         });
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
         await waitFor(() => existsSync(tree.marker));
         expect(existsSync(tree.marker)).toBe(true);
         const descendant = readDescendant(tree.marker);
@@ -312,7 +342,7 @@ describe("BrowserManager shutdown/launch race", () => {
   );
 
   testPosix(
-    "waits for unexpected-exit tree cleanup before relaunching",
+    `waits for unexpected-exit tree cleanup before relaunching${processTableSkipReason}`,
     async () => {
       const tree = spawnTermResistantTree(true);
       const replacement = makeFakeChild();
@@ -332,13 +362,13 @@ describe("BrowserManager shutdown/launch race", () => {
             };
           });
 
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
         await waitFor(() => existsSync(tree.marker));
         expect(existsSync(tree.marker)).toBe(true);
         await waitFor(() => tree.child.exitCode !== null);
         expect(tree.child.exitCode).not.toBeNull();
 
-        await mgr.page().catch(() => {});
+        await mgr.newTab().catch(() => {});
 
         expect(aliveAtRelaunch).toBe(false);
       } finally {
@@ -356,7 +386,7 @@ describe("BrowserManager shutdown/launch race", () => {
       connection: makeFakeConnection(),
     });
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     terminationSeam.failuresRemaining = 1;
     await expect(mgr.closeAll()).rejects.toThrow(
@@ -364,7 +394,7 @@ describe("BrowserManager shutdown/launch race", () => {
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
 
-    await expect(mgr.page()).rejects.toThrow(
+    await expect(mgr.newTab()).rejects.toThrow(
       "injected process-tree cleanup failure",
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
@@ -380,14 +410,14 @@ describe("BrowserManager shutdown/launch race", () => {
       connection: makeFakeConnection(),
     });
     const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     terminationSeam.failuresRemaining = 1;
     child.exitCode = 23;
     child.emit("exit", 23, null);
     await waitFor(() => terminationSeam.calls.length === 1);
 
-    await expect(mgr.page()).rejects.toThrow(
+    await expect(mgr.newTab()).rejects.toThrow(
       "injected process-tree cleanup failure",
     );
     expect(launchBrowserMock).toHaveBeenCalledTimes(1);
@@ -409,7 +439,7 @@ describe("BrowserManager shutdown/launch race", () => {
       });
     const first = track(new BrowserManager({ policy: BASE_POLICY }));
     const second = track(new BrowserManager({ policy: BASE_POLICY }));
-    await Promise.all([first.page().catch(() => {}), second.page().catch(() => {})]);
+    await Promise.all([first.newTab().catch(() => {}), second.newTab().catch(() => {})]);
 
     terminationSeam.failuresRemaining = 1;
     await expect(closeAllBrowserManagers()).rejects.toMatchObject({
@@ -440,14 +470,14 @@ describe("BrowserManager fallback temp profile", () => {
           resolveAgentRuntimeOptions({}, { sessionTempRoot: rootA }),
           async () => {
             await Promise.resolve();
-            await managerA.page().catch(() => {});
+            await managerA.newTab().catch(() => {});
           },
         ),
         runWithAgentRuntimeOptions(
           resolveAgentRuntimeOptions({}, { sessionTempRoot: rootB }),
           async () => {
             await Promise.resolve();
-            await managerB.page().catch(() => {});
+            await managerB.newTab().catch(() => {});
           },
         ),
       ]);
@@ -485,7 +515,7 @@ describe("BrowserManager fallback temp profile", () => {
       const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
       await runWithAgentRuntimeOptions(
         resolveAgentRuntimeOptions({}, { sessionTempRoot: sessionRoot }),
-        () => mgr.page().catch(() => {}),
+        () => mgr.newTab().catch(() => {}),
       );
 
       const created = readdirSync(sessionRoot).filter(
@@ -526,7 +556,7 @@ describe("BrowserManager fallback temp profile", () => {
       }),
     );
 
-    await mgr.page().catch(() => {});
+    await mgr.newTab().catch(() => {});
 
     const launchOptions = launchBrowserMock.mock.calls[0]?.[0] as {
       userDataDir: string;

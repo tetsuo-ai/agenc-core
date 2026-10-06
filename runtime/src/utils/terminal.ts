@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import { ctrlOToExpand } from '../tui/components/CtrlOToExpand.js'
+import { ctrlOToExpand } from './terminalHints.js'
 import { stringWidth } from '../tui/ink/stringWidth.js'
 import sliceAnsi from './sliceAnsi.js'
 

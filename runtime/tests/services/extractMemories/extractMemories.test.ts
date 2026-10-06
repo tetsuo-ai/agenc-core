@@ -39,6 +39,9 @@ function ctx(cwd: string): TurnContext {
     cwd,
     depth: 0,
     sessionSource: "cli_main",
+    sandboxPolicy: { value: "danger_full_access" },
+    fileSystemSandboxPolicy: { allowRead: [], denyRead: [], allowWrite: [], denyWrite: [] },
+    networkSandboxPolicy: { allowlist: [], denylist: [], allowManagedDomainsOnly: false },
   } as unknown as TurnContext;
 }
 
@@ -58,11 +61,12 @@ function extractionContext(opts: {
 
 function sessionWithBus(
   warnings: Array<{ cause: string; message: string }>,
+  runtimeOptions = defaultRuntimeOptions,
 ): Session {
   let subId = 0;
   return {
     conversationId: `bus-${Math.random().toString(36).slice(2)}`,
-    services: { runtimeOptions: defaultRuntimeOptions },
+    services: { runtimeOptions },
     nextInternalSubId: () => String(subId++),
     emit: (event: { msg: { type: string; payload: unknown } }) => {
       if (event.msg.type === "warning") {
@@ -122,24 +126,32 @@ describe("auto memory path resolution", () => {
   });
 
   it("uses shared project-key sanitization for automatic memory directories", async () => {
-    const configHome = join(tmpdir(), "agenc-config-test");
+    const fixture = await mkdtemp(join(tmpdir(), "agenc-memory-key-"));
+    const workspace = join(fixture, "project");
+    const configHome = join(fixture, "config");
+    await mkdir(workspace);
+    await mkdir(join(workspace, ".git"));
     const longPath = `/${"deep/".repeat(50)}project`;
     const longKey = sanitizePathForProjectKey(longPath);
 
     expect(sanitizePathForProjectKey("/tmp/foo")).toMatch(/^v2-.*-[a-f0-9]{64}$/u);
     expect(longKey).toMatch(/^v2-.*-[a-f0-9]{64}$/u);
     expect(longKey.length).toBeLessThanOrEqual(132);
-    await expect(
-      resolveAutoMemoryDirectory({
-        env: {},
-        cwd: "/tmp/foo",
-        configHomeDir: configHome,
-        settings: {},
-      }),
-    ).resolves.toEqual({
-      enabled: true,
-      path: `${join(configHome, "projects", sanitizePathForProjectKey("/tmp/foo"), "memory")}${sep}`,
-    });
+    try {
+      await expect(
+        resolveAutoMemoryDirectory({
+          env: {},
+          cwd: workspace,
+          configHomeDir: configHome,
+          settings: {},
+        }),
+      ).resolves.toEqual({
+        enabled: true,
+        path: `${join(configHome, "projects", sanitizePathForProjectKey(workspace), "memory")}${sep}`,
+      });
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it("canonicalizes linked worktrees before building automatic project keys", async () => {
@@ -842,6 +854,79 @@ describe("extract memories service", () => {
       behavior: "deny",
       metadata: { reason: "tool_not_allowed" },
     });
+  });
+
+  it("logs approval deferral once and does not retry the same memory batch", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const session = sessionWithBus(warnings);
+    const delegateFn = vi.fn(async (options: { deferInteractiveApprovals: (tool: string) => void }) => {
+      options.deferInteractiveApprovals("Write");
+      return { kind: "sync_completed", result: { outcome: "cancelled" } };
+    });
+    initExtractMemories({ env: {}, minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      delegateFn: delegateFn as never,
+      ensureAgentControl: (() => ({ control: {}, registry: {} })) as never,
+    });
+    const messages: LLMMessage[] = [{ role: "user", content: "remember my preferences" }];
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    await executeExtractMemories(extractionContext({ cwd: root, messages, session }));
+    expect(delegateFn).toHaveBeenCalledOnce();
+    expect(warnings.filter((entry) => entry.message.includes("approval required"))).toEqual([{
+      cause: "memory_extraction_skipped",
+      message: "approval required for Write; background memory stopped without requesting input",
+    }]);
+  });
+
+  it.each(["workspace_write", "read_only"] as const)("skips an unwritable memory root before dispatch in %s", async (mode) => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    // workspace_write may write the session temp root. The default one is the
+    // temp directory the test process started with, which can contain this
+    // test's root, so give the session its own.
+    const session = sessionWithBus(warnings, resolveAgentRuntimeOptions({}, {
+      sessionTempRoot: join(root, "session-tmp"),
+    }));
+    const runChild = vi.fn(async () => ({ outcome: "completed" as const }));
+    const scan = vi.fn(async () => []);
+    initExtractMemories({ env: {}, minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }),
+      runChild, scanMemoryFiles: scan,
+    });
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const context = extractionContext({ cwd: workspace, session,
+      messages: [{ role: "user", content: "remember my preferences" }],
+    });
+    const restricted = { ...context, ctx: { ...context.ctx,
+      sandboxPolicy: { value: mode },
+      fileSystemSandboxPolicy: { allowRead: [workspace], denyRead: [], allowWrite: [workspace], denyWrite: [] },
+    } as TurnContext };
+    await executeExtractMemories(restricted);
+    await executeExtractMemories(restricted);
+    expect(runChild).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
+    expect(warnings.filter((entry) => entry.message.includes("memory directory is not writable"))).toHaveLength(1);
+    expect(warnings.some((entry) => entry.cause === "memory_extraction_failed")).toBe(false);
+  });
+
+  it("allows an explicitly writable memory root without granting other paths", async () => {
+    const runChild = vi.fn(async (_request: ExtractMemoriesChildRequest) => ({ outcome: "completed" as const }));
+    initExtractMemories({ env: {}, minEligibleTurns: 1,
+      resolveMemoryDirectory: async () => ({ enabled: true, path: memoryDir }), runChild,
+    });
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const context = extractionContext({ cwd: workspace,
+      messages: [{ role: "user", content: "remember my preferences" }],
+    });
+    const policy = { allowRead: [workspace, memoryDir], denyRead: [], allowWrite: [workspace, memoryDir], denyWrite: [] };
+    await executeExtractMemories({ ...context, ctx: { ...context.ctx,
+      sandboxPolicy: { value: "workspace_write" }, fileSystemSandboxPolicy: policy,
+    } as TurnContext });
+    expect(runChild).toHaveBeenCalledOnce();
+    expect(policy.allowWrite).toEqual([workspace, memoryDir]);
+    const request = runChild.mock.calls[0]![0] as ExtractMemoriesChildRequest;
+    expect(await request.toolPolicy({ name: "Write" }, { file_path: join(workspace, "unrelated.md"), content: "denied" })).toMatchObject({ behavior: "deny" });
   });
 
   it("runs the child on every third eligible turn by default and reports each deferral", async () => {

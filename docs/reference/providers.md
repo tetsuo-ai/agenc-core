@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.17.0**. Source of truth:
+Built-in model providers for AgenC **0.18.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
 ordered credential and endpoint environment ingress names, and first-run
@@ -28,6 +28,9 @@ separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
 ## Gemini reasoning effort
 
+Core defaults to `gemini-3.8-flash` for the Gemini provider.
+`gemini-3.1-pro-preview` remains selectable through an explicit model setting.
+
 The native Gemini adapter sends an explicit effort as
 `generationConfig.thinkingConfig.thinkingLevel`. The model catalog, `/effort`,
 child-agent and role overrides, and provider/model switch checks use the same
@@ -35,6 +38,7 @@ supported-level metadata.
 
 | Model | Explicit levels | Provider default when omitted |
 | --- | --- | --- |
+| `gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
 | `gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.5-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
@@ -106,11 +110,22 @@ catalog for Grok 4.6 exposes:
 | Reasoning effort | `low`, `medium`, `high`, `xhigh`; model default `high` |
 | Standard token rates below 200k prompt tokens | $2.00 / 1M input, $0.50 / 1M cached input, $6.00 / 1M output |
 
+| Selectable model | Context | Input | Reasoning effort | Base rates per 1M input / cached / output |
+| --- | --- | --- | --- | --- |
+| `grok-4.7` | 500,000 | text and image | `low`, `medium`, `high`, `xhigh`; default `high` | $2 / $0.50 / $6 |
+
+Grok 4.7 preserves encrypted reasoning on Responses resends and durable history.
+The session default remains `grok-4.6`.
+
+Grok 4.7 and Grok 4.6 have a Fast tier: xAI priority processing at 2x the
+token rates, on API-key billing only. See
+[Fast mode and service tiers](#fast-mode-and-service-tiers).
+
 `grok-4.5` remains a selectable 500k-context catalog entry with the same input
 modalities and runtime features. Its short-context cached-input rate is
 $0.30 / 1M, versus $0.50 / 1M for Grok 4.6; it supports
 `low`/`medium`/`high` reasoning and is still the managed OpenRouter paid
-default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6,
+default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6, Grok 4.7,
 and the documented 4.20 multi-agent family may receive the provider parameter;
 unknown variants have it stripped instead of inheriting support from a name
 prefix. Grok 4.3's catalog default effort is `low`; Grok 4.5 and Grok 4.6
@@ -128,26 +143,27 @@ the Grok 4.6 default and capability change.
 they run only through the Grok Build CLI ACP path. See
 [grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
-## Built-in providers (23)
+## Built-in providers (24)
 
 | Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
 | `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY`, `GROK_API_KEY` | `XAI_BASE_URL`, `GROK_BASE_URL` | `api-key` |
 | `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `api-key` |
-| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
+| `anthropic` | Anthropic | `claude-opus-5-5` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
 | `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none)_ | `OLLAMA_BASE_URL` | `local` |
 | `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
-| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
+| `groq` | Groq | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
 | `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
 | `meta` | Meta | `muse-spark-1.3` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
 | `qwen-token-plan` | QwenCloud Token Plan | `qwen3.8-max` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_TOKEN_PLAN_API_KEY` | `QWEN_TOKEN_PLAN_BASE_URL`, `DASHSCOPE_TOKEN_PLAN_BASE_URL` | `api-key` |
+| `ollama-cloud` | Ollama Cloud | `deepseek-v4.1-flash` | `https://ollama.com/v1` | `OLLAMA_API_KEY` | None (fixed Cloud endpoint) | `api-key` |
 | `cerebras` | Cerebras | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` | `api-key` |
 | `zai` | Z.AI | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `ZAI_BASE_URL` | `api-key` |
 | `zai-coding-plan` | Z.AI Coding Plan | `glm-5.3` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_CODING_PLAN_API_KEY` | `ZAI_CODING_PLAN_BASE_URL` | `api-key` |
-| `gemini` | Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
+| `gemini` | Gemini | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `kimi` | Kimi (Moonshot) | `kimi-k3` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | _(fixed global endpoint)_ | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
@@ -158,6 +174,10 @@ they run only through the Grok Build CLI ACP path. See
 
 `openrouter` remains an `api-key` first-run route, but a signed-in AgenC
 subscription can supply its managed key access when that feature is enabled.
+
+For current Claude models, limits and thinking behavior, see
+[Anthropic models](./anthropic-models.md).
+
 Amazon Bedrock is an environment-only first-run route because SigV4 requires
 both an access-key ID and secret access key. The optional session token is used
 when present. AgenC's one-field BYOK paste/store path does not accept or persist
@@ -263,26 +283,73 @@ reasoning provider slug.
 
 Muse Spark is registered with a 1,048,576-token context window and a
 131,072-token maximum output. Its supported reasoning levels are `minimal`,
-`low`, `medium`, `high`, and `xhigh` (default `medium`); `none` and `max` are
-rejected by the API. The chat models accept image input, JSON-schema structured
+`low`, `medium`, `high`, and `xhigh` (default `medium`); standard-tier
+`muse-spark-1.3` also accepts `max`. The API rejects `none`, and `max` is not
+available on the other registered models. See Meta's
+[reasoning guide](https://dev.meta.ai/docs/reasoning). The chat models accept image input, JSON-schema structured
 output, and parallel function calls. Meta accepts only `tool_choice: "auto"`
 and rejects `stop`, so AgenC normalizes those controls before sending a
-request. Exact per-token pricing is not published in the authoritative
+request. Streams must include a terminal `finish_reason`; malformed or cut
+streams fail instead of being accepted as completed answers, and tool calls
+require `finish_reason: "tool_calls"` before dispatch. This follows Meta's
+[Chat Completions contract](https://dev.meta.ai/docs/protocols/chat-completions).
+Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
+
+MiniMax keeps AgenC's 131,072-token output reservation while its [API reference](https://platform.minimax.io/docs/api-reference/text-chat-openai)
+sets exact upper limits of 524,288 for M3 and 204,800 for every listed M2 variant.
+M3's [published price](https://platform.minimax.io/docs/guides/pricing-paygo)
+doubles above 512K input tokens, defined as 524,288 tokens by the API reference.
+Priority admission uses `service_tier: "priority"` and costs 1.5 times the
+applicable standard tier. M3 has no published cache-write fee; M2.7 retains its
+own documented fee. The M3.1 preview is currently restricted to Token Plan and
+MiniMax Code, so it is not added to AgenC's standard PAYG picker.
+
+Groq defaults to `openai/gpt-oss-120b`. Its reviewed public catalog also
+contains `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (preview), and
+`minimaxai/minimax-m2.7` (enterprise preview). The GPT OSS models accept
+`low`, `medium`, and `high` effort; Qwen additionally accepts `none` and
+supports images. Parallel tools are advertised only for Qwen and MiniMax.
+The shared Llama models retired on August 16, 2026 and are no longer offered
+in the fallback picker. Enterprise customers can still enter a custom ID;
+enterprise prices remain unknown. Sources: [models](https://console.groq.com/docs/models),
+[tools](https://console.groq.com/docs/tool-use/overview), and
+[deprecations](https://console.groq.com/docs/deprecations).
+
+GitHub's catalog includes the [documented Copilot CLI IDs](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and `claude-opus-5.5`, and
+removes models marked retired in the [Copilot model reference](https://docs.github.com/en/copilot/reference/ai-models/supported-models).
+The separate GitHub Models service retired on July 30, 2026. Copilot model
+access depends on the account and plan; no account-specific discovery was
+available during this review. The four added IDs use [Copilot-specific published prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing),
+including long-context tiers, without borrowing direct-provider fast or search rates.
+
+Bedrock's catalog additionally contains active model cards that explicitly
+advertise Converse and client-side function tools. The exact IDs and source
+URLs are kept in `runtime/src/llm/registry/bedrock-converse-models.ts`.
+Cards showing only rounded K/M limits do not establish exact catalog limits.
+Regional prices and account availability remain unknown. The current adapter
+supports text input only, including for models whose AWS card also advertises
+vision. Existing Nova defaults and Claude-specific wire behavior are retained.
 
 Cerebras uses `CEREBRAS_API_KEY` with the OpenAI-compatible
 `https://api.cerebras.ai/v1/chat/completions` endpoint. The optional
 `CEREBRAS_BASE_URL` override supports a private/dedicated deployment without
-restricting its model name to the public catalog. The public chat catalog is:
+restricting its model name to the public catalog. The public chat catalog is listed below. `gemma-4-31b` was
+[removed from shared inference on September 3, 2026](https://inference-docs.cerebras.ai/support/deprecation).
+Its dedicated-deployment metadata remains available for explicit model IDs,
+while the shared fallback picker omits it. Qwen's catalog preserves the
+conservative free-tier context/output contract; paid plans support larger limits.
+
+The public chat catalog is:
 
 | Model | Context | Max output | Input / output per 1M tokens | Image input | Parallel tools | Reasoning effort (default) |
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | `gpt-oss-120b` | 131,072 | 40,960 | $0.35 / $0.75 | no | no | `low`, `medium`, `high` (`medium`) |
 | `qwen-3.8-27b` | 65,536 | 32,768 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`high`) |
-| `gemma-4-31b` | 131,072 | 40,960 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`none`) |
 
-All three expose function tools and JSON-schema structured output, but
+Both shared models expose function tools and JSON-schema structured output, but
 Cerebras rejects combining those two modes in one request; AgenC blocks that
 combination before dispatch. AgenC sends
 `max_completion_tokens`, keeps Cerebras' `reasoning` response field out of
@@ -567,6 +634,7 @@ wins and the live probe is not consulted.
 | A later ChatGPT subscription request fails with `Unsupported parameter: previous_response_id` | Subscription requests are `store: false`. The continuation optimizer never attaches `previous_response_id` from an unstored response. The prompt-cache key is kept; the incremental delta is skipped. |
 | ChatGPT / Responses refuses to continue after an interrupted tool turn | An unmatched `function_call` in history is closed with a synthetic `function_call_output` marked `interrupted`. The session stays usable; the model must not wait on that call id. |
 | ChatGPT subscription 400s on `max_output_tokens` | Uncapped calls no longer require a provider-enforced output ceiling. Hard token or USD caps still demand a real ceiling and authoritative usage. |
+| Turn ends with `Output recovery is exhausted` / `max_output_tokens_exhausted` | The turn used its three counted retries. Escalation does not count. Escalation to `min(64000, model upper limit)` runs only for a capped default with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). Reasoning-only replies retry with a next-step instruction, not "continue from where you left off". On native DeepSeek, the call after a reasoning-only cap is sent with thinking disabled. If it returns a tool call or a final answer, `reasoningOnlyRecoveryCount` resets to 0, so only unproductive reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept and sent back, so the next thinking-on call is accepted. On `lmstudio` and `openai-compatible`, a stop at the 8192 wire ceiling enters this same recovery, and escalation cannot raise it. Distinct from `context_window_exceeded`. See [max-output-tokens recovery](daemon.md#max-output-tokens-recovery). |
 
 See [provider-aware token accounting](../design/provider-aware-token-accounting.md)
 for how the resolved window is enforced. Grammar-safe schemas, the local
@@ -582,6 +650,12 @@ as unresolved session state. `closeDanglingFunctionCalls`
 `function_call_output` immediately after every unmatched call so history
 always pairs. The output text is an interrupted marker, not a fake
 success.
+
+OpenAI requests carry no reasoning items unless
+`AGENC_OPENAI_REASONING_REPLAY` is on (off by default; see
+[env.md](env.md)). With it on, the `openai` provider keeps each encrypted
+reasoning item of a Responses call and replays it on later stateless requests
+to the same provider and model, right before the function calls it led to.
 
 `previous_response_id` can only reference a **stored** response. When
 the request snapshot has `store: false` (ChatGPT subscription is always
@@ -629,6 +703,27 @@ Its retry behavior is:
 
 - **429 is not retried** (`retry429: false`). 5xx and transport (network/timeout)
   are. Caller abort is not. One extra TLS-cert retry on attempt 0 only.
+- A stream that ends before its terminal event (`response.completed` or
+  `response.failed`) surfaces as `LLMStreamTruncatedError`, which the turn's
+  reconnect ladder retries like `stream_idle`; the transport saw a clean end,
+  so only the typed error identifies it.
+- A transport fault that cuts a stream after text but before any tool call
+  (undici's bare `terminated`, `ECONNRESET`, a 5xx mid-stream) is re-thrown
+  instead of surfacing a partial response, so the same reconnect ladder
+  samples again; nothing executed, and the text already streamed is discarded
+  with the failed attempt. Once a tool call has streamed, the partial
+  response is kept: the executor may have dispatched it. The Anthropic
+  adapter applies the same rule.
+- xAI answers "Response is too large to store" when a response exceeds its
+  server-side storage limit. Stored responses are only the speed default
+  (`AGENC_XAI_STORE`), so the grok provider sends the same request once more
+  with `store: false` (warning `xai_store_too_large`) instead of failing the
+  turn; a request that was already unstored is not retried. The refusal is
+  latched for the session: every later request is unstored with full history
+  (an unstored response cannot be continued). Under an admitted single wire
+  attempt, where the adapter must not retry in band, it throws
+  `LLMRequestRebuiltError`, which the turn's reconnect ladder treats as
+  transient, so the next admitted attempt carries the unstored plan.
 - **Retry-After > 300s** aborts the retry.
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
@@ -760,3 +855,91 @@ Grammar-safe tool schemas and the reduced local catalog:
 - Token admission invariant: [`../design/provider-aware-token-accounting.md`](../design/provider-aware-token-accounting.md)
 - Managed OpenRouter path: [`../managed-openrouter.md`](../managed-openrouter.md)
 - Onboarding: `agenc onboard`
+
+## Fast mode and service tiers
+
+`service_tier = "priority"` (config, profile, or the desktop Speed row) is the
+single "Fast" dial. What it does depends on the provider:
+
+| Provider | Wire | Models | Price | Notes |
+| --- | --- | --- | --- | --- |
+| OpenAI | `service_tier: "priority"` on chat completions and Responses (OpenAI also accepts `"fast"`, its new name for the same tier) | GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4 Mini, 5.3 Codex, 5.2, 5, plus the GPT-4.1/4o/o3/o4-mini rows on the pricing page | 2x standard on GPT-5.6 and later; see the pricing page per model | The response reports the served tier; requests over the fast-mode rate limit fall back per OpenAI's rules. |
+| Anthropic | `speed: "fast"` plus the `anthropic-beta: fast-mode-2026-02-01` header | Claude Opus 5.5, Claude Opus 5, Claude Opus 4.8 only | 2x standard: $8 input / $40 output per MTok on Opus 5.5, $10 / $50 on Opus 5 and 4.8 | Research preview: the organization needs access from Anthropic; without it the API returns an error. `usage.speed` reports `fast` or `standard`; AgenC warns when a request asked for fast and was served standard. Switching speeds invalidates the prompt cache. Not sent to other Claude models, which reject the field. |
+| xAI Grok | `service_tier: "priority"` on the Responses API, the only xAI wire AgenC uses (xAI documents the same field on Chat Completions) | Grok 4.7 and Grok 4.6 | 2x standard on every token type, cache discount first: $4 input / $1 cached input / $12 output per MTok below 200K prompt tokens | Priority processing: higher scheduling priority, not a faster model. API-key billing only: a session signed in with X (`/grok-login`) never sends it, because xAI does not document priority for the sign-in grant; set `GROK_AUTH_MODE=api-key` to use Fast while signed in. The response `service_tier` reports `priority` or `default`, and only `priority` bills the higher rates. This is not the Grok 4.7 Fast model, which xAI serves only in Cursor and Grok Build. |
+| Cerebras, Azure OpenAI | `service_tier` passthrough | per provider | per provider | Documented `service_tier` support; other chat-completions providers have the field stripped. |
+
+`flex` is OpenAI's lower-priority tier and is only sent to providers that
+document `service_tier`.
+
+OpenAI cost follows the tier the response reports it served (`priority` or
+`fast` is Fast, `default` a downgraded Fast request), the long-context rates
+when one request's input passes 272K tokens, and cache writes (1.25x input on
+GPT-5.6 and later). Under a hard USD cap a Fast request is reserved at Fast
+rates, a reservation that could pass 272K input is priced at the long-context
+rates, and a call without Fast sends `service_tier: "default"` so a
+project-level Fast default cannot apply. A Fast request on a model or context
+length with no published Fast price (Pro and nano models, GPT-5.5 and 5.4
+above 272K) is refused under a hard USD cap with
+`unpriced_service_tier_under_hard_cap`.
+
+xAI cost also follows the tier the response reports: `priority` bills every
+token rate at 2x, and `default` (the request ran at the default tier) bills
+standard. Server-side tool calls such as web search keep their own rate.
+AgenC's Grok prices do not model xAI's long-context rates for prompts of 200K
+tokens or more, on either tier. Under a hard USD cap a priority request is
+reserved at the priority rates. xAI documents an omitted `service_tier` as
+its default tier, so a call without Fast sends none.
+
+## Zero data retention
+
+Only one built-in provider takes a request-level zero-data-retention control:
+`[providers.openrouter] zero_data_retention = true` adds `provider.zdr = true`
+to every request (OR-ed with the account setting on OpenRouter's side), so
+routing is restricted to endpoints with a zero-data-retention policy and a
+model without one is refused. The desktop shows this as a switch on the
+OpenRouter card. Everywhere else retention is an account, project or team
+setting, so the config field is rejected and the desktop card states the
+provider's policy instead. Verified 2026-09-12 against each provider's
+documentation:
+
+| Provider | Default retention | Zero data retention | AgenC |
+| --- | --- | --- | --- |
+| OpenRouter | Depends on the upstream endpoint | Per request (`provider.zdr`) and per account (privacy settings) | `zero_data_retention` switch |
+| OpenAI | 30 days for abuse monitoring; Responses state 30 days when `store` is true | Per organization or project, on request and approval; `store` is then forced false | Requests already send `store: false`; ZDR itself is granted by OpenAI |
+| Anthropic | Per the commercial retention policy | Organization-level agreement | Account level |
+| xAI Grok | 30 days encrypted, no training | Team-level in the xAI Console (enterprise); every response carries `x-zero-data-retention: true/false` and ZDR disables the stateful Responses, Files, Collections and Batch APIs | Account level |
+| Google Gemini | Prompts logged for abuse monitoring (paid: 55 days) | Per project, on request | Account level |
+| Groq | No retention of inputs and outputs by default; temporary logs up to 30 days for troubleshooting or abuse | Self-serve in the console Data Controls, globally or per feature | Account level |
+| Mistral | 30-day abuse monitoring window | Organization setting on paid plans, after approval; stateless endpoints only | Account level |
+| Cerebras | Does not retain prompts, requests or responses | Standard policy, nothing to enable | Always on |
+| Ollama Cloud | "Prompt or response data is never logged or trained on"; partners must run zero-data-retention policies | Standard policy, nothing to enable | Always on |
+| DeepSeek | Retained on servers in China while the account exists | None offered | Not available |
+| MiniMax | Purpose- and law-based retention | None documented | Not available |
+| AgenC managed | Requests are routed through the gateway to zero-data-retention endpoints only (`zdr: true`, `data_collection: "deny"`) | Built in | Always on |
+| Local servers (Ollama, LM Studio, OpenAI-compatible) | Nothing leaves the machine unless the endpoint is remote | Not applicable | Local |
+
+Kimi, Qwen, Z.AI, Meta, NVIDIA NIM and GitHub Copilot publish no
+zero-data-retention control for their APIs; treat them as retaining data per
+their terms.
+
+## Ollama Cloud
+
+Select `ollama-cloud` and provide `OLLAMA_API_KEY` for direct hosted inference at
+`https://ollama.com/v1`. The existing `ollama` provider remains a local daemon
+connection; `OLLAMA_BASE_URL` never reroutes the Cloud key. No local Ollama
+installation is required.
+
+The checked-in Cloud metadata comes from Ollama's `/api/tags` and `/api/show`
+on 2026-09-11. Desktop refreshes model IDs from `/v1/models`; an empty successful
+listing stays empty. Unknown additions can use text/tools and native context
+metadata, but do not inherit unverified image or effort settings from another
+provider. Cloud model IDs retain their tags (for example `gpt-oss:120b`).
+
+DeepSeek V4.1 Flash defaults to Low and supports image input. Reasoning controls
+are model specific; binary thinking models expose None/High, GPT OSS uses
+Low/Medium/High, and non-thinking models have no effort control. The 16k default
+and 32k recovery budget are AgenC output budgets, not advertised Cloud limits.
+Cloud quota and model availability depend on the Ollama account.
+
+Sources: https://docs.ollama.com/cloud and
+https://docs.ollama.com/api/openai-compatibility.

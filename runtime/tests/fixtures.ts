@@ -47,7 +47,20 @@ export function createTestConfigStore(
 
 afterAll(() => {
   for (const home of generatedConfigHomes) {
-    rmSync(home, { recursive: true, force: true });
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        (error.code !== "EPERM" &&
+          error.code !== "EBUSY" &&
+          error.code !== "ENOENT")
+      ) {
+        throw error;
+      }
+    }
   }
   generatedConfigHomes.clear();
 });
@@ -208,6 +221,7 @@ function mkRegistry(): ToolRegistry {
 
 export function mkSession(opts?: {
   readonly cwd?: string;
+  readonly model?: string;
   readonly provider?: LLMProvider;
   readonly registry?: ToolRegistry;
   readonly services?: Partial<SessionServices>;
@@ -232,7 +246,7 @@ export function mkSession(opts?: {
       provider: {
         slug: "stub-provider",
       } as unknown as SessionConfiguration["provider"],
-      collaborationMode: { model: "test-model" },
+      collaborationMode: { model: opts?.model ?? "test-model" },
     }),
     history: [...(opts?.history ?? [])],
     totalTokenUsage: opts?.totalTokenUsage ?? 0,
@@ -272,8 +286,8 @@ export function mkSession(opts?: {
       ? { mcpManagerOwnership: opts.mcpManagerOwnership }
       : {}),
     jsRepl: { id: "repl-test" },
-    config: mkConfig(cwd),
-    modelInfo: mkModelInfo(opts?.modelInfo),
+    config: { ...mkConfig(cwd), model: opts?.model ?? "test-model" },
+    modelInfo: mkModelInfo({ ...(opts?.model !== undefined ? { slug: opts.model } : {}), ...opts?.modelInfo }),
     eventQueue: new AsyncQueue<Event>(),
   });
   session.eventLog.subscribe((event) => {

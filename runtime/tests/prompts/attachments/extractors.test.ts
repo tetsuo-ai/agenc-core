@@ -51,7 +51,6 @@ const originalDisableAttachments = process.env.AGENC_DISABLE_ATTACHMENTS;
 const originalEnableTasks = process.env.AGENC_ENABLE_TASKS;
 const originalTaskListId = process.env.AGENC_TASK_LIST_ID;
 const originalAgencHome = process.env.AGENC_HOME;
-const originalUserType = process.env.USER_TYPE;
 
 function toolUse(id: string, name = "Bash") {
   return {
@@ -141,7 +140,6 @@ afterEach(() => {
   restoreOptionalEnv("AGENC_ENABLE_TASKS", originalEnableTasks);
   restoreOptionalEnv("AGENC_TASK_LIST_ID", originalTaskListId);
   restoreOptionalEnv("AGENC_HOME", originalAgencHome);
-  restoreOptionalEnv("USER_TYPE", originalUserType);
   setLastEmittedDate(null);
   setHasExitedPlanMode(false);
   setNeedsPlanModeExitAttachment(false);
@@ -408,7 +406,6 @@ describe("attachment mention extractors", () => {
         process.env.AGENC_ENABLE_TASKS = "1";
         process.env.AGENC_TASK_LIST_ID = "attachment-task-reminder";
         process.env.AGENC_HOME = join(workspace, "home");
-        delete process.env.USER_TYPE;
 
         await createTask(getTaskListId(), {
           subject: "Review task reminder",

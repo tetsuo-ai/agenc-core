@@ -1,4 +1,5 @@
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -99,7 +100,9 @@ describe("Write tool", () => {
       const result = await tool.execute({
         file_path: planPath,
         content: "# Plan\n\n- [ ] Fix plan file writes\n",
-        ...signedSessionPlanFileArgs(planFileAuthorityFromContext({ agencHome, sessionId })),
+        ...signedSessionPlanFileArgs(
+          planFileAuthorityFromContext({ agencHome, sessionId }),
+        ),
         __agencSessionId: sessionId,
         __agencSessionIdSig: signSessionId(sessionId),
         [SESSION_AGENC_HOME_ARG]: agencHome,
@@ -320,15 +323,129 @@ describe("Write tool", () => {
       );
     });
 
-    test("a failure raised mid-write does NOT claim no-effect", async () => {
-      // The write transaction is under way, so the outcome is genuinely
-      // unknown and must stay poisonable. Asserting the negative keeps the
-      // fix from being widened into "never poison on Write".
-      const target = join(root, "mid-write-failure.txt");
+    test("a fault before any byte is written settles as no-effect once the original state is verified", async () => {
+      // The transaction re-checks the target against its original state
+      // before cancelling the admission (#2500); a fault that fired between
+      // the identity check and the write left the file provably untouched.
+      const target = join(root, "pre-write-failure.txt");
       const tool = createFileWriteTool({
         allowedPaths: [root],
         __testAfterPreWriteCheck: async () => {
-          throw new Error("disk exploded mid-write");
+          throw new Error("disk exploded before the write");
+        },
+      });
+
+      const result = await tool.execute({
+        file_path: target,
+        content: "half a file\n",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceRef: "tool:Write:original_state_verified",
+      });
+      expect(String(result.content)).toContain("No bytes were written");
+      await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("a helper refusal on the exclusive open (EACCES) settles as no-effect with diagnostics", async () => {
+      // The benchmark failure (#2500): the bound-directory helper announces
+      // its effect boundary before open(O_CREAT|O_EXCL), which the kernel
+      // refused. Nothing was written, and the result must say so.
+      const sealed = join(root, "sealed");
+      await mkdir(sealed);
+      await chmod(sealed, 0o555);
+      if (process.getuid?.() === 0) {
+        // Root ignores directory permissions; the refusal cannot be provoked.
+        await chmod(sealed, 0o755);
+        return;
+      }
+      try {
+        const target = join(sealed, "refused.txt");
+        const tool = createFileWriteTool({ allowedPaths: [root] });
+        const result = await tool.execute({
+          file_path: target,
+          content: "never lands\n",
+          __agencSessionId: sessionId,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.effectDisposition).toMatchObject({
+          disposition: "confirmed_no_effect",
+          evidenceKind: "boundary_not_crossed",
+          evidenceRef: "tool:Write:original_state_verified",
+        });
+        expect(String(result.content)).toContain("EACCES");
+        expect(String(result.content)).toMatch(/uid=\d+ gid=\d+/u);
+        expect(String(result.content)).toMatch(/cwd mode=0555 owner=\d+:\d+/u);
+        expect(String(result.content)).toContain("No bytes were written");
+        await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await chmod(sealed, 0o755);
+      }
+    });
+
+    /** Seed a file the session has read, so Write may overwrite it. */
+    async function seedReadFile(name: string): Promise<string> {
+      const target = join(root, name);
+      await writeFile(target, "original\n", "utf8");
+      const fileStats = await stat(target);
+      recordSessionRead(sessionId, target, {
+        content: "original\n",
+        timestamp: fileStats.mtimeMs,
+        viewKind: "full",
+      });
+      return target;
+    }
+
+    /** A Write whose transaction faults right after the bytes land. */
+    function writeToolFaultingAfterWrite(
+      hooks: Omit<
+        Parameters<typeof createFileWriteTool>[0],
+        "allowedPaths" | "__testWrite"
+      > = {},
+    ) {
+      return createFileWriteTool({
+        allowedPaths: [root],
+        __testWrite: async ({ write }) => {
+          await write();
+          throw new Error("post-write fault");
+        },
+        ...hooks,
+      });
+    }
+
+    test("a verified rollback after a post-write fault settles as no-effect", async () => {
+      const target = await seedReadFile("rolled-back.txt");
+      const tool = writeToolFaultingAfterWrite();
+
+      const result = await tool.execute({
+        file_path: target,
+        content: "replacement\n",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceRef: "tool:Write:rollback_verified",
+      });
+      expect(String(result.content)).toContain(
+        "restored to its original contents",
+      );
+      await expect(readFile(target, "utf8")).resolves.toBe("original\n");
+    });
+
+    test("a failure whose rollback cannot be verified does NOT claim no-effect", async () => {
+      // The outcome is genuinely unknown and must stay poisonable. Asserting
+      // the negative keeps the fix from being widened into "never poison on
+      // Write".
+      const target = await seedReadFile("mid-write-failure.txt");
+      const tool = writeToolFaultingAfterWrite({
+        __testRestoreBackup: async () => {
+          throw new Error("restore failed too");
         },
       });
 
@@ -584,20 +701,20 @@ describe("Write tool", () => {
     }
   });
 
-  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+  test("does not treat /root filesystem paths as an agent namespace", async () => {
     const tool = createFileWriteTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
-      file_path: "/root/game.py",
+      file_path: "/root/data/new.txt",
       content: "print('hi')\n",
       cwd: root,
       __agencSessionId: sessionId,
     });
 
     expect(result.isError).toBe(true);
-    expect(String(result.content)).toContain("agent namespace");
-    expect(String(result.content)).toContain('"game.py"');
-    await expect(stat(join(root, "game.py"))).rejects.toThrow();
+    expect(String(result.content)).not.toContain("agent namespace");
+    expect(String(result.content)).not.toContain('"data/new.txt"');
+    await expect(stat(join(root, "data", "new.txt"))).rejects.toThrow();
   });
 
   test("error results are plain-text strings, not JSON-wrapped envelopes", async () => {

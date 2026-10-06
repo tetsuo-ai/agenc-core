@@ -3,11 +3,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Key } from "../../ink.js";
 import {
   clampPromptTextInputColumns,
-  clampWorkbenchPromptTextInputColumns,
-  formatVimModeIndicator,
   getNewlineInstructions,
   isNonSpacePrintable,
-  isVimModeEnabled,
   pasteReferenceLineThreshold,
 } from "./utils.js";
 
@@ -77,19 +74,6 @@ afterEach(() => {
 });
 
 describe("PromptInput utils", () => {
-  test("uses tui.vimMode as the sole Vim-input authority", () => {
-    expect(isVimModeEnabled({ tui: { vimMode: false } })).toBe(false);
-    expect(isVimModeEnabled({ tui: { vimMode: true } })).toBe(true);
-    expect(isVimModeEnabled({})).toBe(false);
-
-    mocks.operatorConfig.tui = { vimMode: true };
-    expect(isVimModeEnabled()).toBe(true);
-  });
-
-  test("formats vim mode indicators only when a mode is active", () => {
-    expect(formatVimModeIndicator(undefined)).toBeNull();
-    expect(formatVimModeIndicator("INSERT")).toBe("-- INSERT --");
-  });
 
   test("returns newline instructions for terminal and config states", () => {
     mocks.env.terminal = "Apple_Terminal";
@@ -118,24 +102,6 @@ describe("PromptInput utils", () => {
     expect(clampPromptTextInputColumns(5)).toBe(0);
     expect(clampPromptTextInputColumns(10)).toBe(5);
     expect(clampPromptTextInputColumns(80)).toBe(75);
-  });
-
-  test("clamps workbench input columns to the framed composer chrome", () => {
-    // A 140-column terminal leaves 136 columns inside the workbench frame.
-    // Four padding cells, " YOLO ", the two-cell gap, and "▶ " leave 122
-    // editable cells; the helper returns one extra cell for TextCursor.
-    expect(
-      clampWorkbenchPromptTextInputColumns(136, "YOLO", "▶", false),
-    ).toBe(123);
-    expect(
-      clampWorkbenchPromptTextInputColumns(116, "DEFAULT", "›", false),
-    ).toBe(100);
-    expect(
-      clampWorkbenchPromptTextInputColumns(136, "YOLO", "▶", true),
-    ).toBe(114);
-    expect(
-      clampWorkbenchPromptTextInputColumns(10, "UNATTENDED", ">", true),
-    ).toBe(0);
   });
 
   test("limits paste reference rows to one or two lines", () => {

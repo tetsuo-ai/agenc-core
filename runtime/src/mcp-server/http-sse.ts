@@ -103,6 +103,7 @@ export class McpHttpSseServerTransport {
   };
   #serverFactory: () => McpServerFramework;
   readonly #sessions = new Map<string, McpHttpSseSession>();
+  #closed = false;
 
   constructor(options: McpHttpSseServerTransportOptions) {
     this.#serverFactory = options.serverFactory;
@@ -135,12 +136,14 @@ export class McpHttpSseServerTransport {
    * under which they were admitted.
    */
   replaceServerFactory(serverFactory: () => McpServerFramework): number {
-    const sessionIds = [...this.#sessions.keys()];
     this.#serverFactory = serverFactory;
-    for (const sessionId of sessionIds) {
-      this.closeSession(sessionId);
-    }
-    return sessionIds.length;
+    return this.#revokeSessions();
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#revokeSessions();
   }
 
   createNodeServer(): Server {
@@ -159,6 +162,9 @@ export class McpHttpSseServerTransport {
   ): Promise<boolean> {
     const url = requestUrl(request);
     try {
+      if (this.#closed) {
+        throw new HttpError(503, "MCP HTTP/SSE server is shutting down");
+      }
       this.#validateOrigin(request);
       if (request.method === "POST" && url.pathname === this.#options.httpPath) {
         await this.#handleHttpPost(request, response);
@@ -271,6 +277,14 @@ export class McpHttpSseServerTransport {
     }
     this.#sessions.delete(sessionId);
     return true;
+  }
+
+  #revokeSessions(): number {
+    const sessionIds = [...this.#sessions.keys()];
+    for (const sessionId of sessionIds) {
+      this.closeSession(sessionId);
+    }
+    return sessionIds.length;
   }
 
   #validateOrigin(request: IncomingMessage): void {

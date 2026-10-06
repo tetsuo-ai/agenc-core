@@ -37,6 +37,7 @@ import {
   rewriteProxyEnvValue,
 } from "./proxy-routing.js";
 import {
+  isNativeElfExecutable,
   isProcMountFailure,
   runCommandWithSupervision,
   runLinuxSandboxMain,
@@ -49,7 +50,38 @@ import {
 
 const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
 
+// Records its argv and whether the seccomp FD arrived, then runs the command
+// after `--` the way bubblewrap would.
+const FAKE_BWRAP_SOURCE = [
+  "#!/usr/bin/env node",
+  "const cp = require('node:child_process');",
+  "const fs = require('node:fs');",
+  "const argv = process.argv.slice(2);",
+  "let fd3Open = false;",
+  "try { fs.fstatSync(3); fd3Open = true; } catch {}",
+  "fs.writeFileSync(process.env.AGENC_FAKE_BWRAP_CAPTURE, JSON.stringify({ argv, fd3Open }, null, 2));",
+  "const separator = argv.indexOf('--');",
+  "const command = separator === -1 ? [] : argv.slice(separator + 1);",
+  "if (command.length === 0) process.exit(97);",
+  "const child = cp.spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: process.env, cwd: process.cwd() });",
+  "process.exit(child.status ?? 1);",
+].join("\n") + "\n";
+
 describe("Linux sandbox launcher", () => {
+  it("parses browser CDP stdio transport before the command separator", () => {
+    const parsed = parseLinuxSandboxLauncherArgs([
+      "--browser-cdp-over-stdio",
+      "--sandbox-policy-cwd", "/workspace",
+      "--command-cwd", "/workspace",
+      "--permission-profile", JSON.stringify(workspaceWriteProfile("/workspace", "enabled")),
+      "--session-temp-root", os.tmpdir(),
+      "--", "/bin/echo", "--browser-cdp-over-stdio",
+    ]);
+
+    expect(parsed.browserCdpOverStdio).toBe(true);
+    expect(parsed.command).toEqual(["/bin/echo", "--browser-cdp-over-stdio"]);
+  });
+
   it("parses the manager handoff arguments and preserves command argv", () => {
     const profile = workspaceWriteProfile("/workspace", "restricted");
     const parsed = parseLinuxSandboxLauncherArgs([
@@ -103,6 +135,23 @@ describe("Linux sandbox launcher", () => {
         "/bin/true",
       ]),
     ).toThrow(/cannot be combined/u);
+  });
+
+  it("preserves precise inherited cwd identity and rejects malformed wire authority", () => {
+    const identity = { path: "/workspace", dev: "9007199254740993", ino: "18446744073709551615", mode: "16832" };
+    const args = (value: unknown, inherited = true) => [
+      ...(inherited ? ["--inherited-readonly-command-cwd"] : []),
+      "--permission-profile", JSON.stringify(workspaceWriteProfile("/workspace", "disabled")),
+      "--session-temp-root", os.tmpdir(),
+      "--bound-readonly-cwd-identity", JSON.stringify(value), "--", "/bin/true",
+    ];
+    expect(parseLinuxSandboxLauncherArgs(args(identity)).boundReadOnlyCwd).toEqual(identity);
+    for (const invalid of [
+      { ...identity, dev: 9007199254740993 }, { ...identity, ino: "01" },
+      { ...identity, mode: "-1" }, { ...identity, path: "relative" },
+      { ...identity, path: "/workspace/../outside" }, { ...identity, extra: true },
+    ]) expect(() => parseLinuxSandboxLauncherArgs(args(invalid))).toThrow("invalid inherited cwd identity");
+    expect(() => parseLinuxSandboxLauncherArgs(args(identity, false))).toThrow("bound cwd identity requires inherited read-only cwd");
   });
 
   it("rejects malformed handoff input", () => {
@@ -365,6 +414,86 @@ describe("Linux sandbox launcher", () => {
     ]);
   });
 
+  it("passes --chdir to the physical command cwd when bubblewrap execs the command itself", () => {
+    const root = fs.realpathSync(withTempDir("agenc-linux-launcher-chdir-"));
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "alias");
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias);
+    const options = {
+      mountProc: true,
+      networkMode: "isolated" as const,
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      seccompFd: SECCOMP_STDIN_FD,
+    };
+    for (const policy of [
+      unrestrictedFileSystemPolicy(),
+      restrictedFileSystemPolicy([{ path: { kind: "path", path: workspace }, access: "write" }]),
+    ]) {
+      const inner = createBwrapCommandArgs(["/bin/true"], policy, workspace, workspace, options).args;
+      const direct = createBwrapCommandArgs(
+        ["/bin/true"],
+        policy,
+        workspace,
+        workspace,
+        { ...options, chdirToCommandCwd: true },
+      ).args;
+      expect(inner).not.toContain("--chdir");
+      expect(sliceAfter(direct, "--chdir")[0]).toBe(workspace);
+      expect(direct.indexOf("--chdir")).toBeLessThan(direct.indexOf("--"));
+      expect(direct.filter((arg) => arg !== "--chdir" && arg !== workspace)).toEqual(
+        inner.filter((arg) => arg !== workspace),
+      );
+    }
+    // A symlinked cwd: bubblewrap starts in getcwd(), the physical path.
+    const viaAlias = createBwrapCommandArgs(
+      ["/bin/true"],
+      unrestrictedFileSystemPolicy(),
+      alias,
+      alias,
+      { ...options, chdirToCommandCwd: true },
+    ).args;
+    expect(sliceAfter(viaAlias, "--chdir")[0]).toBe(workspace);
+  });
+
+  it("recognizes only native ELF programs as directly executable", () => {
+    const dir = withTempDir("agenc-linux-launcher-elf-");
+    const header = (wordSize: number, encoding: number, machine: number): Buffer => {
+      const bytes = Buffer.alloc(64);
+      bytes.writeUInt32BE(0x7f454c46, 0);
+      bytes[4] = wordSize;
+      bytes[5] = encoding;
+      if (encoding === 1) bytes.writeUInt16LE(machine, 18);
+      else bytes.writeUInt16BE(machine, 18);
+      return bytes;
+    };
+    const write = (name: string, content: Buffer | string): string => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, content);
+      return file;
+    };
+    expect(isNativeElfExecutable(write("x64", header(2, 1, 62)), "x64")).toBe(true);
+    expect(isNativeElfExecutable(write("arm64", header(2, 1, 183)), "arm64")).toBe(true);
+    expect(isNativeElfExecutable(write("s390x", header(2, 2, 22)), "s390x")).toBe(true);
+    expect(isNativeElfExecutable(write("other-machine", header(2, 1, 183)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("x32", header(1, 1, 62)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("bad-encoding", header(2, 3, 62)), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("script", "#!/bin/sh\necho hi\n"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("no-shebang", "echo hi\n"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("short", Buffer.from([0x7f, 0x45, 0x4c, 0x46])), "x64")).toBe(false);
+    expect(isNativeElfExecutable(path.join(dir, "missing"), "x64")).toBe(false);
+    expect(isNativeElfExecutable(dir, "x64")).toBe(false);
+    expect(isNativeElfExecutable(write("unknown-arch", header(2, 1, 62)), "mips")).toBe(false);
+    // Never blocks or reads a FIFO or a device, also through a symlink.
+    const fifo = path.join(dir, "fifo");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    fs.chmodSync(fifo, 0o755);
+    fs.symlinkSync(fifo, path.join(dir, "fifo-link"));
+    expect(isNativeElfExecutable(fifo, "x64")).toBe(false);
+    expect(isNativeElfExecutable(path.join(dir, "fifo-link"), "x64")).toBe(false);
+    expect(isNativeElfExecutable("/dev/null", "x64")).toBe(false);
+  });
+
   it("skips bubblewrap only for full disk write with full network", () => {
     const args = createBwrapCommandArgs(
       ["/bin/true"],
@@ -419,6 +548,220 @@ describe("Linux sandbox launcher", () => {
     expect(args).toContain(otherSecret);
     expect(args).toContain(path.join(root, ".git"));
     expect(args).toContain("--unshare-net");
+  });
+
+  it("scaffolds narrow aliases before host mounts without binding their parents", () => {
+    const root = withTempDir("agenc-linux-alias-plan-");
+    const parent = path.join(root, "real");
+    const workspace = path.join(parent, "project");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.symlinkSync(parent, path.join(root, "alias"), "dir");
+    fs.symlinkSync("alias", path.join(root, "chain"), "dir");
+    const logical = path.join(root, "chain", "project");
+    const args = createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "path", path: logical }, access: "write" },
+    ], { includePlatformDefaults: false }), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    }).args;
+    expect(args.slice(2, 4)).toEqual(["--tmpfs", "/"]);
+    expect(args.indexOf("--symlink")).toBeLessThan(args.indexOf("--ro-bind"));
+    expect(args.some((flag, index) => flag === "--bind" && args[index + 2] === workspace)).toBe(true);
+    expect(bindModeForDestination(args, parent)).toBeUndefined();
+    expect(bindModeForDestination(args, root)).toBeUndefined();
+    expect(bindModeForDestination(args, "/")).toBeUndefined();
+    expect(sliceAfter(args, "--chdir")).toEqual([workspace, "--"]);
+  });
+
+  it.each(["read", "none"] as const)("refuses mixed-spelling %s restrictions that would be overwritten by an aliased mount", (access) => {
+    const root = withTempDir("agenc-linux-mixed-alias-policy-");
+    const workspace = path.join(root, "real", "project");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.symlinkSync(path.join(root, "real"), path.join(root, "alias"), "dir");
+    const logical = path.join(root, "alias", "project");
+    const protectedPath = path.join(workspace, "protected.txt");
+    fs.writeFileSync(protectedPath, "protected");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "path", path: logical }, access: "write" },
+      { path: { kind: "path", path: protectedPath }, access },
+    ]), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    })).toThrow(/differently spelled restriction/u);
+    expect(fs.readFileSync(protectedPath, "utf8")).toBe("protected");
+  });
+
+  it.each((["read", "none"] as const).flatMap((access) =>
+    (["alias", "canonical"] as const).map((spelling) => ({ access, spelling })),
+  ))("rejects a $access carveout crossing a writable symlink below an aliased root ($spelling)", ({ access, spelling }) => {
+    const root = withTempDir("agenc-linux-hostile-alias-policy-");
+    const workspace = path.join(root, "real", "project");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(outside);
+    fs.symlinkSync(path.join(root, "real"), path.join(root, "alias"), "dir");
+    fs.symlinkSync(outside, path.join(workspace, "protected"), "dir");
+    const logical = path.join(root, "alias", "project");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "path", path: logical }, access: "write" },
+      { path: { kind: "path", path: path.join(spelling === "alias" ? logical : workspace, "protected") }, access },
+    ]), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    })).toThrow(/crossing writable symlink/u);
+  });
+
+  it("rejects a canonical deny glob crossing a writable symlink below an aliased root", () => {
+    const root = withTempDir("agenc-linux-alias-glob-");
+    const workspace = path.join(root, "real", "project");
+    fs.mkdirSync(workspace, { recursive: true });
+    const outside = path.join(root, "outside.key");
+    fs.writeFileSync(outside, "secret");
+    fs.symlinkSync(path.join(root, "real"), path.join(root, "alias"), "dir");
+    fs.symlinkSync(outside, path.join(workspace, "protected.key"));
+    const logical = path.join(root, "alias", "project");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "path", path: logical }, access: "write" },
+      { path: { kind: "glob", pattern: path.join(workspace, "*.key") }, access: "none" },
+    ]), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    })).toThrow(/crossing writable symlink/u);
+  });
+
+  it("keeps protected-create monitoring on the same physical workspace as the mount", () => {
+    const root = withTempDir("agenc-linux-alias-monitor-");
+    const parent = path.join(root, "real");
+    const workspace = path.join(parent, "child");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(path.join(parent, ".git"));
+    fs.symlinkSync(parent, path.join(root, "alias"), "dir");
+    const logical = path.join(root, "alias", "child");
+    const plan = createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "path", path: logical }, access: "write" },
+    ]), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    });
+    expect(plan.protectedCreateTargets).toContain(path.join(workspace, ".git"));
+    expect(plan.protectedCreateTargets).not.toContain(path.join(logical, ".git"));
+  });
+
+  it.each([false, true])("refuses a replaceable alias before planning metadata mounts (narrow=%s)", (narrow) => {
+    const root = withTempDir("agenc-linux-mutable-alias-");
+    const holder = path.join(root, "holder");
+    const real = path.join(root, "real");
+    const workspace = path.join(real, "project");
+    fs.mkdirSync(holder);
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.symlinkSync(real, path.join(holder, "alias"), "dir");
+    const logical = path.join(holder, "alias", "project");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      ...(!narrow ? [{ path: { kind: "special" as const, value: { kind: "root" as const } }, access: "read" as const }] : []),
+      { path: { kind: "path", path: holder }, access: "write" },
+      { path: { kind: "path", path: logical }, access: "write" },
+    ], { includePlatformDefaults: false }), logical, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+    })).toThrow(/alias inside writable authority/u);
+  });
+
+  it.each(["command-cwd", "policy-cwd", "read-only-bind"] as const)("checks mutable aliases used only by %s", (surface) => {
+    const root = withTempDir("agenc-linux-alias-surfaces-");
+    const holder = path.join(root, "holder");
+    const real = path.join(root, "real");
+    const workspace = path.join(real, "project");
+    fs.mkdirSync(holder);
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.symlinkSync(real, path.join(holder, "alias"), "dir");
+    const logical = path.join(holder, "alias", "project");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+      { path: { kind: "path", path: holder }, access: "write" },
+    ]), surface === "policy-cwd" ? logical : workspace, surface === "command-cwd" ? logical : workspace, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      ...(surface === "read-only-bind" ? { extraReadOnlyBindRoots: [logical] } : {}),
+    })).toThrow(/alias inside writable authority/u);
+  });
+
+  it.each([false, true])("checks physical writable authority across different spellings (extra=%s)", (extra) => {
+    const root = withTempDir("agenc-linux-alias-authorities-");
+    const holderParent = path.join(root, "holder-real");
+    const holder = path.join(holderParent, "shared");
+    const real = path.join(root, "real");
+    const workspace = path.join(real, "project");
+    fs.mkdirSync(holder, { recursive: true });
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.symlinkSync(holderParent, path.join(root, "holder-spelling"), "dir");
+    fs.symlinkSync(real, path.join(holder, "alias"), "dir");
+    const writable = path.join(root, "holder-spelling", "shared");
+    const logical = path.join(holder, "alias", "project");
+    expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+      { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+      ...(!extra ? [{ path: { kind: "path" as const, path: writable }, access: "write" as const }] : []),
+    ]), workspace, logical, {
+      mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+      ...(extra ? { extraWritableBindRoots: [writable] } : {}),
+    })).toThrow(/alias inside writable authority/u);
+  });
+
+  it.each([false, true])("refuses an alias that changes between filesystem observations (narrow=%s)", (narrow) => {
+    const root = withTempDir("agenc-linux-alias-observations-");
+    const workspace = path.join(root, "workspace");
+    const first = path.join(root, "first");
+    const second = path.join(root, "second");
+    const alias = path.join(root, "alias");
+    for (const directory of [workspace, first, second]) fs.mkdirSync(directory);
+    fs.symlinkSync(first, alias, "dir");
+    const originalReadlink = fs.readlinkSync;
+    let changed = false;
+    const readlink = vi.spyOn(fs, "readlinkSync").mockImplementation(((...args: Parameters<typeof fs.readlinkSync>) => {
+      const result = originalReadlink(...args);
+      if (args[0] === alias && !changed) {
+        changed = true;
+        fs.unlinkSync(alias);
+        fs.symlinkSync(second, alias, "dir");
+      }
+      return result;
+    }) as typeof fs.readlinkSync);
+    try {
+      expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+        ...(!narrow ? [{ path: { kind: "special" as const, value: { kind: "root" as const } }, access: "read" as const }] : []),
+        { path: { kind: "path", path: workspace }, access: "write" },
+      ], { includePlatformDefaults: false }), workspace, workspace, {
+        mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        extraReadOnlyBindRoots: [alias],
+      })).toThrow(/alias changed while planning/u);
+      expect(changed).toBe(true);
+    } finally {
+      readlink.mockRestore();
+    }
+  });
+
+  it.each(["overlap", "disjoint"] as const)("refuses a retained read-root retarget before the final mount snapshot (%s)", (targetKind) => {
+    const root = withTempDir("agenc-narrow-cwd-alias-snapshot-");
+    const workspace = path.join(root, "workspace");
+    const retained = path.join(root, "retained");
+    const outside = path.join(root, "outside");
+    for (const directory of [workspace, retained, outside]) fs.mkdirSync(directory);
+    const identity = fs.statSync(workspace, { bigint: true });
+    const originalExists = fs.existsSync;
+    let changed = false;
+    const exists = vi.spyOn(fs, "existsSync").mockImplementation((target => {
+      const result = originalExists(target);
+      if (String(target) === retained && !changed) {
+        changed = true;
+        fs.renameSync(retained, path.join(root, "retained-old"));
+        fs.symlinkSync(targetKind === "overlap" ? workspace : outside, retained, "dir");
+      }
+      return result;
+    }) as typeof fs.existsSync);
+    try {
+      expect(() => createBwrapCommandArgs(["/bin/true"], restrictedFileSystemPolicy([
+        { path: { kind: "path", path: INHERITED_CWD_SANDBOX_PATH }, access: "read" },
+        ...(targetKind === "disjoint" ? [{ path: { kind: "path" as const, path: retained }, access: "read" as const }] : []),
+      ], { includePlatformDefaults: false }), INHERITED_CWD_SANDBOX_PATH, INHERITED_CWD_SANDBOX_PATH, {
+        mountProc: false, networkMode: "isolated", sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        inheritedReadOnlyCwd: true,
+        boundReadOnlyCwd: { path: workspace, dev: String(identity.dev), ino: String(identity.ino), mode: String(identity.mode) },
+        ...(targetKind === "overlap" ? { extraReadOnlyBindRoots: [retained] } : {}),
+      })).toThrow(/overlapping public read mount|aliased read root/u);
+      expect(changed).toBe(true);
+    } finally { exists.mockRestore(); }
   });
 
   it("binds tmpdir specials to each explicit session root outside ambient context", () => {
@@ -1042,46 +1385,33 @@ describe("Linux sandbox launcher", () => {
     },
   );
 
-  it("runs bubblewrap through a real subprocess and passes the seccomp FD", async () => {
+  it("lets bubblewrap exec an absolute command directly, with the seccomp FD", async () => {
     const root = withTempDir("agenc-linux-launcher-run-");
     const bin = path.join(root, "bin");
     const workspace = path.join(root, "workspace");
     fs.mkdirSync(bin);
     fs.mkdirSync(workspace);
     const capture = path.join(root, "capture.json");
-    const innerCapture = path.join(root, "inner-capture.json");
+    const commandCapture = path.join(root, "command-capture.json");
     const fakeBwrap = path.join(bin, "bwrap");
-    writeExecutable(
-      fakeBwrap,
-      [
-        "#!/usr/bin/env node",
-        "const cp = require('node:child_process');",
-        "const fs = require('node:fs');",
-        "const argv = process.argv.slice(2);",
-        "let fd3Open = false;",
-        "try { fs.fstatSync(3); fd3Open = true; } catch {}",
-        "fs.writeFileSync(process.env.AGENC_FAKE_BWRAP_CAPTURE, JSON.stringify({ argv, fd3Open }, null, 2));",
-        "const separator = argv.indexOf('--');",
-        "const command = separator === -1 ? [] : argv.slice(separator + 1);",
-        "if (command.length === 0) process.exit(97);",
-        "const child = cp.spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: process.env, cwd: process.cwd() });",
-        "process.exit(child.status ?? 1);",
-      ].join("\n") + "\n",
-    );
-    const inner = path.join(workspace, "inner.js");
+    writeExecutable(fakeBwrap, FAKE_BWRAP_SOURCE);
+    const command = path.join(workspace, "command.js");
     fs.writeFileSync(
-      inner,
+      command,
       [
         "const fs = require('node:fs');",
-        "fs.writeFileSync(process.env.AGENC_INNER_CAPTURE, JSON.stringify({",
+        "fs.writeFileSync(process.env.AGENC_COMMAND_CAPTURE, JSON.stringify({",
         "  argv: process.argv.slice(2),",
         "  active: process.env.AGENC_LINUX_SANDBOX_ACTIVE,",
         "}, null, 2));",
         "process.exit(0);",
       ].join("\n") + "\n",
     );
+    const launcherStage = path.join(root, "launcher-stage.js");
+    fs.writeFileSync(launcherStage, "process.exit(91);\n");
     const profile = workspaceWriteProfile(workspace, "disabled");
 
+    const checked: string[] = [];
     const exitCode = await runLinuxSandboxMain([
       "--sandbox-policy-cwd",
       workspace,
@@ -1092,16 +1422,23 @@ describe("Linux sandbox launcher", () => {
       "--session-temp-root",
       root,
       "--",
-      "/bin/true",
+      process.execPath,
+      command,
+      "arg",
     ], {
       env: {
         ...process.env,
+        PWD: root,
         PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
         AGENC_FAKE_BWRAP_CAPTURE: capture,
-        AGENC_INNER_CAPTURE: innerCapture,
+        AGENC_COMMAND_CAPTURE: commandCapture,
       },
-      selfCommand: [process.execPath, inner],
+      selfCommand: [process.execPath, launcherStage],
       preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: true }),
+      isNativeExecutable: (file) => {
+        checked.push(file);
+        return true;
+      },
     });
 
     expect(exitCode).toBe(0);
@@ -1115,19 +1452,96 @@ describe("Linux sandbox launcher", () => {
     expect(recorded.argv).toContain("--unshare-net");
     expect(recorded.argv).toContain("--seccomp");
     expect(recorded.argv).toContain(String(SECCOMP_STDIN_FD));
-    expect(recorded.argv).toContain("--argv0");
-    expect(recorded.argv).toContain("agenc-linux-sandbox");
-    expect(recorded.argv).toContain("--apply-seccomp-then-exec");
-    expect(recorded.argv).toContain("/bin/true");
+    expect(recorded.argv).not.toContain("--argv0");
+    expect(recorded.argv).not.toContain("--apply-seccomp-then-exec");
+    expect(checked).toEqual([process.execPath]);
+    expect(recorded.argv[recorded.argv.indexOf("--chdir") + 1]).toBe(
+      fs.realpathSync.native(workspace),
+    );
+    expect(recorded.argv.slice(recorded.argv.indexOf("--") + 1)).toEqual([
+      process.execPath,
+      command,
+      "arg",
+    ]);
+    const ran = JSON.parse(fs.readFileSync(commandCapture, "utf8")) as {
+      argv: string[];
+      active: string | undefined;
+    };
+    expect(ran.active).toBe("1");
+    expect(ran.argv).toEqual(["arg"]);
+  });
+
+  it.each([
+    { label: "a bare program name", flags: [], network: "disabled", command: "true", proxy: false, native: true },
+    { label: "a program that is not a native ELF", flags: [], network: "disabled", command: "/bin/true", proxy: false, native: false },
+    { label: "browser CDP pipes", flags: ["--browser-cdp-over-stdio"], network: "enabled", command: "/bin/true", proxy: false, native: true },
+    { label: "a managed proxy", flags: ["--allow-network-for-proxy"], network: "enabled", command: "/bin/true", proxy: true, native: true },
+  ] as const)("keeps the inner launcher stage for $label", async ({ flags, network, command, proxy, native }) => {
+    const root = withTempDir("agenc-linux-launcher-inner-");
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(workspace);
+    const capture = path.join(root, "capture.json");
+    const innerCapture = path.join(root, "inner-capture.json");
+    const fakeBwrap = path.join(bin, "bwrap");
+    writeExecutable(fakeBwrap, FAKE_BWRAP_SOURCE);
+    const inner = path.join(root, "inner.js");
+    fs.writeFileSync(
+      inner,
+      [
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.env.AGENC_INNER_CAPTURE, JSON.stringify({",
+        "  argv: process.argv.slice(2),",
+        "  active: process.env.AGENC_LINUX_SANDBOX_ACTIVE,",
+        "}, null, 2));",
+        "process.exit(0);",
+      ].join("\n") + "\n",
+    );
+
+    const exitCode = await runLinuxSandboxMain([
+      ...flags,
+      "--sandbox-policy-cwd",
+      workspace,
+      "--command-cwd",
+      workspace,
+      "--permission-profile",
+      JSON.stringify(workspaceWriteProfile(workspace, network)),
+      "--session-temp-root",
+      os.tmpdir(),
+      "--",
+      command,
+    ], {
+      env: {
+        ...process.env,
+        PATH: [bin, process.env.PATH ?? ""].join(path.delimiter),
+        AGENC_FAKE_BWRAP_CAPTURE: capture,
+        AGENC_INNER_CAPTURE: innerCapture,
+        ...(proxy ? { HTTP_PROXY: "http://127.0.0.1:3128" } : {}),
+      },
+      selfCommand: [process.execPath, inner],
+      preferredLauncher: () => ({ program: fakeBwrap, supportsArgv0: true }),
+      isNativeExecutable: () => native,
+    });
+
+    expect(exitCode).toBe(0);
+    const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as {
+      argv: string[];
+    };
+    expect(recorded.argv[recorded.argv.indexOf("--argv0") + 1]).toBe("agenc-linux-sandbox");
+    expect(recorded.argv.slice(recorded.argv.indexOf("--") + 1).slice(0, 3)).toEqual([
+      process.execPath,
+      inner,
+      "--apply-seccomp-then-exec",
+    ]);
     const innerRecorded = JSON.parse(fs.readFileSync(innerCapture, "utf8")) as {
       argv: string[];
       active: string | undefined;
     };
     expect(innerRecorded.active).toBe("1");
     expect(innerRecorded.argv).toContain("--apply-seccomp-then-exec");
-    expect(innerRecorded.argv.slice(innerRecorded.argv.indexOf("--") + 1)).toEqual([
-      "/bin/true",
-    ]);
+    for (const flag of flags) expect(innerRecorded.argv).toContain(flag);
+    expect(innerRecorded.argv.slice(innerRecorded.argv.indexOf("--") + 1)).toEqual([command]);
   });
 
   it("ships the launcher as an executable package binary", () => {
@@ -1139,6 +1553,124 @@ describe("Linux sandbox launcher", () => {
 
     expect(packageJson.bin?.["agenc-linux-sandbox"]).toBe("bin/agenc-linux-sandbox");
     expect(fs.statSync(binPath).mode & 0o111).not.toBe(0);
+  });
+
+  it.each([
+    { network: "disabled" as const, proxy: false },
+    { network: "restricted" as const, proxy: false },
+    { network: "enabled" as const, proxy: true },
+  ])("refuses browser CDP stdio with $network network and proxy=$proxy", async ({ network, proxy }) => {
+    const errors: string[] = [];
+    const code = await runLinuxSandboxMain([
+      "--browser-cdp-over-stdio",
+      "--sandbox-policy-cwd", process.cwd(),
+      "--command-cwd", process.cwd(),
+      "--session-temp-root", os.tmpdir(),
+      "--permission-profile", JSON.stringify(workspaceWriteProfile(process.cwd(), network)),
+      ...(proxy ? ["--allow-network-for-proxy", "--proxy-route-spec", "{}"] : []),
+      "--", "/bin/true",
+    ], { onStderr: line => errors.push(line) });
+
+    expect(code).not.toBe(0);
+    expect(errors.join("\n")).toContain("enabled-network profile");
+  });
+
+  it.each([
+    { label: "PWD unset", pwd: undefined },
+    { label: "PWD naming the alias", pwd: "alias" },
+  ] as const)("starts a directly executed command in the physical cwd, as bubblewrap would ($label)", async ({ pwd }) => {
+    const root = fs.realpathSync(withTempDir("agenc-linux-launcher-alias-"));
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "alias");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias);
+    const capture = path.join(root, "capture.json");
+    writeExecutable(path.join(bin, "bwrap"), FAKE_BWRAP_SOURCE);
+    const { PWD: _pwd, ...baseEnv } = process.env;
+    const exitCode = await runLinuxSandboxMain([
+      "--sandbox-policy-cwd", alias,
+      "--command-cwd", alias,
+      "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "disabled" }),
+      "--session-temp-root", root,
+      "--", process.execPath, "-e", "process.exit(0)",
+    ], {
+      env: {
+        ...baseEnv,
+        ...(pwd === undefined ? {} : { PWD: alias }),
+        AGENC_FAKE_BWRAP_CAPTURE: capture,
+      },
+      selfCommand: [process.execPath, path.join(root, "launcher-stage.js")],
+      preferredLauncher: () => ({ program: path.join(bin, "bwrap"), supportsArgv0: true }),
+      isNativeExecutable: () => true,
+    });
+
+    expect(exitCode).toBe(0);
+    const recorded = JSON.parse(fs.readFileSync(capture, "utf8")) as { argv: string[] };
+    expect(recorded.argv).not.toContain("--apply-seccomp-then-exec");
+    expect(recorded.argv[recorded.argv.indexOf("--chdir") + 1]).toBe(workspace);
+  });
+
+  it("resets SIGPIPE and SIGXFSZ to their defaults at the inner stage's exec", async () => {
+    const signals = ["SIGPIPE", "SIGXFSZ"] as const;
+    const before = new Map(signals.map((signal) => [signal, process.listeners(signal)]));
+    const previousCwd = process.cwd();
+    let atExec: number[] | undefined;
+    const execve = vi.spyOn(process, "execve").mockImplementation(((): never => {
+      atExec = signals.map((signal) => process.listenerCount(signal) - before.get(signal)!.length);
+      throw new Error("captured exec");
+    }) as typeof process.execve);
+    try {
+      await runLinuxSandboxMain([
+        "--sandbox-policy-cwd", previousCwd,
+        "--command-cwd", previousCwd,
+        "--session-temp-root", os.tmpdir(),
+        "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "enabled" }),
+        "--apply-seccomp-then-exec",
+        "--", process.execPath, "--version",
+      ], { env: { AGENC_LINUX_SANDBOX_ACTIVE: "1" } });
+      // A caught signal resets to SIG_DFL across execve; an ignored one (Node's
+      // default for both) would stay ignored in the command.
+      expect(atExec).toEqual([1, 1]);
+    } finally {
+      execve.mockRestore();
+      process.chdir(previousCwd);
+      for (const signal of signals) {
+        for (const listener of process.listeners(signal)) {
+          if (!before.get(signal)!.includes(listener)) process.removeListener(signal, listener);
+        }
+      }
+    }
+  });
+
+  it.each([false, true])("restores user NODE_ENV at the launcher exec boundary (inner=%s)", async inner => {
+    const key = Symbol.for("agenc.originalRuntimeEnvironment");
+    const saved = Object.getOwnPropertyDescriptor(globalThis, key);
+    const previousCwd = process.cwd();
+    let environment: Readonly<Record<string, string>> | undefined;
+    Object.defineProperty(globalThis, key, { value: { NODE_ENV: undefined }, configurable: true });
+    const execve = vi.spyOn(process, "execve").mockImplementation(((_file, _args, env): never => {
+      environment = env;
+      throw new Error("captured exec");
+    }) as typeof process.execve);
+    try {
+      await runLinuxSandboxMain([
+        "--sandbox-policy-cwd", previousCwd,
+        "--command-cwd", previousCwd,
+        "--session-temp-root", os.tmpdir(),
+        "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "enabled" }),
+        ...(inner ? ["--apply-seccomp-then-exec"] : []),
+        "--", process.execPath, "--version",
+      ], { env: { NODE_ENV: "production", AGENC_LINUX_SANDBOX_ACTIVE: "1" } });
+      expect(execve).toHaveBeenCalledOnce();
+      expect(environment).not.toHaveProperty("NODE_ENV");
+    } finally {
+      execve.mockRestore();
+      process.chdir(previousCwd);
+      Reflect.deleteProperty(globalThis, key);
+      if (saved) Object.defineProperty(globalThis, key, saved);
+    }
   });
 
   it("supervises a direct child process exit", async () => {

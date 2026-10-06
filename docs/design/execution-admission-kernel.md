@@ -137,7 +137,13 @@ Common fail-closed reasons include:
 | Budget exhausted, allocation blocked, parent cancelled, or deadline expired                     | deny/cancel with a journal reason                                                  |
 | Policy requests approval                                                                        | persist `approval_required`; the current client does not auto-approve or bypass it |
 | Usage is missing or invalid after dispatch                                                      | consume the full reservation as `held_unknown`                                     |
-| Provider exceeds the reservation                                                                | persist `provider_overrun`, block the allocation, and cancel the run subtree       |
+| Provider exceeds a reservation backed by an explicit hard budget cap                            | persist `provider_overrun`, block the allocation, and cancel the run subtree       |
+
+Without an explicit token or cost cap, reservation estimates do not impose a
+budget limit. Reported usage above an estimate is recorded and the run continues.
+The reconciliation check uses the reservation's durable allocation links, so
+inherited and retained period caps remain enforced. Explicit provider-overrun
+reports remain terminal independently of whether a budget was configured.
 
 Provider-side automatic fallback is not used to make a cap appear satisfied.
 Every deliberate model/provider fallback is a visible `fallback` journal

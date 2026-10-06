@@ -54,53 +54,6 @@ describe('debug utilities', () => {
     )
   })
 
-  it('preserves internal-user debug enable semantics', async () => {
-    process.env.USER_TYPE = 'ant'
-
-    const debug = await loadDebugModule()
-
-    expect(debug.enableDebugLogging()).toBe(true)
-  })
-
-  it('writes internal-user debug logs without a debug flag', async () => {
-    const agencHome = await makeTempDir()
-    process.env.AGENC_HOME = agencHome
-    process.env.NODE_ENV = 'production'
-    process.env.USER_TYPE = 'ant'
-
-    const debug = await loadDebugModule('session-ant')
-
-    debug.logForDebugging('api: background diagnostic')
-    await debug.flushDebugLogs()
-
-    const content = await readFile(
-      join(agencHome, 'debug', 'session-ant.txt'),
-      'utf8',
-    )
-    expect(content).toContain('[DEBUG] api: background diagnostic')
-  })
-
-  it('drains buffered internal-user debug logs during registered cleanup', async () => {
-    const agencHome = await makeTempDir()
-    process.env.AGENC_HOME = agencHome
-    process.env.NODE_ENV = 'production'
-    process.env.USER_TYPE = 'ant'
-
-    const debug = await loadDebugModule('session-cleanup')
-    const { runCleanupFunctions } = await import(
-      './cleanupRegistry.js'
-    )
-
-    debug.logForDebugging('api: cleanup diagnostic')
-    await runCleanupFunctions()
-
-    const content = await readFile(
-      join(agencHome, 'debug', 'session-cleanup.txt'),
-      'utf8',
-    )
-    expect(content).toContain('[DEBUG] api: cleanup diagnostic')
-  })
-
   it('honors log-level filtering and JSON-escapes formatted multiline output', async () => {
     process.env.AGENC_DEBUG_LOG_LEVEL = 'warn'
     process.argv.push('--debug-to-stderr')

@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -207,9 +208,15 @@ describe("findGitRoot", () => {
     expect(findGitRoot(nested)).toBe(canonicalRoot);
   });
 
-  it("falls back to the local root when .git is just a plain gitdir file", () => {
+  it("skips a dangling ancestor gitdir file and keeps a linked worktree canonical root", () => {
     writeFileSync(join(tmpRoot, ".git"), "gitdir: /elsewhere/.git/worktrees/x");
-    expect(findGitRoot(tmpRoot)).toBe(tmpRoot);
+    const canonicalRoot = join(tmpRoot, "origin-repo");
+    const worktreeRoot = join(tmpRoot, "linked-wt");
+    const nested = join(worktreeRoot, "pkg");
+    createLinkedWorktree(canonicalRoot, worktreeRoot, "feat");
+    mkdirSync(nested, { recursive: true });
+    expect(findGitRoot(nested)).toBe(canonicalRoot);
+    expect(findGitRoot(tmpRoot)).toBeNull();
   });
 
   it("returns null when no .git ancestor", () => {
@@ -295,6 +302,91 @@ describe("getOrCreateWorktree", () => {
       .map((entry) => entry.path.kind === "path" ? entry.path.path : "");
     expect(checkoutPaths).toContain(handle.path);
     expect(checkoutPaths).not.toContain(join(repo, ".git"));
+  });
+
+  it("keeps .agenc-worktrees out of git status through the repository's own exclude", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const exclude = join(repo, ".git", "info", "exclude");
+    writeFileSync(exclude, "*.log");
+
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-one" });
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-two" });
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-one" });
+
+    expect(readFileSync(exclude, "utf8")).toBe(
+      "*.log\n# Worktrees AgenC creates for agents and Goal runs.\n.agenc-worktrees/\n",
+    );
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" })).toBe("");
+    expect(existsSync(join(repo, ".gitignore"))).toBe(false);
+  });
+
+  it("leaves an exclude that already names the folder, or is a link, as it was", async () => {
+    const covered = join(tmpRoot, "covered");
+    initRepo(covered);
+    // What Desktop writes when it makes a repository for a Goal.
+    const desktopExclude = "# Left out of the first commit AgenC made for a Goal run.\nnode_modules/\n.agenc-worktrees/\n";
+    writeFileSync(join(covered, ".git", "info", "exclude"), desktopExclude);
+    await getOrCreateWorktree({ gitRoot: covered, slug: "agent-covered" });
+    expect(readFileSync(join(covered, ".git", "info", "exclude"), "utf8")).toBe(desktopExclude);
+
+    const linked = join(tmpRoot, "linked");
+    initRepo(linked);
+    const outside = join(tmpRoot, "outside.txt");
+    writeFileSync(outside, "not the repository's\n");
+    const linkedExclude = join(linked, ".git", "info", "exclude");
+    rmSync(linkedExclude, { force: true });
+    symlinkSync(outside, linkedExclude);
+    await getOrCreateWorktree({ gitRoot: linked, slug: "agent-linked" });
+    expect(readFileSync(outside, "utf8")).toBe("not the repository's\n");
+  });
+
+  it("says a missing base commit is missing, with git's own answer", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+
+    await expect(getOrCreateWorktree({ gitRoot: repo, slug: "agent-missing", base: missing })).rejects.toThrow(
+      new RegExp(
+        `^worktree base ${missing} does not resolve to a commit; create a commit before requesting worktree isolation \\(git rev-parse exited 128: fatal: .+\\)$`,
+      ),
+    );
+  });
+
+  it("does not blame the base commit when the check never ran to an answer", async () => {
+    // A Goal's worktree step reported its existing base commit as missing:
+    // the rev-parse process was killed before it ran, and the error said
+    // nothing else. Here the check process is killed the same way.
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const broker = explicitDangerBroker.forkForCwd(repo);
+    const prepareSpawn = broker.prepareSpawn.bind(broker);
+    vi.spyOn(broker, "prepareSpawn").mockImplementation((surface, command, options) =>
+      prepareSpawn(
+        surface,
+        command.args.includes("--verify")
+          ? {
+            ...command,
+            program: process.execPath,
+            argv0: process.execPath,
+            args: ["-e", "process.kill(process.pid, 'SIGKILL')"],
+          }
+          : command,
+        options,
+      ));
+
+    const attempt = getOrCreateWorktreeUnbound({
+      gitRoot: repo,
+      slug: "agent-killed",
+      base,
+      sandboxExecutionBroker: broker,
+    });
+
+    await expect(attempt).rejects.toThrow(
+      new RegExp(`^could not check worktree base ${base} \\(git rev-parse exited \\d+: no output\\)$`),
+    );
+    expect(existsSync(join(repo, ".agenc-worktrees", "agent-killed"))).toBe(false);
   });
 });
 

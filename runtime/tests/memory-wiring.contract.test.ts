@@ -94,6 +94,10 @@ describe("memory wiring contract", () => {
       "runtime/src/tools/system/file-write.ts",
       "runtime/src/tools/FileWriteTool/FileWriteTool.ts",
       "runtime/src/services/extractMemories/memory-paths.ts",
+      // Routing this one through the public index pulls the TUI keybinding
+      // graph into a low-level permissions module and fails module init with
+      // `getPlatform is not a function`. It takes four pure path helpers.
+      "runtime/src/permissions/path-validation.ts",
     ]);
     const directMemoryModuleImport =
       /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;

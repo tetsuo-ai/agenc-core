@@ -104,6 +104,26 @@ test('save/read/clear round trip', async () => {
   expect(readXaiOauthCredentials(home)).toBeUndefined()
 })
 
+test('logout retains rotated bearer history so an old token cannot become a gateway API key', async () => {
+  const { clearXaiOauthCredentials, isXaiOauthBearer, readXaiOauthCredentials,
+    saveXaiOauthCredentials } =
+    await importFreshModule()
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-1' })).success).toBe(true)
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-2' })).success).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(clearXaiOauthCredentials(home).success).toBe(true)
+  expect(readXaiOauthCredentials(home)).toBeUndefined()
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-2')).toBe(true)
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-3' })).success).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  const { createProvider } = await import('../../src/llm/provider.js')
+  expect(() => createProvider('grok', {
+    credentialHome: home, apiKey: 'access-1', model: 'grok-4.6',
+    baseURL: 'https://gateway.example.test/v1', extra: { authMode: 'api_key' },
+  })).toThrow(/refusing to use the stored xAI sign-in token as an API key/)
+})
+
 test('quarantined credentials do not surface a bearer', async () => {
   const { readXaiOauthAccessToken, saveXaiOauthCredentials } =
     await importFreshModule()
@@ -175,6 +195,7 @@ test('bare mode preserves xAI OAuth read, refresh, login, and logout authority',
   const {
     clearXaiOauthCredentials,
     forceRefreshXaiOauthCredentials,
+    isXaiOauthBearer,
     readXaiOauthAccessToken,
     readXaiOauthCredentials,
     saveXaiOauthCredentials,
@@ -186,9 +207,12 @@ test('bare mode preserves xAI OAuth read, refresh, login, and logout authority',
     refreshToken: 'refresh-2',
   })
   expect(readXaiOauthCredentials(home)?.accessToken).toBe('access-2')
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
   expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-3' })))
     .toMatchObject({ success: true })
   expect(readXaiOauthAccessToken(home)).toBe('access-3')
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-2')).toBe(true)
   expect(clearXaiOauthCredentials(home)).toMatchObject({ success: true })
   expect(readXaiOauthCredentials(home)).toBeUndefined()
 })
@@ -320,7 +344,7 @@ test('same-path OAuth secure-storage identities isolate caches and refresh fligh
   const prodHome = resolveHomeContext({ AGENC_HOME: home.path })
   const localHome = resolveHomeContext({
     AGENC_HOME: home.path,
-    USER_TYPE: 'ant',
+    AGENC_OAUTH_DEV_ENDPOINTS: '1',
     USE_LOCAL_OAUTH: '1',
   })
   const customHome = resolveHomeContext({

@@ -399,37 +399,27 @@ describe('AgentTool loadAgentsDir adapter', () => {
     expect(parsed).not.toHaveProperty('memory')
   })
 
-  test('rejects remote isolation outside internal builds', () => {
-    const previousUserType = process.env.USER_TYPE
-    delete process.env.USER_TYPE
-    try {
-      expect(
-        parseAgentFromJson('remote-json', {
-          description: 'Remote JSON',
-          prompt: 'Run remotely.',
-          isolation: 'remote',
-        }),
-      ).not.toMatchObject({ isolation: 'remote' })
+  test('rejects remote isolation', () => {
+    expect(
+      parseAgentFromJson('remote-json', {
+        description: 'Remote JSON',
+        prompt: 'Run remotely.',
+        isolation: 'remote',
+      }),
+    ).not.toMatchObject({ isolation: 'remote' })
 
-      const parsed = parseAgentFromMarkdown(
-        '/repo/.agenc/agents/remote.md',
-        '/repo/.agenc/agents',
-        {
-          name: 'remote-markdown',
-          description: 'Remote markdown',
-          isolation: 'remote',
-        },
-        'Run remotely.',
-        'projectSettings',
-      )
-      expect(parsed).not.toMatchObject({ isolation: 'remote' })
-    } finally {
-      if (previousUserType === undefined) {
-        delete process.env.USER_TYPE
-      } else {
-        process.env.USER_TYPE = previousUserType
-      }
-    }
+    const parsed = parseAgentFromMarkdown(
+      '/repo/.agenc/agents/remote.md',
+      '/repo/.agenc/agents',
+      {
+        name: 'remote-markdown',
+        description: 'Remote markdown',
+        isolation: 'remote',
+      },
+      'Run remotely.',
+      'projectSettings',
+    )
+    expect(parsed).not.toMatchObject({ isolation: 'remote' })
   })
 
   test('omits invalid hook and MCP server settings', () => {

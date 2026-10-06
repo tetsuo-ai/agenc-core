@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import type { BufferConfig, Personality } from "./schema.js";
+import type { Personality } from "./schema.js";
 import {
   cloneRecord,
   isPlainRecord,
@@ -69,6 +69,28 @@ export class AgenCConfigEditsBuilder {
     return this;
   }
 
+  /** Write `[providers.<provider>] auth`; `auto` removes the setting. */
+  setProviderAuth(provider: string, auth: "auto" | "oauth" | "api-key"): this {
+    const normalizedProvider = provider.trim();
+    this.edits.push((raw) => {
+      if (normalizedProvider.length === 0) return;
+      const providers = isPlainRecord(raw.providers)
+        ? cloneRecord(raw.providers)
+        : {};
+      const existing = isPlainRecord(providers[normalizedProvider])
+        ? cloneRecord(providers[normalizedProvider] as Record<string, unknown>)
+        : {};
+      if (auth === "auto") {
+        delete existing.auth;
+      } else {
+        existing.auth = auth;
+      }
+      providers[normalizedProvider] = existing;
+      raw.providers = providers;
+    });
+    return this;
+  }
+
   setCoordinatorMode(enabled: boolean | null): this {
     this.edits.push((raw) => {
       if (enabled === null) {
@@ -87,60 +109,6 @@ export class AgenCConfigEditsBuilder {
       } else {
         raw.personality = personality;
       }
-    });
-    return this;
-  }
-
-  setBufferEditorConfig(config: BufferConfig): this {
-    this.edits.push((raw) => {
-      const buffer: JsonRecord = {};
-      if (config.provider !== undefined) buffer.provider = config.provider;
-      if (config.show_tabs !== undefined) buffer.show_tabs = config.show_tabs;
-      if (config.neovim !== undefined) {
-        const neovim: JsonRecord = {};
-        if (config.neovim.executable !== undefined) {
-          neovim.executable = config.neovim.executable;
-        }
-        if (config.neovim.init !== undefined) neovim.init = config.neovim.init;
-        if (config.neovim.discovery_timeout_ms !== undefined) {
-          neovim.discovery_timeout_ms = config.neovim.discovery_timeout_ms;
-        }
-        if (config.neovim.startup_timeout_ms !== undefined) {
-          neovim.startup_timeout_ms = config.neovim.startup_timeout_ms;
-        }
-        if (config.neovim.operation_timeout_ms !== undefined) {
-          neovim.operation_timeout_ms = config.neovim.operation_timeout_ms;
-        }
-        if (config.neovim.cleanup_timeout_ms !== undefined) {
-          neovim.cleanup_timeout_ms = config.neovim.cleanup_timeout_ms;
-        }
-        if (Object.keys(neovim).length > 0) buffer.neovim = neovim;
-      }
-      if (config.prediction !== undefined) {
-        const prediction: JsonRecord = {};
-        if (config.prediction.enabled !== undefined) {
-          prediction.enabled = config.prediction.enabled;
-        }
-        if (config.prediction.debounce_ms !== undefined) {
-          prediction.debounce_ms = config.prediction.debounce_ms;
-        }
-        if (config.prediction.timeout_ms !== undefined) {
-          prediction.timeout_ms = config.prediction.timeout_ms;
-        }
-        if (config.prediction.max_output_tokens !== undefined) {
-          prediction.max_output_tokens = config.prediction.max_output_tokens;
-        }
-        if (config.prediction.provider !== undefined) {
-          prediction.provider = config.prediction.provider;
-        }
-        if (config.prediction.model !== undefined) {
-          prediction.model = config.prediction.model;
-        }
-        if (Object.keys(prediction).length > 0) {
-          buffer.prediction = prediction;
-        }
-      }
-      raw.buffer = buffer;
     });
     return this;
   }

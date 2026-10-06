@@ -7,16 +7,18 @@ import {
   modelRegistryEntryToModelInfo,
   type ModelMetadataResolverOptions,
 } from "./model-registry.js";
+import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import type { ModelsManager } from "../session/session.js";
 import type { ModelInfo } from "../session/turn-context.js";
 
 export class StaticModelsManager implements ModelsManager {
   private readonly fallbackProvider?: string;
   private readonly configDefaultProvider?: string;
-  private readonly allModels: readonly ModelInfo[];
-  private readonly availableModels: readonly ModelInfo[];
+  private availableModels: readonly ModelInfo[] | undefined;
   private readonly modelRegistry: ModelRegistry;
-  private readonly modelInfoCache = new Map<string, Promise<ModelInfo>>();
+  private metadataRevision = 0;
+  private inFlightModelInfo = new Map<string, Promise<ModelInfo>>();
+  private modelInfoCache = new Map<string, ModelInfo>();
 
   constructor(params: {
     readonly config: AgenCConfig;
@@ -31,13 +33,6 @@ export class StaticModelsManager implements ModelsManager {
       config: params.config,
       metadata: params.metadata,
     });
-    this.allModels = this.modelRegistry
-      .listEntriesSync()
-      .map((entry) => modelRegistryEntryToModelInfo(entry));
-    this.availableModels = this.allModels.filter((model) =>
-      model.showInPicker !== false && model.visibility !== "hide" &&
-      model.visibility !== "none"
-    );
   }
 
   async getModelInfo(modelSlug: string): Promise<ModelInfo> {
@@ -51,24 +46,43 @@ export class StaticModelsManager implements ModelsManager {
     );
   }
 
+  async getModelInfoForProvider(provider: string, model: string): Promise<ModelInfo> {
+    return await this.resolveModelInfo({ provider, model });
+  }
+
   tryListModels(): ReadonlyArray<ModelInfo> | undefined {
-    return this.availableModels;
+    return this.pickerModels();
   }
 
   async listModels(): Promise<ReadonlyArray<ModelInfo>> {
-    return this.availableModels;
+    return this.pickerModels();
+  }
+
+  /** A new session needs one selected model, not every picker entry. */
+  private pickerModels(): readonly ModelInfo[] {
+    return this.availableModels ??= this.modelRegistry.listEntriesSync()
+      .map((entry) => modelRegistryEntryToModelInfo(entry))
+      .filter((model) => model.showInPicker !== false && model.visibility !== "hide" && model.visibility !== "none");
   }
 
   private async resolveModelInfo(params: {
     readonly provider: string;
     readonly model: string;
   }): Promise<ModelInfo> {
+    const revision = this.modelRegistry.metadataRevision(params);
+    if (revision !== this.metadataRevision) {
+      this.inFlightModelInfo = new Map();
+      this.modelInfoCache = new Map();
+      this.availableModels = undefined;
+      this.metadataRevision = revision;
+    }
     const key = `${params.provider}:${params.model}`;
-    const cached = this.modelInfoCache.get(key);
-    if (cached) return await cached;
-    const resolved = this.buildResolvedModelInfo(params);
-    this.modelInfoCache.set(key, resolved);
-    return await resolved;
+    return await rememberSuccessfulLookup(
+      { inFlight: this.inFlightModelInfo, success: this.modelInfoCache },
+      key,
+      () => this.buildResolvedModelInfo(params),
+      (info) => !info.usedFallbackModelMetadata,
+    );
   }
 
   private async buildResolvedModelInfo(params: {

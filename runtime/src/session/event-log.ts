@@ -18,8 +18,9 @@
  * @module
  */
 
+import type { SessionGoal } from "../goal/goal.js";
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
-import type { AgentStatus } from "../agents/status.js";
+import type { AgentStatus, NativeWorkerTiming } from "../agents/status.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type {
   EffectBoundary,
@@ -163,6 +164,18 @@ export interface TurnCompleteEvent {
  * The child journal fsyncs this record before the parent mailbox receives the
  * corresponding receipt, so projection never outruns its durable source.
  */
+export interface SubagentTaskAdmissionEvent {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly turnId: string;
+  readonly taskId: string;
+  readonly author: string;
+  readonly taskText: string;
+  readonly acceptedAt: number;
+  readonly provider: string;
+  readonly model: string;
+}
+
 export interface SubagentTurnOutcomeEvent {
   readonly agentId: string;
   readonly agentPath: string;
@@ -172,6 +185,7 @@ export interface SubagentTurnOutcomeEvent {
   readonly toolCallCount: number;
   readonly message?: string;
   readonly reason?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
   readonly worktreeEvidence?:
     | {
         readonly state: "unverifiable";
@@ -200,6 +214,15 @@ export interface SubagentTurnOutcomeEvent {
         readonly baseIsAncestor: boolean;
         readonly integrationRef?: string;
       };
+}
+
+/** Core-owned user notice, emitted even if the parent model never relays it. */
+export interface SubagentFundsNoticeEvent {
+  readonly agentPath: string;
+  readonly taskId?: string;
+  readonly taskText: string;
+  readonly terminal: import("../agents/child-terminal.js").ChildTerminalOutcome;
+  readonly message: string;
 }
 
 export interface TurnAbortedEvent {
@@ -294,6 +317,54 @@ export interface TurnResumedEvent {
   readonly haltedSideEffectingTools?: ReadonlyArray<string>;
 }
 
+/**
+ * One decision of the non-interactive completion gate (phase 4b): a
+ * verification prompt was injected, or a final answer was accepted as
+ * verified, accepted as partial because remaining checks are unavailable,
+ * accepted because the rounds ran out, or the turn was not gated.
+ * `verified` is structural compliance, not a benchmark pass.
+ */
+/**
+ * The session goal changed (`/goal`, or a goal-gate round). The payload is
+ * the full snapshot so a resumed session restores the goal from the last
+ * event alone; the goal lives outside the conversation on purpose, so
+ * compaction cannot lose or paraphrase it.
+ */
+export interface GoalChangedEvent {
+  readonly goal: SessionGoal;
+  readonly cause:
+    | "set"
+    | "round"
+    | "settled"
+    | "paused"
+    | "resumed"
+    | "cleared";
+  readonly turnId?: string;
+}
+
+export interface CompletionGateEvent {
+  readonly turnId: string;
+  /** Gate prompts injected so far in this turn, after this decision. */
+  readonly round: number;
+  readonly maxRounds: number;
+  readonly outcome: "injected" | "verified" | "partial" | "exhausted" | "skipped";
+  readonly reason:
+    | "initial"
+    | "no_verification"
+    | "no_checklist"
+    | "unmet_items"
+    | "unavailable_unproven"
+    | "verified_with_tools"
+    | "unavailable_checks"
+    | "rounds_exhausted"
+    | "no_tool_use"
+    | "deadline_reserve";
+  /** Tool calls that completed between the last injection and this decision. */
+  readonly toolCallsSinceInjection: number;
+  /** Unchecked, unassociated, or explicitly unverified checklist items, when any. */
+  readonly unmetItems?: ReadonlyArray<string>;
+}
+
 export interface AgentMessageEvent {
   readonly message: string;
 }
@@ -326,11 +397,23 @@ export interface TokenCountEvent {
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
   readonly reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * The session budget then adds completion once. Absent for providers whose
+   * reasoning is still added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   readonly webSearchRequests?: number;
   /** Optional model override for this usage payload. */
   readonly model?: string;
   /** Optional provider override for this usage payload. */
   readonly provider?: string;
+  /**
+   * Present when the provider reports the call was served in fast mode
+   * (Anthropic `usage.speed: "fast"`, an OpenAI or xAI `service_tier` of
+   * "priority" or "fast"), which bills at fast-mode rates.
+   */
+  readonly speed?: "fast";
 }
 
 export interface McpToolCallBeginEvent {
@@ -381,6 +464,8 @@ export type FileWriteApprovalPreview =
 export interface RequestPermissionsEvent {
   readonly callId: string;
   readonly toolName: string;
+  readonly kind?: "cross_provider_spawn";
+  readonly crossProvider?: Readonly<Record<string, unknown>>;
   readonly permissions: ReadonlyArray<string>;
   readonly turnId?: string;
   readonly reason?: string;
@@ -421,6 +506,12 @@ export interface PermissionDecisionEvent {
     | "cache"
     | "aborted";
   readonly reason?: string;
+  /**
+   * For a resolver denial: `user` when a person chose Deny, `runtime` when
+   * the resolver refused on its own. Absent in journals written before the
+   * distinction, where a resolver denial was taken as the user's.
+   */
+  readonly decidedBy?: "user" | "runtime";
   readonly recordedAt: string;
 }
 
@@ -453,6 +544,14 @@ export interface StreamErrorEvent {
 export interface WarningEvent {
   readonly cause: string;
   readonly message: string;
+  /** Explicit scope for warnings produced before a daemon message submission. */
+  readonly turnId?: string;
+  /**
+   * Structured facts behind the message: error names, messages, Node error
+   * codes and paths, byte sizes. Scalar values only. Readers that predate
+   * the field ignore it (journal schemas are additive).
+   */
+  readonly details?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 /**
@@ -806,10 +905,12 @@ export interface CollabAgentSpawnBeginEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
 }
 
 export interface CollabAgentSpawnEndEvent {
+  readonly timing?: NativeWorkerTiming;
   readonly callId: string;
   readonly senderThreadId: string;
   readonly newThreadId?: string;
@@ -821,8 +922,10 @@ export interface CollabAgentSpawnEndEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 /**
@@ -841,6 +944,7 @@ export type CollabAgentTaskStatus =
   "pending" | "running" | "idle" | "completed" | "failed" | "killed";
 
 export interface CollabAgentStatusEvent {
+  readonly timing?: NativeWorkerTiming;
   readonly callId: string;
   readonly senderThreadId: string;
   readonly threadId: string;
@@ -850,6 +954,7 @@ export interface CollabAgentStatusEvent {
   readonly agentRoleDisplayName?: string;
   readonly prompt?: string;
   readonly model?: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus | CollabAgentTaskStatus;
   /**
@@ -865,6 +970,7 @@ export interface CollabAgentStatusEvent {
    */
   readonly tokenCount?: number;
   readonly error?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 export interface CollabAgentInteractionBeginEvent {
@@ -1117,14 +1223,9 @@ export type EventMsg =
          * compatibility with historical rollout events.
          */
         readonly toolName?: string;
-        /**
-         * Runtime-authored Editor authority identity when the tool completed
-         * inside an Editor interaction. Historical and ordinary Agent events
-         * omit it.
-         */
-        readonly editorInteractionId?: string;
         readonly result: string;
         readonly isError: boolean;
+        readonly displayAttachments?: readonly import("../mcp-client/display-attachments.js").DisplayAttachment[];
         readonly metadata?: Record<string, unknown>;
         /**
          * Wall time the tool spent executing, in milliseconds. Omitted for
@@ -1170,9 +1271,14 @@ export type EventMsg =
       readonly payload: ContextCompactedEvent;
     }
   | {
+      readonly type: "subagent_task_admitted";
+      readonly payload: SubagentTaskAdmissionEvent;
+    }
+  | {
       readonly type: "subagent_turn_outcome";
       readonly payload: SubagentTurnOutcomeEvent;
     }
+  | { readonly type: "subagent_funds_notice"; readonly payload: SubagentFundsNoticeEvent }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
@@ -1181,6 +1287,8 @@ export type EventMsg =
       readonly payload: TurnCheckpointEvent;
     }
   | { readonly type: "turn_resumed"; readonly payload: TurnResumedEvent }
+  | { readonly type: "completion_gate"; readonly payload: CompletionGateEvent }
+  | { readonly type: "goal_changed"; readonly payload: GoalChangedEvent }
   | {
       readonly type: "thread_rolled_back";
       readonly payload: ThreadRolledBackEvent;
@@ -1435,12 +1543,16 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "mcp_elicitation_request",
     "mcp_elicitation_complete",
     "context_compacted",
+    "subagent_task_admitted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "turn_complete",
     "turn_aborted",
     "turn_failed",
     "turn_checkpoint",
     "turn_resumed",
+    "completion_gate",
+    "goal_changed",
     "thread_rolled_back",
     "error",
     "stream_error",
@@ -1511,7 +1623,9 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "turn_failed",
     "error",
     "context_compacted",
+    "subagent_task_admitted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "protocol_claim",
     "protocol_settle",
     "protocol_slash",
@@ -1888,6 +2002,9 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
         : {}),
       ...(usage.reasoningOutputTokens !== undefined
         ? { reasoningOutputTokens: usage.reasoningOutputTokens }
+        : {}),
+      ...(usage.reasoningIncludedInCompletion === true
+        ? { reasoningIncludedInCompletion: true as const }
         : {}),
       ...(usage.webSearchRequests !== undefined
         ? { webSearchRequests: usage.webSearchRequests }

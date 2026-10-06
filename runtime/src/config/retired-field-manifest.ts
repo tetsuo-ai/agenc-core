@@ -51,7 +51,6 @@ const V1_RENAMES = Object.freeze({
   configVersion: "config_version",
   modelProvider: "model_provider",
   provider: "model_provider",
-  editorMode: "tui.vimMode",
   enabledPlugins: "plugins.plugins",
   effortLevel: "reasoning_effort",
   sandbox_policy: "sandbox_mode,sandbox",
@@ -559,10 +558,9 @@ const GLOBAL_ENTRIES = Object.freeze([
   entry(
     "global-state",
     "editorMode",
-    "config",
-    "transform",
-    "operator preference moves to canonical TOML",
-    "tui.vimMode",
+    "removed",
+    "drop",
+    "the vim composer mode was removed with the embedded editor",
   ),
   entry(
     "global-state",

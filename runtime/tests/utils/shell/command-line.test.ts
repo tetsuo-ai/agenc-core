@@ -112,6 +112,30 @@ describe("shared shell lexer", () => {
     (argument) => expect(isDirectExecEligible(lexShellCommand(`echo ${argument}`))).toBe(false),
   );
 
+  it.each([
+    ['"$1"', '"/foo$/p"', "/foo$/p"],
+    ['"$@"', '"price: 5$"', "price: 5$"],
+    ['"$#"', '"a$ b"', "a$ b"],
+    ['"$?"', '"$\'x"', "$'x"],
+    ['"$-"', "/^$/d", "/^$/d"],
+    ['"$$"', "cost$", "cost$"],
+    ['"$!"', "a$.b", "a$.b"],
+    ['"$_x"', '"s/ *$//"', "s/ *$//"],
+    ['"${x}"', '"x$"', "x$"],
+    ['"$((1+2))"', '"$/"', "$/"],
+    ['"$[1+2]"', '"50$%"', "50$%"],
+    ['"a$\\\nx"', '"a$,b"', "a$,b"],
+    ["$'\\x41'", "tail$", "tail$"],
+    ['$"text"', "$/", "$/"],
+    ["a$x", '"$ "', "$ "],
+    ["$0", '"end$"', "end$"],
+  ])("tells a $ that expands (%s) from a literal one (%s)", (expanding, literal, value) => {
+    expect(lexShellCommand(`echo ${expanding}`).tokens[1]!.requiresExpansion).toBe(true);
+    const parsed = lexShellCommand(`sed -n ${literal}`);
+    expect(parsed.tokens[2]).toEqual({ kind: "word", value, requiresExpansion: false });
+    expect(isDirectExecEligible(parsed)).toBe(true);
+  });
+
   it("tracks quoted heredoc bodies and resumes after each delimiter", () => {
     const command = ["cat <<'ONE' <<-TWO", "$(literal)", "ONE", "\tplain", "\tTWO", "pwd"].join("\n");
     const parsed = lexShellCommand(command);

@@ -41,6 +41,7 @@ vi.mock("../../../src/utils/supervisedProcess.js", async (importOriginal) => {
 });
 
 import type { Logger } from "../../_deps/logger.js";
+import { attachmentLogger } from "../local-control.js";
 import {
   SandboxExecutionBroker,
   type SandboxPreparedSpawn,
@@ -139,6 +140,34 @@ describe("createStdioMCPEnvironment", () => {
 });
 
 describe("AgenCStdioClientTransport", () => {
+  it("consumes a fully overlapping stderr flood and yields to the event loop", async () => {
+    const messages: string[] = [];
+    const logger: Logger = { debug() {}, warn() {}, error() {}, info(message) {
+      if (message.includes("truncated 0 bytes")) throw new Error("zero-byte stderr flush");
+      messages.push(message);
+    } };
+    const transport = new AgenCStdioClientTransport({ command: "flooder" }, attachmentLogger(logger, { token: "aaaa" }));
+    const internal = transport as unknown as { onStderrData: (chunk: Buffer) => void; stderrBuffer: Buffer; flushStderr: () => void };
+    internal.onStderrData(Buffer.alloc(1024 * 1024 + 1, 0x61));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(internal.stderrBuffer.length).toBeLessThanOrEqual(1024 * 1024);
+    internal.flushStderr();
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages.join(" ")).not.toContain("aaaa");
+    expect(messages.join(" ")).not.toContain("aaa");
+    await transport.close();
+  });
+  it("keeps a secret spanning the stderr cap out of every log fragment", async () => {
+    const messages: string[] = [];
+    const logger: Logger = { debug() {}, info(message) { messages.push(message); }, warn() {}, error() {} };
+    const transport = new AgenCStdioClientTransport({ command: "flooder" }, attachmentLogger(logger, { token: "private-phrase" }));
+    const internal = transport as unknown as { onStderrData: (chunk: Buffer) => void; flushStderr: () => void };
+    internal.onStderrData(Buffer.from("x".repeat(1024 * 1024 - 8) + "private-phrase"));
+    internal.flushStderr();
+    expect(messages.join(" ")).not.toContain("private-");
+    expect(messages.join(" ")).not.toContain("phrase");
+    await transport.close();
+  });
   it("defaults the child cwd to the sandbox broker authority", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-cwd-"));
     tempDirs.add(dir);

@@ -1229,59 +1229,6 @@ describe("explicit v2 migration", () => {
     expect(plan.writes).toEqual([]);
   });
 
-  test("maps the retired editor toggle into tui.vimMode", async () => {
-    const root = temp("agenc-v2-editor-mode");
-    const home = join(root, "home");
-    write(
-      join(home, "config.toml"),
-      'configVersion = 1\neditorMode = "vim"\n',
-    );
-
-    const plan = await checkConfigV2Migration({
-      env: {},
-      home,
-      projectRoot: join(root, "project"),
-      managedConfigPath: join(root, "managed", "config.toml"),
-      managedSettingsPath: join(root, "managed", "managed-settings.json"),
-      globalStatePath: join(root, "missing-global.json"),
-      id: "editor-mode",
-    });
-
-    expect(plan.conflicts).toEqual([]);
-    const configWrite = plan.writes.find(write => write.kind === "config");
-    expect(configWrite?.content).toMatch(/"?vimMode"?\s*=\s*true/u);
-    expect(configWrite?.content).not.toContain("editorMode");
-  });
-
-  test("refuses conflicting editorMode and tui.vimMode values", async () => {
-    const root = temp("agenc-v2-editor-conflict");
-    const home = join(root, "home");
-    write(
-      join(home, "config.toml"),
-      [
-        "configVersion = 1",
-        'editorMode = "vim"',
-        "[tui]",
-        "vimMode = false",
-        "",
-      ].join("\n"),
-    );
-
-    const plan = await checkConfigV2Migration({
-      env: {},
-      home,
-      projectRoot: join(root, "project"),
-      managedConfigPath: join(root, "managed", "config.toml"),
-      managedSettingsPath: join(root, "managed", "managed-settings.json"),
-      globalStatePath: join(root, "missing-global.json"),
-      id: "editor-conflict",
-    });
-
-    expect(plan.conflicts).toEqual([
-      expect.objectContaining({ field: "tui.vimMode" }),
-    ]);
-  });
-
   test("consolidates legacy effort and sandbox policy into canonical fields", async () => {
     const root = temp("agenc-v2-effort-sandbox");
     const home = join(root, "home");

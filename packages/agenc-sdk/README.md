@@ -24,13 +24,24 @@ Errors: `AgencRpcError`, `AgencMalformedResponseError`,
 The socket transport rejects every pending request and closes the connection
 when a completed line contains malformed JSON or an invalid JSON-RPC response
 or notification envelope. `onClose` receives the protocol error once, and later
-requests fail immediately. Partial lines may span chunks within the 16 MiB
-buffer limit. Valid `message.send` and `message.stream` calls remain unbounded
-by the control-request timeout.
+requests fail immediately. Partial lines may span chunks within the shared
+`AGENC_SDK_MAX_FRAME_BYTES` (16 MiB) ceiling. Both transports count payload
+bytes excluding an LF, CRLF, or lone CR delimiter, and they apply the limit
+to the frame rather than the read chunk. `promptViaSubprocess()` decodes
+UTF-8 only after the payload is within the bound, and fails the run once on
+overflow — SIGTERM, then SIGKILL after a short grace, retaining only the
+bounded stderr tail. Valid `message.send` and
+`message.stream` calls remain unbounded by the control-request timeout.
 
 Prompt events on protocol 1.2 also include `message_committed`,
 `history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
 loop below only prints `text`.
+
+Both transports buffer at most `MAX_BUFFERED_PROMPT_EVENTS` (1,000) events
+that a consumer has not iterated yet. Past that the oldest buffered events are
+discarded and reported by a non-evictable `gap` event with
+`reason: "local_overflow"` and the exact `retiredCount`; `reason: "retention"`
+is the daemon's own replay gap. Neither is safe to skip.
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,
@@ -100,16 +111,28 @@ also needs `removeListener("data")`. Update exit-only test fakes to emit `close`
 after exit and stdio closure. A Node `ChildProcess` satisfies the contract
 without an adapter. No protocol or stored-state migration is needed.
 
-- Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
+- Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; paths over 107 UTF-8 bytes on Linux or 103 on macOS use `/tmp/agenc-<uid>/<sha256-of-canonical-home>.sock`. The fallback directory must be owned by the current user, mode `0700`, and not a symlink. Windows uses the existing stable per-home named pipe.
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`); when that start fails, the error carries the CLI's exit code and its last stderr lines
+- Environment: `createSession()` forwards this process's allowlisted environment as `envOverrides` (`collectClientEnvOverrides()`: the daemon's `AGENC_DAEMON_CLIENT_ENV_KEYS` such as `DEEPSEEK_API_KEY` or `AGENC_MODEL`, plus `AGENC_CREDENTIAL_*` bearers), the same ingress `agenc -p` uses, so a provider key exported in the embedder's shell reaches the session. Pass `envOverrides: {}` to forward nothing, or your own map to forward exactly that. A daemon session never inherits the daemon process's own environment.
 - Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
 - Home authority: `AGENC_HOME` must be absolute and is canonicalized before daemon paths are derived. Explicit socket and cookie paths do not bypass home-authority validation.
 
 `promptViaSubprocess()` invokes `agenc -p`. The child captures
 `AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited
 environment when `options.env` is omitted, at automation startup.
+
+The subprocess transport does not settle on child `exit` alone. It waits for
+stdout `end` and child `close` so a result still in the pipe after the wrapper
+exits is not dropped. Custom `AgencSubprocessSpawnFn` adapters must expose
+`on`/`removeListener` for `error`, `exit`, and `close`, plus stdout `end`.
+`postExitDrainTimeoutMs` (default 5,000) bounds that wait; a timeout SIGKILLs
+the direct child. `detachProcessGroup: true` is a Unix opt-in that starts the
+default spawner's child in its own process group so that timeout can also
+SIGKILL the group, and so `cancel()` / abort can forward SIGTERM to it.
+Terminal SIGINT and SIGHUP do not reach a detached child. The default leaves
+the child in the embedder's group. Custom spawners are never group-signalled.
 
 ## Docs & example
 

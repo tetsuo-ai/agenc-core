@@ -204,7 +204,7 @@ export function getSubagentLogName(): string | undefined {
  * when the spawn path had no request_id.
  *
  * Sparse edge semantics: invokingRequestId appears on exactly one
- * tengu_api_success/error per invocation, so a non-NULL value downstream
+ * API success/error event per invocation, so a non-NULL value downstream
  * marks a spawn/resume boundary.
  */
 export function consumeInvokingRequestId():

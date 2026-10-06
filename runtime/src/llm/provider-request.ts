@@ -226,9 +226,22 @@ export function resolveProviderRuntimeRequest(params: {
       grokCapabilities: params.config.providers?.grok,
       env: params.environment,
     }),
+    // Grok continues a conversation with previous_response_id unless the
+    // config (or AGENC_XAI_INCREMENTAL) turns it off: with it, xAI served
+    // later requests from cache far more reliably (docs/reference/config.md).
     ...(params.provider === "grok" &&
-    params.config.providers?.grok?.incremental_continuation === true
+    params.config.providers?.grok?.incremental_continuation !== false
       ? { incrementalContinuation: true }
+      : {}),
+    ...(params.provider === "openrouter" &&
+    params.config.providers?.openrouter?.zero_data_retention === true
+      ? { zeroDataRetention: true }
+      : {}),
+    // Bedrock reads the configured profile mapping to apply the right
+    // request contract to ids that name no model.
+    ...(params.provider === "amazon-bedrock" &&
+    params.config.modelOverrides !== undefined
+      ? { modelOverrides: params.config.modelOverrides }
       : {}),
   };
   return Object.freeze({

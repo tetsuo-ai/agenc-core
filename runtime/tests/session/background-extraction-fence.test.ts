@@ -46,7 +46,13 @@ async function driveTurns(): Promise<readonly LLMMessage[][]> {
     ),
   });
   for (let turn = 0; turn < TURNS; turn += 1) {
-    await drain(runTurn(session, mkCtx(), `hello ${turn}`));
+    await drain(
+      runTurn(
+        session,
+        mkCtx({ sandboxPolicy: { value: "danger_full_access" } }),
+        `hello ${turn}`,
+      ),
+    );
   }
   // Deterministic, not a sleep: the fork registers its promise synchronously
   // when commit.ts calls it, so this awaits every extraction the turns

@@ -25,6 +25,7 @@ import {
   TOKEN_FALLBACK_MARGIN_RATIO,
   TOKEN_FALLBACK_MARGIN_TOKENS,
 } from "../../src/llm/token-accounting.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../src/llm/registry/provider-info.js";
 import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
@@ -268,7 +269,7 @@ describe("tokenEstimation service", () => {
 
     expect(cacheWrapper).toHaveBeenCalledTimes(1);
     expect(countTokens).toHaveBeenCalledWith({
-      model: "claude-opus-4-7",
+      model: BUILT_IN_PROVIDER_DEFAULT_MODELS.anthropic,
       messages: [{ role: "user", content: "hello" }],
     });
   });

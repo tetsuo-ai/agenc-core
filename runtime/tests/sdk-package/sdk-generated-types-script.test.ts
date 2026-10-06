@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -86,6 +87,16 @@ export interface SessionTranscriptV2TurnResult extends JsonObject {
   readonly outcome: "completed" | "aborted";
 }
 
+export interface DisplayAttachment extends JsonObject {
+  readonly id: string;
+  readonly kind: "chart" | "table" | "image" | "file";
+  readonly title: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly digest: string;
+  readonly data?: JsonValue;
+}
+
 export interface SessionTranscriptV2Event extends JsonObject {
   readonly eventId: string;
   readonly type: "token_count" | "turn_failed" | "turn_aborted";
@@ -163,9 +174,16 @@ describe("SDK generated transcript v2 script", () => {
   });
 
   it("accepts the documented npm write entrypoint", async () => {
+    const path = process.platform === "win32" ? win32 : posix;
+    const nodeDirectory = path.dirname(process.execPath);
+    const npmExecPath = [
+      process.env.npm_execpath,
+      path.join(nodeDirectory, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+      path.join(nodeDirectory, "..", "libexec", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    ].find((candidate) => candidate !== undefined && existsSync(candidate));
     const command = npmWriteCommand({
       nodeExecutable: process.execPath,
-      npmExecPath: process.env.npm_execpath,
+      npmExecPath,
       windows: process.platform === "win32",
     });
     expect(command.executable).toMatch(/node(?:\.exe)?$/i);
@@ -361,6 +379,7 @@ describe("SDK generated transcript v2 script", () => {
   );
 
   it("rejects missing interfaces and invalid runtime heritage before writing", async () => {
+    const missingAttachment = runtimeProtocol().replace(/export interface DisplayAttachment extends JsonObject \{[\s\S]*?\n\}\n\n/u, "");
     const missingResult = runtimeProtocol().replace(
       `
 
@@ -375,6 +394,7 @@ export interface SessionTranscriptV2Result extends JsonObject {
     );
 
     for (const [protocol, message] of [
+      [missingAttachment, /missing runtime interface DisplayAttachment/],
       [missingResult, /missing runtime interface SessionTranscriptV2Result/],
       [
         invalidHeritage,

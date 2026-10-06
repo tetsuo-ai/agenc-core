@@ -4,6 +4,7 @@ import {
   AgencCapabilityUnavailableError,
   AgencDuplicateSubmissionIncompleteError,
   AgencPromptRunInProgressError,
+  collectClientEnvOverrides,
   createAgencClient,
   type AgencClient,
   type AgencDaemonMethod,
@@ -13,6 +14,8 @@ import {
   type AgencTransport,
   type JsonObject,
 } from "../../../packages/agenc-sdk/src/index";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
+import { AGENC_SDK_DAEMON_PROTOCOL_VERSION } from "../../../packages/agenc-sdk/src/protocol.js";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -75,7 +78,7 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.12.0";
+  initializeVersion: string = AGENC_SDK_DAEMON_PROTOCOL_VERSION;
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
   attachRuntimeSettings: unknown = VALID_ATTACH_RUNTIME_SETTINGS;
@@ -121,7 +124,8 @@ class PromptTransport implements AgencTransport {
               this.initializeVersion === "1.9.0" ||
               this.initializeVersion === "1.10.0" ||
               this.initializeVersion === "1.11.0" ||
-              this.initializeVersion === "1.12.0",
+              this.initializeVersion === "1.16.0" ||
+              this.initializeVersion === AGENC_SDK_DAEMON_PROTOCOL_VERSION,
           },
         },
       });
@@ -233,7 +237,7 @@ async function initializedClient(
   return client;
 }
 
-function userMessage(clientMessageId: string): JsonObject {
+function userMessage(clientMessageId: string, content: string): JsonObject {
   return {
     jsonrpc: "2.0",
     method: "event.session_event",
@@ -243,7 +247,7 @@ function userMessage(clientMessageId: string): JsonObject {
       event: {
         id: `user_${clientMessageId}`,
         type: "user_message",
-        payload: { message: clientMessageId, messageId: clientMessageId },
+        payload: { message: content, messageId: clientMessageId },
       },
     },
   };
@@ -394,7 +398,7 @@ describe("agenc-sdk prompt race safety", () => {
         onElicitationRequest: respond,
       });
       const send = await waitForSend(transport, 0);
-      transport.emit(userMessage("interactive_message"));
+      transport.emit(userMessage("interactive_message", "interactive"));
       transport.emit(turnStarted("interactive_turn"));
       transport.emit({
         jsonrpc: "2.0",
@@ -448,7 +452,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.12.0" } }),
+        expect.objectContaining({ protocol: { version: AGENC_SDK_DAEMON_PROTOCOL_VERSION }, capabilities: {}, clientName: "agenc-sdk" }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);
@@ -612,6 +616,9 @@ describe("agenc-sdk prompt race safety", () => {
       (request) => request.method === "agent.create",
     );
     expect(createRequests).toHaveLength(1);
+    // createSession() with no explicit envOverrides forwards this process's
+    // allowlisted environment, so the exact-params assertion has to carry it.
+    const forwardedEnv = collectClientEnvOverrides();
     expect(createRequests[0]?.params).toEqual({
       objective: "Interactive session",
       cwd: VALID_ATTACH_CWD,
@@ -621,6 +628,9 @@ describe("agenc-sdk prompt race safety", () => {
         request: { id: "request_1" },
       },
       runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS,
+      ...(Object.keys(forwardedEnv).length > 0
+        ? { envOverrides: forwardedEnv }
+        : {}),
     });
     expect(
       transport.requests.filter(
@@ -766,7 +776,7 @@ describe("agenc-sdk prompt race safety", () => {
     ).toThrow(AgencPromptRunInProgressError);
 
     const sendA = await waitForSend(transport, 0);
-    transport.emit(userMessage("message_A"));
+    transport.emit(userMessage("message_A", "A"));
     transport.emit(turnStarted("turn_A"));
     transport.emit(terminal("turn_A", "answer A"));
     resolveSend(sendA, "turn_A");
@@ -791,7 +801,7 @@ describe("agenc-sdk prompt race safety", () => {
     ]);
     expect(stillPending).toBe(true);
 
-    transport.emit(userMessage("message_B"));
+    transport.emit(userMessage("message_B", "B"));
     transport.emit(turnStarted("turn_B"));
     transport.emit(text("turn_B", "ha"));
     transport.emit(text("turn_B", "ha"));
@@ -821,7 +831,7 @@ describe("agenc-sdk prompt race safety", () => {
     const client = await initializedClient(transport);
     const run = client.runPrompt("session_1", "work", { clientMessageId: "failure-message", includeUsage: false });
     const send = await waitForSend(transport, 0);
-    transport.emit(userMessage("failure-message"));
+    transport.emit(userMessage("failure-message", "work"));
     transport.emit(turnStarted("turn-failure"));
     const emit = (id: string, type: string, payload: JsonObject, turnId = "turn-failure") => transport.emit({
       jsonrpc: "2.0", method: "event.session_event",
@@ -841,6 +851,26 @@ describe("agenc-sdk prompt race safety", () => {
     const nextSend = await waitForSend(transport, 1);
     resolveSend(nextSend, "next-turn");
     await expect(next.result()).resolves.toMatchObject({ exitCode: 0 });
+    await client.close();
+  });
+
+  it("settles a prompt the user ended by denying approval as stopped, not completed", async () => {
+    const transport = new PromptTransport();
+    const client = await initializedClient(transport);
+    const run = client.runPrompt("session_1", "write it", { clientMessageId: "denied-message", includeUsage: false });
+    const send = await waitForSend(transport, 0);
+    transport.emit(userMessage("denied-message", "write it"));
+    transport.emit(turnStarted("turn-denied"));
+    // The daemon's own projection of the denial terminal.
+    transport.emit(notificationFromDaemonEvent("session_1", "session_1", {
+      id: "aborted-denied", eventId: "aborted-denied", type: "turn_aborted",
+      payload: { turnId: "turn-denied", reason: "approval_denied" },
+    }) as unknown as JsonObject);
+    const clientMessageId = String((send.request.params as JsonObject).clientMessageId);
+    send.response.resolve(success(send.request, {
+      messageId: clientMessageId, acceptedAt: "2026-08-17T00:00:00.000Z", disposition: "started", turnId: "turn-denied",
+    }));
+    await expect(run.result()).resolves.toMatchObject({ stopReason: "stopped", exitCode: 130 });
     await client.close();
   });
 
@@ -882,7 +912,7 @@ describe("agenc-sdk prompt race safety", () => {
       ),
     ).toEqual([]);
 
-    transport.emit(userMessage("message_cancel"));
+    transport.emit(userMessage("message_cancel", "cancel me"));
     expect(
       transport.requests.filter(
         (request) => request.method === "session.cancelTurn",
@@ -924,7 +954,7 @@ describe("agenc-sdk prompt race safety", () => {
         (request) => request.method === "session.cancelTurn",
       ),
     ).toHaveLength(0);
-    transport.emit(userMessage("message_legacy_cancel"));
+    transport.emit(userMessage("message_legacy_cancel", "legacy cancel"));
     transport.emit(turnStarted("turn_legacy_cancel"));
     await Promise.resolve();
     expect(
@@ -989,7 +1019,7 @@ describe("agenc-sdk prompt race safety", () => {
     });
     const send = await waitForSend(transport, 0);
 
-    transport.emit(userMessage("message_terminal_fallback"));
+    transport.emit(userMessage("message_terminal_fallback", "finish from result"));
     transport.emit(turnStarted("turn_terminal_fallback"));
     transport.emit(text("turn_terminal_fallback", "answer"));
     transport.emit(committed("turn_terminal_fallback", "answer"));
@@ -1000,4 +1030,25 @@ describe("agenc-sdk prompt race safety", () => {
       finalMessage: "answer",
     });
   });
+});
+
+
+it("forwards Light mode as session runtime authority and rejects older daemons before create", async () => {
+  const transport = new PromptTransport();
+  transport.attachRuntimeOptions = { ...VALID_ATTACH_RUNTIME_OPTIONS, lightMode: true };
+  const client = await initializedClient(transport);
+  await client.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: true, envOverrides: {} });
+  const created = transport.requests.find(request => request.method === "agent.create");
+  expect(created?.params).toMatchObject({ runtimeOptions: { lightMode: true, simpleMode: false, dangerouslyBypassApprovalsAndSandbox: false } });
+  expect(created?.params).not.toHaveProperty("lightMode");
+
+  const older = new PromptTransport();
+  older.initializeVersion = "1.18.0";
+  const oldClient = await initializedClient(older);
+  await expect(oldClient.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: true, envOverrides: {} })).rejects.toMatchObject({ name: "AgencCapabilityUnavailableError", capability: "Light mode" });
+  expect(older.requests.filter(request => request.method === "agent.create")).toEqual([]);
+  older.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
+  await oldClient.createSession({ cwd: VALID_ATTACH_CWD, pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot, lightMode: false, envOverrides: {} });
+  expect(older.requests.find(request => request.method === "agent.create")?.params).toMatchObject({ runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS });
+  expect((older.requests.find(request => request.method === "agent.create")?.params as { runtimeOptions?: object }).runtimeOptions).not.toHaveProperty("lightMode");
 });

@@ -144,7 +144,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("keeps routed compatible providers fail-closed where the matrix says varies", () => {
+  it("uses exact routed metadata and stays conservative for unreviewed providers", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openrouter",
@@ -152,7 +152,7 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "openrouter",
-      acceptsImageHistory: false,
+      acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,
@@ -174,7 +174,7 @@ describe("resolveProviderModelCapabilities", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "deepseek",
-        model: "deepseek-v4-flash",
+        model: "deepseek-v4-pro",
       }),
     ).toMatchObject({
       provider: "deepseek",
@@ -325,6 +325,29 @@ describe("resolveProviderModelCapabilities", () => {
         provider: "lmstudio",
         model: "llama3.1:8b",
       }).acceptsImageHistory,
+    ).toBe(false);
+  });
+
+  it("gives Bedrock Opus 5.5 effort without claiming what the Converse adapter cannot send", () => {
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "amazon-bedrock",
+        model: "global.anthropic.claude-opus-5-5",
+      }),
+    ).toMatchObject({
+      supportsToolUse: true,
+      acceptsReasoningEffort: true,
+      supportsImageInput: false,
+      acceptsImageHistory: false,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
+      supportsProviderNativeWebSearch: false,
+    });
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "amazon-bedrock",
+        model: "anthropic.claude-opus-5",
+      }).acceptsReasoningEffort,
     ).toBe(false);
   });
 

@@ -1,6 +1,10 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
 import type { Session } from "../../session/session.js";
+import { liveAgentSession } from "../live-session.js";
+import { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "../../tools/execution.js";
+import { frameUntrustedToolResultContent } from "../../tools/untrusted-tool-result-framing.js";
 import {
+  agentValidationError,
   callIdFromArgs,
   currentAgentContext,
   DEFAULT_MAX_CONSECUTIVE_WAIT_TIMEOUTS,
@@ -75,13 +79,11 @@ function liveAgentsForDecision(
 
 function waitTimeoutMs(
   args: Record<string, unknown>,
-  opts: MultiAgentV2Options,
-): ToolResult | number {
-  const sessionOrError = getSessionOrError(opts);
-  if (!("conversationId" in sessionOrError)) return sessionOrError;
+  session: Session,
+): number {
   const supplied = numberValue(args.timeout_ms);
   const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } =
-    effectiveWaitTimeoutOptions(sessionOrError);
+    effectiveWaitTimeoutOptions(session);
   if (supplied === undefined) return defaultTimeoutMs;
   // Clamp instead of erroring: an out-of-range value used to cost a full
   // model round trip just to learn the bound. The schema also declares
@@ -135,7 +137,7 @@ type WaitMailboxUpdate = {
 };
 
 function contentToText(content: unknown): string {
-  if (typeof content === "string") return content.trim();
+  if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((part) => {
@@ -150,8 +152,7 @@ function contentToText(content: unknown): string {
         }
         return "";
       })
-      .join("\n")
-      .trim();
+      .join("\n");
   }
   return "";
 }
@@ -170,10 +171,56 @@ function drainMailboxUpdates(session: unknown): readonly WaitMailboxUpdate[] {
         ? message.role
         : "user";
       const content = contentToText(message.content);
-      if (content.length === 0) return null;
+      if (content.trim().length === 0) return null;
       return { role, content };
     })
     .filter((message): message is WaitMailboxUpdate => message !== null);
+}
+
+/** Keep exact pages inline even at the smallest downstream model cap. The
+ * budget includes the JSON envelope, escaping and the model-facing frame. */
+function exactResultPage(
+  ref: { readonly agent_id: string; readonly turn_id: string },
+  page: { readonly text: string; readonly total_chars: number },
+  offset: number,
+): ToolResult {
+  const maxBytes = Math.min(MIN_TOOL_RESULT_BYTES,
+    resolveOffloadThresholdBytes() ?? MIN_TOOL_RESULT_BYTES);
+  // Search character boundaries so next_offset never splits a surrogate pair.
+  const characters = Array.from(page.text);
+  const serialize = (length: number): ToolResult => {
+    const text = characters.slice(0, length).join("");
+    const end = offset + text.length;
+    const complete = end === page.total_chars;
+    const result = json({ result_ref: ref, text, total_chars: page.total_chars,
+      next_offset: complete ? null : end, complete });
+    // Preserve the ordinary sanitizer. Parsing this ASCII JSON transport
+    // restores tags, framing delimiters and invisible Unicode exactly.
+    result.content = result.content.replace(/[<=>&\u007f-\uffff]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    return result;
+  };
+  const fits = (result: ToolResult): boolean => Buffer.byteLength(
+    frameUntrustedToolResultContent("wait_agent", result.content, "workspace") as string,
+    "utf8",
+  ) <= maxBytes;
+  const full = serialize(characters.length);
+  if (fits(full)) return full;
+  let low = 0;
+  let high = characters.length - 1;
+  let result = serialize(0);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = serialize(middle);
+    if (fits(candidate)) {
+      low = middle;
+      result = candidate;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (low === 0) throw new Error("Tool result inline limit is too small for an exact result page");
+  return result;
 }
 
 export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
@@ -189,7 +236,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const strict = strictArgs(args, {
-      allowed: new Set(["timeout_ms"]),
+      allowed: new Set(["timeout_ms", "result_ref"]),
     });
     if (strict) return strict;
     if (
@@ -206,12 +253,47 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     }
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
-    const timeoutMs = waitTimeoutMs(args, opts);
-    if (typeof timeoutMs !== "number") return timeoutMs;
-    const current = currentAgentContext(sessionOrError, args, opts);
+    const rootSession = sessionOrError;
+    const current = currentAgentContext(rootSession, args, opts);
     if (isCurrentAgentContextError(current)) return current;
+    const control = current.threadId === rootSession.conversationId
+      ? undefined : opts.ensureAgentControl(rootSession).control;
+    const caller = control?.getLive(current.threadId);
+    const session = current.threadId === rootSession.conversationId
+      ? rootSession : caller === undefined ? undefined : liveAgentSession(caller);
+    const callerIsCurrent = (): boolean => session !== undefined &&
+      opts.getSession() === rootSession && !session.isShuttingDown &&
+      (control === undefined
+        ? session === rootSession
+        : caller !== undefined && control.getLive(current.threadId) === caller &&
+          caller.agentId === current.threadId && caller.agentPath === current.agentPath &&
+          liveAgentSession(caller) === session);
+    if (session === undefined || !callerIsCurrent()) {
+      return agentValidationError("invalid-runtime-identity: calling agent session is not live");
+    }
+    if (args.result_ref !== undefined) {
+      const ref = args.result_ref;
+      if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return agentValidationError("result_ref must be an object");
+      const value = ref as Record<string, unknown>;
+      if (Object.keys(value).some(key => !["agent_id", "turn_id", "offset"].includes(key)) ||
+          typeof value.agent_id !== "string" || typeof value.turn_id !== "string" ||
+          !value.agent_id || !value.turn_id || value.agent_id.length > 512 || value.turn_id.length > 512 ||
+          (value.offset !== undefined && (typeof value.offset !== "number" || !Number.isSafeInteger(value.offset) || value.offset < 0))) {
+        return agentValidationError("result_ref requires agent_id, turn_id and an optional nonnegative integer offset");
+      }
+      try {
+        const resultControl = control ?? opts.ensureAgentControl(rootSession).control;
+        resultControl.registerSessionRoot(rootSession.conversationId);
+        const offset = value.offset as number | undefined ?? 0;
+        return exactResultPage({ agent_id: value.agent_id, turn_id: value.turn_id },
+          resultControl.readChildResultPage(current.threadId, value.agent_id, value.turn_id, offset), offset);
+      } catch (error) {
+        return agentValidationError(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const timeoutMs = waitTimeoutMs(args, session);
     const waitCallId = callIdFromArgs(args, "wait");
-    emit(sessionOrError, {
+    emit(session, {
       type: "collab_waiting_begin",
       payload: {
         senderThreadId: current.threadId,
@@ -224,20 +306,28 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     // turn while this wait is still sleeping, and charging the result to
     // whatever turn is active on resume would bill the new turn for time it
     // never spent.
-    const turnId = currentTurnId(sessionOrError);
+    const turnId = currentTurnId(session);
     // The executor injects the turn's abort signal; a stopped swarm used to
     // hold its parent turn open until this wait's deadline (#2201).
     const abortSignal = (args as { readonly __abortSignal?: AbortSignal })
       .__abortSignal;
+    const recoveryControl = control ?? opts.ensureAgentControl(rootSession).control;
+    recoveryControl.registerSessionRoot(rootSession.conversationId);
+    const recoveredUpdates = abortSignal?.aborted === true ? []
+      : recoveryControl.drainRecoveredChildTaskUpdates?.(current.threadId) ?? [];
+    const recoveryNotice = recoveryControl.childResultRecoveryNotice;
     let mailboxChanged = false;
     try {
-      mailboxChanged = await sessionOrError.waitForMailboxChange(
+      mailboxChanged = recoveredUpdates.length > 0 || recoveryNotice !== undefined || await session.waitForMailboxChange(
         timeoutMs,
         undefined,
         abortSignal,
       );
     } catch (error) {
-      emit(sessionOrError, {
+      if (!callerIsCurrent()) {
+        return agentValidationError("invalid-runtime-identity: calling agent session is no longer live");
+      }
+      emit(session, {
         type: "collab_waiting_end",
         payload: {
           senderThreadId: current.threadId,
@@ -251,9 +341,14 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         true,
       );
     }
+    // A wait crosses an async boundary. A revoked/replaced caller must never
+    // drain a mailbox or append to a Session that has since begun closing.
+    if (!callerIsCurrent()) {
+      return agentValidationError("invalid-runtime-identity: calling agent session is no longer live");
+    }
     const timedOut = !mailboxChanged;
-    const updates = timedOut ? [] : drainMailboxUpdates(sessionOrError);
-    emit(sessionOrError, {
+    const updates = timedOut ? [] : [...recoveredUpdates, ...drainMailboxUpdates(session)];
+    emit(session, {
       type: "collab_waiting_end",
       payload: {
         senderThreadId: current.threadId,
@@ -267,7 +362,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     if (timedOut && abortSignal?.aborted === true) {
       // The turn was stopped while waiting: return now so the stop lands now,
       // not at the deadline, and start no timeout streak over it.
-      waitTimeoutStreaks.delete(sessionOrError);
+      waitTimeoutStreaks.delete(session);
       return json({
         message: "Wait interrupted: the turn was stopped.",
         interrupted: true,
@@ -275,22 +370,23 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       });
     }
     if (!timedOut) {
-      waitTimeoutStreaks.delete(sessionOrError);
+      waitTimeoutStreaks.delete(session);
       return json({
         message: "Wait completed.",
         timed_out: false,
+        ...(recoveryNotice === undefined ? {} : { recovery: recoveryNotice }),
         ...(updates.length > 0 ? { updates } : {}),
       });
     }
-    const carried = waitTimeoutStreaks.get(sessionOrError);
+    const carried = waitTimeoutStreaks.get(session);
     const streak =
       carried !== undefined && carried.turnId === turnId
         ? carried
         : { turnId, consecutive: 0, waitedMs: 0 };
     streak.consecutive += 1;
     streak.waitedMs += timeoutMs;
-    waitTimeoutStreaks.set(sessionOrError, streak);
-    const limit = maxConsecutiveWaitTimeouts(sessionOrError);
+    waitTimeoutStreaks.set(session, streak);
+    const limit = maxConsecutiveWaitTimeouts(session);
     if (streak.consecutive < limit) {
       return json({
         message: "Wait timed out.",
@@ -309,12 +405,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
           `wait_agent has timed out ${streak.consecutive} times in a row ` +
           `(${waitedSeconds} s) with no mailbox update. Do not call it again ` +
           `the same way. Decide: wait once more with a deadline you can afford ` +
-          `(timeout_ms up to ${maxTimeoutMs}), close the agent with close_agent, ` +
+          `(timeout_ms up to ${effectiveWaitTimeoutOptions(session).maxTimeoutMs}), close the agent with close_agent, ` +
           `or continue the task without its result and say so.`,
         timed_out: true,
         consecutive_timeouts: streak.consecutive,
         waited_ms: streak.waitedMs,
-        agents: liveAgentsForDecision(sessionOrError, opts),
+        agents: liveAgentsForDecision(rootSession, opts),
       },
       true,
     );
@@ -326,6 +422,9 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       "Wait for a mailbox update from any live agent, including queued messages " +
       "and final-status notifications. When updates arrive, returns the drained " +
       "mailbox content so you can report completed agent findings immediately. " +
+      "Child final answers are exact in receipt.message or status.completed. If omitted for size, pass the notification result_ref to wait_agent to read exact text pages. Concatenate text pages without separators using next_offset until complete; never use a truncated completedWork summary as the final answer. This reads the result without waiting or rerunning the child. " +
+      "After restart, returns recovered durable child task results without rerunning the child. " +
+      "If a child reports insufficient_funds, tell the user what finished and what remains, then ask before switching providers; never retry it on the exhausted provider. " +
       "If no mailbox update arrives before the deadline, returns a timeout summary. " +
       "After several consecutive timeouts with no update the call fails and asks " +
       "you to decide (wait with a longer deadline, close the agent, or continue without it).",
@@ -345,6 +444,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     inputSchema: {
       type: "object",
       properties: {
+        result_ref: {
+          type: "object",
+          description: "Read an exact completed child answer using its notification reference. offset counts UTF-16 code units and defaults to zero; each page contains at most 8192 code units.",
+          properties: { agent_id: { type: "string" }, turn_id: { type: "string" }, offset: { type: "integer", minimum: 0 } },
+          required: ["agent_id", "turn_id"], additionalProperties: false,
+        },
         timeout_ms: {
           type: "number",
           minimum: minTimeoutMs,

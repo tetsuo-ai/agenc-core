@@ -37,7 +37,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openConfigMenu } from "./config-menu.js";
 import {
   agencHomeFromCommandContext,
   configStoreFromCommandContext,
@@ -201,7 +200,7 @@ async function handleProfileSubcommand(
   });
   return {
     kind: "text",
-    text: `Profile switch to "${name}" staged — takes effect on next turn.`,
+    text: `Profile switch to "${name}" staged. It takes effect on the next turn.`,
   };
 }
 
@@ -290,7 +289,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
   const spawner = deps.spawner ?? spawnConfigEditor;
   return {
     name: "config",
-    description: "Manage configuration — opens a picker",
+    description: "Manage configuration (opens a picker)",
     immediate: true,
     userInvocable: true,
     execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
@@ -305,7 +304,10 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
         }
         const raw = ctx.argsRaw.trim();
         if (raw === "") {
-          if (openConfigMenu(ctx)) return { kind: "skip" };
+          if (
+            typeof ctx.appState?.setToolJSX === "function" &&
+            (await import("./config-menu.js")).openConfigMenu(ctx)
+          ) return { kind: "skip" };
           return {
             kind: "text",
             text: formatConfigSnapshot(configStore.current()),

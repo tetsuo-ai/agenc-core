@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
-import { AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
+import { AURA_PLAN_GLYPHS, supportsRowTints, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
@@ -11,12 +11,7 @@ import wrapText from '../../ink/wrap-text.js'
 import { TerminalWriteContext } from '../../ink/useTerminalNotification.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
-import { ToolStateGlyph } from '../ToolStateGlyph.js'
 import { stringWidth } from '../../ink/stringWidth.js'
-import {
-  useAssistantMessageMetadata,
-  useWorkbenchTranscriptLayout,
-} from '../../workbench/transcriptLayoutContext.js'
 import {
   AGENC_LOGO_BRAILLE_COMPACT_LINES,
   AGENC_LOGO_BRAILLE_LINES,
@@ -144,18 +139,6 @@ const variantWash: Partial<Record<BadgeVariant, ThemeColor>> = {
   success: 'successWash',
   error: 'errorWash',
   plan: 'planModeWash',
-}
-
-const toolColor: Record<ToolKind, ThemeColor> = {
-  read: 'text2',
-  grep: 'text2',
-  edit: 'agenc',
-  bash: 'worker',
-  delegate: 'worker',
-  proof: 'agenc',
-  claim: 'worker',
-  settle: 'success',
-  stake: 'worker',
 }
 
 function capitalize(value: string): string {
@@ -751,27 +734,10 @@ export function ChatBody({
   )
 }
 
-type WelcomeRecentSession = {
-  readonly keyName: string
-  readonly title: string
-  readonly detail: string
-}
-
-function defaultWorkspaceLabel(): string {
-  const cwd = process.cwd()
-  const home = process.env.HOME
-  return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
-}
-
-// The centered welcome hero and its optional recent-session card share one
-// responsive measure. MIN keeps the action grid useful; MAX stops the quiet
-// metadata/tips block from stretching across a 200-column transcript.
-const WELCOME_HERO_MIN_WIDTH = 46
-const WELCOME_HERO_MAX_WIDTH = 64
 // The transcript surface (ActiveWorkSurface) adds paddingX={1} around the
 // welcome panel, so reserve 2 columns from the reported content width to avoid
 // overflowing the pane.
-const WELCOME_HERO_INSET = 2
+const WELCOME_INSET = 2
 
 function useWelcomeAvailableWidth(): number {
   const contentWidth = useContentWidth()
@@ -782,18 +748,7 @@ function useWelcomeAvailableWidth(): number {
   // Clamp the fallback to the physical terminal so the brand row switches to
   // its stacked compact form before Yoga starts wrapping the logo itself.
   const available = contentWidth ?? Math.min(frameColumns, terminalColumns)
-  return Math.max(1, available - WELCOME_HERO_INSET)
-}
-
-function useWelcomeHeroWidth(): number {
-  const usable = useWelcomeAvailableWidth()
-  const capped = Math.min(
-    WELCOME_HERO_MAX_WIDTH,
-    Math.max(WELCOME_HERO_MIN_WIDTH, usable),
-  )
-  // Never exceed the usable width — on a very narrow pane the cap floor would
-  // otherwise overflow.
-  return Math.min(capped, usable)
+  return Math.max(1, available - WELCOME_INSET)
 }
 
 // Portable fallback for terminals without a graphics protocol. These Braille
@@ -950,146 +905,58 @@ function AgencLogoMark({ compact = false }: { readonly compact?: boolean }): Rea
   )
 }
 
-const WELCOME_TIPS = [
-  { keyName: '/', action: 'COMMANDS', detail: 'browse every action' },
-  { keyName: '@', action: 'ATTACH', detail: 'add files to context' },
-  {
-    keyName: 'SHIFT+TAB',
-    action: 'PERMISSIONS',
-    detail: 'choose how AgenC can act',
-  },
-  { keyName: 'CTRL+O', action: 'TRANSCRIPT', detail: 'inspect the full run' },
+// One line of keys for the cold start. Each fact appears once on the screen:
+// the folder, model and mode live in the status line under the prompt, so the
+// welcome carries only the name, the version and these keys. Segments are
+// ordered by teaching value and whole segments drop on narrow panes instead of
+// ellipsizing mid-word.
+const WELCOME_HINT_SEGMENTS = [
+  { keyName: '/', label: 'commands' },
+  { keyName: '@', label: 'attach files' },
+  { keyName: 'shift+tab', label: 'change mode' },
+  { keyName: '?', label: 'shortcuts' },
 ] as const
+type WelcomeHintSegment = (typeof WELCOME_HINT_SEGMENTS)[number]
+const WELCOME_HINT_GAP = '   '
 
-const WELCOME_TIP_KEY_CONTENT_WIDTH = 10
-const WELCOME_TIP_KEY_WIDTH = WELCOME_TIP_KEY_CONTENT_WIDTH + 2
-
-function WelcomeTips(): React.ReactNode {
-  return (
-    <Box flexDirection="column">
-      <ThemedText color="text" bold>
-        START HERE
-      </ThemedText>
-      {WELCOME_TIPS.map(tip => (
-        <Box key={tip.keyName} flexDirection="row">
-          <Box width={WELCOME_TIP_KEY_WIDTH} flexShrink={0} marginRight={2}>
-            <ThemedText color="text" inverse bold>
-              {` ${tip.keyName.padEnd(WELCOME_TIP_KEY_CONTENT_WIDTH)} `}
-            </ThemedText>
-          </Box>
-          <Box width={13} flexShrink={0} marginRight={2}>
-            <ThemedText color="text" bold>
-              {tip.action}
-            </ThemedText>
-          </Box>
-          <Box minWidth={0} flexShrink={1}>
-            <ThemedText color="inactive" wrap="truncate-end">
-              {tip.detail}
-            </ThemedText>
-          </Box>
-        </Box>
-      ))}
-    </Box>
-  )
+function welcomeHintWidth(segment: WelcomeHintSegment): number {
+  return stringWidth(`${segment.keyName} ${segment.label}`)
 }
 
-// The welcome hint line drops WHOLE segments when the pane is narrow instead
-// of ellipsizing mid-word ("@ to atta…" taught nothing). Segments are ordered
-// by teaching value; the first ones survive narrow panes. "? for shortcuts" is
-// deliberately absent — the composer footer already shows it, and the welcome
-// screen was saying it twice.
-const WELCOME_HINT_SEGMENTS = [
-  'type a task and press ↵',
-  '/ for commands',
-  '@ to attach',
-] as const
-const WELCOME_HINT_SEPARATOR = '  ·  '
-
-export function fitHintSegments(
-  segments: readonly string[],
+function fitHintSegments(
+  segments: readonly WelcomeHintSegment[],
   available: number,
-  separator: string = WELCOME_HINT_SEPARATOR,
-): string {
-  let line = ''
+): readonly WelcomeHintSegment[] {
+  const fitted: WelcomeHintSegment[] = []
+  let width = 0
   for (const segment of segments) {
-    const candidate = line === '' ? segment : `${line}${separator}${segment}`
-    if (stringWidth(candidate) > available) break
-    line = candidate
+    const next =
+      width + (fitted.length > 0 ? WELCOME_HINT_GAP.length : 0) + welcomeHintWidth(segment)
+    if (next > available) break
+    fitted.push(segment)
+    width = next
   }
-  // Never render an empty row: fall back to the single most valuable segment
-  // and let the Text truncate it (only reachable on absurdly narrow panes).
-  return line === '' ? (segments[0] ?? '') : line
+  // Never render an empty row: keep the most valuable segment and let the
+  // Text truncate it (only reachable on absurdly narrow panes).
+  return fitted.length > 0 ? fitted : segments.slice(0, 1)
 }
 
 function WelcomeHintLine(): React.ReactNode {
   const available = useWelcomeAvailableWidth()
   return (
-    <ThemedText color="inactive" wrap="truncate-end">
-      {fitHintSegments(WELCOME_HINT_SEGMENTS, available)}
-    </ThemedText>
-  )
-}
-
-function WelcomeMetaLine({
-  workspace,
-  model,
-  lastSession,
-}: {
-  readonly workspace: string
-  readonly model: string
-  readonly lastSession?: string
-}): React.ReactNode {
-  return (
-    <Box flexDirection="column" alignItems="center">
-      <Box flexDirection="row" justifyContent="center" width="100%">
-        <Box flexShrink={0}>
-          <ThemedText color="inactive">workspace </ThemedText>
-        </Box>
-        <Box flexShrink={1} minWidth={0}>
-          <ThemedText color="text" wrap="truncate-middle">
-            {workspace}
-          </ThemedText>
-        </Box>
-        <Box flexShrink={0}>
-          <ThemedText color="inactive">  ·  model </ThemedText>
-        </Box>
-        <Box flexShrink={0}>
-          <ThemedText color="text" wrap="truncate-end">
-            {model}
-          </ThemedText>
-        </Box>
-      </Box>
-      <Box flexDirection="row" justifyContent="center" width="100%">
-        <ThemedText color="inactive">agenc core </ThemedText>
-        <ThemedText color="text" bold>
-          {VERSION}
+    <Box flexDirection="row">
+      {fitHintSegments(WELCOME_HINT_SEGMENTS, available).map((segment, index) => (
+        <ThemedText key={segment.keyName} wrap="truncate-end">
+          {index > 0 ? WELCOME_HINT_GAP : ''}
+          <ThemedText color="inactive">{segment.keyName}</ThemedText>
+          <ThemedText color="text2">{` ${segment.label}`}</ThemedText>
         </ThemedText>
-      </Box>
-      {lastSession !== undefined ? (
-        <Box flexDirection="row" justifyContent="center" width="100%">
-          <ThemedText color="inactive">last session </ThemedText>
-          <ThemedText color="text2" wrap="truncate-end">
-            {lastSession}
-          </ThemedText>
-        </Box>
-      ) : null}
+      ))}
     </Box>
   )
 }
 
-export function WelcomeColdPanel({
-  workspace = defaultWorkspaceLabel(),
-  model = 'default model',
-  lastSession,
-  recentSessions = [],
-}: {
-  readonly workspace?: string
-  readonly model?: string
-  readonly lastSession?: string
-  readonly recentSessions?: readonly WelcomeRecentSession[]
-}): React.ReactNode {
-  const visibleSessions = recentSessions.slice(0, 3)
-  const heroWidth = useWelcomeHeroWidth()
+export function WelcomeColdPanel(): React.ReactNode {
   const availableWidth = useWelcomeAvailableWidth()
   const { rows: terminalRows } = useTerminalSize()
   const compactLogo = availableWidth < 96 || terminalRows < 20
@@ -1100,73 +967,16 @@ export function WelcomeColdPanel({
       flexDirection="column"
       width={availableWidth}
       alignItems="center"
+      gap={1}
     >
-      <Box flexDirection="column" gap={1} width={heroWidth}>
-        <Box flexDirection="row" justifyContent="center" width={heroWidth}>
-          <AgencLogoMark compact={compactLogo} />
-        </Box>
-
-        <WelcomeMetaLine
-          workspace={workspace}
-          model={model}
-          lastSession={lastSession}
-        />
-
-        <WelcomeTips />
-
-        {/* The recent card renders only with real session data — a fabricated
-            resume list (or a "press 1-3" affordance over fake sessions) is
-            worse than no card at all. */}
-        {visibleSessions.length > 0 ? (
-          <Box flexDirection="column">
-            <Box flexDirection="row" flexWrap="wrap">
-              <ThemedText color="muted3">recent</ThemedText>
-              <ThemedText color="inactive">
-                {`  ·  press ${
-                  visibleSessions.length > 1
-                    ? `1-${visibleSessions.length}`
-                    : '1'
-                } to resume`}
-              </ThemedText>
-            </Box>
-            <ThemedBox
-              flexDirection="column"
-              width={heroWidth}
-              borderStyle="single"
-              // The resume list is the most likely next action on a cold start,
-              // so it carries the one accent border on this screen.
-              borderColor="agenc"
-              paddingX={1}
-              paddingY={1}
-            >
-              {visibleSessions.map(session => (
-                // No `flexWrap="wrap"`: a long title/detail must truncate in
-                // place rather than wrap the detail onto its own flex line.
-                <Box key={session.keyName} flexDirection="row">
-                  {/* The `[n] ` key prefix is fixed and must not be squeezed
-                      when the flexing title/detail cell shrinks. */}
-                  <Box flexShrink={0} flexDirection="row">
-                    <ThemedText color="muted3">[</ThemedText>
-                    <ThemedText color="agenc">{session.keyName}</ThemedText>
-                    <ThemedText color="muted3">] </ThemedText>
-                  </Box>
-                  <Box flexShrink={1} minWidth={0} flexDirection="row">
-                    <ThemedText color="text" wrap="truncate-end">
-                      {session.title}
-                    </ThemedText>
-                    <ThemedText color="muted3" wrap="truncate-end">
-                      {' · '}
-                      {session.detail}
-                    </ThemedText>
-                  </Box>
-                </Box>
-              ))}
-            </ThemedBox>
-          </Box>
-        ) : null}
-
-        {showHint ? <WelcomeHintLine /> : null}
+      <AgencLogoMark compact={compactLogo} />
+      <Box flexDirection="row">
+        <ThemedText color="text" bold>
+          agenc
+        </ThemedText>
+        <ThemedText color="inactive">{` ${VERSION}`}</ThemedText>
       </Box>
+      {showHint ? <WelcomeHintLine /> : null}
     </Box>
   )
 }
@@ -1231,9 +1041,6 @@ export function Msg({
   children,
 }: {
   readonly role: 'user' | 'agenc' | 'worker' | 'system'
-  // Plain user prompts pass no label. In the workbench they use the composer
-  // chevron instead of a "YOU" heading, keeping prompts visually distinct
-  // without adding another speaker name to the transcript.
   readonly label?: string
   readonly time?: string
   readonly children: ReactNode
@@ -1245,8 +1052,6 @@ export function Msg({
     system: 'subtle',
   }
   const inheritedWidth = useContentWidth()
-  const useWorkbenchLayout = useWorkbenchTranscriptLayout()
-  const assistantMetadata = useAssistantMessageMetadata()
   // Queued previews carry no real per-item enqueue time, so they pass no
   // `time` (see PromptInputQueuedCommands). Show a quiet neutral "queued"
   // marker in the header slot instead of a misleading render-time clock.
@@ -1264,106 +1069,79 @@ export function Msg({
   // for the content column; keep the inset in sync with the gap so wrapped body
   // text measures against the right width.
   const contentWidth = insetContentWidth(inheritedWidth, 2 + queuedPaddingWidth)
-  if (useWorkbenchLayout) {
-    const labelWidth = 7
-    const isWorkbenchUserPrompt = role === 'user' && label === undefined
-    const isWorkbenchAssistant = role === 'agenc'
-    const workbenchContentWidth = insetContentWidth(
-      inheritedWidth,
-      labelWidth + queuedPaddingWidth,
-    )
-    const workbenchLabel =
-      label ?? (isWorkbenchUserPrompt ? '❯' : role === 'agenc' ? 'agenc' : role)
-    const workbenchTime =
-      time ?? (isWorkbenchAssistant ? assistantMetadata?.timestamp : undefined)
-
-    if (isWorkbenchAssistant) {
-      return (
-        <Box flexDirection="column" flexGrow={1} width="100%">
-          {workbenchTime ? (
-            <Box flexDirection="row" width="100%">
-              <Box width={labelWidth} flexShrink={0} />
-              <Box flexDirection="row" flexGrow={1} minWidth={0}>
-                <Box flexGrow={1} />
-                <ThemedText color="inactive">{workbenchTime}</ThemedText>
-              </Box>
-            </Box>
-          ) : null}
-          <Box flexDirection="row" width="100%">
-            <Box width={labelWidth} flexShrink={0} />
-            <Box flexDirection="column" flexGrow={1} minWidth={0}>
-              <ContentWidthProvider width={workbenchContentWidth}>
-                <Content color="text">{children}</Content>
-              </ContentWidthProvider>
-            </Box>
-          </Box>
-        </Box>
-      )
-    }
-
-    return (
-      <Box flexDirection="row" flexGrow={1} width="100%">
-        <Box
-          width={labelWidth}
-          flexShrink={0}
-          justifyContent={isWorkbenchUserPrompt ? 'flex-end' : undefined}
-          paddingRight={isWorkbenchUserPrompt ? 1 : 0}
-        >
-          <ThemedText
-            color={isWorkbenchUserPrompt ? 'text' : 'inactive'}
-            bold={isWorkbenchUserPrompt}
-          >
-            {isWorkbenchUserPrompt ? workbenchLabel : workbenchLabel.toUpperCase()}
-          </ThemedText>
-        </Box>
-        <Box flexDirection="column" flexGrow={1} minWidth={0}>
-          {workbenchTime ? (
-            <ThemedText color="inactive">{workbenchTime}</ThemedText>
-          ) : isQueued ? (
-            <ThemedText color="inactive">queued</ThemedText>
-          ) : null}
-          <ContentWidthProvider width={workbenchContentWidth}>
-            <Content color="text">{children}</Content>
-          </ContentWidthProvider>
-        </Box>
-      </Box>
-    )
-  }
+  // One glyph marks who speaks: the user's ❯ and AgenC's ● in the brand
+  // purple, a worker's ● in its own color. The glyph (1 cell) + gap (1 cell)
+  // keeps the same 2-cell content inset the old border used, so wrapped body
+  // widths are unchanged. AgenC's own name is not repeated on every reply.
+  const glyph = role === 'user' ? '❯' : '●'
+  const glyphColor: ThemeColor =
+    role === 'user' || role === 'agenc' ? 'accent' : colors[role]
+  const showLabel = label !== undefined && role !== 'agenc'
   return (
-    // Gutter identity: a role-colored left border runs the FULL height of the
-    // message (header + body), replacing the old single-row ▮ marker — the
-    // colored line now spans the complete message, blockquote-style. The
-    // border (1 cell) + paddingLeft (1 cell) preserves the same 2-cell
-    // content inset the marker + gap used, so body widths are unchanged.
-    <ThemedBox
-      borderStyle="single"
-      borderTop={false}
-      borderRight={false}
-      borderBottom={false}
-      borderLeft
-      borderLeftColor={colors[role]}
-      paddingLeft={1}
-      flexDirection="column"
-      flexGrow={1}
-    >
-      {label !== undefined || time !== undefined || isQueued ? (
-        <Box flexDirection="row" gap={1}>
-          {label !== undefined ? (
-          <ThemedText color={colors[role]} bold>
-            {label.toUpperCase()}
-          </ThemedText>
-          ) : null}
-          {time ? (
-            <ThemedText color="inactive">{time}</ThemedText>
-          ) : isQueued ? (
-            <ThemedText color="inactive">queued</ThemedText>
-          ) : null}
-        </Box>
-      ) : null}
-      <ContentWidthProvider width={contentWidth}>
-        <Content color="text2">{children}</Content>
-      </ContentWidthProvider>
-    </ThemedBox>
+    <Box flexDirection="row" flexGrow={1}>
+      <Box width={2} flexShrink={0}>
+        <ThemedText color={glyphColor} bold={role === 'user'}>
+          {glyph}
+        </ThemedText>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+        {showLabel || time !== undefined || isQueued ? (
+          <Box flexDirection="row" gap={1}>
+            {showLabel ? (
+              <ThemedText color={colors[role]} bold>
+                {label}
+              </ThemedText>
+            ) : null}
+            {time ? (
+              <ThemedText color="inactive">{time}</ThemedText>
+            ) : isQueued ? (
+              <ThemedText color="inactive">queued</ThemedText>
+            ) : null}
+          </Box>
+        ) : null}
+        <ContentWidthProvider width={contentWidth}>
+          <Content color={role === 'user' ? 'text' : 'text2'}>{children}</Content>
+        </ContentWidthProvider>
+      </Box>
+    </Box>
+  )
+}
+
+/** Past tense for a finished step: "Ran ls", "Edited stats.py". */
+const PAST_TENSE: Readonly<Record<string, string>> = {
+  Run: 'Ran',
+  Edit: 'Edited',
+  MultiEdit: 'Edited',
+  Write: 'Wrote',
+  Search: 'Searched',
+  Grep: 'Searched',
+  Glob: 'Listed',
+  Fetch: 'Fetched',
+  Plan: 'Planned',
+}
+
+/**
+ * The quiet line under a tool step: "└ 9 lines", "└ +4 lines",
+ * "└ exit 5, no tests collected". Indented one level under the step.
+ */
+export function ResultLine({
+  failed = false,
+  children,
+}: {
+  readonly failed?: boolean
+  readonly children: ReactNode
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row" paddingLeft={2}>
+      <Box flexShrink={0}>
+        <ThemedText color="subtle">{'└ '}</ThemedText>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <ThemedText color={failed ? 'stepFail' : 'inactive'} wrap="truncate-end">
+          {children}
+        </ThemedText>
+      </Box>
+    </Box>
   )
 }
 
@@ -1393,7 +1171,11 @@ export function Tool({
   readonly expanded?: boolean
   readonly time?: string
 }): React.ReactNode {
-  const color = state === 'failed' ? 'error' : state === 'queued' ? 'inactive' : toolColor[kind]
+  // One static dot says how the step ended: green done, red failed, gray
+  // while queued or running. Nothing animates on finished rows.
+  const dotColor: ThemeColor =
+    state === 'failed' ? 'stepFail' : state === 'done' ? 'stepOk' : 'inactive'
+  const verb = label ?? capitalize(kind)
   // The detail box below indents its content by `marginLeft={2}` + the
   // `borderLeft` rule (1) + `paddingLeft={1}` = 4 columns. An embedded
   // `DiffInline` therefore has exactly `inheritedContentWidth − 4` columns to
@@ -1413,38 +1195,23 @@ export function Tool({
           `● Run` intact and forces all shrinkage onto the args text below.
         */}
         <Box flexShrink={0}>
-          <ToolStateGlyph state={state} color={color} />
+          <ThemedText color={dotColor}>●</ThemedText>
         </Box>
         <Box flexShrink={0}>
-          <ThemedText color={toolColor[kind]} bold>
-            {label ?? capitalize(kind)}
+          <ThemedText color="text" bold>
+            {state === 'done' ? (PAST_TENSE[verb] ?? verb) : verb}
           </ThemedText>
         </Box>
         {/*
-          The parenthesized args render as a single gap={0} unit so the parens
-          hug the argument (`Write (index.html)`) instead of the outer gap={1}
-          inserting a stray space on the inside of each paren (`Write ( index.html )`).
-          The single space between the bold tool label and the opening paren is
-          still supplied by the parent row's gap={1}.
-
-          The whole group shrinks (flexShrink={1} minWidth={0}), but only the
-          inner args text gives way: both parens are pinned flexShrink={0} so
-          the opening `(` is never dropped and the closing `)` always survives,
-          while the args text truncates in the middle. Without this, Yoga shrank
-          the parens too and dropped the opening `(` while keeping the close `)`.
+          The args follow the verb after one space (the row's gap={1}), with no
+          parentheses. Only the args give way under overflow (flexShrink={1}
+          minWidth={0}) and they truncate in the middle, so the start and the
+          end of a long command both stay readable.
         */}
-        <Box flexDirection="row" gap={0} flexShrink={1} minWidth={0}>
-          <Box flexShrink={0}>
-            <ThemedText color="inactive">(</ThemedText>
-          </Box>
-          <Box flexShrink={1} minWidth={0}>
-            <ThemedText color="text2" wrap="truncate-middle">
-              {args}
-            </ThemedText>
-          </Box>
-          <Box flexShrink={0}>
-            <ThemedText color="inactive">)</ThemedText>
-          </Box>
+        <Box flexShrink={1} minWidth={0}>
+          <ThemedText color="text2" wrap="truncate-middle">
+            {args}
+          </ThemedText>
         </Box>
         {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
       </Box>
@@ -1452,13 +1219,9 @@ export function Tool({
         <ToolResultLines state={state}>{result}</ToolResultLines>
       ) : null}
       {expanded && detail ? (
-        <ThemedBox
-          flexDirection="column"
-          marginLeft={2}
-          paddingLeft={1}
-          borderLeft
-          borderLeftColor="lineSoft"
-        >
+        // Detail sits one level under the step, like the └ result line,
+        // without a rule of its own (same 4-column inset as before).
+        <ThemedBox flexDirection="column" marginLeft={2} paddingLeft={2}>
           <DiffInlineWidthContext.Provider value={detailContentWidth}>
             {detail}
           </DiffInlineWidthContext.Provider>
@@ -1481,11 +1244,11 @@ function ToolResultLines({
   readonly state: ToolState
   readonly children: string | ReactNode
 }): React.ReactNode {
-  const color: ThemeColor = state === 'failed' ? 'error' : 'subtle'
+  const color: ThemeColor = state === 'failed' ? 'stepFail' : 'inactive'
   if (typeof children !== 'string') {
     return (
-      <Box flexDirection="row" paddingLeft={1} gap={1}>
-        <ThemedText color="muted3">⎿</ThemedText>
+      <Box flexDirection="row" paddingLeft={2} gap={1}>
+        <ThemedText color="subtle">└</ThemedText>
         <Box flexDirection="column" flexGrow={1}>
           {children}
         </Box>
@@ -1494,8 +1257,8 @@ function ToolResultLines({
   }
   const lines = children.split('\n')
   return (
-    <Box flexDirection="row" paddingLeft={1} gap={1}>
-      <ThemedText color="muted3">⎿</ThemedText>
+    <Box flexDirection="row" paddingLeft={2} gap={1}>
+      <ThemedText color="subtle">└</ThemedText>
       <Box flexDirection="column" flexGrow={1}>
         {lines.map((line, index) => (
           <ThemedText key={index} color={color} wrap="wrap">
@@ -1575,6 +1338,7 @@ export function DiffInline({
   stats,
   lines,
   op = 'DIFF',
+  compact = false,
 }: {
   readonly file: string
   readonly stats?: string
@@ -1591,6 +1355,11 @@ export function DiffInline({
    * and any caller that doesn't know the operation.
    */
   readonly op?: string
+  /**
+   * Transcript form: no frame and no header, because the step row above
+   * already names the file. Only the colored rows remain.
+   */
+  readonly compact?: boolean
 }): React.ReactNode {
   // When a render context supplies the box's exact outer width (the transcript
   // DIFF card), size the code cell deterministically instead of leaving it to
@@ -1602,45 +1371,46 @@ export function DiffInline({
   const explicitBoxWidth = React.useContext(DiffInlineWidthContext)
   const codeCellWidth =
     explicitBoxWidth !== null ? diffInlineCodeCellWidth(explicitBoxWidth) : null
+  const rowTints = supportsRowTints()
   return (
     <ThemedBox
       flexDirection="column"
-      borderStyle="single"
-      borderColor="lineSoft"
+      {...(compact ? {} : { borderStyle: 'single' as const, borderColor: 'lineSoft' as const })}
       {...(explicitBoxWidth !== null ? { width: explicitBoxWidth } : {})}
     >
-      <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
-        <ThemedText color="subtle">{op}</ThemedText>
-        <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
-        <Box flexGrow={1} />
-        {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
-      </ThemedBox>
+      {compact ? null : (
+        <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
+          <ThemedText color="subtle">{op}</ThemedText>
+          <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
+          <Box flexGrow={1} />
+          {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
+        </ThemedBox>
+      )}
       <Box flexDirection="column">
         {lines.map((line, index) => {
-          const bg =
-            line.kind === 'add'
-              ? 'successWash'
+          const bg = !rowTints
+            ? undefined
+            : line.kind === 'add'
+              ? 'diffAdded'
               : line.kind === 'rem'
-                ? 'errorWash'
-                : line.kind === 'hunk'
-                  ? 'agencWash'
-                  : undefined
+                ? 'diffRemoved'
+                : undefined
           const sigil = { add: '+', rem: '-', ctx: ' ', hunk: '@' }[line.kind]
           const sigilColor: ThemeColor =
             line.kind === 'add'
-              ? 'success'
+              ? 'stepOk'
               : line.kind === 'rem'
-                ? 'error'
+                ? 'stepFail'
                 : line.kind === 'hunk'
-                  ? 'agenc'
+                  ? 'accentSoft'
                   : 'muted3'
           const codeColor: ThemeColor =
             line.kind === 'add'
-              ? 'success'
+              ? 'stepOk'
               : line.kind === 'rem'
-                ? 'error'
+                ? 'stepFail'
                 : line.kind === 'hunk'
-                  ? 'agenc'
+                  ? 'accentSoft'
                   : 'text2'
           return (
             // The gutter cells (old/new line nums + sigil) are fixed-width and
@@ -1649,12 +1419,23 @@ export function DiffInline({
             // wide code line lets Yoga squeeze the gutter (eating a pad space)
             // and wrap the row, which silently drops the truncation marker.
             <ThemedBox key={index} flexDirection="row" backgroundColor={bg} paddingX={1}>
-              <Box flexShrink={0}>
-                <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
-              </Box>
-              <Box flexShrink={0}>
-                <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
-              </Box>
+              {compact ? (
+                // One number per row: where the line was, or where it is now.
+                <Box flexShrink={0}>
+                  <ThemedText color="muted3">
+                    {((line.kind === 'rem' ? line.oldLine : line.newLine) ?? '').padStart(4, ' ')}
+                  </ThemedText>
+                </Box>
+              ) : (
+                <>
+                  <Box flexShrink={0}>
+                    <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
+                  </Box>
+                </>
+              )}
               <Box flexShrink={0}>
                 <ThemedText color={sigilColor}> {sigil} </ThemedText>
               </Box>
@@ -1819,7 +1600,7 @@ export function ApprovalCard({
   // The action picker below owns the "1/2/3 + confirm" affordance — keep the
   // summary line to identity only (no repeated confirm text, no `{}` inputs).
   const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
-  // The approval popup is rendered into a fixed-height slot (the workbench
+  // The approval popup is rendered into a fixed-height slot (the layout
   // overlay row, or the modal context). Without a height cap the body grows
   // past the popup's own bottom border and bleeds onto the footer below it.
   // Cap the popup to the rows actually available and let Popup clip the body
@@ -2118,6 +1899,7 @@ export function MenuModal<T>({
   columnGap = 1,
   modalMinHeight,
   rowMinHeight = 1,
+  closeHint,
 }: {
   readonly title: string
   readonly count?: string
@@ -2137,6 +1919,8 @@ export function MenuModal<T>({
   readonly columnGap?: number
   readonly modalMinHeight?: number
   readonly rowMinHeight?: number
+  /** What Esc does, top right. Defaults to the popup's "esc to close". */
+  readonly closeHint?: string
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
   const resolvedListWidth = preview
@@ -2172,6 +1956,7 @@ export function MenuModal<T>({
   return (
     <Popup
       title={popupTitle}
+      {...(closeHint === undefined ? {} : { headerRight: closeHint })}
       status={popupStatus || undefined}
       footer={footer}
       bodyPaddingX={paddingX}

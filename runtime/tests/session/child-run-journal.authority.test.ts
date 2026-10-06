@@ -34,6 +34,40 @@ afterEach(() => {
 });
 
 describe("child journal admission-owner metadata", () => {
+  it("uses the ordinary terminal callback even after a completed child turn", () => {
+    const cwd = join(root, "completed-child");
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    const eventLog = new EventLog();
+    let mounted: RolloutStore | null = null;
+    const closeCallbacks: Array<() => void> = [];
+    const child = {
+      conversationId: "completed-child", eventLog,
+      sessionConfiguration: { cwd, collaborationMode: { model: "test-model" } },
+      services: { admissionRequired: false, provider: { name: "test-provider" } },
+      mountRolloutStore: (store: RolloutStore | null) => { mounted = store; },
+      emit: (input: Event) => {
+        const event = eventLog.emit(input);
+        mounted?.append(event, { durable: true });
+        return event;
+      },
+      onBeforeDurableClose: (callback: () => void) => { closeCallbacks.push(callback); },
+    } as unknown as Session;
+    const store = mountChildRunJournal({ parent, child, originator: "agenc-subagent",
+      terminalResult: () => ({ status: "failed", stopReason: "daemon_shutdown",
+        finalMessage: null }) })!;
+    children.push(store);
+    child.emit({ id: "started", msg: { type: "turn_started",
+      payload: { turnId: "finished-turn" } } } as Event);
+    child.emit({ id: "completed", msg: { type: "turn_complete",
+      payload: { turnId: "finished-turn", lastAgentMessage: "done",
+        completedAt: 1, durationMs: 1 } } } as Event);
+    closeCallbacks.at(-1)!();
+    const terminal = store.readAll().findLast((item) => item.type === "event_msg" &&
+      item.payload.msg.type === "run_terminal");
+    expect(terminal).toMatchObject({ payload: { msg: { type: "run_terminal",
+      payload: { status: "failed", finalMessage: null } } } });
+  });
+
   it("binds a constructed child to its parent's admitted workspace before events", () => {
     const cwd = join(root, "child");
     mkdirSync(join(cwd, ".git"), { recursive: true });

@@ -45,7 +45,7 @@ describe("syncCollabAgentEventToAppState", () => {
       agentType: "Default",
       model: "grok-4.3",
       isBackgrounded: true,
-      startTime: 1234,
+      startTime: 0,
       selectedAgent: { name: "PatchworkGirl" },
     });
   });
@@ -75,7 +75,7 @@ describe("syncCollabAgentEventToAppState", () => {
       prompt: "new input",
       error: "failed tool",
       isBackgrounded: true,
-      startTime: 1234,
+      startTime: 0,
     });
   });
 
@@ -117,7 +117,7 @@ describe("syncCollabAgentEventToAppState", () => {
     expect(completed.tasks.agent_1).toMatchObject({
       status: "completed",
       description: "Librarian",
-      endTime: 1234,
+      startTime: 0,
     });
   });
 
@@ -163,7 +163,7 @@ describe("syncCollabAgentEventToAppState", () => {
     expect(completed.tasks.agent_1).toMatchObject({
       status: "completed",
       description: "Librarian",
-      endTime: 1234,
+      startTime: 0,
       // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
       evictAfter: 1_801_234,
       notified: true,
@@ -316,7 +316,7 @@ describe("syncCollabAgentEventToAppState", () => {
       description: "Librarian",
       prompt: "continue investigating",
       agentType: "Default",
-      startTime: 1_000,
+      startTime: 0,
       notified: false,
     });
     expect(runningAgain.tasks.agent_1).not.toHaveProperty("endTime");
@@ -338,6 +338,7 @@ describe("syncCollabAgentEventToAppState", () => {
       payload: {
         threadId: "agent_1",
         status: "completed",
+        timing: { turnId: "first", startedAt: 1_000, endedAt: 2_000 },
         toolUseCount: 4,
       },
     }, 2_000);
@@ -370,6 +371,7 @@ describe("syncCollabAgentEventToAppState", () => {
       payload: {
         threadId: "agent_1",
         status: { status: "errored", error: "new verification failed" },
+        timing: { turnId: "next", startedAt: 4_000, endedAt: 5_000 },
       },
     }, 5_000);
     expect(failed.tasks.agent_1).toMatchObject({
@@ -420,7 +422,7 @@ describe("syncCollabAgentEventToAppState", () => {
     expect(completed.tasks.agent_1).toMatchObject({
       status: "completed",
       description: "ChromeRider",
-      endTime: 1234,
+      startTime: 0,
       // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
       evictAfter: 1_801_234,
       notified: true,
@@ -429,7 +431,7 @@ describe("syncCollabAgentEventToAppState", () => {
       status: "failed",
       description: "Quickhack",
       error: "review failed",
-      endTime: 1234,
+      startTime: 0,
       // now(1234) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
       evictAfter: 1_801_234,
       notified: true,

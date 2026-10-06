@@ -3,7 +3,6 @@ import { isAbsolute, resolve } from "node:path";
 import type { FileWriteApprovalPreview } from "../session/event-log.js";
 import type { ToolInvocation } from "../tools/context.js";
 import { getSessionReadSnapshot, safePath } from "../tools/system/filesystem.js";
-import { workspaceAuthoritativeRead } from "../workspace/mutation-coordinator.js";
 import { checkToolPathPermission } from "./path-validation.js";
 
 export async function buildFileWriteApprovalPreview(
@@ -48,12 +47,11 @@ export async function buildFileWriteApprovalPreview(
     if (permission.behavior !== "allow") {
       return unavailable("Reading the target requires permission.");
     }
-    const editorRead = workspaceAuthoritativeRead(safe.resolved);
     let metadata;
     try {
       metadata = await stat(safe.resolved);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT" && editorRead === null) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
         return { kind: "missing" };
       }
       return unavailable("The target's current state could not be verified.");
@@ -71,11 +69,7 @@ export async function buildFileWriteApprovalPreview(
     ) {
       return unavailable("Read the full existing file before reviewing its replacement.");
     }
-    if (
-      editorRead !== null
-        ? editorRead.content !== content
-        : snapshot.timestamp !== metadata.mtimeMs
-    ) {
+    if (snapshot.timestamp !== metadata.mtimeMs) {
       return unavailable("The file changed since its last full read.");
     }
     if (content.includes("\0") || Buffer.byteLength(content, "utf8") > 256 * 1024) {

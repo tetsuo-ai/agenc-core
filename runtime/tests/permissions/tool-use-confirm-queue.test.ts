@@ -125,7 +125,8 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
     expect(resolved1).toBe(APPROVED);
     expect(resolved2).toBeNull();
     (got[1] as { onReject: () => void }).onReject();
-    expect(resolved2).toBe(DENIED);
+    // The person at the prompt chose Deny.
+    expect(resolved2).toEqual({ kind: "denied", decidedBy: "user" });
   });
 
   it("onAllow with permission updates resolves to APPROVED_FOR_SESSION; onAbort resolves to ABORT", () => {

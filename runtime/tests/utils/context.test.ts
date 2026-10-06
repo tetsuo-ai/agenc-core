@@ -53,8 +53,8 @@ providerTest('deepseek-v4-flash uses provider-specific context and output caps',
 
   expect(getContextWindowForModel('deepseek-v4-flash')).toBe(1_048_576)
   expect(getModelMaxOutputTokens('deepseek-v4-flash')).toEqual({
-    default: 384_000,
-    upperLimit: 384_000,
+    default: 393_216,
+    upperLimit: 393_216,
   })
 })
 
@@ -91,6 +91,24 @@ providerTest('gpt-5.4 family uses provider-specific context and output caps', ()
   expect(getModelMaxOutputTokens('gpt-5.4-nano')).toEqual({
     default: 128_000,
     upperLimit: 128_000,
+  })
+})
+
+providerTest('native MiniMax keeps output reservations separate from exact API maxima', () => {
+  const context = { provider: 'minimax', environment: {} }
+  expect(getModelMaxOutputTokensForContext('MiniMax-M3', context)).toEqual({ default: 131_072, upperLimit: 524_288 })
+  expect(getModelMaxOutputTokensForContext('MiniMax-M2.1', context)).toEqual({ default: 131_072, upperLimit: 204_800 })
+})
+
+providerTest('MiniMax-M3 carries its 1M window on the openai-compatible table', () => {
+  process.env.AGENC_PROVIDER = 'openai'
+  delete process.env.AGENC_MAX_OUTPUT_TOKENS
+  delete process.env.OPENAI_MODEL
+
+  expect(getContextWindowForModel('MiniMax-M3')).toBe(1_000_000)
+  expect(getModelMaxOutputTokens('MiniMax-M3')).toEqual({
+    default: 131_072,
+    upperLimit: 131_072,
   })
 })
 

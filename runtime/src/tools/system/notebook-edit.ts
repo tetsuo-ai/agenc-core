@@ -6,6 +6,7 @@ import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -13,15 +14,9 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
-import {
-  prepareWorkspaceMutation,
-  workspaceAuthoritativeRead,
-  workspaceMutationAdmissionToolResult,
-} from "../../workspace/mutation-coordinator.js";
-import {
-  executeWorkspaceFileMutation,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const NOTEBOOK_EDIT_TOOL_NAME = "NotebookEdit";
 const MAX_NOTEBOOK_EDIT_BYTES = 16 * 1024 * 1024;
@@ -30,7 +25,11 @@ export interface NotebookEditToolConfig extends WorkspaceFileMutationTestHooks {
   readonly workspaceRoot: string;
 }
 
-function json(value: Record<string, unknown>, isError = false): ToolResult {
+function json(
+  value: Record<string, unknown>,
+  isError = false,
+  evidenceRef = "tool:NotebookEdit:pre-mutation",
+): ToolResult {
   const content = JSON.stringify(value);
   return {
     content,
@@ -40,7 +39,7 @@ function json(value: Record<string, unknown>, isError = false): ToolResult {
           effectDisposition: createToolEffectDispositionEvidence({
             disposition: "confirmed_no_effect",
             evidenceKind: "boundary_not_crossed",
-            evidenceRef: "tool:NotebookEdit:pre-mutation",
+            evidenceRef,
             evidenceMaterial: content,
           }),
         }
@@ -154,9 +153,13 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
           message: "notebook_path must be a non-empty string",
         };
       }
+      // `input` comes back as the decision's `updatedInput`, which the
+      // dispatcher validates against this tool's strict schema again. The
+      // path is checked through `path`; a `file_path` copy in the input
+      // failed every call with "unexpected parameter file_path".
       return checkToolPathPermission({
         toolName: NOTEBOOK_EDIT_TOOL_NAME,
-        input: { ...args, file_path: notebookPath },
+        input: args,
         path: notebookPath,
         cwd: config.workspaceRoot,
         context: context.getAppState().toolPermissionContext,
@@ -224,20 +227,13 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         return json({ error: `Access denied: ${safe.reason}` }, true);
       }
       const filePath = safe.resolved;
-      const editorRead = workspaceAuthoritativeRead(filePath);
 
       try {
-        const fileStats =
-          editorRead === null
-            ? await stat(filePath)
-            : await stat(filePath).catch(() => null);
-        if (fileStats !== null && !fileStats.isFile()) {
+        const fileStats = await stat(filePath);
+        if (!fileStats.isFile()) {
           return json({ error: "Path is not a regular file" }, true);
         }
-        const size =
-          editorRead === null
-            ? (fileStats?.size ?? 0)
-            : Buffer.byteLength(editorRead.content, "utf8");
+        const size = fileStats.size;
         if (size > MAX_NOTEBOOK_EDIT_BYTES) {
           return json(
             {
@@ -269,7 +265,7 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
 
       let original: string;
       try {
-        original = editorRead?.content ?? (await readFile(filePath, "utf8"));
+        original = await readFile(filePath, "utf8");
       } catch (error) {
         return json(
           { error: error instanceof Error ? error.message : String(error) },
@@ -375,34 +371,26 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
       }
 
       const updated = JSON.stringify(parsed, null, 1);
-      const toolCallId =
-        typeof args.__callId === "string" ? args.__callId : undefined;
-      const admission = await prepareWorkspaceMutation({
-        path: filePath,
-        source: "notebook_edit",
-        beforeText: original,
-        afterText: updated,
-        ...(sessionId !== undefined ? { sessionId } : {}),
-        ...(toolCallId !== undefined ? { toolCallId } : {}),
-      });
-      const rejection = workspaceMutationAdmissionToolResult(admission);
-      if (rejection !== null) return rejection;
       try {
         await executeWorkspaceFileMutation({
-          admission,
           path: filePath,
           afterText: updated,
           write: () => writeFile(filePath, updated, "utf8"),
-          metadata: {
-            ...(sessionId !== undefined ? { sessionId } : {}),
-            ...(toolCallId !== undefined ? { toolCallId } : {}),
-          },
           testHooks: config,
         });
       } catch (error) {
-        return ambiguousMutationErrorJson(
-          { error: error instanceof Error ? error.message : String(error) },
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        // A transaction that proved the notebook unchanged settles as
+        // no-effect (#2500); anything else stays an unknown outcome.
+        const evidence = workspaceMutationNoEffectEvidence(error);
+        if (evidence !== undefined) {
+          return json(
+            { error: `${message} ${describeWorkspaceMutationNoEffect(evidence)}` },
+            true,
+            `tool:NotebookEdit:${evidence}`,
+          );
+        }
+        return ambiguousMutationErrorJson({ error: message });
       }
       if (sessionId !== undefined) {
         let mtimeMs = Date.now();
@@ -422,18 +410,26 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         });
       }
 
-      return json({
-        notebook_path: filePath,
-        cell_id: resultCellId,
-        ...(editMode !== "delete" && resultCellType !== undefined
-          ? { cell_type: resultCellType }
-          : {}),
-        language: notebookLanguage(parsed),
-        edit_mode: editMode,
-        ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
-        original_file: original,
-        updated_file: updated,
-      });
+      return {
+        ...json({
+          notebook_path: filePath,
+          cell_id: resultCellId,
+          ...(editMode !== "delete" && resultCellType !== undefined
+            ? { cell_type: resultCellType }
+            : {}),
+          language: notebookLanguage(parsed),
+          edit_mode: editMode,
+          ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
+          original_file: original,
+          updated_file: updated,
+        }),
+        metadata: buildFileMutationMetadata({
+          filePath: notebookPath,
+          operation: "edit",
+          beforeText: original,
+          afterText: updated,
+        }),
+      };
     },
   };
 }

@@ -138,21 +138,7 @@ export const csvJobIdentityReplayMigration: SqlMigration = {
         // Completed historical jobs remain inspectable with their original JSON.
       }
     }
-    db.function(
-      "agenc_csv_legacy_identity_json",
-      { deterministic: true },
-      legacyCsvIdentityJson,
-    );
-    db.function(
-      "agenc_csv_sha256_text",
-      { deterministic: true },
-      (value: unknown) => {
-        if (typeof value !== "string") {
-          throw new Error("legacy CSV digest input is not text");
-        }
-        return createHash("sha256").update(value).digest("hex");
-      },
-    );
+    registerCsvMigrationFunctions(db);
     db.exec(`
 DROP INDEX IF EXISTS idx_csv_agent_jobs_status;
 DROP INDEX IF EXISTS idx_csv_agent_job_items_status;
@@ -904,3 +890,22 @@ END;
     }
   },
 };
+
+/** Preserve the connection-local functions on both fresh and upgraded state. */
+export function registerCsvMigrationFunctions(db: SqliteDatabase): void {
+  db.function(
+    "agenc_csv_legacy_identity_json",
+    { deterministic: true },
+    legacyCsvIdentityJson,
+  );
+  db.function(
+    "agenc_csv_sha256_text",
+    { deterministic: true },
+    (value: unknown) => {
+      if (typeof value !== "string") {
+        throw new Error("legacy CSV digest input is not text");
+      }
+      return createHash("sha256").update(value).digest("hex");
+    },
+  );
+}

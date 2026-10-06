@@ -15,7 +15,9 @@ import { renderToAnsiString, renderToString } from '../../src/utils/staticRender
 // for every Write/Edit, but had no concise "here's what THIS turn changed"
 // rollup. The summary derives that from the assistant message's OWN tool-use
 // blocks (scoped to the turn — no global git scan) and renders one compact
-// line after the turn's tool activity.
+// line after the turn's tool activity. A single changed file is already named
+// on its own "Edited …"/"Wrote …" step, so the rollup only renders when the turn
+// touched two or more files; the render fixtures below use two files.
 
 // A realistic assistant message content array: one Write (new file) and one
 // Edit (existing file), matching the diff-card inputs in the codebase.
@@ -177,7 +179,8 @@ describe('TurnFileChangesSummary (compact per-turn render)', () => {
       editBlock('styles.css', 'a{}\n', 'a{color:red}\nb{}\n'),
     ])
     const out = await renderSummary(changes)
-    expect(out).toContain('files changed')
+    // The rollup hangs off the same `└` line the tool results use.
+    expect(out).toContain('└ files changed')
     // Both files appear.
     expect(out).toContain('index.html')
     expect(out).toContain('styles.css')
@@ -190,7 +193,10 @@ describe('TurnFileChangesSummary (compact per-turn render)', () => {
 
   test('REVERT-SENSITIVITY: summary present with file ops, absent (null) with none', async () => {
     const withOps = await renderSummary(
-      deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')]),
+      deriveTurnFileChanges([
+        writeBlock('index.html', '<html></html>\n'),
+        editBlock('styles.css', 'a{}\n', 'b{}\n'),
+      ]),
     )
     const withoutOps = await renderSummary(deriveTurnFileChanges([{ type: 'text', text: 'hi' }]))
     expect(withOps).toContain('files changed')
@@ -200,11 +206,26 @@ describe('TurnFileChangesSummary (compact per-turn render)', () => {
     expect(withoutOps).not.toContain('files changed')
   })
 
+  test('a single-file turn renders nothing (its own step row already names the file)', async () => {
+    // REVERT-SENSITIVITY: restoring the old `changes.length === 0` guard brings
+    // back a one-file "files changed" row here.
+    const changes = deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')])
+    expect(changes).toHaveLength(1)
+    const out = await renderSummary(changes)
+    expect(out.trim()).toBe('')
+    expect(out).not.toContain('files changed')
+  })
+
   test('a created file shows a "+" create marker + (new) distinct from the "~" edit marker', async () => {
     // Render a CREATE-only turn and an EDIT-only turn so each marker is asserted
     // in isolation (the compact summary may pack several files onto one row).
-    const createOut = await renderSummary(deriveTurnFileChanges([writeBlock('new.ts', 'x\n')]))
-    const editOut = await renderSummary(deriveTurnFileChanges([editBlock('old.ts', 'a\n', 'b\n')]))
+    // Each turn touches two files so the rollup renders at all.
+    const createOut = await renderSummary(
+      deriveTurnFileChanges([writeBlock('new.ts', 'x\n'), writeBlock('new-two.ts', 'y\n')]),
+    )
+    const editOut = await renderSummary(
+      deriveTurnFileChanges([editBlock('old.ts', 'a\n', 'b\n'), editBlock('old-two.ts', 'c\n', 'd\n')]),
+    )
     // Create: '+ new.ts (new)' — the new-file marker and label are present.
     expect(createOut).toContain('+ new.ts')
     expect(createOut).toContain('(new)')
@@ -232,14 +253,17 @@ describe('TurnFileChangesSummary (compact per-turn render)', () => {
   test('a very long single file path is truncated and never overflows the row', async () => {
     const columns = 60
     const longPath = `/very/deeply/nested/${'segment/'.repeat(8)}component.tsx`
+    // Paired with a short second file so the two-file rollup renders.
     const out = await renderSummary(
-      deriveTurnFileChanges([editBlock(longPath, 'a\n', 'b\n')]),
+      deriveTurnFileChanges([editBlock(longPath, 'a\n', 'b\n'), editBlock('short.ts', 'a\n', 'b\n')]),
       columns,
     )
     for (const line of out.split('\n')) {
       expect(line.length).toBeLessThanOrEqual(columns)
     }
     expect(out).toContain('files changed')
+    // The long path was cut, not printed whole.
+    expect(out).not.toContain(longPath)
   })
 
   test('an empty changes array renders nothing', async () => {
@@ -279,7 +303,10 @@ describe('TurnFileChangesSummary (open-from-rollup OSC 8 affordance)', () => {
 
   test('a changed file renders an OSC 8 hyperlink to its file:// URL', async () => {
     process.env.FORCE_HYPERLINK = '1'
-    const changes = deriveTurnFileChanges([editBlock('styles.css', 'a{}\n', 'a{color:red}\n')])
+    const changes = deriveTurnFileChanges([
+      editBlock('styles.css', 'a{}\n', 'a{color:red}\n'),
+      editBlock('app.ts', 'a\n', 'b\n'),
+    ])
     const out = await renderAnsi(changes)
     // The OSC 8 open sequence targets the file's resolved file:// URL.
     const url = pathToFileURL('styles.css').href
@@ -298,18 +325,18 @@ describe('TurnFileChangesSummary (open-from-rollup OSC 8 affordance)', () => {
     // test red. With the wrap present, the link target URL is emitted.
     process.env.FORCE_HYPERLINK = '1'
     const url = pathToFileURL('index.html').href
-    const withLink = await renderAnsi(
-      deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')]),
-    )
+    const twoFiles = [
+      writeBlock('index.html', '<html></html>\n'),
+      writeBlock('main.js', 'run()\n'),
+    ]
+    const withLink = await renderAnsi(deriveTurnFileChanges(twoFiles))
     expect(withLink).toContain(`;${url}\x07`)
 
     // Sanity: with hyperlinks disabled the same render emits no OSC 8 sequence
     // (graceful degradation in non-supporting terminals), proving the link is
     // the only source of the sequence.
     process.env.FORCE_HYPERLINK = '0'
-    const noLink = await renderAnsi(
-      deriveTurnFileChanges([writeBlock('index.html', '<html></html>\n')]),
-    )
+    const noLink = await renderAnsi(deriveTurnFileChanges(twoFiles))
     expect(noLink).not.toContain('\x1B]8;')
     // The summary content itself is unchanged when hyperlinks are off.
     expect(noLink).toContain('files changed')

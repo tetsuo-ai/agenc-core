@@ -65,6 +65,7 @@ const McpbUserConfigurationOptionSchema = z.strictObject({
   sensitive: z.boolean().optional(),
   min: z.number().optional(),
   max: z.number().optional(),
+  pattern: z.string().optional(),
 })
 
 const McpbManifestLocalizationSchema = z.strictObject({

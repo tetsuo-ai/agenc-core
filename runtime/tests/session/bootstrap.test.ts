@@ -243,7 +243,7 @@ function mkStubMcpManager(
       }
       if (behavior.kind === "required-failure") {
         throw new Error(
-          `MCP aggregate startup failure — required server(s) not ready: ${(
+          `MCP aggregate startup failure: required server(s) not ready: ${(
             opts.requiredServers ?? []
           ).join(", ")} (test-failure)`,
         );
@@ -258,6 +258,37 @@ function mkStubMcpManager(
 // ─────────────────────────────────────────────────────────────────────
 
 describe("bootstrapSession happy path", () => {
+  it("retains selected session setup while deferring the skill observer to the response barrier", async () => {
+    const setup: Array<() => Promise<void>> = [];
+    const skillsWatcher = { start: vi.fn(async () => {}) };
+    const configured = vi.fn(async () => { expect(skillsWatcher.start).not.toHaveBeenCalled(); });
+    const session = await bootstrapSession(mkBootstrapOpts({
+      services: mkServices({ skillsWatcher }),
+      onAfterSessionConfigured: configured,
+      deferSkillsWatcherUntilRequest: callback => { setup.push(callback); },
+    }));
+    expect(configured).toHaveBeenCalledOnce();
+    expect(collectSessionEvents(session).filter(event => event.msg.type === "session_configured")).toHaveLength(1);
+    expect(skillsWatcher.start).not.toHaveBeenCalled();
+    expect(setup).toHaveLength(1);
+    await setup[0]!();
+    expect(skillsWatcher.start).toHaveBeenCalledOnce();
+  });
+
+  it("refuses deferred skill observer startup after cancellation", async () => {
+    const abort = new AbortController();
+    const setup: Array<() => Promise<void>> = [];
+    const skillsWatcher = { start: vi.fn(async () => {}) };
+    await bootstrapSession(mkBootstrapOpts({
+      signal: abort.signal,
+      services: mkServices({ skillsWatcher }),
+      deferSkillsWatcherUntilRequest: callback => { setup.push(callback); },
+    }));
+    abort.abort("cancelled before response");
+    await expect(setup[0]!()).rejects.toThrow("cancelled before response");
+    expect(skillsWatcher.start).not.toHaveBeenCalled();
+  });
+
   it("preserves the boundary-owned shell, leaves the active turn clean, and emits session_configured once", async () => {
     const opts = mkBootstrapOpts();
     const session = await bootstrapSession(opts);
@@ -292,133 +323,6 @@ describe("bootstrapSession happy path", () => {
     expect(
       (manager as unknown as { start: ReturnType<typeof vi.fn> }).start,
     ).toHaveBeenCalledTimes(1);
-  });
-
-  it("defers SessionStart hooks across Editor turns and flushes before the first ordinary submit", async () => {
-    const sequence: string[] = [];
-    const processSessionStart = vi.fn(async () => {
-      sequence.push("session-start");
-      return [];
-    });
-    const opts = mkBootstrapOpts({
-      deferSessionStartHooks: true,
-      services: mkServices({
-        hooks: { processSessionStart } as never,
-      }),
-    });
-    const session = await bootstrapSession(opts);
-    const submit = vi.fn(async (message: string | readonly unknown[]) => {
-      sequence.push(
-        `turn:${typeof message === "string" ? message : "structured"}`,
-      );
-    });
-    session.installTurnDriverHooks({ submit: submit as never });
-    const editorInteraction = {
-      interactionId: "interaction-bootstrap-ask",
-      kind: "ask" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-bootstrap",
-      bufferHandle: 2,
-      changedtick: 1,
-      contentSha256: "f".repeat(64),
-      path: "/tmp/example.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 1 },
-      },
-    };
-
-    expect(processSessionStart).not.toHaveBeenCalled();
-    await session.submit("editor question", { editorInteraction });
-    expect(processSessionStart).not.toHaveBeenCalled();
-    await session.submit("ordinary agent turn");
-
-    expect(processSessionStart).toHaveBeenCalledOnce();
-    expect(sequence).toEqual([
-      "turn:editor question",
-      "session-start",
-      "turn:ordinary agent turn",
-    ]);
-  });
-
-  it("defers generic MCP and skill-watcher startup across Editor turns", async () => {
-    const sequence: string[] = [];
-    const auth = vi.fn(async () => {
-      sequence.push("auth");
-    });
-    const processSessionStart = vi.fn(async () => {
-      sequence.push("session-start");
-      return [];
-    });
-    const manager = mkStubMcpManager();
-    (manager.start as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      sequence.push("mcp");
-    });
-    const skillsWatcher = {
-      start: vi.fn(async () => {
-        sequence.push("skills-watcher");
-      }),
-    };
-    const session = await bootstrapSession(
-      mkBootstrapOpts({
-        auth,
-        mcp: { manager },
-        deferSessionStartHooks: true,
-        deferOrdinaryStartup: true,
-        services: mkServices({
-          hooks: { processSessionStart } as never,
-          skillsWatcher,
-        }),
-      }),
-    );
-    const submit = vi.fn(async (message: string | readonly unknown[]) => {
-      sequence.push(
-        `turn:${typeof message === "string" ? message : "structured"}`,
-      );
-    });
-    session.installTurnDriverHooks({ submit: submit as never });
-    const editorInteraction = {
-      interactionId: "interaction-generic-startup-ask",
-      kind: "ask" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-generic-startup",
-      bufferHandle: 14,
-      changedtick: 1,
-      contentSha256: "a".repeat(64),
-      path: "/tmp/example.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 1 },
-      },
-    };
-
-    expect(sequence).toEqual(["auth"]);
-    await session.submit("editor question", { editorInteraction });
-    expect(sequence).toEqual(["auth", "turn:editor question"]);
-
-    await session.submit("ordinary agent turn");
-    expect(sequence).toEqual([
-      "auth",
-      "turn:editor question",
-      "session-start",
-      "mcp",
-      "skills-watcher",
-      "turn:ordinary agent turn",
-    ]);
-
-    await session.submit("second ordinary turn");
-    expect(sequence).toEqual([
-      "auth",
-      "turn:editor question",
-      "session-start",
-      "mcp",
-      "skills-watcher",
-      "turn:ordinary agent turn",
-      "turn:second ordinary turn",
-    ]);
-    expect(processSessionStart).toHaveBeenCalledOnce();
-    expect(manager.start).toHaveBeenCalledOnce();
-    expect(skillsWatcher.start).toHaveBeenCalledOnce();
   });
 
   it("close-before-ordinary discards generic deferred MCP and watcher startup", async () => {

@@ -20,15 +20,14 @@ import { describe, expect, it } from "vitest";
  */
 
 // Frozen snapshot of files under src/ (excluding tests) that import from
-// `utils/permissions/`, captured at the start of the consolidation effort.
+// `utils/permissions/`. Re-baselined 2026-09-20: the donor stack shrank by ten
+// during the 0.18.0 cycle, and the detector below now matches real import and
+// re-export specifiers instead of any occurrence of the path, so a doc comment
+// that merely names a donor module no longer counts as an importer.
 const BASELINE: readonly string[] = [
   "memory/agencmd.ts",
-  "permissions/dangerous-patterns.ts",
-  "permissions/path-validation.ts",
-  "permissions/rules.ts",
-  "permissions/types.ts",
-  "planning/plan-files.ts",
   "tasks/InProcessTeammateTask/types.ts",
+  "tools.ts",
   "tools/AgentTool/agentToolUtils.ts",
   "tools/BashTool/bashCommandHelpers.ts",
   "tools/BashTool/bashPermissions.ts",
@@ -39,26 +38,20 @@ const BASELINE: readonly string[] = [
   "tools/BashTool/readOnlyValidation.ts",
   "tools/BashTool/sedValidation.ts",
   "tools/BashTool/utils.ts",
-  "tools/EnterPlanModeTool/EnterPlanModeTool.ts",
   "tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts",
   "tools/FileWriteTool/FileWriteTool.ts",
   "tools/PowerShellTool/modeValidation.ts",
   "tools/PowerShellTool/pathValidation.ts",
   "tools/PowerShellTool/powershellPermissions.ts",
-  "tools/shared/spawnMultiAgent.ts",
   "tools/SyntheticOutputTool/SyntheticOutputTool.ts",
-  "tools/system/coding-common.ts",
   "tools/Tool.ts",
-  "tools.ts",
   "tools/WebSearchTool/WebSearchTool.ts",
+  "tools/shared/spawnMultiAgent.ts",
   "tui/hooks/useSwarmPermissionPoller.ts",
   "tui/pathDisplay.ts",
   "tui/permission-types.ts",
   "tui/state/AppStateStore.ts",
-  "tui/state/onChangeAppState.ts",
-  "tui/workbench/search/model.ts",
   "types/hooks.ts",
-  "types/permissions.ts",
 ];
 
 const SRC_DIR = resolve(
@@ -73,9 +66,18 @@ function currentDonorImporters(): string[] {
   // any failure rather than masking a real regression as a crash.
   let raw = "";
   try {
+    // Match the specifier of a real import / re-export / require, not a
+    // mention of the path in prose: several canonical modules document which
+    // donor list they mirror, and that is not a dependency.
     raw = execFileSync(
       "git",
-      ["grep", "-l", "utils/permissions/", "--", "*.ts"],
+      [
+        "grep",
+        "-lE",
+        "(from|import|require\\()[[:space:]]*['\"][^'\"]*utils/permissions/",
+        "--",
+        "*.ts",
+      ],
       { cwd: SRC_DIR, encoding: "utf8" },
     );
   } catch (error) {

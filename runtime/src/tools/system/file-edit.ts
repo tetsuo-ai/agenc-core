@@ -40,7 +40,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { createToolEffectDispositionEvidence, settledNoEffectToolResult } from "../effect-boundary.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   sessionPlanFileAuthority,
@@ -53,24 +53,17 @@ import {
 } from "./filesystem.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
-  agentNamespacePathHint,
-  denyAgentNamespacePath,
-  isAgentNamespacePath,
+  FILE_TOOL_PATH_SCHEMA,
+  FILE_TOOL_PATH_USAGE,
+  workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
-import {
-  prepareWorkspaceMutation,
-  WorkspaceMutationCoordinatorError,
-  workspaceAuthoritativeRead,
-  workspaceMutationAdmissionToolResult,
-  type WorkspaceMutationSource,
-} from "../../workspace/mutation-coordinator.js";
-import {
-  executeWorkspaceFileMutation,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -127,13 +120,19 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
   return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
 }
 
+function linePrefixUsage(sparse: boolean): string {
+  return sparse
+    ? "FileRead output puts a N→ line-number prefix on the first line, every tenth line and the last line; it is not part of the file. Match the file content exactly, with its indentation, and never include a prefix in old_string or new_string."
+    : "When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.";
+}
+
 // Verbatim from AgenC FileEditTool/prompt.ts:20-27.
-const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
+const fileEditDescription = (sparse: boolean): string => `Performs exact string replacements in files.
 
 Usage:
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
-- When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- ${FILE_TOOL_PATH_USAGE}
+- ${linePrefixUsage(sparse)}
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
@@ -144,7 +143,7 @@ const FILE_MULTI_EDIT_DESCRIPTION = `Performs multiple exact string replacements
 Usage:
 - Use this tool when you need to make several coordinated edits to the same file.
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- Use workspace-relative paths like \`game.py\` unless the user provided a real absolute path. Do not use \`/root/...\`; \`/root\` is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - Each edit is applied in order to the result of the previous edit.
 - The file is only written after every edit validates successfully. If any edit fails, the file is left unchanged.
 - The edit will FAIL if any \`old_string\` is not unique in the file at the time that edit is applied. Either provide more surrounding context or set \`replace_all\` to true for that edit.
@@ -270,8 +269,11 @@ function preserveQuoteStyle(
 // ── tool config / errors ──────────────────────────────────────────────
 
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
+  readonly lightMode?: boolean;
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
+  /** FileRead numbers only some lines (the session's `AGENC_SPARSE_LINE_NUMBERS`). */
+  readonly sparseLineNumbers?: boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -332,6 +334,54 @@ function validateInputs(
     old_string: oldString,
     new_string: newString,
     replace_all: args.replace_all === true,
+  };
+}
+
+const EDIT_SHAPE_KEYS: ReadonlySet<string> = new Set([
+  "file_path",
+  "old_string",
+  "new_string",
+  "replace_all",
+]);
+
+/**
+ * MultiEdit's `reshapeModelArgs`: a call in Edit's argument shape is one edit.
+ *
+ * Models used to other harnesses call MultiEdit as
+ * `{ file_path, old_string, new_string }`, sometimes with `replace_all`, and
+ * no `edits` array. That becomes
+ * `{ file_path, edits: [{ old_string, new_string, replace_all? }] }`, and only
+ * when all of these hold:
+ * - `edits` is absent;
+ * - `file_path`, `old_string` and `new_string` are all present;
+ * - no other key is present except an optional `replace_all`.
+ * Anything else returns undefined, so the call keeps its original validation
+ * error. Value types are not checked here: the runtime validates the folded
+ * value strictly, and a failure there also keeps the original error.
+ */
+export function foldEditShapedMultiEditArgs(
+  args: Readonly<Record<string, unknown>>,
+): Record<string, unknown> | undefined {
+  if (
+    Object.hasOwn(args, "edits") ||
+    !Object.hasOwn(args, "file_path") ||
+    !Object.hasOwn(args, "old_string") ||
+    !Object.hasOwn(args, "new_string") ||
+    !Object.keys(args).every((key) => EDIT_SHAPE_KEYS.has(key))
+  ) {
+    return undefined;
+  }
+  return {
+    file_path: args.file_path,
+    edits: [
+      {
+        old_string: args.old_string,
+        new_string: args.new_string,
+        ...(Object.hasOwn(args, "replace_all")
+          ? { replace_all: args.replace_all }
+          : {}),
+      },
+    ],
   };
 }
 
@@ -414,26 +464,6 @@ function encodeForOriginalFormat(
 }
 
 async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
-  const editorRead = workspaceAuthoritativeRead(absolutePath);
-  if (editorRead !== null) {
-    const rawText = editorRead.content;
-    const text = rawText.replaceAll("\r\n", "\n");
-    let mtimeMs = 0;
-    try {
-      const fileStats = await stat(absolutePath);
-      if (Number.isFinite(fileStats.mtimeMs)) mtimeMs = fileStats.mtimeMs;
-    } catch {
-      // A dirty new buffer may not exist on disk yet.
-    }
-    return {
-      exists: true,
-      content: text,
-      mtimeMs,
-      size: Buffer.byteLength(rawText, "utf8"),
-      encoding: "utf8",
-      lineEndings: detectLineEndings(rawText),
-    };
-  }
   try {
     const fileStats = await stat(absolutePath);
     if (!fileStats.isFile()) {
@@ -476,54 +506,18 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
 async function coordinateFileWrite(
   input: {
     readonly absolutePath: string;
-    readonly source: WorkspaceMutationSource;
+    readonly source: "file_edit" | "file_multi_edit";
     readonly beforeText: string;
     readonly afterText: string;
-    readonly rawArgs: Record<string, unknown>;
     readonly observedEncoding?: BufferEncoding;
     readonly testHooks?: WorkspaceFileMutationTestHooks;
   },
   write: () => Promise<void>,
 ): Promise<ToolResult | null> {
-  const sessionId = resolveSessionId(input.rawArgs);
-  const toolCallId =
-    typeof input.rawArgs.__callId === "string"
-      ? input.rawArgs.__callId
-      : undefined;
-  const admission = await prepareWorkspaceMutation({
-    path: input.absolutePath,
-    source: input.source,
-    beforeText: input.beforeText,
-    afterText: input.afterText,
-    ...(sessionId !== undefined ? { sessionId } : {}),
-    ...(toolCallId !== undefined ? { toolCallId } : {}),
-  });
-  const rejection = workspaceMutationAdmissionToolResult(admission);
-  if (rejection !== null) {
-    // Admission refused before any byte was written.
-    return {
-      ...rejection,
-      effectDisposition: createToolEffectDispositionEvidence({
-        disposition: "confirmed_no_effect",
-        evidenceKind: "boundary_not_crossed",
-        evidenceRef: `tool:${
-          input.source === "file_multi_edit"
-            ? FILE_MULTI_EDIT_TOOL_NAME
-            : FILE_EDIT_TOOL_NAME
-        }:admission-rejected`,
-        evidenceMaterial: rejection.content,
-      }),
-    };
-  }
   await executeWorkspaceFileMutation({
-    admission,
     path: input.absolutePath,
     afterText: input.afterText,
     write,
-    metadata: {
-      ...(sessionId !== undefined ? { sessionId } : {}),
-      ...(toolCallId !== undefined ? { toolCallId } : {}),
-    },
     decodeObserved: (content) =>
       content
         .toString(input.observedEncoding ?? "utf8")
@@ -594,7 +588,7 @@ class ConcurrentFileModificationError extends Error {
  */
 function formatWriteFileError(err: unknown): string {
   if (
-    err instanceof WorkspaceMutationCoordinatorError &&
+    err instanceof WorkspaceMutationError &&
     err.code === "MUTATION_AUDIT_FAILED"
   ) {
     return err.message;
@@ -610,9 +604,28 @@ function formatWriteFileError(err: unknown): string {
   return `Failed to write file: ${message}`;
 }
 
+/**
+ * A failure thrown by the mutation transaction: settled as no-effect when the
+ * transaction proved the file unchanged (#2500), otherwise an unknown outcome
+ * that the settlement supervisor must review.
+ */
+function mutationErrorResult(
+  err: unknown,
+  message: string,
+  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+): ToolResult {
+  const evidence = workspaceMutationNoEffectEvidence(err);
+  if (evidence === undefined) return errorResult(message);
+  return settledNoEffectToolResult({
+    toolName,
+    message: `${message} ${describeWorkspaceMutationNoEffect(evidence)}`,
+    evidence,
+  });
+}
+
 function formatCreateFileError(err: unknown): string {
   if (
-    err instanceof WorkspaceMutationCoordinatorError &&
+    err instanceof WorkspaceMutationError &&
     err.code === "MUTATION_AUDIT_FAILED"
   ) {
     return err.message;
@@ -818,7 +831,7 @@ function multiEditSuccessText(
 export function createFileEditTool(config: FileEditToolConfig): Tool {
   return {
     name: FILE_EDIT_TOOL_NAME,
-    description: FILE_EDIT_DESCRIPTION,
+    description: fileEditDescription(config.sparseLineNumbers === true),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -836,7 +849,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         file_path: {
           type: "string",
           description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+            FILE_TOOL_PATH_SCHEMA,
         },
         old_string: {
           type: "string",
@@ -867,9 +880,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
       const cwd =
         asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       return checkToolPathPermission({
         toolName: FILE_EDIT_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -888,6 +898,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         return preMutationErrorResult(validated.error, FILE_EDIT_TOOL_NAME);
       }
       const { file_path, old_string, new_string, replace_all } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       // Verbatim from AgenC FileEditTool.ts:148-156.
       if (old_string === new_string) {
@@ -904,12 +915,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         asNonEmptyString(rawArgs.cwd) ??
         config.allowedPaths[0] ??
         process.cwd();
-      if (isAgentNamespacePath(file_path)) {
-        return preMutationErrorResult(
-          agentNamespacePathHint(file_path, cwd),
-          FILE_EDIT_TOOL_NAME,
-        );
-      }
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
@@ -979,14 +984,13 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               source: "file_edit",
               beforeText: "",
               afterText: new_string,
-              rawArgs,
               testHooks: config,
             },
             () => writeFileCreatingParents(absoluteFilePath, new_string),
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatCreateFileError(err));
+          return mutationErrorResult(err, formatCreateFileError(err), FILE_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -995,7 +999,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1091,7 +1095,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
               source: "file_edit",
               beforeText: snapshot.content,
               afterText: new_string,
-              rawArgs,
               observedEncoding: snapshot.encoding,
               testHooks: config,
             },
@@ -1104,12 +1107,12 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatWriteFileError(err));
+          return mutationErrorResult(err, formatWriteFileError(err), FILE_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `${successText(file_path, false)}${lspFeedback}`,
+          content: `${successText(displayPath, false)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1141,7 +1144,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             source: "file_edit",
             beforeText: snapshot.content,
             afterText: updated,
-            rawArgs,
             observedEncoding: snapshot.encoding,
             testHooks: config,
           },
@@ -1150,7 +1152,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         if (rejected !== null) return rejected;
       } catch (err) {
-        return errorResult(formatWriteFileError(err));
+        return mutationErrorResult(err, formatWriteFileError(err), FILE_EDIT_TOOL_NAME);
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
@@ -1158,7 +1160,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${successText(file_path, replace_all)}${lspFeedback}`,
+        content: `${successText(displayPath, replace_all)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
@@ -1192,7 +1194,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         file_path: {
           type: "string",
           description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+            FILE_TOOL_PATH_SCHEMA,
         },
         edits: {
           type: "array",
@@ -1225,6 +1227,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       required: ["file_path", "edits"],
       additionalProperties: false,
     },
+    reshapeModelArgs: foldEditShapedMultiEditArgs,
     checkPermissions(input, context) {
       const args = input as MultiEditArgs;
       const filePath = asNonEmptyString(args.file_path);
@@ -1237,9 +1240,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const cwd =
         asNonEmptyString(args.cwd) ?? config.allowedPaths[0] ?? process.cwd();
       const firstEdit = Array.isArray(args.edits) ? args.edits[0] : undefined;
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       const firstOldString =
         firstEdit !== null &&
         typeof firstEdit === "object" &&
@@ -1267,6 +1267,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
       const { file_path, edits } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       const firstEdit = edits[0];
       if (firstEdit === undefined) {
@@ -1289,12 +1290,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         asNonEmptyString(rawArgs.cwd) ??
         config.allowedPaths[0] ??
         process.cwd();
-      if (isAgentNamespacePath(file_path)) {
-        return preMutationErrorResult(
-          agentNamespacePathHint(file_path, cwd),
-          FILE_MULTI_EDIT_TOOL_NAME,
-        );
-      }
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
@@ -1355,7 +1350,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
               source: "file_multi_edit",
               beforeText: "",
               afterText: firstEdit.new_string,
-              rawArgs,
               testHooks: config,
             },
             () =>
@@ -1363,7 +1357,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatCreateFileError(err));
+          return mutationErrorResult(err, formatCreateFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           resolveSessionId(rawArgs),
@@ -1372,7 +1366,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1459,7 +1453,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
               source: "file_multi_edit",
               beforeText: snapshot.content,
               afterText: firstEdit.new_string,
-              rawArgs,
               observedEncoding: snapshot.encoding,
               testHooks: config,
             },
@@ -1472,7 +1465,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           );
           if (rejected !== null) return rejected;
         } catch (err) {
-          return errorResult(formatWriteFileError(err));
+          return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
         }
         await snapshotPostWrite(
           sessionId,
@@ -1481,7 +1474,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}`,
+          content: `${multiEditSuccessText(displayPath, 1, 1)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1544,7 +1537,6 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             source: "file_multi_edit",
             beforeText: snapshot.content,
             afterText: updated,
-            rawArgs,
             observedEncoding: snapshot.encoding,
             testHooks: config,
           },
@@ -1553,14 +1545,14 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         if (rejected !== null) return rejected;
       } catch (err) {
-        return errorResult(formatWriteFileError(err));
+        return mutationErrorResult(err, formatWriteFileError(err), FILE_MULTI_EDIT_TOOL_NAME);
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}`,
+        content: `${multiEditSuccessText(displayPath, edits.length, replacements)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",

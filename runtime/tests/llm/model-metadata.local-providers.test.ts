@@ -1,9 +1,13 @@
 import { describe, expect, test } from "vitest";
 
+import { defaultConfig, mergeConfigs } from "../../src/config/schema.js";
 import {
+  CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
   ModelMetadataResolver,
   ollamaShowUrlFromBaseUrl,
 } from "../../src/llm/model-metadata.js";
+import { StaticModelsManager } from "../../src/llm/models-manager.js";
+import { modelContextWindow } from "../../src/session/turn-context.js";
 import type { AgenCConfig } from "../../src/utils/config.js";
 
 const EMPTY_CONFIG = {} as unknown as AgenCConfig;
@@ -39,6 +43,7 @@ interface Call {
   readonly url: string;
   readonly method: string;
   readonly body?: string;
+  readonly authorization?: string;
 }
 
 function recordingFetch(
@@ -47,10 +52,12 @@ function recordingFetch(
   const calls: Call[] = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    const authorization = new Headers(init?.headers).get("authorization");
     calls.push({
       url,
       method: init?.method ?? "GET",
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      ...(authorization ? { authorization } : {}),
     });
     const route = routes[url];
     if (route === undefined) {
@@ -115,6 +122,159 @@ describe("provider metadata identity", () => {
       usedFallbackModelMetadata: false,
     });
   });
+
+  test.each([
+    ["grok", "XAI_BASE_URL", "XAI_API_KEY"],
+    ["groq", "GROQ_BASE_URL", "GROQ_API_KEY"],
+    ["deepseek", "DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"],
+    ["meta", "META_BASE_URL", "MODEL_API_KEY"],
+    ["qwen", "QWEN_BASE_URL", "QWEN_API_KEY"],
+    ["qwen-token-plan", "QWEN_TOKEN_PLAN_BASE_URL", "QWEN_TOKEN_PLAN_API_KEY"],
+    ["cerebras", "CEREBRAS_BASE_URL", "CEREBRAS_API_KEY"],
+    ["lmstudio", "LMSTUDIO_BASE_URL", "LMSTUDIO_API_KEY"],
+    ["openai-compatible", "OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"],
+  ])("%s only queries its configured API paths", async (provider, baseUrlEnv, apiKeyEnv) => {
+    const { impl, calls } = recordingFetch({
+      "https://metadata.example/v1/models": {
+        json: { object: "list", data: [{ id: "unlisted-model" }] },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: {
+        [baseUrlEnv]: "https://metadata.example/v1",
+        [apiKeyEnv]: "provider-key",
+      },
+    }).resolve({ provider, model: "unlisted-model", config: EMPTY_CONFIG });
+
+    expect(resolved.contextWindow).toBeGreaterThan(0);
+    expect(calls[0]).toMatchObject({
+      url: "https://metadata.example/v1/models",
+      authorization: "Bearer provider-key",
+    });
+    expect(calls.map((call) => call.url)).not.toContain(
+      "https://metadata.example/api/show",
+    );
+  });
+
+  test("Ollama Cloud still uses its own native API with its own key", async () => {
+    const { impl, calls } = recordingFetch({
+      "https://ollama.com/api/show": { json: OLLAMA_SHOW },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OLLAMA_API_KEY: "ollama-cloud-key", OPENAI_API_KEY: "hosted-openai-key" },
+    }).resolve({
+      provider: "ollama-cloud",
+      model: "unlisted-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(32768);
+    expect(calls).toEqual([{
+      url: "https://ollama.com/api/show",
+      method: "POST",
+      body: JSON.stringify({ model: "unlisted-model" }),
+      authorization: "Bearer ollama-cloud-key",
+    }]);
+  });
+});
+
+describe("official provider base URLs", () => {
+  const liveOpenAiListing = {
+    "https://api.openai.com/v1/models": {
+      json: { data: [{ id: "gpt-5", context_window: 8_192 }] },
+    },
+  };
+
+  test.each([
+    "https://api.openai.com/v1",
+    "https://api.openai.com/v1/",
+    "https://API.OPENAI.COM:443/v1/",
+  ])("OPENAI_BASE_URL=%s uses the curated catalog without a live request", async (baseUrl) => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a configured official OpenAI base URL uses the curated catalog", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://api.openai.com/v1/" } },
+    });
+    const resolved = await new ModelMetadataResolver({ fetchImpl: impl, env: {} })
+      .resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("an official environment URL takes precedence over a configured proxy", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://proxy.example/v1" } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: "https://api.openai.com/v1" },
+    }).resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    ["https://proxy.example/v1", "https://proxy.example/v1/models"],
+    ["https://api.openai.com/other", "https://api.openai.com/other/v1/models"],
+    ["http://api.openai.com/v1", "http://api.openai.com/v1/models"],
+    ["https://api.openai.com:444/v1", "https://api.openai.com:444/v1/models"],
+  ])("a different OpenAI base URL %s still uses live metadata", async (baseUrl, modelsUrl) => {
+    const { impl, calls } = recordingFetch({
+      [modelsUrl]: { json: { data: [{ id: "gpt-5", context_window: 8_192 }] } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 8_192,
+      source: "live_endpoint",
+    });
+    expect(calls.map((call) => call.url)).toEqual([modelsUrl]);
+  });
+
+  test("another hosted provider also skips only its official default", async () => {
+    const { impl, calls } = recordingFetch({
+      "https://api.deepseek.com/v1/models": {
+        json: { data: [{ id: "deepseek-flash", context_window: 8_192 }] },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1/" },
+    }).resolve({ provider: "deepseek", model: "deepseek-flash", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 1_048_576,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
 });
 
 describe("local providers resolve the real context window", () => {
@@ -176,7 +336,10 @@ describe("local providers resolve the real context window", () => {
       });
       const resolved = await new ModelMetadataResolver({
         fetchImpl: impl,
-        env: { [envKey]: "http://127.0.0.1:11434/v1" },
+        env: {
+          [envKey]: "http://127.0.0.1:11434/v1",
+          OPENAI_API_KEY: "hosted-openai-key",
+        },
       }).resolve({
         provider,
         model: "qwen2.5-coder:1.5b",
@@ -191,8 +354,66 @@ describe("local providers resolve the real context window", () => {
         "http://127.0.0.1:11434/v1/models",
         "http://127.0.0.1:11434/api/show",
       ]);
+      expect(calls[0]!.authorization).toBeUndefined();
+      expect(calls[1]!.authorization).toBeUndefined();
     });
   }
+
+  test("the default compatible metadata probe does not borrow the OpenAI key", async () => {
+    const { impl, calls } = recordingFetch({
+      "http://localhost:8000/v1/models": {
+        json: { data: [{ id: "local-model", max_model_len: 8192 }] },
+      },
+    });
+    await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_API_KEY: "hosted-openai-key" },
+    }).resolve({
+      provider: "openai-compatible",
+      model: "local-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(calls[0]?.url).toBe("http://localhost:8000/v1/models");
+    expect(calls[0]?.authorization).toBeUndefined();
+  });
+
+  test.each([
+    ["the default hosted origin", undefined, "https://api.openai.com/v1/models"],
+    ["an explicit hosted origin", "https://api.openai.com/v1", "https://api.openai.com/v1/models"],
+    ["a custom hosted origin", "https://openai.example/v1", "https://openai.example/v1/models"],
+    ["a custom local origin", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/v1/models"],
+  ])("OpenAI session startup never queries /api/show at %s", async (_label, baseUrl, modelsUrl) => {
+    const { impl, calls } = recordingFetch({
+      [modelsUrl]: { json: { object: "list", data: [{ id: "unlisted-model" }] } },
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+      metadata: {
+        fetchImpl: impl,
+        env: {
+          OPENAI_API_KEY: "hosted-openai-key",
+          ...(baseUrl ? { OPENAI_BASE_URL: baseUrl } : {}),
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("unlisted-model");
+    expect(info.contextWindow).toBeGreaterThan(0);
+    if (baseUrl && baseUrl !== "https://api.openai.com/v1") {
+      expect(calls[0]).toMatchObject({
+        url: modelsUrl,
+        authorization: "Bearer hosted-openai-key",
+      });
+      expect(calls.filter((call) => call.authorization)).toEqual([calls[0]]);
+    } else {
+      expect(calls.every((call) => call.authorization === undefined)).toBe(true);
+    }
+    expect(calls.map((call) => call.url)).not.toContain(
+      ollamaShowUrlFromBaseUrl(baseUrl ?? "https://api.openai.com/v1"),
+    );
+  });
 
   test("a compatible server that already reports a window is not probed twice", async () => {
     // vLLM and friends expose max_model_len on /v1/models; that answer wins
@@ -247,10 +468,8 @@ describe("local providers resolve the real context window", () => {
     ]);
   });
 
-  test("a non-Ollama server that rejects the native probe still resolves", async () => {
-    // The extra POST must never turn a working setup into a failure: an
-    // unknown server 404s and the resolver falls through its usual chain.
-    const { impl } = recordingFetch({
+  test("an unrecognized local server uses the usual metadata fallbacks", async () => {
+    const { impl, calls } = recordingFetch({
       "http://127.0.0.1:8000/v1/models": {
         json: { object: "list", data: [{ id: "local-model" }] },
       },
@@ -266,6 +485,9 @@ describe("local providers resolve the real context window", () => {
 
     expect(resolved.source).not.toBe("live_endpoint");
     expect(resolved.contextWindow).toBeGreaterThan(0);
+    expect(calls.map((call) => call.url)).not.toContain(
+      "http://127.0.0.1:8000/api/show",
+    );
   });
 
   test("llama.cpp reports the window nested under meta", async () => {
@@ -347,6 +569,207 @@ describe("local providers resolve the real context window", () => {
         config: EMPTY_CONFIG,
       });
       expect(resolved.source, String(value)).not.toBe("live_endpoint");
+    }
+  });
+});
+
+const OLLAMA_SHOW_URL = "http://127.0.0.1:11434/api/show";
+const OLLAMA_ENV = { OLLAMA_BASE_URL: "http://127.0.0.1:11434" } as const;
+
+function ollamaShowScriptFetch(
+  script: (showCall: number) => Promise<Response> | Response,
+): { readonly impl: typeof fetch; readonly showCalls: () => number } {
+  let showCalls = 0;
+  const impl = (async (input: RequestInfo | URL) => {
+    if (String(input) !== OLLAMA_SHOW_URL) {
+      return new Response("not found", { status: 404 });
+    }
+    showCalls += 1;
+    return await script(showCalls);
+  }) as unknown as typeof fetch;
+  return { impl, showCalls: () => showCalls };
+}
+
+describe("transient metadata failures do not stick", () => {
+  test("a 503 then a valid 32768 window refetches instead of caching undefined", async () => {
+    const { impl, showCalls } = ollamaShowScriptFetch((showCall) => {
+      if (showCall === 1) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify(OLLAMA_SHOW), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "ollama",
+      metadata: { fetchImpl: impl, env: OLLAMA_ENV },
+    });
+
+    const first = await manager.getModelInfo("qwen2.5-coder:1.5b");
+    expect(first.usedFallbackModelMetadata).toBe(true);
+    expect(first.contextWindow).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
+    expect(showCalls()).toBe(1);
+
+    const second = await manager.getModelInfo("qwen2.5-coder:1.5b");
+    expect(second.contextWindow).toBe(32768);
+    expect(second.usedFallbackModelMetadata).toBe(false);
+    expect(showCalls()).toBe(2);
+  });
+
+  test("concurrent ollama lookups share one in-flight /api/show request", async () => {
+    let releaseFirst!: () => void;
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const { impl, showCalls } = ollamaShowScriptFetch(async (showCall) => {
+      if (showCall === 1) await holdFirst;
+      return new Response(JSON.stringify(OLLAMA_SHOW), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const resolver = new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: OLLAMA_ENV,
+    });
+    const lookup = {
+      provider: "ollama",
+      model: "qwen2.5-coder:1.5b",
+      config: EMPTY_CONFIG,
+    };
+
+    const pending = [resolver.resolve(lookup), resolver.resolve(lookup)];
+    expect(showCalls()).toBe(1);
+    releaseFirst();
+    const [left, right] = await Promise.all(pending);
+    expect(left.source).toBe("live_endpoint");
+    expect(right.source).toBe("live_endpoint");
+    expect(left.contextWindow).toBe(32768);
+    expect(right.contextWindow).toBe(32768);
+    expect(showCalls()).toBe(1);
+  });
+});
+
+/**
+ * DeepSeek's GET /v1/models, recorded 2026-09-25 and trimmed to the fields
+ * the resolver reads. The window is spelled `context_window`.
+ */
+const DEEPSEEK_FLASH_LISTING = {
+  id: "deepseek-flash",
+  object: "model",
+  owned_by: "deepseek",
+  context_window: 1_048_576,
+  max_output_tokens: 393_216,
+} as const;
+
+const DEEPSEEK_LISTING_ENV = {
+  DEEPSEEK_API_KEY: "deepseek-key",
+  DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+} as const;
+
+function deepSeekListing(
+  entry: Readonly<Record<string, unknown>>,
+): ReturnType<typeof recordingFetch> {
+  return recordingFetch({
+    "https://api.deepseek.com/v1/models": {
+      json: { object: "list", data: [entry] },
+    },
+  });
+}
+
+async function resolveFromDeepSeekListing(
+  entry: Readonly<Record<string, unknown>>,
+) {
+  return await new ModelMetadataResolver({
+    fetchImpl: deepSeekListing(entry).impl,
+    env: DEEPSEEK_LISTING_ENV,
+  }).resolve({
+    provider: "deepseek",
+    model: String(entry.id),
+    config: EMPTY_CONFIG,
+  });
+}
+
+describe("a source that knows a model's limits but not its window", () => {
+  test("a DeepSeek base URL keeps deepseek-flash's window for the session", async () => {
+    // With DEEPSEEK_BASE_URL set, the models list is read before the catalog.
+    // Only its output limit was read, so every turn of the session failed in
+    // milliseconds with "Missing context window for model deepseek-flash".
+    const { impl, calls } = deepSeekListing(DEEPSEEK_FLASH_LISTING);
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "deepseek",
+        model: "deepseek-flash",
+      }),
+      fallbackProvider: "deepseek",
+      metadata: { fetchImpl: impl, env: DEEPSEEK_LISTING_ENV },
+    });
+
+    const info = await manager.getModelInfo("deepseek-flash");
+
+    expect(info.contextWindow).toBe(1_048_576);
+    expect(modelContextWindow({ modelInfo: info })).toBe(996_147);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.deepseek.com/v1/models",
+    ]);
+  });
+
+  test("a models list's context_window is the window its endpoint serves", async () => {
+    // An endpoint that serves the model with a smaller window than the
+    // catalog's: its listing wins, as it does when the field is named
+    // context_length.
+    const resolved = await resolveFromDeepSeekListing({
+      ...DEEPSEEK_FLASH_LISTING,
+      context_window: 262_144,
+    });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 262_144,
+      source: "live_endpoint",
+    });
+  });
+
+  test("a models list with only an output limit keeps the catalog window", async () => {
+    const resolved = await resolveFromDeepSeekListing({
+      id: "deepseek-flash",
+      max_output_tokens: 32_768,
+    });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 32_768,
+      source: "live_endpoint",
+      usedFallbackModelMetadata: false,
+    });
+  });
+
+  test("an output limit alone does not leave an unknown model without a window", async () => {
+    // Nothing here knows these models, so they plan against the conservative
+    // window, the same one they get when no source answers at all.
+    const capped = new ModelMetadataResolver({ env: {} });
+    const cappedLookup = {
+      provider: "openai",
+      model: "unlisted-model",
+      config: mergeConfigs(defaultConfig(), {
+        providers: { openai: { max_output_tokens: 8_192 } },
+      }),
+    };
+
+    for (
+      const resolved of [
+        await resolveFromDeepSeekListing({
+          id: "proxy-model",
+          max_output_tokens: 8_192,
+        }),
+        capped.resolveSync(cappedLookup),
+        await capped.resolve(cappedLookup),
+      ]
+    ) {
+      expect(resolved).toMatchObject({
+        contextWindow: CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+        maxOutputTokens: 8_192,
+        usedFallbackModelMetadata: true,
+      });
     }
   });
 });

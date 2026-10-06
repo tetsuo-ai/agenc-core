@@ -1,12 +1,12 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.17.0**). For the
+A current map of how `agenc` is put together (runtime **0.18.0**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
 | Doc                                                                              | Scope                                                                        |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon lifecycle, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon), and [max-output-tokens recovery](reference/daemon.md#max-output-tokens-recovery) |
 | [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials, local context-window probes, Responses continuation |
 | [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery (pinned webhook destinations), hooks HTTP   |
 | [`reference/mcp.md`](reference/mcp.md)                                           | Outbound/inbound MCP, plugin-declared servers, model-facing inputSchema sanitization, omitted-type object schemas, Landlock stdio failures |
@@ -49,7 +49,11 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
    **background agents**, the **channel gateway**, **remote control**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
-   view onto daemon-owned sessions.
+   view onto daemon-owned sessions. A TUI that loses its daemon
+   connection mid-turn ends that turn locally when the daemon does not
+   answer within 10 s, and autostart after a hard kill waits until the
+   replacement socket accepts connections:
+   [daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 Everything past the launcher lives in the single runtime workspace
 (`@tetsuo-ai/runtime`). The launcher is intentionally tiny.
@@ -88,7 +92,7 @@ Everything past the launcher lives in the single runtime workspace
 | `elicitation/`                                                           | Structured user-input / MCP elicitation request-response                                                                                                                                                                                       |
 | `memory/` / `memdir/`                                                    | Project/session memory extraction, storage, aging, retrieval; full-corpus FTS index (`derived-indexes/memory-v1.sqlite`); team memory paths. See [memory.md](reference/memory.md).                                                             |
 | `config/`                                                                | Config schema, loader, migrations, profiles, model/provider resolution                                                                                                                                                                         |
-| `state/`                                                                 | On-disk SQLite project state, migrations, rebuildable run/effect/journal projections, recovery, pruning, agent-runs, health stats                                                                                                              |
+| `state/`                                                                 | On-disk SQLite project state, migrations, rebuildable run/effect/journal projections, recovery, pruning (including [session rollout retention](reference/daemon.md#session-rollout-retention)), agent-runs, health stats                                                                                                              |
 | `durability/`                                                            | Crash failpoints and immutable, atomic artifact publication                                                                                                                                                                                    |
 | `secrets/`                                                               | Secret redaction / sanitizer                                                                                                                                                                                                                   |
 | `transaction-guard/`                                                     | Opt-in local SLM guard for Solana-like mutating tool calls                                                                                                                                                                                     |
@@ -103,11 +107,11 @@ Everything past the launcher lives in the single runtime workspace
 | `tasks/`                                                                 | Task UI / task store surface for agent work items                                                                                                                                                                                              |
 | `file-watcher/`                                                          | Workspace file-watch helpers                                                                                                                                                                                                                   |
 | `transport/`                                                             | Transport fallback ladder                                                                                                                                                                                                                      |
-| `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. [CP-0006](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) documents compact thresholds, disable flags, admitted summary calls, and [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival). Most of these are not separate CLIs.                                                                                                                                                                                |
+| `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. [CP-0006](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) documents compact thresholds, disable flags, admitted summary calls, the [900 s transaction wall budget](design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget), and [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival). Most of these are not separate CLIs.                                                                                                                                                                                |
 | `search/`                                                                | Persistent fuzzy file index used by `fs.fuzzy_search`                                                                                                                                                                                          |
-| `workspace/`                                                             | Editor mutation leases and topology fences for BUFFER (`workspace.editor.*`)                                                                                                                                                                   |
+| `workspace/`                                                             | Verified file-mutation transactions (rollback boundary, no-effect evidence) and the per-tool-call operation lifetime that keeps shell descendants contained                                                                                    |
 | `contracts/`                                                             | Frozen run/admission/CSV/invocation types shared by daemon, SDK, and tests                                                                                                                                                                     |
-| `recovery/`                                                              | Crash/recovery helpers for in-flight work                                                                                                                                                                                                      |
+| `recovery/`                                                              | Stream/model fallback ladder, including [max-output-tokens escalate and continuation](#max-output-tokens-recovery). Do not confuse with journal quarantine in `state/`.                                                                         |
 | `onboarding/`                                                            | Guided `agenc onboard` wizard UI                                                                                                                                                                                                               |
 | `eval/`                                                                  | Diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`)                                                                                                                                                    |
 | `eval-contract/`                                                         | Immutable task/preregistration/evidence/score contract v1                                                                                                                                                                                      |
@@ -118,7 +122,8 @@ Everything past the launcher lives in the single runtime workspace
 | `bootstrap/` / `lifecycle/` / `conversation/`                            | Bootstrap state, shutdown/signals, conversation token-budget and realtime                                                                                                                                                                      |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
 | `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
-| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.17.0`), public barrel                                                                                                                                                                                         |
+| `audio/`                                                                 | Local Whisper dictation and verified model install. Downloads fail after 60 s of silence, not a ten-minute wall clock: [whisper-local.md](whisper-local.md#download-idle-clock).                                                               |
+| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.18.0`), public barrel                                                                                                                                                                                         |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -139,8 +144,9 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `gateway/`                                                         | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane                                                    |
 | `projects/<slug>/`                                                 | Per-project SQLite state (including execution admission, run/effect projections, and schema-v18 bounded recovery evidence) + canonical `sessions/<id>/` rollouts |
 | `projects/<slug>/agenc-state_1.pre-v15.sqlite`                     | Automatic verified rollback snapshot created before upgrading an existing project database to schema v15                             |
-| `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename)                                               |
+| `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename). The daemon sweep deletes idle session dirs after `agent.retention.rollout_days` (default 30; 0 keeps every session): [session rollout retention](reference/daemon.md#session-rollout-retention). |
 | `derived-indexes/memory-v1.sqlite`                                 | Rebuildable full-corpus memory FTS cache (not source authority). See [memory.md](reference/memory.md).                               |
+| `whisper/`                                                         | Private Whisper model weights (`ggml-base.bin`, `ggml-small.bin`). Downloads use a 60 s idle clock: [whisper-local.md](whisper-local.md#download-idle-clock). |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
 
 Login tokens, provider BYOK keys, remote bearers, and persisted remote
@@ -367,6 +373,7 @@ phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 | 2   | `streamModel`        | `phases/stream-model.ts`         | Admit one physical sample; stream the provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
 | 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
 | 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
+| 4b  | `completionGate`     | `phases/completion-gate.ts`      | Non-interactive sessions only: accept a tool-free final answer once each checked item has associated tool evidence after the last workspace change (the last file edit or a command the checklist does not name), the first answer only if it also cites a command that ran successfully since then; otherwise inject a durable verification request; at the round cap, or once an answer that ran no tool repeats the last request's verdict, settle `partial` for unavailable checks or `exhausted` |
 | 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
 | 6   | `commit`             | `phases/commit.ts`               | Terminal commit for the iteration; may re-enter via stop-hooks                                    |
 
@@ -415,16 +422,58 @@ recovery condition, triggers are evaluated in a **fixed priority order**
 | Order | Trigger name                | Intent                                               |
 | ----- | --------------------------- | ---------------------------------------------------- |
 | 1     | `isWithheld413`             | Prompt-too-long → collapse / reactive recovery       |
-| 2     | `isWithheldMedia`           | Media-too-large → reactive recovery (skips collapse) |
-| 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation         |
+| 2     | `isWithheldMedia`           | Media-too-large or a provider-refused image → leave the images out and re-sample |
+| 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → [escalate, continuation, or exhaust](#max-output-tokens-recovery) |
 | 4     | `stopHookBlocking`          | Stop-hook inject + re-enter                          |
 | 5     | `streamingFallbackOccured`  | Streaming fallback tombstone + recreate executor     |
 | 6     | `FallbackTriggeredError`    | Model fallback swap                                  |
 
-Related modules: `api-errors.ts` (match predicates), `model-fallback.ts`,
-`max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
+Related modules: `api-errors.ts` (match predicates), `image-rejection.ts`,
+`model-fallback.ts`, `max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
 `withhold-cascading.ts`. Do not reorder the trigger array without updating
 the I-10 tests that pin `I10_TRIGGER_ORDER`.
+
+A refused image is recorded for the session and replaced in every later
+request by a short note (`session/query-image-safety.ts`), so a replayed tool
+result cannot fail each turn that follows. The same projection leaves out
+every image for a model the registry documents as text-only
+(`resolveImageInputSupport` in `llm/capabilities.ts`) and any tool-result
+image whose bytes are not a complete PNG, JPEG, GIF or WebP image
+(`utils/image-validation.ts`). Durable history keeps the original content.
+
+### Max-output-tokens recovery
+
+`isWithheldMaxOutputTokens` matches `apiError: "max_output_tokens"` on the
+last assistant. `post-sample-recovery.ts` `onMaxOutputTokens` then calls
+`runMaxOutputTokensRecovery`:
+
+1. **Escalate** when no escalated override is active, the effective budget
+   is a capped default, and there is no explicit budget
+   (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or
+   `providers.<provider>.max_output_tokens`). Override becomes
+   `min(64000, model upper limit)` (`ESCALATED_MAX_OUTPUT_TOKENS`). Commit
+   clears the override after each completed iteration. Durable history is
+   truncated to `messagesAtSampleStart`, never copied from
+   `messagesForQuery`.
+2. **Continuation** while `maxOutputTokensRecoveryCount` plus
+   `reasoningOnlyRecoveryCount` is under 3
+   (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). Reasoning-only replies (the capped
+   sample has no text and no tool calls, and the last response reports
+   `reasoningOutputTokens > 0`) ask for a next concrete step. Truncated
+   tool arguments ask for complete JSON. Ordinary truncated text uses the
+   resume-from-here line.
+3. **Exhausted** ends the turn as `model_error` when the counted retries
+   reach 3:
+   `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.`
+
+On native DeepSeek, the call after a reasoning-only cap is sent with
+thinking disabled. If it returns a tool call or a final answer,
+`reasoningOnlyRecoveryCount` resets to 0, so only unproductive
+reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
+and sent back, so the next thinking-on call is accepted.
+
+Operator runbook:
+[daemon.md](reference/daemon.md#max-output-tokens-recovery).
 
 ## LLM / providers
 
@@ -484,18 +533,7 @@ Heartbeat: **disabled by default**, interval **1800s**, env
 The TUI is a **custom `react-reconciler` Ink fork** under
 `runtime/src/tui/ink` (own renderer, double-buffered frame diffing, event
 dispatch, bidi/ANSI) — not the upstream `ink` package. On top: app shell,
-prompt input, transcript, and the **workbench** (project explorer, preview,
-and editable `BUFFER`).
-
-BUFFER prefers a supervised `nvim --embed` workspace session. Neovim owns
-editing, modes, command-line UI, messages, popups, buffers, and plugins; AgenC
-attaches a line-grid UI, renders that native grid into the measured center
-pane, routes terminal input, and owns process and file-safety boundaries.
-Loaded and hidden Neovim buffers form one safety unit: navigation reuses the
-session, dirty state is aggregated across the buffer manifest, and a workbench
-transition cannot abandon edits in a non-active buffer. Request-scoped
-Editor turns cap sampling, tool calls, and query tokens; see
-[editor request bounds](embedded-neovim-buffer.md#editor-request-bounds).
+prompt input, and transcript.
 
 A throwing frame is contained; the next frame full-repaints rather than
 crashing the process.
@@ -521,7 +559,7 @@ crashing the process.
   [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
 - Releases use the complete local suite and the manual hosted matrix from
   exact current `main`. The matrix covers Linux kernel
-  sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
+  sandboxing, PowerShell, macOS, and Windows. The optional GitHub App
   and ruleset design remains inactive. See
   [`ci-required-gates.md`](ci-required-gates.md).
 
@@ -548,7 +586,7 @@ compression, and timestamp policy, validates the descriptor graph, compares
 every compressed blob, then starts the bound image under read-only-root,
 capability-free, no-network hardening and verifies native socket credentials.
 
-## Current status (0.17.0)
+## Current status (0.18.0)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

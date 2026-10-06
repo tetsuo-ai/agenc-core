@@ -161,6 +161,24 @@ describe('headless OpenAI model discovery CLI', () => {
     })
   })
 
+  test('environment API key uses its configured OpenAI endpoint', async () => {
+    mocks.read.mockReturnValue(undefined)
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: 'custom-model' }] }),
+    }))
+    const { io } = captureIo(fetchImpl)
+    expect(await runOpenAiModelsCli(
+      { kind: 'list', json: true },
+      { home, environment: { OPENAI_API_KEY: 'custom-key', OPENAI_BASE_URL: 'https://custom.example/v1' } },
+      io,
+    )).toBe(0)
+    expect(fetchImpl).toHaveBeenCalledWith('https://custom.example/v1/models', {
+      headers: { Authorization: 'Bearer custom-key' },
+    })
+  })
+
   test('no credential fails with the sign-in guidance', async () => {
     mocks.read.mockReturnValue(undefined)
     const { io, stdout } = captureIo(vi.fn())

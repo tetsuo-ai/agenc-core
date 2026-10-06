@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   CostSidecar,
   computeUsdCostWithResolution,
@@ -14,6 +14,7 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../config/resolve-provider.js";
+import { BudgetTracker } from "../conversation/token-budget.js";
 
 const ZERO_COST_DEFAULT_PROVIDERS = new Set([
   "lmstudio",
@@ -185,6 +186,79 @@ describe("cost helpers", () => {
     },
   );
 
+  // developers.openai.com/api/docs/pricing and the model pages, Standard
+  // rows for prompts up to 272K input tokens (read 2026-09-22), per 1M:
+  // Astra $10 / $1 cached / $50 output, GPT-6 Sol $2 / $0.20 / $10, GPT-6
+  // Luna $0.10 / $0.01 / $0.50, GPT-5.6 Sol $4 / $0.40 / $20 (promotional,
+  // at least through 2026-11-21), Terra $2 / $0.20 / $12, GPT-5.6 Luna
+  // $0.20 / $0.02 / $1.20, GPT-5.5 $5 / $0.50 / $30, GPT-5.3 Codex
+  // $1.75 / $0.175 / $14.
+  test.each([
+    ["gpt-6-astra", 0.01, 0.001, 0.05],
+    ["gpt-6-sol", 0.002, 0.0002, 0.01],
+    ["gpt-6-luna", 0.0001, 0.00001, 0.0005],
+    ["gpt-5.6-sol", 0.004, 0.0004, 0.02],
+    ["gpt-5.6-terra", 0.002, 0.0002, 0.012],
+    ["gpt-5.6-luna", 0.0002, 0.00002, 0.0012],
+    ["gpt-5.5", 0.005, 0.0005, 0.03],
+    ["gpt-5.3-codex", 0.00175, 0.000175, 0.014],
+  ])(
+    "prices %s at its documented standard rates",
+    (model, inputUsdPer1K, cachedInputUsdPer1K, outputUsdPer1K) => {
+      const resolution = computeUsdCostWithResolution(
+        {
+          provider: "openai",
+          model,
+          inputTokens: 2_000,
+          outputTokens: 1_000,
+          cachedInputTokens: 500,
+          cacheCreationInputTokens: 0,
+          // Reasoning tokens are part of output_tokens and bill at the
+          // output rate; there is no separate reasoning rate.
+          reasoningOutputTokens: 400,
+          webSearchRequests: 0,
+          totalTokens: 3_000,
+          turns: 1,
+        },
+        DEFAULT_MODEL_COSTS,
+      );
+      expect(resolution.known).toBe(true);
+      expect(resolution.matchedKey).toBe(`openai:${model}`);
+      expect(resolution.costUsd).toBeCloseTo(
+        1.5 * inputUsdPer1K + 0.5 * cachedInputUsdPer1K + outputUsdPer1K,
+        10,
+      );
+      // OpenRouter has its own published tariff, tested in openrouter-catalog.test.ts.
+      for (const alias of [model, `openai/${model}`]) {
+        expect(DEFAULT_MODEL_COSTS[alias]).toBe(DEFAULT_MODEL_COSTS[`openai:${model}`]);
+      }
+    },
+  );
+
+  test("keeps GPT-5.x ids from collapsing onto another model's price", () => {
+    const matchedKey = (model: string) =>
+      resolveModelCostEntry({ provider: "openai", model }, DEFAULT_MODEL_COSTS)
+        ?.key ?? null;
+    // Dated snapshots and documented aliases keep their model's price.
+    expect(matchedKey("gpt-5.5-2026-04-23")).toBe("openai:gpt-5.5");
+    expect(matchedKey("gpt-5.6")).toBe("openai:gpt-5.6-sol");
+    expect(matchedKey("gpt-5-2025-08-07")).toBe("openai:gpt-5");
+    expect(matchedKey("gpt-5-codex")).toBe("openai:gpt-5");
+    // A Pro sibling has its own documented row, never its base model's.
+    expect(matchedKey("gpt-5.5-pro")).toBe("openai:gpt-5.5-pro");
+    // A dotted minor is a different model, and a sibling of a priced model
+    // is not that model: unpriced beats a borrowed price.
+    for (const model of [
+      "gpt-5.5-turbo",
+      "gpt-5.6-cyber",
+      "gpt-5.6-sol-unverified",
+      "gpt-5.3-codex-spark",
+      "gpt-5.9",
+    ]) {
+      expect(matchedKey(model), model).toBeNull();
+    }
+  });
+
   test("computeUsdCost reports unknown pricing without throwing", () => {
     const usage = {
       provider: "unknown-provider",
@@ -200,25 +274,15 @@ describe("cost helpers", () => {
     };
     const resolution = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
     expect(resolution.known).toBe(false);
-    expect(resolution.costUsd).toBeCloseTo(0.175, 6);
+    expect(resolution.costUsd).toBeCloseTo(4.5, 6);
+    expect(resolution.costEstimated).toBe(true);
   });
 
   test("built-in provider defaults with authoritative pricing resolve as known costs", () => {
     for (const [provider, model] of Object.entries(
       BUILT_IN_PROVIDER_DEFAULT_MODELS,
     )) {
-      // Meta and QwenCloud Token Plan do not expose a single authoritative
-      // per-token rate. Qwen PayGo pricing is model/region/tier dependent and
-      // is intentionally not guessed here. Their regressions below remain
-      // unknown rather than claiming the conservative fallback as a rate.
-      if (
-        provider === "meta" ||
-        provider === "qwen" ||
-        provider === "qwen-token-plan" ||
-        provider === "zai-coding-plan"
-      ) {
-        continue;
-      }
+      if (["openrouter", "qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
       const sidecar = new CostSidecar({
         defaultProvider: provider,
         defaultModel: model,
@@ -253,8 +317,13 @@ describe("cost helpers", () => {
     }
   });
 
+  test("prices Ollama Cloud at the published peak rate", () => {
+    expect(resolveModelCostEntry({provider: "ollama-cloud", model: "deepseek-v4.1-flash"}, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: 0.0003, outputUsdPer1K: 0.0012, cachedInputUsdPer1K: 0.000006 });
+  });
+
   test.each(BUILT_IN_PROVIDER_MODEL_CATALOG.meta)(
-    "keeps Meta model %s pricing unknown without an authoritative rate",
+    "prices Meta model %s at its published rate",
     (model) => {
       const usage = {
         provider: "meta",
@@ -269,15 +338,19 @@ describe("cost helpers", () => {
         turns: 1,
       };
 
-      expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)).toBeNull();
+      expect(resolveModelCostEntry(usage, DEFAULT_MODEL_COSTS)?.entry).toMatchObject({
+        inputUsdPer1K: model.endsWith("-contributor") ? 0.0001 : 0.00125,
+        outputUsdPer1K: model.endsWith("-contributor") ? 0.0002 : 0.00425,
+        cachedInputUsdPer1K: model.endsWith("-contributor") ? 0.000002 : 0.00015,
+      });
       expect(computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS))
-        .toMatchObject({ known: false });
+        .toMatchObject({ known: true });
     },
   );
 
   test.each(
     (["qwen", "qwen-token-plan"] as const).flatMap((provider) =>
-      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].map((model) => [
+      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || DEFAULT_MODEL_COSTS[`qwen:${model}`] === undefined).map((model) => [
         provider,
         model,
       ] as const)
@@ -303,6 +376,16 @@ describe("cost helpers", () => {
         .toMatchObject({ known: false });
     },
   );
+
+  test.each([
+    ["qwen3.8-27b", 0.0005, 0.003, 0.0001],
+    ["qwen3.8-2.4t-a95b", 0.002, 0.006, 0.00025],
+    ["qwen3.8-omni-flash", 0.00015, 0.00047, 0.000016],
+  ] as const)("prices Qwen PAYG %s without assigning rates to Token Plan", (model, input, output, cached) => {
+    expect(resolveModelCostEntry({ provider: "qwen", model }, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: input, outputUsdPer1K: output, cachedInputUsdPer1K: cached });
+    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model }, DEFAULT_MODEL_COSTS)).toBeNull();
+  });
 
   test("uses the current official Cerebras token rates", () => {
     expect(DEFAULT_MODEL_COSTS["cerebras:gpt-oss-120b"]).toMatchObject({
@@ -405,6 +488,15 @@ describe("cost helpers", () => {
       });
   });
 
+  test("Grok 4.7 uses the documented base token rates", () => {
+    const match = resolveModelCostEntry({ model: "grok-4.7", provider: "grok" }, DEFAULT_MODEL_COSTS);
+    expect(match?.entry).toMatchObject({
+      inputUsdPer1K: 0.002,
+      cachedInputUsdPer1K: 0.0005,
+      outputUsdPer1K: 0.006,
+    });
+  });
+
   test("default + catalog grok models price as known and non-reasoning ones are not charged the reasoning surcharge", () => {
     // grok-4.3 is the grok provider default (provider-info.ts). Both it and
     // grok-build-0.1 used to mis-resolve: grok-4.3 collapsed onto the
@@ -412,6 +504,7 @@ describe("cost helpers", () => {
     // DEFAULT_UNKNOWN_MODEL_COST. Since DEFAULT_MODEL_COSTS feeds dollar_cap
     // enforcement, mispricing here enforces budgets at the wrong threshold.
     const nonReasoningModels = [
+      "grok-4.7",
       "grok-4.6",
       "grok-4.5",
       "grok-4.3",
@@ -632,6 +725,29 @@ describe("CostSidecar", () => {
     expect(sidecar.formatTotalCost()).toContain("2 web search");
   });
 
+  test("adds Anthropic reasoning on top of completion in the budget", () => {
+    const tracker = new BudgetTracker();
+    const sidecar = new CostSidecar({
+      defaultProvider: "anthropic",
+      defaultModel: "claude-sonnet-4-5",
+      budgetTracker: tracker,
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          reasoningOutputTokens: 25,
+          totalTokens: 1525,
+        },
+      },
+    });
+    expect(tracker.emitted).toBe(525);
+  });
+
   test("tracks current-session API-without-retry and tool durations", async () => {
     const sidecar = new CostSidecar();
     sidecar.addToTotalApiDuration(23);
@@ -834,6 +950,21 @@ describe("CostSidecar", () => {
 
     expect(handlers).toHaveLength(0);
     expect(writes).toEqual(["\nlifecycle-summary\n"]);
+  });
+
+  test("exitSummary false registers no process exit hook and writes nothing on stop", async () => {
+    const on = vi.spyOn(process, "on");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const sidecar = new CostSidecar({ exitSummary: false });
+      sidecar.start();
+      expect(on.mock.calls.filter(([event]) => event === "exit")).toHaveLength(0);
+      await sidecar.stop();
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      on.mockRestore();
+      write.mockRestore();
+    }
   });
 
   test("formatSummary produces one-line output", () => {

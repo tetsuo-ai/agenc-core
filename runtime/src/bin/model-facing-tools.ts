@@ -6,6 +6,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import type * as undici from "undici";
+import { loadUndiciAgent } from "../llm/undici-dispatcher.js";
 import pMap from "p-map";
 import { resolveHomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
@@ -49,10 +50,11 @@ import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
   isDirectXaiInferenceHost,
   isXaiLiveXSearchEnabled,
-  resolveXaiBearerToken,
+  tryResolveXaiBearerTokenForBaseUrl,
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
+import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -62,10 +64,18 @@ import {
 } from "../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { validationErrorToolResult } from "../tools/results.js";
+import {
+  DEADLINE_RESERVE_SPAWN_REFUSAL,
+  inDeadlineReserve,
+} from "../session/run-deadline.js";
 import { safeStringify } from "../tools/types.js";
 import { createFileReadTool } from "../tools/system/file-read.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools/system/notebook-edit.js";
-import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ALLOWED_ROOTS_SIG_ARG,
+  SESSION_ID_ARG,
+} from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../unified-exec/process-ownership.js";
 import { runtimeSandboxForExec } from "../tools/system/exec-command.js";
@@ -114,7 +124,6 @@ import {
   createStructuredOutputTool,
   createStructuredOutputToolForSchema,
 } from "./structured-output-tool.js";
-import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
@@ -141,11 +150,17 @@ import {
   isRepositoryControlledSkillSource,
 } from "../skills/repository-skill-boundary.js";
 import {
+  rankSkillsForRequest,
+  type SkillListingEntry,
+} from "../skills/local-loader.js";
+import {
   getInitializationStatus,
   getLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { readToolRuntimeContext } from "../tools/runtimes/context.js";
+import { registerSessionCronMutation } from "../tools/runtimes/session-cron.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 import { getCACertificates } from "../utils/caCerts.js";
@@ -248,6 +263,19 @@ function refusal(content: unknown): ToolResult {
     safeStringify(content),
   );
 }
+
+function cronRefusal(toolName: "CronCreate" | "CronDelete" | "CronList", message: string): ToolResult {
+  return validationErrorToolResult(
+    `tool:${toolName}:before-schedule-change`,
+    safeStringify({ error: message }),
+  );
+}
+
+function unsupportedDurableCron(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "DESCRIPTOR_UNSUPPORTED";
+}
+
+const DURABLE_CRON_UNSUPPORTED = "Durable scheduled tasks need descriptor-relative reads and writes, which are unavailable on this host. Use durable:false for a session job, or run durable cron on Linux.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -542,9 +570,8 @@ function getLiveWebFetchSsrfDispatcher(
 
   const mtlsConfig = getMTLSConfig(environment);
   const caCerts = getCACertificates(environment);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require("undici") as typeof undici;
-  const dispatcher = new undiciMod.Agent({
+  const Agent = loadUndiciAgent();
+  const dispatcher = new Agent({
     connect: {
       lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
       ...(mtlsConfig ?? {}),
@@ -958,30 +985,26 @@ function resolveXaiToolBackend(
   const currentFactory = currentIsGrok && currentProvider
     ? readProviderFactoryOptions(currentProvider)
     : undefined;
-  const currentIsDirect =
-    currentFactory !== undefined &&
-    isDirectXaiInferenceHost(currentFactory.baseURL);
   const sessionApiKey =
-    currentIsDirect && typeof currentFactory?.apiKey === "string"
+    typeof currentFactory?.apiKey === "string"
       ? currentFactory.apiKey
       : undefined;
-  const apiKey = resolveXaiBearerToken(
-    credentialHome,
-    environment,
-    sessionApiKey,
-  );
-  if (apiKey === undefined) return undefined;
-
   const configuredBaseURL = resolveProviderBaseURLEnvironment(
     "grok",
     environment,
   )?.value;
-  const baseURL = currentIsDirect
+  const baseURL = currentFactory !== undefined
     ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
     : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
-  if (!isDirectXaiInferenceHost(baseURL)) return undefined;
+  if (currentFactory === undefined && !isDirectXaiInferenceHost(baseURL)) {
+    return undefined;
+  }
+  const apiKey = tryResolveXaiBearerTokenForBaseUrl(
+    credentialHome, environment, baseURL, sessionApiKey,
+  ).bearer;
+  if (apiKey === undefined) return undefined;
 
-  const currentModel = currentIsDirect ? currentFactory?.model : undefined;
+  const currentModel = currentFactory?.model;
   const model = supportsProviderNativeXSearch({
     provider: "grok",
     model: currentModel,
@@ -1255,6 +1278,9 @@ function buildGrokNativeXSearchProvider(
   })();
   const extra: ProviderFactoryOptions["extra"] = {
     // One-shot only: native x_search, no dual continuous web search spam.
+    ...(!isTrustedXaiOauthInferenceBaseUrl(backend.baseURL)
+      ? { authMode: "api_key" as const }
+      : {}),
     webSearch: false,
     xSearch: true,
     ...(mergedXSearchOptions !== undefined
@@ -1711,6 +1737,13 @@ function createMultiAgentV2RuntimeTools(
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
+    // A run in its deadline reserve (#2503) finishes with what it has.
+    if (inDeadlineReserve(session)) {
+      return validationErrorToolResult(
+        "tool:spawn_agents_on_csv:deadline_reserve",
+        JSON.stringify({ error: DEADLINE_RESERVE_SPAWN_REFUSAL }),
+      );
+    }
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const instruction = exactNonBlankStringValue(args.instruction);
@@ -2320,12 +2353,18 @@ function createMultiAgentV2RuntimeTools(
 
   return [
     ...multiAgentV2Tools,
+    // The CSV job family is deferred (metadata.deferred): a coding turn almost
+    // never touches it, and its six schemas cost about 4 KB of every request.
+    // system.searchTools still lists and loads them; report_agent_job_result
+    // stays visible because the row subagents spawned by the job must call it
+    // without a discovery step.
     {
       name: "spawn_agents_on_csv",
       description:
-        "Spawn one subagent per CSV row. The approved instruction is kept separate from an inert structured row payload; subagents must call `report_agent_job_result` exactly once. Optionally writes an output CSV with each row's status and result.",
+        "Spawn one subagent per CSV row. The approved instruction is kept separate from an inert structured row payload; subagents must call `report_agent_job_result` exactly once. Optionally writes an output CSV with each row's status and result. Companion tools for the job it starts load through system.searchTools (select:<name>): inspect_csv_agent_job, read_csv_agent_job_result, list_csv_job_reviews, show_csv_job_review, resolve_csv_job_review.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "spawn", "batch", "csv", "job"],
       }),
       requiresApproval: true,
@@ -2416,6 +2455,7 @@ function createMultiAgentV2RuntimeTools(
         "Read a bounded summary and keyset-paginated item page for a CSV agent job. Result bodies are not embedded.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "inspect", "status"],
       }),
       isReadOnly: true,
@@ -2447,6 +2487,7 @@ function createMultiAgentV2RuntimeTools(
         "Read one bounded base64 chunk of an available CSV job item result blob.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "result", "read"],
       }),
       isReadOnly: true,
@@ -2474,6 +2515,7 @@ function createMultiAgentV2RuntimeTools(
         "List a bounded cursor page of CSV job items with unknown outcomes.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "list"],
       }),
       isReadOnly: true,
@@ -2499,6 +2541,7 @@ function createMultiAgentV2RuntimeTools(
       description: "Read one bounded CSV unknown-outcome review record.",
       metadata: toolMetadata("agent", {
         mutating: false,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "show"],
       }),
       isReadOnly: true,
@@ -2520,6 +2563,7 @@ function createMultiAgentV2RuntimeTools(
         "Resolve one CSV unknown outcome from operator evidence. This requires explicit approval and fails closed on a conflicting replay.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "job", "csv", "review", "resolve"],
       }),
       requiresApproval: true,
@@ -2831,10 +2875,11 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
         );
         return refusal({
           error: `skill not found: ${skillName}`,
-          available: [
-            ...(outcome.availableSkills?.map((entry) => entry.name) ?? []),
-            ...bundledNames,
-          ].sort((a, b) => a.localeCompare(b)),
+          ...unknownSkillSuggestions(
+            skillName,
+            outcome.availableSkills ?? [],
+            bundledNames,
+          ),
         });
       }
 
@@ -2974,6 +3019,49 @@ async function listBundledSkillNames(): Promise<string[]> {
 function normalizeSkillName(name: string): string {
   const trimmed = name.trim();
   return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
+}
+
+/** Catalogs up to this size are named in full in an unknown-skill refusal. */
+const UNKNOWN_SKILL_FULL_LIST_MAX = 50;
+const UNKNOWN_SKILL_SUGGESTIONS = 20;
+
+/**
+ * What an unknown-skill refusal tells the model about the skills it could
+ * load. A small catalog is named in full. A large one is not: every name of
+ * the audited 1,797-skill catalog made one refusal 45 KB (about 11,000
+ * tokens) for a single mistyped name, most of it names unrelated to the
+ * one asked for. The closest skills by the listing's own relevance ranking,
+ * and the total, answer the question the model actually has. Skills the
+ * model may not load are never offered.
+ */
+function unknownSkillSuggestions(
+  requested: string,
+  skills: readonly SkillListingEntry[],
+  bundledNames: readonly string[],
+): {
+  readonly available: readonly string[];
+  readonly availableCount?: number;
+  readonly note?: string;
+} {
+  const invocable = skills.filter((skill) => skill.disableModelInvocation !== true);
+  const names = [
+    ...new Set([...invocable.map((skill) => skill.name), ...bundledNames]),
+  ].sort((a, b) => a.localeCompare(b));
+  if (names.length <= UNKNOWN_SKILL_FULL_LIST_MAX) return { available: names };
+  const closest = rankSkillsForRequest(
+    [...invocable, ...bundledNames.map((name) => ({ name }))],
+    requested,
+    new Set(),
+    UNKNOWN_SKILL_SUGGESTIONS,
+  ).names;
+  return {
+    available: closest,
+    availableCount: names.length,
+    note:
+      closest.length > 0
+        ? `these are the ${closest.length} installed skills closest to "${requested}" of ${names.length}; the skill listing in this conversation names the ones that fit the task`
+        : `no installed skill name resembles "${requested}" (${names.length} are installed); use a name from the skill listing in this conversation`,
+  };
 }
 
 function isMcpToolName(name: string): boolean {
@@ -3332,6 +3420,12 @@ function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
     recoveryCategory: "idempotent",
+    // The fetch itself is an unpriced HTTPS request, and the optional prompt
+    // extraction is charged at the model boundary (runAdmittedModelFacingCall).
+    // Without an explicit zero bound the default unpriced estimate held every
+    // successful fetch as missing_tool_usage and marked the whole session's
+    // cost unknown.
+    admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
     inputSchema: {
       type: "object",
       properties: {
@@ -3729,6 +3823,9 @@ async function runDuckDuckGoHtmlSearch(
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const requestEnvironment = requireModelFacingRequestEnvironment(opts);
+  // Bootstrap keeps this registry across provider switches. Resolve optional
+  // xAI credentials only when its deferred tool is actually requested.
+  const deferXSearch = opts.getSession() === null;
   const tools: Tool[] = [
     createWebFetchTool(opts),
     {
@@ -3861,6 +3958,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "Search X (Twitter) through an independently configured xAI backend. Any reasoning provider may call this read-only tool; it returns findings with x.com citations.",
       metadata: toolMetadata("web", {
         keywords: ["x", "twitter", "search", "social", "posts"],
+        deferred: deferXSearch,
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
@@ -3897,8 +3995,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   // main turn. The internal one-shot still uses a Grok provider because
   // native x_search is an xAI wire capability.
   const includeXSearch =
-    resolveXaiToolBackend(opts) !== undefined &&
-    isXaiLiveXSearchEnabled(opts.grokCapabilities);
+    isXaiLiveXSearchEnabled(opts.grokCapabilities) &&
+    (deferXSearch || resolveXaiToolBackend(opts) !== undefined);
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
   }
@@ -3979,13 +4077,22 @@ function createNotebookReadTool(opts: ModelFacingToolOptions): Tool {
       if (updatedInput === undefined) {
         return decision;
       }
+      // FileRead judged the notebook in its own shape (`file_path`, `cwd`).
+      // The dispatcher validates `updatedInput` against NotebookRead's strict
+      // schema again, so spreading FileRead's input back failed every call
+      // with "unexpected parameter file_path/cwd". Keep NotebookRead's input
+      // and carry over only the signed roots FileRead granted; they travel on
+      // the runtime's `__agenc*` channel, which schema validation skips.
+      const notebookInput: Record<string, unknown> = {
+        ...record,
+        notebook_path: updatedInput.file_path ?? record.notebook_path,
+      };
+      for (const key of [SESSION_ALLOWED_ROOTS_ARG, SESSION_ALLOWED_ROOTS_SIG_ARG]) {
+        if (updatedInput[key] !== undefined) notebookInput[key] = updatedInput[key];
+      }
       return {
         ...decision,
-        updatedInput: {
-          ...record,
-          ...updatedInput,
-          notebook_path: updatedInput.file_path ?? record.notebook_path,
-        },
+        updatedInput: notebookInput,
       } satisfies PermissionResult<Record<string, unknown>>;
     },
     execute: async (args) => {
@@ -4440,7 +4547,7 @@ async function initializeCsvRecoverySupervisor(opts: {
     return null;
   }
   const { control, registry } = ensureAgentControl(opts.session);
-  const { backgroundTaskLifecycle, registerAgentThreadTask } =
+  const { backgroundTaskLifecycleForSession, registerAgentThreadTask } =
     await import("../tasks/index.js");
   opts.signal?.throwIfAborted();
   const outstandingThreadIds = new Map<string, Set<string>>();
@@ -4528,11 +4635,15 @@ async function initializeCsvRecoverySupervisor(opts: {
       const thread = outcome.thread;
       threadIdsForJob(ctx.jobId).add(thread.threadId);
       try {
-        registerAgentThreadTask(backgroundTaskLifecycle, thread as never, {
-          description: `csv-job:${ctx.itemId}`,
-          prompt: `CSV job item ${ctx.itemId}`,
-          runtimeOptions: opts.session.services.runtimeOptions,
-        });
+        registerAgentThreadTask(
+          backgroundTaskLifecycleForSession(opts.session),
+          thread as never,
+          {
+            description: `csv-job:${ctx.itemId}`,
+            prompt: `CSV job item ${ctx.itemId}`,
+            runtimeOptions: opts.session.services.runtimeOptions,
+          },
+        );
       } catch {
         /* pill registration is best-effort */
       }
@@ -4603,6 +4714,7 @@ export async function startCronSchedulerRunner(opts: {
   readonly workspaceRoot: string;
   readonly signal?: AbortSignal;
   readonly session?: Session;
+  readonly sessionOnly?: boolean;
 }): Promise<void> {
   opts.signal?.throwIfAborted();
   if (opts.conversationId.trim().length === 0) {
@@ -4623,7 +4735,8 @@ export async function startCronSchedulerRunner(opts: {
     const { startSessionCronScheduler } =
       await import("../session/session-cron-scheduler.js");
     opts.signal?.throwIfAborted();
-    await startSessionCronScheduler(opts.session, opts.workspaceRoot);
+    await startSessionCronScheduler(opts.session, opts.workspaceRoot,
+      opts.sessionOnly === undefined ? {} : { sessionOnly: opts.sessionOnly });
     opts.signal?.throwIfAborted();
     return;
   }
@@ -4634,6 +4747,7 @@ export async function startCronSchedulerRunner(opts: {
       conversationId: opts.conversationId,
     },
     workspaceRoot: opts.workspaceRoot,
+    sessionOnly: opts.sessionOnly === true,
   });
   await scheduler.reschedule();
   opts.signal?.throwIfAborted();
@@ -4642,12 +4756,12 @@ export async function startCronSchedulerRunner(opts: {
 function createCronAndWorkflowTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
-  return [
+  const tools: Tool[] = [
     {
       name: "CronCreate",
       admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
       description:
-        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook — they require durable and a running `agenc gateway run`.",
+        "Schedule a recurring (or one-shot) prompt on a five-field cron expression. Jobs are executed by the runtime's own scheduler: when a job comes due its prompt is enqueued as a new turn in this session. Durable jobs persist in .agenc/scheduled_tasks.json and re-arm on restart; non-durable jobs die with the session. Workspace-write sandbox mode supports only non-durable session jobs. Delivery-routed jobs (announceChannel/webhook) instead run in an isolated gateway session and post their result to that channel/webhook; they require durable and a running `agenc gateway run`.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4698,25 +4812,25 @@ function createCronAndWorkflowTools(
         const schedule = stringValue(args.cron) ?? stringValue(args.schedule);
         const prompt = stringValue(args.prompt);
         if (!schedule || !prompt) {
-          return json({ error: "cron/schedule and prompt are required" }, true);
+          return cronRefusal("CronCreate", "cron/schedule and prompt are required");
         }
         if (!validateCron(schedule)) {
-          return json({ error: "cron expression must have five fields" }, true);
+          return cronRefusal("CronCreate", "cron expression must have five fields");
         }
-        const { addCronTask, nextCronRunMs, normalizeDelivery } =
+        const { addCronTask, nextCronRunMs, normalizeDelivery, readCronFile } =
           await import("../utils/cronTasks.js");
         if (nextCronRunMs(schedule, Date.now()) === null) {
-          return json({ error: `invalid cron expression: ${schedule}` }, true);
+          return cronRefusal("CronCreate", `invalid cron expression: ${schedule}`);
         }
         const recurring = boolValue(args.recurring) ?? true;
         const announceChannel = stringValue(args.announceChannel);
         const announceTo = stringValue(args.announceTo);
         const webhookUrl = stringValue(args.webhook);
         if (announceChannel !== undefined && announceTo === undefined) {
-          return json({ error: "announceChannel requires announceTo" }, true);
+          return cronRefusal("CronCreate", "announceChannel requires announceTo");
         }
         if (webhookUrl !== undefined && !/^https?:\/\//i.test(webhookUrl)) {
-          return json({ error: "webhook must be an http(s) URL" }, true);
+          return cronRefusal("CronCreate", "webhook must be an http(s) URL");
         }
         const deliver = normalizeDelivery({
           channel: announceChannel,
@@ -4727,6 +4841,22 @@ function createCronAndWorkflowTools(
         // task file — they must be durable or the gateway can never see them.
         const durable =
           deliver !== undefined ? true : (boolValue(args.durable) ?? false);
+        const sessionOnly = readToolRuntimeContext(args)?.sandboxMode === "workspace_write";
+        if (sessionOnly && durable) {
+          return refusal({ error: "Sandboxed CronCreate supports session-only jobs; durable and delivery jobs require filesystem authority" });
+        }
+        if (durable) {
+          // A read failure precedes any schedule change. Once addCronTask
+          // begins, its failures stay unknown because publication may have run.
+          try {
+            await readCronFile(opts.workspaceRoot);
+          } catch (error) {
+            return cronRefusal("CronCreate", unsupportedDurableCron(error)
+              ? DURABLE_CRON_UNSUPPORTED : errorMessage(error));
+          }
+        }
+        // addCronTask may have created .agenc before descriptor admission
+        // fails. Its error code alone cannot prove zero filesystem effects.
         const id = await addCronTask(
           schedule,
           prompt,
@@ -4744,6 +4874,7 @@ function createCronAndWorkflowTools(
           conversationId,
           workspaceRoot: opts.workspaceRoot,
           session: session ?? undefined,
+          sessionOnly,
         });
         return json({
           cron: {
@@ -4760,7 +4891,7 @@ function createCronAndWorkflowTools(
     {
       name: "CronDelete",
       admissionEstimate: () => ({ maxInputTokens: 0, maxOutputTokens: 0, maxCostUsd: 0 }),
-      description: "Delete a scheduled prompt job by id.",
+      description: "Delete a scheduled prompt job by id. In workspace-write sandbox mode, delete only this session's non-durable jobs; other ids return deleted:false.",
       metadata: toolMetadata("workflow", {
         mutating: true,
         deferred: true,
@@ -4780,15 +4911,48 @@ function createCronAndWorkflowTools(
           return refusal({ error: "CronDelete requires an active owning conversation" });
         }
         const id = stringValue(args.id);
-        if (!id) return json({ error: "id is required" }, true);
-        const { listAllCronTasks, removeCronTasks } =
+        if (!id) return cronRefusal("CronDelete", "id is required");
+        if (readToolRuntimeContext(args)?.sandboxMode === "workspace_write") {
+          const { removeSessionCronTasks } = await import("../bootstrap/state.js");
+          const deleted = removeSessionCronTasks([id], conversationId) > 0;
+          await startCronSchedulerRunner({
+            conversationId,
+            workspaceRoot: opts.workspaceRoot,
+            session: session ?? undefined,
+            sessionOnly: true,
+          });
+          return json({ deleted, id });
+        }
+        const { listAllCronTasks, listSessionCronTasks, removeCronTasks, cronRestoreFailureNeedsWarning } =
           await import("../utils/cronTasks.js");
-        const before = await listAllCronTasks(
-          opts.workspaceRoot,
-          conversationId,
-        );
+        const { removeSessionCronTasks } = await import("../bootstrap/state.js");
+        let before;
+        try {
+          before = await listAllCronTasks(opts.workspaceRoot, conversationId);
+        } catch (error) {
+          const sessionTask = listSessionCronTasks(conversationId).some((task) => task.id === id);
+          if (!sessionTask && !unsupportedDurableCron(error)) {
+            return cronRefusal("CronDelete", errorMessage(error));
+          }
+          if (!sessionTask && await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot)) {
+            return cronRefusal("CronDelete", DURABLE_CRON_UNSUPPORTED);
+          }
+          const deleted = removeSessionCronTasks([id], conversationId) > 0;
+          if (deleted) await startCronSchedulerRunner({
+            conversationId, workspaceRoot: opts.workspaceRoot,
+            session: session ?? undefined,
+          });
+          return json({ deleted, id });
+        }
         const existed = before.some((task) => task.id === id);
-        await removeCronTasks([id], opts.workspaceRoot, conversationId);
+        if (!existed) return json({ deleted: false, id });
+        const sessionMatch = before.some((task) => task.id === id && task.durable === false);
+        const durableMatch = before.some((task) => task.id === id && task.durable !== false);
+        if (sessionMatch && !durableMatch) {
+          removeSessionCronTasks([id], conversationId);
+        } else {
+          await removeCronTasks([id], opts.workspaceRoot, conversationId);
+        }
         await startCronSchedulerRunner({
           conversationId,
           workspaceRoot: opts.workspaceRoot,
@@ -4813,17 +4977,28 @@ function createCronAndWorkflowTools(
         properties: {},
         additionalProperties: false,
       },
-      execute: async () => {
+      execute: async (args) => {
         const conversationId = opts.getSession()?.conversationId;
         if (typeof conversationId !== "string" || conversationId.length === 0) {
           return refusal({ error: "CronList requires an active owning conversation" });
         }
-        const { listAllCronTasks } = await import("../utils/cronTasks.js");
-        const tasks = await listAllCronTasks(
-          opts.workspaceRoot,
-          conversationId,
-        );
+        const { listAllCronTasks, listSessionCronTasks, cronRestoreFailureNeedsWarning } =
+          await import("../utils/cronTasks.js");
+        let tasks;
+        let durableUnavailable = false;
+        if (readToolRuntimeContext(args)?.sandboxMode === "workspace_write") {
+          tasks = listSessionCronTasks(conversationId);
+        } else {
+          try {
+            tasks = await listAllCronTasks(opts.workspaceRoot, conversationId);
+          } catch (error) {
+            if (!unsupportedDurableCron(error)) throw error;
+            durableUnavailable = await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot);
+            tasks = listSessionCronTasks(conversationId);
+          }
+        }
         return json({
+          ...(durableUnavailable ? { warning: DURABLE_CRON_UNSUPPORTED } : {}),
           crons: tasks.map((task) => ({
             id: task.id,
             cron: task.cron,
@@ -4937,6 +5112,10 @@ function createCronAndWorkflowTools(
       },
     },
   ];
+  return tools.map((tool) => registerSessionCronMutation(
+    tool,
+    () => opts.getSession()?.conversationId,
+  ));
 }
 
 function findPowerShell(env: NodeJS.ProcessEnv): string | null {
@@ -5031,12 +5210,13 @@ export function createModelFacingTools(
     env: scopedOpts.env!,
   } as const;
   // Bootstrap constructs one registry before Session attachment and keeps it
-  // across /provider switches. Preserve a universal, deferred ImagineImage in
+  // across /provider switches. Preserve universal, deferred media tools in
   // that lifecycle state; execution resolves current isolated authority and
   // fails closed if the selected backend still has no media credential.
   const includeImagineImage =
     scopedOpts.getSession() === null || hasImagineImageBackend(imagineOptions);
-  const includeImagineVideo = hasImagineVideoBackend(imagineOptions);
+  const includeImagineVideo =
+    scopedOpts.getSession() === null || hasImagineVideoBackend(imagineOptions);
 
   return [
     ...createMultiAgentV2RuntimeTools(scopedOpts),
@@ -5068,7 +5248,6 @@ export function createModelFacingTools(
     ...createTaskTools(scopedOpts),
     ...createCronAndWorkflowTools(scopedOpts),
     ...createPowerShellTool(scopedOpts),
-    createEditorProposalTool(),
     createSessionStructuredOutputTool(scopedOpts),
   ];
 }

@@ -22,10 +22,6 @@ import {
   type FileHistorySnapshot,
 } from "./file-history.js";
 import type { RolloutItem } from "./rollout-item.js";
-import {
-  sha256,
-  workspaceMutationCoordinators,
-} from "../../src/workspace/mutation-coordinator.js";
 
 let previousAgencHome: string | undefined;
 
@@ -38,7 +34,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  workspaceMutationCoordinators.clearForTests();
   if (previousAgencHome === undefined) {
     delete process.env.AGENC_HOME;
   } else {
@@ -149,90 +144,6 @@ describe("FileHistory (I-28)", () => {
     // via its v1 origin backup.
     expect(restored).toContain(late);
     expect(readFileSync(late, "utf8")).toBe("late-original");
-  });
-
-  test("rewindToMessage refuses to overwrite a dirty editor buffer", async () => {
-    const file = join(project, "dirty.txt");
-    writeFileSync(file, "original", "utf8");
-    const hist = new FileHistory({ projectDir: project });
-    await hist.trackEdit(file, "msg-1");
-    await hist.makeSnapshot("msg-1");
-    writeFileSync(file, "disk-modified", "utf8");
-    await hist.makeSnapshot("msg-2");
-    const coordinator = workspaceMutationCoordinators.getOrCreate(project);
-    const lease = coordinator.acquire({
-      workspaceRoot: project,
-      editorInstanceId: "editor-a",
-    });
-    coordinator.sync({
-      workspaceRoot: project,
-      editorInstanceId: "editor-a",
-      leaseToken: lease.leaseToken,
-      epoch: lease.epoch,
-      sequence: 0,
-      buffers: [
-        {
-          path: file,
-          bufferHandle: 1,
-          changedtick: 4,
-          contentSha256: sha256("unsaved editor text"),
-          dirty: true,
-          content: "unsaved editor text",
-        },
-      ],
-    });
-
-    await expect(hist.rewindToMessage("msg-1")).rejects.toThrow(
-      /unsaved editor changes/u,
-    );
-    expect(readFileSync(file, "utf8")).toBe("disk-modified");
-  });
-
-  test("rewindToMessage blocks a clean loaded buffer until Editor unloads it", async () => {
-    const file = join(project, "clean-loaded.txt");
-    writeFileSync(file, "original", "utf8");
-    const hist = new FileHistory({ projectDir: project });
-    await hist.trackEdit(file, "msg-1");
-    await hist.makeSnapshot("msg-1");
-    writeFileSync(file, "disk-modified", "utf8");
-    await hist.makeSnapshot("msg-2");
-    const coordinator = workspaceMutationCoordinators.getOrCreate(project);
-    const lease = coordinator.acquire({
-      workspaceRoot: project,
-      editorInstanceId: "editor-a",
-    });
-    coordinator.sync({
-      workspaceRoot: project,
-      editorInstanceId: "editor-a",
-      leaseToken: lease.leaseToken,
-      epoch: lease.epoch,
-      sequence: 0,
-      buffers: [
-        {
-          path: file,
-          bufferHandle: 2,
-          changedtick: 5,
-          contentSha256: sha256("disk-modified"),
-          dirty: false,
-        },
-      ],
-    });
-
-    await expect(hist.rewindToMessage("msg-1")).rejects.toThrow(
-      /is loaded in Editor/u,
-    );
-    expect(readFileSync(file, "utf8")).toBe("disk-modified");
-
-    coordinator.sync({
-      workspaceRoot: project,
-      editorInstanceId: "editor-a",
-      leaseToken: lease.leaseToken,
-      epoch: lease.epoch,
-      sequence: 1,
-      buffers: [],
-    });
-    await expect(hist.rewindToMessage("msg-1")).resolves.toContain(file);
-    expect(readFileSync(file, "utf8")).toBe("original");
   });
 
   test("previewRewind reports changed files without touching disk", async () => {

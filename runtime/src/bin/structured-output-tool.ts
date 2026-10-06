@@ -14,7 +14,8 @@
 
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
-import { Ajv, type ValidateFunction } from "ajv";
+import type { Ajv, ValidateFunction } from "ajv";
+import { loadAjv } from "../utils/loadAjv.js";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "StructuredOutput";
 
@@ -45,10 +46,13 @@ type StructuredOutputToolBuildResult =
   | { readonly error: string };
 
 const schemaToolCache = new WeakMap<object, StructuredOutputToolBuildResult>();
-const ajv = new Ajv({ allErrors: true, strict: false });
+let ajv: Ajv | undefined;
+function getAjv(): Ajv {
+  return ajv ??= new (loadAjv())({ allErrors: true, strict: false });
+}
 
 function formatSchemaErrors(validate: ValidateFunction): string {
-  return ajv.errorsText(validate.errors, { separator: "\n" });
+  return getAjv().errorsText(validate.errors, { separator: "\n" });
 }
 
 /**
@@ -92,7 +96,7 @@ export function createStructuredOutputToolForSchema(
 
   let validate: ValidateFunction;
   try {
-    validate = ajv.compile(schema);
+    validate = getAjv().compile(schema);
   } catch (error) {
     const result = {
       error: error instanceof Error ? error.message : String(error),

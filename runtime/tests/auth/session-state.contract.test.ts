@@ -59,7 +59,7 @@ describe("remote auth session state", () => {
     const env = {
       AGENC_HOME: home,
       HOME: tmpdir(),
-      USER_TYPE: "ant",
+      AGENC_OAUTH_DEV_ENDPOINTS: "1",
       USE_LOCAL_OAUTH: "1",
     };
     getSecureStorage(resolveSecureStorageHome(env, home)).update({

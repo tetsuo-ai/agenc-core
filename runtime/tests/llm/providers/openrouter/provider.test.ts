@@ -4,6 +4,7 @@ import {
   OPENROUTER_DEFAULT_REFERER,
   OPENROUTER_DEFAULT_TITLE,
   OpenRouterProvider,
+  openRouterExtraBody,
 } from "./index.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -61,6 +62,75 @@ describe("OpenRouterProvider", () => {
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(requestBody.model).toBe(model);
     expect(requestBody.stream).toBe(false);
+  });
+
+  test("routes only to zero-data-retention endpoints when configured, and sends no routing block otherwise", async () => {
+    const reply = () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_zdr",
+          model: BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter,
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => reply());
+    const model = BUILT_IN_PROVIDER_DEFAULT_MODELS.openrouter;
+
+    await new OpenRouterProvider({ apiKey: "or-test", model, fetchImpl, zeroDataRetention: true })
+      .chat([{ role: "user", content: "hello" }]);
+    await new OpenRouterProvider({ apiKey: "or-test", model, fetchImpl })
+      .chat([{ role: "user", content: "hello" }]);
+    await new OpenRouterProvider({
+      apiKey: "or-test",
+      model,
+      fetchImpl,
+      zeroDataRetention: true,
+      extraBody: { provider: { data_collection: "deny" } },
+    }).chat([{ role: "user", content: "hello" }]);
+
+    const bodies = fetchImpl.mock.calls.map(([, init]) =>
+      JSON.parse(String(init?.body)) as Record<string, unknown>,
+    );
+    expect(bodies[0]?.provider).toEqual({ zdr: true });
+    expect(bodies[1]).not.toHaveProperty("provider");
+    // An existing routing block keeps its other preferences.
+    expect(bodies[2]?.provider).toEqual({ data_collection: "deny", zdr: true });
+    expect(openRouterExtraBody({})).toBeUndefined();
+  });
+
+  test("sends no routing block on the managed AgenC gateway, which pins zero data retention itself", async () => {
+    // The gateway's request schema is strict: an unreviewed `provider` field
+    // made every managed DeepSeek request fail as a 503 "provider_unavailable".
+    const model = "deepseek/deepseek-v4.1-flash";
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_managed",
+          model,
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+
+    await new OpenRouterProvider({
+      apiKey: "managed-test",
+      model,
+      baseURL: "https://id.agenc.ag/v1/auth/openrouter/v1",
+      fetchImpl,
+      managedRequestId: true,
+      zeroDataRetention: true,
+    }).chat([{ role: "user", content: "hello" }]);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.model).toBe(model);
+    expect(body).not.toHaveProperty("provider");
+    expect(
+      openRouterExtraBody({ zeroDataRetention: true, managedRequestId: true }),
+    ).toBeUndefined();
   });
 
   test.each(

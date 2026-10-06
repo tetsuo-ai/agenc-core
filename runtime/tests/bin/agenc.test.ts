@@ -13,12 +13,14 @@
  * provider + rollout on disk). These tests cover the extracted units
  * that back the integration.
  */
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as memoryPrompt from "../../src/memory/memdir.js";
 import { VERSION } from "../../src/version.js";
-import { lstat, mkdtemp, rm, writeFile, mkdir, rename } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, lstat, mkdtemp, readFile, rm, writeFile, mkdir, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { canonicalTmpdir } from "../helpers/canonical-temp-dir.js";
 
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
@@ -35,12 +37,15 @@ import {
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
+  parsePrintModeGoal,
+  oneShotFinalMessageRemainder,
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
+  setOneShotDeadlineBackstopForTests,
   shouldLoadMcpCliConfig,
   validateAgencHome,
   type ConfigReloadLatch,
@@ -130,7 +135,7 @@ function withRunSingleTurnRuntime<T>(operation: () => T): T {
     {},
     {
       pluginStorageRoot: join(
-        tmpdir(),
+        canonicalTmpdir(),
         "agenc-run-single-turn-test-plugins",
       ),
     },
@@ -209,6 +214,24 @@ function installDaemonCliDepsForTest(
       readonly requestId: string;
       readonly emit: (event: unknown) => void;
     }) => void;
+    /**
+     * Invoked when the one-shot client starts a turn with `message.stream`
+     * (headless continue, or the compact_failed continuation). Use `emit` to
+     * deliver the events the daemon would produce for that turn.
+     */
+    readonly onMessageStream?: (info: {
+      readonly params: {
+        readonly sessionId?: string;
+        readonly content?: unknown;
+        readonly streamId?: string;
+        readonly clientMessageId?: string;
+      };
+      readonly emit: (event: unknown) => void;
+    }) => void;
+    /** The `terminal` a protocol 1.2 daemon returns with `message.stream`. */
+    readonly messageStreamTerminal?: { readonly code: number; readonly message?: string };
+    /** Answers `session.goal` (print-mode `/goal`). */
+    readonly onSessionGoal?: (params: Record<string, unknown>) => unknown;
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
@@ -411,7 +434,19 @@ function installDaemonCliDepsForTest(
           decision: method === "tool.deny" ? "denied" : "approved",
         };
       }
+      if (method === "session.goal" && options.onSessionGoal !== undefined) {
+        return options.onSessionGoal(params ?? {});
+      }
       if (method === "message.stream") {
+        options.onMessageStream?.({
+          params: (params ?? {}) as {
+            readonly sessionId?: string;
+            readonly content?: unknown;
+            readonly streamId?: string;
+            readonly clientMessageId?: string;
+          },
+          emit: (event) => queueMicrotask(() => sessionEventEmit?.(event)),
+        });
         return {
           messageId: "message_test",
           streamId:
@@ -419,6 +454,9 @@ function installDaemonCliDepsForTest(
               ? params.streamId
               : "stream_test",
           acceptedAt: "2026-05-06T00:00:01.000Z",
+          ...(options.messageStreamTerminal !== undefined
+            ? { terminal: options.messageStreamTerminal }
+            : {}),
         };
       }
       throw new Error(`unexpected daemon request: ${method}`);
@@ -1124,7 +1162,7 @@ afterEach(async () => {
 
 describe("validateAgencHome", () => {
   it("prefers a non-empty AGENC_HOME and creates the directory", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agenc-home-explicit-"));
+    const base = await mkdtemp(join(canonicalTmpdir(), "agenc-home-explicit-"));
     const explicitHome = join(base, "custom-home");
     try {
       expect(
@@ -1140,7 +1178,7 @@ describe("validateAgencHome", () => {
   });
 
   it("falls back to $HOME/.agenc when AGENC_HOME is unset or empty", async () => {
-    const homeRoot = await mkdtemp(join(tmpdir(), "agenc-home-fallback-"));
+    const homeRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-home-fallback-"));
     const expectedHome = join(homeRoot, ".agenc");
     try {
       expect(validateAgencHome({ HOME: homeRoot } as NodeJS.ProcessEnv)).toBe(
@@ -1395,7 +1433,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
 
 describe("ConfigStore integration shape", () => {
   it("constructs from empty env + defaults and current() is frozen", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-config-empty-"));
+    const home = await mkdtemp(join(canonicalTmpdir(), "agenc-config-empty-"));
     try {
       const store = new ConfigStore({ home, env: {} });
       await store.reload();
@@ -1409,7 +1447,7 @@ describe("ConfigStore integration shape", () => {
   });
 
   it("applyEnvOverrides promotes AGENC_MODEL over TOML", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-config-env-"));
+    const home = await mkdtemp(join(canonicalTmpdir(), "agenc-config-env-"));
     try {
       const store = new ConfigStore({
         home,
@@ -1425,7 +1463,7 @@ describe("ConfigStore integration shape", () => {
 
 describe("prepareTurnRuntimeInputs", () => {
   it("reloads MCP instructions while leaving workspace instructions to Session.runTurn", async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), "agenc-turn-inputs-"));
+    const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-"));
     const nested = join(repoRoot, "pkg");
     const memoryDir = join(repoRoot, ".agenc-memory");
     const memoryMdPath = join(memoryDir, "MEMORY.md");
@@ -1472,7 +1510,12 @@ describe("prepareTurnRuntimeInputs", () => {
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
-    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: nested, configStore: store }));
+    // Presentation identity is separate from the shell environment for paths.
+    // This fixture has no captured provider environment, so it uses the default.
+    expect(load).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cwd: nested, configStore: store }),
+      undefined,
+    );
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -1704,6 +1747,99 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
 // T10 A+ Fix-alpha - main() smoke test
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Isolated home + trusted cwd + captured stdio for a one-shot run. The env is
+ * restored and the temp dirs removed however the body ends; `run` races the
+ * body against a bounded timeout so a hang fails instead of stalling the suite.
+ */
+async function withOneShotTestEnvironment<T>(
+  prefix: string,
+  body: (env: {
+    readonly cwd: string;
+    readonly run: <R>(start: () => Promise<R>, timeoutMs: number) => Promise<R | "timeout">;
+    readonly stdout: () => string;
+    readonly stderr: () => string;
+  }) => Promise<T>,
+): Promise<T> {
+  const tmpHome = await mkdtemp(join(canonicalTmpdir(), `${prefix}home-`));
+  const tmpCwd = await mkdtemp(join(canonicalTmpdir(), `${prefix}cwd-`));
+  const prevEnv = { ...process.env };
+  Object.assign(process.env, {
+    AGENC_HOME: tmpHome,
+    AGENC_WORKSPACE: tmpCwd,
+    AGENC_PROVIDER: "openai",
+    OPENAI_API_KEY: "stub-openai-key-for-test",
+    AGENC_CLI_ENTRY_DISABLE: "1",
+  });
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const captured = (spy: typeof stdoutSpy) => () =>
+    spy.mock.calls.map(([chunk]) => String(chunk)).join("");
+  try {
+    trustWorkspaceForTest(tmpHome, tmpCwd);
+    return await body({
+      cwd: tmpCwd,
+      run: (start, timeoutMs) =>
+        Promise.race([
+          start(),
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+        ]),
+      stdout: captured(stdoutSpy),
+      stderr: captured(stderrSpy),
+    });
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    for (const key of Object.keys(process.env)) {
+      if (!(key in prevEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, prevEnv);
+    await rm(tmpHome, { recursive: true, force: true });
+    await rm(tmpCwd, { recursive: true, force: true });
+  }
+}
+
+function completionWarningOneShotFixture(includeExhaustion: boolean) {
+  const agentId = "agent_gate";
+  const sessionId = "session_gate";
+  const turnId = "turn_gate";
+  const warningMessage = "completion gate exhausted after 2 rounds; the final answer was not verified";
+  const transcript = (
+    id: string,
+    type: string,
+    payload: Record<string, unknown>,
+    scope: { sessionId?: string; turnId?: string } = {},
+  ) => ({
+    method: "event.session_event",
+    params: {
+      sessionId, agentId, turnId, eventId: id, ...scope,
+      event: { id, type, payload },
+    },
+  });
+  const warning = transcript("gate-warning", "warning", {
+    cause: "completion_gate_exhausted", message: warningMessage,
+  });
+  const { turnId: _warningTurnId, ...unscopedWarningParams } = warning.params;
+  const events = [
+    transcript("started", "turn_started", { turnId }),
+    transcript("unrelated", "warning", { cause: "skill_listing_truncated", message: "unrelated warning" }),
+    transcript("gate-warning", "warning", { cause: "completion_gate_exhausted", message: "another session" }, { sessionId: "other-session" }),
+    transcript("gate-warning", "warning", { cause: "completion_gate_exhausted", message: "another turn" }, { turnId: "old-turn" }),
+    { ...warning, params: unscopedWarningParams },
+    transcript("conflicting", "warning", { cause: "completion_gate_exhausted", message: "conflicting turn", turnId: "old-turn" }),
+    ...(includeExhaustion ? [
+      warning,
+      // Replay retains the canonical identity even if the producer sub-id differs.
+      { ...warning, params: { ...warning.params, event: { ...warning.params.event, id: "replayed-producer" } } },
+      // A distinct canonical event may reuse the same producer sub-id.
+      { ...warning, params: { ...warning.params, eventId: "second-warning" } },
+    ] : []),
+    transcript("answer", "agent_message", { message: "final answer" }),
+    transcript("completed", "turn_complete", { turnId, lastAgentMessage: "final answer" }),
+  ];
+  return { agentId, sessionId, warning, warningMessage, events };
+}
+
 describe("main() smoke", () => {
   it("loads mcp serve config only when the route needs configured defaults", () => {
     expect(shouldLoadMcpCliConfig(["mcp"])).toBe(false);
@@ -1796,8 +1932,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI starts a daemon prompt agent for slash-looking input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -1876,13 +2012,603 @@ describe("main() smoke", () => {
   });
 
   it.each([
+    {
+      name: "sends a text-only prompt byte for byte as initialContent",
+      prompt: "  keep this indentation\n\tand the final newline\n",
+      sendsInitialContent: true,
+    },
+    {
+      name: "sends no initialContent for a whitespace-only prompt",
+      prompt: " \n\t\n",
+      sendsInitialContent: false,
+    },
+  ])("oneShotCLI $name", async ({ prompt, sendsInitialContent }) => {
+    // The daemon trims agent.create's objective and, without initialContent,
+    // sends that trimmed objective as the first user message. A prompt with
+    // visible text therefore also travels as initialContent, unchanged, while
+    // a whitespace-only prompt still meets the daemon's non-empty check.
+    await withOneShotTestEnvironment("agenc-exact-prompt-", async ({ cwd, run }) => {
+      const scope = { agentId: "agent_exact", sessionId: "session_exact" };
+      const daemon = installDaemonCliDepsForTest({
+        ...scope,
+        cwd,
+        oneShotEvents: [
+          { method: "event.message_chunk", params: { ...scope, eventId: "delta_exact", delta: "done" } },
+          { method: "event.agent_status", params: { ...scope, eventId: "complete_exact", status: "idle", runStatus: "completed" } },
+        ],
+      });
+      expect(await run(() => oneShotCLI(prompt), 4000)).toBe(0);
+      const create = daemon.requests.find((request) => request.method === "agent.create");
+      expect(create?.params).toMatchObject({ objective: prompt, instructions: prompt });
+      if (sendsInitialContent) {
+        expect(create?.params).toMatchObject({ initialContent: prompt });
+      } else {
+        expect(create?.params).not.toHaveProperty("initialContent");
+      }
+    });
+  });
+
+  it.each([false, true])("print durability default and explicit full opt-out=%s", async (fullDurability) => {
+    await withOneShotTestEnvironment("agenc-one-shot-durability-", async ({ cwd, run }) => {
+      const daemon = installDaemonCliDepsForTest({ cwd });
+      expect(await run(() => oneShotCLI("work", [], { fullDurability }), 4000)).toBe(0);
+      expect(daemon.requests.find(request => request.method === "agent.create")?.params)
+        .toMatchObject({ runtimeOptions: { nonInteractive: true, relaxedOneShot: !fullDurability } });
+      expect(daemon.requests.find(request => request.method === "agent.attach")?.params)
+        .toMatchObject({ oneShotOutput: true });
+    });
+  });
+
+  it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
+    // The daemon path emits every assistant message twice: as streamed
+    // deltas (event.message_chunk / agent_message_delta) and then as one
+    // complete agent_message transcript event. Print mode used to write
+    // both, so `agenc -p` answered "pongpong".
+    await withOneShotTestEnvironment("agenc-once-", async ({ cwd, run, stdout }) => {
+      const agentId = "agent_once";
+      const sessionId = "session_once";
+      const transcript = (eventId: string, type: string, payload: Record<string, string>) => ({
+        method: "event.session_event",
+        params: { sessionId, eventId, agentId, msg: { type, payload } },
+      });
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd,
+        oneShotEvents: [
+          { method: "event.message_chunk", params: { sessionId, eventId: "once_delta_1", agentId, delta: "po" } },
+          transcript("once_delta_2", "agent_message_delta", { delta: "ng" }),
+          transcript("once_final_1", "agent_message", { message: "pong" }),
+          // A second message with no deltas at all is still written whole.
+          transcript("once_final_2", "agent_message", { message: "and done" }),
+          { method: "event.agent_status", params: { sessionId, eventId: "once_complete", agentId, status: "idle", runStatus: "completed" } },
+        ],
+      });
+      const code = await run(() => oneShotCLI("Reply with exactly the word pong"), 10_000);
+      expect(code).toBe(0);
+      expect(stdout()).toBe("pong\nand done\n");
+    });
+  });
+
+  it.each([
+    { format: "text", exhausted: true },
+    { format: "text", exhausted: false },
+    { format: "json", exhausted: true },
+    { format: "stream-json", exhausted: true },
+  ])("oneShotCLI preserves successful $format output with exhausted=$exhausted", async ({ format, exhausted }) => {
+    const fixture = completionWarningOneShotFixture(exhausted);
+    const previousArgv = process.argv;
+    process.argv = ["node", "agenc", "--print", `--output-format=${format}`, "work"];
+    try {
+      await withOneShotTestEnvironment("agenc-gate-warning-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd,
+          oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+        expect(stderr()).toBe(format === "text" && exhausted ? `${fixture.warningMessage}\n`.repeat(2) : "");
+        if (format === "text") {
+          expect(stdout()).toBe("final answer\n");
+        } else if (format === "json") {
+          expect(JSON.parse(stdout())).toMatchObject({
+            type: "result", exitCode: 0, finalMessage: "final answer", events: fixture.events,
+          });
+        } else {
+          const records = stdout().trim().split("\n").map((line) => JSON.parse(line));
+          expect(records.filter((record) => record.type === "event").map((record) => record.event)).toEqual(fixture.events);
+          expect(records.at(-1)).toMatchObject({ type: "result", exitCode: 0, finalMessage: "final answer" });
+        }
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    } finally {
+      process.argv = previousArgv;
+    }
+  });
+
+  describe("print-mode /goal", () => {
+    const agentId = "agent_goal";
+    const sessionId = "session_goal";
+    const turnEvents = (streamId: string) => [
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-start", event: { id: "g-start", type: "turn_started", payload: { turnId: streamId } } } },
+      { method: "event.message_chunk", params: { sessionId, eventId: "g-delta", agentId, delta: "clear() added" } },
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-done", event: { id: "g-done", type: "turn_complete", payload: { turnId: streamId, lastAgentMessage: "clear() added" } } } },
+    ];
+    const finalGoal = (status: string, reason: string) => ({
+      ok: true,
+      goal: { objective: "add clear()", status, rounds: 1, budget: { maxRounds: 20 }, verification: [], lastVerdict: { verdict: status, reason, at: "2026-09-19T00:00:00.000Z" } },
+    });
+
+    it("sets the goal before the kickoff turn exists and exits 0 only when it is met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-met-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("met", "clear() exists and is tested")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI('/goal add clear() --verify "tests=npm test"'), 4000)).toBe(0);
+        const create = daemon.requests.find((request) => request.method === "agent.create")?.params as Record<string, unknown>;
+        expect(create).toMatchObject({ deferInitialTurn: true, runtimeOptions: { relaxedOneShot: false } });
+        expect(create).not.toHaveProperty("initialContent");
+        const methods = daemon.requests.map((request) => request.method);
+        expect(methods.indexOf("session.goal")).toBeLessThan(methods.indexOf("message.stream"));
+        expect(daemon.requests.find((request) => request.method === "session.goal")?.params).toEqual({
+          sessionId, action: "set",
+          request: { objective: "add clear()", verify: [{ label: "tests", script: "npm test" }], noVerify: false },
+        });
+        const stream = daemon.requests.find((request) => request.method === "message.stream")?.params as { content?: string };
+        expect(stream.content).toContain("Work toward this goal");
+        expect(stream.content).toContain("add clear()");
+        expect(stderr()).toContain("agenc: goal met after 1 round: clear() exists and is tested");
+      });
+    });
+
+    it("exits 1 with the reviewer's reason when the goal stops without being met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-impossible-", async ({ cwd, run, stderr }) => {
+        installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("impossible", "the tests contradict each other")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("/goal make npm test pass"), 4000)).toBe(1);
+        expect(stderr()).toContain("agenc: goal impossible after 1 round: the tests contradict each other");
+      });
+    });
+
+    it("a refused goal starts no turn", async () => {
+      await withOneShotTestEnvironment("agenc-goal-refused-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: () => ({ ok: false, message: "No checks were found. Add --verify or --no-verify." }),
+        });
+        expect(await run(() => oneShotCLI("/goal make it faster"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(stderr()).toContain("No checks were found");
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toMatchObject({ agentId });
+      });
+    });
+
+    it("recognizes only a leading /goal, and only the form that starts one", () => {
+      expect(parsePrintModeGoal("fix the /goal parser")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("/goals are nice")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("  /goal add clear() --no-verify\n")).toMatchObject({
+        kind: "set", request: { objective: "add clear()", verify: [], noVerify: true },
+      });
+      for (const prompt of ["/goal", "/goal pause", "/goal clear"]) {
+        expect(parsePrintModeGoal(prompt)).toMatchObject({ kind: "error" });
+      }
+    });
+  });
+
+  describe("compact_failed continuation (#2497)", () => {
+    const continuationPrompt =
+      "The previous turn stopped because context compaction failed; it did not " +
+      "finish the task. Continue from where it left off using the conversation " +
+      "above as your state. Do not restart work that is already done. If the " +
+      "task is already complete, give the final answer now.";
+    const failureMessage = "compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]; lastSamplePromptTokens=200000 limit=180000";
+
+    function compactFailedFixture(code = "compact_failed") {
+      const agentId = "agent_compact";
+      const sessionId = "session_compact";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("compact-warning", "warning", { cause: "mid_turn_compact_failed", message: failureMessage }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code, message: failureMessage }),
+      ];
+      const continuationEvents = (streamId: string, outcome: "complete" | "compact_failed") => [
+        transcript("retry-started", "turn_started", { turnId: streamId }, streamId),
+        { method: "event.message_chunk", params: { sessionId, eventId: "retry-delta", agentId, delta: "final answer" } },
+        outcome === "complete"
+          ? transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "final answer" }, streamId)
+          : transcript("retry-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "second compaction failure" }, streamId),
+      ];
+      return { agentId, sessionId, events, continuationEvents };
+    }
+
+    it("continues the task in a new turn on the same session and exits 0 with the continuation answer", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          onMessageStream: ({ params, emit }) => {
+            expect(params.content).toBe(continuationPrompt);
+            for (const event of fixture.continuationEvents(params.streamId!, "complete")) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+        expect(stdout()).toContain("partial");
+        expect(stdout()).toContain("final answer");
+        expect(stderr()).toContain("compact_ladder_exhausted");
+        expect(stderr()).toContain("retry 1/1");
+        const streams = daemon.requests.filter((request) => request.method === "message.stream");
+        expect(streams).toHaveLength(1);
+        expect(streams[0]?.params).toMatchObject({ sessionId: fixture.sessionId });
+        expect(typeof (streams[0]?.params as { streamId?: unknown }).streamId).toBe("string");
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("exits 1 without a second retry when the continuation turn also stops with compact_failed", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-twice-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          onMessageStream: ({ params, emit }) => {
+            for (const event of fixture.continuationEvents(params.streamId!, "compact_failed")) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.filter((request) => request.method === "message.stream")).toHaveLength(1);
+        expect(stderr()).toContain("second compaction failure");
+      });
+    });
+
+    it("AGENC_ONE_SHOT_COMPACT_RETRIES=0 disables the continuation", async () => {
+      const fixture = compactFailedFixture();
+      await withOneShotTestEnvironment("agenc-compact-retry-off-", async ({ cwd, run, stderr }) => {
+        process.env.AGENC_ONE_SHOT_COMPACT_RETRIES = "0";
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(stderr()).toContain("compact_ladder_exhausted");
+        expect(stderr()).not.toContain("retry 1/");
+      });
+    });
+
+    it("does not retry a failure code that is not a compaction stop", async () => {
+      const fixture = compactFailedFixture("provider_error");
+      await withOneShotTestEnvironment("agenc-compact-retry-other-", async ({ cwd, run }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+      });
+    });
+
+    it("writes one json result carrying compactFailedRetries and both turns' events", async () => {
+      const fixture = compactFailedFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-compact-retry-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+            onMessageStream: ({ params, emit }) => {
+              for (const event of fixture.continuationEvents(params.streamId!, "complete")) emit(event);
+            },
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(0);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          const result = JSON.parse(lines[0]!) as { type: string; exitCode: number; compactFailedRetries?: number; events: unknown[] };
+          expect(result).toMatchObject({ type: "result", exitCode: 0, compactFailedRetries: 1 });
+          const types = result.events.map((event) =>
+            ((event as { params?: { event?: { type?: string } } }).params?.event?.type));
+          expect(types).toContain("turn_failed");
+          expect(types).toContain("turn_complete");
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
+  describe("effect_review_required stop (#2501)", () => {
+    const reviewMessage =
+      "live effect settlement is unresolved for call-write-1 (Write); side-effecting and interactive dispatch remain blocked. This run has nobody attached to review it, so this turn stops now.";
+
+    function effectReviewFixture() {
+      const agentId = "agent_review";
+      const sessionId = "session_review";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("review-warning", "warning", { cause: "effect_review_required", message: reviewMessage }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code: "effect_review_required", message: reviewMessage }),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    it("exits 3 with the review marker and never re-enters the session", async () => {
+      const fixture = effectReviewFixture();
+      await withOneShotTestEnvironment("agenc-effect-review-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(3);
+        expect(stdout()).toContain("partial");
+        expect(stderr()).toContain("call-write-1 (Write)");
+        expect(stderr()).toContain("needs operator review");
+        expect(stderr()).toContain("agenc state resolve-tool-call");
+        expect(stderr()).not.toContain("retry 1/");
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("reports exitCode 3 in the json result", async () => {
+      const fixture = effectReviewFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-effect-review-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(3);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          expect(JSON.parse(lines[0]!)).toMatchObject({ type: "result", exitCode: 3 });
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
+  describe("approval-denied stop", () => {
+    // The denial terminal as the daemon projects it: event.agent_status with
+    // the embedded turn_aborted, not a bare session event.
+    const deniedStatus = (sessionId: string, agentId: string, turnId: string) =>
+      notificationFromDaemonEvent(sessionId, agentId, {
+        id: `denied-${turnId}`, eventId: `denied-${turnId}`, type: "turn_aborted",
+        payload: { turnId, reason: "approval_denied" },
+      });
+
+    it("exits 2 with the tool-denied marker when the projected denial status settles the run", async () => {
+      const agentId = "agent_denied_stop";
+      const sessionId = "session_denied_stop";
+      const permissionRequestId = "req-denied-stop";
+      await withOneShotTestEnvironment("agenc-denied-stop-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd,
+          oneShotEvents: [
+            { method: "event.permission_request", params: {
+              sessionId, eventId: "perm_evt", agentId, requestId: permissionRequestId,
+              toolName: "Write", permissions: ["tool.use"],
+            } },
+          ],
+          onToolDecision: ({ method, requestId, emit }) => {
+            if (method === "tool.deny" && requestId === permissionRequestId) {
+              emit(deniedStatus(sessionId, agentId, "turn-1"));
+            }
+          },
+        });
+        expect(await run(() => oneShotCLI("write the notes"), 4000)).toBe(2);
+        expect(daemon.requests.some((request) => request.method === "tool.deny")).toBe(true);
+        expect(stderr()).toContain("tool denied in non-interactive mode");
+        // Read as a stop, not as a completed turn whose answer is the reason.
+        expect(stdout()).not.toContain("approval_denied");
+        expect(stderr()).not.toContain("approval_denied");
+      });
+    });
+
+    it.each(["notification", "rpc"] as const)("exits 2 on a continued session when the denial arrives by %s first", async (first) => {
+      await withOneShotTestEnvironment(`agenc-denied-${first}-`, async ({ cwd, run, stderr }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = `conv-denied-${first}`;
+        const sessionDir = join(getProjectDir(cwd, undefined, home), "sessions", sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+          `${JSON.stringify({ type: "session_meta", payload: { sessionId, timestamp: "2026-09-12T10:00:00.000Z", cwd, originator: "agenc-cli", agencVersion: VERSION, rolloutSchemaVersion: 3 } })}\n` +
+            `${JSON.stringify({ type: "response_item", payload: { role: "user", content: "first step" } })}\n`,
+        );
+        installDaemonCliDepsForTest({
+          agentId: "agent_denied_continue", sessionId, cwd, liveAgent: false, oneShotEvents: [],
+          // RPC first: the message.stream response carries the terminal and no
+          // notification settles the run before it.
+          ...(first === "rpc" ? { messageStreamTerminal: { code: 130, message: "approval_denied" } } : {}),
+          onMessageStream: ({ params, emit }) => {
+            if (first === "notification") emit(deniedStatus(sessionId, "agent_denied_continue", params.streamId!));
+          },
+        });
+        expect(await run(() => oneShotCLI("second step", [], undefined, { kind: "latest" }), 4000)).toBe(2);
+        expect(stderr()).toContain("tool denied in non-interactive mode");
+      });
+    });
+  });
+
+  describe("empty_response stop after the retry ladder (#2502)", () => {
+    const emptyMessage = "The model returned no assistant output after 3 retries.";
+
+    function emptyResponseFixture() {
+      const agentId = "agent_empty";
+      const sessionId = "session_empty";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        transcript("retry-3", "warning", { cause: "empty_response_retry", message: "The model returned no assistant output; retry 3/3 in 30 s with a fresh provider conversation" }),
+        transcript("failed", "turn_failed", { turnId: "turn-1", code: "empty_response", message: emptyMessage }),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    it("exits 4 with the retryable marker and never re-enters the session", async () => {
+      const fixture = emptyResponseFixture();
+      await withOneShotTestEnvironment("agenc-empty-response-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+        });
+        expect(await run(() => oneShotCLI("work"), 4000)).toBe(4);
+        expect(stdout()).toContain("partial");
+        expect(stderr()).toContain(emptyMessage);
+        expect(stderr()).toContain("retryable rather than a task failure");
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+          .toEqual({ agentId: fixture.agentId, reason: "one_shot_complete" });
+      });
+    });
+
+    it("reports exitCode 4 in the json result", async () => {
+      const fixture = emptyResponseFixture();
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", "--print", "--output-format=json", "work"];
+      try {
+        await withOneShotTestEnvironment("agenc-empty-response-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(4);
+          const lines = stdout().trim().split("\n");
+          expect(lines).toHaveLength(1);
+          expect(JSON.parse(lines[0]!)).toMatchObject({ type: "result", exitCode: 4 });
+        });
+      } finally {
+        process.argv = previousArgv;
+      }
+    });
+  });
+
+  describe("--deadline (#2503)", () => {
+    const deadlineMessage = "Run stopped at its deadline. The files on disk are what was saved before it; any step still running was interrupted.";
+
+    function deadlineFixture(options: { readonly terminal: boolean }) {
+      const agentId = "agent_deadline";
+      const sessionId = "session_deadline";
+      const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId = "turn-1") => ({
+        method: "event.session_event",
+        params: { sessionId, agentId, turnId, eventId: id, event: { id, type, payload } },
+      });
+      const events = [
+        transcript("started", "turn_started", { turnId: "turn-1" }),
+        { method: "event.message_chunk", params: { sessionId, eventId: "partial", agentId, delta: "partial" } },
+        ...(options.terminal
+          ? [
+              transcript("deadline-warning", "warning", { cause: "deadline_reached", message: deadlineMessage }),
+              transcript("failed", "turn_failed", { turnId: "turn-1", code: "deadline_reached", message: deadlineMessage }),
+            ]
+          : []),
+      ];
+      return { agentId, sessionId, events };
+    }
+
+    async function withArgv<T>(argv: readonly string[], body: () => Promise<T>): Promise<T> {
+      const previousArgv = process.argv;
+      process.argv = ["node", "agenc", ...argv];
+      try {
+        return await body();
+      } finally {
+        process.argv = previousArgv;
+      }
+    }
+
+    it("sends the deadline to the daemon and exits 5 with the marker on deadline_reached", async () => {
+      const fixture = deadlineFixture({ terminal: true });
+      await withArgv(["--print", "--deadline", "+600", "work"], () =>
+        withOneShotTestEnvironment("agenc-deadline-", async ({ cwd, run, stdout, stderr }) => {
+          const daemon = installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          const before = Date.now();
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(5);
+          expect(stdout()).toContain("partial");
+          expect(stderr()).toContain("Run stopped at its deadline");
+          expect(stderr()).toContain("reached its --deadline");
+          const created = daemon.requests.find((request) => request.method === "agent.create")?.params as {
+            runtimeOptions: { deadlineAt?: number; deadlineReserveMs?: number };
+          };
+          expect(created.runtimeOptions.deadlineAt).toBeGreaterThanOrEqual(before + 600_000);
+          expect(created.runtimeOptions.deadlineAt).toBeLessThan(before + 610_000);
+          expect(created.runtimeOptions.deadlineReserveMs).toBe(300_000);
+          expect(daemon.requests.some((request) => request.method === "session.cancelTurn")).toBe(false);
+        }));
+    });
+
+    it("reports exitCode 5 in the json result", async () => {
+      const fixture = deadlineFixture({ terminal: true });
+      await withArgv(["--print", "--output-format=json", "work"], () =>
+        withOneShotTestEnvironment("agenc-deadline-json-", async ({ cwd, run, stdout }) => {
+          installDaemonCliDepsForTest({
+            agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+          });
+          expect(await run(() => oneShotCLI("work"), 4000)).toBe(5);
+          const lines = stdout().trim().split("\n");
+          expect(JSON.parse(lines.at(-1)!)).toMatchObject({ type: "result", exitCode: 5 });
+        }));
+    });
+
+    it("interrupts the turn itself and exits 5 when the daemon does not end it in time", async () => {
+      const fixture = deadlineFixture({ terminal: false });
+      setOneShotDeadlineBackstopForTests({ afterDeadlineMs: 0, settleMs: 20 });
+      try {
+        await withArgv(["--print", "--deadline", "+1", "work"], () =>
+          withOneShotTestEnvironment("agenc-deadline-backstop-", async ({ cwd, run, stderr }) => {
+            const daemon = installDaemonCliDepsForTest({
+              agentId: fixture.agentId, sessionId: fixture.sessionId, cwd, oneShotEvents: fixture.events,
+            });
+            expect(await run(() => oneShotCLI("work"), 5000)).toBe(5);
+            expect(daemon.requests.find((request) => request.method === "session.cancelTurn")?.params)
+              .toMatchObject({ sessionId: fixture.sessionId, reason: "deadline_reached" });
+            expect(stderr()).toContain("the daemon did not end the turn in time");
+            expect(daemon.requests.find((request) => request.method === "agent.stop")?.params)
+              .toMatchObject({ agentId: fixture.agentId });
+          }));
+      } finally {
+        setOneShotDeadlineBackstopForTests(null);
+      }
+    });
+  });
+
+  it("oneShotFinalMessageRemainder adds only what the deltas did not carry", () => {
+    expect(oneShotFinalMessageRemainder("", "pong")).toBe("pong\n");
+    expect(oneShotFinalMessageRemainder("pong", "pong")).toBe("\n");
+    expect(oneShotFinalMessageRemainder("po", "pong")).toBe("ng\n");
+    // Disagreement keeps both texts rather than dropping either.
+    expect(oneShotFinalMessageRemainder("draft", "final answer")).toBe("\nfinal answer\n");
+  });
+
+  it.each([
     ["turn_complete", "turn_started"],
     ["turn_failed", "turn_started"],
     ["turn_complete", "agent_status"],
     ["turn_failed", "agent_status"],
   ])("oneShotCLI ignores diagnostics and settles on %s after stale %s", async (terminalType, staleStartType) => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-terminal-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-terminal-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-terminal-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-terminal-cwd-"));
     const previousEnv = { ...process.env };
     Object.assign(process.env, {
       AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_PROVIDER: "openai",
@@ -1927,6 +2653,305 @@ describe("main() smoke", () => {
     }
   });
 
+  it("oneShotCLI exits non-zero promptly with the provider error on stderr when its only turn fails", async () => {
+    // Pins the print-mode contract for a provider failure on the only turn,
+    // using the notification shapes the daemon really emits (taken from the
+    // 2026-09-11 grok HTTP 403 rollout): turn_started reaches the client as an
+    // event.agent_status running projection, diagnostics travel as
+    // event.session_event records, and turn_failed is delivered as an
+    // event.session_event, never as an agent_status. The client must classify
+    // that session event, write the message to stderr, settle with code 1
+    // within a bounded time, and stop the daemon agent with one_shot_complete.
+    const agentId = "agent_auth_failed";
+    const sessionId = "session_auth_failed";
+    const turnId = "sub-conv-auth-3";
+    const failureMessage = "grok authentication failed (HTTP 403)";
+    const sessionEvent = (
+      id: string,
+      type: string,
+      payload: Record<string, unknown>,
+    ) => ({
+      method: "event.session_event",
+      params: {
+        sessionId,
+        agentId,
+        eventId: id,
+        turnId,
+        event: { id, type, payload },
+      },
+    });
+    const admission = (id: string, event: string, extra: Record<string, unknown>) =>
+      sessionEvent(id, "execution_admission", {
+        sequence: id === "admission-dispatched" ? 1 : 2,
+        runId: "conv-auth",
+        stepId: `model:${turnId}:1:0:primary`,
+        kind: "model_turn",
+        event,
+        ...extra,
+      });
+    const failedTurnEvents = (cwd: string) =>
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd,
+        oneShotEvents: [
+          {
+            method: "event.agent_status",
+            params: { sessionId, agentId, eventId: "turn-started", turnId, status: "running", runStatus: "running" },
+          },
+          sessionEvent("warning", "warning", { cause: "skill_listing_truncated", message: "listed 83 of 1801 invocable skills" }),
+          admission("admission-dispatched", "dispatched", { provider: "grok", model: "grok-4.6" }),
+          admission("admission-held", "held_unknown", { reason: "provider_call_failed_after_dispatch" }),
+          sessionEvent("failed", "turn_failed", { turnId, code: "turn_execution_failed", message: failureMessage, completedAt: 1789161618399, durationMs: 1506 }),
+        ],
+      });
+
+    const outcome = await withOneShotTestEnvironment("agenc-turn-failed-", async ({ cwd, run, stdout, stderr }) => {
+      const daemon = failedTurnEvents(cwd);
+      // A regression that leaves the run waiting for a status the daemon never
+      // sends must fail here as a timeout instead of stalling the suite.
+      const result = await run(() => oneShotCLI("Reply pong"), 4000);
+      return { daemon, result, stdout: stdout(), stderr: stderr() };
+    });
+
+    expect(outcome.result).toBe(1);
+    expect(outcome.stderr).toContain(failureMessage);
+    expect(outcome.stdout).toBe("");
+    const stop = outcome.daemon.requests.find((request) => request.method === "agent.stop");
+    expect(stop?.params).toEqual({ agentId, reason: "one_shot_complete" });
+    expect(outcome.daemon.stopPromptAgent).not.toHaveBeenCalled();
+    expect(outcome.daemon.client.close).toHaveBeenCalled();
+  });
+
+  describe("headless continue (-c -p / --resume <id> -p)", () => {
+    // A minimal rollout the resume resolver accepts: session_meta plus one
+    // user message (rollouts that never recorded a user turn are skipped).
+    async function writeContinuableRollout(
+      agencHome: string,
+      cwd: string,
+      sessionId: string,
+    ): Promise<string> {
+      const sessionDir = join(
+        getProjectDir(cwd, undefined, agencHome),
+        "sessions",
+        sessionId,
+      );
+      await mkdir(sessionDir, { recursive: true });
+      const file = join(sessionDir, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`);
+      await writeFile(
+        file,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            sessionId,
+            timestamp: "2026-09-12T10:00:00.000Z",
+            cwd,
+            originator: "agenc-cli",
+            agencVersion: VERSION,
+            rolloutSchemaVersion: 3,
+          },
+        })}\n${JSON.stringify({
+          type: "response_item",
+          payload: { role: "user", content: "first step" },
+        })}\n`,
+      );
+      return file;
+    }
+
+    it("revives the latest project session, submits the prompt as a new turn, prints the answer and stops the revived agent", async () => {
+      await withOneShotTestEnvironment("agenc-continue-", async ({ cwd, run, stdout }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue01";
+        const rolloutPath = await writeContinuableRollout(home, cwd, sessionId);
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_continue",
+          sessionId,
+          cwd,
+          liveAgent: false,
+        });
+
+        const code = await run(
+          () => oneShotCLI("second step", [], undefined, { kind: "latest" }),
+          4000,
+        );
+
+        expect(code).toBe(0);
+        expect(stdout()).toContain("daemon answer");
+        // No fresh agent: the prior session is revived from its rollout.
+        expect(daemon.requests.find((request) => request.method === "agent.create")).toBeUndefined();
+        expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+        expect(daemon.resumePromptAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId, rolloutPath, cwd, runtimeOptions: expect.objectContaining({ relaxedOneShot: false }) }),
+        );
+        expect(daemon.requests.find((request) => request.method === "agent.attach")?.params).toMatchObject({
+          agentId: "agent_continue",
+        });
+        // The prompt is one more turn of that session, with a stream id the
+        // client chose so only this turn's terminal can settle the run.
+        const stream = daemon.requests.find((request) => request.method === "message.stream")?.params as
+          | { sessionId?: string; content?: unknown; clientMessageId?: string; streamId?: string }
+          | undefined;
+        expect(stream).toMatchObject({ sessionId, content: "second step" });
+        expect(typeof stream?.streamId).toBe("string");
+        expect(typeof stream?.clientMessageId).toBe("string");
+        // The revived agent is a one-shot resource and is stopped again.
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toEqual({
+          agentId: "agent_continue",
+          reason: "one_shot_complete",
+        });
+      });
+    });
+
+    it("continues after compact_failed on the continued session with a second turn (#2497)", async () => {
+      await withOneShotTestEnvironment("agenc-continue-compact-", async ({ cwd, run, stdout }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue03";
+        await writeContinuableRollout(home, cwd, sessionId);
+        const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId: string) => ({
+          method: "event.session_event",
+          params: { sessionId, agentId: "agent_continue_compact", turnId, eventId: id, event: { id, type, payload } },
+        });
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_continue_compact",
+          sessionId,
+          cwd,
+          liveAgent: false,
+          oneShotEvents: [],
+          onMessageStream: ({ params, emit }) => {
+            const streamId = params.streamId!;
+            if (params.content === "second step") {
+              emit(transcript("first-started", "turn_started", { turnId: streamId }, streamId));
+              emit(transcript("first-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "compact_ladder_exhausted" }, streamId));
+              return;
+            }
+            emit(transcript("retry-started", "turn_started", { turnId: streamId }, streamId));
+            emit({ method: "event.message_chunk", params: { sessionId, eventId: "retry-delta", agentId: "agent_continue_compact", delta: "final answer" } });
+            emit(transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "final answer" }, streamId));
+          },
+        });
+
+        const code = await run(
+          () => oneShotCLI("second step", [], undefined, { kind: "latest" }),
+          4000,
+        );
+
+        expect(code).toBe(0);
+        expect(stdout()).toContain("final answer");
+        const streams = daemon.requests
+          .filter((request) => request.method === "message.stream")
+          .map((request) => request.params as { content?: unknown; streamId?: string });
+        expect(streams.map((stream) => stream.content)).toEqual(["second step", expect.stringContaining("compaction failed")]);
+        expect(new Set(streams.map((stream) => stream.streamId)).size).toBe(2);
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toEqual({
+          agentId: "agent_continue_compact",
+          reason: "one_shot_complete",
+        });
+      });
+    });
+
+    it.each(["resolve", "reject"] as const)("ignores a stale compact-failed RPC %s after the retry starts", async (staleOutcome) => {
+      await withOneShotTestEnvironment("agenc-continue-stale-rpc-", async ({ cwd, run, stdout }) => {
+        const sessionId = "conv-stale-rpc01";
+        await writeContinuableRollout(process.env.AGENC_HOME!, cwd, sessionId);
+        const transcript = (id: string, type: string, payload: Record<string, unknown>, turnId: string) => ({
+          method: "event.session_event",
+          params: { sessionId, agentId: "agent_stale_rpc", turnId, eventId: id, event: { id, type, payload } },
+        });
+        let announceRetry!: () => void;
+        const retryStarted = new Promise<void>((resolve) => { announceRetry = resolve; });
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_stale_rpc", sessionId, cwd, liveAgent: false, oneShotEvents: [],
+          onMessageStream: ({ params, emit }) => {
+            const streamId = params.streamId!;
+            if (params.content === "second step") {
+              emit(transcript("first-started", "turn_started", { turnId: streamId }, streamId));
+              emit(transcript("first-failed", "turn_failed", { turnId: streamId, code: "compact_failed", message: "old turn failed" }, streamId));
+              return;
+            }
+            announceRetry();
+            emit(transcript("retry-started", "turn_started", { turnId: streamId }, streamId));
+            const timer = setTimeout(() => {
+              emit(transcript("retry-complete", "turn_complete", { turnId: streamId, lastAgentMessage: "recovered answer" }, streamId));
+            }, 60);
+            onTestFinished(() => clearTimeout(timer));
+          },
+        });
+        const originalRequest = daemon.client.request.getMockImplementation()!;
+        daemon.client.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+          const result = await originalRequest(method, params);
+          if (method === "message.stream" && params?.content === "second step") {
+            await retryStarted;
+            if (staleOutcome === "reject") throw new Error("late old-turn RPC failure");
+            return { ...result, terminal: { code: 1, message: "old turn failed" } };
+          }
+          return result;
+        });
+        const code = await run(() => oneShotCLI("second step", [], undefined, { kind: "latest" }), 4000);
+        expect(code).toBe(0);
+        expect(stdout()).toContain("recovered answer");
+        expect(daemon.requests.filter((request) => request.method === "message.stream")).toHaveLength(2);
+      });
+    });
+
+    it("reuses a live agent for that session and leaves it running", async () => {
+      await withOneShotTestEnvironment("agenc-continue-live-", async ({ cwd }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = "conv-continue02";
+        await writeContinuableRollout(home, cwd, sessionId);
+        const daemon = installDaemonCliDepsForTest({
+          agentId: "agent_live",
+          sessionId,
+          cwd,
+          liveAgent: true,
+          liveAgentPath: "/root",
+        });
+        // The live agent must carry the rollout identity the descriptor proves.
+        const rolloutStat = await lstat(
+          join(getProjectDir(cwd, undefined, home), "sessions", sessionId, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+          { bigint: true },
+        );
+        daemon.findAgentBySessionId.mockImplementation(async () => ({
+          agentId: "agent_live",
+          agentPath: "/root",
+          objective: "live",
+          status: "idle",
+          createdAt: "2026-09-12T10:00:00.000Z",
+          startedAt: "2026-09-12T10:00:00.000Z",
+          lastActiveAt: "2026-09-12T10:00:00.000Z",
+          cwd,
+          activeSessionIds: [sessionId],
+          metadata: {
+            agentPath: "/root",
+            canonicalRolloutPath: join(getProjectDir(cwd, undefined, home), "sessions", sessionId, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+            canonicalRolloutDev: rolloutStat.dev.toString(10),
+            canonicalRolloutIno: rolloutStat.ino.toString(10),
+          },
+        }));
+
+        const code = await oneShotCLI("third step", [], undefined, { kind: "resume", sessionId });
+
+        expect(code).toBe(0);
+        expect(daemon.resumePromptAgent).not.toHaveBeenCalled();
+        expect(daemon.requests.find((request) => request.method === "message.stream")?.params).toMatchObject({
+          sessionId,
+          content: "third step",
+        });
+        expect(daemon.requests.find((request) => request.method === "agent.stop")).toBeUndefined();
+      });
+    });
+
+    it("exits 1 with a clear message when there is no session to continue", async () => {
+      await withOneShotTestEnvironment("agenc-continue-none-", async ({ stderr }) => {
+        const daemon = installDaemonCliDepsForTest({ liveAgent: false });
+        expect(await oneShotCLI("anything", [], undefined, { kind: "latest" })).toBe(1);
+        expect(stderr()).toContain("agenc: no previous session found for this project");
+        expect(await oneShotCLI("anything", [], undefined, { kind: "resume", sessionId: "conv-missing" })).toBe(1);
+        expect(stderr()).toContain("session not found in either legacy or hashed project layout: conv-missing");
+        expect(daemon.ensureDaemonReady).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
     // Regression for the non-interactive one-shot deadlock: the daemon forces
     // --autonomous, so any tool the model invokes that is not on the (empty by
@@ -1934,8 +2959,8 @@ describe("main() smoke", () => {
     // human attached the run used to hang in `running` forever until SIGTERM.
     // The one-shot client must answer with tool.deny (never tool.approve) so
     // the agent continues and produces a terminal status.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-deny-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-deny-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-deny-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-deny-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2017,6 +3042,13 @@ describe("main() smoke", () => {
       expect(daemon.requests.some((r) => r.method === "tool.approve")).toBe(
         false,
       );
+      // The daemon is told up front that nobody can answer, so it hides the
+      // tools that exist only to ask a person instead of offering them.
+      expect(
+        daemon.requests.find((r) => r.method === "agent.create")?.params,
+      ).toMatchObject({
+        runtimeOptions: expect.objectContaining({ nonInteractive: true }),
+      });
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {
@@ -2037,8 +3069,8 @@ describe("main() smoke", () => {
     // produced a real answer, so callers could not tell a giveup from a real
     // answer. A run that auto-denied a permission request and then completed
     // must exit NON-ZERO and emit a clear stderr marker.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-giveup-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-giveup-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-giveup-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-giveup-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2127,8 +3159,8 @@ describe("main() smoke", () => {
   it("oneShotCLI still exits 0 when no permission request was denied", async () => {
     // PART B guard: a normal run that never auto-denied a tool must keep its
     // success exit code. Only a denied-then-gave-up run signals failure.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-nodeny-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-nodeny-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-nodeny-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-nodeny-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2201,8 +3233,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI cancels an attached daemon run when no terminal event arrives", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-signal-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-signal-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-signal-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-signal-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2299,8 +3331,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI cancels an attached daemon run when stdout closes", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-epipe-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-epipe-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-epipe-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-epipe-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2417,8 +3449,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI writes a single final JSON object for --output-format json", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-json-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-json-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-json-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-json-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2438,7 +3470,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_json";
     const sessionId = "session_json";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -2472,6 +3504,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const stdoutText = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("");
@@ -2513,8 +3550,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI writes daemon events and final result as JSONL for --output-format stream-json", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-jsonl-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-jsonl-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-jsonl-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-jsonl-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2533,7 +3570,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_jsonl";
     const sessionId = "session_jsonl";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -2576,6 +3613,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const lines = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("")
@@ -2636,8 +3678,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI rejects invalid structured I/O format values before daemon startup", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-format-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-format-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-format-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-format-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2703,8 +3745,8 @@ describe("main() smoke", () => {
     // validated mode must reach agent.create so the daemon honors it (the
     // unattended policy preserves acceptEdits/plan rather than forcing
     // unattended — see applyUnattendedPermissionPolicyToContext).
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-permmode-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-permmode-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-permmode-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-permmode-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2764,8 +3806,8 @@ describe("main() smoke", () => {
     // --dangerously-bypass-approvals-and-sandbox must still win: when both --dangerously-bypass-approvals-and-sandbox and --permission-mode acceptEdits
     // are present, the forwarded mode is bypassPermissions (no posture
     // weakening of the existing yolo path).
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-yolo-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-yolo-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-yolo-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2822,8 +3864,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI never forwards a permission bypass token from prompt text", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-prompt-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-prompt-yolo-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -2876,8 +3918,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry streams startup prompt and images as one daemon message", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-image-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-image-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-image-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-image-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2943,9 +3985,69 @@ describe("main() smoke", () => {
     }
   });
 
+  it.each(["shutdown append", "rewritten prefix", "replaced file", "late append"])(
+    "resumeTUIEntry preserves source authorization across daemon readiness: %s",
+    async (change) => {
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-ready-home-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-ready-cwd-"));
+      const previousEnv = { ...process.env };
+      const conversationId = "conv-readyflush1";
+      Object.assign(process.env, { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_CLI_ENTRY_DISABLE: "1" });
+      const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId, tmpHome);
+      if (change === "shutdown append") {
+        // Exercise a retained prefix spanning multiple bounded read chunks.
+        await appendFile(rolloutPath, `${JSON.stringify({
+          type: "response_item", payload: { role: "assistant", content: "x".repeat(70 * 1024) },
+        })}\n`);
+      }
+      const original = await readFile(rolloutPath, "utf8");
+      const flushed = `${JSON.stringify({ type: "event", payload: { id: "shutdown-terminal", msg: { type: "run_terminal", payload: { reason: "daemon shutdown" } } } })}\n`;
+      const daemon = installDaemonCliDepsForTest({ agentId: conversationId, sessionId: conversationId, cwd: tmpCwd, liveAgent: false });
+      daemon.ensureDaemonReady.mockImplementation(() => async () => {
+        if (change === "replaced file") {
+          await rename(rolloutPath, `${rolloutPath}.replaced`);
+          await writeFile(rolloutPath, original + flushed);
+        } else if (change === "rewritten prefix") {
+          await writeFile(rolloutPath, original.replace("retained prompt", "rewritten input") + flushed);
+        } else {
+          await appendFile(rolloutPath, flushed);
+        }
+      });
+      if (change === "late append") {
+        daemon.findAgentBySessionId.mockImplementation(async () => {
+          await appendFile(rolloutPath, flushed);
+          return null;
+        });
+      }
+      vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => {} })) }));
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        trustWorkspaceForTest(tmpHome, tmpCwd);
+        await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(change === "shutdown append" ? 0 : 1);
+        if (change === "shutdown append") {
+          expect(daemon.resumePromptAgent).toHaveBeenCalledWith(expect.objectContaining({ sourceProof: expect.objectContaining({
+            size: String(Buffer.byteLength(original + flushed)),
+            sha256: createHash("sha256").update(original + flushed).digest("hex"),
+          }) }));
+          expect(daemon.requests).toContainEqual(expect.objectContaining({ method: "agent.attach" }));
+        } else {
+          expect(daemon.resumePromptAgent).not.toHaveBeenCalled();
+          expect(stderr).toHaveBeenCalledWith(expect.stringContaining("changed during authorization"));
+        }
+      } finally {
+        stderr.mockRestore();
+        vi.doUnmock("../tui/main.js");
+        for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
+        Object.assign(process.env, previousEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("resumeTUIEntry cold-restores a retained rollout with no live daemon agent", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-cold-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cold-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-cold-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cold-resume-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
     const conversationId = "conv-coldresume1";
@@ -3052,8 +4154,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry attaches an exactly-bound live recovered runtime", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-live-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-live-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-live-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-live-resume-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-liverecovered1";
     process.env.AGENC_HOME = tmpHome;
@@ -3108,8 +4210,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry attaches a matching live agent that wins the cold-resume race", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-raced-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-raced-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-racedresume1";
     process.env.AGENC_HOME = tmpHome;
@@ -3196,8 +4298,8 @@ describe("main() smoke", () => {
   ])(
     "resumeTUIEntry does not mask $label when a live agent appears",
     async ({ error }) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-race-deny-home-"));
-      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-race-deny-cwd-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-race-deny-home-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-race-deny-cwd-"));
       const prevEnv = { ...process.env };
       const conversationId = "conv-racedenied1";
       process.env.AGENC_HOME = tmpHome;
@@ -3263,8 +4365,8 @@ describe("main() smoke", () => {
   );
 
   it("fails transcript restoration before allocating local TUI resources", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-transcript-failure-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-transcript-failure-cwd-"));
     const daemon = installDaemonCliDepsForTest({
       agentId: "agent_transcript_failure",
       sessionId: "session_transcript_failure",
@@ -3290,9 +4392,48 @@ describe("main() smoke", () => {
     }
   });
 
+  it("resolves a 400,000-byte answer before the CLI attach validates its snapshot", async () => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-artifact-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-artifact-attach-cwd-"));
+    const daemon = installDaemonCliDepsForTest({ agentId: "agent_artifact_attach", sessionId: "session_artifact_attach", cwd: tmpCwd });
+    const answer = "A".repeat(400_000);
+    const id = createHash("sha256").update(answer).digest("hex");
+    const originalRequest = daemon.client.request.getMockImplementation()!;
+    daemon.client.request.mockImplementation(async (method, params) => {
+      if (method === "session.transcript.v2") return {
+        schemaVersion: 2, sessionId: daemon.sessionId, runId: daemon.runtimeSessionId,
+        historyEpoch: "artifact_epoch", asOfSequence: 1,
+        messages: [{ messageId: "answer", commitEventId: "event:1", role: "assistant", text: "[truncated]", textArtifact: { id, digest: id, size: 400_000, mimeType: "text/plain" }, committedSequence: 1 }],
+      };
+      if (method === "session.artifact.read") return {
+        sessionId: daemon.sessionId, id, encoding: "base64", data: Buffer.from(answer).toString("base64"),
+        size: 400_000, offset: 0, nextOffset: null,
+      };
+      return originalRequest(method, params);
+    });
+    const received: unknown[] = [];
+    vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async (options: { session: { getInitialTranscriptEvents(): readonly unknown[] } }) => {
+      received.push(...options.session.getInitialTranscriptEvents());
+      return { unmount: vi.fn(), waitUntilExit: async () => undefined };
+    }) }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(attachAgentTuiEntry({
+        agentId: daemon.agentId, clientId: "client_artifact_attach",
+        env: { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, HOME: tmpHome },
+      })).resolves.toBe(0);
+      expect(daemon.client.request).toHaveBeenCalledWith("session.artifact.read", { sessionId: daemon.sessionId, id, offset: 0, length: 524_288 });
+      expect(received).toEqual([{ id: "snapshot:artifact_epoch:answer", type: "agent_message", payload: { message: answer } }]);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("attach binds local TUI work to the daemon session runtime options", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-bare-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-bare-attach-cwd-"));
     const prevEnv = { ...process.env };
     const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true });
     const daemon = installDaemonCliDepsForTest({
@@ -3384,9 +4525,9 @@ describe("main() smoke", () => {
   });
 
   it("main --resume trusts only the resolved target workspace", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-trust-home-"));
-    const currentCwd = await mkdtemp(join(tmpdir(), "agenc-resume-current-"));
-    const targetCwd = await mkdtemp(join(tmpdir(), "agenc-resume-target-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-trust-home-"));
+    const currentCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-current-"));
+    const targetCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-target-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
     const prevStdinIsTTY = Object.getOwnPropertyDescriptor(
@@ -3491,8 +4632,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry refuses a same-id live agent bound to another rollout", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-live-mismatch-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-live-mismatch-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-live-mismatch-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-live-mismatch-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-livemismatch1";
     process.env.AGENC_HOME = tmpHome;
@@ -3544,8 +4685,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry detects a workspace swap after trust before daemon create", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-cwd-swap-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cwd-swap-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-swap-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-swap-cwd-"));
     const parkedCwd = `${tmpCwd}.parked`;
     const prevEnv = { ...process.env };
     const conversationId = "conv-cwdswap1";
@@ -3590,8 +4731,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI treats slash-prefixed filesystem paths as normal prompt input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-path-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-path-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-path-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-path-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3639,8 +4780,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI streams startup prompt and images to the daemon session", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-image-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-image-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-image-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-image-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3696,10 +4837,10 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-idle-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-idle-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-cwd-"));
     const sessionTempRoot = await mkdtemp(
-      join(tmpdir(), "agenc-tui-idle-session-temp-"),
+      join(canonicalTmpdir(), "agenc-tui-idle-session-temp-"),
     );
     const prevEnv = { ...process.env };
 
@@ -3721,8 +4862,13 @@ describe("main() smoke", () => {
     });
     const unmount = vi.fn();
     vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async () => {
+      bootTUI: vi.fn(async ({ session }: { session: {
+        listDaemonSessionProcesses(): Promise<unknown>;
+        stopDaemonSessionProcess(taskId: string): Promise<unknown>;
+      } }) => {
         observedTempRoots.push(resolveSessionTempRoot());
+        await expect(session.listDaemonSessionProcesses()).resolves.toBeUndefined();
+        await expect(session.stopDaemonSessionProcess("unknown-process")).rejects.toThrow("No live daemon session");
         return { unmount, waitUntilExit };
       }),
     }));
@@ -3749,11 +4895,11 @@ describe("main() smoke", () => {
   });
 
   it("attaches a worktree child with separate execution and role workspaces", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-role-home-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-role-home-"));
     const authority = await mkdtemp(
-      join(tmpdir(), "agenc-tui-role-authority-"),
+      join(canonicalTmpdir(), "agenc-tui-role-authority-"),
     );
-    const worktree = await mkdtemp(join(tmpdir(), "agenc-tui-role-worktree-"));
+    const worktree = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-role-worktree-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3796,8 +4942,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry starts a daemon prompt agent on first ordinary TUI input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-slash-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-slash-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -3877,8 +5023,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry forwards deferred session cancel to the live daemon session", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-cancel-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-cancel-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -3898,6 +5044,13 @@ describe("main() smoke", () => {
       agentId: "agent_tui_cancel",
       sessionId: "session_tui_cancel",
       cwd: tmpCwd,
+      oneShotEvents: [{
+        method: "event.session_event",
+        params: {
+          sessionId: "session_tui_cancel", eventId: "cancel-turn-started", turnId: "cancel-turn",
+          event: { id: "cancel-turn-started", type: "turn_started", payload: { turnId: "cancel-turn" } },
+        },
+      }],
     });
 
     let resolveExit: (() => void) | null = null;
@@ -3940,6 +5093,7 @@ describe("main() smoke", () => {
       ]);
       expect(daemon.requests.at(2)?.params).toEqual({
         sessionId: "session_tui_cancel",
+        expectedTurnId: "cancel-turn",
         reason: "interrupted",
       });
     } finally {
@@ -3955,8 +5109,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry reopens deferred TUI sessions after daemon session loss", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-stale-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-stale-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-stale-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-stale-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -4052,8 +5206,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry never serializes MCP configuration into daemon env", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mcp-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mcp-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -4132,8 +5286,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry publishes deferred local transcript events before daemon startup", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-local-emit-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-local-emit-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -4219,9 +5373,9 @@ describe("main() smoke", () => {
   it.each(["/help", "/permissions"])(
     "bootTUIEntry does not send first %s input as a daemon prompt",
     async (slashInput) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-permissions-"));
       const tmpCwd = await mkdtemp(
-        join(tmpdir(), "agenc-tui-permissions-cwd-"),
+        join(canonicalTmpdir(), "agenc-tui-permissions-cwd-"),
       );
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
@@ -4303,8 +5457,8 @@ describe("main() smoke", () => {
   );
 
   it("stops the daemon agent when deferred TUI client connection fails", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-connect-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-connect-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-connect-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-connect-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4364,8 +5518,8 @@ describe("main() smoke", () => {
   });
 
   it("stops the daemon agent when eager TUI attach fails", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-attach-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-attach-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-attach-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4400,8 +5554,8 @@ describe("main() smoke", () => {
   });
 
   it("stops the daemon agent when eager TUI boot fails after attach", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-boot-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-boot-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-boot-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-boot-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4441,8 +5595,8 @@ describe("main() smoke", () => {
   });
 
   it("runs the full main() path through daemon-backed one-shot and exits 0", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-main-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-main-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-"));
 
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
@@ -4563,8 +5717,8 @@ describe("main() smoke", () => {
   ])(
     "main keeps startup-looking tokens literal $label",
     async ({ argv, expectedPrompt }) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-boundary-main-"));
-      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-boundary-cwd-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-boundary-main-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-boundary-cwd-"));
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
       const prevStdinIsTTY = Object.getOwnPropertyDescriptor(

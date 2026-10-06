@@ -263,7 +263,7 @@ export async function createSdkDaemonClient(
       });
       if (created.sessionId === undefined) {
         throw new Error(
-          `gateway: daemon agent ${created.agentId} was created without a session — cannot run turns`,
+          `gateway: daemon agent ${created.agentId} was created without a session and cannot run turns`,
         );
       }
       return wrapSession(await client.resumeSession(created.sessionId));

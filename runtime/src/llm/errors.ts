@@ -6,6 +6,30 @@
 
 import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
+import { isProviderFundsFailure, providerFundsMessage } from "./funds.js";
+
+const preGenerationRejections = new WeakMap<Error, string>();
+
+/**
+ * Adapter evidence that this single wire attempt was rejected before generation.
+ * Mark only at the initial HTTP rejection boundary, never from an error's name,
+ * message, missing usage, or an in-stream status. Preserve the mapped error's
+ * identity so recovery still sees its rate-limit/auth/etc. classification.
+ */
+export function markLLMPreGenerationRejection<T extends Error>(
+  error: T,
+  provider: string,
+): T {
+  preGenerationRejections.set(error, provider);
+  return error;
+}
+
+export function isLLMPreGenerationRejection(
+  error: unknown,
+  provider: string,
+): boolean {
+  return error instanceof Error && preGenerationRejections.get(error) === provider;
+}
 
 export interface TlsValidationDetails {
   readonly code: string;
@@ -136,10 +160,44 @@ export class LLMProviderError extends RuntimeError {
   }
 }
 
+/** An in-stream failure explicitly forbids resampling this attempt. */
+export class LLMStreamRetryDeniedError extends LLMProviderError {
+  constructor(
+    providerName: string,
+    message: string,
+    public readonly reason: "provider_directive" | "partial_output" | "provider_status",
+    statusCode?: number,
+  ) {
+    super(providerName, message, statusCode);
+    this.name = "LLMStreamRetryDeniedError";
+  }
+}
+
+/** Billing/quota exhaustion is terminal for this child and provider. */
+export class LLMFundsError extends LLMProviderError {
+  constructor(providerName: string, statusCode?: number, message = "provider credits or billing quota exhausted") {
+    super(providerName, message, statusCode);
+    this.name = "LLMFundsError";
+  }
+}
+
+/** A successful sign-in model list did not include the requested child model. */
+export class LLMModelUnavailableError extends LLMProviderError {
+  constructor(providerName: string, model: string) {
+    super(providerName, `Model ${providerName}/${model} is not served by this sign-in`);
+    this.name = "LLMModelUnavailableError";
+  }
+}
+
 /** An authenticated AgenC response bound to this attempt proves no dispatch. */
 export class LLMManagedAdmissionError extends LLMProviderError {
-  constructor() {
-    super("agenc", "Too many model requests are active. Try again after one finishes. No new model request was started.", 429);
+  constructor(readonly reason: "capacity" | "insufficient_credits" | "credits_unavailable" = "capacity") {
+    const message = reason === "insufficient_credits"
+      ? "Not enough available AgenC model credits for this request. Check your available credits and pending usage in Profile. No new model request was started."
+      : reason === "credits_unavailable"
+        ? "AgenC model credits are unavailable for this account. Check your credit status in Profile. No new model request was started."
+        : "Too many model requests are active. Try again after one finishes. No new model request was started.";
+    super("agenc", message, reason === "capacity" ? 429 : 402);
     this.name = "LLMManagedAdmissionError";
   }
 }
@@ -277,6 +335,14 @@ export class LLMAuthenticationError extends RuntimeError {
   }
 }
 
+/** A required credential was absent before any provider request was sent. */
+export class LLMMissingCredentialsError extends LLMAuthenticationError {
+  constructor(providerName: string, message: string) {
+    super(providerName, 401, message);
+    this.name = "LLMMissingCredentialsError";
+  }
+}
+
 /**
  * Error thrown when TLS certificate validation fails before any authenticated
  * provider response is received.
@@ -361,6 +427,34 @@ export class LLMServerError extends RuntimeError {
 }
 
 /**
+ * Error thrown when a provider stream ends before its terminal event
+ * (`response.completed` / `response.failed`). The transport delivered a clean
+ * end, so no HTTP status or socket code marks the failure, yet nothing
+ * definitive came from the provider: the request is safe to send again, and
+ * the turn's reconnect policy treats it as transient, like `stream_idle`.
+ */
+export class LLMStreamTruncatedError extends LLMProviderError {
+  constructor(providerName: string, message: string) {
+    super(providerName, message);
+    this.name = "LLMStreamTruncatedError";
+  }
+}
+
+/**
+ * Error thrown when the provider refused the shape of a request and the
+ * adapter has already changed its plan for the next attempt (for example
+ * xAI refusing to store a response, after which the conversation is resent
+ * with `store: false`). Nothing was sampled, so the turn's reconnect policy
+ * treats it as transient and the next admitted attempt carries the new plan.
+ */
+export class LLMRequestRebuiltError extends LLMProviderError {
+  constructor(providerName: string, message: string) {
+    super(providerName, message);
+    this.name = "LLMRequestRebuiltError";
+  }
+}
+
+/**
  * Error thrown when a provider transport succeeds but the returned response
  * envelope is malformed or contradicts the requested capability contract.
  */
@@ -437,6 +531,13 @@ export function mapLLMError(
   err: unknown,
   timeoutMs: number,
 ): Error {
+  if (err instanceof LLMFundsError) return err;
+  if (isProviderFundsFailure(providerName, err)) {
+    const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
+      (err as { statusCode?: unknown } | null)?.statusCode;
+    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined,
+      providerFundsMessage(providerName, err));
+  }
   if (
     err instanceof LLMMessageValidationError ||
     err instanceof LLMContextWindowExceededError ||

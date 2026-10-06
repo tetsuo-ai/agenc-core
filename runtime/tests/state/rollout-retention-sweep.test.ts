@@ -24,6 +24,7 @@ import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
 import { recoverCanonicalRunJournalForRun } from "./startup-run-journal-recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 import { CompactionRetentionRepository } from "../../src/state/compaction-retention.js";
+import { ThreadRegistryLock } from "../../src/thread-store/registry-lock.js";
 import {
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
@@ -570,6 +571,54 @@ describe("pruneRolloutSessions", () => {
     expect(report.prunedSessionIds).toEqual([]);
     expect(existsSync(lockedPath)).toBe(true);
     expect(mirrorRowCountForSource(lockedPath)).toBe(2);
+  });
+
+  it("holds the cross-process registry lock before taking rollout leases for retention", () => {
+    seedSession("thread-guarded-retention", 90);
+    const acquire = SessionLock.prototype.acquire;
+    let registryHeldAtLease = false;
+    const spy = vi.spyOn(SessionLock.prototype, "acquire").mockImplementation(function (options) {
+      registryHeldAtLease = existsSync(join(driver.projectDir, "threads.json.lock"));
+      return acquire.call(this, options);
+    });
+    try {
+      const report = pruneRolloutSessions(driver, {
+        sessionsDir: join(driver.projectDir, "sessions"),
+        retention_days: 30,
+        now: () => NOW,
+      });
+      expect(report.prunedSessions).toBe(1);
+      expect(registryHeldAtLease).toBe(true);
+      expect(existsSync(join(driver.projectDir, "threads.json.lock"))).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("defers the sweep without waiting while another process holds the registry lock", () => {
+    const paths = ["thread-busy-a", "thread-busy-b", "thread-busy-c"].map((id) => seedSession(id, 90));
+    // A live holder (this process's pid) is never reclaimed as stale.
+    const holder = new ThreadRegistryLock(driver.projectDir);
+    expect(holder.tryAcquire()).toBe(true);
+    const started = Date.now();
+    try {
+      const report = pruneRolloutSessions(driver, {
+        sessionsDir: join(driver.projectDir, "sessions"),
+        retention_days: 30,
+        now: () => NOW,
+        maxDeletions: 1,
+      });
+      expect(report.prunedSessions).toBe(0);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      for (const path of paths) expect(existsSync(path)).toBe(true);
+    } finally {
+      holder.release();
+    }
+    const after = pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+    });
+    expect(after.prunedSessions).toBe(3);
+    for (const path of paths) expect(existsSync(path)).toBe(false);
   });
 
   it("defers retention when a writer wins the lease race after observation", () => {

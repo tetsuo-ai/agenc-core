@@ -52,6 +52,21 @@ describe("turn terminal classification", () => {
     })).toEqual([{ outcome: "completed", code: 0, turnId: "turn-1", message: "full answer" }]);
   });
 
+  it("exposes the bounded-stop failure code the one-shot client keys on (#2497)", () => {
+    const failed = createTurnFailedEvent({
+      turnId: "turn-1", code: "compact_failed",
+      message: "compact_ladder_exhausted: tiers=[aggressive_summary,emergency_local]",
+    });
+    expect(classifyTurnTerminal(failed, { expectedTurnId: "turn-1" })).toMatchObject({
+      outcome: "errored", code: 1, failureCode: "compact_failed",
+    });
+    // The same wording inside a completed turn is not a failure.
+    expect(classifyTurnTerminal({
+      type: "turn_complete",
+      payload: { turnId: "turn-1", lastAgentMessage: "compact_ladder_exhausted" },
+    }, { expectedTurnId: "turn-1" })).toMatchObject({ outcome: "completed", code: 0 });
+  });
+
   it("classifies an explicit failure without requiring another terminal event", () => {
     const event = createTurnFailedEvent({
       turnId: "turn-1", code: "provider_error", message: "provider disconnected",

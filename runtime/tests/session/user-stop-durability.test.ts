@@ -39,7 +39,11 @@ function fixture() {
 }
 
 describe("durable user-stop authority", () => {
-  it("commits a child denial to the owner journal before resolving the request", async () => {
+  // A child's denial used to be committed as the owner's user stop. That held
+  // back the follow-up turn the child's report starts, so an asynchronous
+  // child that finished after its parent's turn never resumed the parent. The
+  // child's own turn records the person's stop; the owner stays free.
+  it("does not commit a child denial as the owner's stop", async () => {
     const state = fixture();
     const child = mkSession({ cwd: state.session.sessionConfiguration.cwd }).session;
     Object.defineProperty(child, "conversationId", { value: "child-stop-fixture" });
@@ -55,12 +59,13 @@ describe("durable user-stop authority", () => {
     const pending = requestApproval({ ctx: { callId: "child-call", toolName: "exec_command", turnId: "child-turn", invocation: { callId: "child-call", session: child, payload: { kind: "function", name: "exec_command", arguments: '{"cmd":"git commit"}' }, turn: { subId: "child-turn" } } as never }, resolver: state.session.services.approvalResolver, args: { cmd: "git commit" }, getActiveTurnId: () => "child-turn" });
     await vi.waitFor(() => expect(broker.list(state.session.conversationId)).toHaveLength(1));
     expect(broker.resolve(state.session.conversationId, broker.list(state.session.conversationId)[0]!.requestId, { kind: "denied" })).toBe(true);
-    expect(state.read()).toContainEqual(expect.objectContaining({ type: "session_state", payload: { userStop: { stopped: true, generation: 1 } } }));
-    expect((await pending).decision.kind).toBe("denied");
+    expect(state.read()).not.toContainEqual(expect.objectContaining({ type: "session_state", payload: { userStop: expect.objectContaining({ stopped: true }) } }));
+    expect((await pending).decision).toMatchObject({ kind: "denied", decidedBy: "user" });
+    expect(state.session.stoppedByUserSinceLastPrompt).toBe(false);
     const resumed = state.restored();
     resumed.installTurnDriverHooks({ submit: vi.fn(async () => {}) });
-    expect(resumed.stoppedByUserSinceLastPrompt).toBe(true);
-    expect(await resumed.submitChildFollowup()).toBe(false);
+    expect(resumed.stoppedByUserSinceLastPrompt).toBe(false);
+    expect(await resumed.submitChildFollowup()).toBe(true);
   });
 
   it("records an accepted local human release without relying on daemon message IDs", () => {

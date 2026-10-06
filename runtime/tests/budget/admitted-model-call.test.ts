@@ -1,16 +1,15 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
-import type {
-  AdmissionAcquireInput,
-  ExecutionAdmissionClient,
-} from "../../src/budget/admission-client.js";
+import type { AdmissionAcquireInput } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { createAllowAdmissionHarness } from "./admission-test-harness.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, markLLMPreGenerationRejection } from "../../src/llm/errors.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
+import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type {
@@ -48,73 +47,17 @@ function harness(options: {
   readonly authoritative?: boolean;
   readonly supportsMaxOutputTokens?: boolean;
 }) {
-  const leaseController = new AbortController();
-  const reconcile = vi.fn(() => ({
-    applied: true as const,
-    outcome: "reconciled" as const,
-  }));
-  const holdUnknown = vi.fn();
-  const cancelRun = vi.fn();
-  const acknowledgeCompletion = vi.fn();
-  const voidReservation = vi.fn();
-  const recordFallback = vi.fn();
-  const acquire = vi.fn(
-    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => {
-      if (input.denialReason !== undefined) {
-        throw new AdmissionDeniedError(input.denialReason);
-      }
-      return {
-        decision: "allow",
-        reservation: {
-          reservationId: "reservation-1",
-          step: { runId: "run-1", stepId: input.stepId },
-          reservedCostUsd: input.maxCostUsd ?? 0,
-          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-          reservedAt: "2026-07-18T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-1", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-1",
-          parentScopeId: "session-1",
-          autonomous: false,
-        },
-        signal: leaseController.signal,
-      };
-    },
-  );
-  const admission = {
-    scope: {
-      runId: "run-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-1",
-      autonomous: false,
-      ...(options.maxCostUsd !== undefined
-        ? { maxCostUsd: options.maxCostUsd }
-        : {}),
-      ...(options.maxTokens !== undefined
-        ? { maxTokens: options.maxTokens }
-        : {}),
-      ...(options.hasHardCostCap === true ? { hasHardCostCap: true } : {}),
-      ...(options.hasHardTokenCap === true ? { hasHardTokenCap: true } : {}),
-    },
-    acquire,
-    markDispatched: vi.fn(),
-    reconcile,
-    holdUnknown,
-    cancelRun,
-    void: voidReservation,
+  const {
     acknowledgeCompletion,
+    acquire,
+    admission,
+    cancelRun,
+    holdUnknown,
+    leaseController,
     recordFallback,
-    forSession: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  } as unknown as ExecutionAdmissionClient;
+    reconcile,
+    voidReservation,
+  } = createAllowAdmissionHarness({ scope: options });
   const abortTerminal = vi.fn();
   const session = {
     conversationId: "session-1",
@@ -166,6 +109,56 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
+    const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
+    let chunks = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).includes(":countTokens")) return Response.json({ totalTokens: 100 });
+      if (failure === "before-headers") throw new TypeError("fetch failed");
+      if (failure === "http-503") return new Response("unavailable", { status: 503 });
+      let sent = false;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (failure === "after-interim-usage" && !sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":1}}\n\n',
+            ));
+          } else {
+            controller.error(new Error("connection lost"));
+          }
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = new GeminiProvider({ model: "gemini-3.8-flash", fetchImpl,
+      endpointPlan: createGeminiEndpointPlan(),
+      credentialPlan: { kind: "api-key", credential: "test-only", source: "factory" },
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await expect(runAdmittedModelCall({ session: state.session, provider, messages,
+      options: { maxOutputTokens: 200 }, stepId: `ambiguous:${failure}`, model: "gemini-3.8-flash", providerName: "gemini",
+      invoke: options => provider.chatStream(messages, () => { chunks++; }, options),
+    })).rejects.toBeInstanceOf(Error);
+    if (failure === "after-interim-usage") expect(chunks).toBeGreaterThan(0);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls.filter(([url]) => !String(url).includes(":countTokens"))).toHaveLength(1);
+  });
+  test.each(["matched", "unmarked", "other-provider"] as const)("refunds only adapter-certified rejection for this provider: %s", async (proof) => {
+    const state = harness({});
+    const error = new LLMRateLimitError("grok");
+    if (proof !== "unmarked") markLLMPreGenerationRejection(error, proof === "matched" ? "grok" : "gemini");
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => { throw error; })).rejects.toBe(error);
+    if (proof === "matched") {
+      expect(state.reconcile).toHaveBeenCalledWith("reservation-1", { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+    } else {
+      expect(state.reconcile).not.toHaveBeenCalled();
+      expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    }
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
   test("counts Ollama's pinned text protocol before acquiring the actual wire lease", async () => {
     const state = harness({ maxTokens: 4_096, hasHardTokenCap: true });
     const tools = [{ type: "function" as const, function: { name: "FileRead", description: "read", parameters: { type: "object" } } }];
@@ -636,8 +629,9 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      // Grok 4.5: input + cached input + output.
-      costUsd: 0.00051,
+      // Grok 4.5: the 80 uncached and 20 cached prompt tokens at their own
+      // rates (xAI counts cached tokens inside the prompt tokens), plus output.
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
     expect(state.acknowledgeCompletion).toHaveBeenCalledWith("reservation-1");
@@ -670,7 +664,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
@@ -694,7 +688,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.02051,
+      costUsd: expect.closeTo(0.02047, 12),
     });
   });
 
@@ -866,9 +860,9 @@ describe("runAdmittedModelCall", () => {
     );
   });
 
-  test("settles zero only for a managed gateway no-dispatch receipt", async () => {
+  test.each(["capacity", "insufficient_credits", "credits_unavailable"] as const)("settles zero only for a managed gateway no-dispatch receipt: %s", async (reason) => {
     const state = harness({});
-    const error = new LLMManagedAdmissionError();
+    const error = new LLMManagedAdmissionError(reason);
     await expect(runAdmittedModelCall({session:state.session,provider:state.provider,messages:[],
       options:{maxOutputTokens:200},stepId:"managed-rejected",model:"grok-4.5",providerName:"agenc",
       invoke:async()=>{throw error;},
@@ -890,41 +884,15 @@ describe("runAdmittedModelCall", () => {
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
-  test("keeps the full reservation held when provider pricing is unknown", async () => {
-    const state = harness({});
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).resolves.toMatchObject({ model: "unknown-model" });
-    expect(state.holdUnknown).toHaveBeenCalledWith(
-      "reservation-1",
-      "unpriced_provider_response",
-    );
-    expect(state.reconcile).not.toHaveBeenCalled();
-  });
-
-  test("durably cancel-locks an unpriced provider response under a hard USD cap", async () => {
-    const state = harness({ maxCostUsd: 1 });
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).rejects.toMatchObject({
-      code: "ADMISSION_DENIED",
-      reason: "unpriced_provider_response",
+  test.each([{}, { maxCostUsd: 1 }])("estimates a successful unpriced response: %j", async (limits) => {
+    const state = harness(limits);
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () =>
+      response({ model: "unknown-model" }))).resolves.toMatchObject({ model: "unknown-model" });
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 100, outputTokens: 50, costUsd: 0.045, costEstimated: true,
     });
-    expect(state.cancelRun).toHaveBeenCalledOnce();
-    expect(state.cancelRun).toHaveBeenCalledWith("unpriced_provider_response");
-    // cancelRun owns both the full unknown hold and run-tree cascade in one
-    // transaction; a separate hold would reintroduce a crash gap.
     expect(state.holdUnknown).not.toHaveBeenCalled();
-    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-    expect(state.session.abortTerminal).toHaveBeenCalledWith(
-      "provider_overrun",
-    );
+    expect(state.cancelRun).not.toHaveBeenCalled();
   });
 
   test("accounts managed routing with the concrete provider and model", async () => {
@@ -969,8 +937,98 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
+  });
+
+  const managedDeepSeekUsage = {
+    promptTokens: 22_116,
+    completionTokens: 5,
+    totalTokens: 22_121,
+    availability: "reported",
+    provenance: "provider",
+  } as const;
+
+  function routedProvider(model: string): LLMProvider {
+    return {
+      name: "agenc",
+      getExecutionProfile: async () => ({
+        provider: "openrouter",
+        model,
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+  }
+
+  test("prices the managed AgenC DeepSeek route at its own rates, not the public OpenRouter row", async () => {
+    // Live run on 2026-10-01: this call settled at $3.3204, the registry
+    // ceiling, instead of the route's $0.30/M input and $1.20/M output.
+    const state = harness({ maxCostUsd: 1 });
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: routedProvider("deepseek/deepseek-v4.1-flash"),
+      messages: [{ role: "user", content: "hello" }],
+      options: { model: "deepseek/deepseek-v4.1-flash", maxOutputTokens: 64_000 },
+      stepId: "model:managed-deepseek",
+      model: "deepseek/deepseek-v4.1-flash",
+      providerName: "agenc",
+      // The gateway passes through OpenRouter's dated generation id.
+      invoke: async () => response({
+        model: "deepseek/deepseek-v4.1-flash-20260910",
+        usage: managedDeepSeekUsage,
+      }),
+    });
+
+    const request = state.acquire.mock.calls[0]?.[0] as AdmissionAcquireInput;
+    // Routing attribution is unchanged; only the price follows the route.
+    expect(request).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+    expect(request.costEstimated).toBeUndefined();
+    expect(request.maxCostUsd).toBeCloseTo(
+      (request.maxInputTokens * 0.3 + request.maxOutputTokens * 1.2) / 1_000_000,
+      12,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 22_116,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.0066408, 12),
+    });
+  });
+
+  test.each([
+    { name: "a user's own OpenRouter key", providerName: "openrouter", model: "deepseek/deepseek-v4.1-flash" },
+    { name: "a managed route without its own price", providerName: "agenc", model: "deepseek/deepseek-v4-flash-0731" },
+  ])("keeps $name on the conservative price", async ({ providerName, model }) => {
+    const state = harness({ maxCostUsd: 1 });
+    const provider = providerName === "agenc"
+      ? routedProvider(model)
+      : {
+          name: "openrouter",
+          getExecutionProfile: async () => ({
+            usageReporting: "authoritative" as const,
+            supportsMaxOutputTokens: true,
+          }),
+        } as unknown as LLMProvider;
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { model, maxOutputTokens: 200 },
+      stepId: "model:conservative",
+      model,
+      providerName,
+      invoke: async () => response({ model, usage: managedDeepSeekUsage }),
+    });
+
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openrouter", model, costEstimated: true }),
+      undefined,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      costEstimated: true,
+    }));
   });
 
   test("voids and releases an acquired lease when routing evidence cannot be journaled", async () => {
@@ -1200,5 +1258,162 @@ describe("runAdmittedModelCall local providers (#1752)", () => {
       | undefined;
     expect(acquireInput?.denialReason).toBeUndefined();
     expect(state.reconcile).toHaveBeenCalled();
+  });
+});
+
+// Terminal-Bench 4.0, 2026-09-14: DeepSeek reported 27% more prompt tokens than the fallback estimated, and the next
+// admitted request kept its full output reservation past the context window.
+describe("runAdmittedModelCall provider-usage calibration", () => {
+  const messages = [{ role: "user" as const, content: `photonic geometry ${"x ".repeat(20_000)}` }];
+
+  async function admittedCall(
+    state: ReturnType<typeof harness>,
+    contextWindowTokens: number,
+    reportedPromptTokens: (admittedInputTokens: number) => number = (input) => input,
+    extraOptions: Record<string, unknown> = {},
+  ): Promise<{ input: number; output: number | undefined }> {
+    let output: number | undefined;
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: state.provider,
+      messages,
+      options: { maxOutputTokens: 4_096, contextWindowTokens, ...extraOptions },
+      stepId: `model:calibration:${state.acquire.mock.calls.length + 1}`,
+      model: "grok-4.5",
+      providerName: "grok",
+      invoke: async (options) => {
+        output = options.maxOutputTokens;
+        const promptTokens = reportedPromptTokens(state.acquire.mock.calls.at(-1)![0].maxInputTokens);
+        return response({
+          usage: {
+            promptTokens,
+            completionTokens: 50,
+            totalTokens: promptTokens + 50,
+            availability: "reported",
+            provenance: "provider",
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+            webSearchRequests: 0,
+          },
+        });
+      },
+    });
+    return { input: state.acquire.mock.calls.at(-1)![0].maxInputTokens, output };
+  }
+
+  test("a reported undercount clamps the next admitted output reservation in the same conversation only", async () => {
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-undercount" });
+    const first = await admittedCall(state, 1_048_576, (input) => Math.ceil(input * 1.271));
+    const factor = Math.ceil(first.input * 1.271) / first.input;
+    const calibrated = Math.ceil(first.input * factor * 1.02);
+    const window = calibrated + 2_048;
+
+    expect(await admittedCall(state, window)).toEqual({ input: calibrated, output: 2_048 });
+
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-control" });
+    expect(await admittedCall(control, window)).toEqual({ input: first.input, output: 4_096 });
+  });
+
+  test("a provider-native server tool turn does not calibrate the conversation's later turns", async () => {
+    // Observed on grok-4.7: two web_search steps reported 58,887 and 62,442
+    // input tokens against a query-sized count, the factor locked at its cap,
+    // and every later turn in the conversation ran about six times its real
+    // size until admission denied context_window_exceeded at 86k of 500k.
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-server-tool" });
+    // runGrokNativeWebSearch enables native search on its provider and routes web_search.
+    Object.assign(state.provider, { config: { model: "grok-4.5", webSearch: true } });
+    await admittedCall(state, 1_048_576, () => 62_442, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+    Object.assign(state.provider, { config: { model: "grok-4.5" } });
+    const afterSearch = await admittedCall(state, 1_048_576);
+
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-server-tool-control" });
+    const plain = await admittedCall(control, 1_048_576);
+
+    expect(afterSearch).toEqual(plain);
+  });
+
+  test("a client tool that is only named web_search still calibrates", async () => {
+    // Ordinary turns route their client-tool catalog by name; without a
+    // configured provider-native tool the whole input is ours to count.
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-client-tool-control" });
+    const plain = await admittedCall(control, 1_048_576);
+
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-client-tool" });
+    await admittedCall(state, 1_048_576, () => plain.input * 2, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+    const next = await admittedCall(state, 1_048_576);
+
+    expect(next.input).toBeGreaterThan(plain.input);
+  });
+});
+
+// Codex review, P1: the Chat Completions parser cannot report prompt-cache
+// writes (unlike Responses' input_tokens_details.cache_write_tokens), so it
+// flags its usage with cacheWritesUnreported instead. usageCostUsd only acts
+// on that flag when the priced entry bills cache writes above its input
+// rate; every other Chat Completions user (DeepSeek, Grok, ...) must be
+// unaffected.
+describe("runAdmittedModelCall Chat Completions cache-write reconciliation", () => {
+  function deepSeekCall(
+    stepId: string,
+    usage: LLMResponse["usage"],
+  ): { readonly state: ReturnType<typeof harness>; readonly run: Promise<LLMResponse> } {
+    const state = harness({ maxCostUsd: 10 });
+    const provider = {
+      name: "deepseek",
+      getExecutionProfile: async () => ({
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+    const run = runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { maxOutputTokens: 200 },
+      stepId,
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      invoke: async () => response({ model: "deepseek-v4-pro", usage }),
+    });
+    return { state, run };
+  }
+
+  test("a DeepSeek usage without a higher cache-write rate prices exactly as before the flag", async () => {
+    const usage: LLMResponse["usage"] = {
+      promptTokens: 1000,
+      completionTokens: 50,
+      totalTokens: 1050,
+      availability: "reported",
+      provenance: "provider",
+      cachedInputTokens: 100,
+    };
+    const without = deepSeekCall("model:deepseek-no-flag", usage);
+    await without.run;
+    const withFlag = deepSeekCall("model:deepseek-flag", {
+      ...usage,
+      cacheWritesUnreported: true,
+    });
+    await withFlag.run;
+
+    const withoutCost = without.state.reconcile.mock.calls[0]?.[1].costUsd;
+    const withFlagCost = withFlag.state.reconcile.mock.calls[0]?.[1].costUsd;
+    expect(withFlagCost).toBe(withoutCost);
+    // Pins the actual DeepSeek native formula so a change on either path is
+    // caught: 900 uncached * $0.00132/1K + 100 cached * $0.000044/1K + 50 out
+    // * $0.00396/1K (COST_TIER_DEEPSEEK_V4_PRO_NATIVE, session/cost.ts).
+    expect(withFlagCost).toBeCloseTo(
+      0.9 * 0.00132 + 0.1 * 0.000044 + 0.05 * 0.00396,
+      12,
+    );
   });
 });

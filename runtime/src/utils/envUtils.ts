@@ -9,7 +9,7 @@ import {
   getCurrentRuntimeSession,
   peekAmbientRuntimeSession,
 } from '../session/current-session.js'
-import { peekAgentRuntimeOptions } from '../session/runtime-options.js'
+import { peekAgentRuntimeOptions } from '../session/runtime-options-context.js'
 import { getCanonicalSettingsAuthority } from './settings/canonicalAuthority.js'
 
 /**
@@ -120,12 +120,10 @@ export function shouldMaintainProjectWorkingDir(): boolean {
  * Check if running on Homespace (ant-internal cloud environment)
  */
 export function isRunningOnHomespace(
-  env: Readonly<Record<string, string | undefined>>,
+  _env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  return (
-    env.USER_TYPE === 'ant' &&
-    isEnvTruthy(env.COO_RUNNING_ON_HOMESPACE)
-  )
+  // A hosted development space is not a deployment target of this runtime.
+  return false
 }
 
 /**

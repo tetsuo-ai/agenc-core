@@ -43,6 +43,9 @@ function createChild(
   }) as never
   stdin.destroy = vi.fn(() => destroy()) as never
   child.stdin = stdin
+  // A started player has a pid; only one whose spawn failed has none, and
+  // the player never signals that one. kill() is a spy: nothing is signalled.
+  Object.assign(child, { pid: 424_242 })
   child.kill = vi.fn(() => true) as never
 
   return child

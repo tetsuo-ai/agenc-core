@@ -1,6 +1,6 @@
 import { constants as fsConstants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
-import { basename, dirname, join, resolve, win32 } from "node:path";
+import { basename, dirname, join, parse, resolve, sep, win32 } from "node:path";
 import {
   sameStats,
   verifiedDirectoryOpenFlags,
@@ -96,8 +96,25 @@ export async function withConfinedDirectory<Result>(
     if (descriptorPath === undefined && !allowsPathFallback(policy)) {
       throw new ConfinedIoError(
         "DESCRIPTOR_UNSUPPORTED",
-        `descriptor-confined I/O is unsupported on ${process.platform}`,
+        process.platform === "darwin"
+          ? "Darwin /dev/fd cannot be traversed as a directory. This operation requires descriptor-relative I/O; use a host with a traversable descriptor alias."
+          : `No traversable directory descriptor is available on ${process.platform}. This operation requires descriptor-relative I/O; use a host with a traversable descriptor alias.`,
       );
+    }
+    // Path anchors are used only for the Windows private-path policy. On
+    // POSIX, identity checks cannot confine a child open between checks.
+    let pathAnchors: readonly DirectoryPathAnchor[] | undefined;
+    if (descriptorPath === undefined) {
+      try {
+        pathAnchors = await snapshotDirectoryPath(canonicalPath);
+      } catch (cause) {
+        if (cause instanceof ConfinedIoError) throw cause;
+        throw new ConfinedIoError(
+          "ROOT_CHANGED",
+          `root path changed while opening: ${lexicalPath}`,
+          { cause },
+        );
+      }
     }
     const root: ConfinedDirectory = {
       path: lexicalPath,
@@ -122,6 +139,7 @@ export async function withConfinedDirectory<Result>(
           ) {
             throw new Error("root identity or canonical path changed");
           }
+          if (pathAnchors !== undefined) await verifyDirectoryPath(pathAnchors);
         } catch (cause) {
           throw new ConfinedIoError(
             "ROOT_CHANGED",
@@ -138,6 +156,34 @@ export async function withConfinedDirectory<Result>(
     return result;
   } finally {
     await handle?.close();
+  }
+}
+
+type DirectoryPathAnchor = { readonly path: string; readonly stats: BigIntStats };
+
+async function snapshotDirectoryPath(path: string): Promise<readonly DirectoryPathAnchor[]> {
+  const base = parse(path).root;
+  const components = path.slice(base.length).split(sep).filter(Boolean);
+  const anchors: DirectoryPathAnchor[] = [];
+  let current = base;
+  for (const component of components) {
+    current = join(current, component);
+    const stats = await lstat(current, { bigint: true });
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new ConfinedIoError("ROOT_UNSAFE", `directory path contains an unsafe component: ${current}`);
+    }
+    anchors.push({ path: current, stats });
+  }
+  return anchors;
+}
+
+async function verifyDirectoryPath(anchors: readonly DirectoryPathAnchor[]): Promise<void> {
+  for (const anchor of anchors) {
+    const current = await lstat(anchor.path, { bigint: true });
+    if (!current.isDirectory() || current.isSymbolicLink() ||
+        !sameIdentity(anchor.stats, current)) {
+      throw new ConfinedIoError("ROOT_CHANGED", `directory path changed: ${anchor.path}`);
+    }
   }
 }
 
@@ -378,9 +424,8 @@ function verifyPrivatePath(
 }
 
 function allowsPathFallback(policy: ConfinedIoPolicy): boolean {
-  return policy.unavailableAlias === "identity-checked-path" ||
-    (policy.unavailableAlias === "windows-private-path" && process.platform === "win32" &&
-      policy.privateDirectory && policy.verifyWindowsPrivatePath !== undefined);
+  return policy.unavailableAlias === "windows-private-path" && process.platform === "win32" &&
+    policy.privateDirectory && policy.verifyWindowsPrivatePath !== undefined;
 }
 
 async function descriptorDirectoryPath(

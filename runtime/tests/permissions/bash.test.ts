@@ -19,6 +19,10 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "./types.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 function makeCtx(
   overrides?: Partial<ToolPermissionContext> & {
@@ -532,6 +536,7 @@ describe("bashToolHasPermission", () => {
     ["r\\m -rf /", "rm -rf"],
     ["\"r\"m -rf /", "rm -rf"],
     ["r''m -rf /", "rm -rf"],
+    ...REMOVAL_FLOOR_SHELL_CASES,
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {
@@ -555,6 +560,7 @@ describe("bashToolHasPermission", () => {
     "printf curl | sh",
     "chmod --reference /etc/passwd ./file",
     "chown --reference /etc/passwd ./file",
+    ...INERT_SHELL_SCRIPT_COMMANDS,
   ])(
     "non-critical shell command remains approvable at the permission boundary: %s",
     async (command) => {
@@ -782,6 +788,73 @@ describe("bashToolHasPermission", () => {
     );
     expect(denied.behavior).toBe("deny");
   });
+
+  test.each([
+    "bash -ec 'rm foo'",
+    "bash -c -e 'rm foo'",
+    "bash -c -- 'rm foo'",
+    "bash --norc -c 'rm foo'",
+    "sh -euc 'rm foo'",
+    "dash -c 'rm foo'",
+    "ksh 'rm foo'",
+    "tcsh -c 'echo ok' -c 'rm foo'",
+    "ls && bash -c 'rm foo'",
+    "bash -c \"sh -ec 'rm foo'\"",
+  ])("a deny rule sees the code a shell wrapper runs under bypassPermissions: %s", async (command) => {
+    const ctx = makeCtx({
+      mode: "bypassPermissions",
+      alwaysDenyRules: { userSettings: ["system.bash(rm:*)"] },
+    });
+    const result = await bashToolHasPermission({ command }, makeEvaluatorCtx(ctx));
+    expect(result.behavior).toBe("deny");
+  });
+
+  test.each([
+    "bash -c -e 'rm -rf ~/'",
+    "bash -c -o pipefail 'git push --force origin main'",
+    "bash +c 'rm -rf ~/'",
+    "ksh 'rm -rf ~/'",
+  ])("code behind a wrapper's options stays on the safety floor under bypassPermissions: %s", async (command) => {
+    const ctx = makeCtx({ mode: "bypassPermissions" });
+    const result = await bashToolHasPermission({ command }, makeEvaluatorCtx(ctx));
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.decisionReason).toMatchObject({ type: "safetyCheck" });
+    }
+  });
+
+  test("an allow rule for wrapped code does not allow the wrapper around it", async () => {
+    const ctx = makeCtx({ alwaysAllowRules: { userSettings: ["system.bash(git status:*)"] } });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    expect((await bashToolHasPermission({ command: "bash -c 'git status'" }, evalCtx)).behavior)
+      .toBe("allow");
+    expect((await bashToolHasPermission({ command: "bash -ec 'git status'" }, evalCtx)).behavior)
+      .toBe("ask");
+  });
+
+  test("wrapped code without a rule leaves an allowed wrapper allowed", async () => {
+    const ctx = makeCtx({ alwaysAllowRules: { userSettings: ["system.bash(bash:*)"] } });
+    const result = await bashToolHasPermission(
+      { command: "bash -ec 'make build'" },
+      makeEvaluatorCtx(ctx),
+    );
+    expect(result.behavior).toBe("allow");
+  });
+
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
+    "shell input evaluators stay on the safety floor under bypassPermissions: %s",
+    async (command, label) => {
+      const ctx = makeCtx({ mode: "bypassPermissions" });
+      const result = await bashToolHasPermission({ command }, makeEvaluatorCtx(ctx));
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason).toMatchObject({
+          type: "safetyCheck",
+          reason: label,
+        });
+      }
+    },
+  );
 
   test("BASH_TOOL_NAME is the canonical string", () => {
     expect(BASH_TOOL_NAME).toBe("system.bash");

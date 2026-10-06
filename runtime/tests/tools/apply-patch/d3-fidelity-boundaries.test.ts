@@ -18,7 +18,6 @@ import {
 } from "./limits.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
-import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const BYTE_FIXTURES_ROOT = fileURLToPath(
   new URL("../../fnd/fixtures/patches/", import.meta.url),
@@ -44,10 +43,6 @@ function updatePatch(path: string, before: string, after: string): string {
 async function temporaryRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-d3-fidelity-"));
 }
-
-afterEach(() => {
-  workspaceMutationCoordinators.clearForTests();
-});
 
 describe("apply_patch byte fidelity and input boundaries", () => {
   test.each(BYTE_FIXTURE_CASES)(

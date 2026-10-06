@@ -16,7 +16,8 @@
  *   AgenC `"plan"`              → approval `unless_trusted`
  *   AgenC `"default"`           → approval `on_request`
  *   AgenC `"acceptEdits"`       → approval `on_failure`
- *   AgenC `"bypassPermissions"` → approval `never`
+ *   AgenC `"bypassPermissions"` → approval `never`, or in a workspace-write
+ *                                 sandbox the granted-escalation text
  *   AgenC `"unattended"`        → background-agent allow/deny/pause policy
  *
  * Sandbox-mode text includes a `{{network_access}}` template placeholder that
@@ -67,6 +68,20 @@ export const APPROVAL_POLICY_NEVER =
  */
 export const BYPASS_AUTONOMY_NOTE =
   "Approval policy never means tool calls are pre-approved: do not ask for tool permission or plan approval, and do not pause for confirmation of local, reversible work. The rules in 'Executing actions with care' still apply: destructive, irreversible, shared-system or externally visible actions still need the user's explicit request. If the task is genuinely ambiguous, ask one question with AskUserQuestion; when the requested work is done and verified, stop and report.";
+
+/**
+ * Approval text for bypassPermissions in a workspace-write sandbox. The
+ * orchestrator grants a `require_escalated` request in that mode without
+ * asking (tools/orchestrator.ts), so APPROVAL_POLICY_NEVER, which says such
+ * requests are rejected, is false there. A model told it gave up on opening a
+ * page in the user's browser and started the browser's binary inside the
+ * sandbox, which crashed it. The text names only the cases bypass users
+ * expect to leave the sandbox, GUI apps and blocked network: an escalated
+ * command also skips the shell write guards, and `--bypass-approvals` keeps
+ * file changes inside the workspace.
+ */
+export const APPROVAL_POLICY_BYPASS_ESCALATION =
+  "Approval policy is currently never, and this session runs in bypass mode, so a request to leave the sandbox is granted without asking. Use it only for a GUI app (open, xdg-open, osascript) that opens a browser or a file, or for network access the sandbox blocks: provide `sandbox_permissions` with the value `\"require_escalated\"` and a one-line `justification`. Keep file changes inside the workspace, and do not work around the sandbox another way, such as starting an app's binary directly.\n";
 
 /**
  * Approval policy: unless trusted. Begins with one literal space character.
@@ -291,6 +306,12 @@ function renderSandbox(
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,
   authority: PermissionPromptExecutionAuthority,
+  options: {
+    readonly light?: boolean;
+    readonly lightPrint?: boolean;
+    /** A child whose escalated command stays confined (sandbox/escalation/confinement.ts). */
+    readonly escalationConfined?: boolean;
+  } = {},
 ): string | null {
   if (ctx === null) return null;
   if (ctx.mode === "unattended") {
@@ -313,6 +334,11 @@ export function getPermissionsSection(
   }
   const binding = MODE_BINDINGS[ctx.mode];
   if (binding === undefined) return null;
+  if (options.light === true) {
+    return options.lightPrint === true && unattendedPolicyForContext(ctx).noApprover !== true
+      ? lightPrintPermissionsSection(ctx, authority)
+      : lightPermissionsSection(ctx, authority, options.escalationConfined === true);
+  }
 
   const sandboxText = renderSandbox(
     sandboxTemplateForPolicy(authority.sandboxPolicy),
@@ -320,10 +346,148 @@ export function getPermissionsSection(
   );
   // Approval text constants keep their trailing `\n` from the upstream
   // file. Strip it so the outer joiner controls spacing.
-  const approvalText = binding.approvalText.replace(/\n+$/, "");
+  const approvalText = (bypassGrantsEscalation(ctx, authority, options.escalationConfined === true)
+    ? APPROVAL_POLICY_BYPASS_ESCALATION
+    : binding.approvalText).replace(/\n+$/, "");
 
   const heading = `# Permission Mode: ${binding.label}`;
+  // A routine that keeps acceptEdits or bypassPermissions runs on a schedule
+  // with nobody attached. It keeps its mode's text, but the bypass autonomy
+  // note (which offers AskUserQuestion) gives way to what is true here.
+  const routineNote = unattendedPolicyForContext(ctx).noApprover === true
+    ? ROUTINE_NO_APPROVER_NOTE
+    : undefined;
   return [heading, sandboxText, approvalText]
-    .concat(binding.autonomyNote !== undefined ? [binding.autonomyNote] : [])
+    .concat(
+      routineNote !== undefined
+        ? [routineNote]
+        : binding.autonomyNote !== undefined
+          ? [binding.autonomyNote]
+          : [],
+    )
     .join("\n\n");
+}
+
+/**
+ * Appended for a routine run that keeps acceptEdits or bypassPermissions
+ * (unattended policy `noApprover`). Nothing can be approved while it runs.
+ */
+export const ROUTINE_NO_APPROVER_NOTE =
+  "This routine runs on a schedule with nobody attached. What this permission mode allows proceeds without asking. Anything that would need approval is refused, not paused: that includes asking the user a question, handing over a plan, and requesting escalated sandbox permissions. Files may be written only inside the routine's workspace. Do not retry a refused call; finish what the mode allows and report what you could not do.";
+
+// ─────────────────────────────────────────────────────────────────────
+// Light renderings. Light resends this section after the cached prefix of
+// every model call. These texts carry the same mode, sandbox, network and
+// approval rules as the canonical texts above in fewer words; Standard
+// sessions keep the canonical texts.
+// ─────────────────────────────────────────────────────────────────────
+
+const LIGHT_SANDBOX_TEXT: Readonly<Record<SandboxPolicy, string>> = {
+  danger_full_access:
+    "Sandbox danger-full-access: no filesystem sandboxing; all commands are permitted.",
+  workspace_write:
+    "Sandbox workspace-write: commands may read files and edit files in cwd and writable_roots; editing files elsewhere requires approval.",
+  read_only: "Sandbox read-only: commands may only read files.",
+  external_sandbox:
+    "Sandbox external-sandbox: an external authority controls it, and AgenC does not widen or replace it.",
+};
+
+export const LIGHT_APPROVAL_UNLESS_TRUSTED =
+  "Approval policy unless-trusted: most commands are escalated for user approval, apart from a short allowlist of safe read commands.";
+
+export const LIGHT_APPROVAL_ON_FAILURE =
+  "Approval policy on-failure: commands run in the sandbox; a command that fails there is escalated for user approval to run again without it.";
+
+export const LIGHT_APPROVAL_ON_REQUEST = [
+  "Approval policy on-request: a command runs outside the sandbox only when the user approves it or an existing rule allows it.",
+  "Rules are checked per segment of a command split at |, &&, ||, ; and subshells; segments with redirection, substitution, environment assignments or wildcards never match a rule.",
+  "To escalate, call exec_command with sandbox_permissions \"require_escalated\" and justification as a short question for the user, such as \"Do you want to install this project's dependencies?\". Do not message the user first.",
+  "Escalate when the task needs it: writing where the sandbox forbids (such as tests writing to /var), GUI apps (open, xdg-open, osascript), an important command failing from the sandbox or its network limits (DNS, registry or dependency downloads), or a destructive command such as rm or git reset that the user did not ask for. Do not work around approvals with other tools.",
+  "An optional prefix_rule offers a reusable approval: keep it categorical and narrow, such as [\"npm\", \"run\", \"dev\"] or [\"cargo\", \"test\"]; never a broad interpreter prefix such as [\"python3\"], never for rm or other destructive commands, never for a heredoc or herestring.",
+].join(" ");
+
+export const LIGHT_APPROVAL_NEVER =
+  "Approval policy never: do not provide sandbox_permissions; such commands are rejected.";
+
+/** Light rendering of APPROVAL_POLICY_BYPASS_ESCALATION. */
+export const LIGHT_APPROVAL_BYPASS_ESCALATION =
+  "Approval policy never: bypass mode grants a request to leave the sandbox without asking. Use it only for GUI apps (open, xdg-open, osascript) or blocked network: call exec_command with sandbox_permissions \"require_escalated\" and a one-line justification. Keep file changes inside the workspace; do not work around the sandbox another way.";
+
+/**
+ * Where the bypass escalation text applies. The same sessions get escalation
+ * advice from exec_command's sandbox notices (tools/system/exec-sandbox-denial.ts).
+ * A scheduled routine never leaves its sandbox; a worktree or read-only
+ * delegation child stays confined; danger-full-access and an external
+ * sandbox leave nothing to lift; and a read-only sandbox is a choice to change
+ * nothing, which this text would undercut.
+ */
+function bypassGrantsEscalation(
+  ctx: ToolPermissionContext,
+  authority: PermissionPromptExecutionAuthority,
+  escalationConfined: boolean,
+): boolean {
+  return ctx.mode === "bypassPermissions" &&
+    unattendedPolicyForContext(ctx).noApprover !== true &&
+    !escalationConfined &&
+    authority.sandboxPolicy === "workspace_write";
+}
+
+/**
+ * Light's head has no section titled 'Executing actions with care', so this
+ * note refers to its action rules directly. Same terms as
+ * BYPASS_AUTONOMY_NOTE.
+ */
+export const LIGHT_BYPASS_AUTONOMY_NOTE =
+  "Tool calls are pre-approved: do not ask for tool permission or plan approval, and do not pause to confirm local, reversible work. The action rules above still apply: destructive, irreversible, shared-system or externally visible actions need the user's explicit request. If the task is genuinely ambiguous, ask one question with AskUserQuestion; when the requested work is done and verified, stop and report.";
+
+const LIGHT_APPROVAL_TEXT: Partial<Record<PermissionMode, string>> = {
+  plan: LIGHT_APPROVAL_UNLESS_TRUSTED,
+  default: LIGHT_APPROVAL_ON_REQUEST,
+  acceptEdits: LIGHT_APPROVAL_ON_FAILURE,
+  bypassPermissions: LIGHT_APPROVAL_NEVER,
+};
+
+const LIGHT_PRINT_SANDBOX_TEXT: Readonly<Record<SandboxPolicy, string>> = {
+  danger_full_access: "no filesystem sandbox",
+  workspace_write: "read files; write only cwd and writable_roots",
+  read_only: "read files only",
+  external_sandbox: "externally controlled; never widen or replace it",
+};
+
+function lightPrintPermissionsSection(
+  ctx: ToolPermissionContext,
+  authority: PermissionPromptExecutionAuthority,
+): string | null {
+  const binding = MODE_BINDINGS[ctx.mode];
+  if (binding === undefined) return null;
+  const sandbox = authority.sandboxPolicy.replaceAll("_", "-");
+  const network = authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted";
+  return [
+    `Permission mode: ${binding.label}. Sandbox ${sandbox}: ${LIGHT_PRINT_SANDBOX_TEXT[authority.sandboxPolicy]}; network ${network}.`,
+    "No approver: approval requests are denied. Do not bypass restrictions.",
+    ...(ctx.mode === "bypassPermissions" ? [LIGHT_APPROVAL_NEVER] : []),
+  ].join("\n");
+}
+
+function lightPermissionsSection(
+  ctx: ToolPermissionContext,
+  authority: PermissionPromptExecutionAuthority,
+  escalationConfined: boolean,
+): string | null {
+  const binding = MODE_BINDINGS[ctx.mode];
+  const approvalText = bypassGrantsEscalation(ctx, authority, escalationConfined)
+    ? LIGHT_APPROVAL_BYPASS_ESCALATION
+    : LIGHT_APPROVAL_TEXT[ctx.mode];
+  if (binding === undefined || approvalText === undefined) return null;
+  const network = authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted";
+  const note = unattendedPolicyForContext(ctx).noApprover === true
+    ? ROUTINE_NO_APPROVER_NOTE
+    : binding.autonomyNote !== undefined
+      ? LIGHT_BYPASS_AUTONOMY_NOTE
+      : undefined;
+  return [
+    `Permission mode: ${binding.label}. ${LIGHT_SANDBOX_TEXT[authority.sandboxPolicy]} Network access is ${network}.`,
+    approvalText,
+    ...(note !== undefined ? [note] : []),
+  ].join("\n");
 }

@@ -17,12 +17,13 @@ export type {
   SessionTranscriptV2Message,
   SessionTranscriptV2Result,
   SessionTranscriptV2TurnResult,
+  DisplayAttachment,
 } from "./transcript-v2.generated.js";
 
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.12.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.30.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -79,6 +80,10 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "telegram.agents.pair.cancel",
   "initialize",
   "request.cancel",
+  "print.invoke",
+  "print.admit",
+  "print.ack",
+  "print.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -89,6 +94,8 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -99,6 +106,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "routine.run",
   "routine.runs",
   "routine.cancel",
+  "routine.session.prepare.respond",
   "csvJob.review.list",
   "csvJob.review.show",
   "csvJob.review.resolve",
@@ -109,12 +117,19 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.terminate",
   "session.clear",
   "session.snapshot",
+  "session.processes.list",
+  "session.processes.stop",
+  "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
   "session.mcp.addServer",
+  "plugin.settings.get",
+  "plugin.settings.set",
+  "plugin.settings.reset",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -127,6 +142,8 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "tool.cancel",
   "elicitation.respond",
   "permission.list",
+  "project.trustStatus",
+  "project.trust",
   "fs.fuzzy_search",
   "commandExec.start",
   "commandExec.write",
@@ -149,7 +166,10 @@ export type AgencDaemonMethod = (typeof AGENC_SDK_DAEMON_METHODS)[number];
  * order. Mirror of `AGENC_DAEMON_NOTIFICATION_METHODS`.
  */
 export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
+  "print.admission",
+  "print.output",
   "routine.updated",
+  "routine.session.prepare",
   "commandExec.outputDelta",
   "event.message_chunk",
   "event.tool_request",
@@ -218,6 +238,11 @@ export type RunReplayParams = Wire.RunReplayParams;
 export type RunEvidenceParams = Wire.RunEvidenceParams;
 
 export type RunCancelParams = Wire.RunCancelParams;
+export type RunPauseParams = Wire.RunPauseParams;
+export type RunPauseResult = Wire.RunPauseResult;
+export type RunResumeParams = Wire.RunResumeParams;
+export type RunResumeResult = Wire.RunResumeResult;
+export type RunWorkflowControlState = Wire.RunWorkflowControlState;
 
 /** One required verification command for a verified-change workflow run. */
 export type RunStartVerificationCommand = Wire.RunStartVerificationCommand;
@@ -227,6 +252,9 @@ export type RunStartParams = Wire.RunStartParams;
 /** Helper input; generic request() uses the required-cwd wire shape. */
 export type SessionCreateParams =
   AgencDefaultCwdParams<Wire.SessionCreateParams>;
+
+export type SessionArtifactReadParams = Wire.SessionArtifactReadParams;
+export type SessionArtifactReadResult = Wire.SessionArtifactReadResult;
 
 export type SessionListParams = Wire.SessionListParams;
 
@@ -239,6 +267,12 @@ export type SessionTerminateParams = Wire.SessionTerminateParams;
 export type SessionClearParams = Wire.SessionClearParams;
 
 export type SessionSnapshotParams = Wire.SessionSnapshotParams;
+export type SessionProcessesListParams = Wire.SessionProcessesListParams;
+export type SessionProcessesStopParams = Wire.SessionProcessesStopParams;
+export type SessionGoalParams = Wire.SessionGoalParams;
+export type SessionGoalSetRequest = Wire.SessionGoalSetRequest;
+export type SessionGoalSnapshot = Wire.SessionGoalSnapshot;
+export type SessionProcessSnapshot = Wire.SessionProcessSnapshot;
 
 export type SessionTranscriptParams = Wire.SessionTranscriptParams;
 
@@ -253,6 +287,13 @@ export type SessionResolveToolCallLegacyParams =
 /** Evidence-bearing request required for canonical durable effect records. */
 export type SessionResolveToolCallEvidenceParams =
   Wire.SessionResolveToolCallEvidenceParams;
+
+/** Operator attestation of an outcome, recorded by Core as the evidence. */
+export type SessionResolveToolCallAttestationParams =
+  Wire.SessionResolveToolCallAttestationParams;
+
+/** Protocol 1.20: the exact recorded attempt a review settles. */
+export type SessionResolveToolCallAttempt = Wire.SessionResolveToolCallAttempt;
 
 export type SessionResolveToolCallParams = Wire.SessionResolveToolCallParams;
 
@@ -289,6 +330,10 @@ export type ToolCancelParams = Wire.ToolCancelParams;
 export type ElicitationRespondParams = Wire.ElicitationRespondParams;
 
 export type PermissionListParams = Wire.PermissionListParams;
+
+export type ProjectTrustStatusParams = Wire.ProjectTrustStatusParams;
+
+export type ProjectTrustParams = Wire.ProjectTrustParams;
 
 export type FuzzyFileSearchParams = Wire.FuzzyFileSearchParams;
 
@@ -515,6 +560,9 @@ export interface TokenUsage extends JsonObject {
 }
 
 export type SessionSnapshotResult = Wire.SessionSnapshotResult;
+export type SessionProcessesListResult = Wire.SessionProcessesListResult;
+export type SessionProcessesStopResult = Wire.SessionProcessesStopResult;
+export type SessionGoalResult = Wire.SessionGoalResult;
 
 export type SessionTranscriptMessage = Wire.SessionTranscriptMessage;
 
@@ -545,6 +593,10 @@ export type ElicitationRespondResult = Wire.ElicitationRespondResult;
 export type PermissionGrant = Wire.PermissionGrant;
 
 export type PermissionListResult = Wire.PermissionListResult;
+
+export type ProjectTrustStatusResult = Wire.ProjectTrustStatusResult;
+
+export type ProjectTrustResult = Wire.ProjectTrustResult;
 
 export type FuzzyFileSearchResult = Wire.FuzzyFileSearchResult;
 

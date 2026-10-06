@@ -7,11 +7,36 @@ import {
   getSecureStorage,
   type SecureStorageData,
 } from './index.js'
+import { SecureStorageUnavailableError } from './unavailable.js'
 
 const NATIVE_STORAGE_TRANSACTION_LOCK = '.secure-storage-transaction'
 
 export class NativeSecureStorageError extends Error {
   readonly name = 'NativeSecureStorageError'
+}
+
+/**
+ * A locked or fresh read found no native backend on this host. Plain reads
+ * never raise this: a backend that does not exist here holds no record, so
+ * they answer empty (once with a warning) and environment credentials keep
+ * working. Writes and the destructive-migration preconditions stay strict.
+ */
+export class NativeSecureStorageUnavailableError extends NativeSecureStorageError {}
+
+let warnedUnavailable = false
+
+function noteUnavailable(reason: string): void {
+  if (warnedUnavailable) return
+  warnedUnavailable = true
+  process.stderr.write(
+    `agenc: native secure storage is unavailable on this host (${reason}); ` +
+      'stored credentials cannot be read here, so only environment and config credentials apply\n',
+  )
+}
+
+/** Test seam: forget that the unavailability warning was already printed. */
+export function resetNativeSecureStorageUnavailableWarningForTest(): void {
+  warnedUnavailable = false
 }
 
 export interface NativeSecureStorageTransaction {
@@ -43,6 +68,15 @@ function readStorageOrThrow(
       : storage.read()
     return cloneSecureStorageData(data ?? {})
   } catch (error) {
+    if (error instanceof SecureStorageUnavailableError) {
+      if (!fresh) {
+        noteUnavailable(error.message)
+        return {}
+      }
+      throw new NativeSecureStorageUnavailableError(
+        `${failureMessage}: ${error.message}`,
+      )
+    }
     throw new NativeSecureStorageError(
       `${failureMessage}: ${error instanceof Error ? error.message : String(error)}`,
     )
@@ -102,6 +136,10 @@ export async function readNativeSecureStorageAsync(
       (await getSecureStorage(home).readAsync()) ?? {},
     )
   } catch (error) {
+    if (error instanceof SecureStorageUnavailableError) {
+      noteUnavailable(error.message)
+      return {}
+    }
     throw new NativeSecureStorageError(
       `Native secure storage read failed: ${error instanceof Error ? error.message : String(error)}`,
     )

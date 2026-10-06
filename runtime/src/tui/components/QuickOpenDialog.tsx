@@ -6,8 +6,6 @@ import { useRegisterOverlay } from '../context/overlayContext';
 import { generateFileSuggestions } from '../hooks/fileSuggestions';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { useOptionalSetAppState } from '../state/AppState.js';
-import { openPreviewCommand } from '../workbench/commands.js';
-import { applyWorkbenchCommand, isWorkbenchEnabled } from '../workbench/state.js';
 import { Text } from '../ink.js';
 import { getCwd } from '../../utils/cwd';
 import { openFileInExternalEditor } from '../../utils/editor';
@@ -174,11 +172,6 @@ export function QuickOpenDialog(t0) {
   let t7;
   if ($[8] !== onDone || $[9] !== results.length) {
     t7 = p_1 => {
-      if (isWorkbenchEnabled() && setAppState) {
-        setAppState(prev => applyWorkbenchCommand(prev, openPreviewCommand(p_1, undefined, true)));
-        onDone();
-        return;
-      }
       openFileInExternalEditor(path.resolve(getCwd(), p_1));
       onDone();
     };

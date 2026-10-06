@@ -510,6 +510,53 @@ describe("ExecutionAdmissionRepository", () => {
     ).toEqual(["queued", "allowed", "dispatched", "held_unknown", "cancelled"]);
   });
 
+  it.each([
+    { name: "input estimate", input: 13735, output: 965, cost: 0.0052785 },
+    { name: "cost estimate", input: 12000, output: 965, cost: 0.01 },
+  ])("records actual $name overruns without cancelling an uncapped run", ({ input, output, cost }) => {
+    const root = request("uncapped", "web-fetch", {
+      input: 12450, output: 2000, cost: 0.006135,
+      scopes: [{ key: "uncapped-root" }],
+    });
+    admissions.enqueue(root);
+    const reservation = claimReservation(admissionRecordKey(root.step));
+    admissions.markDispatched(reservation.reservationId);
+    expect(admissions.reconcile(reservation.reservationId, {
+      kind: "reported", usage: { inputTokens: input, outputTokens: output, costUsd: cost },
+    })).toMatchObject({ applied: true, outcome: "reconciled" });
+    expect(admissions.listAllocations()[0]).toMatchObject({
+      usedTokens: input + output, usedCostUsd: cost, blockedByProviderOverrun: false,
+    });
+    now = new Date(T1);
+    admissions.recover({ now: T1 });
+    expect(admissions.listAllocations()[0]?.blockedByProviderOverrun).toBe(false);
+    const child = request("uncapped-child", "next", {
+      parentRunId: "uncapped",
+      scopes: [{ key: "uncapped-child", parentKey: "uncapped-root" }],
+    });
+    admissions.enqueue(child);
+    expect(claimReservation(admissionRecordKey(child.step)).reservationId).toBeTruthy();
+  });
+
+  it("honors a durable parent cap even when the child request omits the limit", () => {
+    const parent = request("capped-parent", "first", {
+      scopes: [{ key: "parent-cap", maxTokens: 1000 }],
+    });
+    admissions.enqueue(parent);
+    const first = claimReservation(admissionRecordKey(parent.step));
+    admissions.void(first.reservationId, "fixture_complete");
+    const child = request("capped-child", "next", {
+      parentRunId: "capped-parent", input: 5, output: 5,
+      scopes: [{ key: "child-cap", parentKey: "parent-cap" }],
+    });
+    admissions.enqueue(child);
+    const lease = claimReservation(admissionRecordKey(child.step));
+    admissions.markDispatched(lease.reservationId);
+    expect(admissions.reconcile(lease.reservationId, {
+      kind: "reported", usage: { inputTokens: 7, outputTokens: 4, costUsd: 0.001 },
+    })).toMatchObject({ outcome: "provider_overrun" });
+  });
+
   it("makes provider overrun explicit, blocks the allocation, and cancels descendants", () => {
     const root = request("root-run", "turn-1", {
       input: 5,
@@ -1026,6 +1073,42 @@ describe("sumReconciledUsageByRunId — the child usage rollup read", () => {
       outputTokens: 10,
       totalTokens: 60,
       costUsd: 0.5,
+    });
+  });
+});
+
+
+describe("durable admission limit dimensions", () => {
+  it.each([
+    ["tokens", { maxTokens: 39, maxCostUsd: 1 }],
+    ["cost", { maxTokens: 100, maxCostUsd: 0.003 }],
+  ] as const)("records %s without changing the legacy denial reason", (dimension, limits) => {
+    const queued = admissions.enqueue(request("goal", "next-model", {
+      scopes: [{ key: "goal-budget", ...limits }],
+    }));
+    expect(admissions.claim({ key: queued.record.key })).toMatchObject({
+      kind: "not_claimed", reason: "budget_exceeded",
+    });
+    expect(admissions.getLatestJournalEvent("goal")).toMatchObject({
+      event: "denied", reason: "budget_exceeded", details: {
+        budgetDimension: dimension, allocationKey: "goal-budget",
+        ...(dimension === "tokens" ? { requestedTokens: 40, usedTokens: 0, heldTokens: 0, maxTokens: 39 }
+          : { requestedCostNanos: 4000000, usedCostNanos: 0, heldCostNanos: 0, maxCostNanos: 3000000 }),
+      },
+    });
+    // A fresh repository sees the same committed reason after restart.
+    const reopened = new ExecutionAdmissionRepository(driver);
+    expect(reopened.getLatestJournalEvent("goal")).toEqual(admissions.getLatestJournalEvent("goal"));
+    expect(reopened.getLatestJournalEvent("absent")).toBeUndefined();
+  });
+
+  it("reports an ancestor token limit even when the child's own budget has room", () => {
+    const queued = admissions.enqueue(request("child", "next-model", {
+      scopes: [{ key: "root", maxTokens: 39 }, { key: "child", parentKey: "root", maxTokens: 100 }],
+    }));
+    admissions.claim({ key: queued.record.key });
+    expect(admissions.getLatestJournalEvent("child")).toMatchObject({
+      details: { budgetDimension: "tokens", allocationKey: "root" },
     });
   });
 });

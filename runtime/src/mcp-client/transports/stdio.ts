@@ -11,28 +11,21 @@
  *     surface in this subsystem yet.
  */
 
-import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   realpathSync,
-  statSync,
 } from "node:fs";
 import {
-  delimiter,
   isAbsolute,
   join,
   relative,
   resolve,
   sep,
 } from "node:path";
-import {
-  deserializeMessage,
-  serializeMessage,
-} from "@modelcontextprotocol/sdk/shared/stdio.js";
+import { loadMcpStdio } from "../../services/mcp/sdk-schema.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -41,25 +34,23 @@ import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
-import {
-  isChildTempAuthorityKey,
-  subprocessEnv,
-  withChildTempAuthority,
-} from "../../utils/subprocessEnv.js";
+import { withChildTempAuthority } from "../../utils/subprocessEnv.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
+import { assertMcpTransportToolDispatch, literalSecretsForAttachmentLogger, redactAttachmentLoggerText } from "../local-control.js";
+import { createStdioMCPEnvironment } from "./stdio-environment.js";
+export { createStdioMCPEnvironment, DEFAULT_STDIO_ENV_VARS } from "./stdio-environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -88,34 +79,6 @@ const STDERR_BUFFER_MAX_BYTES = 1024 * 1024;
  */
 const RECENT_STDERR_MAX_LINES = 8;
 const RECENT_STDERR_LINE_MAX_CHARS = 400;
-export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
-  process.platform === "win32"
-    ? [
-        "APPDATA",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "PROCESSOR_ARCHITECTURE",
-        "SYSTEMDRIVE",
-        "SYSTEMROOT",
-        "USERNAME",
-        "USERPROFILE",
-        "PROGRAMFILES",
-      ]
-    : [
-        "HOME",
-        "LOGNAME",
-        "PATH",
-        "SHELL",
-        "USER",
-        "__CF_USER_TEXT_ENCODING",
-        "LANG",
-        "LC_ALL",
-        "TERM",
-        "TZ",
-      ];
 
 export interface MCPServerStdioConfig {
   readonly name: string;
@@ -139,34 +102,6 @@ export interface StdioTransportServerParameters {
 }
 
 type NodeProcessEnv = ProviderEnvironment;
-
-export function createStdioMCPEnvironment(
-  extraEnv: Readonly<Record<string, string>> | undefined,
-  envVars: readonly string[] | undefined,
-  parentEnv: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  const sanitizedParent = subprocessEnv({ ...parentEnv });
-  const names = new Set<string>(DEFAULT_STDIO_ENV_VARS);
-  for (const name of envVars ?? []) {
-    if (name.trim().length > 0) names.add(name);
-  }
-
-  for (const name of names) {
-    if (isChildTempAuthorityKey(name)) continue;
-    const value = sanitizedParent[name];
-    if (value === undefined || value.startsWith("()")) continue;
-    env[name] = value;
-  }
-
-  if (extraEnv !== undefined) {
-    Object.assign(env, extraEnv);
-  }
-  for (const name of Object.keys(env)) {
-    if (isChildTempAuthorityKey(name)) delete env[name];
-  }
-  return env;
-}
 
 function pathContainsOrEquals(root: string, candidate: string): boolean {
   const relativeCandidate = relative(root, candidate);
@@ -228,50 +163,6 @@ function preparePluginMcpTempAuthority(
   return { dataRoot, tempRoot };
 }
 
-function resolveStdioProgram(
-  command: string,
-  env: Readonly<Record<string, string>>,
-  cwd: string = process.cwd(),
-): string {
-  if (process.platform !== "win32") {
-    return command;
-  }
-  if (command.includes("/") || command.includes("\\") || isAbsolute(command)) {
-    return command;
-  }
-
-  const pathValue = env.PATH ?? "";
-  const pathExtValue = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
-  const extensions = pathExtValue
-    .split(";")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const commandLower = command.toLowerCase();
-  const alreadyHasExecutableExtension = extensions.some((extension) =>
-    commandLower.endsWith(extension.toLowerCase()),
-  );
-  const candidateNames = alreadyHasExecutableExtension
-    ? [command]
-    : [command, ...extensions.map((extension) => `${command}${extension}`)];
-
-  for (const searchDir of [cwd, ...pathValue.split(delimiter)]) {
-    if (searchDir.length === 0) continue;
-    for (const candidateName of candidateNames) {
-      const candidate = join(searchDir, candidateName);
-      if (isExecutableFile(candidate)) return candidate;
-    }
-  }
-  return command;
-}
-
-function isExecutableFile(path: string): boolean {
-  try {
-    return existsSync(path) && statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
 export class AgenCStdioClientTransport implements Transport {
   readonly server: StdioTransportServerParameters;
 
@@ -279,6 +170,7 @@ export class AgenCStdioClientTransport implements Transport {
   private stdoutChunks: Buffer[] = [];
   private stdoutFrameBytes = 0;
   private stderrBuffer = Buffer.alloc(0);
+  private stderrOmittedPrefix = false;
   private recentStderrLines: string[] = [];
   private closedNotified = false;
   private stdoutProtocolFailed = false;
@@ -343,11 +235,10 @@ export class AgenCStdioClientTransport implements Transport {
       this.server.env ?? {},
       childTempRoot,
     );
-    const command = resolveStdioProgram(this.server.command, env, cwd);
     const preparedSpawn = broker.prepareSpawn(
       "mcp_stdio",
       {
-        program: command,
+        program: this.server.command,
         args: this.server.args ?? [],
         cwd,
         env,
@@ -360,6 +251,7 @@ export class AgenCStdioClientTransport implements Transport {
 
     this.resetStdoutFrame();
     this.stderrBuffer = Buffer.alloc(0);
+    this.stderrOmittedPrefix = false;
     this.stdoutProtocolFailed = false;
     this.closedNotified = false;
 
@@ -419,7 +311,8 @@ export class AgenCStdioClientTransport implements Transport {
       throw new Error("Not connected");
     }
 
-    const serialized = serializeMessage(message);
+    const serialized = loadMcpStdio().serializeMessage(message);
+    assertMcpTransportToolDispatch(message);
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
         stdin.off("error", onError);
@@ -466,7 +359,7 @@ export class AgenCStdioClientTransport implements Transport {
         .replace(/\r$/, "");
       this.resetStdoutFrame();
       try {
-        this.onmessage?.(deserializeMessage(line));
+        this.onmessage?.(loadMcpStdio().deserializeMessage(line));
       } catch (error) {
         this.onerror?.(toError(error));
       }
@@ -494,7 +387,25 @@ export class AgenCStdioClientTransport implements Transport {
   }
 
   private readonly onStderrData = (chunk: Buffer): void => {
+    if (literalSecretsForAttachmentLogger(this.logger).some(secret => secret.length >= STDERR_BUFFER_MAX_BYTES)) {
+      this.stderrBuffer = Buffer.alloc(0);
+      this.stderrOmittedPrefix = false;
+      this.logger.info(`MCP server stderr (${this.server.command}) [omitted: credential exceeds stderr buffer cap]`);
+      return;
+    }
     this.stderrBuffer = Buffer.concat([this.stderrBuffer, chunk]);
+    this.logCompleteStderrLines();
+    // Defense-in-depth: a child that streams stderr without a newline would
+    // otherwise grow stderrBuffer without bound. Once the unterminated residue
+    // exceeds the cap, flush the oversized prefix with a truncation notice so
+    // memory stays bounded; any trailing bytes keep accumulating toward the
+    // next newline as before.
+    while (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
+      this.flushOversizedStderrPrefix();
+    }
+  };
+
+  private logCompleteStderrLines(): void {
     for (;;) {
       const index = this.stderrBuffer.indexOf("\n");
       if (index === -1) break;
@@ -503,29 +414,73 @@ export class AgenCStdioClientTransport implements Transport {
         .toString("utf8")
         .replace(/\r$/, "");
       this.stderrBuffer = this.stderrBuffer.subarray(index + 1);
-      this.noteStderrLine(line);
-      this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
+      const safe = this.stderrOmittedPrefix ? "[omitted: overlapping credentials]" : redactAttachmentLoggerText(this.logger, line);
+      this.stderrOmittedPrefix = false;
+      this.noteStderrLine(safe);
+      this.logger.info(`MCP server stderr (${this.server.command}): ${safe}`);
     }
-    // Defense-in-depth: a child that streams stderr without a newline would
-    // otherwise grow stderrBuffer without bound. Once the unterminated residue
-    // exceeds the cap, flush the oversized prefix with a truncation notice so
-    // memory stays bounded; any trailing bytes keep accumulating toward the
-    // next newline as before.
-    if (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
-      const truncated = this.stderrBuffer
-        .subarray(0, STDERR_BUFFER_MAX_BYTES)
-        .toString("utf8");
-      this.stderrBuffer = this.stderrBuffer.subarray(STDERR_BUFFER_MAX_BYTES);
-      this.logger.info(
-        `MCP server stderr (${this.server.command}) [truncated ${STDERR_BUFFER_MAX_BYTES} bytes, no newline]: ${truncated}`,
-      );
+  }
+
+  /** One step of the unterminated-stderr cap: log (redacted) or omit a prefix of stderrBuffer. */
+  private flushOversizedStderrPrefix(): void {
+    const secrets = literalSecretsForAttachmentLogger(this.logger);
+    const maxSecretBytes = secrets.reduce((max, secret) => Math.max(max, secret.length), 0);
+    const tentative = Math.min(STDERR_BUFFER_MAX_BYTES, this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1));
+    const cut = this.alignStderrCutToUtf8(this.stderrCutBeforeSecrets(secrets, tentative));
+    if (cut === 0) {
+      // Overlapping matches can connect the entire buffer. Omit that prefix
+      // and retain only the suffix needed to detect a match in the next chunk.
+      const consumed = this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1);
+      this.stderrBuffer = this.stderrBuffer.subarray(consumed);
+      this.stderrOmittedPrefix = true;
+      this.logger.info(`MCP server stderr (${this.server.command}) [truncated ${consumed} bytes, no newline: overlapping credentials omitted]`);
+      return;
     }
-  };
+    const truncated = this.stderrOmittedPrefix ? "[omitted: overlapping credentials]" :
+      redactAttachmentLoggerText(this.logger, this.stderrBuffer.subarray(0, cut).toString("utf8"));
+    this.stderrBuffer = this.stderrBuffer.subarray(cut);
+    this.logger.info(
+      `MCP server stderr (${this.server.command}) [truncated ${cut} bytes, no newline]: ${truncated}`,
+    );
+  }
+
+  /**
+   * A complete match may cross the tentative cut. Move the cut before its
+   * start, and keep enough raw suffix to recognize a future match.
+   */
+  private stderrCutBeforeSecrets(secrets: readonly Buffer[], tentative: number): number {
+    let cut = tentative;
+    for (;;) {
+      const earlier = secrets.reduce((min, secret) => Math.min(min, this.earliestStderrMatchCrossing(secret, cut)), cut);
+      if (earlier === cut) return cut;
+      cut = earlier;
+    }
+  }
+
+  /** Start of the earliest match of `secret` that begins before `cut` and ends after it, else `cut`. */
+  private earliestStderrMatchCrossing(secret: Buffer, cut: number): number {
+    let earlier = cut;
+    let at = this.stderrBuffer.indexOf(secret, Math.max(0, cut - secret.length + 1));
+    while (at >= 0 && at < cut) {
+      if (at + secret.length > cut) earlier = Math.min(earlier, at);
+      at = this.stderrBuffer.indexOf(secret, at + 1);
+    }
+    return earlier;
+  }
+
+  /** Move the cut back off UTF-8 continuation bytes so a character is never split. */
+  private alignStderrCutToUtf8(cut: number): number {
+    let aligned = cut;
+    while (aligned > 0 && aligned < this.stderrBuffer.length && (this.stderrBuffer[aligned]! & 0xc0) === 0x80) aligned -= 1;
+    return aligned;
+  }
 
   private flushStderr(): void {
     if (this.stderrBuffer.length === 0) return;
-    const line = this.stderrBuffer.toString("utf8").replace(/\r$/, "");
+    const line = this.stderrOmittedPrefix ? "[omitted: overlapping credentials]" :
+      redactAttachmentLoggerText(this.logger, this.stderrBuffer.toString("utf8").replace(/\r$/, ""));
     this.stderrBuffer = Buffer.alloc(0);
+    this.stderrOmittedPrefix = false;
     this.noteStderrLine(line);
     this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
   }
@@ -656,6 +611,7 @@ export async function createStdioMCPConnection(
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -666,20 +622,13 @@ export async function createStdioMCPConnection(
     sandboxExecutionBroker,
     parentEnvironment,
   );
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP stdio server "${config.name}"...`, {
     command: config.command,

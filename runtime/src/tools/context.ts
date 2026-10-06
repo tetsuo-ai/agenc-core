@@ -740,7 +740,6 @@ export function contentItemsToText(
   const parts: string[] = [];
   for (const item of items) {
     if (item.type === "input_text") parts.push(item.text);
-    else if (item.type === "input_image") parts.push(item.image_url);
   }
   return parts.join("");
 }
@@ -1021,7 +1020,7 @@ export function responseInputToCodeModeResult(
 }
 
 /**
- * Code-mode receives the useful item payloads joined by newlines, not
+ * Code-mode receives text item payloads joined by newlines, not
  * the response/transcript wrapper text.
  */
 export function contentItemsToCodeModeResult(
@@ -1031,8 +1030,6 @@ export function contentItemsToCodeModeResult(
   for (const item of items) {
     if (item.type === "input_text") {
       if (item.text.trim().length > 0) parts.push(item.text);
-    } else if (item.image_url.trim().length > 0) {
-      parts.push(item.image_url);
     }
   }
   return parts.join("\n");

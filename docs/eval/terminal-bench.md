@@ -1,0 +1,446 @@
+# Terminal-Bench 2.0 through Harbor
+
+A public, reproducible way to measure AgenC against other agent harnesses on
+the same tasks and the same model. Terminal-Bench 2.0 is 89 verified terminal
+tasks (Laude Institute); Harbor is its runner. Every trial installs the agent
+inside the task container, runs one instruction, and grades the container
+state with the task's own tests. The score is pass@1 over the tasks.
+
+## What is measured
+
+- The agent harness, at a fixed model. Harbor reports rows as `agent +
+  model`, so AgenC on DeepSeek V4 Pro sits next to OpenCode or Hermes on the
+  same model. Model choice moves scores far more than the harness does, so a
+  comparison only means something at equal model.
+- Time and tokens per task, from AgenC's own rollout (`token_count` events),
+  so the run also answers "how much does a solved task cost".
+
+## The adapter
+
+`runtime/eval/harbor/agenc_agent.py` is a Harbor installed-agent adapter
+(`--agent agenc_agent:Agenc` with the file's directory on `PYTHONPATH`). It
+installs AgenC with the public installer (`https://get.agenc.ag/install.sh
+--no-daemon`), or from a tarball built by
+`packages/agenc/scripts/build-runtime-tarball.mjs` when `runtime_url` is set,
+which is how an unreleased commit of main is measured. It then runs
+
+```
+agenc --dangerously-bypass-approvals-and-sandbox --provider <p> --model <m> --deadline +<s> -p "<instruction>"
+```
+
+in the task's working directory, trusting that directory first. The model
+name follows Harbor's `provider/model` form. The provider's key is read from
+the runner's environment and forwarded only into the agent process.
+
+Options (`--ak key=value`): `version` (pin a release), `manifest_url`,
+`runtime_url`, `effort` (default `medium`), `add_dirs` (extra workspace
+roots passed as `--add-dir`, default `/`: the tasks configure the whole
+container and AgenC's shell write policy otherwise refuses writes outside
+the task directory, a boundary the other harnesses do not have), `env`
+(extra `KEY=VALUE` pairs for the agent process, comma separated, which is
+how a runtime switch such as `AGENC_COMPLETION_CONTRACT=0` is measured
+against the default), `stop_daemon` (default false), `deadline_sec` and
+`deadline_margin_sec`.
+
+Harbor kills the agent when its run exceeds the trial's agent timeout but
+never tells the agent what that timeout is. The adapter recomputes it the way
+Harbor does (task.toml `[agent] timeout_sec`, the agent override and cap, the
+timeout multipliers) from the trial's `config.json` next to the agent's log
+directory, and passes it as `--deadline` minus `deadline_margin_sec` (default
+120 s, room for AgenC's own backstop and the rollout copy). AgenC then tells
+the model its budget, asks it to finish in the reserve, and exits 5 with the
+saved result before Harbor's kill (see the `--deadline` notes in
+[cli.md](../reference/cli.md)). `deadline_sec` overrides the budget in
+seconds; `deadline_sec=0` runs without a deadline, which is how the old
+behaviour is measured. The derivation lives in `agenc_deadline.py` next to the
+adapter and is tested with `python3 -m unittest discover -s runtime/eval/harbor`.
+
+The same file carries `HermesCurrent`, Harbor's Hermes adapter with its
+install check fixed (the current Hermes CLI has no `version` subcommand) and
+DeepSeek registered as a native Hermes provider, so Hermes reaches DeepSeek
+directly instead of through OpenRouter. OpenCode runs through Harbor's own
+ACP adapter (`-a acp:opencode`).
+
+## Running
+
+```bash
+uv tool install harbor
+harbor datasets download terminal-bench@2.0 -o ./tb2
+export PYTHONPATH=/path/to/agenc-core/runtime/eval/harbor
+DEEPSEEK_API_KEY=... harbor run -p ./tb2/terminal-bench -a agenc_agent:Agenc \
+  -m deepseek/deepseek-v4-pro -o ./jobs/agenc -n 4 -k 1
+```
+
+Task images are `linux/amd64`. On Apple silicon, run Docker in a VM with
+Rosetta (colima: `--vz-rosetta`) and share the working directory with the VM
+(colima: `--mount <dir>:w`), or Harbor's bind mounts come back empty and no
+reward file is found. Slim images lack `libatomic.so.1`; the adapter installs
+it before the bundled Node runs.
+
+For an unreleased build of main:
+
+```bash
+AGENC_ARTIFACT_PROFILE=container-local AGENC_RELEASE_OUT_DIR=./dist \
+  node packages/agenc/scripts/build-runtime-tarball.mjs      # on linux-x64; see the glibc note below
+python3 -m http.server 8765 --directory ./dist &
+harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal:8765/<tarball>
+```
+
+## What the first runs found in AgenC itself
+
+- Slim Debian and Ubuntu images lack `libatomic.so.1`; the bundled Node dies
+  at daemon spawn. The adapter installs it.
+- Main aborted every headless run on a host without a Secret Service
+  ("Native secure storage read failed"); release 0.17.0 did not. Fixed in
+  core #2424, which is the first commit a benchmark build of main must carry.
+- `exec_command` containment kills every process the agent started when the
+  command returns, and a managed background process (`yield_time_ms`) dies
+  when the one-shot session ends, daemon running or not (checked by hand in
+  the nginx task image). A server or daemon the agent set up was gone by the
+  time the grader ran, and the tool result never said so: the pilot
+  rollouts show the model running `nginx`, `setsid nginx`, `setsid -f ...`
+  and finally `nginx -g 'daemon off;'` under `yield_time_ms`, each time
+  finding nothing listening afterwards. Three of the four failures in every
+  AgenC run were tasks of that shape (nginx, a git server with a deploy
+  hook, an sshd-based multi-branch server); Hermes and OpenCode passed them
+  on the same model. Fixed 2026-09-12: the result now carries a note when
+  leftover processes were stopped, and `exec_command` takes `detach: true`
+  to start a service that outlives the command and the session (under the
+  `danger-full-access` sandbox only). See
+  [tools-permissions-sandbox](../reference/tools-permissions-sandbox.md#shell--process).
+- Even with `--dangerously-bypass-approvals-and-sandbox`, the shell write
+  policy refused removals outside the workspace (`unlink
+  /etc/nginx/sites-enabled/default`, `rm -rf /git/project`) and every
+  command it could not analyse, which was any command containing `$(...)`:
+  51 of 459 shell calls in the git-multibranch run, most an `echo "$(...)"`
+  beside a harmless write. Fixed 2026-09-12: with approvals bypassed and no
+  sandbox, those two guards are lifted (protected paths and the Edit/Write
+  routing for workspace files stay), and removals under `--add-dir` roots
+  count as workspace removals in every mode, and `workdir` may point at an
+  added directory or, under the full bypass, anywhere. The first rerun with
+  that build still showed the refusals: the dispatcher ran a tool's
+  preflight before it attached the runtime context, so the policy decided
+  with no session at all; a provisional context is now attached first.
+- Under the same flag, and even with `--add-dir /`, `Edit`, `Write` and
+  `FileRead` refused every path outside the workspace (`Access denied: Path
+  is outside allowed directories`, 8 times in one nginx trial): the
+  permission layer allowed the path but never handed the tool the widened
+  root it hands out after an approval. Fixed 2026-09-12 in
+  `checkToolPathPermission`. The first rerun also showed `detach: true`
+  refused by the per-tool-call workspace operation fence; a detached service is
+  now outside that fence. `tty: true` is still refused by the same fence in
+  one-shot runs (pre-existing, open). The Editor lease that originally raised
+  that fence was removed in 0.18.0; the containment fence itself remains.
+  The full run then showed the file-tool refusal again on FileRead of
+  `/build/gcc-13.2.0/...` (custom-memory-heap-crash): under the full bypass
+  the permission evaluator does not run, so the permission-layer fix never
+  executed; the dispatcher now widens the root itself (2026-09-13).
+- A task whose instruction starts with `-` (pytorch-model-recovery) made the
+  CLI reject the prompt as an unknown option. The adapter now passes the
+  instruction after `--`.
+- Harbor pulls each task image when the trial starts, with a 600 s limit.
+  On a slow line the multi-GB images time out (`EnvironmentStartTimeoutError`,
+  21 of the first 71 trials of the full run on a 4 Mbit/s Wi-Fi link) and
+  concurrent pulls starve the tasks that download data. Pull all 89 images
+  first (`docker pull alexgshaw/<task>:20251031`) and only then run.
+- `qemu-startup` (Debian 11) and `wdm-design` (miniforge on the same glibc
+  2.31) cannot start the daemon: the CLI runs, but the daemon loads
+  `better_sqlite3.node`, and that binary, built in the `node:26-bookworm`
+  image, needs `GLIBC_2.33`. The CLI reported only "daemon startup failed
+  and replacement cleanup could not be verified"; the real line sits in
+  `$AGENC_HOME/daemon-spawn-stderr.log`. Building in `node:26-bullseye`
+  does not work: its gcc 10 cannot compile Node 26's C++20 headers
+  (`<source_location>`), and the upstream better-sqlite3 prebuilds also need
+  glibc 2.34. What works is `gcc:12-bullseye` with the Node 26.5.0 binary
+  tarball, `npm_config_build_from_source=true` (so node-pty and better-sqlite3
+  skip their prebuilds) and `LDFLAGS="-static-libstdc++ -static-libgcc"`: the
+  resulting `.node` files need only glibc 2.29 and no `GLIBCXX` symbol (a
+  gcc-12 build without the static flag needs `GLIBCXX_3.4.29`, which the
+  same images lack). The daemon then starts on `wdm-design`.
+- `heat-pump-warranty` on grok-4.6 died after 6 minutes with the provider's
+  "Response is too large to store. You can avoid this error by setting
+  `store` to false in your request." as its last line: the grok provider
+  stores responses by default for speed and had no fallback. It now retries
+  the request once unstored.
+- A 55-minute grok-4.6 session on `wdm-design` (191 tool calls) reached the
+  auto-compaction threshold at 356k tokens and died with `compact_failed`: the
+  planner packed the whole 1,401,825-byte canonical-JSON history into one
+  summarizer call because the catalogued 4 bytes per token said it fit a
+  500k window, the provider counted 612,000 tokens (2.29 bytes per token) and
+  answered 400, and the transaction treated that as a durable failure. The
+  planner now bounds its own input at 2 bytes per token, which splits such a
+  history into several map calls.
+- Subagents (`spawn_agent`) under the same full bypass with `--add-dir /` were
+  refused on every path outside the workspace ("Access denied: Path is
+  outside allowed directories" on `Glob path=/tmp`, three Astra trials) while
+  the parent session searched the same directories freely: child tool calls
+  skip the dispatcher that widens the roots. A probe container reproduced it
+  (parent fine, child refused on `/tmp/probe-dir` and `/root/.cache`). The
+  child tool path now applies the same widening.
+- One upstream socket drop on the proxy host (`EHOSTUNREACH` at 09:39Z) ended
+  a grok trial after 1.5 h of work: the truncated stream came back as a plain
+  provider error ("Stream closed without a response.completed or
+  response.failed event"), which neither retry classifier recognized, so the
+  turn failed and the one-shot exited 1. The adapters now raise the typed
+  `LLMStreamTruncatedError`, retried through the same ladder as `stream_idle`.
+- GPT-6 Astra answered a task with conflicting data by calling
+  `AskUserQuestion`. In print mode nobody can answer, the client auto-denied
+  it, and the turn ended with exit 2 (`NonZeroAgentExitCodeError`, reward 0).
+  The one-shot CLI now creates its session with
+  `runtimeOptions.nonInteractive`, which hides the tool; the adapter also sets
+  `tools_config.disabled_tools` for older runtimes.
+- With the harness bugs above fixed, the remaining failures were graded
+  failures after the agent had declared the task done: sessions ended after a
+  fraction of the turns the leaderboard agents spend on the same tasks (a
+  grok trial reported success after 19 tool calls; Astra sessions averaged
+  19 minutes against 35 to 47 for the Codex rows), and the final messages
+  claimed checks the transcript does not contain. The prompt the model
+  received was the interactive one: it tells the model to stop and report once
+  the change is verified, and to check with the user before anything risky,
+  guidance that assumes a human reads the reply and steers. Non-interactive
+  sessions now carry a completion contract section (`# Completing work
+  without a human`): restate the task as a checklist of checkable
+  requirements, run the checks the task implies before the final message,
+  never end the turn waiting for input, report what was verified.
+  `--ak env=AGENC_COMPLETION_CONTRACT=0` runs the same build without it, which
+  is how its effect is measured. The same rule is enforced structurally by
+  the completion gate (`phases/completion-gate.ts`, config `completion_gate`):
+  a tool-free final answer of a tool-using non-interactive turn is accepted
+  once each checked item has associated tool evidence from after the last
+  workspace change, and the first answer also cites a command that ran
+  successfully since then; otherwise it is held while a durable
+  `<completion_gate>` message quoting the task asks for a checklist backed by
+  executed checks. It settles after three rounds, as `partial` when the
+  remaining checks are unavailable and `exhausted` otherwise, or after two
+  when an answer that ran no tool repeats the verdict of the request before
+  it. A
+  `verified` gate event is not a Terminal-Bench pass. Every decision is a
+  `completion_gate` rollout event, so a trial's transcript shows whether the
+  verification round happened. `agenc config set completion_gate.mode never`
+  runs a build without the gate.
+- A GUI task driven through VNC screenshots (legacy-utility-triage) grew a
+  conversation with 54 inline screenshots: 10.8 MB of a 11.1 MB request,
+  while the provider counted only 120k tokens. Every full-history resend
+  after the reconnect ladder was answered 500, and the stored-response
+  refusal followed. The query projection now keeps at most
+  `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` (6 MiB) of inline images, newest first,
+  and replaces older ones with a placeholder on the wire only.
+
+## Terminal-Bench 4.0 run, 2026-09-13
+
+The 4.0 dataset is 66 tasks. Three of them (`fp8-rmsnorm-gemm`,
+`jax-speedrun-gpu`, `math-eval-grader`) declare a GPU and need a GPU-capable
+environment; in a Docker wave one of them raises
+`RuntimeError: Task requires 1 GPU(s)` at trial start and aborts the entire
+Harbor job, cancelling every sibling trial in it. They are excluded from
+Docker runs, which leaves 63 evaluable tasks.
+
+Configuration: `agenc_agent:Agenc`, grok-4.6 at `effort=high`,
+`--verifier-timeout-multiplier 3`, `--add-dir /`, one trial per task. The
+agent cap is the official 8 hours (`--agent-timeout-multiplier 1`) for every
+trial except the first wave, which ran at `0.25` (2 hours) and cut three
+trials off mid-work; those tasks were rerun under the full cap, so a trial's
+cap has to be read from its own job rather than assumed. The runtime is a tarball built from an
+exact commit and installed with `--ak runtime_url=...`, so the build under
+test is named by its commit rather than by a release.
+
+### Comparing against a published row
+
+The public leaderboard row for the same model is Grok Build with Grok 4.6 at
+effort high: 20.3%, 67 successes of 330 trials, 4.00 billion total tokens of
+which 3.88 billion cached input, 32.6 million output, and $3,591.58. That run
+is five trials per task over all 66 tasks. Three alignments matter before any
+comparison:
+
+- Task subset. Their 330 trials include the three GPU tasks. Restricted to
+  the same 63 non-GPU tasks their rate is 66/315.
+- Trials per task. One trial per task compares only against their per-trial
+  rate, never against their pass@2 to pass@5 columns.
+- Metrics that exist on both sides. Pass rate, and wall time per trial: the
+  per-task chart artifact published with that run carries each trial's
+  execution seconds, so wall time compares trial to trial. Token counts do
+  not: the leaderboard row gives one aggregate total for the whole run, not
+  per trial. Neither artifact carries tool or turn counts, so no tool-call
+  comparison can be drawn from them at all.
+
+### Trials that do not measure the agent
+
+A trial whose runtime hit a harness defect measures the defect. Those trials
+are rerun on a build that provably contains the fix, and a graded failure is
+never rerun to improve a score. The rerun build is chosen by provenance, not
+by filename: each build writes a manifest next to its archive recording the
+full source commit and the archive's SHA-256, and the selector verifies the
+checksum before reading the commit and checking that the required fix is an
+ancestor of it. With no verified archive containing the fix, nothing is
+rerun.
+
+## Results
+
+Pilot, 2026-09-12: 11 tasks, one trial each, DeepSeek V4 Pro direct at
+medium effort for every agent, run on a Mac through colima with Rosetta (so
+timings are indicative and the 900 second task budget is tight). AgenC
+0.17.0 is the public installer; AgenC main is commit 4c3afd221 (with #2424
+and #2427) as a tarball; the `+adddir` column reruns AgenC main's four
+failed tasks with `add_dirs=/`.
+
+```
+task                         agenc-0.17.0 agenc-main agenc+adddir     hermes   opencode
+---------------------------------------------------------------------------------------
+chess-best-move                       0          0          1          1          0
+configure-git-webserver               0          0          0          0          0
+count-dataset-tokens                  1          1          -          1          1
+extract-elf                           1          1          -          1          1
+fix-git                               1          1          -          1          1
+git-multibranch                       0          0          0          1          1
+log-summary-date-ranges               1          1          -          1          1
+nginx-request-logging                 0          0          0          1          1
+openssl-selfsigned-cert               -          1          -          1          1
+regex-log                             1          1          -          1          1
+sqlite-db-truncate                    1          1          -          1          1
+---------------------------------------------------------------------------------------
+pass                               6/10       7/11        1/4      10/11       9/11
+agent time (s), sum                3703       4080       1780       3232       2896
+input tokens, sum              10805626    9248524    4929672          0       3330
+output tokens, sum               288694     297244     116402          0       1607
+```
+
+Hermes 10/11, OpenCode 9/11, AgenC main 7/11 (8/11 counting the chess pass in
+the rerun; that task sits at the timeout under emulation). Every agent failed
+configure-git-webserver. The two tasks AgenC fails and the others pass,
+nginx-request-logging and git-multibranch, need a service to keep running
+after the agent's last command; see the containment finding above. Token
+columns: only AgenC's adapter reports usage from its rollouts; Harbor's
+Hermes adapter reports none and the OpenCode adapter only the last message.
+Raw job directories with per-trial rollouts and grader output are kept
+outside the repo (`~/claude-agenc/bench-harbor/jobs` on the run host).
+
+## Full run, 2026-09-13
+
+All 89 tasks, AgenC main (618d2e0db for the first 35 tasks, f43416a00 after
+the dispatch-root fix merged), DeepSeek V4 Pro at medium effort, one clean
+trial per task, on a 24-thread Ryzen 9900X Ubuntu 26.04 host with native
+x86 Docker. Reruns were used only for trials that never produced an agent
+run (image pull or grader timeouts), for the two trials the old adapter
+could not start, and for failures where the file tools were refused before
+f43416a00; a pass was never replaced by a later failure.
+
+**AgenC (main 618d2e0db and f43416a00), DeepSeek V4 Pro, one clean trial per task: 61/89 passed of 89 tasks.**
+
+Failures by cause: 16 tasks failed the grader outright, 7 hit the task's agent timeout, 2 hit the grader's own 600 s timeout, 2 run on Debian 11 images the runtime cannot start on, and 1 (pytorch-model-recovery) is counted from the trial the old adapter could not start plus two grader timeouts on the retries. Total cost of the run including reruns: about 19 USD of DeepSeek credit; 146 trials in all.
+
+What the number contains:
+
+- Seven tasks hit their own agent timeout (900 to 3600 s) and count as
+  failures; two more (model-extraction-relu-logits, path-tracing-reverse)
+  timed out in one attempt but passed the grader in another and count as
+  passes.
+- Two tasks (`qemu-startup`, `qemu-alpine-ssh`) run on Debian 11 images with
+  glibc 2.31; the runtime build needs 2.34, so the daemon cannot start and
+  they count as failures. Hermes (Python) and OpenCode (a static binary) do
+  not have this limit.
+- Three grader timeouts (`torch-tensor-parallelism`, `torch-pipeline-parallelism`,
+  `pytorch-model-recovery`): the grader installs `torch==2.7.1` at test time
+  and the host's 4 Mbit/s line could not deliver it inside the 600 s
+  verifier limit. They count as failures.
+- `caffe-cifar-10` died with exit 137 inside the task's 4 GiB memory limit
+  (AgenC's daemon plus the training run). Counted as a failure.
+- The agent chose `detach: true` for a service in 11 tasks; the
+  residue note fired in 10 trials.
+
+| task | pass | agent s | shell calls | detach | note |
+| --- | --- | --- | --- | --- | --- |
+| adaptive-rejection-sampler | 1 | 882 | 11 |  |  |
+| bn-fit-modify | 1 | 368 | 19 |  |  |
+| break-filter-js-from-html | 1 | 62 | 7 |  |  |
+| build-cython-ext | 1 | 486 | 28 |  |  |
+| build-pmars | 1 | 671 | 28 |  |  |
+| build-pov-ray | 1 | 1172 | 69 |  |  |
+| caffe-cifar-10 | 0 | 1200 | 7 |  | timeout |
+| cancel-async-tasks | 0 | 131 | 4 |  |  |
+| chess-best-move | 0 | 868 | 33 |  |  |
+| circuit-fibsqrt | 1 | 822 | 7 |  |  |
+| cobol-modernization | 1 | 328 | 22 |  |  |
+| code-from-image | 0 | 247 | 15 |  |  |
+| compile-compcert | 1 | 2229 | 98 | 7 |  |
+| configure-git-webserver | 0 | 205 | 20 | 1 |  |
+| constraints-scheduling | 1 | 68 | 0 |  |  |
+| count-dataset-tokens | 1 | 203 | 8 |  |  |
+| crack-7z-hash | 1 | 167 | 22 |  |  |
+| custom-memory-heap-crash | 1 | 265 | 27 |  |  |
+| db-wal-recovery | 1 | 578 | 37 |  |  |
+| distribution-search | 1 | 153 | 3 |  |  |
+| dna-assembly | 0 | 957 | 16 |  |  |
+| dna-insert | 0 | 550 | 17 |  |  |
+| extract-elf | 1 | 206 | 19 |  |  |
+| extract-moves-from-video | 0 | 1800 | 35 |  | timeout |
+| feal-differential-cryptanalysis | 1 | 136 | 4 |  |  |
+| feal-linear-cryptanalysis | 1 | 585 | 9 |  |  |
+| filter-js-from-html | 0 | 389 | 12 |  |  |
+| financial-document-processor | 1 | 273 | 20 |  |  |
+| fix-code-vulnerability | 1 | 56 | 8 |  |  |
+| fix-git | 1 | 62 | 15 |  |  |
+| fix-ocaml-gc | 1 | 482 | 12 |  |  |
+| gcode-to-text | 0 | 900 | 26 |  | timeout |
+| git-leak-recovery | 1 | 35 | 13 |  |  |
+| git-multibranch | 1 | 261 | 36 | 2 |  |
+| gpt2-codegolf | 0 | 900 | 12 |  | timeout |
+| headless-terminal | 1 | 162 | 14 |  |  |
+| hf-model-inference | 1 | 123 | 7 | 1 |  |
+| install-windows-3.11 | 1 | 3019 | 128 | 7 |  |
+| kv-store-grpc | 1 | 104 | 7 | 1 |  |
+| large-scale-text-editing | 1 | 316 | 12 |  |  |
+| largest-eigenval | 0 | 597 | 30 |  |  |
+| llm-inference-batching-scheduler | 1 | 848 | 28 |  |  |
+| log-summary-date-ranges | 1 | 27 | 9 |  |  |
+| mailman | 1 | 866 | 96 | 2 |  |
+| make-doom-for-mips | 0 | 900 | 87 |  | timeout |
+| make-mips-interpreter | 0 | 1631 | 89 |  |  |
+| mcmc-sampling-stan | 1 | 908 | 54 |  |  |
+| merge-diff-arc-agi-task | 1 | 172 | 17 |  |  |
+| model-extraction-relu-logits | 1 | 900 | 14 |  | timeout |
+| modernize-scientific-stack | 1 | 32 | 1 |  |  |
+| mteb-leaderboard | 1 | 70 | 0 |  |  |
+| mteb-retrieve | 0 | 78 | 8 |  |  |
+| multi-source-data-merger | 1 | 131 | 8 |  |  |
+| nginx-request-logging | 1 | 85 | 7 | 1 |  |
+| openssl-selfsigned-cert | 1 | 164 | 9 |  |  |
+| overfull-hbox | 0 | 336 | 13 |  |  |
+| password-recovery | 1 | 150 | 17 |  |  |
+| path-tracing | 1 | 552 | 20 |  |  |
+| path-tracing-reverse | 1 | 1628 | 35 |  |  |
+| polyglot-c-py | 0 | 315 | 11 |  |  |
+| polyglot-rust-c | 0 | 405 | 4 |  |  |
+| portfolio-optimization | 1 | 268 | 12 |  |  |
+| protein-assembly | 0 | 985 | 16 |  |  |
+| prove-plus-comm | 1 | 46 | 4 |  |  |
+| pypi-server | 1 | 68 | 12 | 1 |  |
+| pytorch-model-cli | 1 | 237 | 23 |  |  |
+| pytorch-model-recovery | 0 | 1 | 0 |  | agent exit exit 2 |
+| qemu-alpine-ssh | 0 |  | 0 |  | glibc 2.31 host |
+| qemu-startup | 0 | 2 | 0 |  | glibc 2.31 host |
+| query-optimize | 0 | 656 | 18 |  |  |
+| raman-fitting | 0 | 900 | 35 |  | timeout |
+| regex-chess | 1 | 2505 | 13 |  |  |
+| regex-log | 1 | 136 | 6 |  |  |
+| reshard-c4-data | 1 | 380 | 22 |  |  |
+| rstan-to-pystan | 1 | 1100 | 48 |  |  |
+| sam-cell-seg | 0 | 1167 | 36 |  |  |
+| sanitize-git-repo | 1 | 146 | 10 |  |  |
+| schemelike-metacircular-eval | 1 | 565 | 16 |  |  |
+| sparql-university | 1 | 115 | 5 |  |  |
+| sqlite-db-truncate | 1 | 249 | 9 |  |  |
+| sqlite-with-gcov | 1 | 339 | 27 |  |  |
+| torch-pipeline-parallelism | 0 | 532 | 6 |  | verifier timeout |
+| torch-tensor-parallelism | 0 | 193 | 4 |  | verifier timeout |
+| train-fasttext | 0 | 3602 | 37 | 1 | timeout |
+| tune-mjcf | 1 | 499 | 19 |  |  |
+| video-processing | 1 | 752 | 32 |  |  |
+| vulnerable-secret | 1 | 44 | 7 |  |  |
+| winning-avg-corewars | 1 | 926 | 43 |  |  |
+| write-compressor | 1 | 526 | 10 |  |  |
+
+The workspace write policy's remaining refusal, a shell content write into
+the workspace ("use Edit or Write instead"), appeared in 23 of the 146
+trials, 16 times in build-pov-ray alone. It is the one deliberate guard
+left that costs turns under the full bypass; whether to lift it there is an
+open product decision.

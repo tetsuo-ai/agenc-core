@@ -1,3 +1,5 @@
+import { readCompactionTransactionAdapter } from "./transaction-adapter.js";
+export { readCompactionTransactionAdapter } from "./transaction-adapter.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -7,14 +9,26 @@ import {
   createTokenAccountingRequest,
   requireAdmissibleTokenAccounting,
   assertTokenAccountingWithinContext,
+  MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
   tokenAccountingService,
   type TokenAccountingResult,
 } from "../../llm/token-accounting.js";
 import {
+  DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES,
+  boundContextImageBytes,
+  resolveContextImageBudgetBytes,
+} from "../../session/query-image-budget.js";
+import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../../llm/provider.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import { isKnownEmptyProviderReasoning, type LLMChatOptions, type LLMMessage } from "../../llm/types.js";
+import type { CompactionLocalSummarizer } from "./emergency-summarizer.js";
+import {
+  CompactionTransactionFailureWithDetails,
+  describeFailureCause,
+  type CompactionFailureDetails,
+} from "./failure-details.js";
 import type { BaseHookInput } from "../../entrypoints/sdk/coreTypes.js";
 import {
   accountCompactionCall,
@@ -41,7 +55,7 @@ import {
 import {
   COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
   COMPACTION_CONFIGURATION_DIGEST_DOMAIN,
-  COMPACTION_CONTEXT_KIND_V1,
+  COMPACTION_CONTEXT_KIND_V2,
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_POLICY_DIGEST_DOMAIN,
@@ -67,6 +81,7 @@ import {
   type CompactionSourcePayloadBundlesV1,
   type CompactionSourceRefV1,
   type CompactionStage,
+  type CompactionSummaryBodyV1,
   type CompactionSummaryRefV1,
   type CompactionSummaryDagV1,
   type CompactionSummaryV1,
@@ -83,11 +98,17 @@ import {
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { COMPACTION_HISTORY_MARKER_VERSION } from "../../session/compaction-history-marker.js";
 import { bindExecutionAdmissionJournal } from "../../session/execution-admission-journal.js";
+import { resolveMainLoopReasoningEffort } from "../../session/session-reasoning-effort.js";
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
 } from "./payload-manifest.js";
+import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
+import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
+import type { ProviderReasoningReplay } from "../../llm/types.js";
+import { omitAlteredBinaryCarriers } from "../../llm/content-conversion.js";
 
 const COMPACTION_BOUNDARY_MESSAGE = "Conversation compacted transactionally";
 const COMPACTION_UNKNOWN_MODEL = "unknown";
@@ -107,6 +128,12 @@ interface CompactionOutputTokenAccounting {
 
 export interface TransactionalCompactionOptions {
   readonly customInstructions: string;
+  /**
+   * Runtime-local summarizer for the emergency ladder tier (#2497). When
+   * present, no provider call is made; the plan, byte limits, body
+   * validation, provenance, shrink floor and commit are unchanged.
+   */
+  readonly summarizer?: CompactionLocalSummarizer;
   readonly direction?: "from" | "up_to";
   readonly automatic: boolean;
   readonly messagesToKeep: readonly RuntimeMessage[];
@@ -147,34 +174,6 @@ async function acquireCompactionTransactionLease(
   }
 }
 
-export function readCompactionTransactionAdapter(
-  context: CompactContext,
-): CompactionTransactionAdapter | undefined {
-  const direct = context.compactionTransaction;
-  if (direct !== undefined) return direct;
-  const candidate = (context as CompactContext & {
-    readonly rolloutStore?: unknown;
-  }).rolloutStore;
-  if (candidate === null || typeof candidate !== "object") return undefined;
-  const adapter = candidate as Partial<CompactionTransactionAdapter>;
-  const methods: ReadonlyArray<keyof CompactionTransactionAdapter> = [
-    "acquireCompactionLease",
-    "prepareSource",
-    "failureCount",
-    "pinAndRecordIntent",
-    "recordFailure",
-    "commit",
-    "markProjectionComplete",
-    "markProjectionFailed",
-    "markCleanupComplete",
-    "markCleanupPending",
-  ];
-  if (methods.some((name) => typeof adapter[name] !== "function")) return undefined;
-  if (typeof adapter.sessionId !== "string" || !Number.isSafeInteger(adapter.epoch)) {
-    return undefined;
-  }
-  return adapter as CompactionTransactionAdapter;
-}
 
 export async function compactConversationTransactionally(
   context: CompactContext,
@@ -241,10 +240,22 @@ function createCompactionAdmissionScope(
   const childSession = Object.assign(Object.create(session) as object, {
     services: { ...session.services, executionAdmission: child },
   }) as typeof session;
-  const unbind = bindExecutionAdmissionJournal(childSession, child);
+  let unbind: () => void;
+  try {
+    unbind = bindExecutionAdmissionJournal(childSession, child);
+  } catch (error) {
+    child.release?.();
+    throw error;
+  }
   return {
     context: { ...context, admissionSession: childSession },
-    unbind,
+    unbind: () => {
+      try {
+        unbind();
+      } finally {
+        child.release?.();
+      }
+    },
   };
 }
 
@@ -334,6 +345,10 @@ async function compactConversationTransactionBody(
     providerOptions.model ??
     session.modelInfo.slug ??
     COMPACTION_UNKNOWN_MODEL;
+  // Summary calls send the effort the main loop sends. Without one the
+  // provider default applies, which can be higher: xAI's is high on grok-4.6,
+  // the configured default is medium.
+  const reasoningEffort = resolveSummaryReasoningEffort(session);
   const policyMaterial = {
     map: getCompactionSystemPrompt("map", direction),
     reduce: getCompactionSystemPrompt("reduce", direction),
@@ -443,6 +458,7 @@ async function compactConversationTransactionBody(
     deadline.assertActive();
     const run = await deadline.wait(runSummaryTree({
       context,
+      ...(options.summarizer !== undefined ? { summarizer: options.summarizer } : {}),
       plan,
       attemptId,
       policyDigest,
@@ -451,19 +467,12 @@ async function compactConversationTransactionBody(
       requestedFocus,
       providerName,
       model,
+      reasoningEffort,
       startedAt,
     }));
     deadline.assertActive();
-    const canonicalSummaryEnvelope = canonicalizeJson({
-      version: 1,
-      kind: COMPACTION_CONTEXT_KIND_V1,
-      trust: "untrusted_historical_data",
-      summary_sha256: run.finalSummary.summary_sha256,
-      body: run.finalSummary.body,
-    });
-    const rawSummaryMessage = options.createSummaryMessage(
-      canonicalSummaryEnvelope,
-    );
+    const compactionContext = renderCompactionContext(run.finalSummary.body);
+    const rawSummaryMessage = options.createSummaryMessage(compactionContext);
     const historyMarkerBase = {
       version: COMPACTION_HISTORY_MARKER_VERSION,
       attempt_id: attemptId,
@@ -510,6 +519,7 @@ async function compactConversationTransactionBody(
       providerName,
       model,
       accountingRef,
+      imageBudgetBytes: shrinkAccountingImageBudgetBytes(session),
     }));
     deadline.assertActive();
     const replacementHistory = replacementRuntime.map(toProjectionMessage);
@@ -534,9 +544,20 @@ async function compactConversationTransactionBody(
       committed = adapter.commit(commitInput);
     } catch (error) {
       if (error instanceof CompactionTransactionError) throw error;
-      throw new CompactionTransactionError(
+      // Name the cause and the commit's size facts in the message itself:
+      // the warning that reaches the rollout, the TUI, and stderr carries
+      // the message, and a disk-full write must be distinguishable from a
+      // size cap or a validation refusal after the fact (#2499).
+      const facts = commitSizeFacts(commitInput);
+      throw new CompactionTransactionFailureWithDetails(
         "commit_failed",
-        "durable compaction commit failed",
+        `durable compaction commit failed: ${describeFailureCause(error)}; ` +
+          `replacement history ${facts.replacement_history_bytes} bytes ` +
+          `(${facts.replacement_history_messages} messages), ` +
+          `payload bundles ${facts.payload_bundle_count} ` +
+          `(${facts.payload_chunk_count} chunks, ${facts.payload_canonical_bytes} canonical bytes), ` +
+          `summary ${facts.summary_bytes} bytes`,
+        facts,
         { cause: error },
       );
     }
@@ -549,7 +570,7 @@ async function compactConversationTransactionBody(
             ...hookMetadata,
             hook_event_name: "PostCompact",
             trigger: options.automatic ? "auto" : "manual",
-            compact_summary: canonicalSummaryEnvelope,
+            compact_summary: compactionContext,
           },
           context.abortController?.signal,
         ),
@@ -695,6 +716,27 @@ function readCompactionPermissionMode(
   }
 }
 
+/**
+ * The effort the session's next main-loop turn sends. A turn resolves it
+ * under the session's own settings authority, which Session.runTurn binds.
+ * A compaction can run outside a turn with no authority bound (the daemon's
+ * manual compaction), so it binds the session's here.
+ */
+function resolveSummaryReasoningEffort(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): LLMChatOptions["reasoningEffort"] {
+  const resolve = () =>
+    resolveMainLoopReasoningEffort(session, {
+      reasoningEffort:
+        session.sessionConfiguration?.collaborationMode.reasoningEffort,
+      modelInfo: session.modelInfo,
+    });
+  const configStore = session.services.configStore;
+  return configStore === undefined
+    ? resolve()
+    : runWithCanonicalSettingsAuthority(configStore, resolve);
+}
+
 function mergeCompactionFocus(
   explicitInstructions: string,
   additionalInstructions: string | undefined,
@@ -763,6 +805,23 @@ async function waitForHookUntilAbort<T>(
   }
 }
 
+/**
+ * Model-visible projection of the committed summary. The summary digest,
+ * pinned tool pairs, record ids and source refs stay in the durable summary,
+ * its payload bundles and the compactionHistory marker: the model cannot use
+ * them, and in the message they would be re-sent with every later request.
+ */
+function renderCompactionContext(body: CompactionSummaryBodyV1): string {
+  return canonicalizeJson({
+    version: 2,
+    kind: COMPACTION_CONTEXT_KIND_V2,
+    trust: "untrusted_historical_data",
+    narrative: body.narrative,
+    facts: body.facts.map((fact) => fact.text),
+    open_actions: body.open_actions.map((action) => action.text),
+  });
+}
+
 function buildCompactionDisplayMessage(
   hookDiagnostics: readonly string[],
 ): string {
@@ -771,6 +830,7 @@ function buildCompactionDisplayMessage(
 
 async function runSummaryTree(params: {
   readonly context: CompactContext;
+  readonly summarizer?: CompactionLocalSummarizer;
   readonly plan: CompactionMapReducePlan;
   readonly attemptId: string;
   readonly policyDigest: string;
@@ -779,6 +839,7 @@ async function runSummaryTree(params: {
   readonly requestedFocus: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly startedAt: number;
 }): Promise<{
   readonly finalSummary: CompactionSummaryV1;
@@ -825,37 +886,91 @@ async function runSummaryTree(params: {
         "compaction exceeded its wall-clock budget",
       );
     }
-    accountCompactionCall({
-      messages,
-      systemPrompt: params.policyMaterial[stage],
-      providerName: params.providerName,
-      model: params.model,
-      contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
-    });
-    const invocation = await invokeCompactionProvider({
-      context: params.context,
-      messages,
-      systemPrompt: params.policyMaterial[stage],
-      providerName: params.providerName,
-      model: params.model,
-      callCount,
-      attemptId: params.attemptId,
-      contextWindowTokens: params.plan.context_window_tokens,
-      outputReserveTokens: params.plan.output_reserve_tokens,
-      remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
-    });
-    inputTokens = safeBudgetSum(
-      inputTokens,
-      invocation.accounting.inputTokens,
-    );
-    if (inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
-      throw new CompactionTransactionError(
-        "token_budget_exceeded",
-        "exact provider token counts exceeded the aggregate compaction budget",
+    let response: { readonly content: string; readonly finishReason: string };
+    let outputTokenUpperBound: number;
+    if (params.summarizer !== undefined) {
+      // Emergency ladder tier (#2497): the summary is produced locally and
+      // nothing reaches a provider. The step still passes through execution
+      // admission, reserved as an explicitly unpriced zero-token call and
+      // reconciled at zero, so the canonical scanner sees the same
+      // queued/allowed/dispatched/reconciled cycle it requires of every
+      // planned call. The output reserve still binds the summary.
+      const admissionSession = params.context.admissionSession;
+      const client = admissionSession?.services.executionAdmission;
+      if (admissionSession === undefined || client === undefined) {
+        throw new CompactionTransactionError(
+          "provider_unavailable",
+          "runtime-local compaction requires an execution-admission client",
+        );
+      }
+      const lease = await client.acquire(
+        {
+          stepId: `compact:${params.attemptId}:${callCount}`,
+          kind: "model_turn",
+          sessionId: admissionSession.conversationId,
+          model: params.model,
+          provider: params.providerName,
+          maxInputTokens: 0,
+          maxOutputTokens: params.plan.output_reserve_tokens,
+          maxCostUsd: null,
+        },
+        params.context.abortController?.signal,
       );
+      const reservationId = lease.reservation.reservationId;
+      let content: string;
+      try {
+        content = params.summarizer({
+          stage,
+          messages,
+          allowedSourceRefIds: sourceRefs.map((ref) => ref.ref_id),
+          maxOutputTokens: params.plan.output_reserve_tokens,
+        });
+      } catch (error) {
+        client.void(reservationId, "runtime_local_summary_failed");
+        throw error;
+      }
+      client.markDispatched(reservationId, {
+        boundary: "provider_wire",
+        details: { runtime_local_summary: true, stage },
+      });
+      client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+      response = { content, finishReason: "stop" };
+      outputTokenUpperBound = conservativeOutputTokenEstimate(content);
+    } else {
+      accountCompactionCall({
+        messages,
+        systemPrompt: params.policyMaterial[stage],
+        providerName: params.providerName,
+        model: params.model,
+        contextWindowTokens: params.plan.context_window_tokens,
+        outputReserveTokens: params.plan.output_reserve_tokens,
+      });
+      const invocation = await invokeCompactionProvider({
+        context: params.context,
+        messages,
+        systemPrompt: params.policyMaterial[stage],
+        providerName: params.providerName,
+        model: params.model,
+        reasoningEffort: params.reasoningEffort,
+        callCount,
+        attemptId: params.attemptId,
+        contextWindowTokens: params.plan.context_window_tokens,
+        outputReserveTokens: params.plan.output_reserve_tokens,
+        remainingInputTokens: MAX_COMPACTION_TOTAL_INPUT_TOKENS - inputTokens,
+      });
+      inputTokens = safeBudgetSum(
+        inputTokens,
+        invocation.accounting.inputTokens,
+      );
+      if (inputTokens > MAX_COMPACTION_TOTAL_INPUT_TOKENS) {
+        throw new CompactionTransactionError(
+          "token_budget_exceeded",
+          "exact provider token counts exceeded the aggregate compaction budget",
+        );
+      }
+      response = invocation.response;
+      outputTokenUpperBound = invocation.outputTokenUpperBound;
     }
-    const response = invocation.response;
     if (response.finishReason !== "stop") {
       throw new CompactionTransactionError(
         "provider_non_stop",
@@ -871,7 +986,7 @@ async function runSummaryTree(params: {
     if (
       Buffer.byteLength(response.content, "utf8") >
         MAX_COMPACTION_OUTPUT_UTF8_BYTES_PER_CALL ||
-      invocation.outputTokenUpperBound > params.plan.output_reserve_tokens
+      outputTokenUpperBound > params.plan.output_reserve_tokens
     ) {
       throw new CompactionTransactionError(
         "output_limit_exceeded",
@@ -947,7 +1062,6 @@ async function runSummaryTree(params: {
           structuredReductionMessages({
             children: group.map((node) => ({
               ref_id: node.ref.ref_id,
-              sha256: node.ref.sha256,
               body: node.summary.body,
             })),
             stage: "reduce",
@@ -965,7 +1079,6 @@ async function runSummaryTree(params: {
     structuredReductionMessages({
       children: level.map((node) => ({
         ref_id: node.ref.ref_id,
-        sha256: node.ref.sha256,
         body: node.summary.body,
       })),
       stage: "final",
@@ -1152,6 +1265,7 @@ async function invokeCompactionProvider(params: {
   readonly systemPrompt: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly callCount: number;
   readonly attemptId: string;
   readonly contextWindowTokens: number;
@@ -1166,6 +1280,7 @@ async function invokeCompactionProvider(params: {
     systemPrompt: params.systemPrompt,
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
+    reasoningEffort: params.reasoningEffort,
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
     // provider-native server tools cannot be added after preflight token
@@ -1219,7 +1334,21 @@ async function invokeCompactionProvider(params: {
         content: candidate.content,
         signal: admittedOptions.signal,
       });
-      const reported = candidate.usage?.completionTokens;
+      // `coerceUsage` normalises an ABSENT usage object AND a partial one
+      // (prompt-only or total-only) to completionTokens 0, and marks the partial
+      // case `availability: "reported"`. So neither the value nor `availability`
+      // can distinguish "the provider counted zero output tokens" from "the
+      // provider never counted the output at all". Trusting the coerced 0
+      // BYPASSED this bound whenever usage was unknown or partial; a response
+      // carrying a valid completion count was always bounded correctly. A
+      // non-empty body cannot have cost zero
+      // completion tokens, so a non-positive count against real content is not a
+      // count: fall back to the estimate, which is what this bound exists to apply.
+      const reportedCompletion = candidate.usage?.completionTokens;
+      const reported =
+        reportedCompletion !== undefined && reportedCompletion > 0
+          ? reportedCompletion
+          : undefined;
       outputTokenUpperBound = outputAccounting.source === "conservative_fallback"
         ? compactionOutputTokenUpperBound(candidate.content, reported)
         : Math.max(reported ?? 0, outputAccounting.tokens);
@@ -1310,6 +1439,32 @@ async function countCompactionProviderOutput(params: {
   };
 }
 
+/**
+ * Inline-image budget the shrink measurement applies to both histories.
+ *
+ * The measurement answers "what would the next sampling request cost, before
+ * and after". The sampling path never sends the raw history: it bounds inline
+ * images to `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` first (`run-turn.ts`). Counting
+ * the raw history instead walked every screenshot into the accounting
+ * request, which is capped at 16 MiB, so a 30-screenshot session could not
+ * compact at all (Terminal-Bench `layout-config-recreation__Hrx5oPp`:
+ * "inline image sources exceed the 65447-byte remaining request budget" on
+ * every ladder tier). The operator's budget is the measurement budget; a
+ * disabled (`0`) or cap-sized value measures with the default so the
+ * measurement itself can never exceed the accounting cap.
+ */
+export function shrinkAccountingImageBudgetBytes(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): number {
+  const configured = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  if (configured <= 0 || configured > MAX_TOKEN_ACCOUNTING_REQUEST_BYTES / 2) {
+    return DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES;
+  }
+  return configured;
+}
+
 async function validateShrink(params: {
   readonly context: CompactContext;
   readonly sourceMessages: readonly RuntimeMessage[];
@@ -1317,6 +1472,8 @@ async function validateShrink(params: {
   readonly providerName: string;
   readonly model: string;
   readonly accountingRef: string;
+  /** See {@link shrinkAccountingImageBudgetBytes}. */
+  readonly imageBudgetBytes: number;
 }): Promise<{
   readonly source: TokenAccountingResult;
   readonly candidate: TokenAccountingResult;
@@ -1340,10 +1497,16 @@ async function validateShrink(params: {
       : {}),
   };
   const count = async (messages: readonly RuntimeMessage[]) => {
+    // Measure the projection the model would be sent, not the durable
+    // history: inline images beyond the budget become placeholders on the
+    // wire, and the same bound on both sides keeps the savings comparable.
     const request = createTokenAccountingRequest({
       provider: params.providerName,
       model: params.model,
-      messages: messages.map(toLlmMessage),
+      messages: boundContextImageBytes(
+        messages.map(toLlmMessage),
+        params.imageBudgetBytes,
+      ).messages,
       options: baseOptions,
       contextWindowTokens: contextWindow,
       reservedOutputTokens: outputReserve,
@@ -1413,7 +1576,11 @@ function toProjectionMessage(message: RuntimeMessage): CompactionProjectionMessa
     ...(message.uuid !== undefined ? { id: message.uuid } : {}),
     ...(message.phase !== undefined ? { phase: message.phase } : {}),
     ...(typeof message.providerReasoningContent === "string" &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (normalizedRole === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning:
             message.providerReasoningProvenance !== undefined &&
@@ -1545,6 +1712,57 @@ function createAuthoritativeSelectionMapper(
   // so a sealed tool result maps to its canonical record by that identity.
   // The canonical body is what gets summarized either way; the caller only
   // ever points at a position.
+  // Durable persistence drops an opaque replay when redaction would alter it,
+  // keeping the message. Project the caller's live message the same way, so a
+  // message whose replay was dropped on the canonical side still matches.
+  // Nothing else about the message changes, so a forged body or an altered
+  // ordinary replay is still refused.
+  // Durable persistence also omits a binary carrier whose bytes redaction would
+  // alter. The projection has to apply the identical omission or a caller
+  // message keeps an image its own canonical record no longer has.
+  const withoutMedia = (message: RuntimeMessage): RuntimeMessage => {
+    const { content, omitted } = omitAlteredBinaryCarriers(
+      message.content,
+      message.content,
+      (body) => redactSecretsInValue(body) !== body,
+    );
+    return omitted
+      ? ({ ...message, content } as RuntimeMessage)
+      : message;
+  };
+  const durablyProjected = (message: RuntimeMessage): RuntimeMessage => {
+    const content = message.providerReasoningContent;
+    // A user attachment carries no provider replay, so returning early here
+    // would skip the media omission entirely and the caller would keep an
+    // image its canonical record no longer has.
+    if (typeof content !== "string" || content.length === 0) {
+      return withoutMedia(message);
+    }
+    const provenance = message.providerReasoningProvenance;
+    const replay: ProviderReasoningReplay =
+      provenance !== undefined &&
+      typeof provenance.provider === "string" &&
+      provenance.provider.trim().length > 0 &&
+      typeof provenance.model === "string" &&
+      provenance.model.trim().length > 0
+        ? {
+            version: 2,
+            content,
+            // llmMessageToResponseItem normalizes provider and model before the
+            // durable drop decision is made, so normalize identically here or a
+            // secret-shaped provider/model would redact on one side only.
+            provider: provenance.provider.trim().toLowerCase(),
+            model: provenance.model.trim().toLowerCase(),
+          }
+        : { version: 1, content };
+    if (!durableRedactionDropsProviderReplay(replay)) return withoutMedia(message);
+    const {
+      providerReasoningContent: _droppedContent,
+      providerReasoningProvenance: _droppedProvenance,
+      ...withoutReplay
+    } = message;
+    return withoutMedia(withoutReplay as RuntimeMessage);
+  };
   const key = (message: RuntimeMessage): string => {
     const role =
       message.originalRole ?? message.role ?? message.message?.role ?? "user";
@@ -1563,7 +1781,10 @@ function createAuthoritativeSelectionMapper(
     // caller's live message the same way so a secret in a user or assistant
     // message does not read as "no canonical match" (redaction is idempotent).
     return canonicalizeJson(
-      redactSecretsInValue(canonicalCompactionSourceMessages([message])),
+      redactDurableSecrets(
+        canonicalCompactionSourceMessages([durablyProjected(message)]),
+        "source_history",
+      ),
     );
   };
   const preparedByKey = new Map<string, number[]>();
@@ -1580,6 +1801,15 @@ function createAuthoritativeSelectionMapper(
     const positions = preparedByKey.get(key(message)) ?? [];
     const positionIndex = lastIndexLessThan(positions, nextPreparedIndex);
     if (positionIndex < 0) {
+      if (isTransientContextMessage(message)) {
+        // A per-request context message (a skill listing, a permission
+        // reminder) is rendered for the model and never written to the
+        // rollout, so it cannot have a canonical record. It carries nothing
+        // to summarize or keep: leave it out rather than refuse the whole
+        // compaction over it.
+        callerToPrepared[callerIndex] = -1;
+        continue;
+      }
       // Name the message that broke the projection. Without this the
       // sentence alone could not distinguish a rewritten tool result from a
       // message the canonical rollout never saw, so a live failure could not
@@ -1639,7 +1869,9 @@ function createAuthoritativeSelectionMapper(
       used.add(callerIndex);
       return callerIndex;
     });
-    const preparedIndexes = callerIndexes.map((index) => callerToPrepared[index]!);
+    const preparedIndexes = callerIndexes
+      .map((index) => callerToPrepared[index]!)
+      .filter((index) => index >= 0);
     return {
       messages: preparedIndexes.map((index) => prepared.messages[index]!),
       sourceRefs: preparedIndexes.map(
@@ -1648,6 +1880,22 @@ function createAuthoritativeSelectionMapper(
       preparedIndexes,
     };
   };
+}
+
+/**
+ * A user-channel context message the runtime renders for one request (a
+ * skill listing, a permission reminder, hook context). It is never history:
+ * `isAttachmentMessage` in session/attachment-retention.ts names the same
+ * shape. An agent-invocation channel also carries the user_context boundary
+ * but is durable, so it is excluded here.
+ */
+function isTransientContextMessage(message: RuntimeMessage): boolean {
+  const role = message.originalRole ?? message.role ?? message.message?.role ?? "user";
+  return (
+    role === "user" &&
+    message.runtimeOnly?.mergeBoundary === "user_context" &&
+    message.runtimeOnly?.agentInvocation === undefined
+  );
 }
 
 function lastIndexLessThan(values: readonly number[], threshold: number): number {
@@ -1684,6 +1932,32 @@ function classifyFailure(
     }
   }
   return "provider_error";
+}
+
+/** Byte and count facts of a commit, for the failure message and warning. */
+function commitSizeFacts(commitInput: {
+  readonly summary: CompactionSummaryV1;
+  readonly replacement_history: readonly CompactionProjectionMessageV1[];
+  readonly payload_bundles: CompactionCommitPayloadBundlesV1;
+}): CompactionFailureDetails {
+  const bundles = Object.values(commitInput.payload_bundles);
+  return {
+    replacement_history_bytes: Buffer.byteLength(
+      canonicalizeJson(commitInput.replacement_history),
+      "utf8",
+    ),
+    replacement_history_messages: commitInput.replacement_history.length,
+    summary_bytes: Buffer.byteLength(canonicalizeJson(commitInput.summary), "utf8"),
+    payload_bundle_count: bundles.length,
+    payload_chunk_count: bundles.reduce(
+      (total, bundle) => total + bundle.manifest.chunk_count,
+      0,
+    ),
+    payload_canonical_bytes: bundles.reduce(
+      (total, bundle) => total + bundle.manifest.canonical_utf8_bytes,
+      0,
+    ),
+  };
 }
 
 function errorDetail(error: unknown): string {

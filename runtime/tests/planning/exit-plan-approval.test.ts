@@ -4,8 +4,12 @@ import {
   buildPlanPromptPermissionUpdates,
   clearExitPlanModeApprovalsForTest,
   consumeExitPlanModeApproval,
+  EXIT_PLAN_APPROVED_PLAN_ARG,
+  exitPlanApprovedPlan,
+  injectedExitPlanApprovedPlan,
   parseExitPlanAllowedPrompts,
   recordExitPlanModeApproval,
+  samePlanText,
 } from "../../src/planning/exit-plan-approval.js";
 
 describe("exit plan approval helpers", () => {
@@ -89,5 +93,52 @@ describe("exit plan approval helpers", () => {
       action: "revise",
       feedback: "tighten the rollback step",
     });
+  });
+
+  test("exitPlanApprovedPlan keeps only a non-blank plan string", () => {
+    expect(exitPlanApprovedPlan({})).toEqual({ plan: null });
+    expect(exitPlanApprovedPlan({ plan: "   " })).toEqual({ plan: null });
+    expect(exitPlanApprovedPlan({ plan: 12 })).toEqual({ plan: null });
+    const shown = exitPlanApprovedPlan({ plan: "# Plan\n" });
+    expect(shown).toEqual({ plan: "# Plan\n" });
+    expect(Object.isFrozen(shown)).toBe(true);
+  });
+
+  test("injectedExitPlanApprovedPlan accepts only the hidden runtime snapshot", () => {
+    const args: Record<string, unknown> = { plan: "model-supplied" };
+    expect(injectedExitPlanApprovedPlan(args)).toBeUndefined();
+
+    args[EXIT_PLAN_APPROVED_PLAN_ARG] = { plan: "enumerable" };
+    expect(injectedExitPlanApprovedPlan(args)).toBeUndefined();
+
+    Object.defineProperty(args, EXIT_PLAN_APPROVED_PLAN_ARG, {
+      value: { plan: "# Shown\n" },
+      enumerable: false,
+      configurable: true,
+    });
+    expect(injectedExitPlanApprovedPlan(args)).toEqual({ plan: "# Shown\n" });
+
+    Object.defineProperty(args, EXIT_PLAN_APPROVED_PLAN_ARG, {
+      value: { plan: null },
+      enumerable: false,
+      configurable: true,
+    });
+    expect(injectedExitPlanApprovedPlan(args)).toEqual({ plan: null });
+
+    Object.defineProperty(args, EXIT_PLAN_APPROVED_PLAN_ARG, {
+      value: { plan: 1 },
+      enumerable: false,
+      configurable: true,
+    });
+    expect(injectedExitPlanApprovedPlan(args)).toBeUndefined();
+  });
+
+  test("samePlanText treats no plan and a blank plan as one thing", () => {
+    expect(samePlanText(null, "")).toBe(true);
+    expect(samePlanText(null, "   ")).toBe(true);
+    expect(samePlanText("# Plan\n", "# Plan\n")).toBe(true);
+    expect(samePlanText("# Plan\n", "# Plan\n- extra\n")).toBe(false);
+    expect(samePlanText("# Plan", "# Plan ")).toBe(false);
+    expect(samePlanText("# Plan\n", null)).toBe(false);
   });
 });

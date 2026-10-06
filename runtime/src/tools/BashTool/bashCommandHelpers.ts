@@ -12,7 +12,8 @@ import { type Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
 import { createPermissionRequestMessage } from '../../utils/permissions/permissions.js'
-import { BashTool } from './BashTool.js'
+import type { BashTool } from './BashTool.js'
+import { BASH_TOOL_NAME } from './toolName.js'
 import { bashCommandIsSafeAsync_DEPRECATED } from './bashSecurity.js'
 
 export type CommandIdentityCheckers = {
@@ -42,7 +43,7 @@ async function segmentedCommandPermissionResult(
     return {
       behavior: 'ask',
       decisionReason,
-      message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      message: createPermissionRequestMessage(BASH_TOOL_NAME, decisionReason),
     }
   }
 
@@ -76,7 +77,7 @@ async function segmentedCommandPermissionResult(
       return {
         behavior: 'ask',
         decisionReason,
-        message: createPermissionRequestMessage(BashTool.name, decisionReason),
+        message: createPermissionRequestMessage(BASH_TOOL_NAME, decisionReason),
       }
     }
   }
@@ -149,7 +150,7 @@ async function segmentedCommandPermissionResult(
 
   return {
     behavior: 'ask',
-    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    message: createPermissionRequestMessage(BASH_TOOL_NAME, decisionReason),
     decisionReason,
     suggestions: suggestions.length > 0 ? suggestions : undefined,
   }
@@ -233,7 +234,7 @@ async function bashToolCheckCommandOperatorPermissions(
     }
     return {
       behavior: 'ask',
-      message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      message: createPermissionRequestMessage(BASH_TOOL_NAME, decisionReason),
       decisionReason,
       // This is an unsafe compound command, so we don't want to suggest rules since we wont be able to allow it
     }

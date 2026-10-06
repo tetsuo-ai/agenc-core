@@ -163,6 +163,45 @@ describe("compaction canonical payload manifests", () => {
       .toMatchObject({ recordCount: 2 });
   });
 
+  it("accepts a bundle written across several chunks and rejects kinds interleaved mid-bundle (#2499)", () => {
+    // A source history over one canonical line (4 MiB) is split into chunks.
+    // The strict reader used to refuse the second chunk of the same kind as
+    // "not contiguous by kind", so a screenshot-heavy history could never
+    // commit: "durable compaction commit failed" with the cause hidden.
+    const history = createCompactionPayloadBundleV1({
+      attemptId: "manifest-lifecycle",
+      recordedAtMs: 1,
+      payloadKind: "source_history",
+      value: [{ content: "x".repeat(9_000_000) }],
+      itemCount: 1,
+    });
+    const refs = createCompactionPayloadBundleV1({
+      attemptId: "manifest-lifecycle",
+      recordedAtMs: 1,
+      payloadKind: "active_history_refs",
+      value: [{ ref: "r".repeat(5_000_000) }],
+      itemCount: 1,
+    });
+    expect(history.chunks.length).toBeGreaterThanOrEqual(3);
+    expect(refs.chunks).toHaveLength(2);
+    const intentLine = rolloutLine("compaction_intent", manifestIntent());
+    const lines = (chunks: readonly CompactionPayloadChunkV1[]) =>
+      chunks.map(chunkLine).join("");
+
+    expect(validateCanonicalJournalText(
+      `${intentLine}${lines(history.chunks)}${lines(refs.chunks)}`,
+    )).toMatchObject({ recordCount: 1 + history.chunks.length + refs.chunks.length });
+
+    // Another kind before the first bundle is complete.
+    expect(() => validateCanonicalJournalText(
+      `${intentLine}${chunkLine(history.chunks[0])}${lines(refs.chunks)}${lines(history.chunks.slice(1))}`,
+    )).toThrow(/not contiguous by kind/i);
+    // A completed kind resumed after another kind.
+    expect(() => validateCanonicalJournalText(
+      `${intentLine}${lines(history.chunks)}${lines(refs.chunks)}${chunkLine(history.chunks[0])}`,
+    )).toThrow(/not contiguous by kind/i);
+  });
+
   it("strictly reads manifest-backed persistence records without inline payloads", () => {
     const bundles = persistedPayloadBundles();
     const intent = persistedIntent(bundles.activeRefs, bundles.sourceHistory);

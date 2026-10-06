@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  formatVerificationCommand,
+  formatVerificationResult,
+  isTrivialVerificationCommand,
   parseVerificationVerdict,
+  plannedVerification,
   runRequiredVerification,
   type WorkflowCommandResult,
   type WorkflowCommandRunner,
@@ -14,6 +18,32 @@ import type {
 import type { EvidenceArtifactSink } from "../../src/workflow/worktree-lifecycle.js";
 
 const STEP: RunStepIdentity = { runId: "run-v", stepId: "workflow.verify" };
+
+describe("verification plan placeholders", () => {
+  it.each([
+    "", "  ", "# no tests yet", "true", " true; # placeholder", ":", "exit 0", "exit 00",
+    "echo", "echo 'passed'", "printf 'ok\\n'", "/usr/bin/true", "'true'",
+    "true && :; echo done", "true\necho done", "CI=1 command true",
+    "bash -lc 'true'", "sh -c 'echo done'", "echo passed > result.txt",
+    "bash -ec true", "bash -c -e 'exit 0'", "sh -c -- true", "zsh -fc 'echo ok'", "dash -c :",
+    "bash +c true", "bash -c true extra", "/bin/BASH -c true",
+    "tcsh -c 'echo ok'", "fish --command=true", "fish -C true -c 'echo ok'",
+    "bash -ec \"sh -c true\"",
+  ])("rejects a check that proves nothing: %j", (script) => {
+    expect(isTrivialVerificationCommand(script)).toBe(true);
+  });
+
+  it.each([
+    "npm test", "npm run build", "node --test test/app.test.mjs", "python3 smoke_test.py",
+    "test -s index.html", "echo starting && npm test", "echo starting\nnpm test",
+    "npm test && echo done", "sh -c 'npm test'", "node -e 'require(\"node:assert\").ok(1)'",
+    "exit 1", "echo actual | diff - expected.txt",
+    "bash -ec 'npm test'", "bash -c -e 'npm test'", "bash script.sh", "bash script.sh -c true",
+    "ksh run.ksh", "fish -C true -c 'npm test'", "bash -opipefail -c 'npm test'",
+  ])("leaves meaningful command evaluation to the verifier: %j", (script) => {
+    expect(isTrivialVerificationCommand(script)).toBe(false);
+  });
+});
 
 class MemorySink implements EvidenceArtifactSink {
   readonly artifacts: Array<{ role: string; text: string }> = [];
@@ -194,9 +224,26 @@ describe("verification agent verdict parsing", () => {
     expect(
       parseVerificationVerdict("VERDICT: PASS\nre-ran suite\nVERDICT: FAIL"),
     ).toBe("FAIL");
-    expect(parseVerificationVerdict("  VERDICT: PARTIAL (2 checks skipped)")).toBe(
+    expect(parseVerificationVerdict("  VERDICT: PARTIAL \r")).toBe(
       "PARTIAL",
     );
+  });
+
+  it.each(["PASS", "FAIL", "PARTIAL"])("accepts balanced bold verdicts: %s", (verdict) => {
+    for (const line of [`**VERDICT: ${verdict}**`, `VERDICT: **${verdict}**`]) {
+      expect(parseVerificationVerdict(`Report\n  ${line} \r\n`)).toBe(verdict);
+      expect(parseVerificationVerdict(`VERDICT: PASS\n${line}`)).toBe(verdict);
+    }
+  });
+
+  it.each([
+    "VERDICT: PASSING", "VERDICT: PASS because it works", "VERDICT: PARTIAL (skipped)",
+    "the **VERDICT: PASS** came earlier", "**VERDICT: PASS** trailing",
+    "VERDICT: **PASS** trailing", "**VERDICT: PASS", "VERDICT: PASS**",
+    "VERDICT: **PASS", "VERDICT: PASS FAIL", "VERDICT:\nPASS", "- VERDICT: PASS",
+    "`VERDICT: PASS`", "# VERDICT: PASS", "VERDICT: pass",
+  ])("rejects non-whole or malformed verdict lines: %s", (line) => {
+    expect(parseVerificationVerdict(line)).toBeUndefined();
   });
 
   it("a missing or malformed verdict is undefined — callers treat it as failure", () => {
@@ -205,4 +252,51 @@ describe("verification agent verdict parsing", () => {
     expect(parseVerificationVerdict("the VERDICT: PASS came earlier")).toBeUndefined();
     expect(parseVerificationVerdict("")).toBeUndefined();
   });
+});
+
+describe("verification commands in model prompts", () => {
+  it("names a command by its exact script as a code span", () => {
+    expect(formatVerificationCommand("npm test")).toBe("`npm test`");
+    // A fence longer than any backtick run inside, padded at a backtick edge.
+    expect(formatVerificationCommand("echo `date`")).toBe("`` echo `date` ``");
+    expect(formatVerificationCommand("a ``b`` c")).toBe("```a ``b`` c```");
+  });
+
+  it("renders a recorded result by script, never by label", () => {
+    const record = { label: "verify", script: "npm test", exitCode: 0, timedOut: false };
+    expect(formatVerificationResult(record)).toBe("`npm test`: exit 0");
+    expect(formatVerificationResult({ ...record, exitCode: 124, timedOut: true })).toBe(
+      "`npm test`: exit 124 (timed out)",
+    );
+  });
+});
+
+
+describe("planned verification message contract", () => {
+  const block = (value: unknown) => "Plan\n```agenc-verification\n" + JSON.stringify(value) + "\n```";
+  it.each([
+    'node -e "const s=require(\'fs\').readFileSync(\'README.md\',\'utf8\');if(!/```js[\\s\\S]*?```/.test(s))process.exit(1)"',
+    'test -s `pwd`/README.md',
+  ])("rejects shell backticks before freezing a generated check: %s", script => {
+    expect(() => plannedVerification(block([script]))).toThrow("shell backtick substitution");
+  });
+  it.each([
+    'node -e \'const fs=require("fs");if(!fs.readFileSync("README.md","utf8").includes("```js"))process.exit(1)\'',
+    'node -e "if(!require(\'fs\').readFileSync(\'README.md\',\'utf8\').includes(\'\\`\\`\\`js\'))process.exit(1)"',
+    'node --test test/readme.test.mjs',
+  ])("preserves literal backticks or a test-file invocation: %s", script => {
+    expect(plannedVerification(block([script]))[0]?.script).toBe(script);
+  });
+  it("preserves exact commands and freezes the list and entries", () => {
+    const checks = plannedVerification(block(["npm test", "cd cli && npm run build && node dist/cli.js --help"]));
+    expect(checks.map(check => check.script)).toEqual(["npm test", "cd cli && npm run build && node dist/cli.js --help"]);
+    expect(Object.isFrozen(checks)).toBe(true);
+    expect(checks.every(Object.isFrozen)).toBe(true);
+  });
+  it.each([[], ["true"], ["npm test", "npm test"], [null], [1], {}, [""], Array(21).fill("npm test"), ["npm test " + "x".repeat(4097)]].map(value => [value]))(
+    "rejects invalid check lists %j", value => expect(() => plannedVerification(block(value))).toThrow(),
+  );
+  it.each(["Plan only", "```agenc-verification\n[\n```", block(["npm test"]) + "\n" + block(["make test"])])(
+    "rejects missing, malformed or duplicate blocks", message => expect(() => plannedVerification(message)).toThrow(),
+  );
 });

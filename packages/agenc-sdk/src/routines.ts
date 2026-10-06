@@ -6,6 +6,8 @@ export type {
   RoutineCreateParams,
   RoutineConfig,
   RoutineWorkspaceExpectation,
+  RoutinePermissionMode,
+  RoutinePermissionAuthority,
   Routine,
   RoutineIdParams,
   RoutineUpdateParams,

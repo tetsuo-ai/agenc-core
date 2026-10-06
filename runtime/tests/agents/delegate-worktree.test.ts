@@ -66,6 +66,8 @@ function makeParentSession(cwd: string) {
     snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd },
     config: { cwd },
+    modelInfo: { slug: "fixture-model" },
+    providerService: { current: () => ({ provider: "deepseek", model: "fixture-model" }) },
     services: {
       sandboxExecutionBroker: explicitDangerBroker.forkForCwd(cwd),
     },
@@ -119,6 +121,50 @@ function gatedRun(): {
 }
 
 describe("delegate worktree isolation (real git)", () => {
+  it("lets a read-only Goal planner inspect its existing worktree without creating or deleting it", async () => {
+    const repo = initRepo();
+    const handle = await worktreeModule.getOrCreateWorktree({ gitRoot: repo, slug: "goal_plan",
+      sandboxExecutionBroker: explicitDangerBroker.forkForCwd(repo) });
+    const create = vi.spyOn(worktreeModule, "getOrCreateWorktree");
+    const remove = vi.spyOn(worktreeModule, "removeAgentWorktree");
+    const planRole = resolveAgentRole(ROLE_WORKSPACE, "Plan");
+    const control = {
+      roleCatalog: { require: () => planRole },
+      spawn: vi.fn(async () => ({ ...makeLive("goal-plan", "/root/goal_plan"), role: planRole })),
+      shutdown: vi.fn(async () => {}),
+      markThreadSpawnEdgeClosed: vi.fn(async () => {}),
+    };
+    mockRunAgent.mockImplementationOnce(async function* () {
+      return { threadId: "goal-plan", durationMs: 1, outcome: "completed", finalMessage: "A plan" };
+    });
+    try {
+      const result = await delegate({ parent: makeParentSession(repo) as never, parentPath: "/root",
+        control: control as never, registry: {} as never, role: "Plan", taskPrompt: "Inspect and plan",
+        isolation: "none", inspectionWorktree: handle, runInBackground: false, forceSynchronous: true });
+      expect(result.kind).toBe("sync_completed");
+      expect(create).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(mockRunAgent).toHaveBeenLastCalledWith(expect.objectContaining({
+        worktree: expect.objectContaining({ path: handle.path, created: false }),
+        worktreeBaseCommit: git(repo, "rev-parse", "HEAD").trim(),
+      }));
+      expect(existsSync(handle.path)).toBe(true);
+      expect(git(repo, "status", "--porcelain")).toBe("");
+    } finally {
+      create.mockRestore(); remove.mockRestore();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the inspection checkout handoff for an unconstrained child", async () => {
+    const control = { spawn: vi.fn() };
+    const result = await delegate({ parent: makeParentSession("/repo") as never, parentPath: "/root",
+      control: control as never, registry: {} as never, taskPrompt: "Edit",
+      isolation: "none", inspectionWorktree: { path: "/repo/worktree", gitRoot: "/repo", branch: "owned", created: false } });
+    expect(result).toMatchObject({ kind: "rejected", reason: expect.stringContaining("requires read-only delegation") });
+    expect(control.spawn).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("keeps post-creation failures uncertain even when cleanup fails: %s", async (cleanupFails) => {
     const repo = initRepo();
     const cleanup = vi.spyOn(worktreeModule, "removeAgentWorktree");
@@ -297,6 +343,8 @@ describe("delegate worktree isolation (real git)", () => {
 
   it("rejects worktree isolation outside a git repository", async () => {
     const plainDir = mkdtempSync(join(tmpdir(), "agenc-wt-plain-"));
+    // Host temp-directory ancestors may themselves be repositories.
+    const findGitRoot = vi.spyOn(worktreeModule, "findGitRoot").mockReturnValueOnce(null);
     try {
       const control = {
         spawn: vi.fn(),
@@ -318,6 +366,7 @@ describe("delegate worktree isolation (real git)", () => {
       }
       expect(control.spawn).not.toHaveBeenCalled();
     } finally {
+      findGitRoot.mockRestore();
       rmSync(plainDir, { recursive: true, force: true });
     }
   });

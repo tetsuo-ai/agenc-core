@@ -2,7 +2,7 @@
 
 Design and architecture notes for the fullscreen terminal UI under
 `runtime/src/tui/`. These are the durable decisions a reader needs before
-touching the render stack, the workbench shell, or the v2 design primitives.
+touching the render stack or the v2 design primitives.
 
 ## Render stack: custom Ink fork
 
@@ -35,24 +35,12 @@ observable.
   whether mouse tracking is enabled. The body passed to `AlternateScreen` is
   kept a fragment (not a flex `Box`) so the layout's full-height region
   stays a direct child of the alt-screen `Box`.
-- Picks the layout at render time. When fullscreen and
-  `isWorkbenchEnabled()` is true (`workbench/state.ts`), it mounts
-  `WorkbenchLayout` (`workbench/WorkbenchLayout.tsx`); otherwise it mounts
-  `FullscreenLayout` (`components/FullscreenLayout.tsx`). Both receive the
-  same transcript / composer / overlay / modal slots.
+- Mounts `FullscreenLayout` (`components/FullscreenLayout.tsx`) with the
+  transcript / composer / overlay / modal slots.
 
-Workbench is the default fullscreen TUI; `AGENC_TUI_WORKBENCH=0` opts back
-into the classic `FullscreenLayout` chrome (scrollback + modal host).
-`WorkbenchLayout` owns the workbench panes (Explorer, center work-surface,
-Agents rail, approvals, tasks under `workbench/`) and does **not** mount
-those panes inside the transcript `ScrollBox`. Visible workbench behavior:
-the Explorer pane is interactive, the center pane switches by active work
-surface, diff approvals jump to full hunk review, and the Agents rail is
-visible at wide widths.
-
-`FullscreenLayout` owns the v2 top chrome and status bar (`BrandCells`,
-`TuiHeader`, `StatusBar` from `components/v2/primitives.tsx`). The header mode
-pill reads `toolPermissionContext.mode` from app state via
+`FullscreenLayout` owns the one status line under the prompt (folder, model,
+mode, branch, and spend once known). There is no top bar. The mode label reads
+`toolPermissionContext.mode` from app state via
 `useAppStateMaybeOutsideOfProvider` and falls back to `default` in static
 render/test harnesses that do not mount `AppStateProvider`. A v2
 `PlanModeBanner` renders above scrollback whenever the permission mode is
@@ -106,6 +94,11 @@ set (`ALL_PERMISSION_MODES`) is `default`, `acceptEdits`, `plan`,
 `bypassPermissions`, `dontAsk`, `auto`, `unattended`, `bubble`. The last two
 are internal-only and excluded from `USER_ADDRESSABLE_PERMISSION_MODES`; they
 render in the header if active but are not part of the user-facing mode cycle.
+
+A daemon-backed turn whose connection drops mid-flight ends locally when a
+`session.snapshot` probe fails or gets no answer within 10 s
+(`AGENC_DAEMON_LOST_TURN_PROBE_MS` in `daemon-session.ts`).
+Operator contract: [daemon.md](../../../docs/reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 The live daemon permission overlay classifies low, medium, and destructive
 requests. Destructive requests require typed confirmation; low and medium

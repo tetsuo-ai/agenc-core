@@ -1,10 +1,11 @@
-import type { ChildProcess, ExecFileException } from 'child_process'
+import type { ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
 import { accessSync, constants, statSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { isAbsolute } from 'node:path'
 import { resolvePinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { isInBundledMode } from './bundledMode.js'
+import { childProcessAbortError, stopChildOnAbort } from './child-signal.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -220,7 +221,7 @@ function ripGrepRaw(
     stderr: string,
   ) => void,
   singleThread = false,
-): ChildProcess {
+): void {
   // NB: When running interactively, ripgrep does not require a path as its last
   // argument, but when run non-interactively, it will hang unless a path or file
   // pattern is provided
@@ -237,15 +238,31 @@ function ripGrepRaw(
     parseInt(process.env.AGENC_GLOB_TIMEOUT_SECONDS || '', 10) || 0
   const timeout = parsedSeconds > 0 ? parsedSeconds * 1000 : defaultTimeout
 
+  // Nothing starts for an abort that already happened; report it the way
+  // spawn's own signal option did.
+  if (abortSignal.aborted) {
+    const aborted: ExecFileException = Object.assign(
+      childProcessAbortError(abortSignal.reason),
+      { cmd: [rgPath, ...fullArgs].join(' ') },
+    )
+    process.nextTick(callback, aborted, '', '')
+    return
+  }
+
+  // No `signal` option on either spawn below: Node's own abort handler kills
+  // a child whose spawn failed before its pid-less handle closes, and that
+  // kill is kill(0), the caller's whole process group. stopChildOnAbort
+  // only signals a real pid.
+
   // For embedded ripgrep, use spawn with argv0 (execFile doesn't support argv0 properly)
   if (argv0) {
     const command = [rgPath, ...fullArgs].join(' ')
     const child = spawn(rgPath, fullArgs, {
       argv0,
-      signal: abortSignal,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
     })
+    stopChildOnAbort(child, abortSignal)
 
     let stdout = ''
     let stderr = ''
@@ -317,25 +334,24 @@ function ripGrepRaw(
       const error: ExecFileException = Object.assign(err, { cmd: command })
       callback(error, stdout, stderr)
     })
-
-    return child
+    return
   }
 
   // For non-embedded ripgrep, use execFile
   // Use SIGKILL as killSignal because SIGTERM may not terminate ripgrep
   // when it's blocked in uninterruptible filesystem I/O.
   // On Windows, SIGKILL throws; use default (undefined) which sends SIGTERM.
-  return execFile(
+  const child = execFile(
     rgPath,
     fullArgs,
     {
       maxBuffer: MAX_BUFFER_SIZE,
-      signal: abortSignal,
       timeout,
       killSignal: process.platform === 'win32' ? undefined : 'SIGKILL',
     },
     callback,
   )
+  stopChildOnAbort(child, abortSignal)
 }
 
 /**
@@ -347,8 +363,8 @@ function ripGrepRaw(
  * are carried across chunk boundaries.
  *
  * Callers that want to stop early (e.g. after N matches) should abort the
- * signal — spawn's signal option kills rg. No EAGAIN retry, no internal
- * timeout, stderr is ignored; interactive callers own recovery.
+ * signal, which kills rg. No EAGAIN retry, no internal timeout, stderr is
+ * ignored; interactive callers own recovery.
  */
 export async function ripGrepStream(
   args: string[],
@@ -360,12 +376,20 @@ export async function ripGrepStream(
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
 
   return new Promise<void>((resolve, reject) => {
+    // Nothing starts for an abort that already happened.
+    if (abortSignal.aborted) {
+      reject(childProcessAbortError(abortSignal.reason))
+      return
+    }
+    // No `signal` option: Node's own abort handler kills a child whose spawn
+    // failed before its pid-less handle closes, and that kill is kill(0), the
+    // caller's whole process group. stopChildOnAbort only signals a real pid.
     const child = spawn(rgPath, [...rgArgs, ...args, target], {
       argv0,
-      signal: abortSignal,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
+    stopChildOnAbort(child, abortSignal)
 
     const stripCR = (l: string) => (l.endsWith('\r') ? l.slice(0, -1) : l)
     let remainder = ''
@@ -381,7 +405,7 @@ export async function ripGrepStream(
     child.on('close', code => {
       if (settled) return
       // Abort races close — don't flush a torn tail from a killed process.
-      // Promise still settles: spawn's signal option fires 'error' with
+      // Promise still settles: the abort handler fires 'error' with
       // AbortError → reject below.
       if (abortSignal.aborted) return
       settled = true

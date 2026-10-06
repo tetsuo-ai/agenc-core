@@ -1,6 +1,6 @@
 {
   "name": "agenc-core",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "license": "MIT",
   "private": true,
   "packageManager": "npm@11.17.0",
@@ -61,6 +61,7 @@
   },
   "allowScripts": {
     "@tetsuo-ai/agenc": true,
+    "@tetsuo-ai/runtime": true,
     "better-sqlite3@12.11.1": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true,

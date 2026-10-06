@@ -4,12 +4,43 @@ import {
   type ToolResult,
 } from "../../tools/types.js";
 import { validationErrorToolResult } from "../../tools/results.js";
+import {
+  DEADLINE_RESERVE_SPAWN_REFUSAL,
+  inDeadlineReserve,
+} from "../../session/run-deadline.js";
 import type { Session } from "../../session/session.js";
+import { SESSION_BOUND_TOOL_SURFACE } from "../../tools/session-bound-surface.js";
 import type { ModelInfo, ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
+import { terminalFromAgentStatus } from "../status.js";
+import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
+import { AGENT_MESSAGE_REFERENCE_GUIDANCE, agentMessageReferenceSchema, resolveAgentMessage } from "../message-reference.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
+import {
+  allowedChildPairs,
+  createChildExecutionPlan,
+  authorizeChildExecutionPlan,
+  childModelInfo,
+  childProviderPolicy,
+  crossProviderConsentFromSettings,
+  currentChildProvider,
+  resolveChildSelection,
+} from "../cross-provider.js";
+import type { SubagentSpeed } from "../../config/schema.js";
+import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../session/cost.js";
+import type { ProviderSelection } from "../../session/provider-service.js";
+import {
+  describeSubagentLimits,
+  limitedReasoningEffort,
+  limitedServiceTier,
+  ProviderNotRequestedError,
+  subagentLimit,
+  userNamedProvider,
+} from "../subagent-limits.js";
+import { resolveBuiltInProviderSlug } from "../../llm/registry/provider-info.js";
 import {
   assertValidAgentName,
   depthOfAgentPath,
@@ -28,9 +59,10 @@ import {
 } from "../role-presentation.js";
 import {
   BackgroundTaskError,
-  backgroundTaskLifecycle,
+  backgroundTaskLifecycleForSession,
   observeAgentThreadTask,
   registerAgentThreadTask,
+  isTerminalTaskStatus,
   type BackgroundTaskSnapshot,
 } from "../../tasks/index.js";
 import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
@@ -53,39 +85,64 @@ import {
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
   "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 
-const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
-### When to delegate vs. do the subtask yourself
-- First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
-- Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
-- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
-- Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
-- For reviewer, tester, or verifier agents, first create the artifact they are supposed to inspect and do the smallest local check that it exists. Agents asked to review missing files waste the user's time and produce confusing output.
+/** Status projection belongs to the spawning Session, not the worker lifetime. */
+function ownTaskStatusProjection(session: Session): {
+  readonly active: () => boolean;
+  readonly own: (unsubscribe: () => void) => void;
+  readonly close: () => void;
+} {
+  let closed = session.isShuttingDown;
+  const subscriptions = new Set<() => void>();
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    for (const unsubscribe of subscriptions) unsubscribe();
+    subscriptions.clear();
+  };
+  const own = (unsubscribe: () => void): void => {
+    // Both Session status and task observation can replay synchronously.
+    if (closed) unsubscribe();
+    else subscriptions.add(unsubscribe);
+  };
+  if (!closed) {
+    try {
+      own(session.onBeforeDurableClose(close));
+      // A failed durable finalizer intentionally skips later finalizers.
+      // The owner shutdown status still releases projection subscriptions.
+      own(session.agentStatus.subscribe(() => {
+        if (session.isShuttingDown) close();
+      }));
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
+  return {
+    active: () => {
+      if (session.isShuttingDown) close();
+      return !closed;
+    },
+    own,
+    close,
+  };
+}
 
-### Designing delegated subtasks
-- Subtasks must be concrete, well-defined, and self-contained.
-- Delegated subtasks must materially advance the main task.
-- Do not duplicate work between the main rollout and delegated subtasks.
-- Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
-- Narrow the delegated ask to the concrete output you need next.
-- For coding tasks, prefer delegating concrete code-change runner subtasks over read-only scanner analysis when the subagent can make a bounded patch in a clear write scope.
-- When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
-- For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
-- For parallel code-edit subtasks, use \`isolation: "worktree"\`. Require the worker to commit its changes and report the commit, changed files, and verification it ran. Review and integrate one exact verified \`base_commit..integration_ref\` range at a time; never infer an integration target from a mutable worker branch or treat completion as merge approval. An intended deliverable under an ignored path must be explicitly unignored or force-added and committed.
-- The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
-- Omit \`fork_turns\` for a clean fork: the spawned agent starts fresh with ONLY your task as its context, so make the \`message\` fully self-contained (background, goal, constraints, relevant file paths/snippets) — it has NOT seen this conversation. This is the default and the cheap path for an N-agent fan-out. Use \`fork_turns: "all"\` only when the subtask genuinely needs the full parent conversation, or a positive integer string such as \`"3"\` for just the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
+function usdPerMillion(usdPer1K: number): string {
+  return `$${(usdPer1K * 1000).toFixed(2)}`;
+}
 
-### After you delegate
-- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
-- While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
-- When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
-
-### Parallel delegation patterns
-- Run multiple independent information-seeking subtasks in parallel when you have distinct questions that can be answered independently.
-- Split implementation into disjoint codebase slices and spawn multiple agents for them in parallel when the write scopes do not overlap.
-- Delegate verification only when it can run in parallel with ongoing implementation and is likely to catch a concrete risk before final integration.
-- The key is to find opportunities to spawn multiple independent subtasks in parallel within the same round, while ensuring each subtask is well-defined, self-contained, and materially advances the main task.`;
+/**
+ * An allowed pair, with its API price per million input/output tokens when
+ * the agent picks providers itself. A sign-in route (ChatGPT, X) bills the
+ * user's subscription instead, which only an asynchronous credential read
+ * can tell, so the description labels these API prices.
+ */
+function describePair(pair: { readonly provider: string; readonly model: string }, withPrice: boolean): string {
+  const name = `${pair.provider}/${pair.model}`;
+  const cost = withPrice ? resolveModelCostEntry(pair, DEFAULT_MODEL_COSTS) : null;
+  return cost === null ? name
+    : `${name} ${usdPerMillion(cost.entry.inputUsdPer1K)}/${usdPerMillion(cost.entry.outputUsdPer1K)}`;
+}
 
 function buildSpawnAgentDescription(session: Session | null): string {
   const base = `Spawns an agent to work on the specified task.
@@ -99,18 +156,44 @@ from the Environment section of this prompt — never assume "/root" or
 
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
-The new agent's canonical task name will be provided to it along with the message.`;
+The new agent's canonical task name will be provided to it along with the message.
+${AGENT_MESSAGE_REFERENCE_GUIDANCE}`;
   const cfg = session?.config?.multiAgentV2;
+  const policy = session?.services == null ? undefined : childProviderPolicy(session);
+  const pairs = policy?.cross_provider_enabled === true ? allowedChildPairs(session!) : [];
+  const consentClause = session != null && crossProviderConsentFromSettings(session)
+    ? "The user enabled them in settings, so a spawn to an allowed provider/model pair runs without asking. Once any child reports insufficient_funds, every later cross-provider spawn in this session asks the user, and a run no one can answer gets consent_unavailable."
+    : "Using one asks the user for consent at the moment of use, even when enabled.";
+  const auto = policy?.cross_provider_auto === true;
+  const pairList = pairs.map((pair) => describePair(pair, auto)).join(", ") || "none";
+  const allowedPairs = policy?.cross_provider_enabled !== true ? ""
+    : auto ? ` Allowed provider/model pairs, with API prices per 1M input/output tokens: ${pairList}.`
+    : ` Allowed provider/model pairs: ${pairList}.`;
+  const routingClause = policy?.cross_provider_enabled !== true ? ""
+    : auto
+      ? " You may pick an allowed pair yourself, such as a cheaper one for bulk work or a stronger one for hard reasoning."
+      : " Use another provider only when the user's message for this turn names it or one of its models; otherwise you get not_requested.";
+  const limitsClause = policy === undefined ? "" : ` ${describeSubagentLimits(policy)}`;
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause}${routingClause} If consent_denied, consent_unavailable or not_requested is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${allowedPairs}${limitsClause}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
-    return `${base}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
+    return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
-  let result = `${base}${SPAWN_AGENT_DELEGATION_DISCIPLINE}`;
+  // The delegation rules (when to delegate, how to design subtasks, what to
+  // do after delegating, parallel patterns) live in the static `# Subagents`
+  // system prompt section (prompts/system-prompt.ts getAgentToolSection),
+  // emitted whenever this tool is in the catalog. Keeping them out of the
+  // description takes about 4.8 KB out of the tool catalog of every request.
+  let result = `${base}\nThe delegation rules are in the Subagents section of your instructions.`;
   if (cfg?.usageHintEnabled && cfg.usageHintText) {
     result = `${result}\n${cfg.usageHintText}`;
   }
-  return result;
+  return `${result}\n${policyDescription}`;
 }
 
+// Every ReasoningEffort spelling parses here; whether a level applies is the
+// target model's registry contract, checked in validateSpawnModelOverrides.
+// `max` was missing, so an explicit max was refused for every model before
+// that check, including models whose contract lists it (Claude Opus 5.5).
 function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (
     value === "minimal" ||
@@ -118,6 +201,7 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
     value === "medium" ||
     value === "high" ||
     value === "xhigh" ||
+    value === "max" ||
     value === "none"
   ) {
     return value;
@@ -181,24 +265,59 @@ function normalizeSpawnTaskName(value: string | undefined): string | undefined {
   return normalized.length > 0 ? normalized : trimmed;
 }
 
+function requestsOtherProvider(
+  session: Session,
+  requestedProvider: string | undefined,
+  requestedModel: string | undefined,
+): boolean {
+  const activeProvider = currentChildProvider(session).provider;
+  if (requestedProvider !== undefined &&
+      resolveBuiltInProviderSlug(requestedProvider) !== activeProvider) return true;
+  if (!requestedModel?.includes("/")) return false;
+  const isLocalModel = requestedModel === session.modelInfo.slug ||
+    (session.services.modelsManager?.tryListModels() ?? []).some((candidate) =>
+      candidate.slug === requestedModel &&
+      (candidate.provider === undefined || candidate.provider === activeProvider));
+  if (isLocalModel) return false;
+  const qualified = resolveBuiltInProviderSlug(requestedModel.slice(0, requestedModel.indexOf("/")));
+  return qualified !== undefined && qualified !== activeProvider;
+}
+
 /**
  * The short, human-readable title shown for a spawned agent on the rail /
- * transcript / `/cost` (the task's `description`). Derived from the validated
+ * transcript / `/cost` (the task's `description`). The model's optional
+ * `description` label wins; otherwise it is derived from the validated
  * `task_name` (separators humanized) — NEVER the full prompt, which floods the
  * rail with the agent's entire instruction block. Falls back to the first line
- * of the prompt only when no task name is available, always length-bounded.
+ * of the prompt only when neither is available, always length-bounded.
  */
 export function shortAgentTaskTitle(
   taskName: string | undefined,
   prompt: string,
+  label?: string,
 ): string {
+  const fromLabel = label?.replace(/\s+/gu, " ").trim();
   const fromName = taskName?.trim().replace(/[_-]+/gu, " ").trim();
   const base =
-    fromName && fromName.length > 0
+    fromLabel && fromLabel.length > 0
+      ? fromLabel
+      : fromName && fromName.length > 0
       ? fromName
       : (prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ??
         prompt.trim());
   return base.length > 60 ? `${base.slice(0, 59).trimEnd()}…` : base;
+}
+
+/**
+ * Names a model uses for the standard tier. Every model serves that tier with
+ * no service tier sent, so these mean the same as leaving service_tier out. A
+ * model without tiers used to refuse them and fail the whole spawn.
+ */
+const STANDARD_SERVICE_TIER_NAMES: ReadonlySet<string> = new Set(["default", "standard", "none"]);
+
+function explicitServiceTier(value: string | undefined): string | undefined {
+  return value !== undefined && STANDARD_SERVICE_TIER_NAMES.has(value.toLowerCase())
+    ? undefined : value;
 }
 
 function serviceTierIds(modelInfo: ModelInfo): readonly string[] {
@@ -217,72 +336,108 @@ function formatSupportedServiceTiers(modelInfo: ModelInfo): string {
   return supported.length > 0 ? supported.join(", ") : "none";
 }
 
-async function validateSpawnModelOverrides(opts: {
-  readonly session: Session;
-  readonly model?: string;
+function validateCrossProviderModelOverrides(opts: {
+  readonly modelInfo: ModelInfo;
   readonly reasoningEffort?: ReasoningEffort;
-}): Promise<ToolResult | null> {
-  if (opts.model === undefined && opts.reasoningEffort === undefined) {
-    return null;
-  }
-  const modelsManager = opts.session.services.modelsManager;
-  const currentModel = opts.session.modelInfo.slug;
-  const model = opts.model ?? currentModel;
-  if (opts.model !== undefined) {
-    const listed =
-      modelsManager.tryListModels() ?? (await modelsManager.listModels());
-    if (!listed.some((candidate) => candidate.slug === opts.model)) {
-      const available = listed.map((candidate) => candidate.slug).join(", ");
-      return agentValidationError(
-        `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
-      );
-    }
-  }
+}): ToolResult | null {
   if (
     opts.reasoningEffort !== undefined &&
     opts.reasoningEffort !== "none"
   ) {
-    const modelInfo =
-      opts.model === undefined
-        ? opts.session.modelInfo
-        : await modelsManager.getModelInfo(model);
+    const modelInfo = opts.modelInfo;
     if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
       const supported = modelInfo.supportedReasoningLevels.join(", ");
       return agentValidationError(
-        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
+        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${modelInfo.slug}\`. Supported reasoning efforts: ${supported}`,
       );
     }
   }
   return null;
 }
 
-async function resolveSpawnServiceTier(opts: {
+async function validateSpawnModelOverrides(opts: {
   readonly session: Session;
   readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+}): Promise<ToolResult | null> {
+  if (opts.model === undefined && opts.reasoningEffort === undefined) return null;
+  const modelsManager = opts.session.services.modelsManager;
+  const model = opts.model ?? opts.session.modelInfo.slug;
+  if (opts.model !== undefined) {
+    const listed = modelsManager.tryListModels() ?? await modelsManager.listModels();
+    if (!listed.some((candidate) => candidate.slug === opts.model)) {
+      return agentValidationError(
+        `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${listed.map((candidate) => candidate.slug).join(", ")}`,
+      );
+    }
+  }
+  if (opts.reasoningEffort !== undefined && opts.reasoningEffort !== "none") {
+    const modelInfo = opts.model === undefined
+      ? opts.session.modelInfo : await modelsManager.getModelInfo(model);
+    if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
+      return agentValidationError(
+        `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${modelInfo.supportedReasoningLevels.join(", ")}`,
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * The service tier of a child on the parent's provider. A fork of the full
+ * conversation keeps the parent's tier (`inheritParent`), and its request
+ * cannot set one; every other child gets its provider's speed limit
+ * (`limitedServiceTier`).
+ */
+async function resolveSameProviderServiceTier(opts: {
+  readonly session: Session;
+  readonly model?: string;
+  readonly localModelInfo?: ModelInfo;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
+  readonly inheritParent: boolean;
+  readonly speedLimit?: SubagentSpeed;
 }): Promise<{ readonly serviceTier?: string } | ToolResult> {
-  const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
-  if (
-    opts.requestedServiceTier === undefined &&
-    opts.roleServiceTier === undefined &&
-    parentServiceTier === undefined
-  ) {
-    return {};
-  }
-  const model =
-    opts.model ??
-    opts.session.sessionConfiguration.collaborationMode.model ??
-    opts.session.modelInfo.slug;
-  if (!model) {
+  const parentServiceTier = opts.inheritParent ? opts.session.sessionConfiguration.serviceTier : undefined;
+  if (opts.requestedServiceTier === undefined && opts.roleServiceTier === undefined &&
+      parentServiceTier === undefined && opts.speedLimit !== "fast") return {};
+  const model = opts.model ?? opts.session.sessionConfiguration.collaborationMode.model ?? opts.session.modelInfo.slug;
+  if (!model) return agentValidationError("spawn_agent could not resolve the child model for service tier validation");
+  const modelInfo = opts.localModelInfo ?? (model === opts.session.modelInfo.slug
+    ? opts.session.modelInfo : await opts.session.services.modelsManager.getModelInfo(model));
+  if (opts.requestedServiceTier !== undefined && !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)) {
     return agentValidationError(
-      "spawn_agent could not resolve the child model for service tier validation",
+      `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
-  const modelInfo =
-    model === opts.session.modelInfo.slug
-      ? opts.session.modelInfo
-      : await opts.session.services.modelsManager.getModelInfo(model);
+  if (!opts.inheritParent) return tierResult(limitedServiceTier(modelInfo, opts.roleServiceTier ?? opts.requestedServiceTier, opts.speedLimit));
+  return parentServiceTier !== undefined && modelSupportsServiceTier(modelInfo, parentServiceTier)
+    ? { serviceTier: parentServiceTier } : {};
+}
+
+function tierResult(serviceTier: string | undefined): { readonly serviceTier?: string } {
+  return serviceTier === undefined ? {} : { serviceTier };
+}
+
+function modelSettings(
+  reasoningEffort: ReasoningEffort | undefined,
+  serviceTier: string | undefined,
+): { readonly reasoningEffort?: ReasoningEffort; readonly serviceTier?: string } {
+  return {
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...tierResult(serviceTier),
+  };
+}
+
+/** The service tier of a child on another provider: its speed limit, never the parent's tier. */
+function resolveCrossProviderServiceTier(opts: {
+  readonly modelInfo: ModelInfo;
+  readonly requestedServiceTier?: string;
+  readonly roleServiceTier?: string;
+  readonly speedLimit?: SubagentSpeed;
+}): { readonly serviceTier?: string } | ToolResult {
+  const modelInfo = opts.modelInfo;
+  const model = modelInfo.slug;
   if (
     opts.requestedServiceTier !== undefined &&
     !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)
@@ -291,29 +446,25 @@ async function resolveSpawnServiceTier(opts: {
       `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
-  for (const candidate of [
-    opts.roleServiceTier,
-    opts.requestedServiceTier,
-    parentServiceTier,
-  ]) {
-    if (
-      candidate !== undefined &&
-      modelSupportsServiceTier(modelInfo, candidate)
-    ) {
-      return { serviceTier: candidate };
-    }
+  if (opts.roleServiceTier !== undefined &&
+      !modelSupportsServiceTier(modelInfo, opts.roleServiceTier)) {
+    return agentValidationError(
+      `Role service tier \`${opts.roleServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
+    );
   }
-  return {};
+  return tierResult(limitedServiceTier(modelInfo, opts.roleServiceTier ?? opts.requestedServiceTier, opts.speedLimit));
 }
 
 function buildSpawnModelSchema(
   session: Session | null,
 ): Record<string, unknown> {
   const currentSlug = session?.modelInfo?.slug;
-  const slugs = session?.services?.modelsManager
-    ?.tryListModels()
-    ?.map((candidate) => candidate.slug)
-    .filter((slug): slug is string => typeof slug === "string" && slug.length > 0);
+  const slugs = session == null ? undefined : [
+    ...(session.services?.modelsManager?.tryListModels() ?? [])
+      .filter((candidate) => candidate.provider === undefined || candidate.provider === currentChildProvider(session).provider)
+      .map((candidate) => candidate.slug),
+    ...(session.services == null ? [] : allowedChildPairs(session).map(({ provider, model }) => `${provider}/${model}`)),
+  ];
   const inheritClause = currentSlug
     ? `omit to inherit the parent's current model (\`${currentSlug}\`)`
     : "omit to inherit the parent's current model";
@@ -324,8 +475,8 @@ function buildSpawnModelSchema(
       enum: uniqueSlugs,
       description:
         `Optional model override; ${inheritClause}. ` +
-        `If set, must be one of this provider's models: ${uniqueSlugs.join(", ")}. ` +
-        "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+        `If set, use a model from the active provider or an allowed qualified provider/model pair: ${uniqueSlugs.join(", ")}. ` +
+        "Do not use cross-provider aliases like sonnet/opus/haiku.",
     };
   }
   return {
@@ -333,7 +484,7 @@ function buildSpawnModelSchema(
     description:
       `Optional model override; ${inheritClause}. ` +
       "If set, it must be one of the active provider's model slugs. " +
-      "Do NOT use cross-provider aliases like sonnet/opus/haiku.",
+      "When cross-provider spawning is enabled, use provider/model for another provider. Do not use cross-provider aliases like sonnet/opus/haiku.",
   };
 }
 
@@ -351,8 +502,7 @@ function roleServiceTier(role: AgentRole | undefined): string | undefined {
   return role?.config.serviceTier;
 }
 
-function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknown> {
-  const session = opts.getSession();
+function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSession()): Record<string, unknown> {
   const workspaceRoles = opts.roleCatalog?.list() ?? (
     session === null
       ? listAgentRoles(opts.workspace)
@@ -370,12 +520,17 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
       message: {
         type: "string",
         description:
-          "REQUIRED. The complete task prompt for the spawned agent: the overall goal, the files it owns, local conventions it must follow, and how to verify its work. The agent sees only this message (plus any forked turns) — never assume it has context you did not include. A call without `message` is rejected.",
+          "The complete task prompt (at most 256 KiB UTF-8). Supply either message or message_ref. Prefer message_ref for existing user text, especially long tasks; never copy large context through your output tokens.",
       },
+      message_ref: { ...agentMessageReferenceSchema, description: AGENT_MESSAGE_REFERENCE_GUIDANCE },
       task_name: {
         type: "string",
         description:
           "Task name for the new agent. Lowercase letters, digits, and underscores are canonical; hyphens and spaces are accepted and normalized to underscores.",
+      },
+      description: {
+        type: "string",
+        description: "Optional short label (3-5 words) shown for the agent in the UI. Defaults to the task name.",
       },
       agent_type: {
         type: "string",
@@ -386,9 +541,18 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
             "Use only a listed role name. For implementation, edits, or tests use `runner`. For codebase reconnaissance use `scanner`. Omit this field for a general `netrunner` fork. Do not invent role names such as `code-implementer` or `reviewer` unless they are listed here.",
           ].join("\n\n"),
       },
-      model: buildSpawnModelSchema(opts.getSession()),
+      model: buildSpawnModelSchema(session),
+      provider: {
+        type: "string",
+        description: "Optional provider for the child model. Cross-provider choices require [agents] cross_provider_enabled and an allowed provider/model pair.",
+      },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
+      exact_output: { type: "boolean", description: "Set true when this task needs an exact machine-readable answer, such as verbatim JSON. Skips the child completion checklist; child results are always delivered unchanged to the parent." },
+      tool_free: {
+        type: "boolean",
+        description: "Only for a model without client-side tool calling, which requires it. A model that can call tools always keeps all of them, web search included, and this flag is ignored for it.",
+      },
       fork_turns: {
         type: "string",
         description:
@@ -401,17 +565,20 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknow
           "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from its session-scoped full agent identity and this spawn), so parallel agents that WRITE files never clobber each other or your working tree and a later logical respawn cannot inherit retained state. Requires the cwd to be inside a git repository. Unchanged newly created worktrees are removed automatically when the agent closes; worktrees resumed within the same logical spawn and worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
       },
     },
-    required: ["message", "task_name"],
+    required: ["task_name"],
     additionalProperties: false,
   };
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const preflight: NonNullable<Tool["preflight"]> = (args) => {
-    for (const key of ["message", "task_name"]) {
+    for (const key of ["task_name"]) {
       if (typeof args[key] !== "string" || args[key].trim().length === 0) {
         return { code: `missing-${key}`, message: `${key} is required` };
       }
+    }
+    if (args.message_ref === undefined && (typeof args.message !== "string" || args.message.trim().length === 0)) {
+      return { code: "missing-message", message: "message or message_ref is required" };
     }
     return null;
   };
@@ -424,27 +591,38 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (!("conversationId" in sessionOrError)) {
       return confirmedNoSpawn(sessionOrError);
     }
-    const session = sessionOrError;
+    const rootSession = sessionOrError;
+    // A run in its deadline reserve (#2503) finishes with what it has.
+    if (inDeadlineReserve(rootSession)) {
+      return spawnValidationError(DEADLINE_RESERVE_SPAWN_REFUSAL);
+    }
     const strict = strictArgs(args, {
       allowed: new Set([
         "message",
+        "message_ref",
         "task_name",
+        "description",
         "agent_type",
         "model",
+        "provider",
         "reasoning_effort",
         "service_tier",
+        "tool_free",
+        "exact_output",
         "fork_turns",
         "fork_context",
         "isolation",
       ]),
-      required: ["message", "task_name"],
+      required: ["task_name"],
     });
     if (strict) return confirmedNoSpawn(strict);
     for (const key of [
       "message",
       "task_name",
+      "description",
       "agent_type",
       "model",
+      "provider",
       "reasoning_effort",
       "service_tier",
       "fork_turns",
@@ -460,9 +638,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     ) {
       return spawnValidationError("fork_context must be a boolean");
     }
-    const prompt = stringValue(args.message);
-    if (!prompt || prompt.trim().length === 0) {
-      return spawnValidationError("message is required");
+    if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+      return spawnValidationError("exact_output must be a boolean");
+    }
+    if (args.tool_free !== undefined && typeof args.tool_free !== "boolean") {
+      return spawnValidationError("tool_free must be a boolean");
     }
     if (args.fork_context !== undefined) {
       return spawnValidationError(
@@ -471,7 +651,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     try {
       assertAgentRoleWorkspaceMatches(
-        session.roleWorkspace,
+        rootSession.roleWorkspace,
         opts.workspace.id,
       );
     } catch (error) {
@@ -479,7 +659,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const { control, registry } = opts.ensureAgentControl(session);
+    const { control, registry } = opts.ensureAgentControl(rootSession);
     try {
       control.assertRoleWorkspace(opts.workspace);
     } catch (error) {
@@ -487,14 +667,40 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const current = currentAgentContext(session, args, opts);
+    const current = currentAgentContext(rootSession, args, opts);
     if (isCurrentAgentContextError(current)) return confirmedNoSpawn(current);
+    const caller = current.threadId === rootSession.conversationId
+      ? undefined : control.getLive(current.threadId);
+    const inheritedConsentPlan = caller?.metadata?.executionPlan;
+    const session = current.threadId === rootSession.conversationId
+      ? rootSession : caller === undefined ? undefined : liveAgentSession(caller);
+    const callerIsCurrent = (): boolean => session !== undefined &&
+      (caller === undefined
+        ? session === rootSession
+        : control.getLive(current.threadId) === caller &&
+          caller.agentId === current.threadId && caller.agentPath === current.agentPath &&
+          liveAgentSession(caller) === session);
+    if (session === undefined || !callerIsCurrent()) {
+      return spawnValidationError("invalid-runtime-identity: calling agent session is not live");
+    }
+    try {
+      assertAgentRoleWorkspaceMatches(session.roleWorkspace, opts.workspace.id);
+    } catch (error) {
+      return spawnValidationError(error instanceof Error ? error.message : String(error));
+    }
+    let prompt: string;
+    try {
+      prompt = resolveAgentMessage(args, session);
+    } catch (error) {
+      return spawnValidationError(error instanceof Error ? error.message : String(error));
+    }
     const rawRole = stringValue(args.agent_type);
     // The session catalog performs exact-name lookup before public alias
     // fallback. Canonicalizing here would make an executable plugin/workspace
     // definition whose exact name is also a built-in alias disappear.
     const role = rawRole;
     const model = stringValue(args.model);
+    const requestedProvider = stringValue(args.provider);
     const rawReasoningEffort = stringValue(args.reasoning_effort);
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
@@ -504,12 +710,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const taskName = normalizeSpawnTaskName(rawTaskName);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
-    if (
-      forkMode?.kind === "full_history" &&
-      (role !== undefined || model !== undefined || reasoningEffort !== undefined)
-    ) {
+    const requestedServiceTier = explicitServiceTier(stringValue(args.service_tier));
+    if (forkMode?.kind === "full_history" &&
+        (role !== undefined || model !== undefined || reasoningEffort !== undefined ||
+          requestedServiceTier !== undefined) &&
+        !requestsOtherProvider(session, requestedProvider, model)) {
       return spawnValidationError(
-        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
+        "Full-history forked agents inherit the parent agent type, model, reasoning effort, and service tier; omit agent_type, model, reasoning_effort, and service_tier, or spawn without a full-history fork.",
       );
     }
     const rawIsolation = stringValue(args.isolation);
@@ -526,25 +733,29 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
       );
     }
-    const requestedServiceTier = stringValue(args.service_tier);
     const callId = callIdFromArgs(args, "agent");
+    const activeProvider = currentChildProvider(session).provider;
+    let reportedProvider = requestedProvider ?? activeProvider;
+    let reportedModel = model ?? session.sessionConfiguration.collaborationMode.model;
+    let reportedEffort = reasoningEffort ?? session.sessionConfiguration.collaborationMode.reasoningEffort;
 
-    emit(session, {
-      type: "collab_agent_spawn_begin",
-      payload: {
-        callId,
-        senderThreadId: current.threadId,
-        prompt,
-        taskName,
-        agentType: role,
-        model: model ?? session.sessionConfiguration.collaborationMode.model,
-        reasoningEffort:
-          reasoningEffort ??
-          session.sessionConfiguration.collaborationMode.reasoningEffort,
-      },
-    });
+    let begun = false;
+    const emitSpawnBegin = (): void => {
+      if (begun) return;
+      begun = true;
+      emit(session, {
+        type: "collab_agent_spawn_begin",
+        payload: {
+          callId, senderThreadId: current.threadId, prompt, taskName,
+          agentType: role, model: reportedModel,
+          ...(crossProviderRequested ? { provider: reportedProvider } : {}),
+          reasoningEffort: reportedEffort,
+        },
+      });
+    };
 
     const emitSpawnFailureEnd = (reason: string): void => {
+      emitSpawnBegin();
       emit(session, {
         type: "collab_agent_spawn_end",
         payload: {
@@ -553,10 +764,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           prompt,
           taskName,
           agentType: role,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          model: reportedModel,
+          ...(crossProviderRequested ? { provider: reportedProvider } : {}),
+          reasoningEffort: reportedEffort,
           status: {
             status: "errored",
             turnId: callId,
@@ -570,6 +780,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(reason);
       return spawnValidationError(reason);
     };
+    const refuseNotRequested = (refusal: ProviderNotRequestedError): ToolResult => {
+      emitSpawnFailureEnd(refusal.message);
+      return confirmedNoSpawn(json({ code: refusal.code, error: refusal.message,
+        action: "Continue this subtask yourself on the current provider. Use another provider only when the user's message names it or one of its models." }, true));
+    };
+    let crossProviderRequested = requestsOtherProvider(session, requestedProvider, model);
     let resolvedRole: AgentRole | undefined;
     try {
       if (role !== undefined) {
@@ -578,115 +794,151 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
-    let overrideError: ToolResult | null;
-    try {
-      overrideError = await validateSpawnModelOverrides({
-        session,
-        ...(model !== undefined ? { model } : {}),
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      });
-    } catch (error) {
-      return failSpawn(error instanceof Error ? error.message : String(error));
-    }
-    if (overrideError) {
-      const overrideReason =
-        typeof overrideError.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(overrideError.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : overrideError.content;
-              } catch {
-                return overrideError.content;
-              }
-            })()
-          : "spawn_agent override validation failed";
-      emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(overrideError);
-    }
     const roleConfiguredModel = roleModel(resolvedRole);
     const roleConfiguredReasoningEffort = roleReasoningEffort(resolvedRole);
     const roleConfiguredServiceTier = roleServiceTier(resolvedRole);
     const effectiveModel = roleConfiguredModel ?? model;
-    const effectiveReasoningEffort =
-      roleConfiguredReasoningEffort ?? reasoningEffort;
-    let roleOverrideError: ToolResult | null = null;
-    if (
-      roleConfiguredModel !== undefined ||
-      roleConfiguredReasoningEffort !== undefined
-    ) {
-      try {
-        roleOverrideError = await validateSpawnModelOverrides({
-          session,
-          ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-          ...(effectiveReasoningEffort !== undefined
-            ? { reasoningEffort: effectiveReasoningEffort }
-            : {}),
-        });
-      } catch (error) {
-        return failSpawn(
-          error instanceof Error ? error.message : String(error),
-        );
+    const effectiveReasoningEffort = roleConfiguredReasoningEffort ?? reasoningEffort;
+    if (!crossProviderRequested) crossProviderRequested = requestsOtherProvider(session, requestedProvider, effectiveModel);
+    const provenancedDescendant = !crossProviderRequested && inheritedConsentPlan?.crossProvider === true;
+    // A fork of the full conversation keeps the parent's model, effort and
+    // tier, so it can reuse the parent's prompt cache. Every other child runs
+    // at its provider's limits.
+    const fullHistoryFork = forkMode?.kind === "full_history";
+    // A spawn announces itself with the effort its child runs at. A local
+    // child on the parent's model knows it now, before validation: its
+    // provider's limit, or the parent's effort for a full-history fork. Any
+    // other child announces itself once its model's limit is known; a
+    // failure before that still announces itself before it ends.
+    if (!crossProviderRequested && !provenancedDescendant &&
+        (fullHistoryFork || effectiveModel === undefined ||
+          effectiveModel === currentChildProvider(session).model)) {
+      if (!fullHistoryFork) {
+        reportedEffort = limitedReasoningEffort(session.modelInfo, effectiveReasoningEffort,
+          subagentLimit(childProviderPolicy(session), activeProvider).effort) ?? reportedEffort;
       }
+      emitSpawnBegin();
     }
-    if (roleOverrideError) {
-      const overrideReason =
-        typeof roleOverrideError.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(roleOverrideError.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : roleOverrideError.content;
-              } catch {
-                return roleOverrideError.content;
-              }
-            })()
-          : "spawn_agent role override validation failed";
-      emitSpawnFailureEnd(overrideReason);
-      return confirmedNoSpawn(roleOverrideError);
-    }
-    let serviceTierResult: Awaited<
-      ReturnType<typeof resolveSpawnServiceTier>
-    >;
-    try {
-      serviceTierResult = await resolveSpawnServiceTier({
-        session,
-        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-        ...(requestedServiceTier !== undefined
-          ? { requestedServiceTier }
-          : {}),
-        ...(roleConfiguredServiceTier !== undefined
-          ? { roleServiceTier: roleConfiguredServiceTier }
-          : {}),
-      });
-    } catch (error) {
-      return failSpawn(error instanceof Error ? error.message : String(error));
+    const overrideReason = (result: ToolResult): string => {
+      try {
+        const parsed = JSON.parse(result.content) as { error?: unknown };
+        return typeof parsed.error === "string" ? parsed.error : result.content;
+      } catch {
+        return result.content;
+      }
+    };
+    let selection: Awaited<ReturnType<typeof resolveChildSelection>> | undefined;
+    let targetModelInfo: ModelInfo | undefined;
+    let selectedReasoningEffort: ReasoningEffort | undefined;
+    let serviceTierResult: { readonly serviceTier?: string } | ToolResult;
+    if (crossProviderRequested) {
+      try {
+        selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+        reportedProvider = selection.provider;
+        reportedModel = selection.model;
+        if (forkMode !== undefined) return failSpawn("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+        targetModelInfo = await childModelInfo(session, selection);
+      } catch (error) {
+        return failSpawn(error instanceof Error ? error.message : String(error));
+      }
+      if (targetModelInfo.supportsToolUse === false && args.tool_free !== true) {
+        return failSpawn(`Model \`${selection.provider}/${selection.model}\` does not support client-side tool calling. Set tool_free = true for an explicitly tool-free task.`);
+      }
+      const policy = childProviderPolicy(session);
+      // Settings are the consent, and with automatic choice off only the
+      // user picks a provider: the message they sent for this turn must name
+      // it. A managed AgenC route is checked by the provider it resolves to,
+      // once that is known (createChildExecutionPlan).
+      if (selection.provider !== "agenc" && policy.cross_provider_auto !== true &&
+          !userNamedProvider(rootSession, selection.provider, selection.model)) {
+        return refuseNotRequested(new ProviderNotRequestedError(selection.provider));
+      }
+      const effortError = validateCrossProviderModelOverrides({ modelInfo: targetModelInfo,
+        ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}) });
+      if (effortError !== null) {
+        emitSpawnFailureEnd(overrideReason(effortError));
+        return confirmedNoSpawn(effortError);
+      }
+      const limit = subagentLimit(policy, selection.provider);
+      selectedReasoningEffort = limitedReasoningEffort(targetModelInfo, effectiveReasoningEffort, limit.effort);
+      reportedEffort = selectedReasoningEffort;
+      serviceTierResult = resolveCrossProviderServiceTier({ modelInfo: targetModelInfo,
+        ...(limit.speed !== undefined ? { speedLimit: limit.speed } : {}),
+        ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
+        ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}) });
+    } else {
+      if (provenancedDescendant) {
+        try {
+          selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+          targetModelInfo = await childModelInfo(session, selection, true);
+        } catch (error) {
+          return failSpawn(error instanceof Error ? error.message : String(error));
+        }
+        const effortError = validateCrossProviderModelOverrides({ modelInfo: targetModelInfo,
+          ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}) });
+        if (effortError !== null) {
+          emitSpawnFailureEnd(overrideReason(effortError));
+          return confirmedNoSpawn(effortError);
+        }
+        // A full-history fork keeps the calling child's effort, as any
+        // full-history fork keeps its parent's.
+        selectedReasoningEffort = fullHistoryFork
+          ? session.sessionConfiguration.collaborationMode.reasoningEffort
+          : limitedReasoningEffort(targetModelInfo, effectiveReasoningEffort,
+            subagentLimit(childProviderPolicy(session), selection.provider).effort);
+        reportedEffort = selectedReasoningEffort ?? reportedEffort;
+      }
+      if (!provenancedDescendant) for (const overrides of [
+        { model, reasoningEffort },
+        ...(roleConfiguredModel !== undefined || roleConfiguredReasoningEffort !== undefined
+          ? [{ model: effectiveModel, reasoningEffort: effectiveReasoningEffort }] : []),
+      ]) {
+        let failure: ToolResult | null;
+        try { failure = await validateSpawnModelOverrides({ session, ...overrides }); }
+        catch (error) { return failSpawn(error instanceof Error ? error.message : String(error)); }
+        if (failure !== null) {
+          emitSpawnFailureEnd(overrideReason(failure));
+          return confirmedNoSpawn(failure);
+        }
+      }
+      if (!provenancedDescendant && effectiveModel !== undefined &&
+          effectiveModel !== currentChildProvider(session).model) {
+        try {
+          targetModelInfo = await childModelInfo(session, {
+            provider: activeProvider, model: effectiveModel,
+          });
+        } catch (error) {
+          return failSpawn(error instanceof Error ? error.message : String(error));
+        }
+      }
+      const limit = subagentLimit(childProviderPolicy(session), selection?.provider ?? activeProvider);
+      if (!provenancedDescendant && !fullHistoryFork) {
+        selectedReasoningEffort = limitedReasoningEffort(targetModelInfo ?? session.modelInfo,
+          effectiveReasoningEffort, limit.effort);
+        reportedEffort = selectedReasoningEffort ?? reportedEffort;
+      }
+      // A descendant with a plan announces itself once the plan is granted.
+      if (!provenancedDescendant) emitSpawnBegin();
+      try {
+        serviceTierResult = await resolveSameProviderServiceTier({ session, model: effectiveModel,
+          inheritParent: fullHistoryFork,
+          ...(limit.speed !== undefined ? { speedLimit: limit.speed } : {}),
+          ...(provenancedDescendant && targetModelInfo !== undefined
+            ? { localModelInfo: targetModelInfo } : {}),
+          ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
+          ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}) });
+      } catch (error) { return failSpawn(error instanceof Error ? error.message : String(error)); }
     }
     if ("content" in serviceTierResult) {
-      const overrideReason =
-        typeof serviceTierResult.content === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(serviceTierResult.content) as {
-                  error?: unknown;
-                };
-                return typeof parsed.error === "string"
-                  ? parsed.error
-                  : serviceTierResult.content;
-              } catch {
-                return serviceTierResult.content;
-              }
-            })()
-          : "spawn_agent service tier validation failed";
-      emitSpawnFailureEnd(overrideReason);
+      emitSpawnFailureEnd(overrideReason(serviceTierResult));
       return confirmedNoSpawn(serviceTierResult);
     }
+    // A child without a plan gets its tier decided here, standard included:
+    // null keeps it from taking its parent's or its role's tier. A
+    // full-history fork keeps its parent's.
+    const childServiceTier = fullHistoryFork
+      ? serviceTierResult.serviceTier
+      : serviceTierResult.serviceTier ?? null;
     if (!taskName) {
       return failSpawn("task_name is required");
     }
@@ -695,10 +947,72 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
+    // Model/tier validation can await. Never delegate using a child Session
+    // that closed or was replaced while those checks were pending.
+    if (!callerIsCurrent()) {
+      return failSpawn("invalid-runtime-identity: calling agent session is no longer live");
+    }
+    // Every child whose model can call tools keeps all of them, web search
+    // included, whatever the parent asked; tool_free only describes a model
+    // that cannot call client-side tools.
+    const toolFree = args.tool_free === true && targetModelInfo?.supportsToolUse === false;
     let thread: AgentThread | undefined;
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
+      let plan: Awaited<ReturnType<typeof createChildExecutionPlan>> | undefined;
+      if (selection !== undefined && targetModelInfo !== undefined) {
+        const keptServiceTier = serviceTierResult.serviceTier;
+        // A managed AgenC route resolves its destination only after its
+        // preliminary consent. The destination is what the user must have
+        // named, and it sets the limits: the route's own do not apply.
+        const managedDestinationSettings = selection.provider !== "agenc" ? undefined
+          : (destination: ProviderSelection, destinationModelInfo: ModelInfo) => {
+              const policyNow = childProviderPolicy(session);
+              if (crossProviderRequested && policyNow.cross_provider_auto !== true &&
+                  !userNamedProvider(rootSession, destination.provider, destination.model)) {
+                throw new ProviderNotRequestedError(destination.provider);
+              }
+              if (fullHistoryFork) return modelSettings(selectedReasoningEffort, keptServiceTier);
+              const limit = subagentLimit(policyNow, destination.provider);
+              return modelSettings(
+                limitedReasoningEffort(destinationModelInfo, effectiveReasoningEffort, limit.effort),
+                limitedServiceTier(destinationModelInfo, roleConfiguredServiceTier ?? requestedServiceTier, limit.speed),
+              );
+            };
+        let proposedPlan: Awaited<ReturnType<typeof createChildExecutionPlan>>;
+        try {
+          proposedPlan = await createChildExecutionPlan({
+            session, selection, modelInfo: targetModelInfo,
+            parentPath: current.agentPath, taskId: callId, taskName, taskText: prompt,
+            toolFree, forkedHistory: forkMode !== undefined,
+            ...(resolvedRole?.config.allowlist !== undefined
+              ? { toolAllowlist: resolvedRole.config.allowlist } : {}),
+            ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
+            ...(keptServiceTier !== undefined ? { serviceTier: keptServiceTier } : {}),
+            ...(inheritedConsentPlan !== undefined ? { inheritedConsentPlan } : {}),
+            ...(managedDestinationSettings !== undefined ? { managedDestinationSettings } : {}),
+          });
+        } catch (error) {
+          if (error instanceof ProviderNotRequestedError) return refuseNotRequested(error);
+          // Planning only resolves the child's route, endpoint and credentials;
+          // nothing has started yet, so a refusal here (a custom base URL, an
+          // unsupported sign-in) spawned nothing and must not hold the session
+          // for an effect review.
+          return failSpawn(error instanceof Error ? error.message : String(error));
+        }
+        const consent = await authorizeChildExecutionPlan(session, proposedPlan);
+        if (consent.kind !== "granted") {
+          emitSpawnFailureEnd(consent.reason);
+          return confirmedNoSpawn(json({ code: consent.kind, error: consent.reason,
+            action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
+        }
+        plan = consent.plan;
+        reportedProvider = plan.destination.provider;
+        reportedModel = plan.destination.model;
+        reportedEffort = plan.reasoningEffort ?? reportedEffort;
+        emitSpawnBegin();
+      }
       const worktreeSlug =
         isolation !== undefined
           ? deriveAgentWorktreeSlug({
@@ -710,9 +1024,15 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const outcome = await delegate({
         parent: session,
         parentPath: current.agentPath,
+        ...(caller !== undefined ? {
+          assertParentSessionActive: () => {
+            if (!callerIsCurrent()) throw new Error("invalid-runtime-identity: calling agent session is no longer live");
+          },
+        } : {}),
         control,
         registry,
         taskPrompt: prompt,
+        exactOutput: args.exact_output === true,
         taskId: callId,
         agentName: taskName,
         depthCap: depthOfAgentPath(current.agentPath) + 1,
@@ -721,14 +1041,17 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // Keep collab workers alive so assign_task after first completion
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
+        // Tasks are unattended even though the worker remains reusable.
+        summarizeAtStepLimit: true,
+        ...(toolFree ? { toolAllowlist: [] } : {}),
         ...(role !== undefined ? { role } : {}),
-        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-        ...(effectiveReasoningEffort !== undefined
-          ? { reasoningEffort: effectiveReasoningEffort }
-          : {}),
-        ...(serviceTierResult.serviceTier !== undefined
-          ? { serviceTier: serviceTierResult.serviceTier }
-          : {}),
+        ...(plan !== undefined ? { plan } : {}),
+        ...(plan === undefined && effectiveModel !== undefined ? { model: effectiveModel } : {}),
+        ...(plan === undefined && targetModelInfo !== undefined
+          ? { modelInfo: targetModelInfo } : {}),
+        ...(plan === undefined && (selectedReasoningEffort ?? effectiveReasoningEffort) !== undefined
+          ? { reasoningEffort: selectedReasoningEffort ?? effectiveReasoningEffort } : {}),
+        ...(plan === undefined && childServiceTier !== undefined ? { serviceTier: childServiceTier } : {}),
         ...(isolation !== undefined
           ? { isolation, worktreeSlug }
           : {}),
@@ -740,26 +1063,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       thread = outcome.thread;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      emit(session, {
-        type: "collab_agent_spawn_end",
-        payload: {
-          callId,
-          senderThreadId: current.threadId,
-          prompt,
-          taskName,
-          agentType: role,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
-          status: {
-            status: "errored",
-            turnId: callId,
-            endedAtMs: Date.now(),
-            error: reason,
-          },
-        },
-      });
+      // A plan or delegate failure can come before the announcement of a
+      // cross-provider spawn, which waits for consent: announce it first.
+      emitSpawnFailureEnd(reason);
       return {
         ...json({ error: reason }, true),
         ...(rejectedEffectDisposition !== undefined
@@ -771,48 +1077,91 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return json({ error: "spawn_agent did not return an agent thread" }, true);
     }
     const live = thread.live;
+    const projection = ownTaskStatusProjection(session);
     const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
-      if (snapshot.status === "pending") return;
-      emit(session, {
-        type: "collab_agent_status",
-        payload: {
-          callId,
-          senderThreadId: current.threadId,
-          threadId: live.agentId,
-          agentPath: live.agentPath,
-          agentNickname: live.nickname,
-          agentRole: live.role.name,
-          agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
-          prompt,
-          model: model ?? session.sessionConfiguration.collaborationMode.model,
-          reasoningEffort:
-            reasoningEffort ??
-            session.sessionConfiguration.collaborationMode.reasoningEffort,
-          status: snapshot.status,
-          // Forward the live per-agent tool-use + token counts so the fan-out
-          // rail / fleet panel show real activity for collab-spawned agents
-          // instead of a frozen `tools 0 tokens 0`. The snapshot's progress is
-          // refreshed from the live handle by registerAgentThreadTask.
-          ...(snapshot.progress?.toolUseCount !== undefined
-            ? { toolUseCount: snapshot.progress.toolUseCount }
-            : {}),
-          ...(snapshot.progress?.tokenCount !== undefined
-            ? { tokenCount: snapshot.progress.tokenCount }
-            : {}),
-          ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
-        },
+      if (snapshot.status === "pending" || !projection.active()) return;
+      try {
+        const terminal = terminalFromAgentStatus(live.status.value) ?? live.lastTaskReceipt?.terminal;
+        emit(session, {
+          type: "collab_agent_status",
+          payload: {
+            callId,
+            senderThreadId: current.threadId,
+            threadId: live.agentId,
+            ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
+            agentPath: live.agentPath,
+            agentNickname: live.nickname,
+            agentRole: live.role.name,
+            agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
+            prompt,
+            model: reportedModel,
+            ...(crossProviderRequested ? { provider: reportedProvider } : {}),
+            reasoningEffort: reportedEffort,
+            status: snapshot.status,
+            // Forward the live per-agent tool-use + token counts so the fan-out
+            // rail / fleet panel show real activity for collab-spawned agents
+            // instead of a frozen `tools 0 tokens 0`. The snapshot's progress is
+            // refreshed from the live handle by registerAgentThreadTask.
+            ...(snapshot.progress?.toolUseCount !== undefined
+              ? { toolUseCount: snapshot.progress.toolUseCount }
+              : {}),
+            ...(snapshot.progress?.tokenCount !== undefined
+              ? { tokenCount: snapshot.progress.tokenCount }
+              : {}),
+            ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+            ...(terminal !== undefined ? { terminal } : {}),
+          },
+        });
+      } finally {
+        if (isTerminalTaskStatus(snapshot.status)) projection.close();
+      }
+    };
+    // Tasks belong to the root session: agent paths such as
+    // /root/<task_name> repeat across the sessions of one daemon.
+    const lifecycle = backgroundTaskLifecycleForSession(rootSession);
+    const registerTask = (registerAgentPathAlias: boolean): void => {
+      registerAgentThreadTask(lifecycle, thread, {
+        toolUseId: callId,
+        runtimeOptions: session.services.runtimeOptions,
+        // Short title (the model's label, else task_name), not the full
+        // prompt — the rail / transcript / `/cost` show this as the agent's
+        // label. The full prompt is preserved separately on the task's
+        // `prompt` field.
+        description: shortAgentTaskTitle(taskName, prompt, stringValue(args.description)),
+        prompt,
+        registerAgentPathAlias,
       });
     };
     try {
-      registerAgentThreadTask(backgroundTaskLifecycle, thread, {
-        toolUseId: callId,
-        runtimeOptions: session.services.runtimeOptions,
-        // Short title (from task_name), not the full prompt — the rail /
-        // transcript / `/cost` show this as the agent's label. The full prompt
-        // is preserved separately on the task's `prompt` field.
-        description: shortAgentTaskTitle(taskName, prompt),
-        prompt,
-        onSnapshot: (snapshot) => {
+      try {
+        registerTask(true);
+      } catch (error) {
+        if (
+          !(error instanceof BackgroundTaskError) ||
+          error.code !== "already_exists"
+        ) {
+          throw error;
+        }
+        // The child is already running. Another registration of this same
+        // thread is fine to observe. A live task that still holds the agent
+        // path, such as a stale record of a closed agent, must not leave this
+        // child unregistered: register it by its id alone.
+        if (lifecycle.get(thread.threadId ?? live.agentId) === undefined) {
+          registerTask(false);
+        }
+      }
+    } catch (error) {
+      projection.close();
+      throw error;
+    }
+    try {
+      // The daemon may already own registration. In either case, status
+      // projection has a separate subscription scoped to this Session.
+      projection.own(observeAgentThreadTask(
+        lifecycle,
+        thread,
+        (snapshot) => {
+          if (!projection.active()) return;
           syncBackgroundTaskSnapshotToAppState(
             (
               session as unknown as {
@@ -825,47 +1174,36 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           );
           emitTaskStatus(snapshot);
         },
+      ));
+      emit(session, {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId,
+          senderThreadId: current.threadId,
+          newThreadId: live.agentId,
+          ...(live.status.timing !== undefined ? { timing: live.status.timing } : {}),
+          newAgentPath: live.agentPath,
+          newAgentNickname: live.nickname,
+          newAgentRole: live.role.name,
+          newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
+          prompt,
+          model: reportedModel,
+          ...(crossProviderRequested ? { provider: reportedProvider } : {}),
+          reasoningEffort: reportedEffort,
+          status: live.status.value,
+        },
       });
     } catch (error) {
-      if (
-        !(error instanceof BackgroundTaskError) ||
-        error.code !== "already_exists"
-      ) {
-        throw error;
-      }
-      /*
-       * The daemon pre-registers agent threads, so this registration — and
-       * with it the onSnapshot hook that carries `collab_agent_status` to
-       * attached UIs — was silently skipped: clients saw the spawn begin
-       * and end, then nothing. No status, no live tool/token counts. Wire
-       * the same telemetry straight to the live handle instead.
-       */
-      observeAgentThreadTask(
-        backgroundTaskLifecycle,
-        thread,
-        emitTaskStatus,
-      );
+      projection.close();
+      throw error;
     }
-    emit(session, {
-      type: "collab_agent_spawn_end",
-      payload: {
-        callId,
-        senderThreadId: current.threadId,
-        newThreadId: live.agentId,
-        newAgentPath: live.agentPath,
-        newAgentNickname: live.nickname,
-        newAgentRole: live.role.name,
-        newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
-        prompt,
-        model: model ?? session.sessionConfiguration.collaborationMode.model,
-        reasoningEffort:
-          reasoningEffort ??
-          session.sessionConfiguration.collaborationMode.reasoningEffort,
-        status: live.status.value,
-      },
-    });
     return json({
       task_name: live.agentPath,
+      ...(crossProviderRequested ? {
+        provider: reportedProvider,
+        model: reportedModel,
+        ...(reportedEffort !== undefined ? { reasoning_effort: reportedEffort } : {}),
+      } : {}),
       ...(!hideSpawnAgentMetadata(session)
         ? { nickname: live.nickname ?? null }
         : {}),
@@ -880,8 +1218,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   };
 
   return {
+    [SESSION_BOUND_TOOL_SURFACE]: (session: Session | null) => ({
+      description: buildSpawnAgentDescription(session),
+      inputSchema: buildSpawnAgentSchema(opts, session),
+    }),
     name: "spawn_agent",
-    description: buildSpawnAgentDescription(opts.getSession()),
+    // Read per request: the tool is built before its session exists, and the
+    // allowed cross-provider pairs follow the live config.
+    get description(): string {
+      return buildSpawnAgentDescription(opts.getSession());
+    },
     metadata: toolMetadata("agent", {
       mutating: true,
       // Spawning mutates collaboration/runtime state, while any child file

@@ -1,7 +1,33 @@
-import { realpathSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createHermeticRunRoot } from "./helpers/hermetic-env.mjs";
+
+const HERMETIC_ENV_URL = new URL("./helpers/hermetic-env.mjs", import.meta.url)
+  .href;
+
+// Runs the worker setup the way a plain `vitest` run does: no prelauncher run
+// root, so the home and its TMPDIR come from the ambient temp directory. It
+// needs a fresh process because a worker mints its home only once.
+const PLAIN_VITEST_SETUP_PROBE = `
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+  getOrCreateHermeticTestHome,
+  sanitizeHermeticEnv,
+} from ${JSON.stringify(HERMETIC_ENV_URL)};
+const home = getOrCreateHermeticTestHome();
+sanitizeHermeticEnv(process.env, home);
+const temp = tmpdir();
+console.log(JSON.stringify({
+  home,
+  homeRealpath: realpathSync(home),
+  temp,
+  tempRealpath: realpathSync(temp),
+}));
+`;
 
 // The hermetic run root is the base of every sandboxed home, workspace and
 // socket path a test sees. Two properties keep the suite honest on every
@@ -49,6 +75,52 @@ describe("createHermeticRunRoot", () => {
       try {
         // 104 bytes minus room for "<home>/.agenc/daemon.sock"-shaped suffixes.
         expect(Buffer.byteLength(root)).toBeLessThan(60);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+// The macOS default TMPDIR (`/var/folders/...`) is a symlinked path, so a
+// plain `vitest` run used to hand every test a non-canonical home and TMPDIR.
+// A symlinked temp directory reproduces that on any POSIX platform.
+describe("getOrCreateHermeticTestHome without the prelauncher", () => {
+  it.runIf(process.platform !== "win32")(
+    "roots the home and TMPDIR at the real path of a symlinked temp directory",
+    () => {
+      const root = createHermeticRunRoot("agv-test-");
+      try {
+        const realTemp = join(root, "real-temp");
+        const linkedTemp = join(root, "linked-temp");
+        mkdirSync(realTemp);
+        symlinkSync(realTemp, linkedTemp, "dir");
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          TEMP: linkedTemp,
+          TMP: linkedTemp,
+          TMPDIR: linkedTemp,
+        };
+        delete env.AGENC_TEST_HERMETIC_RUN_ROOT;
+
+        const result = spawnSync(
+          process.execPath,
+          ["--input-type=module", "--eval", PLAIN_VITEST_SETUP_PROBE],
+          { encoding: "utf8", env, timeout: 30_000 },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        const lastLine = result.stdout.trim().split("\n").at(-1) ?? "";
+        const paths = JSON.parse(lastLine) as {
+          home: string;
+          homeRealpath: string;
+          temp: string;
+          tempRealpath: string;
+        };
+        expect(paths.home).toBe(paths.homeRealpath);
+        expect(paths.temp).toBe(paths.tempRealpath);
+        expect(paths.home.startsWith(`${realTemp}${sep}`)).toBe(true);
+        expect(paths.temp).toBe(join(paths.home, "tmp"));
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

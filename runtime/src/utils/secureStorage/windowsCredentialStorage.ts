@@ -1,3 +1,4 @@
+import { statSync } from 'fs'
 import { join } from 'path'
 import { jsonStringify } from '../slowOperations.js'
 import {
@@ -75,6 +76,43 @@ function getFailureWarning(
   return fallback
 }
 
+interface CachedWindowsRead {
+  /** Identity of the DPAPI file the cached data was decrypted from. */
+  readonly recordKey: string
+  readonly data: SecureStorageData | null
+}
+
+/**
+ * Process-local read cache keyed by the DPAPI file identity (inode, size and
+ * timestamps). Every decrypt spawns PowerShell, which costs about a second on
+ * Windows; provider discovery alone reads the credential record once per
+ * provider, so an uncached store turned one status command into thirty
+ * synchronous PowerShell launches. A record written by any process changes
+ * the file identity and misses the cache, and mutations through this module
+ * drop it explicitly.
+ */
+const windowsReadCache = new Map<string, CachedWindowsRead>()
+
+/** Test hook: forget every cached DPAPI read. */
+export function clearWindowsCredentialReadCache(): void {
+  windowsReadCache.clear()
+}
+
+const ABSENT_RECORD_KEY = 'absent'
+
+function windowsRecordKey(storageFilePath: string): string | undefined {
+  try {
+    const stats = statSync(storageFilePath, { bigint: true })
+    return `${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return ABSENT_RECORD_KEY
+    }
+    // Unknown file state (permissions, transient I/O): never cache it.
+    return undefined
+  }
+}
+
 export function createWindowsCredentialStorage(
   home: HomeContext,
   runCommand: SecureStorageCommandRunner = runSecureStorageCommand,
@@ -109,60 +147,85 @@ export function createWindowsCredentialStorage(
     return powerShellExecutable
   }
 
+  const cacheKey = `${storageFilePath}\u0000${entropy}`
+
+  const readFresh = (): SecureStorageData | null => {
+    const recordKey = windowsRecordKey(storageFilePath)
+    const data = decryptRecord()
+    // Cache only when the file identity did not change while PowerShell ran,
+    // so a concurrent writer can never leave stale data behind a new key.
+    if (recordKey !== undefined && windowsRecordKey(storageFilePath) === recordKey) {
+      windowsReadCache.set(cacheKey, { recordKey, data })
+    } else {
+      windowsReadCache.delete(cacheKey)
+    }
+    return data
+  }
+
+  function decryptRecord(): SecureStorageData | null {
+    const filePath = escapePowerShellSingleQuoted(storageFilePath)
+    const escapedEntropy = escapePowerShellSingleQuoted(entropy)
+    const script = `
+    $ErrorActionPreference = 'Stop'
+    try {
+      $path = '${filePath}'
+      if (!(Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop)) {
+        exit 2
+      }
+
+      Add-Type -AssemblyName System.Security
+
+      $protectedBase64 = [System.IO.File]::ReadAllText(
+        $path,
+        [System.Text.Encoding]::UTF8
+      ).Trim()
+      if (-not $protectedBase64) {
+        throw 'Credential record is empty'
+      }
+
+      $protectedBytes = [Convert]::FromBase64String($protectedBase64)
+      $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${escapedEntropy}')
+      $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+        $protectedBytes,
+        $entropyBytes,
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+      )
+      [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($bytes))
+    } catch {
+      exit 1
+    }
+    `
+
+    const result = runPowerShell(runCommand, getPowerShellExecutable, script)
+    if (result === null) {
+      throw new Error('Windows secure storage could not start PowerShell')
+    }
+    if (result.exitCode === 2 && !result.stderr?.trim()) return null
+    if (result.exitCode === 0 && result.stdout?.trim()) {
+      return decodeSecureStorageData(
+        result.stdout,
+        'Windows secure storage',
+      )
+    }
+    throw new Error(
+      getFailureWarning(
+        result,
+        'Windows secure storage could not decrypt the credential record',
+      ),
+    )
+  }
+
   return {
     name: 'windows-dpapi',
     read(): SecureStorageData | null {
-      const filePath = escapePowerShellSingleQuoted(storageFilePath)
-      const escapedEntropy = escapePowerShellSingleQuoted(entropy)
-      const script = `
-      $ErrorActionPreference = 'Stop'
-      try {
-        $path = '${filePath}'
-        if (!(Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop)) {
-          exit 2
-        }
-
-        Add-Type -AssemblyName System.Security
-
-        $protectedBase64 = [System.IO.File]::ReadAllText(
-          $path,
-          [System.Text.Encoding]::UTF8
-        ).Trim()
-        if (-not $protectedBase64) {
-          throw 'Credential record is empty'
-        }
-
-        $protectedBytes = [Convert]::FromBase64String($protectedBase64)
-        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes('${escapedEntropy}')
-        $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-          $protectedBytes,
-          $entropyBytes,
-          [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($bytes))
-      } catch {
-        exit 1
+      const recordKey = windowsRecordKey(storageFilePath)
+      const cached = windowsReadCache.get(cacheKey)
+      if (recordKey !== undefined && cached?.recordKey === recordKey) {
+        return cached.data
       }
-    `
-
-      const result = runPowerShell(runCommand, getPowerShellExecutable, script)
-      if (result === null) {
-        throw new Error('Windows secure storage could not start PowerShell')
-      }
-      if (result.exitCode === 2 && !result.stderr?.trim()) return null
-      if (result.exitCode === 0 && result.stdout?.trim()) {
-        return decodeSecureStorageData(
-          result.stdout,
-          'Windows secure storage',
-        )
-      }
-      throw new Error(
-        getFailureWarning(
-          result,
-          'Windows secure storage could not decrypt the credential record',
-        ),
-      )
+      return readFresh()
     },
+    readFresh,
     async readAsync(): Promise<SecureStorageData | null> {
       return this.read()
     },
@@ -231,6 +294,7 @@ export function createWindowsCredentialStorage(
         script,
         { input: payload },
       )
+      windowsReadCache.delete(cacheKey)
       if (result?.exitCode === 0) {
         return { success: true }
       }
@@ -261,6 +325,7 @@ export function createWindowsCredentialStorage(
         getPowerShellExecutable,
         removeDpapiScript,
       )
+      windowsReadCache.delete(cacheKey)
       return (removeDpapiResult?.exitCode ?? 1) === 0
     },
   }

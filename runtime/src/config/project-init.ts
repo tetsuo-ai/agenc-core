@@ -106,7 +106,7 @@ export interface InitializeAgenCProjectOptions {
   readonly config?: Partial<AgenCConfig>;
 }
 
-interface PackageJsonShape {
+export interface PackageJsonShape {
   readonly name?: unknown;
   readonly type?: unknown;
   readonly packageManager?: unknown;
@@ -338,7 +338,7 @@ async function readTopLevelDirs(cwd: string): Promise<string[]> {
   }
 }
 
-function parsePackageJson(content: string | undefined): PackageJsonShape | null {
+export function parsePackageJson(content: string | undefined): PackageJsonShape | null {
   if (content === undefined) return null;
   try {
     const parsed = JSON.parse(content) as PackageJsonShape;
@@ -348,7 +348,7 @@ function parsePackageJson(content: string | undefined): PackageJsonShape | null 
   }
 }
 
-function detectPackageManager(
+export function detectPackageManager(
   files: ReadonlyMap<string, string>,
   pkg: PackageJsonShape | null,
 ): string {

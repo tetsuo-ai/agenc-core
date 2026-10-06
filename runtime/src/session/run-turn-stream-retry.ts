@@ -9,13 +9,18 @@
 import {
   classifyLLMFailure,
   LLMAuthenticationError,
+  LLMFundsError,
   LLMContextWindowExceededError,
   LLMMessageValidationError,
   LLMRateLimitError,
+  LLMRequestRebuiltError,
   LLMServerError,
+  LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMTimeoutError,
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
+import { StreamProgressError } from "../llm/stream-progress.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import { isPartialProviderResponseError } from "../recovery/api-errors.js";
 import {
@@ -28,6 +33,13 @@ import type { TurnState } from "./turn-state.js";
 
 function streamRetryErrorCause(error: unknown): unknown {
   return error instanceof StreamModelError ? error.cause : error;
+}
+
+/** Controlled runtime stops, never provider prose containing these words. */
+export function isStreamProgressStop(error: unknown): boolean {
+  const cause = streamRetryErrorCause(error);
+  return cause instanceof StreamProgressError ||
+    (cause instanceof Error && cause.message.startsWith("stream_idle:"));
 }
 
 function streamRetryErrorStatus(error: unknown): number | undefined {
@@ -57,6 +69,9 @@ const TRANSIENT_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 function streamRetryFailureLabel(cause: unknown): string {
+  if (cause instanceof StreamProgressError) {
+    return cause.reason === "stream_loop" ? "repetitive reasoning" : "no model progress";
+  }
   if (cause instanceof Error && cause.message.startsWith("stream_idle")) {
     return "stream idle";
   }
@@ -282,11 +297,14 @@ export function isRetryableStreamError(error: unknown): boolean {
   if (!(error instanceof StreamModelError)) return false;
   if (isPartialProviderResponseError(error)) return false;
   const cause = error.cause;
+  if (cause instanceof LLMStreamRetryDeniedError) return false;
+  if (cause instanceof StreamProgressError) return true;
 
   // Explicitly non-retryable typed causes — fail closed before any
   // generic branch so a provider message containing "504" can't
   // accidentally retry a context-window or auth failure.
   if (cause instanceof LLMContextWindowExceededError) return false;
+  if (cause instanceof LLMFundsError) return false;
   if (cause instanceof LLMAuthenticationError) return false;
   if (cause instanceof LLMMessageValidationError) return false;
 
@@ -294,6 +312,12 @@ export function isRetryableStreamError(error: unknown): boolean {
   if (cause instanceof LLMServerError) return true;
   if (cause instanceof LLMTimeoutError) return true;
   if (cause instanceof LLMRateLimitError) return true;
+  // A stream that ended before its terminal event: nothing definitive came
+  // back, so the request is re-sent through the same ladder as stream_idle.
+  if (cause instanceof LLMStreamTruncatedError) return true;
+  // The adapter already rebuilt its plan (xAI store refusal under an admitted
+  // single wire attempt): nothing was sampled, the next attempt carries it.
+  if (cause instanceof LLMRequestRebuiltError) return true;
 
   // Transient node networking via error `code`.
   const code = (cause as { code?: unknown } | null | undefined)?.code;

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +14,14 @@ import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
 import {
   STATE_DATABASE_FILENAME,
   openStateDatabases,
+  openStateDatabasePaths,
+  resolveStateDatabasePaths,
 } from "../../src/state/sqlite-driver.js";
+
+vi.mock("../../src/state/sqlite-driver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/state/sqlite-driver.js")>();
+  return { ...actual, openStateDatabasePaths: vi.fn(actual.openStateDatabasePaths) };
+});
 
 const LIMITS = {
   global: 1,
@@ -155,6 +162,106 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
     );
   });
 }
+
+describe("state-only admission storage", () => {
+  it("keeps FULL state recovery/admission without opening independent logs", async () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    const value = kernel("state-only-admission");
+    const client = bind(value, "state-only-run");
+    const opened = vi.mocked(openStateDatabasePaths).mock.results
+      .filter((result) => result.type === "return")
+      .map((result) => result.value)
+      .find((driver) => driver.stateDbPath === paths.stateDbPath);
+    expect(opened).toBeDefined();
+    expect(opened!.state.pragma("synchronous", { simple: true })).toBe(2);
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, { inputTokens: 1, outputTokens: 1, costUsd: 0 });
+    client.release?.();
+    value.close();
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+
+    // A corrupt, unused logs file cannot hide state or change its authority.
+    writeFileSync(paths.logsDbPath, "invalid unused logs");
+    const restarted = kernel("state-only-restart");
+    expect(restarted.initializeExistingState().failures).toEqual([]);
+    expect(restarted.sumReconciledUsageByRunId("state-only-run").totalTokens).toBe(2);
+  });
+
+  it("still refuses a corrupt state database before binding a client", () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    mkdirSync(paths.projectDir, { recursive: true });
+    writeFileSync(paths.stateDbPath, "invalid state");
+    expect(() => bind(kernel("invalid-state"), "refused-run")).toThrow();
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+  });
+});
+
+describe("idle admission bindings", () => {
+  it("opens only the child's bound project when 20 idle projects are known", () => {
+    const value = new ExecutionAdmissionKernel({ agencHome: home });
+    kernels.add(value);
+    for (let index = 0; index < 20; index += 1) {
+      const project = join(home, `idle-project-${index}`);
+      mkdirSync(join(project, ".git"), { recursive: true });
+      value.bindClient({
+        cwd: project,
+        scope: { runId: `idle-${index}`, sessionId: `idle-${index}`, autonomous: false },
+      }).release?.();
+    }
+    const parent = value.bindClient({
+      cwd,
+      scope: { runId: "bound-parent", sessionId: "bound-parent", autonomous: false },
+    });
+    const child = parent.forSession({
+      runId: "bound-child", sessionId: "bound-child", parentRunId: "bound-parent",
+    });
+    child.release?.();
+    parent.release?.();
+    const opens = vi.mocked(openStateDatabasePaths);
+    opens.mockClear();
+    expect(value.sumReconciledUsageByRunId("bound-child").totalTokens).toBe(0);
+    expect(opens).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the journal cursor when cancellation reopens an idle project", async () => {
+    const value = kernel("cursor-after-idle-close");
+    const client = bind(value, "cursor-run");
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 1, outputTokens: 1, costUsd: 0,
+    });
+    client.release?.();
+    const reads = vi.spyOn(ExecutionAdmissionRepository.prototype, "listJournal");
+    try {
+      value.cancelAdmissions("cursor-run", "test_cancel");
+      expect(reads.mock.calls.some(([options]) => (options?.afterSequence ?? 0) > 0)).toBe(true);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+
+  it("keeps recovered journal position after restart recovery closes the project", async () => {
+    const before = kernel("cursor-before-restart");
+    const client = bind(before, "recovered-cursor-run");
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 1, outputTokens: 1, costUsd: 0,
+    });
+    client.release?.();
+    before.close();
+
+    const after = kernel("cursor-after-restart");
+    expect(after.initializeExistingState().failures).toEqual([]);
+    const reads = vi.spyOn(ExecutionAdmissionRepository.prototype, "listJournal");
+    try {
+      after.cancelAdmissions("recovered-cursor-run", "recovery_cancel");
+      expect(reads.mock.calls.some(([options]) => (options?.afterSequence ?? 0) > 0)).toBe(true);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+});
 
 describe("ExecutionAdmissionKernel recovery", () => {
   it("stops admission work when canonical journal projection fails and retries the same evidence", async () => {
@@ -722,6 +829,25 @@ describe("ExecutionAdmissionKernel recovery", () => {
 });
 
 describe("ExecutionAdmissionKernel active cancellation", () => {
+  it("keeps an uncapped run and its children usable after an underestimated response", async () => {
+    const value = kernel("uncapped-estimate");
+    const client = bind(value, "uncapped-root");
+    const lease = await client.acquire({
+      stepId: "web-extraction", kind: "model_turn", model: "deepseek-flash", provider: "deepseek",
+      maxInputTokens: 12450, maxOutputTokens: 2000, maxCostUsd: 0.006135,
+    });
+    client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    expect(client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 13735, outputTokens: 965, costUsd: 0.0052785,
+    })).toMatchObject({ outcome: "reconciled" });
+    expect(lease.signal.aborted).toBe(false);
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+    const child = client.forSession({ runId: "uncapped-child", sessionId: "uncapped-child" });
+    const next = await acquire(child, "continue");
+    expect(next.signal.aborted).toBe(false);
+    expect(client.getUsageSummary?.()).toMatchObject({ totalTokens: 14700, costUsd: 0.0052785 });
+  });
+
   it("enforces a direct scope hard cap across sibling reservations", async () => {
     const siblingLimits = {
       global: 2,
@@ -887,7 +1013,11 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     }
 
     const value = kernel("atomic-provider-overrun");
-    const client = bind(value, "atomic_overrun_root");
+    const client = value.bindClient({
+      cwd,
+      scope: { runId: "atomic_overrun_root", sessionId: "atomic_overrun_root", autonomous: false },
+      budget: { runMaxTokens: 100 },
+    });
     const lease = await acquire(client);
     client.markDispatched(lease.reservation.reservationId, {
       boundary: "provider_wire",
@@ -1549,5 +1679,23 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
         .filter((event) => event.event === "allowed")
         .map((event) => event.stepId),
     ).toEqual(["month-one", "month-two"]);
+  });
+});
+
+
+it("exposes durable admission dimensions for Goal without relabeling other callers", async () => {
+  const value = kernel("goal-stop-dimensions");
+  const parent = value.bindClient({ cwd, scope: { runId: "goal", sessionId: "goal", autonomous: true },
+    budget: { runMaxTokens: 1, runMaxCostUsd: 1 } });
+  const child = parent.forSession({ runId: "goal-child", sessionId: "goal-child" });
+  await expect(acquire(child)).rejects.toMatchObject({ reason: "budget_exceeded" });
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", reason: "budget_exceeded", details: { budgetDimension: "tokens" },
+  });
+  expect(value.getLatestJournalEventByRunId("absent")).toBeUndefined();
+  child.release?.();
+  parent.release?.();
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", details: { budgetDimension: "tokens" },
   });
 });

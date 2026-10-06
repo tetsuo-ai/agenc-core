@@ -1,4 +1,7 @@
+import { largeGrokReplay, unpaddedGrokReplays } from "../../helpers/grok-encrypted-replay.js";
+import { llmMessageToDurableResponseItem, responseItemToLlmMessage } from "../../../src/session/message-history-conversion.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { crc32 } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -22,6 +25,16 @@ import {
 } from "../../../src/services/compact/summary-v1.js";
 import { compactConversationTransactionally } from "../../../src/services/compact/transaction.js";
 import {
+  CompactionTransactionFailureWithDetails,
+  compactionFailureDetails,
+} from "../../../src/services/compact/failure-details.js";
+import {
+  MAX_TOKEN_ACCOUNTING_REQUEST_BYTES,
+  tokenAccountingService,
+} from "../../../src/llm/token-accounting.js";
+import { DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES } from "../../../src/session/query-image-budget.js";
+import {
+  CompactionTransactionError,
   MAX_COMPACTION_INTERMEDIATE_TOKENS,
   MAX_COMPACTION_OUTPUT_NODES_TOTAL,
   MAX_COMPACTION_OUTPUT_UTF8_BYTES_TOTAL,
@@ -44,6 +57,7 @@ import { getCompactPrompt } from "../../../src/services/compact/prompt.js";
 import { RolloutStore } from "../../../src/session/rollout-store.js";
 import { reduceAll } from "../../../src/session/event-log-reducer.js";
 import { readCompactionRolloutPayload } from "../../../src/session/compaction-event-reader.js";
+import { createToolResultIntegrity } from "../../../src/session/tool-result-integrity.js";
 import type { RolloutItem } from "../../../src/session/rollout-item.js";
 import type { Session } from "../../../src/session/session.js";
 import type {
@@ -88,6 +102,48 @@ type TransactionRunOverrides = Pick<
   readonly messagesToKeep?: readonly RuntimeMessage[];
   readonly messagesToSummarize?: readonly RuntimeMessage[];
 };
+
+function expectReplaySurvivedCompaction(
+  store: RolloutStore,
+  result: Awaited<ReturnType<typeof runRealTransaction>>,
+  expected: {
+    readonly version: 2;
+    readonly content: string | undefined;
+    readonly provider: string;
+    readonly model: string;
+  },
+): void {
+  expect(
+    result.transaction?.committed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+
+  const committedRow = store.readAll().find(
+    (item) => item.type === "compaction_committed",
+  );
+  expect(committedRow?.type).toBe("compaction_committed");
+  if (committedRow?.type !== "compaction_committed") {
+    throw new Error("missing compaction commit");
+  }
+  const parsed = readCompactionRolloutPayload(
+    committedRow.type,
+    committedRow.payload,
+  );
+  if (!("replacement_history" in parsed)) {
+    throw new Error("missing replacement history in compaction payload");
+  }
+  expect(
+    parsed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+  expect(
+    reduceAll(store.readAll()).state.history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+}
 
 describe("transactional compaction strict contracts", () => {
   it("never authorizes instructions embedded in transcript context", () => {
@@ -276,6 +332,31 @@ describe("transactional compaction strict contracts", () => {
         ...persisted[0]!,
         providerReasoning,
       }]))).not.toBe(canonical);
+    }
+  });
+
+  it("distinguishes known-empty GLM reasoning from missing state in compaction digests", () => {
+    const runtime: RuntimeMessage = {
+      role: "assistant", content: "",
+      toolCalls: [{ id: "empty-glm", name: "FileRead", arguments: "{}" }],
+      providerReasoningContent: "",
+      providerReasoningProvenance: { provider: "ZAI-CODING-PLAN", model: "GLM-5.3-Flash" },
+    };
+    const persisted = llmMessageToDurableResponseItem(runtime as LLMMessage);
+    expect(persisted.providerReasoning).toEqual({
+      version: 2, content: "", provider: "zai-coding-plan", model: "glm-5.3-flash",
+    });
+    const canonical = canonicalizeJson(canonicalCompactionSourceMessages([runtime]));
+    expect(canonicalizeJson(canonicalCompactionProjectionMessages([persisted])))
+      .toBe(canonical);
+    for (const change of [
+      { providerReasoningContent: undefined },
+      { providerReasoningContent: "nonempty" },
+      { providerReasoningProvenance: { provider: "zai", model: "glm-5.3-flash" } },
+      { providerReasoningProvenance: { provider: "zai-coding-plan", model: "glm-5.3" } },
+    ]) {
+      expect(canonicalizeJson(canonicalCompactionSourceMessages([{ ...runtime, ...change }])))
+        .not.toBe(canonical);
     }
   });
 });
@@ -708,36 +789,108 @@ describe("transactional compaction production path", () => {
         provider: "qwen",
         model: "qwen3.8-max",
       } as const;
-      expect(
-        result.transaction?.committed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
+      expectReplaySurvivedCompaction(store, result, expected);
+    });
+  });
 
-      const committedRow = store.readAll().find(
-        (item) => item.type === "compaction_committed",
-      );
-      expect(committedRow?.type).toBe("compaction_committed");
-      if (committedRow?.type !== "compaction_committed") {
-        throw new Error("missing compaction commit");
+  it("preserves known-empty GLM reasoning through a real compaction commit and disk replay", async () => {
+    const sessionId = "transaction-empty-glm-replay";
+    await withTransactionalStore(sessionId, async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const origin = { provider: "zai-coding-plan", model: "glm-5.3-flash" };
+      const kept: LLMMessage[] = [
+        { role: "user", content: "Read the current file." },
+        { role: "assistant", content: "", providerReasoningContent: "",
+          providerReasoningProvenance: origin,
+          toolCalls: [{ id: "call-empty", name: "FileRead", arguments: "{}" }] },
+        { role: "tool", content: "file contents", toolCallId: "call-empty", toolName: "FileRead",
+          runtimeOnly: { toolResultIntegrity: createToolResultIntegrity({
+            runId: sessionId, toolCallId: "call-empty", content: "file contents",
+          }) } },
+      ];
+      for (const message of kept) {
+        store.appendRollout({ type: "response_item", payload: llmMessageToDurableResponseItem(message) },
+          { durable: true });
       }
-      const parsed = readCompactionRolloutPayload(
-        committedRow.type,
-        committedRow.payload,
+      const complete = [...source, ...kept as RuntimeMessage[]];
+      const result = await runRealTransaction(store, complete, compactionProvider(), {
+        messagesToKeep: kept as RuntimeMessage[], messagesToSummarize: source,
+      });
+      expectReplaySurvivedCompaction(store, result, { version: 2, content: "", ...origin });
+      const restored = reduceAll(store.readAll()).state.history.map(responseItemToLlmMessage);
+      expect(restored.find(message => message.providerReasoningContent !== undefined))
+        .toMatchObject({ role: "assistant", providerReasoningContent: "", providerReasoningProvenance: origin,
+          toolCalls: kept[1]!.toolCalls });
+    });
+  });
+
+  it("preserves 100KB encrypted reasoning through compaction replacement and disk replay", async () => {
+    await withTransactionalStore("transaction-grok-encrypted-replay", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const reasoningMessage: RuntimeMessage = {
+        role: "assistant",
+        content: "",
+        ...largeGrokReplay,
+      };
+      store.appendRollout({
+        type: "response_item",
+        payload: llmMessageToDurableResponseItem(reasoningMessage as LLMMessage),
+      }, { durable: true });
+      source.push(reasoningMessage);
+
+      const result = await runRealTransaction(
+        store,
+        source,
+        compactionProvider(),
+        {
+          messagesToKeep: [reasoningMessage],
+          messagesToSummarize: source.slice(0, -1),
+        },
       );
-      if (!("replacement_history" in parsed)) {
-        throw new Error("missing replacement history in compaction payload");
-      }
-      expect(
-        parsed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-      expect(
-        reduceAll(store.readAll()).state.history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
+      const expected = {
+        version: 2,
+        content: largeGrokReplay.providerReasoningContent,
+        provider: "grok",
+        model: "grok-4.7",
+      } as const;
+      expectReplaySurvivedCompaction(store, result, expected);
+      const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
+      expect(restored.some((message) => message.providerReasoningContent === largeGrokReplay.providerReasoningContent)).toBe(true);
+    });
+  });
+
+  it.each(unpaddedGrokReplays)("preserves unpadded $length-character reasoning through compaction replacement and disk replay", async ({ replay }) => {
+    await withTransactionalStore("transaction-grok-encrypted-replay", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const reasoningMessage: RuntimeMessage = {
+        role: "assistant",
+        content: "",
+        ...replay,
+      };
+      store.appendRollout({
+        type: "response_item",
+        payload: llmMessageToDurableResponseItem(reasoningMessage as LLMMessage),
+      }, { durable: true });
+      source.push(reasoningMessage);
+
+      const result = await runRealTransaction(
+        store,
+        source,
+        compactionProvider(),
+        {
+          messagesToKeep: [reasoningMessage],
+          messagesToSummarize: source.slice(0, -1),
+        },
+      );
+      const expected = {
+        version: 2,
+        content: replay.providerReasoningContent,
+        provider: "grok",
+        model: "grok-4.7",
+      } as const;
+      expectReplaySurvivedCompaction(store, result, expected);
+      const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
+      expect(restored.some((message) => message.providerReasoningContent === replay.providerReasoningContent)).toBe(true);
     });
   });
 
@@ -802,6 +955,83 @@ describe("transactional compaction production path", () => {
           { type: "compaction_intent" },
           { type: "compaction_failed", payload: { reason: "output_limit_exceeded" } },
         ]);
+    });
+  });
+
+  /**
+   * Terminal-Bench `layout-config-recreation2__RtxCUzj` died on "durable
+   * compaction commit failed" with nothing in the rollout, the log, or
+   * stderr to say why (#2499). The wrap now names the cause and the
+   * commit's size facts in the message, and carries them as details.
+   */
+  describe("commit failure diagnosability (#2499)", () => {
+    it("names a disk-full write and the commit's sizes", async () => {
+      await withTransactionalStore("transaction-commit-enospc", async (store) => {
+        const source = appendSourceMessages(store, 8, 4_000);
+        const provider = compactionProvider();
+        const adapter = failingCommitAdapter(store, () =>
+          Object.assign(new Error("ENOSPC: no space left on device, write"), {
+            code: "ENOSPC",
+            errno: -28,
+            syscall: "write",
+            path: store.rolloutPath,
+          }));
+
+        const failure = await runRealTransaction(store, source, provider, {
+          compactionTransaction: adapter,
+        }).then(() => undefined, (error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(CompactionTransactionFailureWithDetails);
+        const typed = failure as CompactionTransactionFailureWithDetails;
+        expect(typed.reason).toBe("commit_failed");
+        expect(typed.message).toMatch(/durable compaction commit failed: Error: ENOSPC: no space left on device, write \(code=ENOSPC, syscall=write, path=/);
+        expect(typed.message).toMatch(/replacement history \d+ bytes \(\d+ messages\)/);
+        expect(typed.message).toMatch(/payload bundles 3 \(\d+ chunks, \d+ canonical bytes\)/);
+        expect(typed.message).toMatch(/summary \d+ bytes/);
+        expect(typed.details).toMatchObject({
+          replacement_history_messages: expect.any(Number),
+          payload_bundle_count: 3,
+        });
+        expect(typed.details.replacement_history_bytes).toBeGreaterThan(0);
+        expect(compactionFailureDetails(typed)).toMatchObject({
+          error_reason: "commit_failed",
+          cause_name: "Error",
+          cause_code: "ENOSPC",
+          cause_errno: -28,
+          cause_syscall: "write",
+          cause_path: store.rolloutPath,
+          payload_bundle_count: 3,
+        });
+        expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "commit_failed" } },
+        ]);
+      });
+    });
+
+    it("keeps a typed validation failure's own reason", async () => {
+      await withTransactionalStore("transaction-commit-typed", async (store) => {
+        const source = appendSourceMessages(store, 8, 4_000);
+        const provider = compactionProvider();
+        const adapter = failingCommitAdapter(store, () =>
+          new CompactionTransactionError(
+            "output_limit_exceeded",
+            "replacement history exceeds the payload limit",
+          ));
+
+        const failure = await runRealTransaction(store, source, provider, {
+          compactionTransaction: adapter,
+        }).then(() => undefined, (error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(CompactionTransactionError);
+        expect(failure).not.toBeInstanceOf(CompactionTransactionFailureWithDetails);
+        expect((failure as CompactionTransactionError).reason).toBe("output_limit_exceeded");
+        expect((failure as Error).message).toBe("replacement history exceeds the payload limit");
+        expect(store.readAll().filter(isCompactionLifecycleItem)).toMatchObject([
+          { type: "compaction_intent" },
+          { type: "compaction_failed", payload: { reason: "output_limit_exceeded" } },
+        ]);
+      });
     });
   });
 
@@ -886,6 +1116,148 @@ describe("transactional compaction production path", () => {
         .toBe(false);
     });
   }, 30_000);
+
+  /**
+   * Regression from Terminal-Bench `layout-config-recreation__Hrx5oPp` (#2498).
+   * ~30 screenshots put the raw history past the 16 MiB accounting request
+   * cap. The summarizer never sees image bytes, but the shrink measurement
+   * counted the raw history and threw "inline image sources exceed the
+   * …-byte remaining request budget" on every ladder tier.
+   */
+  describe("inline images past the accounting cap (#2498)", () => {
+    const IMAGE_MARKER = "data:image/png;base64,";
+
+    /**
+     * A PNG with a real IHDR (1920x1080) so token accounting meters it by
+     * pixels, as it does a real screenshot, followed by filler bytes.
+     */
+    function screenshotDataUrl(decodedBytes: number): string {
+      const ihdr = Buffer.alloc(13);
+      ihdr.writeUInt32BE(1920, 0);
+      ihdr.writeUInt32BE(1080, 4);
+      ihdr[8] = 8; // bit depth
+      ihdr[9] = 6; // colour type RGBA
+      const chunkBody = Buffer.concat([Buffer.from("IHDR", "ascii"), ihdr]);
+      const header = Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        Buffer.from([0, 0, 0, 13]),
+        chunkBody,
+        Buffer.from(new Uint32Array([crc32(chunkBody)]).buffer).reverse(),
+      ]);
+      const filler = Buffer.alloc(Math.max(0, decodedBytes - header.length), 0x42);
+      return `${IMAGE_MARKER}${Buffer.concat([header, filler]).toString("base64")}`;
+    }
+
+    function screenshot(index: number, encodedBytes: number): RuntimeMessage {
+      return {
+        role: "user",
+        content: [
+          { type: "text", text: `screenshot ${index}` },
+          { type: "image_url", image_url: { url: screenshotDataUrl(Math.floor((encodedBytes * 3) / 4)) } },
+        ],
+      };
+    }
+
+    function inlineImageBytes(value: unknown): number {
+      return JSON.stringify(value).split(IMAGE_MARKER).slice(1)
+        .reduce((total, tail) => total + IMAGE_MARKER.length + tail.indexOf('"'), 0);
+    }
+
+    function screenshotHistory(): RuntimeMessage[] {
+      // Six screenshots of 3 MiB (encoded) each: more than the 16 MiB
+      // accounting cap in total, each under the 4 MiB rollout record
+      // ceiling, all well under the 64 MiB canonical source cap.
+      const perImage = 3 * 1024 * 1024;
+      expect(6 * perImage).toBeGreaterThan(MAX_TOKEN_ACCOUNTING_REQUEST_BYTES);
+      const text = Array.from({ length: 7 }, (_, index) => ({
+        role: index % 2 === 0 ? "assistant" as const : "user" as const,
+        content: `${index}:${"x".repeat(4_000)}`,
+      }));
+      const shots = Array.from({ length: 6 }, (_, index) => screenshot(index, perImage));
+      return [
+        shots[0]!, ...text.slice(0, 3), shots[1]!, shots[2]!, shots[3]!,
+        ...text.slice(3), shots[4]!, shots[5]!,
+      ];
+    }
+
+    function appendHistory(store: RolloutStore, source: readonly RuntimeMessage[]): void {
+      for (const message of source) {
+        store.appendRollout({
+          type: "response_item",
+          payload: {
+            role: message.role ?? "user",
+            content: message.content as string | ReadonlyArray<{
+              readonly type: string;
+              readonly text?: string;
+              readonly [key: string]: unknown;
+            }>,
+          },
+        }, { durable: true });
+      }
+    }
+
+    it("compacts a screenshot history, measuring shrink on the image-bounded request", async () => {
+      await withTransactionalStore("transaction-image-cap", async (store) => {
+        const source = screenshotHistory();
+        appendHistory(store, source);
+        const provider = compactionProvider();
+        const counted = vi.spyOn(tokenAccountingService, "count");
+        try {
+          const result = await runRealTransaction(store, source, provider);
+
+          // Every accounting request carries at most the sampling path's
+          // image budget (the newest screenshots), never the raw history
+          // that overflowed the 16 MiB cap; the source measurement is the
+          // bounded projection, not an image-free one.
+          const countedImageBytes = counted.mock.calls.map(([request]) =>
+            inlineImageBytes(request.messages),
+          );
+          expect(Math.max(...countedImageBytes)).toBeGreaterThan(0);
+          expect(Math.max(...countedImageBytes)).toBeLessThanOrEqual(DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES);
+          for (const [messages] of provider.chat.mock.calls) {
+            const modelInput = JSON.stringify(messages);
+            expect(modelInput).not.toContain(IMAGE_MARKER);
+            expect(modelInput).toContain("omitted from compaction model input");
+          }
+          const committed = result.transaction!.committed;
+          expect(committed.selected_history_indexes).toEqual(source.map((_, index) => index));
+          expect(committed.accounting.source_tokens).toBeGreaterThan(
+            committed.accounting.candidate_tokens,
+          );
+          expect(JSON.stringify(committed.replacement_history)).not.toContain(IMAGE_MARKER);
+        } finally {
+          counted.mockRestore();
+        }
+      });
+    }, 60_000);
+
+    it("keeps the retained screenshots in the replacement history", async () => {
+      await withTransactionalStore("transaction-image-keep", async (store) => {
+        // Two recent small screenshots are kept verbatim behind the summary
+        // (the contract provider meters images by bytes, so they stay small).
+        const keep = [screenshot(6, 64 * 1024), screenshot(7, 64 * 1024)];
+        const source = [...screenshotHistory(), ...keep];
+        appendHistory(store, source);
+        const provider = compactionProvider();
+
+        const result = await runRealTransaction(store, source, provider, {
+          messagesToKeep: keep,
+          messagesToSummarize: source.slice(0, -2),
+        });
+
+        const committed = result.transaction!.committed;
+        expect(committed.selected_history_indexes).toEqual(
+          source.slice(0, -2).map((_, index) => index),
+        );
+        // Durable history keeps every retained image; only the measurement
+        // is bounded.
+        expect(JSON.stringify(committed.replacement_history).split(IMAGE_MARKER)).toHaveLength(3);
+        expect(committed.accounting.source_tokens).toBeGreaterThan(
+          committed.accounting.candidate_tokens,
+        );
+      });
+    }, 60_000);
+  });
 
   it("redacts selected media from model input while preserving source provenance", async () => {
     await withTransactionalStore("transaction-media", async (store) => {
@@ -1215,12 +1587,13 @@ function observingTransactionAdapter(
 
 function failingCommitAdapter(
   store: RolloutStore,
+  failure: () => Error = () => new Error("injected commit failure"),
 ): CompactionTransactionAdapter {
   return new Proxy(store, {
     get(target, property, receiver) {
       if (property === "commit") {
         return () => {
-          throw new Error("injected commit failure");
+          throw failure();
         };
       }
       const value = Reflect.get(target, property, receiver) as unknown;

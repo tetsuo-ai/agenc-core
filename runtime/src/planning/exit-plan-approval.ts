@@ -30,6 +30,53 @@ export type ExitPlanModeApproval =
 const CALL_ID_ARG = "__callId";
 const approvals = new Map<string, ExitPlanModeApproval>();
 
+/**
+ * The plan an ExitPlanMode approval request showed. The request snapshots
+ * the plan file; the runtime hands that snapshot to the tool as a hidden
+ * argument so the tool executes exactly the text the user approved.
+ */
+export const EXIT_PLAN_APPROVED_PLAN_ARG = "__agencApprovedPlan";
+
+export interface ExitPlanApprovedPlan {
+  /** The plan text the request showed, or null when it showed none. */
+  readonly plan: string | null;
+}
+
+/** What an approval request built from `approvalArgs` shows as the plan. */
+export function exitPlanApprovedPlan(
+  approvalArgs: Record<string, unknown>,
+): ExitPlanApprovedPlan {
+  const plan = approvalArgs.plan;
+  return Object.freeze({
+    plan: typeof plan === "string" && plan.trim().length > 0 ? plan : null,
+  });
+}
+
+/**
+ * The snapshot the runtime injected, or undefined when there is none. The
+ * runtime injects it as a non-enumerable property after argument
+ * validation; a model-supplied argument of the same name is enumerable and
+ * never counts.
+ */
+export function injectedExitPlanApprovedPlan(
+  args: Record<string, unknown>,
+): ExitPlanApprovedPlan | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(args, EXIT_PLAN_APPROVED_PLAN_ARG);
+  if (descriptor === undefined || descriptor.enumerable === true) return undefined;
+  const snapshot = asRecord(descriptor.value);
+  if (snapshot === null) return undefined;
+  const plan = snapshot.plan;
+  if (plan !== null && typeof plan !== "string") return undefined;
+  return { plan };
+}
+
+/** Whether two plan texts are the same plan; no plan and a blank plan are one thing. */
+export function samePlanText(left: string | null, right: string | null): boolean {
+  const blank = (value: string | null): boolean =>
+    value === null || value.trim().length === 0;
+  return blank(left) || blank(right) ? blank(left) && blank(right) : left === right;
+}
+
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()

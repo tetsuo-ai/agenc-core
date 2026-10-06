@@ -222,6 +222,7 @@ export async function beginLegacyAgentSpawnAdmission(params: {
         // any) remains conservative and acknowledgement releases live slots.
       } finally {
         acknowledgePhysicalCompletion()
+        childAdmission.release?.()
       }
     },
   }

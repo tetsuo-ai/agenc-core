@@ -30,12 +30,12 @@ export type ClientSideInstruction = {
  * (rebuilt every turn; cache-busts on late connect).
  *
  * Env override for local testing: AGENC_MCP_INSTR_DELTA=true/false
- * wins over both ant bypass and the GrowthBook gate.
+ * wins over the default (on).
  */
 export function isMcpInstructionsDeltaEnabled(): boolean {
   if (isEnvTruthy(process.env.AGENC_MCP_INSTR_DELTA)) return true
   if (isEnvDefinedFalsy(process.env.AGENC_MCP_INSTR_DELTA)) return false
-  return process.env.USER_TYPE === 'ant' || true
+  return true
 }
 
 /**

@@ -30,6 +30,7 @@ export type OpenAiOauthErrorCode =
   | 'exchange_failed'
   | 'timeout'
   | 'denied'
+  | 'cancelled'
 
 export class OpenAiOauthError extends Error {
   constructor(
@@ -60,7 +61,8 @@ function base64Url(buffer: Buffer): string {
     .replace(/=+$/, '')
 }
 
-function createPkcePair(): { verifier: string; challenge: string } {
+function createPkcePair(): { verifier: string
+  | 'cancelled'; challenge: string } {
   const verifier = base64Url(randomBytes(48))
   const challenge = base64Url(createHash('sha256').update(verifier).digest())
   return { verifier, challenge }
@@ -108,8 +110,13 @@ function buildAuthorizeUrl(opts: {
 function waitForCallback(
   state: string,
   authority: OpenAiOauthAuthority,
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new OpenAiOauthError('cancelled', 'sign-in cancelled'))
+      return
+    }
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://localhost`)
       if (url.pathname !== CALLBACK_PATH) {
@@ -165,8 +172,16 @@ function waitForCallback(
       cleanup()
       reject(new OpenAiOauthError('timeout', 'sign-in timed out'))
     }, CALLBACK_TIMEOUT_MS)
+    // A cancelled sign-in frees the callback port now instead of holding
+    // it until the timeout, so an immediate retry can listen again.
+    const onAbort = (): void => {
+      cleanup()
+      reject(new OpenAiOauthError('cancelled', 'sign-in cancelled'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
     function cleanup(): void {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       try {
         server.close()
       } catch {
@@ -248,11 +263,13 @@ export async function runOpenAiBrowserLogin(opts: {
   readonly onAuthorizeUrl: (url: string) => Promise<void> | void
   /** Progress reporting so long stages are visible, not silent. */
   readonly onStage?: (stage: OpenAiLoginStage) => void
+  /** Cancels the wait and closes the callback listener at once. */
+  readonly signal?: AbortSignal
 }): Promise<OpenAiBrowserLoginResult> {
   const authority = oauthAuthority(opts.environment)
   const { verifier, challenge } = createPkcePair()
   const state = base64Url(randomBytes(16))
-  const callback = waitForCallback(state, authority)
+  const callback = waitForCallback(state, authority, opts.signal)
   // Hand the URL out only after the listener is armed, so the redirect
   // cannot race the server.
   await opts.onAuthorizeUrl(buildAuthorizeUrl({ challenge, state, authority }))

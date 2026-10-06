@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { markEffectBoundaryNotCrossed } from "../effect-boundary.js";
 import {
   getProjectRoot,
   setScheduledTasksEnabled,
@@ -10,6 +11,7 @@ import {
   addCronTask,
   getCronFilePath,
   listAllCronTasks,
+  listSessionCronTasks,
   nextCronRunMs,
   normalizeDelivery,
 } from "../../utils/cronTasks.js";
@@ -124,7 +126,22 @@ export const CronCreateTool = buildTool({
         errorCode: 2,
       };
     }
-    const tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    const needsDurableRead = (input.durable === true && isDurableCronEnabled()) || normalizeDelivery({
+      channel: input.announceChannel, to: input.announceTo, webhook: input.webhook,
+    }) !== undefined;
+    let tasks;
+    try {
+      tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    } catch (error) {
+      if (needsDurableRead || (error as NodeJS.ErrnoException | null)?.code !== "DESCRIPTOR_UNSUPPORTED") {
+        if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
+          evidenceRef: "tool:CronCreate:validation-read",
+          evidenceMaterial: error.message,
+        });
+        throw error;
+      }
+      tasks = listSessionCronTasks(conversationId);
+    }
     if (tasks.length >= MAX_JOBS) {
       return {
         result: false,

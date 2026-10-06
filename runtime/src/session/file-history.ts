@@ -48,12 +48,6 @@ import type { Event } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
-import {
-  completeWorkspaceTopologyMutation,
-  reserveWorkspaceTopologyMutation,
-  workspaceLoadedEditorPathConflict,
-  workspaceMutationPathConflict,
-} from "../workspace/mutation-coordinator.js";
 
 const MAX_SNAPSHOTS = 100;
 
@@ -928,30 +922,7 @@ export async function fileHistoryRewind(
       `FileHistory: Snapshot for messageId=${messageId} not found`,
     );
   }
-  for (const trackingPath of state.trackedFiles) {
-    const conflict = workspaceMutationPathConflict(trackingPath);
-    if (conflict !== null) {
-      throw new Error(
-        `Cannot rewind ${trackingPath}: ${conflict.path} has ${
-          conflict.authority === "editor_dirty"
-            ? "unsaved editor changes"
-            : "unreconciled editor changes"
-        }. Resolve the Editor buffer first.`,
-      );
-    }
-    const loadedConflict = workspaceLoadedEditorPathConflict(trackingPath);
-    if (loadedConflict !== null) {
-      throw new Error(
-        `Cannot rewind ${trackingPath}: ${loadedConflict.path} is loaded in Editor. Close that buffer before rewinding.`,
-      );
-    }
-  }
-  const reservation = await reserveWorkspaceTopologyMutation(
-    [...state.trackedFiles].map((path) => ({ path })),
-    "rewind",
-  );
   const changed: string[] = [];
-  let outcomeUnknown = false;
   for (const trackingPath of state.trackedFiles) {
     const targetBackup = target.trackedFileBackups[trackingPath];
     const origin = targetBackup ?? getOriginBackup(state, trackingPath);
@@ -964,9 +935,7 @@ export async function fileHistoryRewind(
           await rm(trackingPath);
           changed.push(trackingPath);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            outcomeUnknown = true;
-          }
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         continue;
       }
@@ -976,15 +945,9 @@ export async function fileHistoryRewind(
         changed.push(trackingPath);
       }
     } catch {
-      // Rewind is historically best-effort, but an attempted filesystem
-      // effect still has to be represented truthfully to a concurrent editor.
-      outcomeUnknown = true;
+      // Rewind is best-effort: a path that cannot be restored is skipped.
     }
   }
-  await completeWorkspaceTopologyMutation(
-    reservation,
-    outcomeUnknown ? "unknown_outcome" : "applied",
-  );
   return changed;
 }
 

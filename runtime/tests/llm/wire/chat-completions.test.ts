@@ -4,9 +4,38 @@ import {
   collectChatCompletionsRequestMetadata,
   parseChatCompletionsResponse,
 } from "./chat-completions.js";
+import { chatCompletionsCapabilityHintsForProvider } from "./capability-gating.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 describe("buildChatCompletionsRequest", () => {
+  test("keeps Chat Completions controls and static head unchanged across response detail levels", () => {
+    const build = (modelVerbosity?: "low" | "medium" | "high") => buildChatCompletionsRequest({
+      model: "qwen-local", messages: [{ role: "user", content: "hello" }],
+      tools: [{ type: "function", function: { name: "echo", description: "Echo", parameters: { type: "object" } } }],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required", maxOutputTokens: 4096 },
+    });
+    const inherited = build();
+    for (const level of ["low", "medium", "high"] as const) {
+      const candidate = build(level);
+      expect(candidate.tools).toEqual(inherited.tools);
+      expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+      expect(candidate.max_tokens).toEqual(inherited.max_tokens);
+      expect((candidate.messages as Array<{ content: string }>)[0]?.content.split("<!-- dynamic-boundary -->")[0])
+        .toBe((inherited.messages as Array<{ content: string }>)[0]?.content.split("<!-- dynamic-boundary -->")[0]);
+      expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
+    }
+    expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
+  });
+  test("keeps unset request bytes from the pre-detail builder", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local", messages: [{ role: "user", content: "hello" }], tools: [],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        maxOutputTokens: 4096 },
+    });
+    expect(JSON.stringify(request)).toBe('{"model":"qwen-local","stream":false,"messages":[{"role":"system","content":"STATIC_HEAD\\n\\n<!-- dynamic-boundary -->\\n\\nDYNAMIC_TAIL"},{"role":"user","content":"hello"}],"max_tokens":4096}');
+    expect(request.max_tokens).toBe(4096);
+  });
   test("serializes request instructions as the first system message only", () => {
     const request = buildChatCompletionsRequest({
       model: "qwen-local",
@@ -63,6 +92,27 @@ describe("buildChatCompletionsRequest", () => {
         content: "current ask",
       },
     ]);
+  });
+
+  test("disables thinking only on the measured recovery switch, for one sample", () => {
+    const native = chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-flash");
+    const build = (hints: typeof native, disableThinkingForRecovery?: true) =>
+      buildChatCompletionsRequest({
+        model: "deepseek-flash",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { reasoningEffort: "high", ...(disableThinkingForRecovery ? { disableThinkingForRecovery } : {}) },
+        providerCapabilityHints: hints,
+      });
+
+    expect(build(native, true).thinking).toEqual({ type: "disabled" });
+    expect(build(native).thinking).toEqual({ type: "enabled" });
+    expect(
+      build(chatCompletionsCapabilityHintsForProvider("minimax", "minimax-m3"), true).thinking,
+    ).toEqual({ type: "adaptive" });
+    expect(
+      build(chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"), true).thinking,
+    ).toBeUndefined();
   });
 
   test("always sends a positive output-token budget", () => {
@@ -195,7 +245,7 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
-  test("preserves mixed text and image tool results without forcing store", () => {
+  test("omits image parts from Chat Completions tool messages", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-4.1",
       messages: [
@@ -219,7 +269,7 @@ describe("buildChatCompletionsRequest", () => {
             { type: "text", text: "Screenshot captured" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "data:image/png;base64,YWJj" },
             },
           ],
         },
@@ -229,6 +279,7 @@ describe("buildChatCompletionsRequest", () => {
 
     expect("store" in request).toBe(false);
     expect(request.stream).toBe(false);
+    expect(JSON.stringify(request.messages)).not.toContain("YWJj");
     expect(request.messages).toEqual([
       {
         role: "user",
@@ -251,13 +302,7 @@ describe("buildChatCompletionsRequest", () => {
       {
         role: "tool",
         tool_call_id: "call_1",
-        content: [
-          { type: "text", text: "Screenshot captured" },
-          {
-            type: "image_url",
-            image_url: { url: "https://example.com/cat.png" },
-          },
-        ],
+        content: "Screenshot captured\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
       },
     ]);
   });
@@ -593,5 +638,42 @@ describe("buildChatCompletionsRequest", () => {
 
     expect(response.content).toBe("");
     expect(response.providerReasoningContent).toBe("opaque replay state");
+  });
+
+  // Codex review, P1: unlike Responses' input_tokens_details.cache_write_tokens,
+  // Chat Completions has no field for prompt-cache writes, so a real write is
+  // folded into prompt_tokens with no way to tell it apart from ordinary
+  // input. Budget reconciliation (admitted-model-call.ts) needs this flag to
+  // avoid under-pricing those writes as ordinary input.
+  test("flags Chat Completions usage as unable to report prompt-cache writes", () => {
+    const response = parseChatCompletionsResponse(
+      "gpt-6-sol",
+      {
+        id: "chatcmpl_cache_write",
+        choices: [
+          {
+            message: { role: "assistant", content: "ok" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 200 },
+        },
+      },
+      {
+        model: "gpt-6-sol",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+      },
+    );
+
+    expect(response.usage.cacheWritesUnreported).toBe(true);
+    // Cached reads are still reported normally; only cache WRITES have no
+    // wire field on this path.
+    expect(response.usage.cachedInputTokens).toBe(200);
+    expect(response.usage.cacheCreationInputTokens).toBeUndefined();
   });
 });

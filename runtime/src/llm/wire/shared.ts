@@ -8,20 +8,23 @@ import type {
   LLMChatOptions,
   LLMContentPart,
   LLMMessage,
+  LLMResponse,
   LLMTool,
   LLMToolCall,
   LLMToolChoice,
   LLMUsage,
 } from "../types.js";
+import { LLMInvalidResponseError } from "../errors.js";
 import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall, validateToolCallDetailed } from "../types.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
 import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY as SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  SYSTEM_PROMPT_VOLATILE_BOUNDARY as SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
 } from "../../prompts/system-prompt-boundary.js";
 
-export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER, SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER };
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -98,19 +101,55 @@ function toAnthropicImageSource(
  */
 export function splitSystemPromptOnDynamicBoundary(
   systemPrompt: string | undefined,
-): { staticPrefix?: string; dynamicSuffix?: string } {
+): { staticPrefix?: string; sessionSuffix?: string; dynamicSuffix?: string } {
   const trimmed = systemPrompt?.trim();
   if (trimmed === undefined || trimmed.length === 0) return {};
-  const markerIndex = trimmed.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER);
-  if (markerIndex === -1) return { staticPrefix: trimmed };
-  const staticPrefix = trimmed.slice(0, markerIndex).trimEnd();
-  const dynamicSuffix = trimmed
-    .slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length)
-    .trim();
+  // With session-tail caching on, the part of the tail that is fixed for the
+  // session comes back as `sessionSuffix` (callers place it right after the
+  // static head, inside the cached prefix) and only the text after the
+  // volatile marker stays `dynamicSuffix` (the end of the request).
+  const volatileIndex = trimmed.indexOf(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER);
+  const head = volatileIndex === -1
+    ? trimmed
+    : trimmed.slice(0, volatileIndex).trimEnd();
+  const volatileSuffix = volatileIndex === -1
+    ? undefined
+    : trimmed
+      .slice(volatileIndex + SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER.length)
+      .trim();
+  const markerIndex = head.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER);
+  const staticPrefix = markerIndex === -1
+    ? head
+    : head.slice(0, markerIndex).trimEnd();
+  const tail = markerIndex === -1
+    ? ""
+    : head.slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length).trim();
+  if (volatileIndex === -1) {
+    return {
+      ...(staticPrefix.length > 0 ? { staticPrefix } : {}),
+      ...(tail.length > 0 ? { dynamicSuffix: tail } : {}),
+    };
+  }
   return {
     ...(staticPrefix.length > 0 ? { staticPrefix } : {}),
-    ...(dynamicSuffix.length > 0 ? { dynamicSuffix } : {}),
+    ...(tail.length > 0 ? { sessionSuffix: tail } : {}),
+    ...(volatileSuffix !== undefined && volatileSuffix.length > 0
+      ? { dynamicSuffix: volatileSuffix }
+      : {}),
   };
+}
+
+/**
+ * The system prompt with the volatile marker removed, for wires that send the
+ * whole prompt as one leading block (Chat Completions and the rest). The
+ * marker only exists when session-tail caching is on, and those wires keep
+ * the prompt exactly as they received it before the marker existed.
+ */
+export function withoutVolatileBoundary(text: string): string {
+  if (!text.includes(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER)) return text;
+  return text
+    .split(`\n\n${SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER}\n\n`).join("\n\n")
+    .split(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER).join("");
 }
 
 export function readDocumentPayload(part: unknown): {
@@ -263,8 +302,10 @@ export function coerceUsage(usage: {
   readonly cacheCreationInputTokens?: unknown;
   readonly reasoningOutputTokens?: unknown;
   readonly webSearchRequests?: unknown;
+  readonly speed?: LLMUsage["speed"];
   readonly availability?: LLMUsage["availability"];
   readonly provenance?: LLMUsage["provenance"];
+  readonly cacheWritesUnreported?: LLMUsage["cacheWritesUnreported"];
 }): LLMUsage {
   const reportedPromptTokens = toOptionalNumber(usage.promptTokens);
   const reportedCompletionTokens = toOptionalNumber(usage.completionTokens);
@@ -299,30 +340,76 @@ export function coerceUsage(usage: {
       : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(webSearchRequests !== undefined ? { webSearchRequests } : {}),
+    ...(usage.speed !== undefined ? { speed: usage.speed } : {}),
+    ...(usage.cacheWritesUnreported !== undefined
+      ? { cacheWritesUnreported: usage.cacheWritesUnreported }
+      : {}),
   };
 }
 
-export function normalizeFinishReason(
+/**
+ * The speed OpenAI reports it served a request at. `service_tier` in the
+ * Responses and Chat Completions response names the tier used: "priority"
+ * for Fast mode on GPT-5.6 and earlier, "fast" on GPT-6, and "default" when
+ * a Fast request was downgraded and billed at Standard rates
+ * (developers.openai.com/api/docs/guides/fast-mode, read 2026-09-23).
+ */
+export function openAiServedSpeed(serviceTier: unknown): "fast" | undefined {
+  return serviceTier === "priority" || serviceTier === "fast"
+    ? "fast"
+    : undefined;
+}
+
+type LLMFinishReason = LLMResponse["finishReason"];
+
+type ProviderStopOutcome =
+  | { readonly kind: "mapped"; readonly finishReason: LLMFinishReason }
+  | { readonly kind: "unsupported" };
+
+const PROVIDER_STOP_REASON_OUTCOME: {
+  readonly [reason: string]: ProviderStopOutcome;
+} = {
+  tool_calls: { kind: "mapped", finishReason: "tool_calls" },
+  tool_use: { kind: "mapped", finishReason: "tool_calls" },
+  length: { kind: "mapped", finishReason: "length" },
+  max_tokens: { kind: "mapped", finishReason: "length" },
+  model_context_window_exceeded: { kind: "mapped", finishReason: "length" },
+  content_filter: { kind: "mapped", finishReason: "content_filter" },
+  refusal: { kind: "mapped", finishReason: "content_filter" },
+  sensitive: { kind: "mapped", finishReason: "content_filter" },
+  error: { kind: "mapped", finishReason: "error" },
+  network_error: { kind: "mapped", finishReason: "error" },
+  pause_turn: { kind: "unsupported" },
+};
+
+function providerStopReasonKey(reason: unknown): string {
+  return typeof reason === "string" ? reason : "";
+}
+
+function outcomeForProviderStopReason(reason: unknown): ProviderStopOutcome {
+  return PROVIDER_STOP_REASON_OUTCOME[providerStopReasonKey(reason)] ?? {
+    kind: "mapped",
+    finishReason: "stop",
+  };
+}
+
+export function normalizeFinishReason(reason: unknown): LLMFinishReason {
+  const outcome = outcomeForProviderStopReason(reason);
+  return outcome.kind === "mapped" ? outcome.finishReason : "error";
+}
+
+export function requireMappedFinishReason(
+  providerName: string,
   reason: unknown,
-): "stop" | "tool_calls" | "length" | "content_filter" | "error" {
-  switch (String(reason ?? "")) {
-    case "tool_calls":
-    case "tool_use":
-      return "tool_calls";
-    case "length":
-    case "max_tokens":
-    case "model_context_window_exceeded":
-      return "length";
-    case "content_filter":
-    case "refusal":
-    case "sensitive":
-      return "content_filter";
-    case "error":
-    case "network_error":
-      return "error";
-    default:
-      return "stop";
+): LLMFinishReason {
+  const outcome = outcomeForProviderStopReason(reason);
+  if (outcome.kind === "unsupported") {
+    throw new LLMInvalidResponseError(
+      providerName,
+      `Unsupported provider state ${JSON.stringify(providerStopReasonKey(reason))}`,
+    );
   }
+  return outcome.finishReason;
 }
 
 export function messageTextContent(
@@ -607,7 +694,7 @@ export function parseAnthropicToolChoice(
 ): unknown {
   if (toolChoice === undefined || toolChoice === "auto") return undefined;
   if (toolChoice === "required") return { type: "any" };
-  if (toolChoice === "none") return undefined;
+  if (toolChoice === "none") return { type: "none" };
   return {
     type: "tool",
     // Must match the encoded `tools[]` entry (see parseOpenAIToolChoice).
@@ -688,15 +775,26 @@ export function applyToolResultImagePolicyForWire(
       .map((part) => messageTextContent([part]))
       .filter((text) => text.length > 0)
       .join("\n");
+    // A text-only model keeps the tool's text, and is told the image itself
+    // was left out: "Read image shot.png (...)" alone reads as if it had
+    // seen the picture.
+    const strippedNote =
+      policy !== "strip" || imageParts.length === 0
+        ? undefined
+        : imageParts.length === 1
+          ? "[Image not shown: this model does not accept image input, so the image in this tool result was left out.]"
+          : `[Images not shown: this model does not accept image input, so the ${imageParts.length} images in this tool result were left out.]`;
     projected.push({
       ...message,
-      content:
-        textContent ||
-        (imageParts.length > 0
+      content: textContent
+        ? strippedNote === undefined
+          ? textContent
+          : `${textContent}\n${strippedNote}`
+        : imageParts.length > 0
           ? policy === "relay_as_user"
             ? "[Tool returned image content; image follows in the next message.]"
             : "[Tool returned image content; this model does not accept image input.]"
-          : "[Tool returned no textual content.]"),
+          : "[Tool returned no textual content.]",
     });
     if (policy === "relay_as_user" && imageParts.length > 0) {
       pendingRelays.push({
@@ -824,6 +922,17 @@ export function assistantTextFromContentBlocks(
     }
   }
   return pieces.join("");
+}
+
+/** Mistral's documented ThinkChunk contains an array of text chunks. */
+export function thinkingTextFromContentBlocks(content: readonly unknown[]): string {
+  return content.flatMap((block) => {
+    if (!block || typeof block !== "object") return [];
+    const record = block as Record<string, unknown>;
+    return record.type === "thinking" && Array.isArray(record.thinking)
+      ? [assistantTextFromContentBlocks(record.thinking)]
+      : [];
+  }).join("");
 }
 
 function toOptionalNumber(value: unknown): number | undefined {

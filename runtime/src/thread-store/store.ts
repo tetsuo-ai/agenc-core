@@ -12,11 +12,11 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { persistDisplayArtifactBytes, readDisplayArtifact, removeDisplayArtifacts } from "../session/display-artifact-store.js";
+import { THREAD_REGISTRY_FILENAME, ThreadRegistryLock } from "./registry-lock.js";
 import {
   basename,
   dirname,
@@ -168,6 +168,9 @@ export interface ListThreadsParams {
  *  policy, git info, full preview, and cli version are not populated. */
 export interface StoredThread {
   readonly threadId: ThreadId;
+  /** Presentation profile from the matching durable agent run, when recorded. */
+  readonly lightMode?: boolean;
+  readonly parentThreadId?: ThreadId;
   readonly rolloutPath?: string;
   readonly forkedFromId?: ThreadId;
   readonly name?: string;
@@ -273,6 +276,18 @@ export interface ThreadStore {
   discardThread(threadId: ThreadId): void;
   loadHistory(params: LoadThreadHistoryParams): StoredThreadHistory;
   readThread(params: ReadThreadParams): StoredThread;
+  /** Publish snapshot text against the thread's current canonical rollout. */
+  publishTranscriptArtifact?(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string;
+  /** Read only the authoritative profile; caller-supplied metadata is ignored. */
+  readThreadLightMode?(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined;
+  /**
+   * The runtime options the thread's run recorded when it was created
+   * (`agent_runs.metadata_json.runtimeOptions`), not yet validated.
+   */
+  readThreadRuntimeOptions?(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
   /** Indexed count for latency-sensitive health probes. */
@@ -290,6 +305,7 @@ export interface ThreadStore {
 // ─────────────────────────────────────────────────────────────────────
 
 interface RegistryEntry {
+  readonly parentThreadId?: ThreadId;
   readonly threadId: ThreadId;
   readonly name?: string;
   readonly modelProvider?: string;
@@ -303,6 +319,7 @@ interface RegistryEntry {
   readonly forkedFromId?: ThreadId;
   readonly rolloutPath?: string;
   readonly archivedRolloutPath?: string;
+  readonly archiveCleanupGeneration?: string;
 }
 
 interface RegistrySnapshot {
@@ -311,9 +328,10 @@ interface RegistrySnapshot {
 }
 
 const REGISTRY_VERSION = 1;
-const REGISTRY_FILENAME = "threads.json";
 
 export interface FileThreadStoreOpts {
+  /** Defer the unused logs connection for a session-owned metadata store. */
+  readonly deferLogs?: boolean;
   /**
    * The cwd used to resolve the per-project state path
    * (`getProjectDir(cwd, projectRootMarkers)`). Defaults
@@ -350,7 +368,6 @@ export interface FileThreadStoreOpts {
  */
 export class FileThreadStore implements ThreadStore {
   private readonly registryPath: string;
-  private readonly registryLockPath: string;
   private readonly projectDir: string;
   private readonly archivedSessionsDir: string;
   private readonly defaultModelProviderId: string;
@@ -367,8 +384,7 @@ export class FileThreadStore implements ThreadStore {
     const projectDir =
       opts.projectDir ?? getProjectDir(cwd, markers, opts.agencHome);
     this.projectDir = projectDir;
-    this.registryPath = join(projectDir, REGISTRY_FILENAME);
-    this.registryLockPath = `${this.registryPath}.lock`;
+    this.registryPath = join(projectDir, THREAD_REGISTRY_FILENAME);
     this.archivedSessionsDir = join(projectDir, "archived_sessions");
     this.defaultModelProviderId = opts.defaultModelProviderId ?? "unknown";
     this.stateDriver =
@@ -379,14 +395,16 @@ export class FileThreadStore implements ThreadStore {
               ? { agencHome: opts.agencHome }
               : {}),
             projectRootMarkers: markers,
+            deferLogs: opts.deferLogs,
           })
         : openStateDatabasePaths({
             projectDir,
             stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
             logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
-          });
+          }, undefined, { deferLogs: opts.deferLogs });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
+    this.finishPendingUnarchiveCleanup();
   }
 
   /** Compatibility sidecar path imported by this store. Exposed for tests. */
@@ -410,7 +428,7 @@ export class FileThreadStore implements ThreadStore {
         : canonicalizeThreadSource(params.source);
     this.prepareLiveRecorder(params.rolloutStore);
 
-    this.updateRegistry((registry) => {
+    this.updateRegistry(threadId, (registry) => {
       const now = new Date().toISOString();
       const existing = registry.get(threadId);
       const entry: RegistryEntry = {
@@ -449,6 +467,9 @@ export class FileThreadStore implements ThreadStore {
         ...(existing?.archivedRolloutPath !== undefined
           ? { archivedRolloutPath: existing.archivedRolloutPath }
           : {}),
+        ...(existing?.archiveCleanupGeneration !== undefined
+          ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+          : {}),
         rolloutPath: params.rolloutStore.rolloutPath,
       };
       registry.set(threadId, entry);
@@ -464,7 +485,7 @@ export class FileThreadStore implements ThreadStore {
         `thread ${threadId} already has a live local writer`,
       );
     }
-    this.updateRegistry((registry) => {
+    this.updateRegistry(threadId, (registry) => {
       const existing = registry.get(threadId);
       if (
         existing?.archivedAt !== undefined &&
@@ -507,6 +528,9 @@ export class FileThreadStore implements ThreadStore {
         ...(existing?.archivedRolloutPath !== undefined
           ? { archivedRolloutPath: existing.archivedRolloutPath }
           : {}),
+        ...(existing?.archiveCleanupGeneration !== undefined
+          ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+          : {}),
         rolloutPath:
           params.rolloutPath ??
           existing?.rolloutPath ??
@@ -544,7 +568,9 @@ export class FileThreadStore implements ThreadStore {
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
     this.unbindLiveRecorder(threadId, recorder);
-    this.updateRegistry((registry) => {
+    let archivedSessionDir: string | undefined;
+    this.withRegistryLock(() => {
+      const registry = this.readRegistryUnlocked(true);
       const existing = registry.get(threadId);
       if (
         existing === undefined ||
@@ -559,11 +585,14 @@ export class FileThreadStore implements ThreadStore {
         ownedWriter: true,
       });
       if (archivedRolloutPath === undefined) return;
+      if (existing.rolloutPath) archivedSessionDir = dirname(existing.rolloutPath);
       registry.set(threadId, {
         ...existing,
         archivedRolloutPath,
         updatedAt: new Date().toISOString(),
       });
+      this.writeRegistryUnlocked(registry);
+      if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
     });
   }
 
@@ -625,7 +654,106 @@ export class FileThreadStore implements ThreadStore {
           includeArchived: params.includeArchived,
         })
       : undefined;
-    return toStoredThread(entry, this.defaultModelProviderId, history);
+    return this.toStoredThread(entry, history);
+  }
+
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
+    this.assertOpen();
+    if (verifiedProjectDir !== undefined && resolve(verifiedProjectDir) !== resolve(this.projectDir)) {
+      throw new ThreadStoreInvalidRequestError("runtime profile project does not match the verified resume source");
+    }
+    const row = this.stateDriver.prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    ).get(threadId);
+    if (row?.metadata_json == null) return undefined;
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.metadata_json);
+    } catch {
+      throw new ThreadStoreInvalidRequestError("invalid persisted run metadata");
+    }
+    if (!isRecord(metadata) || metadata.runtimeOptions === undefined) return undefined;
+    const options = metadata.runtimeOptions;
+    if (!isRecord(options)) {
+      throw new ThreadStoreInvalidRequestError("invalid persisted runtime options");
+    }
+    return options;
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    const options = this.readThreadRuntimeOptions(threadId, verifiedProjectDir);
+    if (options?.lightMode === undefined) return undefined;
+    if (typeof options.lightMode !== "boolean") {
+      throw new ThreadStoreInvalidRequestError("invalid persisted Light mode");
+    }
+    return options.lightMode;
+  }
+
+  private toStoredThread(entry: RegistryEntry, history?: StoredThreadHistory): StoredThread {
+    const lightMode = this.readThreadLightMode(entry.threadId);
+    return {
+      ...toStoredThread(entry, this.defaultModelProviderId, history),
+      ...(lightMode !== undefined ? { lightMode } : {}),
+    };
+  }
+
+  publishTranscriptArtifact(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string {
+    this.assertOpen();
+    return this.withRegistryLock(() => {
+      let candidate = observedRolloutPath;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const entry = this.readRegistryUnlocked(true).get(threadId);
+        const current = entry === undefined ? undefined : this.readableRolloutPath(entry);
+        if (current === undefined) throw new ThreadNotFoundError(threadId);
+        if (current !== candidate) {
+          candidate = current;
+          continue;
+        }
+        // Archive takes the registry lock before moving this journal. Retention
+        // takes its canonical rollout lease before removing the session dir.
+        // Do not let lock acquisition create a directory that retention moved.
+        if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+        let digest: string;
+        const ownWriter = this.liveRecorders.get(threadId);
+        if (ownWriter?.rolloutPath === current) {
+          digest = persistDisplayArtifactBytes(dirname(current), bytes);
+        } else {
+          const lease = new SessionLock(`${current}.lock`);
+          try {
+            try {
+              lease.acquire({ createParent: false });
+            } catch (error) {
+              if (!(error instanceof SessionLockedError)) throw error;
+              // A foreign foreground writer can own this lease for the whole
+              // session. Retention takes the project registry lock before its
+              // lease and directory removal, so it cannot be the holder here.
+              if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+            }
+            if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+            digest = persistDisplayArtifactBytes(dirname(current), bytes);
+          } finally {
+            lease.release();
+          }
+        }
+        // A former registry holder could have lost its lock to a stale-lock
+        // race while the foreign writer still held the rollout lease. Verify
+        // the committed location after the write and retry a moved session.
+        const latest = this.readRegistryUnlocked(true).get(threadId);
+        const latestPath = latest === undefined ? undefined : this.readableRolloutPath(latest);
+        if (latestPath === undefined) throw new ThreadNotFoundError(threadId);
+        if (latestPath !== current) {
+          candidate = latestPath;
+          continue;
+        }
+        try {
+          if (readDisplayArtifact(dirname(latestPath), digest).equals(bytes)) return digest;
+        } catch { /* The current location was cleaned up while publishing. */ }
+      }
+      throw new ThreadStoreInvalidRequestError(`thread ${threadId} moved during transcript artifact publication`);
+    });
   }
 
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread {
@@ -715,7 +843,7 @@ export class FileThreadStore implements ThreadStore {
       const last = page.items.at(-1);
       return {
         items: page.items.map((entry) =>
-          toStoredThread(entry, this.defaultModelProviderId),
+          this.toStoredThread(entry),
         ),
         ...(page.hasMore && last !== undefined
           ? {
@@ -761,7 +889,7 @@ export class FileThreadStore implements ThreadStore {
           })
         : undefined;
     return {
-      items: sliced.map((e) => toStoredThread(e, this.defaultModelProviderId)),
+      items: sliced.map((e) => this.toStoredThread(e)),
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     };
   }
@@ -802,7 +930,7 @@ export class FileThreadStore implements ThreadStore {
       );
     }
     let result: StoredThread | undefined;
-    this.updateRegistry((registry) => {
+    this.updateRegistry(params.threadId, (registry) => {
       const existing = registry.get(params.threadId);
       if (existing === undefined) {
         throw new ThreadNotFoundError(params.threadId);
@@ -824,21 +952,41 @@ export class FileThreadStore implements ThreadStore {
         this.indexReadableRollout(updated);
       }
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
     return result!;
   }
 
   archiveThread(params: ArchiveThreadParams): void {
     this.assertOpen();
+    // Re-archiving an active thread must not overwrite the only path that
+    // records a failed unarchive cleanup.
+    this.finishPendingUnarchiveCleanup(params.threadId);
+    let archivedSessionDir: string | undefined;
+    let archiveArtifactDir: string | undefined;
     timed("thread_archive", () =>
-      this.updateRegistry((registry) => {
+      this.withRegistryLock(() => {
+        const registry = this.readRegistryUnlocked(true);
         const existing = registry.get(params.threadId);
         if (existing === undefined) {
           throw new ThreadNotFoundError(params.threadId);
         }
         if (existing.archivedAt !== undefined) {
-          return; // already archived
+          // The registry may have committed before artifact removal failed.
+          // A repeated archive also completes a move if a foreign writer
+          // released its lease without calling shutdownThread.
+          if (!this.liveRecorders.has(params.threadId)) {
+            const archivedRolloutPath = existing.archivedRolloutPath ?? this.archiveRolloutFile(existing);
+            if (archivedRolloutPath !== undefined) archiveArtifactDir = dirname(archivedRolloutPath);
+            if (archivedRolloutPath !== undefined && existing.archivedRolloutPath === undefined) {
+              registry.set(params.threadId, { ...existing, archivedRolloutPath, updatedAt: new Date().toISOString() });
+            }
+            if (existing.rolloutPath && (archivedRolloutPath !== undefined || !existsSync(existing.rolloutPath))) archivedSessionDir = dirname(existing.rolloutPath);
+          }
+          this.writeRegistryUnlocked(registry);
+          if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+          if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
+          return;
         }
         const now = new Date().toISOString();
         this.appendThreadMetadataRollout(existing, {
@@ -847,12 +995,17 @@ export class FileThreadStore implements ThreadStore {
         const archivedRolloutPath = this.liveRecorders.has(params.threadId)
           ? existing.archivedRolloutPath
           : this.archiveRolloutFile(existing);
+        if (archivedRolloutPath !== undefined) archiveArtifactDir = dirname(archivedRolloutPath);
+        if (archivedRolloutPath !== undefined && existing.rolloutPath) archivedSessionDir = dirname(existing.rolloutPath);
         registry.set(params.threadId, {
           ...existing,
           updatedAt: now,
           archivedAt: now,
           ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
         });
+        this.writeRegistryUnlocked(registry);
+        if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+        if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
       }),
     );
   }
@@ -860,10 +1013,16 @@ export class FileThreadStore implements ThreadStore {
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
     this.assertOpen();
     let result: StoredThread | undefined;
-    this.updateRegistry((registry) => {
+    let archiveArtifactDir: string | undefined;
+    this.updateRegistry(params.threadId, (registry) => {
       const existing = registry.get(params.threadId);
       if (existing === undefined) {
         throw new ThreadNotFoundError(params.threadId);
+      }
+      if (existing.archivedAt === undefined) {
+        if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
+        result = this.toStoredThread(existing);
+        return;
       }
       const now = new Date().toISOString();
       this.appendThreadMetadataRollout(existing, {
@@ -872,24 +1031,49 @@ export class FileThreadStore implements ThreadStore {
       const restoredRolloutPath = this.liveRecorders.has(params.threadId)
         ? existing.rolloutPath
         : this.unarchiveRolloutFile(existing);
+      if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
       const {
         archivedAt: _drop,
-        archivedRolloutPath: _archivedRolloutPath,
         ...rest
       } = existing;
       void _drop;
-      void _archivedRolloutPath;
+      // Keep archivedRolloutPath as a durable cleanup cursor. A crash or
+      // failed removal can resume after the active registry transition.
       const updated: RegistryEntry = {
         ...rest,
         updatedAt: now,
+        ...(existing.archivedRolloutPath !== undefined
+          ? { archiveCleanupGeneration: randomUUID() }
+          : {}),
         ...(restoredRolloutPath !== undefined
           ? { rolloutPath: restoredRolloutPath }
           : {}),
       };
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
+    if (archiveArtifactDir !== undefined) this.finishPendingUnarchiveCleanup(params.threadId);
     return result!;
+  }
+
+  private finishPendingUnarchiveCleanup(threadId?: ThreadId): void {
+    const entries = threadId === undefined
+      ? this.threadIndex.listPendingUnarchiveCleanup()
+      : [this.threadIndex.getThread(threadId)];
+    for (const entry of entries) {
+      if (entry === undefined || entry.archivedAt !== undefined || entry.archivedRolloutPath === undefined) continue;
+      this.withRegistryLock(() => {
+        const registry = this.readRegistryUnlocked(true);
+        const current = registry.get(entry.threadId);
+        if (current === undefined || current.archivedAt !== undefined || current.archivedRolloutPath === undefined || current.archivedRolloutPath !== entry.archivedRolloutPath || current.archiveCleanupGeneration !== entry.archiveCleanupGeneration) return;
+        removeDisplayArtifacts(dirname(current.archivedRolloutPath));
+        const { archivedRolloutPath: _drop, archiveCleanupGeneration: _generation, ...cleaned } = current;
+        void _drop;
+        void _generation;
+        registry.set(entry.threadId, cleaned);
+        this.writeRegistryUnlocked(registry);
+      });
+    }
   }
 
   close(): void {
@@ -905,6 +1089,11 @@ export class FileThreadStore implements ThreadStore {
   /** Per-project state directory this store is bound to (DAE-03 multi-project). */
   getProjectDir(): string {
     return this.projectDir;
+  }
+
+  /** A daemon may evict this project's read cache once no writer uses it. */
+  hasLiveRecorders(): boolean {
+    return this.liveRecorders.size > 0;
   }
 
   // ── internal helpers ────────────────────────────────────────────────
@@ -1259,10 +1448,13 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private updateRegistry(
+    threadId: ThreadId,
     mutator: (registry: Map<ThreadId, RegistryEntry>) => void,
   ): void {
     this.withRegistryLock(() => {
-      const registry = this.readRegistryUnlocked(true);
+      const entry = this.readRegistryEntryUnlocked(threadId);
+      const registry = new Map<ThreadId, RegistryEntry>();
+      if (entry !== undefined) registry.set(threadId, entry);
       mutator(registry);
       this.writeRegistryUnlocked(registry);
     });
@@ -1271,31 +1463,29 @@ export class FileThreadStore implements ThreadStore {
   private readRegistryUnlocked(
     includeLegacy: boolean,
   ): Map<ThreadId, RegistryEntry> {
+    if (includeLegacy) this.importLegacyRegistryOnce();
     const result = new Map<ThreadId, RegistryEntry>();
     for (const entry of this.threadIndex.listThreads()) {
       const normalized = normalizeRegistryEntry(entry);
       if (normalized !== undefined) result.set(normalized.threadId, normalized);
     }
-    if (!includeLegacy) {
-      return result;
-    }
+    return result;
+  }
 
-    // The legacy import walks sessions/ + archived_sessions/ and stats every
-    // rollout — and every imported entry is upserted into the SQLite index,
-    // so later reads see it from `threadIndex.listThreads()` above. Running
-    // it once per store instance is therefore sufficient; before this guard
-    // it re-ran per readRegistry call (O(N²) directory walks when listing N
-    // threads — audit finding #1).
-    if (this.legacyImportDone) {
-      return result;
-    }
+  private readRegistryEntryUnlocked(threadId: ThreadId): RegistryEntry | undefined {
+    this.importLegacyRegistryOnce();
+    // Always read SQLite under the caller's registry lock. The legacy-import
+    // guard is not a cache of thread metadata or archive/permission state.
+    return normalizeRegistryEntry(this.threadIndex.getThread(threadId));
+  }
+
+  private importLegacyRegistryOnce(): void {
+    if (this.legacyImportDone) return;
     for (const [threadId, entry] of this.importLegacyRegistry()) {
-      const merged = mergeLegacyEntry(result.get(threadId), entry);
-      result.set(threadId, merged);
-      this.threadIndex.upsertThread(merged);
+      const existing = normalizeRegistryEntry(this.threadIndex.getThread(threadId));
+      this.threadIndex.upsertThread(mergeLegacyEntry(existing, entry));
     }
     this.legacyImportDone = true;
-    return result;
   }
 
   private writeRegistryUnlocked(registry: Map<ThreadId, RegistryEntry>): void {
@@ -1305,102 +1495,13 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private withRegistryLock<T>(fn: () => T): T {
-    mkdirSync(dirname(this.registryPath), { recursive: true });
-    // Generous lock-acquisition window. Daemons under realistic load can hold
-    // the lock for several seconds while writing the rollout file, so a 2s
-    // ceiling produces spurious conflicts and leaves orphaned lock dirs
-    // behind every time agent.create is killed mid-run. Pair this with the
-    // stale-lock reclaim below so a hard-killed previous holder can never
-    // wedge the project.
-    const deadline = Date.now() + 30_000;
-    const holderFile = join(this.registryLockPath, "holder.pid");
-    while (true) {
-      try {
-        mkdirSync(this.registryLockPath);
-        // Stamp our pid so a subsequent acquirer can detect orphaned locks.
-        try {
-          writeFileSync(holderFile, `${process.pid}`, "utf8");
-        } catch {
-          // Best-effort: writing the pid is purely diagnostic. The lock
-          // itself is the directory's existence; pid metadata is recovery
-          // information.
-        }
-        break;
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        if (code !== "EEXIST") {
-          throw new ThreadStoreConflictError(
-            `failed to acquire registry lock ${this.registryLockPath}`,
-          );
-        }
-        if (this.tryReclaimStaleLock(holderFile)) {
-          // Reclaim returned true: the prior holder is dead and we removed
-          // its lock dir. Loop again to mkdirSync ours.
-          continue;
-        }
-        if (Date.now() >= deadline) {
-          throw new ThreadStoreConflictError(
-            `failed to acquire registry lock ${this.registryLockPath}`,
-          );
-        }
-        sleepSync(25);
-      }
-    }
-
+    const lock = new ThreadRegistryLock(this.projectDir);
+    try { lock.acquire(); }
+    catch (error) { throw new ThreadStoreConflictError((error as Error).message); }
     try {
       return fn();
     } finally {
-      rmSync(this.registryLockPath, { recursive: true, force: true });
-    }
-  }
-
-  private tryReclaimStaleLock(holderFile: string): boolean {
-    let holderPid: number | null = null;
-    try {
-      const raw = readFileSync(holderFile, "utf8").trim();
-      const parsed = Number.parseInt(raw, 10);
-      if (Number.isInteger(parsed) && parsed > 0) holderPid = parsed;
-    } catch {
-      // No holder file means the lock predates the pid-stamping or was
-      // partially written. Treat as reclaimable if older than the staleness
-      // threshold below.
-    }
-    if (holderPid !== null) {
-      try {
-        // Signal 0 probes liveness without delivering anything.
-        process.kill(holderPid, 0);
-        // Holder is alive: not stale.
-        return false;
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        if (code !== "ESRCH") {
-          // Some other error (EPERM = process exists but is owned by
-          // another user). Be conservative and don't reclaim.
-          return false;
-        }
-        // ESRCH: pid doesn't exist. Reclaim.
-      }
-    } else {
-      // No holder pid stamp. Either the lock is from a prior code path
-      // that didn't stamp pids, or the holder crashed before the stamp
-      // completed. In both cases the holder is gone; reclaim aggressively
-      // after a brief grace window so a freshly mkdir'd lock has time to
-      // get its pid stamp written before we'd reclaim it from a healthy
-      // sibling acquirer in a parallel session.
-      try {
-        const stats = statSync(this.registryLockPath);
-        if (Date.now() - stats.mtimeMs < 5_000) return false;
-      } catch {
-        // The lock dir vanished between EEXIST and stat. The next mkdir
-        // call will succeed; signal that by returning true.
-        return true;
-      }
-    }
-    try {
-      rmSync(this.registryLockPath, { recursive: true, force: true });
-      return true;
-    } catch {
-      return false;
+      lock.release();
     }
   }
 
@@ -1491,6 +1592,7 @@ function toStoredThread(
       : (entry.rolloutPath ?? entry.archivedRolloutPath);
   return {
     threadId: entry.threadId,
+    ...(entry.parentThreadId !== undefined ? { parentThreadId: entry.parentThreadId } : {}),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     modelProvider: entry.modelProvider ?? defaultModelProviderId,
@@ -1721,6 +1823,7 @@ function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
   const source = normalizeThreadSource(value.source);
   return {
     threadId: value.threadId,
+    ...(typeof value.parentThreadId === "string" ? { parentThreadId: value.parentThreadId } : {}),
     createdAt:
       typeof value.createdAt === "string"
         ? value.createdAt
@@ -1750,6 +1853,9 @@ function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
       : {}),
     ...(typeof value.archivedRolloutPath === "string"
       ? { archivedRolloutPath: value.archivedRolloutPath }
+      : {}),
+    ...(typeof value.archiveCleanupGeneration === "string"
+      ? { archiveCleanupGeneration: value.archiveCleanupGeneration }
       : {}),
   };
 }
@@ -2070,8 +2176,4 @@ function listRolloutFilesRecursive(root: string): string[] {
 
 function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

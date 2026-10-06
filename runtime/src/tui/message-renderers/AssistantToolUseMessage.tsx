@@ -296,6 +296,12 @@ export function AssistantToolUseMessage({
     toolState !== "failed"
       ? renderEditDiffPreview(param.name, input.data)
       : null;
+  // A finished edit says what it changed on the step's result line
+  // ("└ +4 -0"); the colored rows follow underneath.
+  const editStats =
+    editDiffDetail !== null && rowResult === undefined
+      ? editDiffStats(param.name, input.data)
+      : undefined;
   const detail = extraDetail || editDiffDetail || toolUseTag || progressDetail || queuedDetail
     ? (
       <Box flexDirection="column">
@@ -315,7 +321,7 @@ export function AssistantToolUseMessage({
         label={userFacingToolName}
         state={toolState}
         args={toolArgs}
-        result={rowResult}
+        result={rowResult ?? editStats}
         detail={detail}
         expanded={detail !== null}
       />
@@ -329,6 +335,8 @@ export function AssistantToolUseMessage({
  * there is no diffable change (so the row stays clean). Reuses the `DiffInline`
  * primitive + the shared diff engine via `buildEditDiffPreview`.
  */
+const EDIT_STEP_MAX_CHANGED_LINES = 8;
+
 export function renderEditDiffPreview(
   toolName: string,
   input: unknown,
@@ -343,10 +351,20 @@ export function renderEditDiffPreview(
     return null;
   }
   if (preview === null) return null;
-  const lines = [...preview.lines];
-  if (preview.remaining > 0) {
+  // The transcript shows what changed, not the context around it: changed
+  // rows only, a few at most, the rest one "… +N more lines" away.
+  const changed = preview.lines.filter(line => line.kind === "add" || line.kind === "rem");
+  const shownChanged = changed.slice(0, EDIT_STEP_MAX_CHANGED_LINES);
+  const lines = shownChanged.length > 0 ? [...shownChanged] : [...preview.lines];
+  const hiddenChanged = changed.length - shownChanged.length + preview.remaining;
+  if (shownChanged.length > 0 && hiddenChanged > 0) {
+    lines.push({
+      kind: "ctx",
+      code: `… +${hiddenChanged} more ${hiddenChanged === 1 ? "line" : "lines"} · ctrl+w d for full diff`,
+    });
+  } else if (shownChanged.length === 0 && preview.remaining > 0) {
     // State the affordance so the collapsed diff is not a dead end: the full
-    // diff is reachable in the workbench via the openDiff shortcut. The count
+    // diff is reachable through /diff. The count
     // leads so it survives even if the row truncates at narrow widths.
     lines.push({
       kind: "ctx",
@@ -365,8 +383,17 @@ export function renderEditDiffPreview(
       stats={preview.stats}
       lines={lines}
       op={op}
+      compact
     />
   );
+}
+
+function editDiffStats(toolName: string, input: unknown): string | undefined {
+  try {
+    return buildEditDiffPreview(toolName, input)?.stats;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseToolUse(

@@ -1402,128 +1402,59 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
     )
   }
 
-  // For ants in agenc-cli-internal, set up dev panes (watch + start)
-  const isAnt = process.env.USER_TYPE === 'ant'
-  const isAgenCCliInternal = repoName === 'agenc-cli-internal'
-  const shouldSetupDevPanes = isAnt && isAgenCCliInternal && !sessionExists
-
-  if (shouldSetupDevPanes) {
-    // Create detached session with AgenC in first pane
-    spawnSync(
-      'tmux',
-      [
-        'new-session',
-        '-d', // detached
-        '-s',
-        tmuxSessionName,
-        '-c',
-        worktreeDir,
-        '--',
-        process.execPath,
-        ...newArgs,
-      ],
-      { cwd: worktreeDir, env: tmuxEnv },
-    )
-
-    // Split horizontally and run watch
-    spawnSync(
-      'tmux',
-      ['split-window', '-h', '-t', tmuxSessionName, '-c', worktreeDir],
-      { cwd: worktreeDir },
-    )
-    spawnSync(
-      'tmux',
-      ['send-keys', '-t', tmuxSessionName, 'bun run watch', 'Enter'],
-      { cwd: worktreeDir },
-    )
-
-    // Split vertically and run start
-    spawnSync(
-      'tmux',
-      ['split-window', '-v', '-t', tmuxSessionName, '-c', worktreeDir],
-      { cwd: worktreeDir },
-    )
-    spawnSync('tmux', ['send-keys', '-t', tmuxSessionName, 'bun run start'], {
-      cwd: worktreeDir,
-    })
-
-    // Select the first pane (AgenC)
-    spawnSync('tmux', ['select-pane', '-t', `${tmuxSessionName}:0.0`], {
-      cwd: worktreeDir,
-    })
-
-    // Attach or switch to the session
-    if (isAlreadyInTmux) {
-      // Switch to sibling session (avoid nesting)
+  // Create or attach
+  if (isAlreadyInTmux) {
+    // Already in tmux - create detached session, then switch to it (sibling)
+    // Check if session already exists first
+    if (sessionExists) {
+      // Just switch to existing session
       spawnSync('tmux', ['switch-client', '-t', tmuxSessionName], {
         stdio: 'inherit',
       })
     } else {
-      // Attach to the session
+      // Create new detached session
       spawnSync(
         'tmux',
-        [...tmuxGlobalArgs, 'attach-session', '-t', tmuxSessionName],
-        {
-          stdio: 'inherit',
-          cwd: worktreeDir,
-        },
+        [
+          'new-session',
+          '-d', // detached
+          '-s',
+          tmuxSessionName,
+          '-c',
+          worktreeDir,
+          '--',
+          process.execPath,
+          ...newArgs,
+        ],
+        { cwd: worktreeDir, env: tmuxEnv },
       )
-    }
-  } else {
-    // Standard behavior: create or attach
-    if (isAlreadyInTmux) {
-      // Already in tmux - create detached session, then switch to it (sibling)
-      // Check if session already exists first
-      if (sessionExists) {
-        // Just switch to existing session
-        spawnSync('tmux', ['switch-client', '-t', tmuxSessionName], {
-          stdio: 'inherit',
-        })
-      } else {
-        // Create new detached session
-        spawnSync(
-          'tmux',
-          [
-            'new-session',
-            '-d', // detached
-            '-s',
-            tmuxSessionName,
-            '-c',
-            worktreeDir,
-            '--',
-            process.execPath,
-            ...newArgs,
-          ],
-          { cwd: worktreeDir, env: tmuxEnv },
-        )
 
-        // Switch to the new session
-        spawnSync('tmux', ['switch-client', '-t', tmuxSessionName], {
-          stdio: 'inherit',
-        })
-      }
-    } else {
-      // Not in tmux - create and attach (original behavior)
-      const tmuxArgs = [
-        ...tmuxGlobalArgs,
-        'new-session',
-        '-A', // Attach if exists, create if not
-        '-s',
-        tmuxSessionName,
-        '-c',
-        worktreeDir,
-        '--', // Separator before command
-        process.execPath,
-        ...newArgs,
-      ]
-
-      spawnSync('tmux', tmuxArgs, {
+      // Switch to the new session
+      spawnSync('tmux', ['switch-client', '-t', tmuxSessionName], {
         stdio: 'inherit',
-        cwd: worktreeDir,
-        env: tmuxEnv,
       })
     }
-  }
+  } else {
+    // Not in tmux - create and attach (original behavior)
+    const tmuxArgs = [
+      ...tmuxGlobalArgs,
+      'new-session',
+      '-A', // Attach if exists, create if not
+      '-s',
+      tmuxSessionName,
+      '-c',
+      worktreeDir,
+      '--', // Separator before command
+      process.execPath,
+      ...newArgs,
+    ]
 
+    spawnSync('tmux', tmuxArgs, {
+      stdio: 'inherit',
+      cwd: worktreeDir,
+      env: tmuxEnv,
+    })
+  }
+  
   return { handled: true }
 }

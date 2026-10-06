@@ -22,20 +22,20 @@ import { getTotalCost } from '../../cost/tracker.js';
 import { formatUsdCost } from '../../session/cost.js';
 import { isNullRenderingAttachment } from '../message-visibility.js';
 import { PromptDialogOverlay, PromptSuggestionsOverlay } from './PromptOverlaySurfaces.js';
-import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
+import { permissionModeShortTitle } from '../../permissions/mode-display.js';
 import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
-import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
+import { PlanModeBanner } from './v2/primitives.js';
+import { useStatusEffort } from '../context/statusEffortContext.js';
 import ThemedText from './design-system/ThemedText.js';
 import { LedgerStatus } from './LedgerStatus.js';
 import { SwarmStatusIndicator } from './SwarmStatusIndicator.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
-const TOP_CHROME_ROWS = 2;
-const BOTTOM_CHROME_ROWS = 2;
-const MIN_ROWS_FOR_TOP_CHROME = 8;
+/** The status line under the prompt is one plain row; there is no top bar. */
+const BOTTOM_CHROME_ROWS = 1;
 const MIN_ROWS_FOR_BOTTOM_CHROME = 5;
 const MIN_ROWS_FOR_SCROLLABLE = 2;
 const FILE_TREE_GUTTER_MIN_COLUMNS = 112;
@@ -44,7 +44,6 @@ const FILE_TREE_GUTTER_MIN_WIDTH = 22;
 const FILE_TREE_GUTTER_MAX_WIDTH = 28;
 
 export type FullscreenLayoutBudget = {
-  readonly showTopChrome: boolean;
   readonly showScrollable: boolean;
   readonly showBottomChrome: boolean;
   readonly bottomMaxHeight: number;
@@ -67,15 +66,11 @@ export function calculateFullscreenLayoutBudget(
   const rows = Number.isFinite(terminalRows)
     ? Math.max(0, Math.trunc(terminalRows))
     : 0;
-  const showTopChrome = rows >= MIN_ROWS_FOR_TOP_CHROME;
   const showBottomChrome = rows >= MIN_ROWS_FOR_BOTTOM_CHROME;
-  const chromeRows =
-    (showTopChrome ? TOP_CHROME_ROWS : 0) +
-    (showBottomChrome ? BOTTOM_CHROME_ROWS : 0);
+  const chromeRows = showBottomChrome ? BOTTOM_CHROME_ROWS : 0;
   const contentRows = Math.max(1, rows - chromeRows);
 
   return {
-    showTopChrome,
     showScrollable: contentRows >= MIN_ROWS_FOR_SCROLLABLE,
     showBottomChrome,
     bottomMaxHeight: Math.max(1, Math.ceil(contentRows / 2)),
@@ -107,12 +102,6 @@ export function shouldShowFileTreeGutter(
     calculateFileTreeGutterWidth(columns) > 0 &&
     calculateFullscreenLayoutBudget(safeRows).showScrollable
   );
-}
-
-export function isNoColorEnv(
-  env: Pick<NodeJS.ProcessEnv, 'NO_COLOR' | 'FORCE_COLOR' | 'TERM'> = process.env,
-): boolean {
-  return env.NO_COLOR !== undefined || env.FORCE_COLOR === '0' || env.TERM === 'dumb';
 }
 
 /** Context for scroll-derived chrome (sticky header, pill). StickyTracker
@@ -391,7 +380,6 @@ export function FullscreenLayout(t0) {
     columns
   } = useTerminalSize();
   const layoutBudget = calculateFullscreenLayoutBudget(terminalRows);
-  const noColor = isNoColorEnv();
   const isFullscreen = useFullscreenMode();
   const [stickyPrompt, setStickyPrompt] = useState(null);
   let t4;
@@ -485,7 +473,7 @@ export function FullscreenLayout(t0) {
     }
     const t15 = <PromptSuggestionsOverlay availableRows={layoutBudget.bottomMaxHeight} />;
     const t16 = <PromptDialogOverlay />;
-    const t14Content = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}{t16}</Box>;
+    const t14Content = <Box flexGrow={1} flexDirection="column" overflow="hidden">{t8}<DesignPlanModeBanner />{t11}{t12}{t13}{t16}</Box>;
     const showFileTreeGutter = shouldShowFileTreeGutter(columns, terminalRows, modal != null) && fileTreeGutter !== undefined && fileTreeGutter !== null && fileTreeGutter !== false;
     const t14 = showFileTreeGutter ? <Box flexGrow={1} flexDirection="row" overflow="hidden">{fileTreeGutter}{t14Content}</Box> : t14Content;
     let t17;
@@ -513,7 +501,7 @@ export function FullscreenLayout(t0) {
     } else {
       t18 = $[37];
     }
-    return <PromptOverlayProvider>{layoutBudget.showTopChrome ? <DesignTopChrome columns={columns} noColor={noColor} /> : null}{layoutBudget.showScrollable ? t14 : null}{t17}{layoutBudget.showBottomChrome ? <DesignBottomChrome columns={columns} /> : null}{t18}</PromptOverlayProvider>;
+    return <PromptOverlayProvider>{layoutBudget.showScrollable ? t14 : null}{t17}{layoutBudget.showBottomChrome ? <StatusLineChrome columns={columns} /> : null}{t18}</PromptOverlayProvider>;
   }
   let t8;
   if ($[42] !== bottom || $[43] !== modal || $[44] !== overlay || $[45] !== scrollable) {
@@ -537,29 +525,25 @@ const GIT_CHROME_REFRESH_MS = 30_000;
 
 let cachedGitChromeLabel: string | null = null;
 
+/** The current branch, or null outside a git repository. */
 async function probeGitChromeLabel(): Promise<string | null> {
   try {
     const branch = (await execFileAsync('git', ['branch', '--show-current'], {
       cwd: process.cwd(),
       encoding: 'utf8',
       timeout: 1000,
-    })).stdout.trim() || 'detached';
-    const shortSha = (await execFileAsync('git', ['rev-parse', '--short=7', 'HEAD'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      timeout: 1000,
     })).stdout.trim();
-    return `${branch} · ${shortSha}`;
+    return branch || 'detached';
   } catch {
-    return 'no git';
+    return null;
   }
 }
 
-/** Git label for the bottom chrome. The probe runs async (two short `git`
- *  subprocesses) so it never blocks the first paint; it re-runs on terminal
+/** Branch for the status line. The probe runs async (one short `git`
+ *  subprocess) so it never blocks the first paint; it re-runs on terminal
  *  focus changes and on a slow interval so a mid-session branch switch
- *  surfaces. Until the first probe resolves, the git segment stays hidden —
- *  better a missing segment than a fabricated one. */
+ *  surfaces. Until the first probe resolves, and outside a repository, the
+ *  branch segment stays hidden. */
 function useGitChromeLabel(): string | null {
   const terminalFocused = useTerminalFocus();
   const [label, setLabel] = useState<string | null>(() => cachedGitChromeLabel);
@@ -567,7 +551,7 @@ function useGitChromeLabel(): string | null {
     let cancelled = false;
     const refresh = () => {
       void probeGitChromeLabel().then(next => {
-        if (cancelled || next === null) return;
+        if (cancelled) return;
         cachedGitChromeLabel = next;
         setLabel(prev => (prev === next ? prev : next));
       }, () => {});
@@ -603,54 +587,10 @@ function useSessionSpendLabel(): string {
     interval.unref?.();
     return () => clearInterval(interval);
   }, [hasUsageContext]);
-  if (usage === null) return '—';
-  if (usage !== undefined) return `${formatUsdCost(usage.costUsd)}${usage.hasUnknownCost ? ' +?' : ''}`;
+  // No usage reported yet: show nothing rather than a placeholder.
+  if (usage === null) return '';
+  if (usage !== undefined) return `${formatUsdCost(usage.costUsd)}${usage.costEstimated ? ' est.' : ''}${usage.hasUnknownCost ? ' +?' : ''}`;
   return spend;
-}
-
-function DesignBottomLeftLabel({
-  gitLabel,
-  mode,
-  modelLabel,
-}: {
-  readonly gitLabel: string | null;
-  readonly mode: PermissionMode;
-  readonly modelLabel: string;
-}): React.ReactNode {
-  const modeLabel = permissionModeFooterChrome(mode).label;
-  // Swarm status sits next to the mode: visible only while swarm mode is on
-  // and carrying the live running-agent count from AppState.
-  // Read from AppState (the appStateBridge /swarm writes through), with the
-  // provider-safe hook so the label also renders without AppStateProvider.
-  const swarmMode =
-    useAppStateMaybeOutsideOfProvider((state) => state.swarmMode) === true;
-  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
-  const runningAgents = React.useMemo(
-    () => Object.values(tasks ?? {}).filter((task: any) => task?.type !== "local_bash" && (task?.status === "running" || task?.status === "pending")).length,
-    [tasks],
-  );
-  return (
-    <>
-      <ThemedText color="text2" wrap="truncate-end">● {modeLabel}</ThemedText>
-      {swarmMode ? (
-        <SwarmStatusIndicator runningAgents={runningAgents} />
-      ) : null}
-      <ThemedText color="text2" wrap="truncate-end"> · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>
-    </>
-  );
-}
-
-function DesignBottomRightLabel({
-  spend,
-}: {
-  readonly spend: string;
-}): React.ReactNode {
-  return (
-    <>
-      <LedgerStatus />
-      <ThemedText color="text2" wrap="truncate-end"> spend {spend}</ThemedText>
-    </>
-  );
 }
 
 function DesignPlanModeBanner(): React.ReactNode {
@@ -658,64 +598,126 @@ function DesignPlanModeBanner(): React.ReactNode {
   return mode === 'plan' ? <PlanModeBanner /> : null;
 }
 
-export function DesignBrandBleed({ columns }: { columns: number }): React.ReactNode {
-  if (columns < 72) return null;
-  const compact = columns < 100;
-  return <Box position="absolute" top={0} right={0}>
-      <BrandCells columns={compact ? 18 : 28} rows={compact ? 3 : 5} />
-    </Box>;
+/** Short label for a permission mode in the status line. */
+function statusModeLabel(mode: PermissionMode): string {
+  switch (mode) {
+    case 'default':
+      return 'default mode';
+    case 'acceptEdits':
+      return 'accept edits';
+    case 'plan':
+      return 'plan mode';
+    case 'auto':
+      return 'auto mode';
+    case 'bypassPermissions':
+      return 'bypass mode';
+    default:
+      return `${permissionModeShortTitle(mode).toLowerCase()} mode`;
+  }
 }
 
-export function DesignTopChrome({ columns, noColor }: { columns: number; noColor: boolean }): React.ReactNode {
-  const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
-  const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
-  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
-  const activeTask = React.useMemo(() => {
-    const values = Object.values(tasks ?? {});
-    return values.find(task => task?.status === 'running' || task?.status === 'queued') ?? values[0];
-  }, [tasks]);
-  const taskPda = activeTask?.id ? truncateMiddleToWidth(String(activeTask.id), Math.max(12, Math.floor(columns * 0.18))) : '—';
-  const title = truncateMiddleToWidth(`~/${cwdName}`, Math.max(12, Math.floor(columns * 0.24)));
-  return <TuiHeader columns={columns} title={title} tabLabel="agenc · orchestrator" tabStatus={activeTask?.status === 'failed' ? 'warn' : 'live'} permissionMode={mode} taskPda={taskPda} />;
-}
+const STATUS_FOLDER_MIN_COLUMNS = 80;
+const STATUS_BRANCH_MIN_COLUMNS = 64;
 
-export function formatDesignBottomChromeLabels(
+export type StatusLineSegments = {
+  readonly folder: string | null;
+  readonly model: string;
+  readonly effort: string | null;
+  readonly mode: string;
+  readonly branch: string | null;
+  readonly spend: string | null;
+};
+
+/**
+ * What the status line shows, each fact once: folder, model, mode and branch
+ * on the left, spend on the right once there is a figure. Narrow terminals
+ * drop the folder, then the branch.
+ */
+export function statusLineSegments(
   columns: number,
+  folder: string,
   modelLabel: string,
   mode: PermissionMode,
-  gitLabel: string | null,
+  branch: string | null,
   spend: string,
-): { readonly left: string; readonly right: string } {
-  const modeLabel = permissionModeFooterChrome(mode).label;
-  const trimmedGitLabel = gitLabel === null
-    ? null
-    : truncateMiddleToWidth(gitLabel, columns >= 100 ? 32 : 18);
+  effort: string | null = null,
+): StatusLineSegments {
   return {
-    left: `● ${modeLabel} · ${modelLabel}${trimmedGitLabel === null ? '' : ` · ${trimmedGitLabel}`}`,
-    right: `spend ${spend}`,
+    folder: columns >= STATUS_FOLDER_MIN_COLUMNS ? folder : null,
+    model: modelLabel,
+    effort,
+    mode: statusModeLabel(mode),
+    branch: branch !== null && columns >= STATUS_BRANCH_MIN_COLUMNS ? branch : null,
+    spend: spend === '' ? null : spend,
   };
 }
 
-function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
+function workspaceFolderLabel(columns: number): string {
+  const name = process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace';
+  return truncateMiddleToWidth(`~/${name}`, Math.max(12, Math.floor(columns * 0.24)));
+}
+
+const STATUS_SEPARATOR = '  ·  ';
+
+/**
+ * The one status line under the prompt. Plain text on the terminal's own
+ * background, no border or wash: the folder and branch are muted, the model
+ * is bold, the mode is full ink (and bold in bypass mode), spend sits on the
+ * right. Swarm and Ledger indicators keep their places when active.
+ */
+function StatusLineChrome({ columns }: { columns: number }): React.ReactNode {
   const model = useAppStateMaybeOutsideOfProvider(state => state.mainLoopModel) ?? 'agenc';
   const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
-  const modelLabel = modelDisplayString(model);
-  // Only segments with a real data source may render here. There is no live
-  // context-% or stake feed at this point in the tree (the transcript's
-  // per-message usage never reaches the layout), so those segments stay
-  // hidden rather than showing fabricated values.
+  const swarmMode = useAppStateMaybeOutsideOfProvider(state => state.swarmMode) === true;
+  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
+  const runningAgents = React.useMemo(
+    () => Object.values(tasks ?? {}).filter((task: any) => task?.type !== "local_bash" && (task?.status === "running" || task?.status === "pending")).length,
+    [tasks],
+  );
+  const folder = React.useMemo(() => workspaceFolderLabel(columns), [columns]);
   const spend = useSessionSpendLabel();
-  const gitLabel = useGitChromeLabel();
-  const { right } = formatDesignBottomChromeLabels(columns, modelLabel, mode, gitLabel, spend);
-  const trimmedGitLabel = gitLabel === null ? null : truncateMiddleToWidth(gitLabel, columns >= 100 ? 32 : 18);
-  return <V2StatusBar variant={mode === 'plan' ? 'plan' : mode === 'bypassPermissions' ? 'error' : mode === 'auto' ? 'success' : mode === 'acceptEdits' ? 'accent' : 'neutral'} left={[
-      <DesignBottomLeftLabel key="left" gitLabel={trimmedGitLabel} mode={mode} modelLabel={modelLabel} />,
-    ]} right={[
-      // The honest right cluster is a single short segment (real spend), so
-      // the <54-col compact branch can reuse the same string — it is already
-      // compact now that the fabricated ctx/stake segments are gone.
-      columns >= 54 ? <DesignBottomRightLabel key="right" spend={spend} /> : <StatusSegment key="right-compact" label="" value={right} color="muted3" />,
-    ]} />;
+  const branch = useGitChromeLabel();
+  const effort = useStatusEffort();
+  const segments = statusLineSegments(columns, folder, modelDisplayString(model), mode, branch, spend, effort);
+  const bypass = mode === 'bypassPermissions';
+  const separator = <ThemedText color="subtle">{STATUS_SEPARATOR}</ThemedText>;
+  return (
+    <Box flexDirection="row" paddingX={2} minHeight={1} flexShrink={0}>
+      {segments.folder !== null ? (
+        <>
+          <Box flexShrink={1} minWidth={0}>
+            <ThemedText color="inactive" wrap="truncate-middle">{segments.folder}</ThemedText>
+          </Box>
+          {separator}
+        </>
+      ) : null}
+      <Box flexShrink={1} minWidth={0}>
+        <ThemedText color="text" bold wrap="truncate-end">{segments.model}</ThemedText>
+      </Box>
+      {segments.effort !== null ? (
+        <>
+          {separator}
+          <ThemedText color="text2" wrap="truncate-end">{segments.effort}</ThemedText>
+        </>
+      ) : null}
+      {separator}
+      <ThemedText color={bypass ? 'error' : 'text2'} bold={bypass} wrap="truncate-end">
+        {segments.mode}
+      </ThemedText>
+      {swarmMode ? <SwarmStatusIndicator runningAgents={runningAgents} /> : null}
+      {segments.branch !== null ? (
+        <>
+          {separator}
+          <Box flexShrink={1} minWidth={0}>
+            <ThemedText color="inactive" wrap="truncate-end">{segments.branch}</ThemedText>
+          </Box>
+        </>
+      ) : null}
+      <Box flexGrow={1} />
+      <LedgerStatus />
+      {segments.spend !== null ? <ThemedText color="text2" wrap="truncate-end">{` ${segments.spend}`}</ThemedText> : null}
+    </Box>
+  );
 }
 
 const fullscreenHyperlinkOwners = new WeakMap<object, {

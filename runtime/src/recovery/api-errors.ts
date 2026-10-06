@@ -15,10 +15,14 @@ import {
   LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
+  LLMRequestRebuiltError,
+  LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMMessageValidationError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
   LLMProviderError,
+  LLMFundsError,
 } from "../llm/errors.js";
 import {
   parsePromptTooLongTokenCounts,
@@ -148,6 +152,68 @@ export function isMediaTooLargeMessage(msg: AssistantMessage): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Refused image (shares the I-10 media trigger)
+// ─────────────────────────────────────────────────────────────────────
+
+const IMAGE_REJECTION_SUBJECT = /\bimages?\b|\bimage_url\b/iu;
+const IMAGE_REJECTION_VERDICT =
+  /\b(?:unsupported|not supported|does not support|doesn't support|invalid|not (?:a )?valid|does not appear|could not|couldn't|cannot|can't|unable to|failed to|not allowed|only allowed|supported only|only supported|must be|exceeds?|exceeded|too (?:large|big|many)|at most|dimensions?|corrupt(?:ed)?|malformed|decod(?:e|ed|ing)|pars(?:e|ing))\b/iu;
+
+/** Refusal statuses a provider uses for a request it will never accept. */
+const IMAGE_REJECTION_STATUSES = new Set([400, 415, 422]);
+
+/**
+ * The provider, or the wire contract in front of it, refused the request
+ * because of an image it carries: an image it cannot decode, one over its
+ * size limits, or any image at all for a model without vision. Sending the
+ * same history again fails the same way, so the turn must change the
+ * request instead of retrying it.
+ *
+ * Context overflow, authentication, rate limits, server errors and partial
+ * responses are never image refusals, whatever their text says.
+ */
+export function isProviderImageRejection(err: unknown): boolean {
+  return isProviderImageRejectionInner(err, new Set<object>(), 0);
+}
+
+function isProviderImageRejectionInner(
+  err: unknown,
+  seen: Set<object>,
+  depth: number,
+): boolean {
+  if (depth > 4 || !(err instanceof Error)) return false;
+  if (seen.has(err)) return false;
+  seen.add(err);
+  if (
+    isPartialProviderResponseError(err) ||
+    err instanceof LLMContextWindowExceededError ||
+    isExplicitNonTransientProviderError(err) ||
+    isTransientProviderError(err)
+  ) {
+    return false;
+  }
+  const status =
+    err instanceof LLMProviderError
+      ? err.statusCode
+      : (err as { readonly status?: unknown }).status;
+  const refusal =
+    status === undefined ||
+    (typeof status === "number" && IMAGE_REJECTION_STATUSES.has(status));
+  if (
+    refusal &&
+    IMAGE_REJECTION_SUBJECT.test(err.message) &&
+    IMAGE_REJECTION_VERDICT.test(err.message)
+  ) {
+    return true;
+  }
+  return isProviderImageRejectionInner(
+    (err as { readonly cause?: unknown }).cause,
+    seen,
+    depth + 1,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Max-output-tokens error (I-10 third-priority trigger)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -175,6 +241,24 @@ export function isWithheld413Message(msg: AssistantMessage): boolean {
     isPromptTooLongMessage(msg) ||
     msg.apiError === "context_window_exceeded" ||
     msg.apiError === "prompt_too_long"
+  );
+}
+
+/**
+ * A provider refused the sample as too long for the context window, and the
+ * refusal reached the turn as a typed stream error instead of a withheld
+ * assistant message. It takes the same bounded 413 collapse, but only while no
+ * tool call from that sample has streamed: once one has, the executor may
+ * already be running it, and a collapse plus resample could issue it again.
+ */
+export function isRecoverableContextOverflowStreamError(
+  state: Pick<TurnState, "toolUseBlocks">,
+  streamError: unknown,
+): boolean {
+  return (
+    streamError instanceof LLMContextWindowExceededError &&
+    !isPartialProviderResponseError(streamError) &&
+    state.toolUseBlocks.length === 0
   );
 }
 
@@ -351,8 +435,24 @@ const TRANSIENT_PROVIDER_MESSAGE_PARTS = [
   "terminated",
 ];
 
+/**
+ * A stream that a transport fault cut before any tool call had streamed can
+ * be sampled again by the turn's reconnect ladder: nothing executed, and the
+ * text emitted so far is discarded with the failed attempt. Once a tool call
+ * has streamed, the executor may already have dispatched it, so the adapter
+ * must surface a partial response instead.
+ */
+export function isResampleableStreamInterruption(
+  err: unknown,
+  streamedToolCalls: number,
+): boolean {
+  return streamedToolCalls === 0 && isTransientProviderError(err);
+}
+
 function isExplicitNonTransientProviderError(err: unknown): boolean {
   return (
+    err instanceof LLMStreamRetryDeniedError ||
+    err instanceof LLMFundsError ||
     err instanceof LLMAuthenticationError ||
     err instanceof LLMContextWindowExceededError ||
     err instanceof LLMMessageValidationError ||
@@ -371,6 +471,9 @@ function isTransientProviderErrorInner(
 ): boolean {
   if (depth > 4) return false;
   if (isExplicitNonTransientProviderError(err)) return false;
+  if (err instanceof Error && isExplicitNonTransientProviderError(err.cause)) return false;
+  if (err instanceof LLMStreamTruncatedError) return true;
+  if (err instanceof LLMRequestRebuiltError) return true;
   if (err instanceof Error) {
     const msg = err.message.toLowerCase();
     if (TRANSIENT_PROVIDER_MESSAGE_PARTS.some((part) => msg.includes(part))) {

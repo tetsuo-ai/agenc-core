@@ -168,8 +168,8 @@ describe("plugin config authority architecture", () => {
 
   test("plugin option values have one canonical config owner", () => {
     const storage = source("utils/plugins/pluginOptionsStorage.ts");
-    expect(storage).toContain("settings.pluginConfigs?.[pluginId]?.options");
-    expect(storage).toContain("pluginConfigs:");
+    expect(storage).toContain("readFreshPluginConfigs()");
+    expect(storage).toContain("mutateCanonicalUserConfigSync(authority.homeContext.configTomlPath");
     expect(storage).not.toMatch(
       /settings\.plugins\?\.plugins\?\.\[pluginId\]\?\.options/u,
     );

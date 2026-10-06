@@ -6,6 +6,7 @@ import {
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
 } from "./event-log.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   assertAgentInvocationChannelMessage,
@@ -883,7 +884,9 @@ function assertResponseItemShape(
     if (
       (!validV1 && !validV2) ||
       typeof providerReasoning.content !== "string" ||
-      providerReasoning.content.length === 0
+      (providerReasoning.content.length === 0 &&
+        !(validV2 && Array.isArray(item.toolCalls) && item.toolCalls.length > 0 &&
+          isKnownEmptyProviderReasoning(providerReasoning.content, providerReasoning)))
     ) {
       throw malformed(
         `checkpoint response item ${index} has invalid provider reasoning replay`,
@@ -1019,6 +1022,7 @@ function parseRequiredCheckpointSlice(
 
 interface ParsedCheckpointRetryCounts {
   planToolRequiredRetryCount?: number;
+  completionGateRound?: number;
 }
 
 function parseCheckpointRetryCounts(
@@ -1031,11 +1035,16 @@ function parseCheckpointRetryCounts(
       "resumableState.planToolRequiredRetryCount",
     );
   }
+  if (value.completionGateRound !== undefined) {
+    result.completionGateRound = nonNegativeInteger(
+      value.completionGateRound,
+      "resumableState.completionGateRound",
+    );
+  }
   return result;
 }
 
 interface ParsedCheckpointAdmissionState {
-  editorToolCallsAdmitted?: number;
   pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
 }
 
@@ -1043,12 +1052,7 @@ function parseCheckpointAdmissionState(
   value: Record<string, unknown>,
 ): ParsedCheckpointAdmissionState {
   const result: ParsedCheckpointAdmissionState = {};
-  if (value.editorToolCallsAdmitted !== undefined) {
-    result.editorToolCallsAdmitted = nonNegativeInteger(
-      value.editorToolCallsAdmitted,
-      "resumableState.editorToolCallsAdmitted",
-    );
-  }
+  // `editorToolCallsAdmitted` (retired editor quota) is accepted and ignored.
   if (value.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
       value.pendingAdmissionFallback,
@@ -1061,6 +1065,8 @@ function parseCheckpointAdmissionState(
 }
 
 interface ParsedCheckpointModelSampleState {
+  reasoningOnlyRecoveryPending?: true;
+  reasoningOnlyRecoveryCount?: number;
   modelSampleOrdinal?: number;
   modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
   textToolCallCorrectionCount?: number;
@@ -1071,6 +1077,17 @@ function parseCheckpointModelSampleState(
   value: Record<string, unknown>,
 ): ParsedCheckpointModelSampleState {
   const result: ParsedCheckpointModelSampleState = {};
+  if (value.reasoningOnlyRecoveryCount !== undefined) {
+    result.reasoningOnlyRecoveryCount = nonNegativeInteger(
+      value.reasoningOnlyRecoveryCount, "resumableState.reasoningOnlyRecoveryCount",
+    );
+  }
+  if (value.reasoningOnlyRecoveryPending !== undefined) {
+    if (value.reasoningOnlyRecoveryPending !== true) {
+      throw malformed("resumableState.reasoningOnlyRecoveryPending is invalid");
+    }
+    result.reasoningOnlyRecoveryPending = true;
+  }
   if (value.modelSampleOrdinal !== undefined) {
     result.modelSampleOrdinal = nonNegativeInteger(
       value.modelSampleOrdinal,

@@ -214,7 +214,7 @@ describe("channel act (O-3)", () => {
     const environment = Object.freeze({
       AGENC_HOME: home,
       HOME: tmpdir(),
-      USER_TYPE: "ant",
+      AGENC_OAUTH_DEV_ENDPOINTS: "1",
       USE_LOCAL_OAUTH: "1",
     });
     const credentialHome = resolveHomeContext(environment, {
@@ -438,7 +438,7 @@ describe("recap (O-6) + status funnel", () => {
   });
 
   test.each([
-    ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
+    ["local", { AGENC_OAUTH_DEV_ENDPOINTS: "1", USE_LOCAL_OAUTH: "1" }],
     ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
   ] as const)(
     "summarizes channels from the captured %s OAuth storage identity",

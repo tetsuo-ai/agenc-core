@@ -80,9 +80,11 @@ describe("agenc skills CLI", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-cli-warn-ws-"));
     const brokenDir = join(workspaceRoot, ".agenc", "skills", "broken");
     await mkdir(brokenDir, { recursive: true });
+    // Unterminated quote: still broken after the quoting retry that now
+    // rescues an unquoted `name: [unclosed`, as the canonical parser does.
     await writeFile(
       join(brokenDir, "SKILL.md"),
-      "---\nname: [unclosed\n---\n# Broken\n",
+      "---\nname: \"unclosed\n---\n# Broken\n",
     );
 
     const inventory = await buildSkillsInventory({
@@ -100,6 +102,23 @@ describe("agenc skills CLI", () => {
         ),
       ]),
     );
+  });
+
+  it("does not publish a skill body line in listing errors", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-skills-cli-private-"));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-cli-private-ws-"));
+    const skillDir = join(agencHome, "skills", "private");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "Internal body text unique to this test\n");
+    const inventory = await buildSkillsInventory({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: { AGENC_HOME: agencHome },
+    });
+    expect(inventory.errors).toEqual([
+      `${join(skillDir, "SKILL.md")}: no description in frontmatter`,
+    ]);
   });
 
   it("exposes English display labels separately from stable skill names, roots, and plugin identity", async () => {

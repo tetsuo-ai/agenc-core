@@ -1,3 +1,4 @@
+import "../helpers/cron-os-home.js";
 /**
  * Gateway cron delivery tests (TODO task 16).
  *
@@ -550,6 +551,7 @@ describe("cron task delivery persistence", () => {
           },
         ],
       }),
+      { mode: 0o600 },
     );
     const tasks = await readCronTasks(ws);
     expect(tasks).toHaveLength(1);

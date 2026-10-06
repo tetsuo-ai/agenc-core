@@ -286,6 +286,31 @@ describe("StateRunDurabilityRepository", () => {
     );
   });
 
+  it("requires an outcome before suspending a running turn and gates unknown mutations", () => {
+    runs.ensureInitialEpoch({ runId: "run-1", openedAt: T0 });
+    beginSideEffect("step-write", 1);
+    expect(() => runs.recordRunSuspended({
+      runId: "run-1", epoch: 1, eventId: "shutdown-suspend", eventSequence: 2,
+      reason: "daemon_shutdown_idle", suspendedAt: T1, allowUnsettledEffects: true,
+    })).toThrowError(expect.objectContaining({ code: "RUN_SUSPENSION_EFFECT_PENDING" }));
+    runs.markEffectUnknown({
+      runId: "run-1", stepId: "step-write", eventId: "unknown-before-suspend",
+      eventSequence: 2, reason: "physical_settlement_exceeded_shutdown_drain",
+      observedAt: T1,
+    });
+    expect(runs.recordRunSuspended({
+      runId: "run-1", epoch: 1, eventId: "shutdown-suspend", eventSequence: 3,
+      reason: "daemon_shutdown_idle", suspendedAt: T1, allowUnsettledEffects: true,
+    }).applied).toBe(true);
+    expect(runs.recordRunResumed({
+      runId: "run-1", epoch: 1, suspensionEventId: "shutdown-suspend",
+      eventId: "resume-before-review", eventSequence: 4,
+      reason: "daemon_startup_restore", resumedAt: T2,
+    }).applied).toBe(true);
+    expect(() => runs.assertDependentMutationAllowed("run-1"))
+      .toThrowError(expect.objectContaining({ code: "RUN_EFFECT_REVIEW_REQUIRED" }));
+  });
+
   it("refuses executable lifecycle boundaries after durable cancellation locks", () => {
     runs.ensureInitialEpoch({ runId: "run-admission-cancelled", openedAt: T0 });
     driver

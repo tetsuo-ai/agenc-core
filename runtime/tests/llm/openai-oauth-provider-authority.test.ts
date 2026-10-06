@@ -108,7 +108,10 @@ test('subscription binding forces the safe backend contract', async () => {
     kind: 'refreshed',
     accessToken: 'subscription-access-2',
   })
-  expect(refresh).toHaveBeenCalledWith(boundHome, environment, { force: true })
+  expect(refresh).toHaveBeenCalledWith(boundHome, environment, {
+    force: true,
+    rejectedAccessToken: 'subscription-access',
+  })
 })
 
 test('OAuth binding rejects a custom OpenAI endpoint', async () => {

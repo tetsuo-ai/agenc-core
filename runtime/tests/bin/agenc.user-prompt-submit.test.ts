@@ -19,10 +19,7 @@ import {
   trustProjectSync,
 } from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
-import {
-  AutonomousKeepaliveScheduler,
-  type SessionEditorInteraction,
-} from "../session/autonomous-mode.js";
+import { AutonomousKeepaliveScheduler } from "../session/autonomous-mode.js";
 import {
   canonicalizePath,
   clearSessionReadState,
@@ -83,26 +80,6 @@ function fakeSession(cwd: string) {
     },
   };
   return { session, events };
-}
-
-function daemonEditorInteraction(
-  interactionId: string,
-): SessionEditorInteraction {
-  return {
-    interactionId,
-    kind: "explain",
-    policy: "read_only",
-    editorInstanceId: "editor-prompt-hook-test",
-    bufferHandle: 12,
-    changedtick: 4,
-    contentSha256: "f".repeat(64),
-    path: "src/prompt-hook.ts",
-    range: {
-      start: { line: 1, column: 0 },
-      end: { line: 2, column: 3 },
-    },
-    selectionMode: "character",
-  };
 }
 
 const EMPTY_TURN_INPUTS: PreparedTurnRuntimeInputs = {
@@ -298,29 +275,12 @@ describe("UserPromptSubmit prompt ingress", () => {
       stopReason: "compact_failed",
       errorMessage: "compaction could not shrink the context",
       prompt: "hello",
-      editorInteraction: undefined,
-    },
-    {
-      label: "a request-scoped Editor failure",
-      content: "Editor interaction stopped at its request-scoped limit.",
-      stopReason: "editor_request_failed",
-      errorMessage: "editor_interaction_limit: request cap reached",
-      prompt: "explain this selection",
-      editorInteraction: {
-        interactionId: "editor-request-failed",
-        policy: "read_only",
-        bufferHandle: 1,
-        changedtick: 1,
-        contentSha256: "a".repeat(64),
-        range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
-      },
     },
   ] as const)("blocks autonomous keepalive after $label", async ({
     content,
     stopReason,
     errorMessage,
     prompt,
-    editorInteraction,
   }) => {
     const { session } = fakeSession("/workspace");
     const setContextBlocked = vi.spyOn(
@@ -348,10 +308,7 @@ describe("UserPromptSubmit prompt ingress", () => {
     });
 
     try {
-      await session.submit(
-        prompt,
-        editorInteraction === undefined ? undefined : { editorInteraction },
-      );
+      await session.submit(prompt);
       expect(setContextBlocked).toHaveBeenCalledWith(true);
     } finally {
       uninstall();
@@ -876,51 +833,6 @@ describe("UserPromptSubmit prompt ingress", () => {
             message: expect.stringContaining("daemon policy denied"),
           }),
         }),
-      }),
-    );
-  });
-
-  it("bypasses UserPromptSubmit hooks for daemon editor interactions", async () => {
-    const { session } = fakeSession("/workspace");
-    const hook = vi.fn(() => ({
-      blockingError: { blockingError: "must not run for editor input" },
-    }));
-    session.services.hooks.userPromptSubmitHooks.push(hook);
-    const modelInputs: unknown[] = [];
-    const turnOptions: unknown[] = [];
-    const runTurnFn = vi.fn(async function* (
-      _session: unknown,
-      _ctx: unknown,
-      input: unknown,
-      options: unknown,
-    ) {
-      modelInputs.push(input);
-      turnOptions.push(options);
-      yield {
-        type: "turn_complete",
-        content: "ok",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        stopReason: "completed",
-      } satisfies PhaseEvent;
-      return { reason: "completed" };
-    });
-    __installDaemonTurnDriverHooksForTest(
-      session as never,
-      { current: () => defaultConfig } as never,
-      runTurnFn as never,
-    );
-
-    await session.submit("explain this selection", {
-      editorInteraction: daemonEditorInteraction("editor-hook-bypass"),
-    });
-
-    expect(hook).not.toHaveBeenCalled();
-    expect(runTurnFn).toHaveBeenCalledTimes(1);
-    expect(modelInputs).toEqual(["explain this selection"]);
-    expect(turnOptions).toContainEqual(
-      expect.objectContaining({
-        systemPrompt: expect.stringContaining("<editor_interaction_policy>"),
-        systemPromptTrust: "trusted_internal",
       }),
     );
   });

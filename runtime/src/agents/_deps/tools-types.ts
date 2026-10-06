@@ -7,6 +7,8 @@
  * gut→AgenC crossing.
  */
 
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
+
 export type JSONSchema = Record<string, unknown>;
 
 export interface ToolEffectDispositionEvidence {
@@ -24,6 +26,7 @@ export interface ToolEffectDispositionEvidence {
 
 export interface ToolResult {
   content: string;
+  contentItems?: readonly FunctionCallOutputContentItem[];
   isError?: boolean;
   metadata?: Record<string, unknown>;
   admissionUsage?: {

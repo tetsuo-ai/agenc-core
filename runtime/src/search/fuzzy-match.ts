@@ -1,3 +1,5 @@
+import { FuzzyBoundaryError, validateFuzzyQuery, validateFuzzyCandidate } from "./fuzzy-boundary.js";
+export { MAX_FUZZY_QUERY_UTF8_BYTES, MAX_FUZZY_QUERY_CODE_POINTS, MAX_FUZZY_CANDIDATE_UTF8_BYTES, MAX_FUZZY_CANDIDATE_CODE_POINTS, type FuzzyBoundaryReason, FuzzyBoundaryError, validateFuzzyQuery, validateFuzzyCandidate } from "./fuzzy-boundary.js";
 /**
  * One bounded fuzzy-subsequence matcher for daemon and TUI file search.
  *
@@ -11,10 +13,6 @@
 import { basename } from "node:path";
 
 /** Shared-core ceiling; the daemon applies its stricter 256-code-point limit. */
-export const MAX_FUZZY_QUERY_UTF8_BYTES = 262_144;
-export const MAX_FUZZY_QUERY_CODE_POINTS = 65_535;
-export const MAX_FUZZY_CANDIDATE_UTF8_BYTES = 262_144;
-export const MAX_FUZZY_CANDIDATE_CODE_POINTS = 65_535;
 /** Pinned Nucleo v0.4.0 MatrixSlab cell ceiling (100 * 1024). */
 export const MAX_FUZZY_MATRIX_CELLS = 102_400;
 export const MAX_FUZZY_OPTIMAL_NEEDLE_CODE_POINTS = 2_048;
@@ -36,11 +34,6 @@ const SCORE_LENGTH_BONUS_CEILING = 32;
 const SCORE_LENGTH_BONUS_DIVISOR = 4;
 const TEST_PATH_RANK_DIVISOR = 1.05;
 const UNREACHABLE_SCORE = Number.NEGATIVE_INFINITY;
-const UTF16_HIGH_SURROGATE_START = 0xd800;
-const UTF16_HIGH_SURROGATE_END = 0xdbff;
-const UTF16_LOW_SURROGATE_START = 0xdc00;
-const UTF16_LOW_SURROGATE_END = 0xdfff;
-const BYTE_NUL = 0x00;
 const NUCLEO_MATRIX_SLAB_BYTES = 133_120;
 const NUCLEO_SCORE_CELL_BYTES = 8;
 const NUCLEO_MATRIX_CELL_BYTES = 1;
@@ -73,29 +66,6 @@ const RUN_BONUSES = Object.freeze([
   BONUS_BOUNDARY_DELIMITER,
 ]);
 const RUN_BONUS_STATE_COUNT = RUN_BONUSES.length;
-
-export type FuzzyBoundaryReason =
-  | "EMPTY_QUERY"
-  | "TEXT_NUL"
-  | "TEXT_LONE_SURROGATE"
-  | "QUERY_BYTE_LIMIT"
-  | "QUERY_CODE_POINT_LIMIT"
-  | "CANDIDATE_BYTE_LIMIT"
-  | "CANDIDATE_CODE_POINT_LIMIT"
-  | "MATRIX_LIMIT"
-  | "CANDIDATE_COUNT_LIMIT"
-  | "CANDIDATE_TOTAL_BYTE_LIMIT"
-  | "RESULT_LIMIT";
-
-export class FuzzyBoundaryError extends Error {
-  readonly reason: FuzzyBoundaryReason;
-
-  constructor(reason: FuzzyBoundaryReason, message: string) {
-    super(message);
-    this.name = "FuzzyBoundaryError";
-    this.reason = reason;
-  }
-}
 
 export type FuzzyCaseMode = "insensitive" | "sensitive" | "smart";
 
@@ -680,49 +650,6 @@ export async function rankFuzzyCandidates(
   return materializeRankedCandidates(matcher, heap, options);
 }
 
-export function validateFuzzyQuery(query: string): void {
-  validateTextEncoding(query, "fuzzy query");
-  if (query.length === 0) {
-    throw new FuzzyBoundaryError(
-      "EMPTY_QUERY",
-      "fuzzy query must not be empty",
-    );
-  }
-  const bytes = Buffer.byteLength(query, "utf8");
-  if (bytes > MAX_FUZZY_QUERY_UTF8_BYTES) {
-    throw new FuzzyBoundaryError(
-      "QUERY_BYTE_LIMIT",
-      `fuzzy query is ${bytes} UTF-8 bytes; maximum is ${MAX_FUZZY_QUERY_UTF8_BYTES}`,
-    );
-  }
-  const codePoints = Array.from(query).length;
-  if (codePoints > MAX_FUZZY_QUERY_CODE_POINTS) {
-    throw new FuzzyBoundaryError(
-      "QUERY_CODE_POINT_LIMIT",
-      `fuzzy query has ${codePoints} code points; maximum is ${MAX_FUZZY_QUERY_CODE_POINTS}`,
-    );
-  }
-}
-
-export function validateFuzzyCandidate(candidate: string): number {
-  validateTextEncoding(candidate, "fuzzy candidate");
-  const bytes = Buffer.byteLength(candidate, "utf8");
-  if (bytes > MAX_FUZZY_CANDIDATE_UTF8_BYTES) {
-    throw new FuzzyBoundaryError(
-      "CANDIDATE_BYTE_LIMIT",
-      `fuzzy candidate is ${bytes} UTF-8 bytes; maximum is ${MAX_FUZZY_CANDIDATE_UTF8_BYTES}`,
-    );
-  }
-  const codePoints = Array.from(candidate).length;
-  if (codePoints > MAX_FUZZY_CANDIDATE_CODE_POINTS) {
-    throw new FuzzyBoundaryError(
-      "CANDIDATE_CODE_POINT_LIMIT",
-      `fuzzy candidate has ${codePoints} code points; maximum is ${MAX_FUZZY_CANDIDATE_CODE_POINTS}`,
-    );
-  }
-  return bytes;
-}
-
 export function validateFuzzyCandidateCollection(
   candidates: readonly (string | PreparedFuzzyCandidate)[],
 ): void {
@@ -781,47 +708,6 @@ function boundedSumFits(
     Number.isSafeInteger(current + addition) &&
     current + addition <= maximum
   );
-}
-
-function validateTextEncoding(value: string, label: string): void {
-  if (typeof value !== "string")
-    throw new TypeError(`${label} must be a string`);
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit === BYTE_NUL) {
-      throw new FuzzyBoundaryError(
-        "TEXT_NUL",
-        `${label} contains an embedded NUL`,
-      );
-    }
-    if (
-      codeUnit >= UTF16_HIGH_SURROGATE_START &&
-      codeUnit <= UTF16_HIGH_SURROGATE_END
-    ) {
-      const following = value.charCodeAt(index + 1);
-      if (
-        index + 1 >= value.length ||
-        following < UTF16_LOW_SURROGATE_START ||
-        following > UTF16_LOW_SURROGATE_END
-      ) {
-        throw new FuzzyBoundaryError(
-          "TEXT_LONE_SURROGATE",
-          `${label} contains a lone UTF-16 high surrogate`,
-        );
-      }
-      index += 1;
-      continue;
-    }
-    if (
-      codeUnit >= UTF16_LOW_SURROGATE_START &&
-      codeUnit <= UTF16_LOW_SURROGATE_END
-    ) {
-      throw new FuzzyBoundaryError(
-        "TEXT_LONE_SURROGATE",
-        `${label} contains a lone UTF-16 low surrogate`,
-      );
-    }
-  }
 }
 
 const FUZZY_SIGNATURE_WORDS = 8;

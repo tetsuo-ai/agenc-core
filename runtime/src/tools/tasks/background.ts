@@ -17,7 +17,7 @@ import {
   backgroundTaskLifecycle,
   isTerminalTaskStatus,
   stopTask,
-  type BackgroundTaskLifecycle,
+  BackgroundTaskLifecycle,
 } from "../../tasks/index.js";
 import type { Tool } from "../types.js";
 import {
@@ -70,9 +70,17 @@ function formatTaskOutputContent(payload: {
   return parts.join("\n\n");
 }
 
+/**
+ * `source` is one lifecycle, or a resolver called on every execution so the
+ * tools always read and stop the calling session's own tasks (see
+ * backgroundTaskLifecycleForSession).
+ */
 export function createBackgroundTaskTools(
-  lifecycle: BackgroundTaskLifecycle = backgroundTaskLifecycle,
+  source: BackgroundTaskLifecycle | (() => BackgroundTaskLifecycle) =
+    backgroundTaskLifecycle,
 ): readonly Tool[] {
+  const current = (): BackgroundTaskLifecycle =>
+    source instanceof BackgroundTaskLifecycle ? source : source();
   return [
     {
       name: "TaskOutput",
@@ -96,6 +104,7 @@ export function createBackgroundTaskTools(
         additionalProperties: false,
       },
       execute: async (args) => {
+        const lifecycle = current();
         const strict = taskStrictArgs(args, {
           allowed: new Set(["task_id", "block", "timeout"]),
           required: ["task_id"],
@@ -185,6 +194,7 @@ export function createBackgroundTaskTools(
         additionalProperties: false,
       },
       execute: async (args) => {
+        const lifecycle = current();
         const strict = taskStrictArgs(args, {
           allowed: new Set(["task_id"]),
           required: ["task_id"],

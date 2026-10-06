@@ -13,6 +13,7 @@ import type {
   MCPServerConfig,
   MCPToolBridge,
 } from "./types.js";
+import type { MCPListChangedHandlers } from "./list-changed.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type {
@@ -20,6 +21,7 @@ import type {
   MCPToolBridgePermissionOptions,
   MCPToolCatalogPolicyConfig,
 } from "./tools.js";
+import { isMcpConnectionError, mcpConnectionFailure } from "./connection-errors.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
@@ -29,6 +31,17 @@ import {
   EMPTY_MCP_REQUEST_ENVIRONMENT,
   snapshotMcpRequestEnvironment,
 } from "./environment.js";
+
+/** Only template-resolved sensitive settings are redaction inputs for plugins. */
+export function pluginSensitiveHeaders(
+  config: MCPServerConfig,
+): Readonly<Record<string, string>> | undefined {
+  if (config.origin?.scope !== "plugin") return undefined;
+  const values = (config.pluginSecretValues ?? []).filter(Boolean);
+  return values.length === 0
+    ? undefined
+    : Object.fromEntries(values.map((value, index) => [`decoded:${index}`, value]));
+}
 
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
@@ -50,6 +63,9 @@ export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const allowedTools = config.enabled_tools;
+  // Only the runtime-minted plugin sandbox metadata identifies the trusted
+  // directory. An arbitrary MCP server may set AGENC_PLUGIN_DATA in its env.
+  const displayDataRoot = config.pluginSandbox?.pluginDataDir;
   const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,
@@ -59,13 +75,12 @@ export function toToolCatalogPolicyConfig(
   // This flag bypasses filesystem target inference, so only authorities that
   // cannot be supplied by a checked-out project, a plugin, or a session may
   // grant it. Desktop persists its audited loopback bridge at user scope.
-  const virtualNoFsWriteTools =
-    config.origin?.scope === "default" ||
-      config.origin?.scope === "managed" ||
-      config.origin?.scope === "user"
-      ? config.virtual_no_fs_write_tools
-      : undefined;
+  const virtualNoFsWriteTools = mayGrantVirtualNoFsWrite(config)
+    ? config.virtual_no_fs_write_tools
+    : undefined;
+  const sensitiveHeaders = catalogSensitiveHeaders(config);
   if (
+    !displayDataRoot &&
     !config.supplyChain &&
     !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
@@ -74,15 +89,15 @@ export function toToolCatalogPolicyConfig(
     virtualNoFsWriteTools === undefined &&
     config.tools === undefined &&
     config.localOnly !== true &&
-    !(config.origin?.scope === "session" && config.headers !== undefined)
+    sensitiveHeaders === undefined
   ) {
     return undefined;
   }
   return {
+    ...(displayDataRoot ? { displayDataRoot } : {}),
     ...(config.localOnly === true ? { localOnly: true } : {}),
     ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
-    ...(config.origin?.scope === "session" && config.headers !== undefined
-      ? { sensitiveHeaders: config.headers } : {}),
+    ...(sensitiveHeaders !== undefined ? { sensitiveHeaders } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined
@@ -99,24 +114,25 @@ export function toToolCatalogPolicyConfig(
   };
 }
 
-/** Patterns that indicate the underlying MCP connection is dead. */
-const CONNECTION_ERROR_PATTERNS = [
-  "not connected",
-  "disconnected",
-  "epipe",
-  "channel closed",
-  "process exited",
-  "connection refused",
-  "broken pipe",
-  "transport closed",
-  "client closed",
-  "econnreset",
-  "econnrefused",
-];
+function mayGrantVirtualNoFsWrite(config: MCPServerConfig): boolean {
+  const scope = config.origin?.scope;
+  return scope === "default" || scope === "managed" || scope === "user";
+}
+
+/** A session server's own headers; otherwise the plugin's secret headers, if any. */
+function catalogSensitiveHeaders(
+  config: MCPServerConfig,
+): Readonly<Record<string, string>> | undefined {
+  if (config.origin?.scope === "session" && config.headers !== undefined) {
+    return config.headers;
+  }
+  return pluginSensitiveHeaders(config);
+}
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
+const RECONNECT_STABILITY_MS = 60_000;
 
 export interface MCPReconnectCleanupFailure {
   /** Exact resource whose cleanup could not be proven. */
@@ -144,6 +160,11 @@ export class MCPReconnectCleanupError extends AggregateError {
 }
 
 interface ResilientMCPBridgeOptions {
+  /** Revalidate manager generation and installation before an automatic spawn. */
+  readonly beforeReconnect?: () => void;
+  readonly revocationGuard?: () => boolean;
+  readonly revocationSignal?: AbortSignal;
+  readonly onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
    * Local event observer forwarded to the inner bridge on reconnect so a
@@ -165,6 +186,8 @@ interface ResilientMCPBridgeOptions {
    * tool reconnect.
    */
   readonly onReconnect?: (client: unknown) => void | Promise<void>;
+  /** Install the manager's close observer before replacement discovery. */
+  readonly onReconnectClient?: (client: unknown, isAlive: () => boolean) => void;
   /**
    * Notifies the manager before a poisoned reconnect task settles. The outer
    * bridge retains the exact nested owners and remains their retry boundary.
@@ -186,6 +209,11 @@ interface ResilientMCPBridgeOptions {
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /** Immutable transport authority reused by every automatic reconnect. */
   readonly environment?: ProviderEnvironment;
+  /**
+   * Re-registers SDK listChanged handlers on the fresh client spawned
+   * during automatic reconnect so catalog notifications survive a drop.
+   */
+  readonly listChangedHandlers?: MCPListChangedHandlers;
 }
 
 /**
@@ -199,6 +227,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
   readonly tools: Tool[];
 
   private inner: MCPToolBridge;
+  /**
+   * The bridge whose `dispose()` closes the live client. Catalog refresh
+   * replacements swap `inner` without taking client ownership.
+   */
+  private clientOwner: MCPToolBridge;
   private readonly config: MCPServerConfig;
   /**
    * Catalog policy (allow/deny filter, I-74 SHA-256 pin, approval modes)
@@ -214,6 +247,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private reconnectTask: Promise<void> | undefined;
   private reconnectEpoch = 0;
   private backoffMs = 0;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   private cleanupPoisoned = false;
   private readonly retainedCleanup = new Map<
     unknown,
@@ -225,6 +259,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private innerDisposal:
     | { readonly bridge: MCPToolBridge; readonly promise: Promise<void> }
     | undefined;
+  /** The latest scheduled reconnect; settles when its attempt ends. */
+  private reconnectCycle: ReconnectCycle | undefined;
 
   constructor(
     config: MCPServerConfig,
@@ -235,6 +271,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
     this.config = config;
     this.catalogPolicy = toToolCatalogPolicyConfig(config);
     this.inner = initialBridge;
+    this.clientOwner = initialBridge;
     this.logger = logger;
     this.options = {
       ...options,
@@ -260,7 +297,12 @@ export class ResilientMCPBridge implements MCPToolBridge {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const inner = this.inner;
+    if (this.stabilityTimer !== null) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
+    }
+    this.reconnectCycle?.settle();
+    const inner = this.clientOwner;
     const reconnectTask = this.reconnectTask;
     const task = Promise.allSettled([
       this.disposeInnerBridge(inner),
@@ -286,6 +328,48 @@ export class ResilientMCPBridge implements MCPToolBridge {
       if (this.disposal === task) this.disposal = undefined;
     });
     return task;
+  }
+
+  /**
+   * Replace the published tool proxies from a refresh-built catalog
+   * without closing the live client. The replacement bridge must not
+   * own client disposal. Refused (returns false) while a reconnect is
+   * pending: the reconnect installs its own bridge, which would strand
+   * proxies published from the old connection.
+   */
+  replacePublishedCatalog(next: MCPToolBridge): boolean {
+    if (this.disposed || this.reconnecting) return false;
+    this.inner = next;
+    const replacements = next.tools.map((tool) =>
+      this.createProxyTool(tool.name, tool),
+    );
+    this.tools.splice(0, this.tools.length, ...replacements);
+    return true;
+  }
+
+  /** True from a detected connection loss until the reconnect installs a bridge or ends. */
+  get isReconnecting(): boolean {
+    return this.reconnecting;
+  }
+
+  /** Resolves once no reconnect is scheduled or running, or the bridge is disposed. */
+  async whenReconnectSettled(): Promise<void> {
+    let cycle = this.reconnectCycle;
+    while (cycle !== undefined && this.reconnecting && !this.disposed) {
+      await cycle.settled;
+      if (this.reconnectCycle === cycle) return;
+      cycle = this.reconnectCycle;
+    }
+  }
+
+  /** Whether the published proxies list exactly the tools they execute against. */
+  publishedCatalogMatchesInner(): boolean {
+    return toolCatalogSignature(this.tools) === toolCatalogSignature(this.inner.tools);
+  }
+
+  /** A transport close can occur while no tool call is in flight. */
+  notifyTransportClosed(): void {
+    this.scheduleReconnect();
   }
 
   // --------------------------------------------------------------------------
@@ -331,7 +415,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
         // A bound provider receipt describes a known terminal tool outcome,
         // not a transport loss inferred from arbitrary result text/URLs.
-        if (result.isError && result.effectDisposition === undefined && isConnectionError(result.content)) {
+        if (result.isError && result.effectDisposition === undefined && (mcpConnectionFailure(result) ?? isMcpConnectionError(result.content))) {
           this.scheduleReconnect();
           return { content: `MCP server "${this.serverName}" lost connection — reconnecting...`, isError: true };
         }
@@ -344,8 +428,15 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnecting || this.cleanupPoisoned) return;
 
+    if (this.stabilityTimer !== null) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
+    }
+
     this.reconnecting = true;
     const epoch = ++this.reconnectEpoch;
+    const cycle = createReconnectCycle();
+    this.reconnectCycle = cycle;
     this.backoffMs = this.backoffMs === 0
       ? INITIAL_BACKOFF_MS
       : Math.min(this.backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
@@ -358,12 +449,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
       this.reconnectTimer = null;
       if (this.disposed || epoch !== this.reconnectEpoch) {
         this.reconnecting = false;
+        cycle.settle();
         return;
       }
       const task = this.reconnect(epoch);
       this.reconnectTask = task;
       const clear = (): void => {
         if (this.reconnectTask === task) this.reconnectTask = undefined;
+        cycle.settle();
       };
       void task.then(clear, clear);
     }, this.backoffMs);
@@ -379,7 +472,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       // Do not spawn a replacement until the old connection has actually
       // closed. A failed close is a fail-closed reconnect, not a reason to run
       // two server process trees concurrently.
-      const previousBridge = this.inner;
+      const previousBridge = this.clientOwner;
       try {
         await this.disposeInnerBridge(previousBridge);
       } catch (error) {
@@ -398,6 +491,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
       const { createMCPConnection } = await import("./connection.js");
       const { createToolBridge } = await import("./tools.js");
+      this.options.beforeReconnect?.();
 
       // gaphunt3 #14: re-supply the session's elicitation handlers so the
       // rebuilt client re-registers its ElicitRequest/ElicitationComplete
@@ -410,7 +504,19 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.options.samplingHandlers,
         this.options.sandboxExecutionBroker,
         this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
+        this.options.listChangedHandlers,
       );
+      let closed = false;
+      if (typeof client === "object" && client !== null) {
+        const observed = client as { onclose?: () => void };
+        const previous = observed.onclose;
+        observed.onclose = () => {
+          closed = true;
+          previous?.();
+        };
+      }
+      const isAlive = (): boolean => !closed && this.isReconnectCurrent(epoch);
+      this.options.onReconnectClient?.(client, isAlive);
       if (!this.isReconnectCurrent(epoch)) {
         await closeClientForAbandonedReconnect(client, this.serverName);
         client = undefined;
@@ -434,6 +540,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
           ...(this.options.permissions !== undefined
             ? { permissions: this.options.permissions }
             : {}),
+          ...(this.options.revocationGuard ? { revocationGuard: this.options.revocationGuard } : {}),
+          ...(this.options.revocationSignal ? { revocationSignal: this.options.revocationSignal } : {}),
           // Keep the rebuilt bridge emitting the same local call events.
           ...(this.options.callObserver !== undefined
             ? { callObserver: this.options.callObserver }
@@ -443,8 +551,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
             : {}),
           environment:
             this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
+          ...(this.options.onCatalog !== undefined ? { onCatalog: this.options.onCatalog } : {}),
         },
       );
+
+      if (!isAlive()) throw new Error(`MCP server "${this.serverName}" replacement closed during discovery`);
 
       if (!this.isReconnectCurrent(epoch)) {
         await disposeAbandonedReconnectBridge(newBridge, this.serverName);
@@ -453,10 +564,6 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.reconnecting = false;
         return;
       }
-
-      this.inner = newBridge;
-      this.reconnecting = false;
-      this.backoffMs = 0;
 
       // (a) Rebuild the manager's resource + prompt bridges against the new
       // client. The resilient bridge owns only the tool surface; without
@@ -467,11 +574,29 @@ export class ResilientMCPBridge implements MCPToolBridge {
         try {
           await this.options.onReconnect(client);
         } catch (hookError) {
+          if (!isAlive()) throw hookError;
           this.logger.warn?.(
             `MCP server "${this.serverName}" reconnect resource/prompt refresh failed: ${(hookError as Error).message}`,
           );
         }
       }
+
+      if (!isAlive()) throw new Error(`MCP server "${this.serverName}" replacement closed during initialization`);
+      this.inner = newBridge;
+      this.clientOwner = newBridge;
+      this.reconnecting = false;
+      // A replacement that initializes and immediately dies is still part
+      // of the same crash sequence. Reset only after a healthy interval.
+      // Catalog refresh swaps `inner` without changing the live connection,
+      // so the timer follows `clientOwner` rather than that replaceable bridge.
+      const healthyOwner = this.clientOwner;
+      this.stabilityTimer = setTimeout(() => {
+        this.stabilityTimer = null;
+        if (!this.disposed && !this.reconnecting && this.clientOwner === healthyOwner && this.reconnectEpoch === epoch) {
+          this.backoffMs = 0;
+        }
+      }, RECONNECT_STABILITY_MS);
+      this.stabilityTimer.unref?.();
 
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {
@@ -604,6 +729,25 @@ export class ResilientMCPBridge implements MCPToolBridge {
   }
 }
 
+interface ReconnectCycle {
+  readonly settled: Promise<void>;
+  readonly settle: () => void;
+}
+
+function createReconnectCycle(): ReconnectCycle {
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { settled, settle };
+}
+
+function toolCatalogSignature(tools: readonly Tool[]): string {
+  return JSON.stringify(
+    tools.map((tool) => [tool.name, tool.description, tool.inputSchema]),
+  );
+}
+
 /**
  * Close a freshly-spawned MCP client that a newer lifecycle epoch abandoned.
  * A close failure is propagated as a cleanup failure so strict sandbox
@@ -659,10 +803,4 @@ function reconnectCleanupFailure(
   error: unknown,
 ): MCPReconnectCleanupFailure {
   return { owner, dispose, error };
-}
-
-/** Check if an error message indicates a dead connection. */
-function isConnectionError(content: string): boolean {
-  const lower = content.toLowerCase();
-  return CONNECTION_ERROR_PATTERNS.some((pattern) => lower.includes(pattern));
 }

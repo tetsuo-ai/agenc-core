@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import QRCode from "qrcode";
 import WebSocket from "ws";
 import { RemoteApprovalProjection } from "./approvals.js";
 import type { AgenCDaemonResponse, JsonObject } from "../app-server/protocol/index.js";
@@ -27,7 +26,7 @@ export interface RemoteServiceOptions {
   readonly home: string;
   readonly backend: RemoteBackend;
   readonly lookupSession: RemoteSessionLookup;
-  readonly createConnection: (access: RemoteAccessBoundary) => BrowserConnection;
+  readonly createConnection: (access: RemoteAccessBoundary, cid: string) => BrowserConnection;
   readonly socket?: (url: string, protocols: string[]) => WebSocket;
   readonly now?: () => number;
   readonly qrDataUrl?: (value: string) => Promise<string>;
@@ -47,9 +46,9 @@ export class RemoteService {
   #pairingOperation = 0;
   #beginController?: AbortController;
   #error: string | null = null;
-  readonly #approvals = new RemoteApprovalProjection();
+  readonly #approvals: RemoteApprovalProjection;
 
-  constructor(options: RemoteServiceOptions) { this.#options = options; }
+  constructor(options: RemoteServiceOptions, approvals = new RemoteApprovalProjection()) { this.#options = options; this.#approvals = approvals; }
   capabilities(): RemoteCapabilities { return { available: true, contractVersion: 1, browserProtocol: "agenc-browser-v2", roles: ["view", "control"], workspaceScope: "explicit-sessions", supportsFiles: true, supportsApprovals: true, supportsSessionCreate: this.#options.createSession !== undefined, supportsPendingApprovals: true, requiresLocalApproval: true, requiresSignIn: true }; }
   observeSessionEvent(sessionId: string, event: JsonObject): void { this.#approvals.observe(sessionId, event); }
   status(): RemoteStatus {
@@ -106,7 +105,10 @@ export class RemoteService {
       assertCurrent();
       pair = await this.#options.backend.start({ machineName: hostname() || "Computer", role: grant.role, workspaceIds: [grant.workspaceId] }, signal);
       assertCurrent();
-      const qrDataUrl = await (this.#options.qrDataUrl ?? ((value) => QRCode.toDataURL(value, { width: 256, margin: 2 })))(pair.pairUrl);
+      const qrDataUrl = await (this.#options.qrDataUrl ?? (async (value) => {
+        const { default: QRCode } = await import("qrcode");
+        return QRCode.toDataURL(value, { width: 256, margin: 2 });
+      }))(pair.pairUrl);
       assertCurrent();
       const record: PairRecord = { pair, grant, generation, controller: new AbortController(), peers: new Map(), seen: new Set(), timers: new Set(), polling: false, connecting: false, pairing: { pairingId: pair.pairingId, code: pair.code, pairUrl: pair.pairUrl, qrDataUrl, expiresAt: pair.expiresAt, status: "pending", ...grant } };
       this.#pending = record; this.#error = null;
@@ -114,7 +116,10 @@ export class RemoteService {
       return this.status();
     } catch (error) {
       if (pair) this.#revokeBackend(pair);
-      if (generation === this.#generation && operation === this.#pairingOperation) this.#error = error instanceof RemoteError ? error.code : "REMOTE_PAIRING_FAILED";
+      // The caller receives this refusal. It describes one request (a task
+      // that cannot be shared, a folder outside the project), not the
+      // service, so it is not kept as the service's error: that turned every
+      // later status into "error" until the next successful pairing.
       throw error instanceof RemoteError ? error : new RemoteError("REMOTE_PAIRING_FAILED");
     } finally { if (generation === this.#generation && operation === this.#pairingOperation) { this.#beginning = false; this.#beginController = undefined; } }
   }
@@ -233,10 +238,16 @@ export class RemoteService {
     if (!message || Array.isArray(message) || message.jsonrpc !== "2.0" || typeof message.id !== "string" || message.id.length < 1 || message.id.length > 128 || typeof message.method !== "string") return;
     const fail = (code: string) => this.#send(record, cid, { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: code, data: { code } } });
     const mutation = ["session.create", "message.send", "session.cancelTurn", "tool.approve", "tool.deny"].includes(message.method);
-    // Read polling cannot exhaust mutation replay protection. Mutation IDs are never
-    // evicted while their grant is live; a new explicit pairing resets that ledger.
-    if (mutation && (record.seen.has(message.id) || record.seen.size >= 4096)) { fail("REMOTE_REPLAY_DENIED"); return; }
-    if (mutation) record.seen.add(message.id);
+    // Read polling cannot exhaust mutation replay protection. The ledger keeps
+    // the most recent 4096 mutation ids for the life of the grant, across
+    // reconnects; a full ledger forgets its oldest id. It used to refuse every
+    // new id instead, which locked a busy device out of sending, approving and
+    // cancelling until it paired again. A new explicit pairing resets it.
+    if (mutation) {
+      if (record.seen.has(message.id)) { fail("REMOTE_REPLAY_DENIED"); return; }
+      if (record.seen.size >= 4096) record.seen.delete(record.seen.values().next().value!);
+      record.seen.add(message.id);
+    }
     let peer = record.peers.get(cid);
     if (!peer) {
       if (record.peers.size >= 4) { fail("REMOTE_PEER_LIMIT"); return; }
@@ -246,7 +257,7 @@ export class RemoteService {
         try { return await this.#options.createSession!(record.grant.workspacePath, title, record.controller.signal); }
         finally { record.creatingSession = false; }
       } } : {}) });
-      peer = { connection: this.#options.createConnection(access), queued: 0, bytes: 0 };
+      peer = { connection: this.#options.createConnection(access, cid), queued: 0, bytes: 0 };
       record.peers.set(cid, peer);
     }
     const bytes = Buffer.byteLength(frame.payload);

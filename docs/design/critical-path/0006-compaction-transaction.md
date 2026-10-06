@@ -51,8 +51,24 @@ idempotently. Missing proof keeps the source pinned.
 Immutable policy and output schema use the privileged instruction channel.
 Transcript, tool output, and prior summaries are untrusted structured data;
 their bytes are never interpolated into control delimiters. Complete semantic
-units preserve order and never separate a tool use from its result or lose the
-checkpoint-bound result digest from CP-0003.
+units preserve order and never separate a tool use from its result. The
+runtime binds each result's checkpoint-bound digest from CP-0003 to its unit
+and pins the unit's tool pairs into the summary itself.
+
+The summarizer payload carries only what the model summarizes. Within a
+unit, calls and results are linked by short refs (`c1`, `c2`, ...) instead of
+provider call IDs, and a result does not carry its checkpoint-bound digest.
+Tool-call arguments that parse are embedded as JSON values instead of escaped
+strings; a unit whose parsed arguments the canonical encoder refuses (node or
+depth bound, lone surrogate) keeps the strings. A tool result that is an exact
+untrusted-data frame for its tool is sent without the frame: the payload kind
+and the compactor's policy already label every unit untrusted, and the frame's
+body was sanitized when it was framed. Reduce and final calls receive each
+child's ref, narrative, and fact and open-action IDs and text, without its
+digest, pinned tool pairs, or record sources, so the fan-in preflight measures
+the payload that is sent. In captured sessions, the omitted digests, IDs,
+frames, and escaping were 5 to 35 percent of map input, depending on result
+size, and pinned tool pairs were 85 percent of a reduce call's input.
 
 The reduction plan is a bounded, preflighted map/reduce tree. It reserves policy,
 schema, and output tokens; caps source bytes/messages/units, chunks, levels,
@@ -72,6 +88,32 @@ wrapper fields fail before commit.
 complete trusted wrapper with `summary_sha256` omitted. The response must finish
 with `stop`, satisfy the strict schema and provenance graph, fit the target
 context, save at least 1,024 tokens, and reduce tokens by at least 20 percent.
+The shrink measurement compares the request the model would actually be sent
+before and after: both histories pass through the same inline-image budget the
+sampling path applies (`AGENC_CONTEXT_IMAGE_BUDGET_BYTES`), never the raw
+history, which is capped at 16 MiB by token accounting and overflowed on a
+30-screenshot Terminal-Bench session. The summarizer itself never receives
+image bytes; media parts are placeholders in its projection.
+
+Payload bundles (`source_history`, `active_history_refs`, `final_summary`,
+`summary_dag`, `replacement_history`) are written as a chain of chunks, each
+under one 4 MiB canonical line, kind by kind. The strict reader accepts a
+kind's chunks back to back and refuses a kind switch while the previous kind is
+incomplete or a kind that resumes after another was written. It used to refuse
+the second chunk of the same kind, so any bundle over one line failed at
+commit as `durable compaction commit failed` (#2499).
+
+The model sees the committed summary as one user message after the boundary
+policy message: canonical JSON with `version: 2`,
+`kind: "agenc_compaction_context_v2"`, `trust: "untrusted_historical_data"`,
+the `narrative`, and the text of each fact and open action. `summary_sha256`,
+the runtime-pinned tool pairs, record IDs, and source refs stay in the durable
+summary, its `final_summary` and `summary_dag` payloads, and the
+`compactionHistory` marker. The model cannot use them, and in the message they
+would cost about 53 tokens per compacted tool call on every later request. The
+`PostCompact` hook's `compact_summary` is the same text. Readers identify the
+boundary and summary by the marker, never by content, so
+`agenc_compaction_context_v1` messages in older rollouts stay valid.
 
 ### Failure, commit, and projection
 
@@ -80,6 +122,13 @@ injection, no-shrink, or commit-precondition failure leaves original history
 active and appends a typed, flushed `compaction_failed` event. If that failure
 event cannot be recorded, the pin remains for startup reconciliation. A
 deterministic extract may support diagnostics but can never replace history.
+The `compaction_failed` event carries only a digest of the detail; the
+readable cause travels in the turn's `auto_compact_failed` warning. A
+`commit_failed` wrap names the adapter's error (name, message, Node error
+code, syscall, path) and the commit's size facts in its message and as
+structured warning `details` (`runtime/src/services/compact/failure-details.ts`),
+so a disk-full write, a size cap, and a validation refusal are told apart
+after the fact.
 
 The loop guard permits at most two failed automatic attempts for the same source
 history/configuration digest. Restart reconstructs that guard; only changed
@@ -333,10 +382,73 @@ native tools. Admission derives its provider-native accounting catalog from
 the same options that the wire adapter receives, so it accounts the same
 selected native tools that can reach the provider.
 
+Summary calls send the reasoning effort the main loop sends. Each
+transaction reads the session's current effort, or the configured
+`reasoning_effort` when the session has none, and resolves it for the
+session's provider and model with the main loop's resolver
+(`runtime/src/session/session-reasoning-effort.ts`). It reads the
+configuration through the session's own settings authority, as a turn
+does: a manual compaction that the daemon runs has no authority bound. An
+in-process teammate's summary calls send the parent session's current
+effort, resolved for the teammate's model, as the teammate's own requests
+do. A summary call without an effort would get the provider default, which
+can be higher: xAI's default on grok-4.6 is high, the configured default is
+medium. A model-downshift compaction sends its summary calls to the
+previous model with the effort resolved for the current one, so a tier that
+only the current model offers can be refused there.
+
 Accepted output is still strict `CompactionSummaryV1`. Shrink must save at
 least **1,024** tokens and **20 percent**. Automatic compaction is suppressed
 after **two** durable `compaction_failed` rows for the same
 history/configuration digest; `/compact` (manual) is the explicit retry.
+The digest leaves out the reasoning effort, so changing the effort does not
+lift that suppression.
+
+### Compaction transaction wall budget
+
+`/compact` and every automatic transactional compact share one
+whole-transaction wall budget: **900 seconds**
+(`MAX_COMPACTION_WALL_MS` in `transaction-types.ts`). It is not a
+per-call timeout and is not an environment or `config.toml` override.
+
+The timer starts when `compactConversationTransactionally` creates the
+deadline, after the exclusive lease and admission scope. Two checks
+enforce it:
+
+1. Before each admitted summary call, `compactionWallTimeExceeded`
+   throws `wall_time_exceeded` once elapsed time is greater than 900 s.
+2. A `setTimeout` aborts the transaction controller with
+   `compaction exceeded its 900000 ms wall-clock deadline`. Admission
+   cancellation then uses cause `compaction_wall_time_exceeded`.
+
+The former 300 s bound cut off a measured grok-4.6 compaction of a
+~356k-token source at effort high (observed healthy calls 109–290 s).
+The current bound is three times that cutoff.
+
+On expiry:
+
+- Durable history stays unchanged. Only a flushed `compaction_committed`
+  replaces it.
+- After intent exists, the adapter records `compaction_failed` with
+  `reason: "wall_time_exceeded"`. A wall abort before intent is rethrown
+  without that durable row (PreCompact and planning sit on the same
+  timer).
+- The summarizer is given **5 seconds**
+  (`MAX_COMPACTION_ABORT_QUIESCENCE_MS`) to settle. If it does not, the
+  recorded reason becomes `recovery_interrupted`
+  (`compaction provider did not quiesce within 5000 ms after cancellation`).
+- Automatic compact is suppressed after **two** durable failures for the
+  same history/configuration digest. `/compact` remains the explicit
+  retry.
+- A thrown compact still follows the
+  [compact-skip session survival](#compact-skip-and-session-survival)
+  turn mapping.
+
+This bound is not the source-span rollback window. An active retention
+pin does not expire by wall clock. It is also not `provider_timeout`
+(that classify path is only for errors that are not already a
+`CompactionTransactionError`) and not `mid_turn_compact_skipped` (that
+is a no-op after the outer token gate).
 
 ### Rollback and retention
 
@@ -389,6 +501,7 @@ checkpoint. See [checkpoint prefix items](../durable-runs-effects-events.md#chec
 | Auto never runs, then the next turn is `context_window_exceeded` | Confirm the live window instead of assuming the 128k fallback. Above 13k, the threshold is `min(window-13k, 75%)`. Also check `AGENC_AUTOCOMPACT_PCT_OVERRIDE` and `AGENC_DISABLE_AUTO_COMPACT`. |
 | A post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing history with an old checkpoint or hash version. Preserve the rollout and let the schema upgrader validate the old checkpoint before rewriting it; do not edit the version fields by hand. |
 | After switching to a smaller-window model, the first turn overflows | Model-downshift only runs when the previous slug differs, the old window is larger, and usage is greater than the new pre-sampling limit or at least the new window. Three failed automatic attempts skip later ones this turn. `AGENC_DISABLE_AUTO_COMPACT` makes the compact return without changing history. |
+| Compact runs ~15 min then `compaction_failed` / `wall_time_exceeded` | The whole-transaction wall budget fired. Check the rollout `compaction_failed.reason`. History should be unchanged. Manual `/compact` retries; a second auto failure for the same digest is suppressed. Distinct from `provider_timeout` and from `mid_turn_compact_skipped`. If the reason is `recovery_interrupted` after 5 s, the summarizer ignored abort. See [compaction transaction wall budget](#compaction-transaction-wall-budget). |
 | A summary call includes a client or provider-native tool | This violates the summary-call contract. Summary calls must send an empty client catalog and an empty native-tool routing allowlist. Admission must account the same selected native catalog as the wire. |
 | History vanished after a failed compact | Only a flushed `compaction_committed` may replace active history. Any earlier replacement is a transaction bug and must not be treated as a commit. |
 | `/compact` says durable adapter unavailable | Compaction requires the canonical rollout owner (`readCompactionTransactionAdapter`). There is no character-extract fallback. |

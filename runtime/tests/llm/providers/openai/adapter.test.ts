@@ -9,6 +9,9 @@ import {
 import { LMStudioProvider } from "../lmstudio/index.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "./adapter.js";
+import { childTerminalOutcome } from "../../../agents/child-terminal.js";
+import { StreamModelError } from "../../../phases/stream-model.js";
+import { isRetryableStreamError } from "../../../session/run-turn-stream-retry.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
 
@@ -51,6 +54,110 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each([false, true])("uses the flat Responses named tool choice (stream=%s)", async stream => {
+    const output = [{ type: "function_call", id: "fc_fixture", call_id: "call_fixture", name: "mcp__memory__search_nodes", arguments: '{}' }];
+    const payload = { id: "resp_fixture", status: "completed", model: "gpt-5-pro", output, usage: { input_tokens: 8, output_tokens: 4 } };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(stream
+      ? sseResponse([`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: payload })}\n\n`])
+      : Response.json(payload));
+    const provider = new OpenAIProvider({ model: "gpt-5-pro", apiKey: "fixture", fetchImpl });
+    const messages = [{ role: "user" as const, content: "Search memory" }];
+    const options = { maxOutputTokens: 128, toolChoice: { type: "function" as const, name: "mcp.memory.search_nodes" }, tools: [{ type: "function" as const, function: { name: "mcp.memory.search_nodes", description: "Search", parameters: { type: "object", properties: {} } } }] };
+    const response = stream
+      ? await provider.chatStream(messages, vi.fn(), options)
+      : await provider.chat(messages, options);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://api.openai.com/v1/responses");
+    expect(body.stream).toBe(stream);
+    expect(body.tool_choice).toEqual({ type: "function", name: body.tools[0].name });
+    expect(body.tool_choice).not.toHaveProperty("function");
+    expect(response.toolCalls[0]?.name).toBe("mcp.memory.search_nodes");
+  });
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds Chat Completions cache keys supplied through extraBody: %s",
+    async (promptCacheKey) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+        JSON.stringify({
+          id: "chatcmpl_cache_key",
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-4.1",
+        useResponsesApi: false,
+        extraBody: { prompt_cache_key: promptCacheKey },
+        fetchImpl,
+      });
+
+      await provider.chat([{ role: "user", content: "hello" }]);
+
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+      expect(body.prompt_cache_key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      if (promptCacheKey.length <= 64) {
+        expect(body.prompt_cache_key).toBe(promptCacheKey);
+      }
+    },
+  );
+
+  test.each([
+    "rate_limit_exceeded",
+    "rate_limit",
+    "rate_limited",
+    "too_many_requests",
+  ])("classifies response.failed throttling code %s with or without HTTP status", async (code) => {
+    for (const status of [undefined, 429]) {
+      const error = { code, message: "Request throttled", retry_after_ms: 2_500,
+        ...(status === undefined ? {} : { status }) };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { error } })}\n\n`,
+      ]));
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+        useResponsesApi: true, fetchImpl });
+      const failure = await provider.chatStream(
+        [{ role: "user", content: "go" }], () => {}, { singleWireAttempt: true },
+      ).then(() => undefined, (caught: unknown) => caught);
+      expect(failure).toBeInstanceOf(LLMRateLimitError);
+      expect(failure).toMatchObject({ retryAfterMs: 2_500 });
+      expect((failure as Error).message).toContain("openai_category=rate_limited");
+      expect(childTerminalOutcome({ provider: "openai", model: "gpt-5", error: failure,
+        dispatch: "sent" })).toMatchObject({ reason: "rate_limited", retryable: true,
+          retryAfterMs: 2_500 });
+      expect(isRetryableStreamError(new StreamModelError(failure))).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test.each([
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "organization_usage_limit_exceeded",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "usage_limit_reached",
+    "usage_limit_exceeded",
+    "usage_not_included",
+    "usage_limit",
+  ])("classifies response.failed billing code %s with or without HTTP status", async (code) => {
+    for (const status of [undefined, 429]) {
+      const error = { code, message: "Billing is unavailable", ...(status === undefined ? {} : { status }) };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { error } })}\n\n`,
+      ]));
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+        useResponsesApi: true, fetchImpl,
+        providerFallback: { provider: "openai", model: "gpt-5",
+          targets: [{ provider: "grok", model: "grok-4-fast" }] } });
+      const failure = await provider.chatStream([{ role: "user", content: "go" }], () => {})
+        .then(() => undefined, (caught: unknown) => caught);
+      expect(failure).toBeInstanceOf(Error);
+      expect(childTerminalOutcome({ provider: "openai", model: "gpt-5", error: failure,
+        dispatch: "sent" })).toMatchObject({ reason: "insufficient_funds", retryable: false });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
   test("uses the registry endpoint for registered provider identities", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -771,6 +878,20 @@ describe("OpenAIProvider", () => {
     ).rejects.not.toThrow(/d1c7a95e8d4f|user_3FtLIoOmu|openrouter\.ai\/workspaces|128000/);
   });
 
+  test("maps an OpenRouter monthly limit response to a typed funds stop", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: "Monthly limit exceeded", code: 429 } }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ));
+    const provider = new OpenAIProvider({
+      apiKey: "managed-key", providerName: "openrouter", model: "openrouter/openai/gpt-5-nano",
+      baseURL: "https://llm.agenc.tech/v1", useResponsesApi: false, fetchImpl,
+    });
+
+    await expect(provider.chat([{ role: "user", content: "hello" }]))
+      .rejects.toMatchObject({ name: "LLMFundsError", statusCode: 429 });
+  });
+
   test("rejects chat-completions non-stream tool calls with invalid JSON", async () => {
     const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -875,6 +996,83 @@ describe("OpenAIProvider", () => {
       provider.chat([{ role: "user", content: "hello" }]),
     ).rejects.toBeInstanceOf(LLMContextWindowExceededError);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  // #2520: on a long tool loop the output reservation decayed from 131,072 to
+  // 1,256 tokens over ~110 dispatches with nothing in the rollout to show for
+  // it. The squeeze itself is unchanged; below half of the requested maximum
+  // it is reported, first when it crosses the fraction and then as it halves.
+  describe("output reservation squeeze warning", () => {
+    const CONTEXT_WINDOW = 950_000;
+    const REQUESTED_OUTPUT = 131_072;
+
+    function squeezeExercise() {
+      const emitWarning = vi.fn();
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+        new Response(
+          JSON.stringify({
+            id: "chatcmpl_squeezed",
+            model: "glm-5.3",
+            choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "local-token",
+        model: "glm-5.3",
+        baseURL: "http://127.0.0.1:8000/v1",
+        useResponsesApi: false,
+        fetchImpl,
+        emitWarning,
+      });
+      const dispatch = async (accountedInputTokens: number): Promise<number> => {
+        await provider.chat([{ role: "user", content: "hello" }], {
+          accountedInputTokens,
+          maxOutputTokens: REQUESTED_OUTPUT,
+          contextWindowTokens: CONTEXT_WINDOW,
+        });
+        const body = JSON.parse(String(fetchImpl.mock.calls.at(-1)?.[1]?.body)) as Record<string, unknown>;
+        return body.max_tokens as number;
+      };
+      const squeezeWarnings = (): string[] =>
+        emitWarning.mock.calls.flatMap(([warning]) =>
+          warning.cause === "output_reservation_squeezed" ? [warning.message as string] : []);
+      return { dispatch, squeezeWarnings };
+    }
+
+    test("warns when the squeeze crosses half of the requested output, then again as it halves, without changing the fit", async () => {
+      const { dispatch, squeezeWarnings } = squeezeExercise();
+      // The incident's own decay, as implied input estimates against a 950k window.
+      expect(await dispatch(818_000)).toBe(130_976);
+      expect(squeezeWarnings()).toEqual([]);
+      expect(await dispatch(908_202)).toBe(40_774);
+      expect(squeezeWarnings()).toEqual([
+        expect.stringContaining("reduced the output reservation to 40774 of the requested 131072 tokens (31%)"),
+      ]);
+      expect(await dispatch(927_892)).toBe(21_084);
+      expect(squeezeWarnings()).toHaveLength(1);
+      expect(await dispatch(944_618)).toBe(4_358);
+      expect(await dispatch(947_720)).toBe(1_256);
+      expect(squeezeWarnings()).toEqual([
+        expect.stringContaining("40774 of the requested 131072 tokens (31%)"),
+        expect.stringContaining("4358 of the requested 131072 tokens (3%)"),
+        expect.stringContaining("1256 of the requested 131072 tokens (0%)"),
+      ]);
+      expect(squeezeWarnings()[0]).toContain(
+        "the estimated prompt (908202) leaves that much of the 950000 token context window after the 1024 token safety buffer",
+      );
+    });
+
+    test("re-arms once a request fits above the fraction again", async () => {
+      const { dispatch, squeezeWarnings } = squeezeExercise();
+      await dispatch(908_202);
+      expect(squeezeWarnings()).toHaveLength(1);
+      // Compaction restored headroom: the next request needs no squeeze at all.
+      expect(await dispatch(100_000)).toBe(REQUESTED_OUTPUT);
+      await dispatch(908_202);
+      expect(squeezeWarnings()).toHaveLength(2);
+    });
   });
 
   test("refreshes oauth credentials after a 401 and retries once", async () => {
@@ -1303,6 +1501,7 @@ describe("OpenAIProvider", () => {
     expect(chunks).toEqual([
       { content: "Hel", done: false },
       { content: "lo", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: false,
@@ -1525,7 +1724,9 @@ describe("OpenAIProvider", () => {
 
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "there", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: true,
@@ -1546,6 +1747,7 @@ describe("OpenAIProvider", () => {
       provenance: "provider",
       cachedInputTokens: 3,
       reasoningOutputTokens: 2,
+      cacheWritesUnreported: true,
     });
 
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
@@ -1580,7 +1782,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow(
       `${PROVIDER_TEST_LABEL} chat-completions stream emitted invalid tool_call`,
     );
-    expect(chunks).toEqual([]);
+    expect(chunks).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -1614,6 +1816,7 @@ describe("OpenAIProvider", () => {
     expect(response.toolCalls).toEqual([]);
     expect(chunks).toEqual([
       { content: "Let me write that.", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "", done: true },
     ]);
   });

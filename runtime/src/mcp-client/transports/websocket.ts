@@ -1,3 +1,4 @@
+import { loadMcpTypes } from "../../services/mcp/sdk-schema.js";
 /**
  * MCP JSON-RPC WebSocket transport for AgenC's MCP client connection
  * boundary.
@@ -11,23 +12,20 @@
  *     JSON-RPC over a caller-provided WebSocket endpoint.
  */
 
-import { VERSION } from "../../version.js";
 import WebSocket, { type RawData } from "ws";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import {
-  type JSONRPCMessage,
-  JSONRPCMessageSchema,
+import type {
+  JSONRPCMessage,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import { getWebSocketTLSOptions } from "../../utils/mtls.js";
 import { getWebSocketProxyAgent } from "../../utils/proxy.js";
@@ -36,6 +34,7 @@ import {
   EMPTY_MCP_REQUEST_ENVIRONMENT,
   snapshotMcpRequestEnvironment,
 } from "../environment.js";
+import { assertMcpTransportToolDispatch } from "../local-control.js";
 
 const MCP_WEBSOCKET_SUBPROTOCOL = "mcp";
 export const WEBSOCKET_CLOSE_WAIT_MS = 1_000;
@@ -134,6 +133,7 @@ export class MCPWebSocketClientTransport implements Transport {
       throw new Error("WebSocket is not open");
     }
 
+    assertMcpTransportToolDispatch(message);
     await new Promise<void>((resolve, reject) => {
       socket.send(JSON.stringify(message), (error) => {
         if (error) {
@@ -148,7 +148,7 @@ export class MCPWebSocketClientTransport implements Transport {
 
   private readonly onMessage = (data: RawData): void => {
     try {
-      const message = JSONRPCMessageSchema.parse(JSON.parse(rawDataToString(data)));
+      const message = loadMcpTypes().JSONRPCMessageSchema.parse(JSON.parse(rawDataToString(data)));
       this.onmessage?.(message);
     } catch (error) {
       this.onerror?.(toError(error));
@@ -198,25 +198,19 @@ export async function createWebSocketMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const timeout = config.timeout ?? 30_000;
   const transport = createWebSocketMCPTransport(config, environment);
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP WebSocket server "${config.name}"...`, {
     endpoint: config.endpoint,

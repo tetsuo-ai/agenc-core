@@ -61,8 +61,10 @@ import {
   captureBaseState,
   checkBaseMovement,
   cleanupAfterEvidence,
+  discardCancelledWorktree,
   exportPatchArtifacts,
   provisionWorkflowWorktree,
+  validateContinuationSnapshot,
 } from "../../../src/workflow/worktree-lifecycle.js";
 
 export const M5_EXIT_RUN_ID = "wf-m5-exit";
@@ -259,6 +261,7 @@ export function buildM5Harness(options: M5HarnessOptions): M5Harness {
   const spawnKinds: WorkflowSpawnKind[] = [];
 
   const worktrees: WorkflowWorktreeBroker = {
+    validateContinuation: async input => validateContinuationSnapshot({ ...input, broker }),
     captureBaseState: async (repoPath) => captureBaseState(repoPath, broker),
     provision: async (spec) => {
       const handle = await provisionWorkflowWorktree(spec, broker);
@@ -282,13 +285,10 @@ export function buildM5Harness(options: M5HarnessOptions): M5Harness {
         patchBytes: input.patchBytes,
         broker,
       }),
-    cleanup: async (input) =>
-      cleanupAfterEvidence({
-        proof: input.proof,
-        handle: input.handle,
-        broker,
-        warn: (message) => warnings.push(message),
-      }),
+    // The whole input, headCommit included: the delivered commit is pinned
+    // before the worktree branch goes, as in the daemon adapter.
+    cleanup: async (input) => cleanupAfterEvidence({ ...input, broker, warn }),
+    discard: async (input) => discardCancelledWorktree({ ...input, broker, warn }),
   };
 
   const commands: WorkflowCommandRunner = {

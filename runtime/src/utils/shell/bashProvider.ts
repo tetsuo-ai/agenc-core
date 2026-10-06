@@ -15,9 +15,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getPlatform } from '../platform.js'
 import { getSessionEnvironmentScript } from '../sessionEnvironment.js'
 import {
-  ensureSocketInitialized,
   getAgenCTmuxEnv,
-  hasTmuxToolBeenUsed,
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
 import type { PreparedShellCommand, ShellProvider } from './shellProvider.js'
@@ -192,22 +190,8 @@ export async function createBashShellProvider(
         )
       }
 
-      // TMUX SOCKET ISOLATION (DEFERRED):
-      // We initialize AgenC's tmux socket ONLY AFTER the Tmux tool has been used
-      // at least once, OR if the current command appears to use tmux.
-      // This defers the startup cost until tmux is actually needed.
-      //
-      // Once the Tmux tool is used (or a tmux command runs), all subsequent Bash
-      // commands will use AgenC's isolated socket via the TMUX env var override.
-      //
-      // See tmuxSocket.ts for the full isolation architecture documentation.
-      const commandUsesTmux = command.includes('tmux')
-      if (
-        options.childEnvironment.USER_TYPE === 'ant' &&
-        (hasTmuxToolBeenUsed() || commandUsesTmux)
-      ) {
-        await ensureSocketInitialized()
-      }
+      // See tmuxSocket.ts for the tmux socket isolation architecture. The
+      // socket is only ever set up by the Tmux tool itself.
       const agencTmuxEnv = getAgenCTmuxEnv()
       const env: Record<string, string> = {}
       // CRITICAL: Override TMUX to isolate ALL tmux commands to AgenC's socket.

@@ -345,7 +345,7 @@ describe("permission request overlay coverage", () => {
       stdin.write("3");
       await sleep();
 
-      expect(denyResolved).toEqual([DENIED]);
+      expect(denyResolved).toEqual([{ ...DENIED, decidedBy: "user" }]);
     } finally {
       root.unmount();
       stdin.end();
@@ -422,7 +422,7 @@ describe("permission request overlay coverage", () => {
       expect(resolved).toEqual([]);
       stdin.write("3");
       await sleep();
-      expect(resolved).toEqual([DENIED]);
+      expect(resolved).toEqual([{ ...DENIED, decidedBy: "user" }]);
     } finally {
       root.unmount();
       stdin.end();

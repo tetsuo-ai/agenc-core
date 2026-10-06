@@ -20,7 +20,7 @@ import {
   sep,
 } from 'node:path'
 
-import yaml from 'js-yaml'
+import { loadYaml } from '../../utils/lazy-runtime-packages.js'
 import { z } from 'zod/v4'
 
 import type { AgenCConfig } from '../../config/schema.js'
@@ -443,12 +443,9 @@ function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
     : undefined
 }
 
-function parseIsolation(value: unknown): 'worktree' | 'remote' | undefined {
-  const valid = process.env.USER_TYPE === 'ant' ? ['worktree', 'remote'] : ['worktree']
-  return typeof value === 'string' &&
-    valid.includes(value)
-    ? (value as 'worktree' | 'remote')
-    : undefined
+function parseIsolation(value: unknown): 'worktree' | undefined {
+  // Only worktree isolation exists; a remote sandbox is not a thing here.
+  return value === 'worktree' ? 'worktree' : undefined
 }
 
 function parseHooks(value: unknown): HooksSettings | undefined {
@@ -599,7 +596,7 @@ function parseMarkdown(raw: string): {
   const frontmatterRaw = raw.slice(3, end)
   const contentStart = raw.indexOf('\n', end + 4)
   const content = contentStart === -1 ? '' : raw.slice(contentStart + 1)
-  const parsed = yaml.load(frontmatterRaw)
+  const parsed = loadYaml().load(frontmatterRaw)
   return {
     frontmatter: isRecord(parsed) ? parsed : {},
     content,

@@ -1,3 +1,4 @@
+import type { BoundReadOnlyCwdCapability } from "./bound-readonly-cwd.js";
 /**
  * Final process-execution boundary for commands that do not naturally pass
  * through the model-tool router (hooks, MCP stdio, and direct interactive
@@ -12,7 +13,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
-import { realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +49,7 @@ import type { UnifiedExecRuntimeSandbox } from "../unified-exec/types.js";
 import { UnifiedExecError } from "../unified-exec/types.js";
 import type { SandboxMode } from "../tools/orchestrator.js";
 import {
+  confineRoutineProfile,
   permissionProfileForSandboxMode,
   sandboxModeRequiresPlatformIsolation,
 } from "../tools/runtimes/sandboxing.js";
@@ -47,13 +58,22 @@ import {
   isAppArmorUserNamespaceDenial,
 } from "./apparmor.js";
 import { sanitizeSandboxLauncherEnvironment } from "./launcher-environment.js";
+import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 import {
   SandboxExecutionLeaseCleanupError,
   registerSandboxPreparedSpawn,
   type SandboxPreparedSpawn,
 } from "./execution-prepared-spawn.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
+import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "./agenc-home-protection.js";
+import { protectDaemonSocket } from "./daemon-socket-protection.js";
+import {
+  confineProfileToWorktree,
+  type SandboxForkOptions,
+  type WorktreeWriteConfinement,
+} from "./worktree-confinement.js";
 
 export {
   SandboxExecutionLeaseCleanupError,
@@ -118,9 +138,14 @@ export interface SandboxExecutionStatus {
     readonly reason: string;
     readonly remediation: string;
   };
+  /** The workspace policy cannot be enforced by the active fallback. */
+  readonly landlockPolicyRefusal?: string;
 }
 
 export interface SandboxSpawnCommand {
+  /** Browser-owned CDP pipes; the Linux launcher carries these on standard IO. */
+  readonly browserCdp?: boolean;
+  readonly browserCdpOverStdio?: boolean;
   readonly program: string;
   readonly args: readonly string[];
   readonly cwd: string;
@@ -128,6 +153,7 @@ export interface SandboxSpawnCommand {
   readonly argv0?: string;
   /** Keep cwd attached to the caller's open directory and expose it read-only. */
   readonly cwdBinding?: "inherited_readonly";
+  readonly cwdCapability?: BoundReadOnlyCwdCapability;
   /** Narrow, surface-owned grants required by the child process. */
   readonly additionalPermissions?: AdditionalPermissionProfile;
   /** Require the executable itself to be outside every sandbox-writable root. */
@@ -161,12 +187,14 @@ export interface SandboxExecutionBrokerLike {
   readonly sessionTempRoot: string;
   /** Zero for a root session; increments for each isolated child authority. */
   readonly forkDepth?: number;
+  /** Set for a worktree child: its commands write inside the worktree only. */
+  readonly worktreeConfinement?: WorktreeWriteConfinement;
   /** Captured operator-owned policy; reading it grants no spawn admission. */
   executionAuthority?(): SandboxExecutionBrokerAuthority;
   /** Permanent authority poison set after a lifecycle rollback cannot recover. */
   isClosedAfterLifecycleAuthorityFailure?(): boolean;
   /** Fork an independent boundary for a child session or worktree. */
-  forkForCwd(cwd: string): SandboxExecutionBrokerLike;
+  forkForCwd(cwd: string, options?: SandboxForkOptions): SandboxExecutionBrokerLike;
   forkForReadOnlyInspection?(cwd: string, deniedReadPatterns?: readonly string[]): SandboxExecutionBrokerLike;
   status(): SandboxExecutionStatus;
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus;
@@ -230,9 +258,11 @@ export function requiredSandboxExecutionError(
   status: SandboxExecutionStatus,
 ): SandboxExecutionError {
   return new SandboxExecutionError({
-    code: status.reason?.startsWith("probe:")
-      ? "sandbox_probe_failed"
-      : "sandbox_required_unavailable",
+    code: status.landlockPolicyRefusal !== undefined
+      ? "sandbox_policy_unexpressible"
+      : status.reason?.startsWith("probe:")
+        ? "sandbox_probe_failed"
+        : "sandbox_required_unavailable",
     surface,
     status,
   });
@@ -264,7 +294,25 @@ export interface SandboxExecutionBrokerOptions {
   }) => SandboxExecutionStatus;
   /** Injectable Landlock plan seam for deterministic pre-flight tests. */
   readonly planLandlockPolicy?: typeof planLandlockConfinement;
+  /**
+   * Set on a scheduled routine run: its command surfaces write only inside the
+   * workspace (see confineRoutineProfile) and get this folder, inside the
+   * workspace, as TMPDIR. Service surfaces (MCP servers, LSP, hooks, the
+   * browser, providers) keep the session profile.
+   */
+  readonly routineChildTempRoot?: string;
+  /**
+   * Set for a worktree child: its command surfaces write only inside the
+   * worktree and the temp root (see confineProfileToWorktree). Service
+   * surfaces keep the session profile, as they do for a routine run.
+   */
+  readonly worktreeConfinement?: WorktreeWriteConfinement;
 }
+
+/** Surfaces that run services, not a model's commands; a routine run and a worktree child leave them as configured. */
+const ROUTINE_SERVICE_SURFACES: ReadonlySet<SandboxExecutionSurface> = new Set([
+  "startup", "hook", "mcp_stdio", "lsp", "browser", "provider", "powershell_parser",
+]);
 
 export interface SandboxExecutionBrokerAuthority {
   readonly mode: SandboxMode;
@@ -517,8 +565,12 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #desktopAuthorityRoot: string;
+  readonly #agencHome: string;
+  readonly #cronAuthorityRoots: readonly string[];
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
+  readonly #routineChildTempRoot: string | undefined;
+  readonly #worktreeConfinement: WorktreeWriteConfinement | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
   readonly #planLandlockPolicy: typeof planLandlockConfinement;
   #status: SandboxExecutionStatus | undefined;
@@ -540,6 +592,8 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
     this.#desktopAuthorityRoot = desktopAuthorityRoot(undefined, this.#env);
+    this.#agencHome = sandboxAgencHome(undefined, this.#env);
+    this.#cronAuthorityRoots = cronLockAuthorityRoots();
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
     this.#explicitLinuxHelper = options.agencLinuxSandboxExe;
@@ -555,6 +609,21 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#permissionProfile = immutablePermissionProfile(
       options.permissionProfile,
     );
+    if (
+      options.routineChildTempRoot !== undefined &&
+      !path.isAbsolute(options.routineChildTempRoot)
+    ) {
+      throw new Error("routine child temp root must be an absolute path");
+    }
+    this.#routineChildTempRoot = options.routineChildTempRoot === undefined
+      ? undefined
+      : path.normalize(options.routineChildTempRoot);
+    this.#worktreeConfinement = options.worktreeConfinement === undefined
+      ? undefined
+      : Object.freeze({
+          worktree: path.resolve(options.worktreeConfinement.worktree),
+          checkout: path.resolve(options.worktreeConfinement.checkout),
+        });
     this.#probe = options.probe ?? probeSandboxExecutionStatus;
     this.#planLandlockPolicy =
       options.planLandlockPolicy ?? planLandlockConfinement;
@@ -577,6 +646,16 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   get sessionTempRoot(): string {
     return this.#sessionTempRoot;
+  }
+
+  /** Whether this broker belongs to a scheduled routine run. */
+  get routineRun(): boolean {
+    return this.#routineChildTempRoot !== undefined;
+  }
+
+  /** The worktree a child's commands write in, when this broker belongs to a worktree child. */
+  get worktreeConfinement(): WorktreeWriteConfinement | undefined {
+    return this.#worktreeConfinement;
   }
 
   get mode(): SandboxMode {
@@ -901,9 +980,14 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#status = undefined;
   }
 
-  forkForCwd(cwd: string): SandboxExecutionBroker {
+  forkForCwd(cwd: string, options: SandboxForkOptions = {}): SandboxExecutionBroker {
     this.#assertLifecycleAuthorityOpen("child_agent");
     const resolvedCwd = path.resolve(cwd);
+    // A descendant of a worktree child stays in that worktree unless it is
+    // given one of its own.
+    const worktreeConfinement = options.worktreeConfinement === undefined
+      ? this.#worktreeConfinement
+      : options.worktreeConfinement ?? undefined;
     return new SandboxExecutionBroker({
       mode: this.mode,
       cwd: resolvedCwd,
@@ -930,6 +1014,10 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       planLandlockPolicy: this.#planLandlockPolicy,
       forkDepth: this.forkDepth + 1,
       lifecycleLeaseDrainTimeoutMs: this.#lifecycleLeaseDrainTimeoutMs,
+      ...(this.#routineChildTempRoot !== undefined
+        ? { routineChildTempRoot: this.#routineChildTempRoot }
+        : {}),
+      ...(worktreeConfinement !== undefined ? { worktreeConfinement } : {}),
     });
   }
 
@@ -996,7 +1084,30 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
         : {}),
     });
-    return this.#status;
+    const host = this.#status;
+    if (
+      this.#platform !== "linux" || this.mode !== "workspace_write" ||
+      host.kind !== "ready" || host.landlockFallback === undefined
+    ) return host;
+    const profile = this.#protectedProfile();
+    const plan = this.#planLandlockPolicy({
+      fileSystem: this.#confineToWorktree("tool", profile, this.#sessionTempRoot).fileSystem,
+      sandboxPolicyCwd: this.#cwd,
+      sessionTempRoot: this.#sessionTempRoot,
+      allowNetworkForProxy: false,
+      inheritedCwd: false,
+    });
+    if (plan.kind === "ok") return host;
+    return {
+      ...host,
+      kind: "unavailable",
+      landlockPolicyRefusal: plan.reason,
+      reason: `the Landlock fallback cannot express the workspace-write policy: ${plan.reason}`,
+      remediation:
+        "Install bubblewrap and allow unprivileged user namespaces. " +
+        "In Docker, use seccomp/AppArmor settings that permit bubblewrap, or run outside the container. " +
+        host.landlockFallback.remediation,
+    };
   }
 
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus {
@@ -1006,9 +1117,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   #assertReadyAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
+    allowPolicyRefusal = false,
   ): SandboxExecutionStatus {
     const status = this.status();
-    if (!this.required || status.kind === "ready") return status;
+    if (
+      !this.required || status.kind === "ready" ||
+      (allowPolicyRefusal && status.landlockPolicyRefusal !== undefined)
+    ) return status;
     throw requiredSandboxExecutionError(surface, status);
   }
 
@@ -1019,21 +1134,56 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     return this.#runtimeSandboxAfterLifecycleAdmission(surface);
   }
 
+  #routineConfines(surface: SandboxExecutionSurface): boolean {
+    return this.#routineChildTempRoot !== undefined &&
+      !ROUTINE_SERVICE_SURFACES.has(surface);
+  }
+
+  #protectedProfile(): PermissionProfile {
+    return this.#protectProfile(this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
+      cwd: this.#cwd,
+    }));
+  }
+
+  #protectProfile(profile: PermissionProfile): PermissionProfile {
+    return protectAgencHomeUnderWritableRoot(
+      protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+        profile, this.#desktopAuthorityRoot,
+      ), this.#cronAuthorityRoots)),
+      this.#agencHome, this.#cwd, this.#sessionTempRoot,
+    );
+  }
+
+  /** A worktree child's command surface: its profile writes inside the worktree only. */
+  #confineToWorktree(
+    surface: SandboxExecutionSurface,
+    profile: PermissionProfile,
+    tempRoot: string,
+  ): PermissionProfile {
+    if (this.#worktreeConfinement === undefined || ROUTINE_SERVICE_SURFACES.has(surface)) {
+      return profile;
+    }
+    return confineProfileToWorktree(profile, this.#worktreeConfinement, this.#cwd, tempRoot);
+  }
+
   #runtimeSandboxAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
-    const status = this.#assertReadyAfterLifecycleAdmission(surface);
+    // A spawn may tighten the session profile; its exact policy is checked
+    // immediately before launch by #preflightLandlockPlan.
+    const status = this.#assertReadyAfterLifecycleAdmission(surface, true);
+    const profile = this.#protectedProfile();
+    const confined = this.#routineConfines(surface);
+    const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {
-      permissionProfile: protectDesktopAuthority(
-        this.#permissionProfile ??
-        permissionProfileForSandboxMode(this.mode, {
-          cwd: this.#cwd,
-        }),
-        this.#desktopAuthorityRoot,
+      permissionProfile: this.#confineToWorktree(
+        surface,
+        confined ? confineRoutineProfile(profile) : profile,
+        tempRoot,
       ),
       sandboxPolicyCwd: this.#cwd,
-      sessionTempRoot: this.#sessionTempRoot,
+      sessionTempRoot: tempRoot,
       preference: "require",
       ...(status.helperPath !== undefined
         ? { agencLinuxSandboxExe: status.helperPath }
@@ -1046,9 +1196,19 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   prepareSpawn(
     surface: SandboxExecutionSurface,
-    command: SandboxSpawnCommand,
+    requestedCommand: SandboxSpawnCommand,
     options: SandboxPrepareSpawnOptions = {},
   ): SandboxPreparedSpawn {
+    // A routine run's commands get their scratch folder inside the workspace
+    // as TMPDIR: the session temp root is not writable for them.
+    const command: SandboxSpawnCommand = this.#routineConfines(surface)
+      ? { ...requestedCommand, env: withChildTempAuthority(requestedCommand.env, this.#routineChildTempRoot!) }
+      : requestedCommand;
+    // CDP over stdio takes over the child's stdin and stdout; only the browser
+    // speaks it.
+    if (command.browserCdp === true && surface !== "browser") {
+      throw new Error(`browserCdp is only valid for the browser surface, not ${surface}`);
+    }
     try {
       const participantName = options.lifecycleParticipant;
       const requiresLifecyclePermit =
@@ -1069,15 +1229,33 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       // A surface may TIGHTEN its own boundary (plugin MCP servers confined
       // to their data dir) — never widen a stricter global mode, so the
       // override applies only under workspace_write.
-      const runtimeSandbox =
+      let runtimeSandbox =
         modeSandbox !== undefined &&
         command.permissionProfileOverride !== undefined &&
         this.mode === "workspace_write"
           ? {
               ...modeSandbox,
-              permissionProfile: protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot),
+              permissionProfile: this.#confineToWorktree(
+                surface,
+                this.#protectProfile(command.permissionProfileOverride),
+                modeSandbox.sessionTempRoot,
+              ),
             }
           : modeSandbox;
+      if (runtimeSandbox !== undefined && command.additionalPermissions !== undefined &&
+          !this.#routineConfines(surface)) {
+        // A per-command grant can introduce a containing root after the base
+        // profile was protected. Inspect the final grants, but add only the
+        // reservation here; the existing transform still owns their merge.
+        runtimeSandbox = {
+          ...runtimeSandbox,
+          permissionProfile: protectAgencHomeUnderWritableRoot(
+            runtimeSandbox.permissionProfile, this.#agencHome, this.#cwd,
+            runtimeSandbox.sessionTempRoot,
+            effectivePermissionProfile(runtimeSandbox.permissionProfile, command.additionalPermissions),
+          ),
+        };
+      }
       const resolvedProgram = resolveSpawnExecutable({
         program: command.program,
         cwd: command.cwd,
@@ -1121,8 +1299,9 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       };
       const preparedCommand = (() => {
         if (runtimeSandbox === undefined) return resolvedCommand;
+        // A routine run's commands never widen their sandbox.
         const sandboxWithSurfacePermissions =
-          command.additionalPermissions === undefined
+          command.additionalPermissions === undefined || this.#routineConfines(surface)
             ? runtimeSandbox
             : {
                 ...runtimeSandbox,
@@ -1322,6 +1501,23 @@ function rebasePermissionProfile(
   nextCwd: string,
 ): PermissionProfile {
   if (profile.fileSystem.kind !== "restricted") return profile;
+  const sharedGitMetadata = verifiedSharedGitMetadata(previousCwd, nextCwd);
+  const rebasePath = (candidate: string): string => {
+    if (sharedGitMetadata !== null && path.isAbsolute(candidate)) {
+      const relative = path.relative(sharedGitMetadata, candidate);
+      if (
+        relative !== ".." &&
+        !relative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relative)
+      ) {
+        // A linked worktree's .git is a pointer file. The existing grants and
+        // restrictions on its common metadata must retain their original
+        // authority, rather than becoming impossible child/.git/config paths.
+        return candidate;
+      }
+    }
+    return rebaseWorkspacePath(candidate, previousCwd, nextCwd);
+  };
   const entries = profile.fileSystem.entries.map((entry) => {
     switch (entry.path.kind) {
       case "path":
@@ -1329,11 +1525,7 @@ function rebasePermissionProfile(
           ...entry,
           path: {
             kind: "path" as const,
-            path: rebaseWorkspacePath(
-              entry.path.path,
-              previousCwd,
-              nextCwd,
-            ),
+            path: rebasePath(entry.path.path),
           },
         };
       case "glob":
@@ -1341,11 +1533,7 @@ function rebasePermissionProfile(
           ...entry,
           path: {
             kind: "glob" as const,
-            pattern: rebaseWorkspacePath(
-              entry.path.pattern,
-              previousCwd,
-              nextCwd,
-            ),
+            pattern: rebasePath(entry.path.pattern),
           },
         };
       case "special":
@@ -1356,11 +1544,7 @@ function rebasePermissionProfile(
             kind: "special" as const,
             value: {
               ...entry.path.value,
-              path: rebaseWorkspacePath(
-                entry.path.value.path,
-                previousCwd,
-                nextCwd,
-              ),
+              path: rebasePath(entry.path.value.path),
             },
           },
         };
@@ -1373,6 +1557,70 @@ function rebasePermissionProfile(
       entries,
     },
   };
+}
+
+/**
+ * Recognize Git's registered linked-worktree relationship without executing Git.
+ * This adds no grant: only already-present common-metadata entries may remain
+ * anchored. Unregistered, foreign, missing or symlinked pointers retain the
+ * ordinary rebase, which fails closed when it cannot express a policy.
+ */
+function verifiedSharedGitMetadata(
+  previousCwd: string,
+  nextCwd: string,
+): string | null {
+  const originalMetadata = path.join(previousCwd, ".git");
+  const pointerPath = path.join(nextCwd, ".git");
+  try {
+    if (!lstatSync(originalMetadata).isDirectory()) return null;
+    const common = realpathSync(originalMetadata);
+    const pointer = readSmallGitPointer(pointerPath);
+    if (pointer === null || !pointer.startsWith("gitdir: ")) return null;
+    const adminPath = path.resolve(nextCwd, pointer.slice("gitdir: ".length));
+    if (
+      !lstatSync(adminPath).isDirectory() ||
+      !lstatSync(path.dirname(adminPath)).isDirectory()
+    ) return null;
+    const admin = realpathSync(adminPath);
+    const worktrees = path.join(common, "worktrees");
+    if (
+      path.dirname(admin) !== worktrees ||
+      realpathSync(path.dirname(adminPath)) !== worktrees ||
+      realpathSync(worktrees) !== worktrees
+    ) return null;
+    const commonPointer = readSmallGitPointer(path.join(admin, "commondir"));
+    const worktreePointer = readSmallGitPointer(path.join(admin, "gitdir"));
+    if (commonPointer === null || worktreePointer === null) return null;
+    if (realpathSync(path.resolve(admin, commonPointer)) !== common) return null;
+    if (
+      realpathSync(path.resolve(admin, worktreePointer)) !==
+      realpathSync(pointerPath)
+    ) return null;
+    return originalMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function readSmallGitPointer(file: string): string | null {
+  // Pointer records are tiny. Bound reads and refuse final-component symlinks
+  // and hard links instead of following model-editable metadata as authority.
+  if (!lstatSync(file).isFile()) return null;
+  const fd = openSync(
+    file,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+  );
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 4096) return null;
+    const bytes = Buffer.alloc(4097);
+    const length = readSync(fd, bytes, 0, bytes.length, 0);
+    if (length > 4096) return null;
+    const value = bytes.subarray(0, length).toString("utf8").trim();
+    return value.length > 0 && !/[\0\r\n]/u.test(value) ? value : null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function rebaseWorkspacePath(
@@ -1412,7 +1660,7 @@ export function resolveSpawnExecutable(options: {
           ? candidate
           : path.resolve(options.cwd, candidate)
       )
-    : executableSearchDirectories(options.env, options.cwd).flatMap((directory) =>
+    : executableSearchDirectories(options.env, options.cwd, platform).flatMap((directory) =>
         candidateNames.map((candidate) => path.join(directory, candidate))
       );
   for (const candidate of candidates) {
@@ -1432,10 +1680,13 @@ export function resolveSpawnExecutable(options: {
 function executableSearchDirectories(
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
+  platform: NodeJS.Platform,
 ): string[] {
-  return (env.PATH ?? "")
-    .split(delimiter)
+  const directories = (env.PATH ?? "")
+    .split(platform === "win32" ? ";" : delimiter)
     .map((entry) => entry.length === 0 ? cwd : path.resolve(cwd, entry));
+  // Windows resolves a bare executable in the launch directory before PATH.
+  return platform === "win32" ? [cwd, ...directories] : directories;
 }
 
 function executableCandidateNames(
@@ -1446,6 +1697,7 @@ function executableCandidateNames(
   if (platform !== "win32") return [program];
   const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
+    .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   const lower = program.toLowerCase();
   if (extensions.some((extension) => lower.endsWith(extension.toLowerCase()))) {
@@ -1523,7 +1775,7 @@ function probeLinuxSandbox(options: {
   readonly agencLinuxSandboxExe?: string;
 }): SandboxExecutionStatus {
   const helper = resolveTrustedLinuxSandboxExecutable(
-    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(),
+    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(undefined, options.env),
     options.cwd,
   );
   if (helper.error !== undefined) {
@@ -1746,12 +1998,13 @@ function executableFile(
 
 export function resolveDefaultLinuxSandboxExecutable(
   moduleUrl = import.meta.url,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   // Dev checkouts live inside the writable workspace, which trips the
   // "helper must be outside the workspace" trust invariant enforced by
   // resolveTrustedLinuxSandboxExecutable. AGENC_LINUX_SANDBOX_EXE points at a
   // helper installed outside the workspace; packaged installs never need it.
-  const override = process.env.AGENC_LINUX_SANDBOX_EXE;
+  const override = env.AGENC_LINUX_SANDBOX_EXE;
   if (override !== undefined && override.trim() !== "") {
     return override;
   }
@@ -1813,6 +2066,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
         args: params.args,
         cwd: params.cwd,
         env: params.env,
+        ...(params.cwdCapability !== undefined ? { cwdCapability: params.cwdCapability } : {}),
         ...(params.cwdBinding !== undefined
           ? { cwdBinding: params.cwdBinding }
           : {}),
@@ -1844,6 +2098,14 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       ...(params.runtimeSandbox.allowGpu === true ? { allowGpu: true } : {}),
     });
     const [program, ...args] = transformed.command;
+    const browserCdpOverStdio = params.browserCdp === true && sandbox === "linux_seccomp";
+    if (browserCdpOverStdio) {
+      const separator = args.indexOf("--");
+      if (separator < 0) {
+        throw new Error("Linux browser sandbox command separator missing");
+      }
+      args.splice(separator, 0, "--browser-cdp-over-stdio");
+    }
     if (program === undefined) {
       throw new UnifiedExecError(
         "create_process",
@@ -1856,6 +2118,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       cwd: transformed.cwd,
       env: { ...transformed.env },
       argv0: transformed.arg0 ?? basename(program),
+      ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     };
   } catch (error) {
     if (error instanceof UnifiedExecError) throw error;

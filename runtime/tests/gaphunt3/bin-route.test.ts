@@ -106,17 +106,65 @@ describe("gaphunt3 #37: unconsumed value flags are no longer silently swallowed"
   });
 });
 
-describe("todo-122: --continue requires a TTY (mirror --resume)", () => {
-  it("rejects -c in a non-TTY context", () => {
+describe("todo-122: --continue and --resume outside a TTY take the one-shot path", () => {
+  it("routes -c in a non-TTY context to a one-shot continue of the latest session", () => {
     const plan = classifyCLI({
       argv: [NODE, SCRIPT, "-c"],
       isTTY: false,
       isStdoutTTY: false,
     });
-    expect(plan.kind).toBe("errorAndExit");
-    if (plan.kind !== "errorAndExit") throw new Error("expected error");
-    expect(plan.message).toMatch(/--continue requires an interactive terminal/);
-    expect(plan.exitCode).toBe(2);
+    expect(plan).toEqual({
+      kind: "oneShotCLI",
+      userMessage: "",
+      continueSession: { kind: "latest" },
+    });
+  });
+
+  it("routes -c -p <prompt> to a one-shot continue with the prompt intact, even in a TTY", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "-c", "-p", "add a", "clamp"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "oneShotCLI",
+      userMessage: "add a clamp",
+      continueSession: { kind: "latest" },
+    });
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--continue", "--no-tui", "next step"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toMatchObject({
+      kind: "oneShotCLI",
+      userMessage: "next step",
+      continueSession: { kind: "latest" },
+    });
+  });
+
+  it("routes --resume <id> -p <prompt> to a one-shot continue of that session", () => {
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--resume", "conv-abc123", "-p", "finish it"],
+        isTTY: false,
+        isStdoutTTY: false,
+      }),
+    ).toEqual({
+      kind: "oneShotCLI",
+      userMessage: "finish it",
+      continueSession: { kind: "resume", sessionId: "conv-abc123" },
+    });
+    // The TTY resume path is unchanged when no headless flag is present.
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "-r", "conv-abc123"],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({ kind: "resumeTUI", args: { resumeId: "conv-abc123" } });
   });
 
   it("accepts -c in a TTY", () => {

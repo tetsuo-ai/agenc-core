@@ -8,6 +8,8 @@ import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { loadProjectInstructions } from "../../../prompts/project-instructions.js";
 import { assembleSystemPrompt } from "../../../prompts/system-prompt.js";
 import { AnthropicProvider } from "./adapter.js";
+import { mkCtx, mkProvider, mkSession } from "../../../fixtures.js";
+import { stepLimitWrapup } from "../../../../src/session/step-limit-wrapup.js";
 
 function sseResponse(frames: string[]): Response {
   const encoder = new TextEncoder();
@@ -35,6 +37,182 @@ function useDeterministicFallbackTimers(): () => void {
 }
 
 describe("AnthropicProvider", () => {
+  test.each([
+    { model: "claude-sonnet-4.5", reasoningEffort: undefined },
+    { model: "claude-sonnet-4.5", reasoningEffort: "high" as const },
+    { model: "claude-opus-5-5", reasoningEffort: undefined },
+  ])("preserves tool history and disables tools in step-limit synthesis: %j", async ({ model, reasoningEffort }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: {
+        id: "msg_wrapup", type: "message", role: "assistant", model, content: [],
+        usage: { input_tokens: 3, output_tokens: 0 },
+      } })}\n\n`,
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Found a defect."}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]));
+    const provider = new AnthropicProvider({ apiKey: "anthropic-test", model, fetchImpl });
+    const { session } = mkSession({ provider: {
+      ...mkProvider(), name: provider.name, chatStream: provider.chatStream.bind(provider),
+    } });
+    const result = await stepLimitWrapup({
+      session, ctx: mkCtx({ reasoningEffort }), signal: new AbortController().signal,
+      fallback: "fallback trail",
+      request: {
+        input: [
+          { role: "user", content: "Review the file." },
+          { role: "assistant", content: "", toolCalls: [{ id: "read-1", name: "Read", arguments: "{}" }] },
+          { role: "tool", toolCallId: "read-1", toolName: "Read", content: "Missing validation." },
+          { role: "user", content: "Write the final answer now." },
+        ],
+        tools: [{ type: "function", function: { name: "Read", description: "Read a file", parameters: { type: "object" } } }],
+        baseInstructions: "", parallelToolCalls: true,
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.tools).toEqual([expect.objectContaining({ name: "Read", input_schema: { type: "object" } })]);
+    expect(body.tool_choice).toEqual({ type: "none" });
+    expect(body.messages[1].content).toContainEqual({ type: "tool_use", id: "read-1", name: "Read", input: {} });
+    expect(body.messages[2].content).toContainEqual(expect.objectContaining({ type: "tool_result", tool_use_id: "read-1", content: "Missing validation." }));
+    expect(result.text).toBe("Partial result: stopped at the step limit.\n\nFound a defect.");
+  });
+
+  test("fast mode rides the priority tier: beta header, speed field, and a warning when served standard", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fast","type":"message","role":"assistant","model":"claude-opus-5","content":[],"usage":{"input_tokens":3,"output_tokens":0,"speed":"standard"}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1,"speed":"standard"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    );
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5",
+      betaHeaders: ["interleaved-thinking-2025-05-14"],
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { serviceTier: "priority", maxOutputTokens: 64 },
+    );
+
+    expect(response.content).toBe("ok");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = init?.headers as Headers;
+    // The fast-mode beta joins the betas the client always sends.
+    expect(headers.get("anthropic-beta")).toBe(
+      "interleaved-thinking-2025-05-14,fast-mode-2026-02-01",
+    );
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.speed).toBe("fast");
+    // The API served standard speed (no preview access, rate limit, capacity):
+    // the operator is told, because the turn ran at standard speed and price.
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        cause: "fast_mode_not_applied",
+        message: expect.stringContaining("served at standard speed"),
+      }),
+    ]);
+    // Cost accounting sees the served speed, so the turn bills standard.
+    expect(response.usage.speed).toBe("standard");
+  });
+
+  test("reports a fast-served Opus 5.5 turn on the response usage", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fast55","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":3,"output_tokens":0,"speed":"fast"}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1,"speed":"fast"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    );
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5-5",
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { serviceTier: "priority", maxOutputTokens: 64 },
+    );
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({ speed: "fast" });
+    expect(response.usage.speed).toBe("fast");
+    expect(warnings).toEqual([]);
+  });
+
+  test("keeps fast mode off the wire for models and tiers that do not take it", async () => {
+    const frames = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_std","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => sseResponse(frames));
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-5",
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    // Priority tier on a model without fast mode: no field, no beta, no warning.
+    await provider.chatStream([{ role: "user", content: "hi" }], () => {}, {
+      serviceTier: "priority",
+      maxOutputTokens: 64,
+    });
+    // Fast-mode model without the tier: nothing either.
+    await provider.chatStream([{ role: "user", content: "hi" }], () => {}, {
+      model: "claude-opus-5",
+      maxOutputTokens: 64,
+    });
+    for (const [, init] of fetchImpl.mock.calls) {
+      const headers = init?.headers as Headers;
+      expect(headers.get("anthropic-beta")).toBeNull();
+      expect(JSON.parse(String(init?.body))).not.toHaveProperty("speed");
+    }
+    expect(warnings).toEqual([]);
+  });
+
+  test("the token counter never forwards the fast-mode field", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ input_tokens: 5 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-5",
+      fetchImpl,
+    });
+    const request = createTokenAccountingRequest({
+      provider: provider.name,
+      model: "claude-opus-5",
+      messages: [{ role: "user", content: "hello" }],
+      options: { serviceTier: "priority", maxOutputTokens: 64 },
+    });
+    await provider.tokenCountCapability?.countTokens(request, new AbortController().signal);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("speed");
+  });
+
   test("counts the complete Messages request through the native endpoint", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ input_tokens: 37 }), {
@@ -190,6 +368,22 @@ describe("AnthropicProvider", () => {
         { singleWireAttempt: true },
       ),
     ).rejects.toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not retry or fall back when the stream reports exhausted credits", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: error\ndata: {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}\n\n',
+      ]),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test", model: "claude-sonnet-4.5", fetchImpl,
+      providerFallback: { provider: "anthropic", model: "claude-sonnet-4.5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }] },
+    });
+    await expect(provider.chatStream([{ role: "user", content: "hello" }], () => {}))
+      .rejects.toMatchObject({ name: "LLMFundsError" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -853,5 +1047,85 @@ describe("AnthropicProvider", () => {
     expect(request.stream).toBe(true);
     expect(headers.get("x-api-key")).toBe("anthropic-test");
     expect(headers.get("accept")).toBe("text/event-stream");
+  });
+
+  test("maps chat model_context_window_exceeded to length", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_window",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4.5",
+          content: [
+            { type: "text", text: "truncated answer" },
+            {
+              type: "tool_use",
+              id: "toolu_cut",
+              name: "system.echo",
+              input: { text: "incomplete" },
+            },
+          ],
+          stop_reason: "model_context_window_exceeded",
+          usage: { input_tokens: 8, output_tokens: 4 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "fill the window" }],
+    );
+
+    expect(response.finishReason).toBe("length");
+    expect(response.content).toBe("truncated answer");
+  });
+
+  test("rejects chat pause_turn as an unsupported provider state", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_pause",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-4-7",
+          content: [
+            { type: "text", text: "searching" },
+            {
+              type: "server_tool_use",
+              id: "srvtoolu_1",
+              name: "web_search",
+              input: { query: "latest news" },
+            },
+          ],
+          stop_reason: "pause_turn",
+          usage: { input_tokens: 3, output_tokens: 2 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-opus-4-7",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "search the web" }]),
+    ).rejects.toMatchObject({
+      name: "LLMInvalidResponseError",
+      message: expect.stringContaining("pause_turn"),
+    });
   });
 });

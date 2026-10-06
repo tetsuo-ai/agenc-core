@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as nextTick } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AGENC_SDK_MAX_FRAME_BYTES } from "../../../packages/agenc-sdk/src/limits";
 import { AgencSocketTransport } from "../../../packages/agenc-sdk/src/socket";
 
 function startPendingRequests(transport: AgencSocketTransport) {
@@ -33,26 +34,31 @@ describe("SDK socket protocol failures", () => {
   let server: Server;
   let peer: Socket;
   let root: string;
+  let socketPath: string;
   let onClose: ReturnType<typeof vi.fn>;
   let onNotification: ReturnType<typeof vi.fn>;
 
-  beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "agenc-sdk-protocol-"));
-    const socketPath = process.platform === "win32"
-      ? `\\\\.\\pipe\\agenc-sdk-protocol-${randomUUID()}`
-      : join(root, "daemon.sock");
-    server = createServer();
+  async function connect(requestTimeoutMs: number): Promise<void> {
     const accepted = once(server, "connection");
-    server.listen(socketPath);
-    await once(server, "listening");
-    onClose = vi.fn();
-    onNotification = vi.fn();
     transport = await AgencSocketTransport.connect({
-      socketPath, requestTimeoutMs: 5000, onClose, onNotification,
+      socketPath, requestTimeoutMs, onClose, onNotification,
     });
     [peer] = await accepted;
     peer.on("error", () => {});
     peer.resume();
+  }
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-sdk-protocol-"));
+    socketPath = process.platform === "win32"
+      ? `\\\\.\\pipe\\agenc-sdk-protocol-${randomUUID()}`
+      : join(root, "daemon.sock");
+    server = createServer();
+    server.listen(socketPath);
+    await once(server, "listening");
+    onClose = vi.fn();
+    onNotification = vi.fn();
+    await connect(5000);
   });
 
   afterEach(async () => {
@@ -62,6 +68,41 @@ describe("SDK socket protocol failures", () => {
     if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
+
+  it("reassembles a 13 MiB display artifact from bounded socket responses", async () => {
+    const bytes = randomBytes(13 * 1024 * 1024);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    let input = "";
+    peer.on("data", (chunk: Buffer) => {
+      input += chunk.toString("utf8");
+      for (;;) {
+        const newline = input.indexOf("\n");
+        if (newline < 0) break;
+        const request = JSON.parse(input.slice(0, newline)) as { id: string; method: string; params: { offset: number } };
+        input = input.slice(newline + 1);
+        expect(request.method).toBe("session.artifact.read");
+        const offset = request.params.offset;
+        const end = Math.min(bytes.length, offset + 512 * 1024);
+        const frame = JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {
+          sessionId: "session", id: digest, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"),
+          size: bytes.length, offset, nextOffset: end < bytes.length ? end : null,
+        } }) + "\n";
+        expect(Buffer.byteLength(frame)).toBeLessThan(1024 * 1024);
+        peer.write(frame);
+      }
+    });
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    for (let index = 0;; index += 1) {
+      const response = await transport.request({ jsonrpc: "2.0", id: `chunk-${index}`, method: "session.artifact.read", params: { sessionId: "session", id: digest, offset } });
+      const result = response.result as { data: string; nextOffset: number | null };
+      chunks.push(Buffer.from(result.data, "base64"));
+      if (result.nextOffset === null) break;
+      offset = result.nextOffset;
+    }
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(digest);
+    expect(onClose).not.toHaveBeenCalled();
+  }, 60_000);
 
   it.each([
     "{malformed",
@@ -165,17 +206,50 @@ describe("SDK socket protocol failures", () => {
     expect(pending.outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
   });
 
+  it("accepts an exact-limit frame split across chunks and rejects one extra byte", async () => {
+    const prefix = '{"jsonrpc":"2.0","id":"send","result":{"pad":"';
+    const suffix = '"}}';
+    const padLength = AGENC_SDK_MAX_FRAME_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+    const frame = `${prefix}${"a".repeat(padLength)}${suffix}`;
+    expect(Buffer.byteLength(frame)).toBe(AGENC_SDK_MAX_FRAME_BYTES);
+    const pending = transport.request({
+      jsonrpc: "2.0", id: "send", method: "message.send",
+      params: { sessionId: "session", content: "test" },
+    });
+    const split = Math.floor(frame.length / 2);
+    peer.write(frame.slice(0, split));
+    await nextTick();
+    expect(onClose).not.toHaveBeenCalled();
+    peer.write(`${frame.slice(split)}\n`);
+    await expect(pending).resolves.toMatchObject({ id: "send" });
+    peer.write(`${"x".repeat(AGENC_SDK_MAX_FRAME_BYTES + 1)}`);
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect((onClose.mock.calls[0]?.[0] as Error).message).toContain("exceeded 16777216 bytes");
+  });
+
   it("still rejects incomplete-buffer overflow and closes once", async () => {
+    // 16 MiB has to cross a real socket before the overflow can be detected,
+    // which can take seconds on a loaded machine. The requests must outlive
+    // that wait, or their own timeout settles them first with another error.
+    await transport.close();
+    peer.destroy();
+    onClose = vi.fn();
+    onNotification = vi.fn();
+    await connect(120_000);
+    const overflowWait = { timeout: 60_000 } as const;
     const pending = startPendingRequests(transport);
     peer.write("x".repeat(16 * 1024 * 1024 + 1));
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1), overflowWait);
     await pending.settled;
-    expect(pending.outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
-    expect((pending.outcomes[0]?.value as Error).message).toContain("exceeded 16777216 bytes");
-    await vi.waitFor(() => expect(peer.destroyed).toBe(true));
+    expect(pending.outcomes).toHaveLength(3);
+    for (const outcome of pending.outcomes) {
+      expect(outcome.status).toBe("rejected");
+      expect((outcome.value as Error).message).toContain("exceeded 16777216 bytes");
+    }
+    await vi.waitFor(() => expect(peer.destroyed).toBe(true), overflowWait);
     await transport.close();
     expect(onClose).toHaveBeenCalledTimes(1);
-  });
+  }, 180_000);
 
   it("keeps deliberate local closure silent and settles pending work", async () => {
     const pending = startPendingRequests(transport);

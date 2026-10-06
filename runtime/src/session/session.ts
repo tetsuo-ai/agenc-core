@@ -33,6 +33,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
+import { persistDisplayAttachments } from "./display-artifact-store.js";
+import { boundDisplayCompletionEvent } from "./display-completion.js";
+import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
@@ -55,6 +59,7 @@ import {
   type ProviderHttpContinuationSnapshot,
 } from "../llm/client.js";
 import { isFactoryProvider } from "../llm/provider.js";
+import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -65,10 +70,6 @@ import {
   projectRuntimeOnly,
   projectToolExchangeFields,
 } from "./runtime-message-conversion.js";
-import {
-  buildPostCompactMessages,
-  partialCompactConversationAsync,
-} from "../services/compact/compact.js";
 import type {
   CompactContext,
   CompactionResult,
@@ -361,8 +362,7 @@ export type UserInput = unknown;
  * the same immutable interaction id.
  */
 export interface IdleInputOwnership {
-  readonly workspaceView: "agent" | "editor";
-  readonly editorInteractionId?: string;
+  readonly workspaceView: "agent";
 }
 
 /**
@@ -430,39 +430,20 @@ function idleInputOwnershipFromMessage(
   ) {
     return undefined;
   }
-  const record = candidate as {
-    readonly workspaceView?: unknown;
-    readonly editorInteractionId?: unknown;
-  };
-  if (record.workspaceView !== "agent" && record.workspaceView !== "editor") {
-    return undefined;
-  }
-  return {
-    workspaceView: record.workspaceView,
-    ...(typeof record.editorInteractionId === "string"
-      ? { editorInteractionId: record.editorInteractionId }
-      : {}),
-  };
+  const record = candidate as { readonly workspaceView?: unknown };
+  // Historical envelopes may carry the retired "editor" view; they belong to
+  // no live surface and are never drained.
+  return record.workspaceView === "agent" ? { workspaceView: "agent" } : undefined;
 }
 
 function mailboxMessageEligibleForOwnership(
   message: InterAgentCommunication,
-  ownership?: IdleInputOwnership,
 ): boolean {
   const isIdle = message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT;
-  if (ownership?.workspaceView === "editor") {
-    if (!isIdle) return false;
-    const interactionId = ownership.editorInteractionId;
-    const candidate = idleInputOwnershipFromMessage(message);
-    return (
-      typeof interactionId === "string" &&
-      interactionId.length > 0 &&
-      candidate?.workspaceView === "editor" &&
-      candidate.editorInteractionId === interactionId
-    );
-  }
   if (!isIdle) return true;
-  return idleInputOwnershipFromMessage(message)?.workspaceView !== "editor";
+  // Idle input written by a retired surface is never drained into a turn.
+  const ownership = idleInputOwnershipFromMessage(message);
+  return ownership === undefined || ownership.workspaceView === "agent";
 }
 
 export interface Mailbox<T = InterAgentCommunication> {
@@ -1057,6 +1038,7 @@ export interface RolloutRecorder {
 /** Runtime provider/model catalog. */
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
+  getModelInfoForProvider?(provider: string, model: string): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
   listModels(
     strategy?: "online_if_uncached",
@@ -1137,12 +1119,14 @@ export interface McpSurfaceServer {
   readonly transport: "stdio" | "sse" | "http" | "websocket";
   readonly enabled: boolean;
   readonly required: boolean;
+  /** Idle plugin process; render as “Stopped (on demand)”, not a failure. */
   readonly state:
     | "connected"
     | "pending"
     | "failed"
     | "disabled"
     | "needs-auth"
+    | "stopped"
     | "disconnected";
   readonly displayTarget?: string;
   readonly toolCount: number;
@@ -1351,6 +1335,8 @@ export interface StateDbContext {
 
 /** DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Flush only auxiliary startup log indexing at the first provider outcome. */
+  readonly flushStartupLogIndex?: () => void;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;
@@ -1472,6 +1458,9 @@ export interface SessionServices {
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
+  readonly crossProviderConsent?: import("../agents/cross-provider.js").CrossProviderConsentService;
+  /** Maintenance may use existing grants but must defer new interactive approval. */
+  readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly permissionAuditLogger?: PermissionAuditLogger;
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   requestUserInputResolver?: {
@@ -1877,6 +1866,7 @@ function normalizedReasoningProvenance(
 }
 
 function normalizedProviderReasoning(candidate: {
+  readonly toolCalls?: unknown;
   readonly providerReasoningContent?: unknown;
   readonly providerReasoningProvenance?: unknown;
   readonly providerReasoning?: unknown;
@@ -1886,8 +1876,7 @@ function normalizedProviderReasoning(candidate: {
 > {
   const hasFlatContent = candidate.providerReasoningContent !== undefined;
   const flatContent =
-    typeof candidate.providerReasoningContent === "string" &&
-    candidate.providerReasoningContent.length > 0
+    typeof candidate.providerReasoningContent === "string"
       ? candidate.providerReasoningContent
       : undefined;
   const hasFlatProvenance =
@@ -1903,7 +1892,7 @@ function normalizedProviderReasoning(candidate: {
       ? (candidate.providerReasoning as Record<string, unknown>)
       : undefined;
   const durableContent =
-    typeof durable?.content === "string" && durable.content.length > 0
+    typeof durable?.content === "string"
       ? durable.content
       : undefined;
 
@@ -1913,7 +1902,10 @@ function normalizedProviderReasoning(candidate: {
   if (
     (hasFlatContent && flatContent === undefined) ||
     (hasFlatProvenance && flatProvenance === undefined) ||
-    (hasDurable && durable === undefined)
+    (hasDurable && durable === undefined) ||
+    (flatContent === "" &&
+      (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+        !isKnownEmptyProviderReasoning(flatContent, flatProvenance)))
   ) {
     return {};
   }
@@ -1921,7 +1913,10 @@ function normalizedProviderReasoning(candidate: {
   if (durable !== undefined) {
     if (durable.version === 2) {
       const durableProvenance = normalizedReasoningProvenance(durable);
-      if (durableContent === undefined || durableProvenance === undefined) {
+      if (durableContent === undefined || durableProvenance === undefined ||
+          (durableContent === "" &&
+            (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+              !isKnownEmptyProviderReasoning(durableContent, durableProvenance)))) {
         return {};
       }
       if (
@@ -1937,7 +1932,7 @@ function normalizedProviderReasoning(candidate: {
         providerReasoningProvenance: durableProvenance,
       };
     }
-    if (durable.version !== 1 || durableContent === undefined) return {};
+    if (durable.version !== 1 || durableContent === undefined || durableContent.length === 0) return {};
     if (flatContent !== undefined && flatContent !== durableContent) return {};
     // V1 is deliberately unbound. Never upgrade it from adjacent flat fields;
     // only a producer-written V2 record is authoritative provenance.
@@ -1961,6 +1956,7 @@ export function normalizeHistoryMessages(
   for (const item of history) {
     if (!item || typeof item !== "object") continue;
     const candidate = item as {
+      id?: unknown;
       role?: unknown;
       content?: unknown;
       phase?: unknown;
@@ -1982,6 +1978,7 @@ export function normalizeHistoryMessages(
       agentInvocation?: AgentInvocationChannelMetadata;
       compactionHistory?: CompactionHistoryMarkerV1;
       runtimeOnly?: {
+        responseItemId?: unknown;
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
         agentInvocation?: AgentInvocationChannelMetadata;
@@ -2022,15 +2019,23 @@ export function normalizeHistoryMessages(
         ? { toolName: candidate.toolName }
         : {}),
       ...providerReasoning,
-      // Preserve the file-history join key and durable integrity metadata.
+      // Preserve response-item identity, the file-history join key, and
+      // durable integrity metadata across turn-start and checkpoint copies.
       // The invocation merge boundary is derived from authenticated channel
       // metadata instead of accepting a transient serialized flag.
-      ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
+      ...(typeof candidate.runtimeOnly?.responseItemId === "string" ||
+      typeof candidate.id === "string" ||
+      typeof candidate.runtimeOnly?.userMessageId === "string" ||
       durable.toolResultIntegrity !== undefined ||
       durable.agentInvocation !== undefined ||
       durable.compactionHistory !== undefined
         ? {
             runtimeOnly: {
+              ...(typeof candidate.runtimeOnly?.responseItemId === "string"
+                ? { responseItemId: candidate.runtimeOnly.responseItemId }
+                : typeof candidate.id === "string"
+                  ? { responseItemId: candidate.id }
+                  : {}),
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
                 ? { userMessageId: candidate.runtimeOnly.userMessageId }
                 : {}),
@@ -2546,6 +2551,7 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+  private shutdownResourceRelease?: () => void | Promise<void>;
 
   private outOfBandElicitationPauseCount = 0;
 
@@ -2581,6 +2587,8 @@ export class Session {
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
+  private interruptedTurnHandoff: (() => Promise<void>) | null = null;
+  private interruptedTurnHandoffInFlight: Promise<void> | null = null;
   private readonly turnDriverReadyListeners = new Set<() => void>();
   /**
    * SessionStart hooks may be deferred when the atomic first turn is an
@@ -2827,9 +2835,15 @@ export class Session {
       provider: admittedPending.provider,
       model: admittedPending.model,
     });
-    const rawModelInfo = await deriveNextModelInfo(
-      this.services.modelsManager,
-      provider.binding.model,
+    // A Grok binding on the xAI sign-in route never sends priority
+    // processing, so its model info does not offer the Fast tier.
+    const rawModelInfo = withoutXaiSignInFastTier(
+      await deriveNextModelInfo(
+        this.services.modelsManager,
+        provider.binding.model,
+        provider.binding.provider,
+      ),
+      provider.binding,
     );
     const modelInfo = provider.managedDefaultOutputCap
       ? capManagedOpenRouterModelInfo(rawModelInfo)
@@ -2866,7 +2880,9 @@ export class Session {
       permissionContext,
       profile: this.config.coordinatorMode === true
         ? "coordinator"
-        : usesLocalToolProfile(provider.binding.provider)
+        : this.services.runtimeOptions.lightMode === true
+          ? "light"
+          : usesLocalToolProfile(provider.binding.provider)
           ? "compact"
           : "standard",
     });
@@ -2955,7 +2971,11 @@ export class Session {
     ) {
       return [];
     }
-    return projectMcpManagerToConnections(manager);
+    const saved = this.services.configStore === undefined
+      ? (value: string) => value
+      : createLazySavedPluginSecretRedactor(this.services.configStore.homeContext);
+    const plugin = (manager as McpManagerLike & { redactPluginSecrets?: (value: string) => string }).redactPluginSecrets;
+    return projectMcpManagerToConnections(manager, value => plugin?.call(manager, saved(value)) ?? saved(value));
   }
 
   listMcpTools(): readonly unknown[] {
@@ -3498,6 +3518,27 @@ export class Session {
     }
   }
 
+  /** Run recovery pairing inside the serialized submit lifecycle, before history append. */
+  installInterruptedTurnHandoff(handoff: (() => Promise<void>) | null): void {
+    this.interruptedTurnHandoff = handoff;
+  }
+
+  /** Settle a recovered turn's open calls before new history or a history boundary. */
+  async settleInterruptedTurnHandoff(): Promise<void> {
+    const handoff = this.interruptedTurnHandoff;
+    if (handoff === null) return;
+    const inFlight = this.interruptedTurnHandoffInFlight ?? handoff();
+    this.interruptedTurnHandoffInFlight = inFlight;
+    try {
+      await inFlight;
+      if (this.interruptedTurnHandoff === handoff) this.interruptedTurnHandoff = null;
+    } finally {
+      if (this.interruptedTurnHandoffInFlight === inFlight) {
+        this.interruptedTurnHandoffInFlight = null;
+      }
+    }
+  }
+
   onTurnDriverReady(listener: () => void): () => void {
     if (this.lifecycleState !== "open") {
       throw new Error("cannot schedule a turn after shutdown");
@@ -3578,6 +3619,11 @@ export class Session {
     // replayed with duplicate side effects by a later submit.
     this.deferredOrdinarySubmitHookPromise = pending;
     await pending;
+  }
+
+  /** Whether this Session has stopped accepting new work. */
+  get isShuttingDown(): boolean {
+    return this.lifecycleState !== "open";
   }
 
   /**
@@ -3746,6 +3792,11 @@ export class Session {
     };
   }
 
+  /** Release daemon-shared leases after the session has sealed its journal. */
+  registerShutdownResourceRelease(release: () => void | Promise<void>): void {
+    this.shutdownResourceRelease = release;
+  }
+
   async submit(
     message: string | readonly LLMContentPart[],
     opts: SessionSubmitOptions = {},
@@ -3792,16 +3843,12 @@ export class Session {
       if (this.pendingCompactionCleanups.size > 0) {
         await this.repairPendingCompactionCleanups();
       }
-      if (
-        opts.editorInteraction === undefined &&
-        this.deferredSessionStartHook !== null
-      ) {
+      if (this.deferredSessionStartHook !== null) {
         await this.flushDeferredSessionStartHook();
       }
       if (
-        opts.editorInteraction === undefined &&
-        (this.deferredOrdinarySubmitHooks.length > 0 ||
-          this.deferredOrdinarySubmitHookPromise !== null)
+        this.deferredOrdinarySubmitHooks.length > 0 ||
+        this.deferredOrdinarySubmitHookPromise !== null
       ) {
         await this.flushDeferredOrdinarySubmitHooks();
       }
@@ -3818,6 +3865,9 @@ export class Session {
         }
       }
       if (!permitted()) return false;
+      if (this.interruptedTurnHandoff !== null) {
+        await this.settleInterruptedTurnHandoff();
+      }
       if (generation === undefined) {
         await this.childFollowupAdmission.exit(() => hooks.submit(message, opts));
         return true;
@@ -3935,6 +3985,10 @@ export class Session {
 
     try {
       this.throwIfPartialCompactAborted(abortController.signal);
+      const { buildPostCompactMessages, partialCompactConversationAsync } =
+        await import("../services/compact/compact.js");
+      this.throwIfPartialCompactAborted(abortController.signal);
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4058,6 +4112,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4153,6 +4208,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       let result: SessionRollbackCompactionResult | null = null;
       await this.taskDispatchLock.with(async () => {
         const ownsTask = await this.activeTurn.with(
@@ -4753,6 +4809,25 @@ export class Session {
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
       );
     }
+    if (event.msg.type === "tool_call_completed") {
+      let completion = boundDisplayCompletionEvent(event as Parameters<typeof boundDisplayCompletionEvent>[0]);
+      const pending = completion.msg.payload.metadata?.displayAttachments;
+      if (Array.isArray(pending) && pending.length > 0 && this.rolloutStore) {
+        const { displayAttachments: _pending, ...metadata } = completion.msg.payload.metadata ?? {};
+        completion = {
+          ...completion,
+          msg: {
+            ...completion.msg,
+            payload: {
+              ...completion.msg.payload,
+              metadata,
+              displayAttachments: persistDisplayAttachments(this.rolloutStore.store.sessionDir, pending as import("../mcp-client/display-attachments.js").DisplayAttachment[]),
+            },
+          },
+        };
+      }
+      event = completion;
+    }
     if (
       event.msg.type === "context_compacted" ||
       (event.msg as { type?: string }).type === "compacted"
@@ -4794,7 +4869,9 @@ export class Session {
         ? measureToolResultBytes(stamped.msg.payload.result)
         : undefined);
     // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
-    const durable = isDurableEvent(stamped) || appendOpts.durable === true;
+    const durable = isDurableEvent(stamped) ||
+      (stamped.msg.type === "tool_call_completed" && (stamped.msg.payload.displayAttachments?.length ?? 0) > 0) ||
+      appendOpts.durable === true;
     if (this.rolloutStore) {
       const committed = this.rolloutStore.append(stamped, {
         durable,
@@ -4886,9 +4963,9 @@ export class Session {
    * the next turn. This is the only state `run-turn.ts` needs to decide
    * whether an empty submission is a no-op or should continue.
    */
-  hasPendingInput(ownership?: IdleInputOwnership): boolean {
+  hasPendingInput(_ownership?: IdleInputOwnership): boolean {
     return this.sessionMailbox.some((message) =>
-      mailboxMessageEligibleForOwnership(message, ownership),
+      mailboxMessageEligibleForOwnership(message),
     );
   }
 
@@ -4994,11 +5071,6 @@ export class Session {
             ? {
                 idleInputOwnership: {
                   workspaceView: ownership.workspaceView,
-                  ...(ownership.editorInteractionId !== undefined
-                    ? {
-                        editorInteractionId: ownership.editorInteractionId,
-                      }
-                    : {}),
                 },
               }
             : {}),
@@ -5050,38 +5122,17 @@ export class Session {
    * Returns the original `UserInput` payloads in FIFO order — the
    * session-local `InterAgentCommunication` envelope is stripped.
    */
-  drainIdleInput(ownership?: IdleInputOwnership): UserInput[] {
+  drainIdleInput(_ownership?: IdleInputOwnership): UserInput[] {
     return this.sessionMailbox
       .extractWhere(
         (message) =>
           message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT &&
-          mailboxMessageEligibleForOwnership(message, ownership),
+          mailboxMessageEligibleForOwnership(message),
       )
       .map((message) => message.metadata?.payload);
   }
 
-  drainPendingInputMessages(ownership?: IdleInputOwnership): LLMMessage[] {
-    if (ownership?.workspaceView === "editor") {
-      return this.sessionMailbox
-        .extractWhere((message) =>
-          mailboxMessageEligibleForOwnership(message, ownership),
-        )
-        .flatMap((message): LLMMessage[] => {
-          const payload = message.metadata?.payload;
-          if (
-            payload !== null &&
-            typeof payload === "object" &&
-            "role" in payload &&
-            "content" in payload
-          ) {
-            return [payload as LLMMessage];
-          }
-          return typeof payload === "string" && payload.trim().length > 0
-            ? [{ role: "user", content: payload }]
-            : [];
-        });
-    }
-
+  drainPendingInputMessages(_ownership?: IdleInputOwnership): LLMMessage[] {
     const projectedEntries: Array<{
       readonly seq: number;
       readonly message: LLMMessage;
@@ -5125,14 +5176,14 @@ export class Session {
       snapshot.find(
         (candidate) =>
           candidate.seq > seq &&
-          mailboxMessageEligibleForOwnership(candidate, ownership) &&
+          mailboxMessageEligibleForOwnership(candidate) &&
           (candidate.triggerTurn ||
             candidate.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT),
       );
 
     const processed = this.sessionMailbox.processPrefix((msg) => {
       if (msg.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT) {
-        if (!mailboxMessageEligibleForOwnership(msg, ownership)) {
+        if (!mailboxMessageEligibleForOwnership(msg)) {
           return "retain";
         }
         const payload = msg.metadata?.payload;
@@ -5312,7 +5363,8 @@ export class Session {
         event.type === "permission_decision" &&
         event.payload.runId === this.conversationId &&
         event.payload.decision === "denied" &&
-        event.payload.source === "resolver"
+        event.payload.source === "resolver" &&
+        event.payload.decidedBy !== "runtime"
       ) {
         if (!stopped) generation += 1;
         stopped = true;
@@ -5994,6 +6046,10 @@ export class Session {
    * provider_switched re-entry).
    */
   abortTerminal(reason: AbortReason): void {
+    if (reason === "provider_switched") {
+      this.abortActiveTurnForProviderSwitch();
+      return;
+    }
     if (this.abortController.signal.aborted) return;
     const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
@@ -6011,6 +6067,34 @@ export class Session {
   }
 
   /**
+   * I-13: a mid-turn provider switch cancels only the turn in flight. The
+   * session-level controller is the lifetime shutdown token; tripping it for a
+   * switch left every later prompt aborting with `provider_switched` before
+   * the staged selection could apply. Phases observe the merged turn signal,
+   * so the same reason reaches them through the turn's own controller.
+   */
+  private abortActiveTurnForProviderSwitch(): void {
+    const active = this.activeTurn.unsafePeek();
+    if (active === null || active.abortController.signal.aborted) return;
+    active.abortController.abort("provider_switched");
+    for (const task of active.tasks.values()) {
+      if (!task.abortController.signal.aborted) {
+        task.abortController.abort("provider_switched");
+      }
+    }
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: active.turnId,
+          reason: "provider_switched",
+        },
+      },
+    });
+  }
+
+  /**
    * I-33 + I-87: gracefully shut down the session.
    *
    *   - Drain every per-child mailbox under a `MAX_DRAIN_MS` race
@@ -6019,6 +6103,36 @@ export class Session {
    *   - Emit final shutdown status.
    */
   async shutdown(): Promise<void> {
+    let shutdownError: unknown;
+    try {
+      await this.shutdownCore();
+    } catch (error) {
+      shutdownError = error;
+    }
+    let resourceReleaseError: unknown;
+    try {
+      await this.shutdownResourceRelease?.();
+    } catch (error) {
+      resourceReleaseError = error;
+    }
+    try {
+      this.services.executionAdmission?.release?.();
+    } catch (error) {
+      resourceReleaseError = resourceReleaseError === undefined
+        ? error
+        : new AggregateError([resourceReleaseError, error], "session resource release failed");
+    }
+    if (shutdownError !== undefined && resourceReleaseError !== undefined) {
+      throw new AggregateError(
+        [shutdownError, resourceReleaseError],
+        "session shutdown and resource release failed",
+      );
+    }
+    if (shutdownError !== undefined) throw shutdownError;
+    if (resourceReleaseError !== undefined) throw resourceReleaseError;
+  }
+
+  private async shutdownCore(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
     this.beginShutdown();
     const mcpDisposeTask = this.prepareOwnedMcpDisposalForShutdown(
@@ -6144,6 +6258,9 @@ export class Session {
         }
       }
 
+      // Best-effort lifecycle closeAll may time out or retain cleanup failure.
+      // Neither permits a cancellation/suspension terminal to authorize seal.
+      await this.services.unifiedExecManager?.prepareForDurableClose?.();
       const finalizers = [...this.beforeDurableCloseListeners];
       this.beforeDurableCloseListeners.clear();
       for (const finalize of finalizers) {
@@ -6360,11 +6477,18 @@ function deriveMinimalModelInfo(slug: string): ModelInfo {
 async function deriveNextModelInfo(
   modelsManager: ModelsManager | undefined,
   model: string,
+  provider: string,
 ): Promise<ModelInfo> {
   if (!modelsManager || typeof modelsManager.getModelInfo !== "function") {
     return deriveMinimalModelInfo(model);
   }
   try {
+    // Two providers can list the same model id (the managed AgenC route and
+    // public OpenRouter share DeepSeek ids), so the bound provider decides
+    // whose limits apply.
+    if (typeof modelsManager.getModelInfoForProvider === "function") {
+      return await modelsManager.getModelInfoForProvider(provider, model);
+    }
     return await modelsManager.getModelInfo(model);
   } catch {
     return deriveMinimalModelInfo(model);

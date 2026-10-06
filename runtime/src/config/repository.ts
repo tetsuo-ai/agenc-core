@@ -34,6 +34,10 @@ import {
   type McpServerConfig,
 } from "./schema.js";
 import { resolveProviderModelLayer } from "./provider-model-authority.js";
+import {
+  LOCAL_CONFIG_RELATIVE_PATH,
+  PROJECT_CONFIG_RELATIVE_PATH,
+} from "./project-config-paths.js";
 
 export const CANONICAL_CONFIG_VERSION = 2 as const;
 export const CANONICAL_CONFIG_VERSION_KEY = "config_version" as const;
@@ -196,6 +200,15 @@ const V2_TOP_LEVEL_KEYS = new Set(
 V2_TOP_LEVEL_KEYS.add(CANONICAL_CONFIG_VERSION_KEY);
 
 const REPOSITORY_SCOPES = new Set<ConfigScope>(["project", "local"]);
+
+/**
+ * The reason recorded for a repository key that only an untrusted project
+ * root drops. Project trust review reads exactly these records to tell the
+ * user what trusting the root would turn on.
+ */
+const UNTRUSTED_PROJECT_KEY_REASON =
+  "inactive until the canonical project root is trusted";
+
 const NON_OPERATOR_SCOPES = new Set<ConfigScope>([
   "default",
   "plugin",
@@ -561,6 +574,33 @@ function currentSandboxMode(config: AgenCConfig): unknown {
   return config.sandbox_mode;
 }
 
+/**
+ * Top-level keys of a repository layer that trusting its project root turns
+ * on: dropped while the root is untrusted and kept once it is trusted. Keys a
+ * repository can never set (providers, status line, plugins, ...) are left
+ * out, because trust does not activate them either.
+ */
+export function trustActivatedRepositoryKeys(
+  layer: ConfigLayerSnapshot,
+): string[] {
+  const untrusted: IgnoredConfigValue[] = [];
+  sanitizeRepositoryLayer({}, layer, false, untrusted);
+  const trusted: IgnoredConfigValue[] = [];
+  sanitizeRepositoryLayer({}, layer, true, trusted);
+  const droppedEvenWhenTrusted = new Set(trusted.map((entry) => entry.key));
+  return [
+    ...new Set(
+      untrusted
+        .filter(
+          (entry) =>
+            entry.reason === UNTRUSTED_PROJECT_KEY_REASON &&
+            !droppedEvenWhenTrusted.has(entry.key),
+        )
+        .map((entry) => entry.key),
+    ),
+  ].sort();
+}
+
 function sanitizeRepositoryLayer(
   base: AgenCConfig,
   layer: ConfigLayerSnapshot,
@@ -600,7 +640,7 @@ function sanitizeRepositoryLayer(
         key,
         layer,
         ignored,
-        "inactive until the canonical project root is trusted",
+        UNTRUSTED_PROJECT_KEY_REASON,
       );
     }
   }
@@ -632,6 +672,7 @@ function sanitizeRepositoryLayer(
 
   for (const key of [
     "auth",
+    "agents",
     "profiles",
     "providers",
     "attachments",
@@ -771,7 +812,6 @@ function sanitizeRepositoryLayer(
   for (const path of [
     ["browser", "executable_path"],
     ["browser", "profile_dir"],
-    ["buffer", "neovim", "executable"],
     ["llm", "xai", "remote_mcp"],
   ] as const) {
     removeNestedPath(
@@ -791,19 +831,6 @@ function sanitizeRepositoryLayer(
         layer,
         ignored,
         "project/local configuration cannot weaken browser isolation",
-      );
-    }
-  }
-
-  if (isPlainRecord(raw.buffer) && isPlainRecord(raw.buffer.prediction)) {
-    const prediction = raw.buffer.prediction;
-    if (prediction.enabled !== "off") {
-      removeNestedPath(
-        raw,
-        ["buffer", "prediction"],
-        layer,
-        ignored,
-        "project/local configuration cannot enable or route source-code prediction",
       );
     }
   }
@@ -1391,7 +1418,7 @@ async function loadLayeredConfigInternal(
   });
   const project = includeWorkspaceLayers
     ? await readStrictConfigLayer(
-        join(projectRoot, ".agenc", "config.toml"),
+        join(projectRoot, ...PROJECT_CONFIG_RELATIVE_PATH),
         "project",
         "project config",
       )
@@ -1411,7 +1438,7 @@ async function loadLayeredConfigInternal(
   }
   const local = includeWorkspaceLayers
     ? await readStrictConfigLayer(
-        join(projectRoot, ".agenc", "config.local.toml"),
+        join(projectRoot, ...LOCAL_CONFIG_RELATIVE_PATH),
         "local",
         "local config",
       )

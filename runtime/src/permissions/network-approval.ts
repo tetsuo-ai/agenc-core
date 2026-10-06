@@ -357,6 +357,11 @@ interface MutablePending {
   readonly map: Map<string, PendingHostApproval>;
 }
 
+class NetworkApprovalSession {
+  readonly abortController = new AbortController();
+  readonly pendingLock = new AsyncLock<MutablePending>({ map: new Map() });
+}
+
 export class NetworkApprovalService {
   /** JSON-stringified `HostApprovalKey` → present means "session allow". */
   private readonly sessionApprovedHosts = new Set<string>();
@@ -365,12 +370,11 @@ export class NetworkApprovalService {
   private readonly sessionDeniedHosts = new Set<string>();
 
   /**
-   * In-flight host approvals keyed by `hostApprovalKeyToString`. Guarded
-   * by `pendingLock` so concurrent callers observe a consistent owner.
+   * Each session generation owns its pending approvals and cancellation.
+   * Keeping the lock with the generation prevents old cleanup from deleting
+   * a new session's approval for the same host.
    */
-  private readonly pendingLock = new AsyncLock<MutablePending>({
-    map: new Map(),
-  });
+  private session = new NetworkApprovalSession();
 
   /** Active/deferred network approvals keyed by registration ID. */
   private readonly activeNetworkApprovals =
@@ -379,13 +383,16 @@ export class NetworkApprovalService {
   // ───── Session reset ────────────────────────────────────────────────
 
   /**
-   * Clear both session caches. Called on new session bootstrap and by
-   * `/clear`. Does NOT touch in-flight pending
-   * approvals — those resolve themselves.
+   * Clear both caches and cancel approvals from the previous session.
+   * Owners and waiters return a `session_cleared` denial, even if an external
+   * resolver never settles. Late results cannot affect the new session.
    */
   clearSessionHosts(): void {
+    const previous = this.session;
+    this.session = new NetworkApprovalSession();
     this.sessionApprovedHosts.clear();
     this.sessionDeniedHosts.clear();
+    previous.abortController.abort();
   }
 
   /** Test/observability helper: current session-allow set size. */
@@ -400,7 +407,7 @@ export class NetworkApprovalService {
 
   /** Test/observability helper: in-flight pending approval count. */
   pendingSize(): number {
-    return this.pendingLock.unsafePeek().map.size;
+    return this.session.pendingLock.unsafePeek().map.size;
   }
 
   /** Test/observability helper: active + deferred approval registration count. */
@@ -502,19 +509,40 @@ export class NetworkApprovalService {
       return { kind: "allow" };
     }
 
-    // (5) Pending-map lookup — owner vs waiter.
-    const { pending, isOwner } = await this.getOrCreatePending(stringKey);
+    return this.requestUncachedApproval(normalizedKey, opts);
+  }
 
-    if (!isOwner) {
-      // Waiter path: block until owner notifies, then project the
-      // decision. Abort propagates if the caller cancels while waiting.
-      const pendingDecision = await raceAbort(pending.wait(), opts.signal);
-      return pendingDecisionToNetwork(pendingDecision);
-    }
+  private async requestUncachedApproval(
+    normalizedKey: HostApprovalKey,
+    opts: RequestNetworkApprovalOptions,
+  ): Promise<NetworkDecision> {
+    const stringKey = hostApprovalKeyToString(normalizedKey);
 
-    // Owner path: run hooks → resolver → project decision.
+    // (5) Capture the session before awaiting the pending-map lookup.
+    const session = this.session;
+    const sessionSignal = session.abortController.signal;
+    const signal = opts.signal
+      ? AbortSignal.any([opts.signal, sessionSignal])
+      : sessionSignal;
+    const { pending, isOwner } = await this.getOrCreatePending(stringKey, session);
+    let publicDecision: PendingApprovalDecision;
+
     try {
-      const resolved = await this.resolveApproval(normalizedKey, opts);
+      throwIfAborted(signal);
+      if (!isOwner) {
+        // Waiters are cancelled along with their owner on session reset.
+        const pendingDecision = await raceAbort(pending.wait(), signal);
+        throwIfAborted(signal);
+        return pendingDecisionToNetwork(pendingDecision);
+      }
+
+      // Owner path: run hooks → resolver → project decision. External work
+      // may ignore cancellation, so race it and fence all later side effects.
+      const resolved = await raceAbort(
+        this.resolveApproval(normalizedKey, { ...opts, signal }),
+        signal,
+      );
+      throwIfAborted(signal);
 
       // Cache side effects.
       if (resolved === "allow_for_session") {
@@ -527,18 +555,26 @@ export class NetworkApprovalService {
 
       // Normalize cached-deny to the plain `deny` value exposed via
       // `PendingApprovalDecision`. Waiters only see the coarse enum.
-      const publicDecision: PendingApprovalDecision =
-        resolved === "deny_for_session" ? "deny" : resolved;
+      publicDecision = resolved === "deny_for_session" ? "deny" : resolved;
 
       pending.set(publicDecision);
-      return pendingDecisionToNetwork(publicDecision);
     } catch (err) {
       // Release waiters with a deny so they don't hang; rethrow for owner.
-      pending.set("deny");
+      if (isOwner) pending.set("deny");
+      if (sessionSignal.aborted) {
+        return { kind: "deny", reason: "session_cleared" };
+      }
       throw err;
     } finally {
-      await this.removePending(stringKey);
+      if (isOwner) await this.removePending(stringKey, session);
     }
+
+    // Reset may run while owner cleanup waits for the pending-map lock.
+    if (sessionSignal.aborted) {
+      return { kind: "deny", reason: "session_cleared" };
+    }
+    throwIfAborted(signal);
+    return pendingDecisionToNetwork(publicDecision);
   }
 
   async requestDeferredApproval(
@@ -627,8 +663,9 @@ export class NetworkApprovalService {
 
   private async getOrCreatePending(
     stringKey: string,
+    session: NetworkApprovalSession,
   ): Promise<{ pending: PendingHostApproval; isOwner: boolean }> {
-    return this.pendingLock.with((state) => {
+    return session.pendingLock.with((state) => {
       const existing = state.map.get(stringKey);
       if (existing !== undefined) {
         return { pending: existing, isOwner: false };
@@ -639,8 +676,11 @@ export class NetworkApprovalService {
     });
   }
 
-  private async removePending(stringKey: string): Promise<void> {
-    await this.pendingLock.with((state) => {
+  private async removePending(
+    stringKey: string,
+    session: NetworkApprovalSession,
+  ): Promise<void> {
+    await session.pendingLock.with((state) => {
       state.map.delete(stringKey);
     });
   }
@@ -670,6 +710,7 @@ export class NetworkApprovalService {
       for (const hook of opts.hooks ?? []) {
         if (opts.signal?.aborted) throw makeAbortError(opts.signal);
         const result = await hook(ctx);
+        if (opts.signal?.aborted) throw makeAbortError(opts.signal);
         if (result === null || result === undefined) continue;
         if ("allow" in result && result.allow === true) return "allow_once";
         if ("deny" in result) throw new DeniedByPolicy(result.deny);
@@ -681,6 +722,7 @@ export class NetworkApprovalService {
     if (opts.signal?.aborted) throw makeAbortError(opts.signal);
 
     const review = await opts.resolver.requestNetworkApproval(ctx);
+    if (opts.signal?.aborted) throw makeAbortError(opts.signal);
 
     // (c) Map ReviewDecision → PendingApprovalDecision (+ amendment persistence).
     switch (review.kind) {
@@ -697,6 +739,7 @@ export class NetworkApprovalService {
         } catch (err) {
           opts.onAmendmentPersistError?.(err);
         }
+        if (opts.signal?.aborted) throw makeAbortError(opts.signal);
         return review.amendment.action === "allow"
           ? "allow_for_session"
           : "deny_for_session";
@@ -731,11 +774,20 @@ function formatNetworkTarget(key: HostApprovalKey): string {
 }
 
 function makeAbortError(signal: AbortSignal): Error {
-  const reason = signal.reason instanceof Error
-    ? signal.reason
-    : new Error("aborted");
-  (reason as { name?: string }).name = "AbortError";
-  return reason;
+  if (signal.reason instanceof Error && signal.reason.name === "AbortError") {
+    return signal.reason;
+  }
+  // Native DOMException names and caller-owned error objects may be read-only.
+  const error = new Error(
+    signal.reason instanceof Error ? signal.reason.message : "aborted",
+    { cause: signal.reason },
+  );
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw makeAbortError(signal);
 }
 
 /**
@@ -749,7 +801,6 @@ async function raceAbort<T>(
   signal: AbortSignal | undefined,
 ): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) throw makeAbortError(signal);
 
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
@@ -757,6 +808,9 @@ async function raceAbort<T>(
       reject(makeAbortError(signal));
     };
     signal.addEventListener("abort", onAbort, { once: true });
+    // Observe the work promise even when it synchronously triggered an abort
+    // before this race was installed; it can still reject after cancellation.
+    if (signal.aborted) onAbort();
     promise.then(
       (value) => {
         signal.removeEventListener("abort", onAbort);

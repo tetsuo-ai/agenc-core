@@ -42,6 +42,33 @@ function commandContext(usage?: AdmissionUsageSummary): SlashCommandContext {
 }
 
 describe("session usage projection", () => {
+  it("labels estimated session, model and agent costs while preserving priced rows", () => {
+    const usage: AdmissionUsageSummary = {
+      ...summary(10, 0.045), costEstimated: true,
+      models: [
+        { ...totals(0.045), model: "unpriced", costEstimated: true },
+        { ...totals(0), model: "free" },
+      ],
+      agents: [
+        { ...totals(0.045), runId: "worker", costEstimated: true },
+        { ...totals(0), runId: "free-worker" },
+      ],
+    };
+    const transcript = adaptTranscriptEvents([usageEvent(usage)]);
+    const report = buildCostReport(commandContext(transcript.sessionUsage!));
+    expect(report.totalIsEstimated).toBe(true);
+    expect(report.models[0]?.costEstimated).toBe(true);
+    expect(report.agents[0]?.costEstimated).toBe(true);
+    const output = formatCostReport(report);
+    expect(output).toContain("Session cost: $0.045 est.");
+    expect(output).toContain("unpriced: 20 in, 10 out ($0.045 est.)");
+    expect(output).toContain("completed Worker · runner: 30 tokens · $0.045 est.");
+    expect(output).toContain("free: 20 in, 10 out ($0.00)");
+    expect(output).toContain("recorded free-worker: 30 tokens · $0.00");
+    expect(output).not.toContain("some pricing unknown");
+    expect(output).not.toContain("from agent tokens");
+  });
+
   it("uses the same exact aggregate for transcript and cost report without adding worker rows again", () => {
     const usage = summary();
     const transcript = adaptTranscriptEvents([
@@ -133,5 +160,23 @@ describe("session usage projection", () => {
     expect(() => buildCostReport(commandContext())).not.toThrow();
     expect(buildCostReport(commandContext()).totalCostUsd).toBe(0);
     expect(buildCostReport(commandContext()).hasUnknownCost).toBe(true);
+  });
+});
+
+describe("transcript cost for fast mode", () => {
+  it("prices a fast-served token_count at the model's fast-mode rates", () => {
+    // 1M input tokens on Claude Opus 5.5: $4 standard, $8 fast.
+    const tokenCount = (speed?: "fast") => ({
+      type: "token_count",
+      payload: {
+        promptTokens: 1_000_000,
+        completionTokens: 0,
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+        ...(speed !== undefined ? { speed } : {}),
+      },
+    });
+    expect(adaptTranscriptEvents([tokenCount()]).sessionCostUsd).toBeCloseTo(4, 6);
+    expect(adaptTranscriptEvents([tokenCount("fast")]).sessionCostUsd).toBeCloseTo(8, 6);
   });
 });

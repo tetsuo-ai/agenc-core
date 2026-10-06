@@ -23,7 +23,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openMcpMenu } from "./mcp-menu.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 export interface McpServerStatus {
@@ -36,6 +35,7 @@ export interface McpServerStatus {
     | "failed"
     | "disabled"
     | "needs-auth"
+    | "stopped"
     | "pending";
   readonly error?: string;
   readonly url?: string;
@@ -215,6 +215,8 @@ export async function collectMcpServerStatus(
             ? "needs-auth"
             : projected?.type === "pending"
               ? "pending"
+              : projected?.type === "stopped"
+                ? "stopped"
               : projected?.type === "disabled" || !info.enabled
               ? "disabled"
               : projected?.type === "connected" || connected
@@ -256,7 +258,8 @@ export function formatMcpServerStatus(
       tools !== undefined
         ? `, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`
         : "";
-    lines.push(`  ${server.name}: ${server.state}${required} (${target}${toolCount})`);
+    const state = server.state === "stopped" ? "stopped (on demand)" : server.state;
+    lines.push(`  ${server.name}: ${state}${required} (${target}${toolCount})`);
     if (server.error) {
       lines.push(`    error: ${server.error}`);
     }
@@ -715,7 +718,12 @@ export const mcpCommand: SlashCommand = {
       if (parsed.kind === "status") {
         const servers = await collectMcpServerStatus(ctx.session);
         const toolsByServer = collectMcpToolStatusByServer(ctx.session, servers);
-        if (openMcpMenu(ctx, servers, toolsByServer, createMcpMenuController(ctx))) {
+        if (
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./mcp-menu.js")).openMcpMenu(
+            ctx, servers, toolsByServer, createMcpMenuController(ctx),
+          )
+        ) {
           return { kind: "skip" };
         }
         return {

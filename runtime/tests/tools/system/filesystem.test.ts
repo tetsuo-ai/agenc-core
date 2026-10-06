@@ -534,6 +534,31 @@ describe("system.stat", () => {
     expect(result.isError).toBe(true);
     expect(parseResult(result).error).toContain("not found");
   });
+
+  it("reads a relative path in the session's working directory, not the daemon's", async () => {
+    // A Light sub-agent's stat of "." was refused: it resolved against the
+    // daemon process's directory, which is outside the allowed ones.
+    mockStat.mockResolvedValueOnce({
+      size: 96,
+      mtime: new Date("2026-09-26T00:00:00Z"),
+      birthtime: new Date("2026-09-26T00:00:00Z"),
+      isDirectory: () => true,
+      isFile: () => false,
+      mode: 0o40755,
+    } as never);
+    const session = { sessionConfiguration: { cwd: "/workspace/project" } } as unknown as Session;
+    const result = await runWithCurrentRuntimeSession(session, () => tool.execute({ path: "." }));
+    expect(result.isError).toBeUndefined();
+    expect(parseResult(result).isDirectory).toBe(true);
+    expect(mockStat).toHaveBeenCalledWith("/workspace/project");
+  });
+
+  it("still refuses a relative path that climbs out of the session's directory", async () => {
+    const session = { sessionConfiguration: { cwd: "/workspace/project" } } as unknown as Session;
+    const result = await runWithCurrentRuntimeSession(session, () => tool.execute({ path: "../../etc" }));
+    expect(result.isError).toBe(true);
+    expect(mockStat).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================

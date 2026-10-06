@@ -576,6 +576,7 @@ describe("coverage swarm daemon session adapter", () => {
         permissions: ["tool.use", 5, "tool.admin"],
       },
     });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
     client.emit("session_1", {
       method: "event.agent_status",
       params: {
@@ -583,7 +584,7 @@ describe("coverage swarm daemon session adapter", () => {
         status: "running",
       },
     });
-    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "status" });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "daemon-turn" });
 
     unsubscribeFirst();
     expect(client.sessionUnsubscribeCount).toBe(0);
@@ -614,7 +615,6 @@ describe("coverage swarm daemon session adapter", () => {
         id: "status",
         type: "background_agent_status",
         payload: {
-          turnId: "status",
           status: "running",
         },
       },

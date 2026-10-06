@@ -50,6 +50,7 @@ beforeEach(async () => {
   repo = join(tempRoot, "repo");
   mkdirSync(home, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  mkdirSync(join(repo, ".git"));
   oldProjectRoot = getProjectRoot();
   oldAgencHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = home;

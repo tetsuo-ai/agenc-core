@@ -46,9 +46,7 @@ import { resolve } from "node:path";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { buildFileMutationMetadata } from "../result-metadata.js";
-import {
-  sessionPlanFileAuthority,
-} from "../../planning/session-plan-authority.js";
+import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -59,23 +57,20 @@ import {
 } from "./filesystem.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
-  agentNamespacePathHint,
-  denyAgentNamespacePath,
-  isAgentNamespacePath,
+  FILE_TOOL_PATH_SCHEMA,
+  FILE_TOOL_PATH_USAGE,
+  workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import {
+  createToolEffectDispositionEvidence,
+  settledNoEffectToolResult,
+} from "../effect-boundary.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
-import {
-  prepareWorkspaceMutation,
-  WorkspaceMutationCoordinatorError,
-  workspaceAuthoritativeRead,
-  workspaceMutationAdmissionToolResult,
-} from "../../workspace/mutation-coordinator.js";
-import {
-  executeWorkspaceFileMutation,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 import { logForDebugging } from "../../utils/debug.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
@@ -107,9 +102,9 @@ export function attachFileWriteTouchedPathCallback(
 function readFileWriteTouchedPathCallback(
   args: Record<string, unknown>,
 ): FileWriteTouchedPathCallback | undefined {
-  const callback = (
-    args as Record<PropertyKey, unknown>
-  )[FILE_WRITE_TOUCHED_PATH_CALLBACK];
+  const callback = (args as Record<PropertyKey, unknown>)[
+    FILE_WRITE_TOUCHED_PATH_CALLBACK
+  ];
   return typeof callback === "function"
     ? (callback as FileWriteTouchedPathCallback)
     : undefined;
@@ -127,7 +122,7 @@ const FILE_WRITE_DESCRIPTION = `Writes a file to the local filesystem.
 
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
-- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
+- ${FILE_TOOL_PATH_USAGE}
 - If this is an existing file, you MUST use the FileRead tool first to read the file's contents. This tool will fail if you did not read the file first.
 - Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
 - NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
@@ -192,17 +187,26 @@ function preMutationErrorResult(message: string): ToolResult {
   };
 }
 
-/** Attach pre-mutation no-effect evidence to an already-built refusal. */
-function asPreMutationRefusal(result: ToolResult): ToolResult {
-  return {
-    ...result,
-    effectDisposition: createToolEffectDispositionEvidence({
-      disposition: "confirmed_no_effect",
-      evidenceKind: "boundary_not_crossed",
-      evidenceRef: `tool:${FILE_WRITE_TOOL_NAME}:admission-rejected`,
-      evidenceMaterial: String(result.content ?? ""),
-    }),
-  };
+/**
+ * A failure thrown by the mutation transaction: settled as no-effect when the
+ * transaction proved the file unchanged, otherwise an unknown outcome.
+ */
+function formatWriteFailure(err: unknown, filePath: string): string {
+  if (err instanceof WorkspaceMutationError) return err.message;
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code
+    ? `${code}: failed to write ${filePath}`
+    : `failed to write ${filePath}`;
+}
+
+function mutationErrorResult(err: unknown, message: string): ToolResult {
+  const evidence = workspaceMutationNoEffectEvidence(err);
+  if (evidence === undefined) return errorResult(message);
+  return settledNoEffectToolResult({
+    toolName: FILE_WRITE_TOOL_NAME,
+    message: `${message} ${describeWorkspaceMutationNoEffect(evidence)}`,
+    evidence,
+  });
 }
 
 /**
@@ -224,6 +228,7 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
 }
 
 export interface FileWriteToolConfig extends WorkspaceFileMutationTestHooks {
+  readonly lightMode?: boolean;
   /**
    * Allowed path prefixes — all writes must canonicalize inside one
    * of these. When omitted, falls back to `process.cwd()` so the tool
@@ -322,8 +327,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       properties: {
         file_path: {
           type: "string",
-          description:
-            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
+          description: FILE_TOOL_PATH_SCHEMA,
         },
         content: {
           type: "string",
@@ -344,9 +348,6 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       }
       const cwd =
         asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
-        return denyAgentNamespacePath(filePath, cwd);
-      }
       return checkToolPathPermission({
         toolName: FILE_WRITE_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -372,10 +373,6 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
 
       const cwdArg = asNonEmptyString(args.cwd);
       const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();
-      if (isAgentNamespacePath(filePath)) {
-        return preMutationErrorResult(agentNamespacePathHint(filePath, cwd));
-      }
-
       // Notebook redirect — AgenC routes `.ipynb` to NotebookEdit
       // instead of allowing a raw text write that would corrupt the
       // notebook's JSON envelope.
@@ -410,17 +407,11 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         (args[SESSION_ID_ARG] as string).trim().length > 0
           ? (args[SESSION_ID_ARG] as string)
           : undefined;
-      const editorRead = workspaceAuthoritativeRead(absolutePath);
-
       // Stat the target. ENOENT means we are creating a brand-new
       // file; any other failure is surfaced as a write error.
       let existed = false;
       let existingStat: { mtimeMs: number } | null = null;
       let existingContentForUi = "";
-      if (editorRead !== null) {
-        existed = true;
-        existingContentForUi = normalizeNewlines(editorRead.content);
-      }
       try {
         const result = await stat(absolutePath);
         if (result.isDirectory()) {
@@ -471,12 +462,9 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         if (isFullSnapshot) {
           let onDisk: string;
           try {
-            onDisk =
-              editorRead !== null
-                ? normalizeNewlines(editorRead.content)
-                : normalizeNewlines(
-                    (await readFile(absolutePath)).toString("utf-8"),
-                  );
+            onDisk = normalizeNewlines(
+              (await readFile(absolutePath)).toString("utf-8"),
+            );
             existingContentForUi = onDisk;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException)?.code;
@@ -504,12 +492,9 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           }
           // Populate the UI snapshot from disk best-effort.
           try {
-            existingContentForUi =
-              editorRead !== null
-                ? normalizeNewlines(editorRead.content)
-                : normalizeNewlines(
-                    (await readFile(absolutePath)).toString("utf-8"),
-                  );
+            existingContentForUi = normalizeNewlines(
+              (await readFile(absolutePath)).toString("utf-8"),
+            );
           } catch {
             existingContentForUi = "";
           }
@@ -542,20 +527,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       }
 
       try {
-        const toolCallId =
-          typeof rawArgs.__callId === "string" ? rawArgs.__callId : undefined;
-        const admission = await prepareWorkspaceMutation({
-          path: absolutePath,
-          source: "file_write",
-          beforeText: existed ? existingContentForUi : "",
-          afterText: content,
-          ...(sessionId !== undefined ? { sessionId } : {}),
-          ...(toolCallId !== undefined ? { toolCallId } : {}),
-        });
-        const rejection = workspaceMutationAdmissionToolResult(admission);
-        if (rejection !== null) return asPreMutationRefusal(rejection);
         await executeWorkspaceFileMutation({
-          admission,
           path: absolutePath,
           afterText: content,
           write: async (
@@ -576,22 +548,10 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
             await boundMutation.writeContent(data);
           },
           writeUsesBoundMutation: true,
-          metadata: {
-            ...(sessionId !== undefined ? { sessionId } : {}),
-            ...(toolCallId !== undefined ? { toolCallId } : {}),
-          },
           testHooks: config,
         });
       } catch (err) {
-        if (err instanceof WorkspaceMutationCoordinatorError) {
-          return errorResult(err.message);
-        }
-        const code = (err as NodeJS.ErrnoException)?.code;
-        return errorResult(
-          code
-            ? `${code}: failed to write ${filePath}`
-            : `failed to write ${filePath}`,
-        );
+        return mutationErrorResult(err, formatWriteFailure(err, filePath));
       }
 
       const lspFeedback = await collectEditFeedback(absolutePath, content);
@@ -637,8 +597,8 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         ...successResult(
           `${
             existed
-              ? `The file ${filePath} has been updated successfully.`
-              : `File created successfully at: ${filePath}`
+              ? `The file ${workspaceRelativeToolPath(filePath, allowedPaths[0], config.lightMode === true)} has been updated successfully.`
+              : `File created successfully at: ${workspaceRelativeToolPath(filePath, allowedPaths[0], config.lightMode === true)}`
           }${lspFeedback}`,
         ),
         metadata: buildFileMutationMetadata({

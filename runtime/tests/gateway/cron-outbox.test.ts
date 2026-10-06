@@ -1,3 +1,4 @@
+import "../helpers/cron-os-home.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,6 +107,24 @@ function start(options: {
 }
 
 describe("durable cron delivery", () => {
+  test("reports the storage capability failure without executing a provider or delivery", async () => {
+    const failure = vi.spyOn(CronDeliveryOutboxStore.prototype, "schedule").mockRejectedValue(
+      new Error("descriptor-confined I/O is unsupported on darwin"),
+    );
+    const runner = start({});
+    try {
+      await vi.waitFor(() => expect(runner.lines).toContain(
+        "cron: delivery state unavailable: descriptor-confined I/O is unsupported on darwin",
+      ));
+      expect(runner.model).not.toHaveBeenCalled();
+      expect(runner.send).not.toHaveBeenCalled();
+      expect(runner.postWebhook).not.toHaveBeenCalled();
+    } finally {
+      await runner.handle.stop();
+      failure.mockRestore();
+    }
+  });
+
   test.each(["model", "errored", "channel", "webhook"] as const)("backs off after a slow %s failure finishes", async (failure) => {
     const finishedAt = DUE_AT + 120_000;
     const fail = async () => {

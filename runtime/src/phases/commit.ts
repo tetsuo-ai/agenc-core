@@ -377,10 +377,6 @@ function launchTerminalBackgroundHooks(
   session: Session,
   querySource: string,
 ): void {
-  // Editor interactions are an explicit, fail-closed authority boundary.
-  // PromptSuggestion and AutoDream can launch background agents and write
-  // durable state, so they must not inherit an Editor turn implicitly.
-  if (ctx.editorInteraction !== undefined) return;
   if (lastAssistantIsApiError(state)) return;
 
   const hookContext = buildTerminalHookContext(
@@ -491,7 +487,7 @@ export async function commit(
     state.transition === undefined &&
     !state.needsFollowUp;
 
-  if (turnIsTerminating && ctx.editorInteraction === undefined) {
+  if (turnIsTerminating) {
     launchTerminalBackgroundHooks(
       state,
       ctx,
@@ -540,28 +536,23 @@ export async function commit(
     } else {
       state.stopHookActive = false;
       state.stopHookBlockingCount = 0;
-      if (ctx.editorInteraction === undefined) {
-        const messages = state.messages.map(cloneMessage);
-        const completedToolResults = state.completedToolResults.map(
-          cloneCompletedToolResult,
-        );
-        ensureExtractMemoriesInitialized();
-        void executeExtractMemories(
-          {
-            messages,
-            completedToolResults,
-            ctx,
-            session,
-            signal,
-          },
-          (paths) => emitSavedMemoryNotice(session, paths),
-        ).catch(() => {});
-      }
+      const messages = state.messages.map(cloneMessage);
+      const completedToolResults = state.completedToolResults.map(
+        cloneCompletedToolResult,
+      );
+      ensureExtractMemoriesInitialized();
+      void executeExtractMemories(
+        {
+          messages,
+          completedToolResults,
+          ctx,
+          session,
+          signal,
+        },
+        (paths) => emitSavedMemoryNotice(session, paths),
+      ).catch(() => {});
     }
   } else if (turnIsTerminating) {
-    // Stop hooks may inject model-facing messages and force another sample.
-    // Editor requests have their own bounded read/proposal loop, so they
-    // terminate without consulting the shared Agent stop-hook pipeline.
     state.stopHookActive = false;
     state.stopHookBlockingCount = 0;
   }

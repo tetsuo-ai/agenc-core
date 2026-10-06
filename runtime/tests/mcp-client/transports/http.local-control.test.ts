@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHttpMCPConnection } from "./http.js";
+import { withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "../local-control.js";
 
 const observed = vi.hoisted(() => ({ options: undefined as unknown, proxy: vi.fn(() => ({ dispatcher: "direct-dispatcher" })) }));
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({ Client: class {} }));
@@ -14,6 +15,29 @@ vi.mock("../../utils/proxy.js", () => ({ getProxyFetchOptions: observed.proxy })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("private HTTP MCP transport", () => {
+  it("follows an ordinary HTTP redirect while keeping local redirects blocked", async () => {
+    const endpoint = "https://service.example/mcp";
+    const visited: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      visited.push(url);
+      if (url === endpoint) {
+        if (init?.redirect === "error") throw new Error("unexpected redirect");
+        visited.push(`${endpoint}/`); // Node's default follows the 307 Location.
+      }
+      return new Response("destination", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    await createHttpMCPConnection({ name: "ordinary", endpoint });
+    const ordinary = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await expect(ordinary(endpoint, { method: "POST", body: JSON.stringify({ method: "tools/call" }) })).resolves.toHaveProperty("status", 200);
+    expect(fetch).toHaveBeenLastCalledWith(endpoint, expect.not.objectContaining({ redirect: "error" }));
+    expect(visited).toEqual([endpoint, `${endpoint}/`]);
+    await createHttpMCPConnection({ name: "local", endpoint, localOnly: true });
+    const local = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await expect(local(endpoint)).rejects.toThrow("unexpected redirect");
+    expect(visited).toEqual([endpoint, `${endpoint}/`, endpoint]);
+  });
   it("uses an explicitly direct environment, rejects redirects and refuses alternate endpoints", async () => {
     const fetch = vi.fn(async () => new Response("ok"));
     vi.stubGlobal("fetch", fetch);
@@ -32,8 +56,16 @@ describe("private HTTP MCP transport", () => {
 
   it("keeps ordinary HTTP MCP proxy and authentication behavior unchanged", async () => {
     const environment = { HTTPS_PROXY: "http://proxy.example:80" };
+    const fetch = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", fetch);
     await createHttpMCPConnection({ name: "ordinary", endpoint: "https://service.example/mcp", headers: { Authorization: "Bearer ordinary" } }, undefined, undefined, undefined, environment);
     expect(observed.proxy).toHaveBeenCalledWith({ environment });
-    expect((observed.options as Record<string, unknown>).fetch).toBeUndefined();
+    const guardedFetch = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await guardedFetch("https://service.example/mcp", { method: "POST", body: JSON.stringify({ method: "tools/call" }) });
+    expect(fetch).toHaveBeenCalledOnce();
+    await expect(withDesktopMcpDispatchGuard(() => { throw new DesktopMcpPreflightRefusal("revoked"); },
+      () => guardedFetch("https://service.example/mcp", { method: "POST", body: JSON.stringify({ method: "tools/call" }) })))
+      .rejects.toThrow("revoked");
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });

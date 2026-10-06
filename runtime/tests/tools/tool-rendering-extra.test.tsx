@@ -11,6 +11,7 @@ vi.mock("../tui/ink.js", () => {
   return { Box, Text };
 });
 
+import { ResultLine } from "../tui/components/v2/primitives.js";
 import {
   createTuiTool,
   FileReadView,
@@ -29,6 +30,19 @@ interface ChildProps {
 
 interface ChildElement {
   readonly props: ChildProps;
+}
+
+/**
+ * The transcript form of a result: one `└` ResultLine. Asserts the element is
+ * a ResultLine and returns its text and failed flag.
+ */
+function resultLine(node: unknown): { readonly text: unknown; readonly failed?: boolean } {
+  const element = node as {
+    readonly type: unknown;
+    readonly props: { readonly children?: unknown; readonly failed?: boolean };
+  };
+  expect(element.type).toBe(ResultLine);
+  return { text: element.props.children, failed: element.props.failed };
 }
 
 function flatten(node: unknown): ChildElement[] {
@@ -84,15 +98,15 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     );
   });
 
-  test("file tool-use cards call out agent namespace paths", () => {
+  test("file tool-use cards show /root paths as filesystem paths", () => {
     const write = createTuiTool("Write");
     const read = createTuiTool("FileRead");
 
     expect(
       write.renderToolUseMessage({ file_path: "/root/game.py", content: "x" }),
-    ).toBe("/root/game.py (agent namespace, not a file path)");
+    ).toBe("/root/game.py");
     expect(read.renderToolUseMessage({ file_path: "/root/game.py" })).toBe(
-      "/root/game.py (agent namespace, not a file path)",
+      "/root/game.py",
     );
   });
 
@@ -196,38 +210,37 @@ describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispa
     expect((node as { type: unknown }).type).not.toBe(FileReadView);
   });
 
-  test("FileReadView renders a 'Read N lines' summary using the line range", () => {
-    // Capped preview: a single "Read N lines" line derived from <read-lines>.
+  test("FileReadView renders an 'N lines' result line using the line range", () => {
+    // Capped preview: a single "└ N lines" line derived from <read-lines>. The
+    // step row already says "Read", so the count carries no verb.
     const node = FileReadView({
       content:
         "<read-file>src/foo.ts</read-file>\n<read-lines>5-10</read-lines>\n<read-content>function hello() {}</read-content>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Read 6 lines");
-    expect(node.props.dimColor).toBe(true);
+    });
+    expect(resultLine(node).text).toBe("6 lines");
   });
 
   test("FileReadView falls back to counting body lines when no range is present", () => {
     const body = Array.from({ length: 3 }, (_, i) => `line ${i + 1}`).join("\n");
     const node = FileReadView({
       content: `<read-file>x</read-file>\n<read-content>${body}</read-content>`,
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Read 3 lines");
+    });
+    expect(resultLine(node).text).toBe("3 lines");
   });
 
-  test("FileReadView shows (empty file) indicator when the read returns no content", () => {
+  test("FileReadView shows an 'empty file' result line when the read returns no content", () => {
     const node = FileReadView({
       content: "<read-file>x</read-file>\n<read-content></read-content>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("(empty file)");
-    expect(node.props.dimColor).toBe(true);
+    });
+    expect(resultLine(node).text).toBe("empty file");
   });
 
   test("FileReadView with content but no <read-file> tag still summarizes line count", () => {
     const node = FileReadView({
       content: "<read-content>just body</read-content>",
-    }) as { props: ChildProps };
+    });
     // Single-line body -> singular "line".
-    expect(node.props.children).toBe("Read 1 line");
+    expect(resultLine(node).text).toBe("1 line");
   });
 
   test("FileRead with the legacy single-string content shape (no envelope tags at all) falls through to the generic Text renderer instead of FileReadView", () => {
@@ -244,8 +257,8 @@ describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispa
     const huge = Array.from({ length: 5000 }, (_, i) => `x${i}`).join("\n");
     const node = FileReadView({
       content: `<read-file>big.txt</read-file>\n<read-content>${huge}</read-content>`,
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Read 5000 lines");
+    });
+    expect(resultLine(node).text).toBe("5000 lines");
   });
 });
 
@@ -297,43 +310,41 @@ describe("createTuiTool('Grep').renderToolResultMessage — end-to-end dispatch"
     expect((node as { type: unknown }).type).toBe(GrepMatchesView);
   });
 
-  test("GrepMatchesView renders a 'Found N matches' summary (no per-match dump)", () => {
+  test("GrepMatchesView renders an 'N matches' result line (no per-match dump)", () => {
     const node = GrepMatchesView({
       content:
         "<grep-pattern>TODO</grep-pattern>\n<grep-matches>a.ts:1:foo\nb.ts:2:bar\nc.ts:3:baz</grep-matches>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Found 3 matches");
-    expect(node.props.dimColor).toBe(true);
+    });
+    expect(resultLine(node).text).toBe("3 matches");
   });
 
-  test("GrepMatchesView renders 'No matches' when the match block is empty", () => {
+  test("GrepMatchesView renders 'no matches' when the match block is empty", () => {
     const node = GrepMatchesView({
       content: "<grep-pattern>X</grep-pattern>\n<grep-matches></grep-matches>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("No matches");
-    expect(node.props.dimColor).toBe(true);
+    });
+    expect(resultLine(node).text).toBe("no matches");
   });
 
-  test("GrepMatchesView with a single match uses the singular 'Found 1 match'", () => {
+  test("GrepMatchesView with a single match uses the singular '1 match'", () => {
     const node = GrepMatchesView({
       content: "<grep-pattern>X</grep-pattern>\n<grep-matches>a.ts:1:hit</grep-matches>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Found 1 match");
+    });
+    expect(resultLine(node).text).toBe("1 match");
   });
 
   test("GrepMatchesView counts matches even without a <grep-pattern> tag", () => {
     const node = GrepMatchesView({
       content: "<grep-matches>a.ts:1:hit\nb.ts:2:hit</grep-matches>",
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Found 2 matches");
+    });
+    expect(resultLine(node).text).toBe("2 matches");
   });
 
   test("GrepMatchesView counts large match lists exactly (no 200-cap truncation in the summary)", () => {
     const lines = Array.from({ length: 350 }, (_, i) => `f${i}.ts:1:hit`).join("\n");
     const node = GrepMatchesView({
       content: `<grep-pattern>X</grep-pattern>\n<grep-matches>${lines}</grep-matches>`,
-    }) as { props: ChildProps };
-    expect(node.props.children).toBe("Found 350 matches");
+    });
+    expect(resultLine(node).text).toBe("350 matches");
   });
 });
 
@@ -348,11 +359,13 @@ describe("createTuiTool('Glob').renderToolResultMessage — end-to-end dispatch"
     expect((node as { type: unknown }).type).toBe(GlobPathsView);
   });
 
-  test("GlobPathsView renders the bold pattern header with a path count and one Text child per path", () => {
-    const node = GlobPathsView({
-      content:
-        "<glob-pattern>src/**/*.ts</glob-pattern>\n<glob-paths>src/a.ts\nsrc/b.ts</glob-paths>",
-    });
+  test("GlobPathsView renders a path count line, and verbose renders the bold pattern header with one Text child per path", () => {
+    const content =
+      "<glob-pattern>src/**/*.ts</glob-pattern>\n<glob-paths>src/a.ts\nsrc/b.ts</glob-paths>";
+    // Transcript form: one "└ N paths" result line.
+    expect(resultLine(GlobPathsView({ content })).text).toBe("2 paths");
+    // Verbose (ctrl+o) keeps the full list under a Glob header.
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
     const header = children.find((c) => c.props.bold === true);
     expect(header?.props.children).toContain("Glob: src/**/*.ts");
@@ -365,10 +378,10 @@ describe("createTuiTool('Glob').renderToolResultMessage — end-to-end dispatch"
     ).toBeDefined();
   });
 
-  test("GlobPathsView renders (no paths) when no paths matched AND preserves the bold pattern header (behavior 3)", () => {
-    const node = GlobPathsView({
-      content: "<glob-pattern>X</glob-pattern>\n<glob-paths></glob-paths>",
-    });
+  test("GlobPathsView renders 'no paths' when no paths matched, and verbose preserves the bold pattern header (behavior 3)", () => {
+    const content = "<glob-pattern>X</glob-pattern>\n<glob-paths></glob-paths>";
+    expect(resultLine(GlobPathsView({ content })).text).toBe("no paths");
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
     const header = children.find(
       (c) => c.props.bold === true && c.props.children === "Glob: X",
@@ -380,19 +393,19 @@ describe("createTuiTool('Glob').renderToolResultMessage — end-to-end dispatch"
     expect(noPaths).toBeDefined();
   });
 
-  test("GlobPathsView with single path renders 'Glob: X (1 path)' (singular), not 'paths'", () => {
-    const node = GlobPathsView({
-      content: "<glob-pattern>X</glob-pattern>\n<glob-paths>only.ts</glob-paths>",
-    });
+  test("GlobPathsView with single path renders '1 path' and a verbose 'Glob: X (1 path)' header (singular), not 'paths'", () => {
+    const content = "<glob-pattern>X</glob-pattern>\n<glob-paths>only.ts</glob-paths>";
+    expect(resultLine(GlobPathsView({ content })).text).toBe("1 path");
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
     const header = children.find((c) => c.props.bold === true);
     expect(header?.props.children).toBe("Glob: X (1 path)");
   });
 
   test("GlobPathsView without <glob-pattern> tag renders the path list without a header (no header crash)", () => {
-    const node = GlobPathsView({
-      content: "<glob-paths>a.ts\nb.ts</glob-paths>",
-    });
+    const content = "<glob-paths>a.ts\nb.ts</glob-paths>";
+    expect(resultLine(GlobPathsView({ content })).text).toBe("2 paths");
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
     const header = children.find((c) => c.props.bold === true);
     expect(header).toBeUndefined();
@@ -401,11 +414,12 @@ describe("createTuiTool('Glob').renderToolResultMessage — end-to-end dispatch"
     ).toBeDefined();
   });
 
-  test("GlobPathsView truncates large path lists to 200 visible + dim N-more-truncated marker", () => {
+  test("GlobPathsView counts every path, and verbose truncates large path lists to 200 visible + dim N-more-truncated marker", () => {
     const paths = Array.from({ length: 250 }, (_, i) => `p${i}.ts`).join("\n");
-    const node = GlobPathsView({
-      content: `<glob-pattern>X</glob-pattern>\n<glob-paths>${paths}</glob-paths>`,
-    });
+    const content = `<glob-pattern>X</glob-pattern>\n<glob-paths>${paths}</glob-paths>`;
+    // The count covers all 250 paths (no "+": the result itself was complete).
+    expect(resultLine(GlobPathsView({ content })).text).toBe("250 paths");
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
     const truncated = children.find(
       (c) =>
@@ -447,31 +461,25 @@ describe("Tool error cross-cutting dispatch", () => {
     expect((node as { type: unknown }).type).toBe(ToolErrorView);
   });
 
-  test("ToolErrorView renders a red-bold header with the tool name and the error message body", () => {
+  test("ToolErrorView renders one failed result line with the error message (the step row names the tool)", () => {
     const node = ToolErrorView({
       content:
         "<tool-error-name>FileRead</tool-error-name>\n<tool-error>ENOENT: no such file</tool-error>",
     });
-    const children = flatten(node);
-    const header = children.find(
-      (c) => c.props.bold === true && c.props.color === "red",
-    );
-    expect(header?.props.children).toBe("FileRead error");
-    const body = children.find(
-      (c) => c.props.children === "ENOENT: no such file",
-    );
-    expect(body).toBeDefined();
+    const line = resultLine(node);
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("ENOENT: no such file");
+    // No separate "<Tool> error" header row.
+    expect(String(line.text)).not.toContain("FileRead error");
   });
 
-  test("ToolErrorView renders a generic 'Tool error' header when no <tool-error-name> tag is present", () => {
+  test("ToolErrorView renders the message alone when no <tool-error-name> tag is present", () => {
     const node = ToolErrorView({
       content: "<tool-error>nameless failure</tool-error>",
     });
-    const children = flatten(node);
-    const header = children.find(
-      (c) => c.props.bold === true && c.props.color === "red",
-    );
-    expect(header?.props.children).toBe("Tool error");
+    const line = resultLine(node);
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("nameless failure");
   });
 
   test("createTuiTool exposes renderToolUseErrorMessage that dispatches to ToolErrorView (cross-cutting upstream renderToolUseErrorMessage path)", () => {
@@ -544,9 +552,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
     const joined = blocks.map((b) => b.text).join("\n");
     expect(joined).toContain("<read-file>src/foo.ts</read-file>");
     expect(joined).toContain("<read-lines>1-3</read-lines>");
-    const node = FileReadView({ content: joined }) as { props: ChildProps };
-    // <read-lines>1-3</read-lines> -> "Read 3 lines".
-    expect(node.props.children).toBe("Read 3 lines");
+    // <read-lines>1-3</read-lines> -> "3 lines".
+    expect(resultLine(FileReadView({ content: joined })).text).toBe("3 lines");
   });
 
   test("Write envelope produced by formatStructuredToolResult is consumed by FileWriteView", async () => {
@@ -575,9 +582,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
       },
     );
     const joined = blocks.map((b) => b.text).join("\n");
-    const node = GrepMatchesView({ content: joined }) as { props: ChildProps };
-    // One match -> "Found 1 match".
-    expect(node.props.children).toBe("Found 1 match");
+    // One match -> "1 match".
+    expect(resultLine(GrepMatchesView({ content: joined })).text).toBe("1 match");
   });
 
   test("Glob envelope produced by formatStructuredToolResult is consumed by GlobPathsView", async () => {
@@ -588,7 +594,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
       { result: { pattern: "*.ts", paths: ["a.ts", "b.ts"] } },
     );
     const joined = blocks.map((b) => b.text).join("\n");
-    const node = GlobPathsView({ content: joined });
+    expect(resultLine(GlobPathsView({ content: joined })).text).toBe("2 paths");
+    const node = GlobPathsView({ content: joined, verbose: true });
     const children = flatten(node);
     const header = children.find((c) => c.props.bold === true);
     expect(header?.props.children).toContain("Glob: *.ts");
@@ -601,11 +608,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
       "ENOENT: no such file",
     );
     const joined = blocks.map((b) => b.text).join("\n");
-    const node = ToolErrorView({ content: joined });
-    const children = flatten(node);
-    const header = children.find(
-      (c) => c.props.bold === true && c.props.color === "red",
-    );
-    expect(header?.props.children).toBe("FileRead error");
+    const line = resultLine(ToolErrorView({ content: joined }));
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("ENOENT: no such file");
   });
 });

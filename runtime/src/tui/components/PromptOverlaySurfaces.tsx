@@ -23,7 +23,6 @@ export function PromptSuggestionsOverlay({
       paddingX={0}
       flexDirection="column"
       opaque={true}
-      backgroundColor="surfaceBackground"
     >
       <PromptInputFooterSuggestions
         suggestions={data.suggestions}

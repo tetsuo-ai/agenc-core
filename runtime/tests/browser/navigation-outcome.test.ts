@@ -4,6 +4,7 @@ import {
   BrowserActionError,
   BrowserPage,
   readBrowserNavigationFailureReceipt,
+  readBrowserNavigationPolicyRefusal,
 } from "../../src/browser/page.js";
 import { CdpError, type CdpConnection, type CdpSendOptions } from "../../src/browser/cdp.js";
 import { createBrowserTool } from "../../src/tools/BrowserTool/tool.js";
@@ -133,6 +134,33 @@ describe("known browser navigation outcomes", () => {
     expect(error).toBeInstanceOf(BrowserActionError);
     expect(String(error)).toContain("navigation blocked");
     expect(readBrowserNavigationFailureReceipt(error)).toBeUndefined();
+    expect(readBrowserNavigationPolicyRefusal(error)).toMatchObject({
+      url: URL, host: "example.com", reason: "private destination denied",
+    });
+  });
+
+  it("settles a proxy policy refusal as committed instead of locking the session", async () => {
+    // A sub-agent navigated to its own dev server at 127.0.0.1; the proxy refused
+    // the loopback address and the plain error left an unknown outcome that
+    // blocked every later side-effecting call in that session.
+    const { connection } = fakePage(async () => ({ frameId: "frame-1" }));
+    const page = new BrowserPage({
+      connection: connection as unknown as CdpConnection,
+      targetId: "target-1", sessionId: "session-1", navigationTimeoutMs: 1_000,
+      blockReporter: () => "blocked 127.0.0.1, a loopback address",
+    });
+    const refusal = await page.navigate(URL).catch((failure: unknown) => failure);
+    const browser = fakeBrowser(async () => { throw refusal; });
+    const result = await browser.tool.execute(browser.args);
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("navigation blocked");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
+    expect(result.effectDisposition?.evidenceRef).toBe("tool:Browser:proxy-policy-refusal");
+
+    browser.args.url = "https://example.com/other";
+    const other = await browser.tool.execute(browser.args);
+    expect(other.isError).toBe(true);
+    expect(other.effectDisposition).toBeUndefined();
   });
 
   it("preserves abort and transport loss during the post-navigation load wait", async () => {

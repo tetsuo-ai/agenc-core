@@ -1,11 +1,12 @@
 import {
   assertTokenAccountingWithinContext,
+  conservativeBytesPerToken,
   createTokenAccountingRequest,
   estimateTokenAccountingRequest,
   requireAdmissibleTokenAccounting,
   type TokenAccountingResult,
 } from "../../llm/token-accounting.js";
-import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
+import { isKnownEmptyProviderReasoning, type LLMChatOptions, type LLMMessage } from "../../llm/types.js";
 import { messageText } from "./_deps/runtime.js";
 import { canonicalizeJson, sha256Hex } from "./summary-v1.js";
 import {
@@ -21,7 +22,9 @@ import {
   MAX_COMPACTION_SOURCE_MESSAGES,
   MAX_COMPACTION_TOTAL_INPUT_TOKENS,
   MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT,
+  type CompactionBodyRecordV1,
   type CompactionSourceAuthorityV1,
+  type CompactionSummaryBodyV1,
   type CompactionToolPairV1,
   type RolloutSpanRefV1,
   CompactionCannotReduceError,
@@ -30,6 +33,7 @@ import {
 import type { CompactContext, RuntimeMessage } from "./types.js";
 import { fromRuntimeMessageContent } from "../../llm/content-conversion.js";
 import { verifyToolResultIntegrity } from "../../session/tool-result-integrity.js";
+import { unframeUntrustedToolResultContent } from "../../tools/untrusted-tool-result-framing.js";
 
 const COMPACTION_STRUCTURED_TRANSCRIPT_VERSION = 1 as const;
 const COMPACTION_STRUCTURED_TRANSCRIPT_KIND =
@@ -37,7 +41,48 @@ const COMPACTION_STRUCTURED_TRANSCRIPT_KIND =
 const COMPACTION_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const COMPACTION_DEFAULT_OUTPUT_RESERVE_TOKENS = 4_000;
 const COMPACTION_MINIMUM_INPUT_TOKEN_BUDGET = 1_024;
+/**
+ * Upper bound on bytes per token for the summarizer's own input. The
+ * catalogued ratios describe ordinary prompts (prose, code, tool output); the
+ * compaction transcript is canonical JSON, which tokenizes far denser. Measured
+ * 2026-09-13 on grok-4.6 (catalogue: 4 bytes per token): a 1,401,825-byte
+ * source history counted 612,000 tokens at the provider, 2.29 bytes per token,
+ * so the planner packed it into one 500k-window call, the provider answered
+ * 400, and a 55-minute session ended with `compact_failed`. Planning at 2
+ * keeps every summarizer call inside the window; the exact provider counts
+ * still govern the aggregate budget afterwards.
+ */
+const COMPACTION_INPUT_BYTES_PER_TOKEN_BOUND = 2;
 
+/** Bytes per token the compaction planner assumes for its own summarizer calls. */
+export function compactionInputBytesPerToken(
+  providerName: string,
+  model: string,
+): number {
+  return Math.min(
+    conservativeBytesPerToken(providerName, model),
+    COMPACTION_INPUT_BYTES_PER_TOKEN_BOUND,
+  );
+}
+
+function denseCompactionInputTokens(
+  messages: readonly LLMMessage[],
+  options: LLMChatOptions,
+  providerName: string,
+  model: string,
+): number {
+  const bytes = Buffer.byteLength(
+    JSON.stringify({ system: options.systemPrompt ?? "", messages }),
+    "utf8",
+  );
+  return Math.ceil(bytes / compactionInputBytesPerToken(providerName, model));
+}
+
+/**
+ * A message as the summarizer reads it. Calls carry per-unit refs (c1, c2,
+ * ...) that their results name in `tool_call_id`; provider call ids and
+ * result digests stay in the runtime's tool pairs.
+ */
 interface StructuredMessageV1 {
   readonly role: string;
   readonly content: unknown;
@@ -46,9 +91,8 @@ interface StructuredMessageV1 {
   readonly tool_calls?: readonly {
     readonly id: string;
     readonly name: string;
-    readonly arguments?: string;
+    readonly arguments?: unknown;
   }[];
-  readonly tool_result_sha256?: string;
 }
 
 export interface CompactionSemanticUnit {
@@ -329,7 +373,8 @@ function createPlanningWork(): MutableCompactionPlanningWork {
  * suffix for every chunk. Exponential growth establishes a local failure
  * bracket, then binary search resolves only that bracket. Every materialized
  * candidate is therefore no larger than the remaining source or twice the
- * preceding fitted prefix.
+ * preceding fitted prefix. Fitting includes bounded canonical source encoding,
+ * not just token accounting: many small messages can exhaust a node budget.
  */
 function findMaximalChunkCandidate(params: {
   readonly units: readonly CompactionSemanticUnit[];
@@ -342,7 +387,7 @@ function findMaximalChunkCandidate(params: {
   readonly planningWork: MutableCompactionPlanningWork;
 }): CompactionChunkCandidate | null {
   let best = evaluateChunkCandidate({ ...params, end: params.start + 1 });
-  if (!chunkCandidateFits(best, params.contextWindow)) return null;
+  if (best === null || !chunkCandidateFits(best, params.contextWindow)) return null;
 
   let growth = 1;
   let firstFailingEnd: number | undefined;
@@ -352,7 +397,7 @@ function findMaximalChunkCandidate(params: {
       safeSum(best.end, growth),
     );
     const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
-    if (!chunkCandidateFits(candidate, params.contextWindow)) {
+    if (candidate === null || !chunkCandidateFits(candidate, params.contextWindow)) {
       firstFailingEnd = candidateEnd;
       break;
     }
@@ -366,7 +411,7 @@ function findMaximalChunkCandidate(params: {
   while (low <= high) {
     const candidateEnd = low + Math.floor((high - low) / 2);
     const candidate = evaluateChunkCandidate({ ...params, end: candidateEnd });
-    if (chunkCandidateFits(candidate, params.contextWindow)) {
+    if (candidate !== null && chunkCandidateFits(candidate, params.contextWindow)) {
       best = candidate;
       low = candidateEnd + 1;
     } else {
@@ -386,19 +431,8 @@ function evaluateChunkCandidate(params: {
   readonly contextWindow: number;
   readonly outputReserve: number;
   readonly planningWork: MutableCompactionPlanningWork;
-}): CompactionChunkCandidate {
+}): CompactionChunkCandidate | null {
   const units = params.units.slice(params.start, params.end);
-  const sourceRef = chunkSourceRef(
-    params.options.source,
-    units,
-    params.chunkIndex,
-    params.options.messageSourceRefs,
-  );
-  const messages = structuredTranscriptMessages(
-    units,
-    [sourceRef.ref_id],
-    params.options.requestedFocus,
-  );
   const sourceRefCount = units.length === 0
     ? 0
     : units.at(-1)!.last_message_index - units[0]!.first_message_index + 1;
@@ -418,6 +452,35 @@ function evaluateChunkCandidate(params: {
     params.planningWork.maximum_candidate_semantic_units,
     units.length,
   );
+  let sourceRef: RolloutSpanRefV1;
+  let messages: readonly LLMMessage[];
+  try {
+    sourceRef = chunkSourceRef(
+      params.options.source,
+      units,
+      params.chunkIndex,
+      params.options.messageSourceRefs,
+    );
+    messages = structuredTranscriptMessages(
+      units,
+      [sourceRef.ref_id],
+      params.options.requestedFocus,
+    );
+  } catch (error) {
+    // These are source-input candidates, not responses from a provider. A
+    // candidate can exceed the bounded canonicalizer's node/depth/work budget
+    // before it reaches the token estimator. Let the existing maximal-prefix
+    // search split it, without relaxing those limits or catching malformed
+    // source/provenance errors. A single unit that cannot fit remains a typed
+    // semantic_unit_oversized refusal at the caller.
+    if (
+      error instanceof CompactionTransactionError &&
+      error.reason === "output_limit_exceeded"
+    ) {
+      return null;
+    }
+    throw error;
+  }
   params.planningWork.candidate_transcript_utf8_bytes = safeSum(
     params.planningWork.candidate_transcript_utf8_bytes,
     messagesUtf8Bytes(messages),
@@ -499,8 +562,7 @@ function buildCallDag(
       const messages = structuredReductionMessages({
         children: group.map((child) => ({
           ref_id: child.refId,
-          sha256: "0".repeat(64),
-          body: { narrative: "", facts: [], open_actions: [], tool_pairs: [] },
+          body: { narrative: "", facts: [], open_actions: [] },
         })),
         stage,
         requestedFocus: options.requestedFocus,
@@ -550,8 +612,7 @@ function selectReductionFanIn(
     const messages = structuredReductionMessages({
       children: Array.from({ length: candidate }, (_, index) => ({
         ref_id: `preflight-child-${index}`,
-        sha256: "0".repeat(64),
-        body: { narrative: "", facts: [], open_actions: [], tool_pairs: [] },
+        body: { narrative: "", facts: [], open_actions: [] },
       })),
       stage: "reduce",
       requestedFocus: options.requestedFocus,
@@ -583,8 +644,7 @@ function selectReductionFanIn(
 export function structuredReductionMessages(params: {
   readonly children: readonly {
     readonly ref_id: string;
-    readonly sha256: string;
-    readonly body: unknown;
+    readonly body: Pick<CompactionSummaryBodyV1, "narrative" | "facts" | "open_actions">;
   }[];
   readonly stage: "reduce" | "final";
   readonly requestedFocus?: string;
@@ -604,10 +664,24 @@ export function structuredReductionMessages(params: {
         stage: params.stage,
         coverage_priority: params.requestedFocus ?? "",
         allowed_source_ref_ids: params.children.map((child) => child.ref_id),
-        summaries: params.children,
+        // The reducer cites a child by its ref. The child's digest, pinned
+        // tool pairs and record sources are runtime provenance, so a
+        // preflight child with an empty body measures what is sent.
+        summaries: params.children.map((child) => ({
+          ref_id: child.ref_id,
+          narrative: child.body.narrative,
+          facts: child.body.facts.map(childRecord),
+          open_actions: child.body.open_actions.map(childRecord),
+        })),
       }),
     },
   ];
+}
+
+function childRecord(
+  record: CompactionBodyRecordV1,
+): { readonly id: string; readonly text: string } {
+  return { id: record.id, text: record.text };
 }
 
 export function accountCompactionCall(params: {
@@ -655,7 +729,6 @@ function buildSemanticUnits(
   let index = 0;
   while (index < messages.length) {
     const first = messages[index]!;
-    const firstStructured = structuredMessage(first);
     const toolCalls = first.toolCalls ?? [];
     if (toolCalls.length > 0 && roleOf(first) !== "assistant") {
       throw new CompactionTransactionError(
@@ -663,7 +736,7 @@ function buildSemanticUnits(
         "only assistant messages may declare tool calls",
       );
     }
-    const expectedToolIds = new Set<string>();
+    const callRefs = new Map<string, string>();
     for (const call of toolCalls) {
       if (call.id.trim().length === 0) {
         throw new CompactionTransactionError(
@@ -671,7 +744,7 @@ function buildSemanticUnits(
           "compaction source contains an empty tool-call id",
         );
       }
-      if (expectedToolIds.has(call.id)) {
+      if (callRefs.has(call.id)) {
         throw new CompactionTransactionError(
           "provenance_invalid",
           `compaction source contains duplicate tool-call id ${call.id}`,
@@ -683,15 +756,15 @@ function buildSemanticUnits(
           `compaction source reuses tool-call id ${call.id}`,
         );
       }
-      expectedToolIds.add(call.id);
+      callRefs.set(call.id, toolCallRef(callRefs.size));
       allToolCallIds.add(call.id);
     }
-    const unitMessages: StructuredMessageV1[] = [firstStructured];
+    const resultMessages: StructuredMessageV1[] = [];
     const toolPairs: CompactionToolPairV1[] = [];
     const firstIndex = index;
     index += 1;
-    if (expectedToolIds.size > 0) {
-      const unresolved = new Set(expectedToolIds);
+    if (callRefs.size > 0) {
+      const unresolved = new Set(callRefs.keys());
       while (index < messages.length && roleOf(messages[index]!) === "tool") {
         const result = messages[index]!;
         const callId = result.toolCallId?.trim();
@@ -724,7 +797,9 @@ function buildSemanticUnits(
             "",
           ),
         });
-        unitMessages.push(structuredMessage(result));
+        resultMessages.push(
+          structuredMessage(result, { tool_call_id: callRefs.get(callId)! }),
+        );
         index += 1;
       }
       if (unresolved.size !== 0) {
@@ -739,6 +814,8 @@ function buildSemanticUnits(
         "compaction source contains an orphaned tool result",
       );
     }
+    const unitId = `unit-${String(units.length + 1).padStart(6, "0")}`;
+    const unitMessages = transcriptUnitMessages(unitId, first, resultMessages);
     const canonical = canonicalizeJson(unitMessages);
     const utf8Bytes = Buffer.byteLength(canonical, "utf8");
     planningWork.semantic_units_built = safeSum(
@@ -750,7 +827,7 @@ function buildSemanticUnits(
       utf8Bytes,
     );
     units.push({
-      unit_id: `unit-${String(units.length + 1).padStart(6, "0")}`,
+      unit_id: unitId,
       first_message_index: firstIndex,
       last_message_index: index - 1,
       messages: unitMessages,
@@ -772,8 +849,8 @@ function createCompactionModelProjection(
 ): readonly RuntimeMessage[] {
   return messages.map((message) => {
     const content = message.content ?? message.message?.content;
-    if (!Array.isArray(content)) return message;
-    const projectedContent = content.map(redactCompactionContentPart);
+    const projectedContent = projectCompactionContent(message, content);
+    if (projectedContent === content) return message;
     return {
       ...message,
       content: projectedContent,
@@ -782,6 +859,28 @@ function createCompactionModelProjection(
         : { message: { ...message.message, content: projectedContent } }),
     };
   });
+}
+
+/**
+ * Media become placeholders, and a tool result loses its untrusted-data
+ * frame: the transcript kind and the compactor's policy label every unit
+ * untrusted, and the frame's body was sanitized when it was framed.
+ */
+function projectCompactionContent(
+  message: RuntimeMessage,
+  content: unknown,
+): unknown {
+  const redacted = Array.isArray(content)
+    ? content.map(redactCompactionContentPart)
+    : content;
+  if (
+    roleOf(message) !== "tool" ||
+    message.toolName === undefined ||
+    (typeof redacted !== "string" && !Array.isArray(redacted))
+  ) {
+    return redacted;
+  }
+  return unframeUntrustedToolResultContent(message.toolName, redacted);
 }
 
 function redactCompactionContentPart(part: unknown): unknown {
@@ -848,27 +947,82 @@ function measureCanonicalSourceBytes(
   return bytes;
 }
 
-function structuredMessage(message: RuntimeMessage): StructuredMessageV1 {
-  const role = roleOf(message);
-  const content = message.content ?? message.message?.content ?? "";
-  const resultDigest = message.runtimeOnly?.toolResultIntegrity?.original.digest;
+/**
+ * A unit's messages as the summarizer reads them. Tool-call arguments that
+ * parse are embedded as JSON values, so their quotes and backslashes are not
+ * escaped a second time. A parsed value can exceed the canonical encoder's
+ * node or depth bound, or hold a lone surrogate, where its string did not;
+ * such a unit keeps the argument strings, so parsing never makes a unit
+ * impossible to send.
+ */
+function transcriptUnitMessages(
+  unitId: string,
+  first: RuntimeMessage,
+  results: readonly StructuredMessageV1[],
+): readonly StructuredMessageV1[] {
+  const withArguments = (
+    encodeArguments: (text: string) => unknown,
+  ): readonly StructuredMessageV1[] => [
+    structuredMessage(first, structuredToolCalls(first, encodeArguments)),
+    ...results,
+  ];
+  const parsed = withArguments(parsedArguments);
+  return (first.toolCalls ?? []).length === 0 || encodesAlone(unitId, parsed)
+    ? parsed
+    : withArguments((text) => text);
+}
+
+function structuredToolCalls(
+  message: RuntimeMessage,
+  encodeArguments: (text: string) => unknown,
+): Pick<StructuredMessageV1, "tool_calls"> {
+  if (message.toolCalls === undefined) return {};
   return {
-    role,
-    content,
-    ...(message.toolCallId !== undefined ? { tool_call_id: message.toolCallId } : {}),
+    tool_calls: message.toolCalls.map((call, callIndex) => ({
+      id: toolCallRef(callIndex),
+      name: call.name,
+      ...(call.arguments !== undefined
+        ? { arguments: encodeArguments(call.arguments) }
+        : {}),
+    })),
+  };
+}
+
+function toolCallRef(callIndex: number): string {
+  return `c${callIndex + 1}`;
+}
+
+function parsedArguments(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+/** Whether a unit fits a map transcript on its own; the encoder refuses otherwise. */
+function encodesAlone(
+  unitId: string,
+  messages: readonly StructuredMessageV1[],
+): boolean {
+  try {
+    // Every ref id and focus is a single string: a placeholder encodes alike.
+    structuredTranscriptMessages([{ unit_id: unitId, messages }], [""], undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function structuredMessage(
+  message: RuntimeMessage,
+  link: Pick<StructuredMessageV1, "tool_call_id" | "tool_calls">,
+): StructuredMessageV1 {
+  return {
+    role: roleOf(message),
+    content: message.content ?? message.message?.content ?? "",
+    ...link,
     ...(message.toolName !== undefined ? { tool_name: message.toolName } : {}),
-    ...(message.toolCalls !== undefined
-      ? {
-          tool_calls: message.toolCalls.map((call) => ({
-            id: call.id,
-            name: call.name,
-            ...(call.arguments !== undefined ? { arguments: call.arguments } : {}),
-          })),
-        }
-      : {}),
-    ...(resultDigest !== undefined
-      ? { tool_result_sha256: resultDigest.replace(/^sha256:/u, "") }
-      : {}),
   };
 }
 
@@ -877,7 +1031,7 @@ function roleOf(message: RuntimeMessage): string {
 }
 
 function structuredTranscriptMessages(
-  units: readonly CompactionSemanticUnit[],
+  units: readonly Pick<CompactionSemanticUnit, "unit_id" | "messages">[],
   allowedSourceRefIds: readonly string[],
   requestedFocus: string | undefined,
 ): readonly LLMMessage[] {
@@ -985,17 +1139,36 @@ function accountCallWithoutContextAssertion(
       "model context leaves no bounded compaction input budget after output reserve",
     );
   }
-  const result = estimateTokenAccountingRequest(
-    createTokenAccountingRequest({
-      provider: providerName,
-      model,
-      messages,
-      options,
-      contextWindowTokens: contextWindow,
-      reservedOutputTokens: outputReserve,
-    }),
+  const result = requireAdmissibleTokenAccounting(
+    estimateTokenAccountingRequest(
+      createTokenAccountingRequest({
+        provider: providerName,
+        model,
+        messages,
+        options,
+        contextWindowTokens: contextWindow,
+        reservedOutputTokens: outputReserve,
+      }),
+    ),
   );
-  return requireAdmissibleTokenAccounting(result);
+  // The catalogued estimate is an upper bound for ordinary prompts, not for
+  // the canonical-JSON transcript the summarizer reads. Hold the denser bound
+  // whenever it is larger, so the packing never plans a call the provider
+  // will refuse.
+  const denseInputTokens = denseCompactionInputTokens(
+    messages,
+    options,
+    providerName,
+    model,
+  );
+  if (denseInputTokens <= result.inputTokens) return result;
+  return {
+    ...result,
+    inputTokens: denseInputTokens,
+    totalTokens: denseInputTokens + result.reservedOutputTokens,
+    source: "conservative_fallback",
+    confidence: "conservative",
+  };
 }
 
 function compactionMapReduceTopology(
@@ -1034,7 +1207,11 @@ function compactionMapReduceTopology(
 function messageForDigest(message: RuntimeMessage): unknown {
   const providerReasoning =
     typeof message.providerReasoningContent === "string" &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (roleOf(message) === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? message.providerReasoningProvenance !== undefined &&
         typeof message.providerReasoningProvenance.provider === "string" &&
         message.providerReasoningProvenance.provider.trim().length > 0 &&

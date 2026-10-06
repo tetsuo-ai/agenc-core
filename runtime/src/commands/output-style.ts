@@ -10,10 +10,9 @@ import {
   getExecutionAuthoritySettings,
   updateSettingsForSource,
 } from "../utils/settings/settings.js";
-import {
-  openOutputStyleMenu,
-  type OutputStyleMenuRow,
-  type OutputStyleMenuSnapshot,
+import type {
+  OutputStyleMenuRow,
+  OutputStyleMenuSnapshot,
 } from "./output-style-menu.js";
 import { requireCommandConfigStore } from "./config-context.js";
 import {
@@ -304,7 +303,8 @@ export const outputStyleCommand: SlashCommand = {
       if (target.length === 0 || target === "list") {
         const snapshot = await readOutputStyleMenuSnapshot(ctx);
         if (
-          openOutputStyleMenu(ctx, snapshot, async (name) => {
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./output-style-menu.js")).openOutputStyleMenu(ctx, snapshot, async (name) => {
             const message = await applyOutputStyleSwitch(ctx, name);
             return {
               message,

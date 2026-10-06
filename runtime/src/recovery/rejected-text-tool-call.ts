@@ -31,7 +31,8 @@ export function textToolCallCorrectionPrompt(correction: TextToolCallCorrection)
   const failure = correction.reason === "not_advertised"
     ? `Your previous response attempted ${name}, which is not in this request's available tool catalog. No tool was executed. Use system.searchTools to discover that exact tool and follow the returned selection/loading instructions before calling it. Never invent or directly call an unavailable tool.`
     : `Your previous response attempted ${name}, but its arguments did not match the advertised schema. No tool was executed. Correct the arguments using the exact currently advertised tool schema, including all required fields. Use an actual tool call, not an explanation or JSON example.`;
-  return `${failure} Existing permissions and user instructions still apply. If the tool cannot be used, explain the limitation plainly; do not claim that the action succeeded.`;
+  const handoff = correction.toolName === "spawn_agent" ? " For long tasks use message_ref instead of copying user text into message." : "";
+  return `${failure}${handoff} Existing permissions and user instructions still apply. If the tool cannot be used, explain the limitation plainly; do not claim that the action succeeded.`;
 }
 
 export function injectTextToolCallCorrection(state: TurnState): void {

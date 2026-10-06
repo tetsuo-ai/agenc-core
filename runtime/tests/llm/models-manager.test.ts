@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { mergeConfigs, defaultConfig } from "../config/schema.js";
 import { StaticModelsManager } from "./models-manager.js";
+import { ModelRegistry } from "../../src/llm/model-registry.js";
 import { CONSERVATIVE_CONTEXT_WINDOW_TOKENS } from "./model-metadata.js";
 
 function jsonResponse(value: unknown): Response {
@@ -12,6 +13,27 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("StaticModelsManager", () => {
+  it("defers picker enumeration until requested and shares the cached list", async () => {
+    const enumerate = vi.spyOn(ModelRegistry.prototype, "listEntriesSync");
+    try {
+      const manager = new StaticModelsManager({
+        config: defaultConfig(),
+        fallbackProvider: "openai",
+      });
+      expect(enumerate).not.toHaveBeenCalled();
+      expect(await manager.getModelInfo("gpt-5")).toMatchObject({ slug: "gpt-5" });
+      expect(enumerate).not.toHaveBeenCalled();
+      const picker = manager.tryListModels();
+      expect(picker?.length).toBeGreaterThan(0);
+      expect(enumerate).toHaveBeenCalledTimes(1);
+      expect(await manager.listModels()).toBe(picker);
+      expect(manager.tryListModels()).toBe(picker);
+      expect(enumerate).toHaveBeenCalledTimes(1);
+    } finally {
+      enumerate.mockRestore();
+    }
+  });
+
   it("returns concrete metadata for known built-in models", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
@@ -32,12 +54,155 @@ describe("StaticModelsManager", () => {
       truncationPolicy: "off",
       usedFallbackModelMetadata: false,
     });
+    // gpt-5's own ladder: minimal is its floor and xhigh is not accepted
+    // (Responses API, probed 2026-09-11).
     expect(info.supportedReasoningLevels).toEqual([
+      "minimal",
       "low",
       "medium",
       "high",
-      "xhigh",
     ]);
+  });
+
+  it("gives Claude Opus 5.5 its documented context, output and effort contract", async () => {
+    // platform.claude.com (2026-09-22): 1M context, 128K max output, efforts
+    // low..max with medium as the API default. Without a registered row the
+    // registry fell back to 200K / 64K and advertised no effort at all.
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "anthropic",
+      metadata: { fetchImpl },
+    });
+    const contract = {
+      contextWindow: 1_000_000,
+      maxOutputTokens: 64_000,
+      maxOutputTokensUpperLimit: 128_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningLevel: "medium",
+      usedFallbackModelMetadata: false,
+    };
+    for (const model of ["claude-opus-5-5", "claude-opus-5-5-20260922"]) {
+      const info = await manager.getModelInfo(model);
+      expect(info, model).toMatchObject({ slug: model, ...contract });
+      expect(info.serviceTiers?.map((tier) => tier.id), model).toEqual(["priority"]);
+    }
+    // The listing spawn_agent validates against carries the same row.
+    const listed = (await manager.listModels()).find(
+      (model) => model.slug === "claude-opus-5-5",
+    );
+    expect(listed).toMatchObject(contract);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  const claudeManager = () =>
+    new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "anthropic",
+      metadata: { fetchImpl: vi.fn<typeof fetch>() },
+    });
+
+  it("gives every spelling the shared parser reads as Opus 5.5 its catalog contract", async () => {
+    const manager = claudeManager();
+    for (const model of [
+      "claude-opus-5.5",
+      "claude-opus-5-5-20260922",
+      "claude-opus-5-5[1m]",
+    ]) {
+      expect(await manager.getModelInfo(model), model).toMatchObject({
+        slug: model,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 64_000,
+        maxOutputTokensUpperLimit: 128_000,
+        supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningLevel: "medium",
+      });
+    }
+  });
+
+  it("uses the exact OpenRouter contract for its vendor-qualified Opus ID", async () => {
+    expect(await claudeManager().getModelInfo("anthropic/claude-opus-5.5")).toMatchObject({
+      contextWindow: 1_000_000, maxOutputTokens: 128_000,
+      supportedReasoningLevels: ["max", "xhigh", "high", "medium", "low"],
+      defaultReasoningLevel: "high",
+    });
+  });
+
+  it("never lends the Opus 5.5 row by prefix to ids the parser rejects", async () => {
+    const manager = claudeManager();
+    for (const model of [
+      "claude-opus-5-5-fast",
+      "claude-opus-5-5-preview",
+      "claude-opus-5-50",
+    ]) {
+      const info = await manager.getModelInfo(model);
+      expect(info.contextWindow, model).toBe(200_000);
+      expect(info.maxOutputTokensUpperLimit, model).toBeLessThan(128_000);
+      expect(info.supportedReasoningLevels, model).not.toContain("xhigh");
+      expect(info.supportedReasoningLevels, model).not.toContain("max");
+    }
+  });
+
+  it("gives Bedrock ids of Claude Opus 5.5 its registered contract", async () => {
+    // AWS model card (2026-09-22): 1M context, 128K output, effort low..max
+    // with medium as the default. The Converse adapter sends all five.
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "amazon-bedrock",
+      metadata: { fetchImpl: vi.fn<typeof fetch>() },
+    });
+    for (const model of [
+      "anthropic.claude-opus-5-5",
+      "global.anthropic.claude-opus-5-5",
+      "us.anthropic.claude-opus-5-5-v1:0",
+      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5",
+    ]) {
+      const info = await manager.getModelInfo(model);
+      expect(info, model).toMatchObject({
+        slug: model,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 64_000,
+        maxOutputTokensUpperLimit: 128_000,
+        supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningLevel: "medium",
+        usedFallbackModelMetadata: false,
+      });
+      // Fast mode is Claude API only.
+      expect(info.serviceTiers, model).toBeUndefined();
+    }
+    // Models without a registered contract keep their Bedrock fallback.
+    for (const model of ["anthropic.claude-opus-5-50", "amazon.nova-pro-v1:0"]) {
+      const info = await manager.getModelInfo(model);
+      expect(info.supportedReasoningLevels, model).toEqual([]);
+      expect(info.contextWindow, model).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
+    }
+    expect(await manager.getModelInfo("anthropic.claude-opus-5")).toMatchObject({
+      contextWindow: 1_000_000, supportedReasoningLevels: [],
+    });
+  });
+
+  it("reads a configured Bedrock application profile as the Claude model it serves", async () => {
+    const profile =
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6";
+    const infoFor = async (config: ReturnType<typeof defaultConfig>) =>
+      await new StaticModelsManager({
+        config,
+        fallbackProvider: "amazon-bedrock",
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      }).getModelInfo(profile);
+    expect(
+      await infoFor({ ...defaultConfig(), modelOverrides: { "claude-opus-5-5": profile } }),
+    ).toMatchObject({
+      slug: profile,
+      contextWindow: 1_000_000,
+      maxOutputTokensUpperLimit: 128_000,
+      supportedReasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningLevel: "medium",
+    });
+    // Without a mapping the profile names no model and gets no effort levels.
+    const unmapped = await infoFor(defaultConfig());
+    expect(unmapped.supportedReasoningLevels).toEqual([]);
+    expect(unmapped.contextWindow).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
   });
 
   it("uses curated Z.ai metadata without probing a custom base URL", async () => {
@@ -133,6 +298,7 @@ describe("StaticModelsManager", () => {
       usedFallbackModelMetadata: false,
     });
     expect(info.supportedReasoningLevels).toEqual([
+      "none",
       "low",
       "medium",
       "high",
@@ -176,8 +342,10 @@ describe("StaticModelsManager", () => {
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toEqual(
       expect.arrayContaining([
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "minimaxai/minimax-m2.7",
       ]),
     );
     expect(listed.map((entry) => entry.slug)).not.toContain(
@@ -317,7 +485,7 @@ describe("StaticModelsManager", () => {
     });
 
     const info = await manager.getModelInfo("gpt-5.4-mini");
-    expect(info.contextWindow).toBe(272_000);
+    expect(info.contextWindow).toBe(400_000);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -351,6 +519,39 @@ describe("StaticModelsManager", () => {
     expect(info.maxOutputTokensUpperLimit).toBe(60_000);
     expect(info.maxOutputTokensExplicit).toBe(true);
     expect(info.maxOutputTokensCappedDefault).toBe(false);
+  });
+
+  it.each([
+    ["meta", "muse-spark-1.3", 1_048_576],
+    ["openai", "gpt-5.4-mini", 272_000],
+  ] as const)("preserves %s context when only its output cap is configured", async (
+    provider,
+    model,
+    contextWindow,
+  ) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: provider,
+        model,
+        providers: { [provider]: { max_output_tokens: 512 } },
+      }),
+      fallbackProvider: provider,
+      metadata: { fetchImpl, env: {} },
+    });
+    const expected = {
+      contextWindow,
+      maxOutputTokens: 512,
+      maxOutputTokensUpperLimit: 512,
+      maxOutputTokensExplicit: true,
+      usedFallbackModelMetadata: false,
+    };
+
+    // Picker metadata resolves synchronously; session startup resolves async.
+    expect(manager.tryListModels()?.find((entry) => entry.slug === model))
+      .toMatchObject(expected);
+    expect(await manager.getModelInfo(model)).toMatchObject(expected);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("reads live openai-compatible endpoint metadata for vLLM-style models", async () => {

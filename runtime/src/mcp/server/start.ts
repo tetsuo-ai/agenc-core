@@ -6,9 +6,9 @@
  * transport, host, and port defaults before opening real transports.
  */
 
+import "../../bootstrap/node-env.js";
 import type { Server } from "node:http";
-import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
 import type { Readable, Writable } from "node:stream";
 import {
@@ -20,8 +20,10 @@ import {
   createMemoryResourceProvider,
   createSkillPromptProvider,
 } from "./content-providers.js";
-import type { AgenCConfig, McpServerModeConfig } from "../../config/schema.js";
-import { VERSION } from "../../index.js";
+import type { ResolvedMcpServeDefaults } from "./defaults.js";
+import { normalizeMcpSseLoopbackHost, resolveMcpServeWorkspace } from "./workspace.js";
+export { resolveMcpServeDefaults, type ResolvedMcpServeDefaults } from "./defaults.js";
+import { VERSION } from "../../version.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";
@@ -74,14 +76,6 @@ export interface StartedMcpSseServer {
   waitUntilClosed(): Promise<void>;
 }
 
-export interface ResolvedMcpServeDefaults {
-  readonly enabled: boolean;
-  readonly transport: "stdio" | "sse";
-  readonly host: string;
-  readonly port: number;
-  readonly workspace?: string;
-}
-
 export interface PreparedMcpSseServerReconfiguration {
   readonly defaults: ResolvedMcpServeDefaults;
   /** Applies the validated context and returns the number of revoked sessions. */
@@ -104,80 +98,10 @@ export type ConfiguredMcpServerStartResult =
       readonly server: StartedMcpSseServer;
     };
 
-export function resolveMcpServeDefaults(
-  config: McpServerModeConfig | undefined,
-): ResolvedMcpServeDefaults {
-  const workspace = readMcpServeWorkspace(config?.workspace);
-  return {
-    enabled: config?.enabled === true,
-    transport: config?.transport === "sse" ? "sse" : "stdio",
-    host: readMcpServeHost(config?.host),
-    port: readMcpServePort(config?.port),
-    ...(workspace !== undefined ? { workspace } : {}),
-  };
-}
-
-export async function startMcpServerFromConfig(
-  config: Pick<AgenCConfig, "mcp"> | undefined,
-  options: McpServerStartOptions = {},
-): Promise<ConfiguredMcpServerStartResult> {
-  const defaults = resolveMcpServeDefaults(config?.mcp?.server);
-  if (!defaults.enabled) {
-    return { kind: "disabled", defaults };
-  }
-  if (defaults.transport === "stdio") {
-    return {
-      kind: "unsupported",
-      defaults,
-      reason: "MCP stdio transport requires foreground `agenc mcp serve`",
-    };
-  }
-
-  if (defaults.workspace === undefined) {
-    return {
-      kind: "unsupported",
-      defaults,
-      reason:
-        "daemon MCP autostart requires an explicit absolute mcp.server.workspace; " +
-        "use foreground `agenc mcp serve` from the target workspace otherwise",
-    };
-  }
-
-  const workspace = await resolveMcpServeWorkspace(defaults.workspace);
-  const server = await startMcpSseServe(defaults, {
-    ...options,
-    cwd: workspace,
-  });
-  return { kind: "started", defaults, server };
-}
-
-export async function prepareMcpSseServerReconfigurationFromConfig(
-  server: StartedMcpSseServer,
-  config: Pick<AgenCConfig, "mcp"> | undefined,
-): Promise<PreparedMcpSseServerReconfiguration> {
-  const defaults = resolveMcpServeDefaults(config?.mcp?.server);
-  if (!defaults.enabled || defaults.transport !== "sse") {
-    throw new Error(
-      "MCP SSE listener reconfiguration requires enabled SSE config",
-    );
-  }
-  const host = normalizeMcpSseLoopbackHost(defaults.host);
-  if (
-    host !== server.configuredHost ||
-    defaults.port !== server.configuredPort
-  ) {
-    throw new Error("MCP SSE listener binding changed and cannot be reused");
-  }
-  if (defaults.workspace === undefined) {
-    throw new Error(
-      "daemon MCP autostart requires an explicit absolute mcp.server.workspace",
-    );
-  }
-
-  const workspace = await resolveMcpServeWorkspace(defaults.workspace);
-  const apply = server.prepareContextReplacement(workspace);
-  return { defaults, apply };
-}
+export {
+  startMcpServerFromConfig,
+  prepareMcpSseServerReconfigurationFromConfig,
+} from "./configured-start.js";
 
 export async function runMcpStdioServe(
   io: McpServerStartIo,
@@ -230,20 +154,32 @@ export async function startMcpSseServe(
       });
       return () => transport.replaceServerFactory(replacementFactory);
     },
-    close: () =>
-      new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      }),
+    close: closeMcpSseHttpServer(server, transport),
     waitUntilClosed: () =>
       new Promise((resolve) => {
         server.once("close", resolve);
       }),
+  };
+}
+
+function closeMcpSseHttpServer(
+  server: Server,
+  transport: McpHttpSseServerTransport,
+): () => Promise<void> {
+  let closing: Promise<void> | undefined;
+  return () => {
+    closing ??= new Promise((resolve, reject) => {
+      transport.close();
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+      server.closeAllConnections();
+    });
+    return closing;
   };
 }
 
@@ -254,51 +190,6 @@ export function formatMcpSseServeUrl(host: string, port: number): string {
   return `http://${bracketedHost}:${port}/mcp`;
 }
 
-function readMcpServeHost(host: unknown): string {
-  return typeof host === "string" && host.trim().length > 0
-    ? host.trim()
-    : "127.0.0.1";
-}
-
-function readMcpServePort(port: unknown): number {
-  const valid =
-    typeof port === "number" &&
-    Number.isInteger(port) &&
-    port >= 0 &&
-    port <= 65_535;
-  return valid ? port : 3334;
-}
-
-function readMcpServeWorkspace(workspace: unknown): string | undefined {
-  return typeof workspace === "string" && workspace.trim().length > 0
-    ? workspace.trim()
-    : undefined;
-}
-
-async function resolveMcpServeWorkspace(workspace: string): Promise<string> {
-  if (!isAbsolute(workspace)) {
-    throw new Error("mcp.server.workspace must be an absolute filesystem path");
-  }
-  const canonical = await realpath(workspace).catch((error: unknown) => {
-    throw new Error(
-      `mcp.server.workspace cannot be resolved: ${formatMcpWorkspaceError(error)}`,
-    );
-  });
-  const workspaceStat = await stat(canonical).catch((error: unknown) => {
-    throw new Error(
-      `mcp.server.workspace cannot be inspected: ${formatMcpWorkspaceError(error)}`,
-    );
-  });
-  if (!workspaceStat.isDirectory()) {
-    throw new Error("mcp.server.workspace must resolve to a directory");
-  }
-  return canonical;
-}
-
-function formatMcpWorkspaceError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function pinMcpServerStartOptions(
   options: McpServerStartOptions,
 ): Promise<McpServerStartOptions & { readonly cwd: string }> {
@@ -307,14 +198,6 @@ async function pinMcpServerStartOptions(
   const requestedCwd = options.cwd ?? processCwd();
   const cwd = await resolveMcpServeWorkspace(requestedCwd);
   return { ...options, cwd };
-}
-
-function normalizeMcpSseLoopbackHost(host: string): string {
-  const trimmed = host.trim();
-  if (trimmed === "127.0.0.1" || trimmed === "localhost" || trimmed === "::1") {
-    return trimmed;
-  }
-  throw new Error("AgenC MCP SSE transport only binds to loopback hosts");
 }
 
 function createMcpFrameworkFactory(

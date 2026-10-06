@@ -137,7 +137,7 @@ describe("provider reasoning durability", () => {
       .toThrow(/invalid provider reasoning replay/u);
   });
 
-  test("fails closed instead of mutating replay state during secret redaction", () => {
+  test("drops a replay that redaction would alter and keeps the message, while the sink still refuses such a replay", () => {
     const qwenCredential = [
       "sk-ws-H",
       "WORK123",
@@ -145,13 +145,25 @@ describe("provider reasoning durability", () => {
       "a".repeat(64),
     ].join(".");
     const secretLikeReasoning = `provider state ${qwenCredential}`;
-    expect(() =>
-      llmMessageToDurableResponseItem({
-        role: "assistant",
-        content: "",
-        providerReasoningContent: secretLikeReasoning,
-      }))
-      .toThrow(/secret redaction would change its opaque content/u);
+    // Redacting opaque replay state would corrupt it and persisting it raw
+    // would leak the match, so the durable record carries the message
+    // without its replay instead of failing the turn.
+    const durable = llmMessageToDurableResponseItem({
+      role: "assistant",
+      content: "Setting the password now.",
+      providerReasoningContent: secretLikeReasoning,
+      toolCalls: [{ id: "call-9", name: "exec_command", arguments: "{}" }],
+    });
+    expect(durable.providerReasoning).toBeUndefined();
+    expect(durable.content).toBe("Setting the password now.");
+    expect(durable.toolCalls).toEqual([
+      { id: "call-9", name: "exec_command", arguments: "{}" },
+    ]);
+    expect(llmMessageToCheckpointResponseItem({
+      role: "assistant",
+      content: "Setting the password now.",
+      providerReasoningContent: secretLikeReasoning,
+    }).providerReasoning).toBeUndefined();
     expect(() =>
       serializeRolloutItem({
         type: "response_item",

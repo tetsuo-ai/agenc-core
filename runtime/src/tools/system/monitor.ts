@@ -15,10 +15,17 @@ import type {
   ToolResult,
 } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
-import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import {
+  UnifiedExecError,
+  type UnifiedExecProcessManagerLike,
+} from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
-import { runtimeSandboxForExec } from "./exec-command.js";
+import {
+  confirmedNoEffectDisposition,
+  runtimeSandboxForExec,
+} from "./exec-command.js";
 
 const MONITOR_INITIAL_YIELD_MS = 30_000;
 
@@ -153,6 +160,19 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
         return {
           content: `Monitor failed to start: ${message}`,
           isError: true,
+          // Both are raised before unified exec starts anything (a missing
+          // working directory included), as exec_command also records. Without
+          // the evidence the error counts as an unknown outcome and blocks
+          // every later side-effecting call in the session.
+          ...(err instanceof UnifiedExecError ||
+          err instanceof SandboxExecutionError
+            ? {
+                effectDisposition: confirmedNoEffectDisposition(
+                  "tool:system.monitor:pre-spawn-error",
+                  message,
+                ),
+              }
+            : {}),
           metadata: {
             command,
             description,

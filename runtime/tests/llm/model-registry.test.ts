@@ -33,7 +33,9 @@ describe("ModelRegistry", () => {
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: "gpt-5",
       contextWindow: 272_000,
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      // gpt-5 predates xhigh; the API answers "Supported values are:
+      // 'minimal', 'low', 'medium', 'high'" (probed 2026-09-11).
+      supportedReasoningLevels: ["minimal", "low", "medium", "high"],
       usedFallbackModelMetadata: false,
     });
   });
@@ -52,7 +54,7 @@ describe("ModelRegistry", () => {
       slug: "gpt-5.4",
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      supportedReasoningLevels: ["none", "low", "medium", "high", "xhigh"],
       serviceTiers: [
         {
           id: "priority",
@@ -61,6 +63,81 @@ describe("ModelRegistry", () => {
         },
       ],
     });
+  });
+
+  it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("resolves %s from the registry with a known price", (model) => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+
+    const entry = registry.resolveSync({ provider: "openai", model });
+
+    expect(entry.metadata.contextWindow).toBe(1_050_000);
+    expect(entry.cost.known).toBe(true);
+    expect(entry.cost.matchedKey).toBe(`openai:${model}`);
+    expect(entry.capabilities.acceptsReasoningEffort).toBe(true);
+    expect(entry.capabilities.supportsVisionInput).toBe(true);
+    expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
+    expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
+      slug: model,
+      contextWindow: 1_050_000,
+      // Sol and Luna also take none; Astra does not.
+      supportedReasoningLevels: model === "gpt-6-astra"
+        ? ["low", "medium", "high", "xhigh", "max"]
+        : ["none", "low", "medium", "high", "xhigh", "max"],
+      usedFallbackModelMetadata: false,
+    });
+  });
+
+  it("advertises the Fast tier for Anthropic fast-mode models and the rest of the GPT-5 family", () => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+    const tiersFor = (provider: string, model: string) =>
+      modelRegistryEntryToModelInfo(registry.resolveSync({ provider, model })).serviceTiers ?? [];
+
+    expect(tiersFor("anthropic", "claude-opus-5")).toEqual([
+      {
+        id: "priority",
+        name: "Fast",
+        description: "Up to 2.5x output speed at 2x price (fast mode research preview)",
+      },
+    ]);
+    expect(tiersFor("anthropic", "claude-opus-4-8").map((tier) => tier.id)).toEqual(["priority"]);
+    // Opus 5.5 fast mode is $8/$40, the same 2x multiple (fast-mode doc, 2026-09-22).
+    expect(tiersFor("anthropic", "claude-opus-5-5")).toEqual(tiersFor("anthropic", "claude-opus-5"));
+    // Sonnet 5 and Fable have no fast mode; the dial must not offer one.
+    expect(tiersFor("anthropic", "claude-sonnet-5")).toEqual([]);
+    expect(tiersFor("anthropic", "claude-fable-5-1")).toEqual([]);
+    // OpenAI fast mode pricing covers the whole GPT-5.x line, not only gpt-5/5.4/5.5.
+    for (const model of ["gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+      expect(tiersFor("openai", model).map((tier) => tier.id)).toEqual(["priority"]);
+    }
+  });
+
+  it("advertises the xAI Fast tier for Grok 4.7 and Grok 4.6 only", () => {
+    // xAI priority processing: service_tier "priority", 2x every token rate
+    // (docs.x.ai priority-processing and pricing pages, 2026-09-24).
+    const registry = new ModelRegistry({ config: defaultConfig() });
+    const tiersFor = (model: string) =>
+      modelRegistryEntryToModelInfo(registry.resolveSync({ provider: "grok", model })).serviceTiers ?? [];
+
+    for (const model of ["grok-4.7", "grok-4.6"]) {
+      expect(tiersFor(model), model).toEqual([
+        {
+          id: "priority",
+          name: "Fast",
+          description: "Higher scheduling priority at 2x price",
+        },
+      ]);
+    }
+    for (const model of [
+      "grok-4.5",
+      "grok-4.3",
+      "grok-build-0.1",
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-0309-non-reasoning",
+      "grok-4.20-multi-agent-0309",
+      "grok-composer-2.5-fast",
+    ]) {
+      expect(tiersFor(model), model).toEqual([]);
+    }
   });
 
   it("preserves hidden model visibility in model info", () => {
@@ -182,7 +259,8 @@ describe("ModelRegistry", () => {
 
     expect(entry.cost.known).toBe(false);
     expect(entry.cost.matchedKey).toBeUndefined();
-    expect(entry.cost.entry.label).toBe("fallback");
+    expect(entry.cost.entry.label).toBe("conservative estimate");
+    expect(entry.cost.entry.costEstimated).toBe(true);
   });
 
   it("applies configured capability overrides through registry entries", () => {

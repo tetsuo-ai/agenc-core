@@ -849,6 +849,7 @@ function storedThreadToSessionSummary(
 ): SessionSummary {
   const roleWorkspace = roleWorkspaceFromThreadSource(thread.source);
   const metadata: JsonObject = {
+    ...(thread.parentThreadId !== undefined ? { parentThreadId: thread.parentThreadId } : {}),
     source:
       thread.source === undefined
         ? undefined
@@ -857,6 +858,7 @@ function storedThreadToSessionSummary(
     modelProvider: thread.modelProvider,
     rolloutPath: thread.rolloutPath,
     recovered: true,
+    ...(thread.lightMode !== undefined ? { lightMode: thread.lightMode } : {}),
     ...(roleWorkspace !== undefined
       ? {
           agentRoleWorkspaceId: roleWorkspace.id,

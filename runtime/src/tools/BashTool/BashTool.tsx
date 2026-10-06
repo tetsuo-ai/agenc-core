@@ -77,7 +77,6 @@ import { userFacingName as fileEditUserFacingName } from "../FileEditTool/UI.js"
 import { trackGitOperations } from "../shared/gitOperationTracking.js";
 import {
   bashToolHasPermission,
-  commandHasAnyCd,
   matchWildcardPattern,
   permissionRuleExtractPrefix,
 } from "./bashPermissions.js";
@@ -87,7 +86,7 @@ import {
   getMaxTimeoutMs,
   getSimplePrompt,
 } from "./prompt.js";
-import { checkReadOnlyConstraints } from "./readOnlyValidation.js";
+import { isReadOnlyBashInput } from "./readOnlyValidation.js";
 import { parseSedEditCommand } from "./sedEditParser.js";
 import { shouldUseSandbox } from "./shouldUseSandbox.js";
 import { BASH_TOOL_NAME } from "./toolName.js";
@@ -381,7 +380,7 @@ function detectBlockedSleepPattern(command: string): string | null {
 /**
  * Checks if a command contains tools that shouldn't run in sandbox
  * This includes:
- * - Dynamic config-based disabled commands and substrings (tengu_sandbox_disabled_commands)
+ * - Dynamic config-based disabled commands and substrings
  * - User-configured commands from config.toml (sandbox.excludedCommands)
  *
  * User-configured commands support the same pattern syntax as permission rules:
@@ -478,10 +477,8 @@ export const BashTool = buildTool({
   isConcurrencySafe(input) {
     return this.isReadOnly?.(input) ?? false;
   },
-  isReadOnly(input) {
-    const compoundCommandHasCd = commandHasAnyCd(input.command);
-    const result = checkReadOnlyConstraints(input, compoundCommandHasCd);
-    return result.behavior === "allow";
+  isReadOnly(input): boolean {
+    return isReadOnlyBashInput(input);
   },
   toAutoClassifierInput(input) {
     return input.command;

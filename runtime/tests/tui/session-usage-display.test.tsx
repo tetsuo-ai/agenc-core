@@ -2,8 +2,6 @@ import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { CostReport } from "../../src/commands/cost.js";
 import { CostUsageModal } from "../../src/tui/components/v2/CostUsageModal.js";
-import { AppStateProvider, getDefaultAppState } from "../../src/tui/state/AppState.js";
-import { AgentsRail } from "../../src/tui/workbench/agents/AgentsRail.js";
 import { renderToString } from "../../src/utils/staticRender.js";
 
 vi.mock("../../src/tui/keybindings/useKeybinding.js", () => ({
@@ -11,6 +9,18 @@ vi.mock("../../src/tui/keybindings/useKeybinding.js", () => ({
 }));
 
 describe("canonical session usage display", () => {
+  it("marks estimated totals and model/agent rows in the modal", async () => {
+    const report: CostReport = {
+      totalCostUsd: 0.045, totalIsEstimated: true, hasUnknownCost: false,
+      models: [{ label: "unpriced", inputTokens: 100, outputTokens: 50, costUsd: 0.03, costEstimated: true }],
+      agents: [{ label: "worker", status: "completed", costUsd: 0.015, costEstimated: true }],
+    };
+    const output = await renderToString(<CostUsageModal report={report} onDone={() => {}} active={false} />, 120);
+    expect(output).toContain("$0.045 est.");
+    expect(output).toContain("$0.030 est.");
+    expect(output).toContain("$0.015 est.");
+  });
+
   it("renders recorded worker cost instead of its competing token estimate", async () => {
     const report: CostReport = {
       totalCostUsd: 1.071394005, hasUnknownCost: false, models: [],
@@ -22,14 +32,4 @@ describe("canonical session usage display", () => {
     expect(output).not.toContain("$9.00");
   });
 
-  it.each([false, true])("renders aggregate rail spending with unknown=%s", async (unknown) => {
-    const output = await renderToString(
-      <AppStateProvider initialState={getDefaultAppState()}>
-        <AgentsRail width={45} focused={false} sessionCostUsd={1.071394005} sessionCostUnknown={unknown} />
-      </AppStateProvider>,
-      100,
-    );
-    expect(output).toContain("$1.07");
-    expect(output.includes("$1.07+?")).toBe(unknown);
-  });
 });

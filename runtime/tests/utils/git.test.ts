@@ -59,7 +59,10 @@ describe("git root discovery", () => {
       const repo = join(root, "repo");
       const nested = join(repo, "src", "utils");
       const file = join(nested, "git.ts");
-      await mkdir(join(repo, ".git"), { recursive: true });
+      const gitDir = join(repo, ".git");
+      await mkdir(join(gitDir, "objects"), { recursive: true });
+      await mkdir(join(gitDir, "refs"), { recursive: true });
+      await writeFile(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
       await mkdir(nested, { recursive: true });
       await writeFile(file, "export {}\n");
 
@@ -112,6 +115,23 @@ describe("git root discovery", () => {
       await writeFile(join(worktreeGitDir, "commondir"), "../..\n");
       await writeFile(join(worktreeGitDir, "gitdir"), `${join(main, ".git")}\n`);
       expect(findCanonicalGitRoot(linked)).toBe(linked);
+    });
+  });
+
+  it("ignores an empty ancestor .git so a nested repo still wins", async () => {
+    await withTempDir(async (root) => {
+      await mkdir(join(root, ".git"));
+      const stray = join(root, "unmanaged", "tmp");
+      await mkdir(stray, { recursive: true });
+      expect(findGitRoot(stray)).toBeNull();
+
+      const repo = join(root, "checkout");
+      await initRepo(repo);
+      expect(findGitRoot(join(repo, "src"))).toBe(repo);
+
+      const bare = join(root, "upstream.git");
+      await runGitOk(root, ["init", "--bare", bare]);
+      expect(findGitRoot(bare)).toBe(bare);
     });
   });
 });

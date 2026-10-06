@@ -39,6 +39,9 @@ Inside the TUI:
 /grok-logout         # delete the stored tokens
 ```
 
+During device-code sign-in, press Esc or Ctrl+C to cancel the pending attempt.
+If no browser opens, use the URL and code shown in the terminal.
+
 The browser flow opens `auth.x.ai` and returns through a loopback callback
 on `127.0.0.1:56121`. On headless/SSH hosts (or when that port is taken,
 e.g. by the Grok CLI) the device-code flow is used automatically.
@@ -59,15 +62,27 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
   Service, or a DPAPI-protected file under `AGENC_HOME` on Windows; no
   plaintext fallback). Tokens refresh automatically (~6 h access tokens with
   rotating refresh tokens). xAI expired bearers are often **403**; refresh
-  runs on 401 and 403 (two attempts). Admitted turns do not in-band retry:
+  runs on 401 and 403 (two attempts), except for the spending-limit refusal
+  under Troubleshooting, which no refresh can lift. Admitted turns do not in-band retry:
   they pre-flight refresh if the stored token is near expiry. Transient
   refresh failure does not force `/grok-login`.
 - The OAuth bearer is only ever sent to `api.x.ai` / `*.grok.com`. A custom
   grok base-URL override refuses to start in OAuth mode — set a real API
   key (and no OAuth token) to use gateways.
+- Fast (xAI priority processing, `service_tier = "priority"`) is sent only
+  with API-key billing. xAI does not document whether the sign-in grant can
+  use it or how it would be billed, so a signed-in session ignores the Fast
+  setting and does not list a Fast tier. To use Fast while signed in, select
+  API-key billing with `GROK_AUTH_MODE=api-key` and an `XAI_API_KEY`.
 
 ## Troubleshooting
 
+- **"xAI refused the request: the account has run out of credits, reached its
+  spending limit, or needs a Grok subscription"**: xAI answered HTTP 403 with
+  `personal-team-blocked:spending-limit` (its own text: "You have run out of
+  credits or need a Grok subscription"). Signing in again does not help, and
+  AgenC does not refresh the token for it. Add credits or raise the limit on
+  grok.com, or upgrade the subscription, then retry.
 - **403 "no active Grok subscription"** right after a successful login:
   xAI enforces entitlement at request time, keyed by account email. Make
   sure your X account and grok.com account use the **same email**, or fall

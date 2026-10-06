@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
+  NON_INTERACTIVE_HIDDEN_TOOLS,
   resolvePerToolConfig,
   toolConfigAllowsTool,
+  withDisabledTools,
 } from "./config.js";
 
 describe("tools_config per-tool resolution", () => {
@@ -63,5 +65,35 @@ describe("tools_config per-tool resolution", () => {
 
     expect(toolConfigAllowsTool(config, "WebSearch")).toBe(false);
     expect(toolConfigAllowsTool(config, "web_search")).toBe(true);
+  });
+});
+
+describe("withDisabledTools", () => {
+  test("hides the non-interactive tools on top of an absent config", () => {
+    const config = withDisabledTools(undefined, NON_INTERACTIVE_HIDDEN_TOOLS);
+
+    expect(config.disabled_tools).toEqual(["AskUserQuestion"]);
+    expect(toolConfigAllowsTool(config, "AskUserQuestion")).toBe(false);
+    expect(toolConfigAllowsTool(config, "exec_command")).toBe(true);
+  });
+
+  test("keeps the operator's lists and per-tool defaults, without duplicates", () => {
+    const config = withDisabledTools(
+      {
+        enabled_tools: ["AskUserQuestion", "FileRead"],
+        disabled_tools: ["Write", "AskUserQuestion"],
+        Edit: { default_permission_mode: "never" },
+      },
+      ["AskUserQuestion", "TodoWrite"],
+    );
+
+    expect(config.disabled_tools).toEqual(["Write", "AskUserQuestion", "TodoWrite"]);
+    expect(config.enabled_tools).toEqual(["AskUserQuestion", "FileRead"]);
+    expect(resolvePerToolConfig(config, "Edit")).toEqual({
+      defaultPermissionMode: "never",
+    });
+    // An allowlist entry does not bring a hidden tool back.
+    expect(toolConfigAllowsTool(config, "AskUserQuestion")).toBe(false);
+    expect(toolConfigAllowsTool(config, "FileRead")).toBe(true);
   });
 });

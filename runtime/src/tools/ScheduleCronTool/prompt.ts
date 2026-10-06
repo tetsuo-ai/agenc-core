@@ -7,29 +7,15 @@ export const DEFAULT_MAX_AGE_DAYS =
 /**
  * Unified gate for the cron scheduling system.
  *
- * Open builds (USER_TYPE !== 'ant') enable cron unconditionally — the
- * cron tools and /loop skill are registered without the AGENT_TRIGGERS
- * build flag, so this gate is the sole runtime switch. Set the env var
- * `AGENC_DISABLE_CRON=1` to turn it off locally.
- *
- * provider-internal (ant) builds additionally consult the
- * `tengu_kairos_cron` GrowthBook gate on a 5-minute refresh window,
- * serving as a fleet-wide kill switch.
+ * Cron is on by default: the cron tools and /loop skill are registered
+ * without a build flag, so this gate is the sole runtime switch. Set the
+ * env var `AGENC_DISABLE_CRON=1` to turn it off locally.
  *
  * Called from Tool.isEnabled() (lazy, post-init) and inside useEffect /
- * imperative setup, never at module scope — so the disk cache has had a
- * chance to populate.
- *
- * `AGENC_DISABLE_CRON` is a local override that wins over GB.
+ * imperative setup, never at module scope.
  */
 export function isKairosCronEnabled(): boolean {
-  if (isEnvTruthy(process.env.AGENC_DISABLE_CRON)) return false
-
-  // AgenC open builds do not rely on provider's internal runtime gates.
-  // Expose cron support by default unless explicitly disabled.
-  if (process.env.USER_TYPE !== 'ant') return true
-
-  return true
+  return !isEnvTruthy(process.env.AGENC_DISABLE_CRON)
 }
 
 /**

@@ -13,13 +13,20 @@
  */
 
 import type { GrokCapabilityConfig } from "../config/schema.js";
-import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
+import {
+  isXaiOauthBearer,
+  readXaiOauthAccessToken,
+} from "../utils/xaiOauthCredentials.js";
 import type { HomeContext } from "../config/home.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import type { ProviderRuntimeExtra } from "./provider.js";
 import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
 import { resolveProviderApiKeyEnvironment } from "./registry/provider-ingress.js";
 import { providerAuthPreference } from "./provider-auth-selection.js";
+import {
+  assertXaiOauthBaseUrl,
+  isTrustedXaiOauthInferenceBaseUrl,
+} from "../services/xai/oauth.js";
 
 const DIRECT_XAI_HOST_SUFFIXES = [".x.ai", ".grok.com"] as const;
 
@@ -316,9 +323,63 @@ export function resolveXaiBearerToken(
   return resolveGrokProviderCredential(home, sessionApiKey, env).value;
 }
 
+/** Resolve a bearer only after binding a stored sign-in to the API URL. */
+export function resolveXaiBearerTokenForBaseUrl(
+  home: HomeContext,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+  baseURL: string,
+  sessionApiKey?: string,
+): string | undefined {
+  const credential = resolveGrokProviderCredential(home, sessionApiKey, env);
+  if (!isTrustedXaiOauthInferenceBaseUrl(baseURL)) {
+    const preference = providerAuthPreference("grok", env);
+    if (preference === "oauth") {
+      if (credential.isOAuth) assertXaiOauthBaseUrl(baseURL);
+      return undefined;
+    }
+    const sessionKey = sessionApiKey?.trim();
+    const apiKey = [
+      sessionKey?.toLowerCase() === "undefined" ? undefined : sessionKey,
+      resolveProviderApiKeyEnvironment("grok", env)?.value,
+    ].find(
+      (key) => key !== undefined && key !== "" &&
+        !isXaiOauthBearer(home, key),
+    );
+    if (apiKey === undefined) {
+      if (credential.isOAuth || isXaiOauthBearer(home, credential.value)) {
+        assertXaiOauthBaseUrl(baseURL);
+      }
+      return undefined;
+    }
+    return apiKey;
+  }
+  return credential.value;
+}
+
+/** A URL-bound sign-in cannot serve this xAI candidate; other backends may. */
+export function tryResolveXaiBearerTokenForBaseUrl(
+  home: HomeContext,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+  baseURL: string,
+  sessionApiKey?: string,
+): { readonly bearer?: string; readonly oauthBaseUrlError?: string } {
+  try {
+    return { bearer: resolveXaiBearerTokenForBaseUrl(
+      home, env, baseURL, sessionApiKey,
+    ) };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(
+      "xAI sign-in credentials are bound to the first-party xAI API endpoint.",
+    )) {
+      return { oauthBaseUrlError: error.message };
+    }
+    throw error;
+  }
+}
+
 export interface ResolvedGrokProviderCredential {
   readonly value?: string;
-  /** True only when the selected value came from stored xAI OAuth. */
+  /** True when the selected value is a tracked xAI OAuth bearer. */
   readonly isOAuth: boolean;
 }
 
@@ -341,7 +402,7 @@ export function resolveGrokProviderCredential(
   if (explicit && explicit.toLowerCase() !== "undefined") {
     return Object.freeze({
       value: explicit,
-      isOAuth: false,
+      isOAuth: isXaiOauthBearer(home, explicit),
     });
   }
   const environment = resolveProviderApiKeyEnvironment("grok", env);
@@ -349,7 +410,7 @@ export function resolveGrokProviderCredential(
     ? Object.freeze({ isOAuth: false })
     : Object.freeze({
         value: environment.value,
-        isOAuth: false,
+        isOAuth: isXaiOauthBearer(home, environment.value),
       });
 }
 

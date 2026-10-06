@@ -19,14 +19,14 @@ function jwt(payload: Record<string, unknown>): string {
   ).toString('base64url')}.signature`
 }
 
-async function loadRepository() {
+async function loadRepository(asyncRead?: (bound: HomeContext) => Promise<SecureStorageData>) {
   vi.resetModules()
   vi.doMock(nativeModulePath, () => ({
     NativeSecureStorageError: class NativeSecureStorageError extends Error {},
     readNativeSecureStorage: (bound: HomeContext) =>
       structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
-    readNativeSecureStorageAsync: async (bound: HomeContext) =>
-      structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
+    readNativeSecureStorageAsync: asyncRead ?? (async (bound: HomeContext) =>
+      structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {})),
     updateNativeSecureStorage: (
       bound: HomeContext,
       updater: (current: Readonly<SecureStorageData>) => SecureStorageData,
@@ -142,6 +142,39 @@ describe('OpenAI OAuth credential authority', () => {
     )
   })
 
+  test('single-flights before independently delayed credential reads can reuse a rotated token', async () => {
+    const bound = home('/tmp/agenc-openai-delayed-read-home')
+    const expired = jwt({ exp: 1, chatgpt_account_id: 'account-1' })
+    const fresh = jwt({ exp: Math.floor(Date.now() / 1000) + 3_600, chatgpt_account_id: 'account-1' })
+    secureStorageByIdentity.set(bound.identityKey, { openAiOauth: {
+      accessToken: expired, refreshToken: 'old-refresh', accountId: 'account-1', authMode: 'chatgpt',
+    } })
+    let releaseSecondRead!: () => void
+    const secondRead = new Promise<void>(resolve => { releaseSecondRead = resolve })
+    let reads = 0
+    const repository = await loadRepository(async storageHome => {
+      const snapshot = structuredClone(secureStorageByIdentity.get(storageHome.identityKey) ?? {})
+      if (++reads === 2) await secondRead
+      return snapshot
+    })
+    const exchanged: string[] = []
+    globalThis.fetch = vi.fn(async (_url, init) => {
+      const token = new URLSearchParams(String(init?.body)).get('refresh_token') ?? ''
+      exchanged.push(token)
+      if (exchanged.length > 1) return new Response('{"error":"invalid_grant"}', { status: 400 })
+      return new Response(JSON.stringify({ access_token: fresh, refresh_token: 'new-refresh' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    const environment = Object.freeze({ PROVIDER_CODE_OAUTH_CLIENT_ID: 'captured-client' })
+    const first = repository.refreshOpenAiSubscriptionIfNeeded(bound, environment)
+    const second = repository.refreshOpenAiSubscriptionIfNeeded(bound, environment)
+    await first
+    releaseSecondRead()
+    const results = await Promise.all([first, second])
+    expect(results.every(result => result.credentials?.accessToken === fresh)).toBe(true)
+    expect(exchanged).toEqual(['old-refresh'])
+  })
+
   test('refreshes the subscription token even when the same login also minted a platform key', async () => {
     const bound = home('/tmp/agenc-openai-dual-credential-refresh-home')
     const expired = jwt({ exp: 1, chatgpt_account_id: 'account-1' })
@@ -179,5 +212,31 @@ describe('OpenAI OAuth credential authority', () => {
       accountId: 'account-1',
       authMode: 'apiKey',
     })
+  })
+
+  test('refuses a refresh-token redirect away from the trusted token endpoint', async () => {
+    const bound = home('/tmp/agenc-openai-refresh-redirect-home')
+    const expired = jwt({ exp: 1, chatgpt_account_id: 'account-1' })
+    secureStorageByIdentity.set(bound.identityKey, { openAiOauth: {
+      accessToken: expired, refreshToken: 'old-refresh', accountId: 'account-1', authMode: 'chatgpt',
+    } })
+    const leaked: string[] = []
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (String(url).startsWith('https://attacker.example')) {
+        leaked.push(String(init?.body))
+        return new Response('{}', { status: 200 })
+      }
+      if (init?.redirect !== 'manual') {
+        leaked.push(String(init?.body))
+        return new Response('{}', { status: 200 })
+      }
+      return Response.redirect('https://attacker.example/token', 307)
+    }) as typeof fetch
+    const repository = await loadRepository()
+    await expect(repository.refreshOpenAiSubscriptionIfNeeded(bound,
+      Object.freeze({ PROVIDER_CODE_OAUTH_CLIENT_ID: 'captured-client' })))
+      .rejects.toThrow(/token endpoint redirect/u)
+    expect(leaked).toEqual([])
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
   })
 })

@@ -3,7 +3,7 @@ import type { Buffer } from 'buffer'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
-  metadata(): Promise<{ width: number; height: number; format: string }>
+  metadata(): Promise<{ width: number; height: number; pages?: number; format: string }>
   resize(
     width: number,
     height: number,
@@ -16,10 +16,16 @@ export type SharpInstance = {
     colors?: number
   }): SharpInstance
   webp(options?: { quality?: number }): SharpInstance
+  /** Uncompressed pixel output; sharp decodes every pixel to produce it. */
+  raw?(): SharpInstance
   toBuffer(): Promise<Buffer>
 }
 
-export type SharpFunction = (input: Buffer) => SharpInstance
+export type SharpFunction = (
+  input: Buffer,
+  /** `animated: true` reads every frame of an animation, not just the first. */
+  options?: { animated?: boolean },
+) => SharpInstance
 
 type SharpCreatorOptions = {
   create: {

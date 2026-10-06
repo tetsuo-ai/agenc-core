@@ -109,6 +109,26 @@ describe("session-store", () => {
     store.close();
   });
 
+  test("scans a live canonical journal in bounded chunks and refuses changed or closed sources", () => {
+    const store = new SessionStore({ cwd: home, sessionId: "scan-owner", agencVersion: "0.2.0" });
+    store.open({ sessionId: "scan-owner", timestamp: new Date().toISOString(), cwd: home,
+      originator: "test", agencVersion: "0.2.0" });
+    try {
+      const pieces: Buffer[] = [];
+      store.scanCanonicalChunks(1024 * 1024, chunk => pieces.push(Buffer.from(chunk)));
+      expect(Buffer.concat(pieces)).toEqual(readFileSync(store.rolloutPath));
+      expect(() => store.scanCanonicalChunks(1, () => {})).toThrow("byte limit");
+      expect(() => store.scanCanonicalChunks(1024 * 1024, () => {
+        const original = readFileSync(store.rolloutPath);
+        renameSync(store.rolloutPath, `${store.rolloutPath}.old`);
+        writeFileSync(store.rolloutPath, original);
+      })).toThrow(/changed|resume/);
+    } finally {
+      store.close();
+    }
+    expect(() => store.scanCanonicalChunks(1024, () => {})).toThrow("closed");
+  });
+
   test("fresh session metadata canonicalizes a symlink-spelled workspace", () => {
     const canonicalCwd = mkdtempSync(join(home, "canonical-workspace-"));
     const lexicalCwd = join(home, "workspace-alias");
@@ -462,6 +482,38 @@ describe("session-store", () => {
       resumed.close();
     },
   );
+
+  test("failed-payload rewrite loops live ordinals instead of spreading Math.max", () => {
+    const cwd = mkdtempSync(join(home, "failed-payload-ordinal-loop-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const sessionId = "sess-failed-payload-ordinal-loop";
+    const store = new SessionStore({
+      cwd,
+      sessionId,
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId,
+      timestamp: "2026-09-24T00:00:00.000Z",
+      cwd,
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    try {
+      const manyRefs = Array.from({ length: 80_000 }, (_, index) => ({
+        first_sequence: index + 1,
+        last_sequence: index + 1,
+      }));
+      expect(() =>
+        store.rewriteFailedCompactionPayloadChunksAtomically(
+          "failed-payload-ordinal-loop",
+          manyRefs,
+        ),
+      ).not.toThrow();
+    } finally {
+      store.close();
+    }
+  });
 
   test("descriptor handoff rejects a source swap before SessionStore adoption", () => {
     const cwd = mkdtempSync(join(home, "resume-handoff-swap-cwd-"));

@@ -65,7 +65,14 @@ import {
   type LiveToolDispatchOptions,
   type ToolRouter,
 } from "./router.js";
-import { resolveTimeoutMs } from "./execution.js";
+import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
+import { normalizeModelToolArgs } from "./argument-validation.js";
+import {
+  formatUnknownToolMessage,
+  suggestToolForUnknownName,
+  type ToolSuggestion,
+} from "./tool-name-suggestion.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./system/tool-search-name.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import type { Tool } from "./types.js";
 import {
@@ -540,7 +547,9 @@ export class StreamingToolExecutor {
    * pre-synthesize a deterministic `No such tool available` terminal
    * result and mark the tracked tool `completed`. That guarantees
    * every `tool_use` block receives a paired `tool_result` and keeps
-   * the model from seeing orphaned tool calls on the next turn.
+   * the model from seeing orphaned tool calls on the next turn. When a
+   * tool the model can use clearly matches the name (`Read` -> `FileRead`),
+   * the error names it; the call itself is never redirected.
    */
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
     if (this.closed || this.isAborting) {
@@ -586,11 +595,19 @@ export class StreamingToolExecutor {
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
     const isKnown = this.isKnownToolCall(toolCall);
     if (!isKnown) {
+      // Never an alias: the call fails here. With a clear match, the error
+      // names the tool this session can call instead.
+      const suggestion = this.suggestToolName(toolCall.name);
+      const message = formatUnknownToolMessage(
+        toolCall.name,
+        suggestion?.name,
+        suggestion?.loadWith,
+      );
       const syntheticResult: ToolDispatchResult = {
         content: JSON.stringify({
           tool_use_id: toolCall.id,
           is_error: true,
-          content: `<tool_use_error>Error: No such tool available: ${toolCall.name}</tool_use_error>`,
+          content: `<tool_use_error>Error: ${message}</tool_use_error>`,
         }),
         isError: true,
       };
@@ -614,19 +631,25 @@ export class StreamingToolExecutor {
     }
 
     const classifiable = this.resolveClassifiable(toolCall);
-    const parsedArgs = parseToolCallArguments(toolCall.arguments);
-    const classification = classify(classifiable, parsedArgs);
+    const resolvedName = this.resolveModelToolName(toolCall.name);
+    const tool = this.registry.tools.find((t) => t.name === resolvedName);
+    const parsedArgs = parseToolArgsWithBigInt(toolCall.arguments ?? "{}");
+    const validation = parsedArgs === null
+      ? null
+      : normalizeModelToolArgs(classifiable.inputSchema, parsedArgs, tool?.reshapeModelArgs);
+    const executionArgs = validation?.valid ? validation.args ?? parsedArgs : null;
+    const classification = executionArgs === null ? EXCLUSIVE : classify(classifiable, executionArgs);
     // AgenC tracks a per-call `isConcurrencySafe` boolean derived
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
     // reference `:436-438` semantics exactly.
-    const resolvedName = this.resolveModelToolName(toolCall.name);
-    const tool = this.registry.tools.find((t) => t.name === resolvedName);
     let concurrencySafe = false;
-    if (tool?.isConcurrencySafe) {
+    if (executionArgs === null) {
+      concurrencySafe = false;
+    } else if (tool?.isConcurrencySafe) {
       try {
-        concurrencySafe = Boolean(tool.isConcurrencySafe(parsedArgs));
+        concurrencySafe = Boolean(tool.isConcurrencySafe(executionArgs));
       } catch {
         concurrencySafe = false;
       }
@@ -785,11 +808,12 @@ export class StreamingToolExecutor {
         }
         if (this.discarded) return;
 
-        if (
-          this.hasExecutingTools() &&
-          !this.hasCompletedResults() &&
-          !this.hasPendingProgress()
-        ) {
+        // Wait unless a drain pass would yield something now. A completed
+        // result behind a still-executing exclusive tool cannot be yielded
+        // yet (the pass stops at that head to keep submission order), so
+        // counting it skipped this wait and spun the loop on microtasks,
+        // starving the head tool's own I/O and timers.
+        if (this.hasExecutingTools() && !this.hasDrainableWork()) {
           await this.waitForExecutingToolOrProgress();
         }
       }
@@ -824,11 +848,12 @@ export class StreamingToolExecutor {
         }
         if (this.discarded) return;
 
-        if (
-          this.hasExecutingTools() &&
-          !this.hasCompletedResults() &&
-          !this.hasPendingProgress()
-        ) {
+        // Wait unless a drain pass would yield something now. A completed
+        // result behind a still-executing exclusive tool cannot be yielded
+        // yet (the pass stops at that head to keep submission order), so
+        // counting it skipped this wait and spun the loop on microtasks,
+        // starving the head tool's own I/O and timers.
+        if (this.hasExecutingTools() && !this.hasDrainableWork()) {
           await this.waitForExecutingToolOrProgress();
         }
       }
@@ -910,6 +935,44 @@ export class StreamingToolExecutor {
     return toolName;
   }
 
+  /**
+   * The closest tool the model can use for an unknown name. Candidates are
+   * the tools this executor can dispatch (registry and router), described by
+   * whether this request offered them, whether they are deferred or hidden,
+   * and whether the router marks them unavailable; `suggestToolForUnknownName`
+   * decides. Never throws: the call still needs its terminal result.
+   */
+  private suggestToolName(requested: string): ToolSuggestion | undefined {
+    try {
+      const specs = this.liveToolDispatch?.router.getSpecs() ?? [];
+      const specByName = new Map(specs.map((spec) => [spec.tool.name, spec]));
+      const tools = new Map<string, Tool>();
+      for (const spec of specs) tools.set(spec.tool.name, spec.tool);
+      for (const tool of this.registry.tools) tools.set(tool.name, tool);
+      const offered = new Set(
+        this.liveToolDispatch?.options.advertisedToolNames ??
+          this.registry.toLLMTools().map((tool) => tool.function.name),
+      );
+      const candidates = [...tools.values()].map((tool) => {
+        const spec = specByName.get(tool.name);
+        return {
+          name: tool.name,
+          offered: offered.has(tool.name),
+          deferred: tool.metadata?.deferred === true || spec?.deferred === true,
+          hidden: tool.metadata?.hiddenByDefault === true,
+          unavailable: spec?.unavailable === true,
+        };
+      });
+      return suggestToolForUnknownName(
+        requested,
+        candidates,
+        SYSTEM_SEARCH_TOOLS_NAME,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
   private isKnownToolCall(toolCall: LLMToolCall): boolean {
     const resolvedName = this.resolveModelToolName(toolCall.name);
     if (
@@ -946,6 +1009,7 @@ export class StreamingToolExecutor {
         : defaultConcurrencyClassFor(resolvedName));
     return {
       name: resolvedName,
+      inputSchema: tool?.inputSchema as Record<string, unknown> | undefined,
       concurrencyClass: resolvedClass,
       isConcurrencySafe: (tool as Tool | undefined)?.isConcurrencySafe,
       ...(resolvedServerId !== undefined ? { serverId: resolvedServerId } : {}),
@@ -972,12 +1036,21 @@ export class StreamingToolExecutor {
     return this.tools.some((t) => t.status === "executing");
   }
 
-  private hasCompletedResults(): boolean {
-    return this.tools.some((t) => t.status === "completed");
-  }
-
-  private hasPendingProgress(): boolean {
-    return this.tools.some((t) => t.pendingProgress.length > 0);
+  /**
+   * True when a drain pass (`getCompletedResults` / `getCompletedUpdates`)
+   * would flush or yield something now: pending progress on a tool the pass
+   * reaches, or a completed result ahead of the first executing exclusive
+   * tool. It walks the tools with the pass's own head-of-line rule, so a
+   * result the pass cannot yield yet never counts as work.
+   */
+  private hasDrainableWork(): boolean {
+    for (const tool of this.tools) {
+      if (tool.pendingProgress.length > 0) return true;
+      if (tool.status === "yielded") continue;
+      if (tool.status === "completed" && tool.result) return true;
+      if (tool.status === "executing" && !tool.isConcurrencySafe) return false;
+    }
+    return false;
   }
 
   /**

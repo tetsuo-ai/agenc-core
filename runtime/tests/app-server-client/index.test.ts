@@ -393,21 +393,6 @@ describe("app-server-client daemon helpers", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction: {
-          interactionId: "interaction-client-explain",
-          kind: "explain",
-          policy: "read_only",
-          editorInstanceId: "editor-client",
-          bufferHandle: 7,
-          changedtick: 12,
-          contentSha256: "c".repeat(64),
-          path: "/workspace/src/main.ts",
-          range: {
-            start: { line: 2, column: 3 },
-            end: { line: 4, column: 0 },
-          },
-          selectionMode: "character",
-        },
       });
 
       expect(createAgent).toHaveBeenCalledWith(
@@ -431,21 +416,6 @@ describe("app-server-client daemon helpers", () => {
             },
           ],
           initialDisplayUserMessage: "Explain the selected code",
-          initialEditorInteraction: {
-            interactionId: "interaction-client-explain",
-            kind: "explain",
-            policy: "read_only",
-            editorInstanceId: "editor-client",
-            bufferHandle: 7,
-            changedtick: 12,
-            contentSha256: "c".repeat(64),
-            path: "/workspace/src/main.ts",
-            range: {
-              start: { line: 2, column: 3 },
-              end: { line: 4, column: 0 },
-            },
-            selectionMode: "character",
-          },
         }),
       );
       await startAgenCDaemonPromptAgent({

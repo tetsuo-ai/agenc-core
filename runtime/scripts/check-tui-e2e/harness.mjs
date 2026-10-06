@@ -252,7 +252,7 @@ export function hasRenderedAssistantReply(rows) {
     }
   }
   if (headerIdx === -1) {
-    return hasRenderedWorkbenchAssistantReply(rows);
+    return hasRenderedCompactAssistantReply(rows);
   }
 
   const headerMatch = headerRe.exec(rows[headerIdx]);
@@ -281,13 +281,13 @@ export function hasRenderedAssistantReply(rows) {
 }
 
 /**
- * The workbench transcript deliberately omits a repeated AGENC speaker label.
+ * The compact transcript deliberately omits a repeated AGENC speaker label.
  * User rows reserve a seven-cell label slot (`❯ ` plus padding); assistant
  * rows reserve the same slot and start their content at the identical column.
  * Detect the first real body row at that column without accepting text from
- * the explorer, agents rail, footer, or a slash-command overlay.
+ * the footer or a slash-command overlay.
  */
-function hasRenderedWorkbenchAssistantReply(rows) {
+function hasRenderedCompactAssistantReply(rows) {
   for (let promptIdx = rows.length - 1; promptIdx >= 0; promptIdx -= 1) {
     const prompt = /❯\s+\S/u.exec(rows[promptIdx]);
     if (prompt === null) continue;
@@ -501,7 +501,7 @@ export function normalizePtyOutput(raw, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function frameLooksBusy(frame) {
+export function frameLooksBusy(frame) {
   return (
     /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame)
   );
@@ -517,6 +517,7 @@ export class TuiSession {
     gateState,
     useTempHome = false,
     sandboxMode,
+    preTrust = true,
   } = {}) {
     this.args = args;
     this.cols = cols;
@@ -526,6 +527,8 @@ export class TuiSession {
     this.gateState = gateState ?? null;
     this.useTempHome = useTempHome;
     this.sandboxMode = sandboxMode;
+    // Trust scenarios start in a folder that is NOT trusted in advance.
+    this.preTrust = preTrust;
     this.tempHome = null;
     this.ownsTempHome = false;
     this.runtimeEnv = null;
@@ -591,7 +594,7 @@ export class TuiSession {
       this.ownsTempHome = true;
       env = tuiGateEnvironment(home, env, this.envOverrides);
     }
-    await ensureProjectTrusted(this.cwd, env);
+    if (this.preTrust) await ensureProjectTrusted(this.cwd, env);
     this.throwIfAborted();
     this.runtimeEnv = env;
     return env;
@@ -733,6 +736,18 @@ export class TuiSession {
     }
     await stopTuiGateDaemon(this.gateState);
     return startTuiGateDaemon(this.gateState, BIN_AGENC);
+  }
+
+  /**
+   * Captured stderr of the gate daemon with this pid (bounded). Scenarios use
+   * it to wait for a daemon log line, such as the startup restore summary.
+   */
+  gateDaemonStderr(pid) {
+    const record = this.gateState?.daemonProcesses.get(pid);
+    if (record === undefined) {
+      throw new Error(`no private TUI gate daemon with pid ${pid}`);
+    }
+    return record.stderr;
   }
 
   async abort(reason = new Error("TUI scenario aborted")) {
@@ -1067,7 +1082,7 @@ export class TuiSession {
 
   /**
    * Wait for the permission overlay to appear in the captured output. The
-   * workbench approval card renders the current prompt as "needs approval"
+   * approval card renders the current prompt as "needs approval"
    * / "enter approve" rather than the old numbered prompt copy.
    */
   async waitForPermissionOverlay({ timeout = 60_000 } = {}) {
@@ -1081,8 +1096,7 @@ export class TuiSession {
   }
 
   /**
-   * Accept the permission overlay. "y" is handled by both the approval
-   * overlay and the workbench diff surface when the diff pane has focus.
+   * Accept the permission overlay with "y".
    */
   async acceptPermissionOverlay() {
     await sleep(120);
@@ -1136,8 +1150,8 @@ export class TuiSession {
 
   /**
    * Wait for the assistant's reply to render. Classic transcript turns use
-   * an AGENC identity header with reply text beneath it. The workbench's
-   * compact transcript omits that repeated label and aligns assistant content
+   * an AGENC identity header with reply text beneath it. The compact
+   * transcript omits that repeated label and aligns assistant content
    * with the submitted user row's reserved label slot. After `submit`, this
    * fires only once at least one line of real reply content renders.
    *

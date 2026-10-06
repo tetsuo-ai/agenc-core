@@ -6,6 +6,10 @@ import {
 } from './macOsKeychainHelpers.js'
 import type { HomeContext } from '../../config/home.js'
 import type { SecureStorage, SecureStorageData } from './index.js'
+import {
+  isSecureStorageUnavailableMessage,
+  SecureStorageUnavailableError,
+} from './unavailable.js'
 import { decodeSecureStorageData } from './decode.js'
 import {
   resolveBundledSecureStorageHelper,
@@ -70,10 +74,15 @@ export function createLinuxSecretStorage(
       return null
     }
     if (result.exitCode !== 0) {
-      throw new Error(
-        result.stderr?.trim() ||
-          `Secret Service lookup failed with exit code ${result.exitCode}`,
-      )
+      const detail = result.stderr?.trim() ||
+        `Secret Service lookup failed with exit code ${result.exitCode}`
+      // No libsecret, or no session bus to reach a Secret Service (containers,
+      // servers, CI): the backend is absent on this host rather than holding
+      // an unreadable record.
+      if (isSecureStorageUnavailableMessage(detail)) {
+        throw new SecureStorageUnavailableError(detail)
+      }
+      throw new Error(detail)
     }
     if (!result.stdout?.trim()) {
       throw new Error('Secret Service returned an empty credential record')

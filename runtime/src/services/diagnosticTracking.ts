@@ -1,7 +1,7 @@
 import figures from 'figures'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { logError } from 'src/utils/log.js'
-import { callIdeRpc } from './mcp/client.js'
+import { callIdeRpc } from './mcp/ideRpc.js'
 import type { MCPServerConnection } from './mcp/types.js'
 import { AgenCError } from '../utils/errors.js'
 import { normalizePathForComparison, pathsEqual } from '../utils/file.js'

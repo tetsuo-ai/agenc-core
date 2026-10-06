@@ -12,7 +12,9 @@
  *   2. **Continuation** (1257-1291) — escalate already fired (or
  *      caller opted out). Inject "Resume directly — do not apologize"
  *      meta message, bump `maxOutputTokensRecoveryCount`, re-enter
- *      Phase 1. Capped at `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3`.
+ *      Phase 1. Capped at `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3`. Native
+ *      reasoning-only retries count separately and reset after a productive
+ *      thinking-off sample; other cap retries retain their cumulative spending.
  *
  * After both exhaust, the turn surfaces the error.
  *
@@ -28,7 +30,9 @@
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import { supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
 import type { TurnState } from "../session/turn-state.js";
+import { isAttachmentMessage } from "../session/attachment-retention.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import {
   appendTerminalToolResults,
@@ -43,8 +47,21 @@ import {
 export const MAX_OUTPUT_TOKENS_ESCALATED = ESCALATED_MAX_OUTPUT_TOKENS;
 export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
+export const RETRY_TRUNCATED_TOOL_CONTENT =
+  "The output limit truncated tool-call arguments. The incomplete calls were not executed. " +
+  "Retry with complete valid JSON, not a continuation of the partial string. " +
+  "Keep arguments short and within the configured output budget. Do not claim that a child spawned without a successful spawn result.";
+
+const RETRY_REFERENCED_HANDOFF_CONTENT =
+  " For spawn_agent use message_ref to copy the current user message or a delimited excerpt without regenerating it.";
+
 const RESUME_META_CONTENT =
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
+
+export const RETRY_REASONING_ONLY_CONTENT =
+  "The previous response exhausted its output budget on reasoning without returning an answer or a tool call. " +
+  "Choose the next concrete step now: make one short, complete call to an available tool, or give a concise final answer if the task is complete. " +
+  "Do not restart the analysis. Stay within the task's scope and current tool permissions.";
 
 export type MaxOutputTokensOutcome =
   | { readonly kind: "escalate" }
@@ -196,6 +213,7 @@ function modelFacingToolResultContent(
     toolName,
     content,
     classifyUntrustedToolResult(toolName, registeredTool),
+    session.services?.runtimeOptions?.lightMode === true,
   );
 }
 
@@ -373,9 +391,31 @@ function appendTerminalExecutorClosureHistory(
 }
 
 function removeTruncatedAssistantForRetry(state: TurnState): void {
-  // Escalation retries the same request with a larger output ceiling.
-  // Do not carry the truncated assistant/tool batch into that retry.
-  state.messages = [...state.messagesForQuery];
+  // Escalation retries the same request with a larger output ceiling. Do not
+  // carry the truncated assistant/tool batch into that retry: cut the durable
+  // history back to where this sample started. The query projection is not a
+  // substitute. It carries the per-request attachments, pointer-swapped tool
+  // bodies and microcompacted history the rollout never stores; copying it
+  // here left a 1252-byte skill reminder inside the durable prefix, and the
+  // next durable compaction refused the whole turn with "caller history is
+  // not an ordered projection of canonical active history".
+  const mark = state.messagesAtSampleStart;
+  if (
+    mark !== undefined &&
+    Number.isInteger(mark) &&
+    mark >= 0 &&
+    mark <= state.messages.length
+  ) {
+    state.messages = state.messages.slice(0, mark);
+  } else {
+    // The request was not prepared through the sampling boundary (no mark):
+    // fall back to the projection minus what is context, not history.
+    state.messages = state.messagesForQuery.filter(
+      (message) =>
+        !isAttachmentMessage(message) ||
+        message.runtimeOnly?.agentInvocation !== undefined,
+    );
+  }
   state.assistantMessages = [];
   state.toolUseBlocks = [];
   state.toolResults = [];
@@ -399,29 +439,62 @@ export function runMaxOutputTokensRecovery(
 ): MaxOutputTokensOutcome {
   const { session, state } = opts;
   const overrideUnset = state.maxOutputTokensOverride === undefined;
-  const escalateAllowed = opts.escalateAllowed !== false;
+  const truncatedTools = (state.truncatedToolCallNames?.length ?? 0) > 0;
+  // There is no visible answer to continue in a reasoning-only response.
+  // Repeating the generic continuation can spend each retry reasoning again.
+  const reasoningOnly = !truncatedTools &&
+    (state.lastResponseUsage?.reasoningOutputTokens ?? 0) > 0 &&
+    state.assistantMessages.length > 0 &&
+    state.assistantMessages.every((message) =>
+      message.apiError === "max_output_tokens" &&
+      !message.text?.trim() && message.toolCalls.length === 0);
+  // Only the calling session's active human input can back message_ref.
+  // Child sessions and autonomous turns still need inline-message recovery.
+  const canReferenceMessage = (session.currentRootHumanTurn?.()?.text?.trim().length ?? 0) > 0;
+  const referencedHandoffsOnly = truncatedTools &&
+    canReferenceMessage && state.truncatedToolCallNames!.every(name => name === "spawn_agent");
+  const escalateAllowed = opts.escalateAllowed !== false && !referencedHandoffsOnly;
 
   // Step 1: escalate path — first attempt, override unset.
   if (overrideUnset && escalateAllowed) {
+    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     state.maxOutputTokensOverride =
       opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
     state.transition = { reason: "max_output_tokens_escalate" };
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);
+    if (reasoningOnly) {
+      state.messages.push({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
+    }
     return { kind: "escalate" };
   }
 
-  // Step 2: continuation path — bump counter if under the cap.
-  if (state.maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+  // Visible-output and truncated-tool retries retain their cumulative budget.
+  // Only native thinking-off recovery spending can be forgiven after a
+  // completed productive recovery sample. Mixed unproductive retries still
+  // share the same three-retry ceiling.
+  const reasoningRecovery = reasoningOnly && supportsThinkingOffRecovery(
+    session.services?.provider?.name ?? "", session.config?.model ?? "",
+  );
+  const spent = state.maxOutputTokensRecoveryCount + (state.reasoningOnlyRecoveryCount ?? 0);
+  if (spent < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+    state.reasoningOnlyRecoveryPending = reasoningOnly ? true : undefined;
     discardExecutorForMaxOutputTokens(session, state, {
       appendCompletedHistory: true,
     });
     const metaMessage: LLMMessage = {
       role: "user",
-      content: RESUME_META_CONTENT,
+      content: truncatedTools
+        ? RETRY_TRUNCATED_TOOL_CONTENT + (canReferenceMessage && state.truncatedToolCallNames!.includes("spawn_agent")
+          ? RETRY_REFERENCED_HANDOFF_CONTENT : "")
+        : reasoningOnly ? RETRY_REASONING_ONLY_CONTENT : RESUME_META_CONTENT,
     };
     state.messages.push(metaMessage);
-    state.maxOutputTokensRecoveryCount += 1;
+    if (reasoningRecovery) {
+      state.reasoningOnlyRecoveryCount = (state.reasoningOnlyRecoveryCount ?? 0) + 1;
+    } else {
+      state.maxOutputTokensRecoveryCount += 1;
+    }
     state.transition = { reason: "max_output_tokens_recovery" };
     return { kind: "continuation" };
   }

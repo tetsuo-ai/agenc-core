@@ -1,7 +1,19 @@
-import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  ProviderReasoningReplay,
+} from "../llm/types.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
-import type { ResponseItem } from "./rollout-item.js";
+import { createMemoizedSecretRedactor } from "../secrets/sanitizer.js";
+import {
+  OMITTED_BINARY_CARRIER_TEXT,
+  omitAlteredBinaryCarriers,
+  validatedBinaryCarrierBody,
+} from "../llm/content-conversion.js";
+import { serializeRolloutItem, type ResponseItem } from "./rollout-item.js";
+import { HARD_MAX_RECOVERY_LINE_BYTES } from "../state/recovery-contract.js";
 import {
   deterministicToolResultId,
   verifyToolResultIntegrity,
@@ -10,16 +22,82 @@ import {
   type ToolResultRepresentation,
 } from "./tool-result-integrity.js";
 
+import { isGrokEncryptedReplay, redactDurableSecrets } from "./provider-replay-redaction.js";
+
 type RolloutContentPart = Extract<
   ResponseItem["content"],
   ReadonlyArray<unknown>
 >[number];
+
+const DURABLE_TOOL_IMAGE_OMITTED =
+  "[Image omitted from durable history: image byte limit reached]";
+const DURABLE_TOOL_TEXT_TRUNCATED =
+  "[Tool result text truncated for durable history]";
+
+function boundDurableToolRecord(
+  item: ResponseItem,
+  seal: (body: ResponseItem) => ResponseItem,
+): ResponseItem {
+  let durable = seal(item);
+  if (item.role !== "tool") return durable;
+  const lineBytes = () => Buffer.byteLength(
+    serializeRolloutItem({ type: "response_item", payload: durable }),
+    "utf8",
+  ) - 1;
+  let bytes = lineBytes();
+  if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+
+  if (Array.isArray(item.content)) {
+    const content = [...item.content];
+    for (let index = 0; index < content.length; index += 1) {
+      const part = content[index]!;
+      const image = part.type === "image_url" &&
+        typeof part.image_url === "object" && part.image_url !== null
+        ? part.image_url as { url?: unknown }
+        : undefined;
+      if (typeof image?.url !== "string") continue;
+      content[index] = { type: "text", text: DURABLE_TOOL_IMAGE_OMITTED };
+      durable = seal({ ...item, content });
+      bytes = lineBytes();
+      if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+    }
+    for (let index = content.length - 1; index >= 0; index -= 1) {
+      const part = content[index]!;
+      if (
+        part.type !== "text" || typeof part.text !== "string" ||
+        part.text === DURABLE_TOOL_IMAGE_OMITTED
+      ) continue;
+      const excess = bytes - HARD_MAX_RECOVERY_LINE_BYTES;
+      const keep = Math.max(0, part.text.length - excess - DURABLE_TOOL_TEXT_TRUNCATED.length - 256);
+      content[index] = {
+        ...part,
+        text: `${part.text.slice(0, keep)}${DURABLE_TOOL_TEXT_TRUNCATED}`,
+      };
+      durable = seal({ ...item, content });
+      bytes = lineBytes();
+      if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+    }
+  } else {
+    const excess = bytes - HARD_MAX_RECOVERY_LINE_BYTES;
+    const keep = Math.max(0, item.content.length - excess - DURABLE_TOOL_TEXT_TRUNCATED.length - 256);
+    durable = seal({
+      ...item,
+      content: `${item.content.slice(0, keep)}${DURABLE_TOOL_TEXT_TRUNCATED}`,
+    });
+    bytes = lineBytes();
+    if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+  }
+  throw new Error("durable tool result exceeds the recovery line byte limit");
+}
 
 export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
   assertLlmAgentInvocationMessage(message);
   return {
     role: message.role,
     content: cloneContent(message.content),
+    ...(message.runtimeOnly?.responseItemId !== undefined
+      ? { id: message.runtimeOnly.responseItemId }
+      : {}),
     ...(message.toolCalls !== undefined
       ? {
           toolCalls: message.toolCalls.map((call) => ({
@@ -34,7 +112,11 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.providerReasoningContent !== undefined &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning: {
             ...(message.providerReasoningProvenance !== undefined &&
@@ -91,9 +173,23 @@ export function llmMessageToDurableResponseItem(
 export function llmMessageToCheckpointResponseItem(
   message: LLMMessage,
 ): ResponseItem {
+  return projectCheckpointMessage(message, redactSecretsInValue);
+}
+
+/** A bounded pure-string redaction cache owned by one turn, not its messages. */
+export function createCheckpointResponseItemProjector(): typeof llmMessageToCheckpointResponseItem {
+  const redact = createMemoizedSecretRedactor();
+  return (message) => projectCheckpointMessage(message, redact);
+}
+
+function projectCheckpointMessage(
+  message: LLMMessage,
+  redact: typeof redactSecretsInValue,
+): ResponseItem {
   const item = llmMessageToResponseItem(message);
+  // Always validate the current seal and current fields, including cache hits.
   const integrity = currentIntegrity(message, true);
-  return redactResponseItemForPersistence(item, integrity, "preserve");
+  return redactResponseItemForPersistence(item, integrity, "preserve", redact);
 }
 
 /**
@@ -113,7 +209,21 @@ export function llmMessageToReplacementResponseItem(
 export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
   const message: LLMMessage = {
     role: item.role,
-    content: cloneContent(item.content),
+    // A rollout written before binary carriers were protected can hold an
+    // already-damaged payload. Replaying it fails the next provider call, so a
+    // carrier that is no longer canonical is omitted on the way out. The
+    // durable record is not rewritten.
+    //
+    // A sealed tool result is left exactly as persisted: its integrity record
+    // covers these bytes, so omitting them here would leave a body the seal no
+    // longer verifies, and re-digesting would authenticate whatever the record
+    // now contains, including tampering. Such a result still replays broken and
+    // fails at the provider, which is the honest outcome for a seal we must not
+    // silently void.
+    content:
+      item.toolResultIntegrity === undefined
+        ? withoutBrokenBinaryCarriers(cloneContent(item.content))
+        : cloneContent(item.content),
     ...(item.toolCalls !== undefined
       ? {
           toolCalls: item.toolCalls.map((call) => ({
@@ -129,7 +239,11 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.providerReasoning !== undefined &&
-    item.providerReasoning.content.length > 0
+    (item.providerReasoning.content.length > 0 ||
+      (item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0 &&
+        item.providerReasoning.version === 2 && isKnownEmptyProviderReasoning(
+          item.providerReasoning.content, item.providerReasoning,
+        )))
       ? {
           providerReasoningContent: item.providerReasoning.content,
           ...(item.providerReasoning.version === 2 &&
@@ -146,11 +260,17 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
             : {}),
         }
       : {}),
-    ...(item.toolResultIntegrity !== undefined ||
+    // Checkpoint v3 hashes response-item IDs, including IDs assigned to
+    // committed compaction boundary and summary messages.
+    ...(item.id !== undefined ||
+    item.toolResultIntegrity !== undefined ||
     item.agentInvocation !== undefined ||
     item.compactionHistory !== undefined
       ? {
           runtimeOnly: {
+            ...(item.id !== undefined
+              ? { responseItemId: item.id }
+              : {}),
             ...(item.toolResultIntegrity !== undefined
               ? { toolResultIntegrity: item.toolResultIntegrity }
               : {}),
@@ -257,15 +377,58 @@ function currentIntegrity(
   throw new Error(`cannot persist tool result: ${verification.failure.reason}`);
 }
 
+/**
+ * Only canonical provider ciphertext is exempt from text redaction.
+ * True when durable persistence drops invalid Grok replay or other replay because secret
+ * redaction would alter it.
+ *
+ * The durable record then carries no replay while the caller's live message
+ * still does, so anything that projects a live message onto the canonical
+ * rollout has to apply the same drop or the two can never match. Keeping this
+ * rule in one place is the point: the writer dropping the replay while the
+ * compaction projection kept it is what made a redacted replay fail the pin
+ * check with "caller history is not an ordered projection of canonical active
+ * history".
+ *
+ * Redaction is context free (per-string patterns plus per-key names, none of
+ * which match `providerReasoning`, `content`, `provider`, `model` or
+ * `version`), so redacting the replay alone gives the same answer as reading
+ * it back off a whole-item redaction.
+ */
+export function durableRedactionDropsProviderReplay(
+  providerReasoning: ProviderReasoningReplay | undefined,
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
+): boolean {
+  if (providerReasoning === undefined) return false;
+  if (providerReasoning.version === 2 && providerReasoning.provider === "grok") {
+    if (!isGrokEncryptedReplay(providerReasoning)) return true;
+    const metadata = redact({ provider: providerReasoning.provider, model: providerReasoning.model });
+    return metadata.provider !== providerReasoning.provider || metadata.model !== providerReasoning.model;
+  }
+  const redacted = redactDurableSecrets({
+    role: "assistant",
+    providerReasoning,
+  }, "response", redact).providerReasoning;
+  return (
+    redacted?.content !== providerReasoning.content ||
+    redacted.version !== providerReasoning.version ||
+    (providerReasoning.version === 2 &&
+      (redacted.version !== 2 ||
+        redacted.provider !== providerReasoning.provider ||
+        redacted.model !== providerReasoning.model))
+  );
+}
+
 function redactResponseItemForPersistence(
   item: ResponseItem,
   integrity: ToolResultIntegrity | undefined,
   bodyMode: "authenticate" | "preserve",
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
 ): ResponseItem {
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
-  const redacted =
+  let redacted =
     unsealedItem.agentInvocation === undefined
-      ? (redactSecretsInValue(unsealedItem) as ResponseItem)
+      ? (redactDurableSecrets(unsealedItem, "response", redact) as ResponseItem)
       : (() => {
           const {
             content,
@@ -273,7 +436,7 @@ function redactResponseItemForPersistence(
             ...untrustedUnauthenticatedFields
           } = unsealedItem;
           return {
-            ...(redactSecretsInValue(untrustedUnauthenticatedFields) as Omit<
+            ...(redactDurableSecrets(untrustedUnauthenticatedFields, "response", redact) as Omit<
               ResponseItem,
               "content" | "agentInvocation"
             >),
@@ -281,55 +444,110 @@ function redactResponseItemForPersistence(
             agentInvocation,
           } as ResponseItem;
         })();
-  if (
-    item.providerReasoning !== undefined &&
-    (redacted.providerReasoning?.content !== item.providerReasoning.content ||
-      redacted.providerReasoning.version !== item.providerReasoning.version ||
-      (item.providerReasoning.version === 2 &&
-        (redacted.providerReasoning.version !== 2 ||
-          redacted.providerReasoning.provider !==
-            item.providerReasoning.provider ||
-          redacted.providerReasoning.model !== item.providerReasoning.model)))
-  ) {
-    throw new Error(
-      "cannot persist provider reasoning replay because secret redaction would change its opaque content",
-    );
+  if (durableRedactionDropsProviderReplay(item.providerReasoning, redact)) {
+    // The replay is opaque provider state: redacting it would corrupt what
+    // the provider gets back, and persisting it unredacted would write the
+    // matched secret into the rollout. Neither is acceptable, so the replay
+    // is dropped from the durable record and the message itself is kept.
+    // The cost is one lost replay on resume. Failing the turn here cost the
+    // whole task: DeepSeek V4 Pro reasoning that quoted a generated password
+    // or a long token-shaped string ended every such run with
+    // turn_execution_failed.
+    const { providerReasoning: _droppedReplay, ...withoutReplay } = redacted;
+    redacted = withoutReplay as ResponseItem;
   }
+  redacted = withoutAlteredBinaryCarriers(item, redacted, redact);
   assertResponseAgentInvocationItem(redacted);
-  if (integrity === undefined) return redacted;
-  if (redacted.role !== "tool" || redacted.toolCallId === undefined) {
-    throw new Error("redaction removed a durable tool-result identity");
-  }
+  return boundDurableToolRecord(redacted, (body) => {
+    if (integrity === undefined) return body;
+    if (body.role !== "tool" || body.toolCallId === undefined) {
+      throw new Error("redaction removed a durable tool-result identity");
+    }
 
-  let durableIntegrity = rebindRedactedIdentity(integrity, redacted.toolCallId);
-  if (bodyMode === "authenticate") {
-    const redactedBody = verifyToolResultIntegrity({
-      integrity: durableIntegrity,
-      toolCallId: redacted.toolCallId,
-      content: redacted.content,
-    });
-    if (redactedBody.status !== "valid") {
-      if (
-        redactedBody.status !== "invalid" ||
-        (redactedBody.failure.code !== "persisted_body_digest_mismatch" &&
-          redactedBody.failure.code !== "persisted_body_length_mismatch")
-      ) {
-        throw new Error(
-          `cannot persist redacted tool result: ${redactedBody.failure.reason}`,
+    let durableIntegrity = rebindRedactedIdentity(integrity, body.toolCallId, redact);
+    if (bodyMode === "authenticate") {
+      const redactedBody = verifyToolResultIntegrity({
+        integrity: durableIntegrity,
+        toolCallId: body.toolCallId,
+        content: body.content,
+      });
+      if (redactedBody.status !== "valid") {
+        if (
+          redactedBody.status !== "invalid" ||
+          (redactedBody.failure.code !== "persisted_body_digest_mismatch" &&
+            redactedBody.failure.code !== "persisted_body_length_mismatch")
+        ) {
+          throw new Error(
+            `cannot persist redacted tool result: ${redactedBody.failure.reason}`,
+          );
+        }
+        const representation =
+          durableIntegrity.persisted.representation === "original"
+            ? "redacted"
+            : durableIntegrity.persisted.representation;
+        durableIntegrity = withPersistedToolResultRepresentation(
+          durableIntegrity,
+          representation,
+          body.content,
         );
       }
-      const representation =
-        durableIntegrity.persisted.representation === "original"
-          ? "redacted"
-          : durableIntegrity.persisted.representation;
-      durableIntegrity = withPersistedToolResultRepresentation(
-        durableIntegrity,
-        representation,
-        redacted.content,
-      );
     }
-  }
-  return { ...redacted, toolResultIntegrity: durableIntegrity };
+    return { ...body, toolResultIntegrity: durableIntegrity };
+  });
+}
+
+/**
+ * Secret redaction is text-oriented, and a long base64 payload can contain a
+ * run that matches a credential heuristic by chance: a Solana secret key is an
+ * unbroken 80-90 character base58 run, and base58 is a subset of the base64
+ * alphabet, so a large enough inline image will eventually contain one. Marking
+ * it rewrites bytes inside the payload, and the provider then rejects the whole
+ * request with "Invalid base64 data", losing the turn.
+ *
+ * Persisting the original is not acceptable either: the match may be a real
+ * secret. So a carrier whose validated binary redaction would alter is dropped
+ * and replaced with a text omission, exactly as an altered opaque replay is
+ * dropped. Only carriers that are canonical base64 to begin with are treated
+ * as binary, so plaintext wearing a `data:image/png;base64,` label stays
+ * redacted as text rather than passing through.
+ */
+/** Drop carriers already damaged on disk, so historical rollouts still replay. */
+function withoutBrokenBinaryCarriers(
+  content: LLMMessage["content"],
+): LLMMessage["content"] {
+  if (!Array.isArray(content)) return content;
+  const kept = content.map((part) => {
+    const record = part as unknown as Record<string, unknown>;
+    // Only inline payloads can be damaged by text redaction. A remote https
+    // image carries no bytes here, so it must survive untouched.
+    const image = record.image_url as Record<string, unknown> | undefined;
+    const source = record.source as Record<string, unknown> | undefined;
+    const isInline =
+      (record.type === "image_url" &&
+        typeof image?.url === "string" &&
+        image.url.startsWith("data:")) ||
+      (record.type === "document" &&
+        source?.type === "base64" &&
+        typeof source.data === "string");
+    if (!isInline) return part;
+    return validatedBinaryCarrierBody(part) === null
+      ? ({ type: "text", text: OMITTED_BINARY_CARRIER_TEXT } as typeof part)
+      : part;
+  });
+  return kept as LLMMessage["content"];
+}
+
+function withoutAlteredBinaryCarriers(
+  original: ResponseItem,
+  redacted: ResponseItem,
+  redact: typeof redactSecretsInValue,
+): ResponseItem {
+  const { content, omitted } = omitAlteredBinaryCarriers(
+    original.content,
+    redacted.content,
+    (body) => redact(body) !== body,
+  );
+  return omitted ? ({ ...redacted, content } as ResponseItem) : redacted;
 }
 
 function assertResponseAgentInvocationItem(item: ResponseItem): void {
@@ -344,8 +562,9 @@ function assertResponseAgentInvocationItem(item: ResponseItem): void {
 function rebindRedactedIdentity(
   integrity: ToolResultIntegrity,
   toolCallId: string,
+  redact: typeof redactSecretsInValue,
 ): ToolResultIntegrity {
-  const runId = redactSecretsInValue(integrity.runId);
+  const runId = redact(integrity.runId);
   return {
     ...integrity,
     runId,

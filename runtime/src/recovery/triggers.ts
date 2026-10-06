@@ -6,8 +6,10 @@
  * error + streaming fallback), the ladder evaluates in a fixed
  * documented order:
  *
- *   1. isWithheld413         → prompt-too-long (AgenC collapse / reactive recovery)
- *   2. isWithheldMedia       → media size error (reactive recovery skips collapse)
+ *   1. isWithheld413         → prompt-too-long, withheld or thrown as a typed
+ *                              context overflow (AgenC collapse / reactive recovery)
+ *   2. isWithheldMedia       → media size error or a provider-refused image
+ *                              (leave the images out and sample again)
  *   3. isWithheldMaxOutputTokens → max-output-tokens escalate/continuation
  *   4. stopHookBlocking      → stop-hook inject + re-enter
  *   5. streamingFallbackOccured → streaming fallback tombstone + recreate
@@ -28,6 +30,7 @@ import type {
 } from "../session/turn-state.js";
 import {
   isFallbackTriggeredError,
+  isRecoverableContextOverflowStreamError,
   isStopHookBlocking,
   isStreamingFallbackOccured,
   isWithheld413Message,
@@ -35,6 +38,7 @@ import {
   isMediaTooLargeMessage,
   type FallbackTriggeredError,
 } from "./api-errors.js";
+import { isRecoverableImageRejection } from "./image-rejection.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Trigger context + outcome
@@ -68,7 +72,7 @@ export interface RecoveryTrigger {
 export interface TriggerActions {
   /** PTL gate → AgenC collapse vs reactive recovery routing. */
   on413(ctx: TriggerContext): Promise<TriggerOutcome>;
-  /** Media-size gate → direct reactive recovery. */
+  /** Media-size gate or refused image → leave images out and re-enter. */
   onMedia(ctx: TriggerContext): Promise<TriggerOutcome>;
   /** Max-output-tokens → escalate or continuation. */
   onMaxOutputTokens(ctx: TriggerContext): Promise<TriggerOutcome>;
@@ -93,12 +97,18 @@ export function buildDefaultTriggerOrder(
   return [
     {
       name: "isWithheld413",
-      match: (ctx) => !!ctx.lastMessage && isWithheld413Message(ctx.lastMessage),
+      match: (ctx) =>
+        (!!ctx.lastMessage && isWithheld413Message(ctx.lastMessage)) ||
+        isRecoverableContextOverflowStreamError(ctx.state, ctx.streamError),
       apply: (ctx) => actions.on413(ctx),
     },
     {
       name: "isWithheldMedia",
-      match: (ctx) => !!ctx.lastMessage && isMediaTooLargeMessage(ctx.lastMessage),
+      // A withheld media-size message, or a provider that refused an image
+      // in the request: both are cured by leaving images out, not by retrying.
+      match: (ctx) =>
+        (!!ctx.lastMessage && isMediaTooLargeMessage(ctx.lastMessage)) ||
+        isRecoverableImageRejection(ctx.state, ctx.streamError),
       apply: (ctx) => actions.onMedia(ctx),
     },
     {

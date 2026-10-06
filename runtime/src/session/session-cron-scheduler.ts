@@ -6,7 +6,7 @@ import {
   removeSessionCronTasksForConversation,
 } from "../bootstrap/state.js";
 import { CronScheduler } from "../utils/cronScheduler.js";
-import { listAllCronTasks, mutateCronFile, type CronTask } from "../utils/cronTasks.js";
+import { listAllCronTasks, listSessionCronTasks, mutateCronFile, type CronTask } from "../utils/cronTasks.js";
 import { emitWarning } from "./event-log.js";
 import type { Session } from "./session.js";
 
@@ -15,6 +15,7 @@ type SessionCronOwner = {
   readonly workspaceRoot: string;
   closed: boolean;
   ready: boolean;
+  sessionOnly: boolean;
 };
 
 const sessionOwners = new WeakMap<Session, SessionCronOwner>();
@@ -36,8 +37,8 @@ async function claimScheduledOccurrence(
   workspaceRoot: string,
   assertActive: () => void,
 ): Promise<boolean> {
+  assertActive();
   if (task.durable === false) {
-    assertActive();
     const current = getSessionCronTasks().find((candidate) =>
       candidate.queueOwner.conversationId === conversationId &&
       matchesScheduledOccurrence(candidate, task),
@@ -60,6 +61,7 @@ async function claimScheduledOccurrence(
 export async function startSessionCronScheduler(
   session: Session,
   workspaceRoot: string,
+  options: { readonly sessionOnly?: boolean } = {},
 ): Promise<CronScheduler> {
   session.abortController.signal.throwIfAborted();
   const startupSignal = session.services.mcpStartupCancellationToken.signal;
@@ -74,16 +76,31 @@ export async function startSessionCronScheduler(
     workspaceOwners.set(canonicalRoot, owners);
     let currentOwner: SessionCronOwner;
     const scheduler = new CronScheduler({
+      onLoadError: (error) => {
+        if (currentOwner.closed) return;
+        emitWarning(session.eventLog, session.nextInternalSubId(),
+          "cron_storage_unavailable",
+          `Durable scheduled tasks unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      },
       loadTasks: async (directory, conversationId) => {
-        const tasks = await listAllCronTasks(directory, conversationId);
+        // Only Linux currently admits descriptor-confined durable writes.
+        // A read-only durable record must never reach onAccepted and stop
+        // this session's independent in-memory scheduler.
+        const tasks = process.platform === "linux"
+          ? await listAllCronTasks(directory, conversationId)
+          : listSessionCronTasks(conversationId);
         if (currentOwner.closed) return [];
-        const ownsDurableTasks = [...owners].find((candidate) => candidate.ready) === currentOwner;
+        const ownsDurableTasks = process.platform === "linux" &&
+          [...owners].find((candidate) => candidate.ready && !candidate.sessionOnly) === currentOwner;
         return tasks.filter((task) => task.durable === false || ownsDurableTasks);
       },
       enqueue: async (command, task, firedAt) => {
         let accepted = false;
         const assertActive = (): void => {
           if (currentOwner.closed) throw new Error("Cron scheduler session is closed");
+          if (currentOwner.sessionOnly && task.durable !== false) {
+            throw new ScheduledTaskCancelled();
+          }
           session.abortController.signal.throwIfAborted();
           startupSignal?.throwIfAborted();
         };
@@ -101,7 +118,9 @@ export async function startSessionCronScheduler(
           });
         } catch (error) {
           if (error instanceof ScheduledTaskCancelled) return "cancelled" as const;
-          scheduler.stop();
+          // A durable claim can fail independently of session jobs. Leave
+          // those jobs armed even if durable storage becomes unavailable.
+          if (task.durable === false) scheduler.stop();
           if (accepted || !currentOwner.closed) {
             emitWarning(
               session.eventLog,
@@ -110,12 +129,12 @@ export async function startSessionCronScheduler(
               `Scheduled turn failed ${accepted ? "after acceptance; the attempt will not be replayed" : "before acceptance; the job is retained"}: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
-          if (!accepted) throw error;
+          if (!accepted && task.durable === false) throw error;
         }
-        return "accepted" as const;
+        return accepted ? "accepted" as const : "cancelled" as const;
       },
     });
-    currentOwner = { scheduler, workspaceRoot: canonicalRoot, closed: false, ready: false };
+    currentOwner = { scheduler, workspaceRoot: canonicalRoot, closed: false, ready: false, sessionOnly: options.sessionOnly === true };
     owner = currentOwner;
     owners.add(owner);
     sessionOwners.set(session, owner);
@@ -133,7 +152,9 @@ export async function startSessionCronScheduler(
         owners.delete(currentOwner);
         sessionOwners.delete(session);
         if (owners.size === 0) workspaceOwners.delete(canonicalRoot);
-        await Promise.all([...owners].map((remaining) => remaining.scheduler.reschedule()));
+        if (!currentOwner.sessionOnly) {
+          await Promise.all([...owners].map((remaining) => remaining.scheduler.reschedule()));
+        }
       });
       return closePromise;
     };
@@ -151,17 +172,24 @@ export async function startSessionCronScheduler(
       scheduler.start({
         queueOwner: { kind: "session", conversationId: session.conversationId },
         workspaceRoot: canonicalRoot,
+        sessionOnly: currentOwner.sessionOnly,
       });
     });
   }
+  if (options.sessionOnly !== undefined) owner.sessionOnly = options.sessionOnly;
   if (owner.ready) {
     owner.scheduler.start({
       queueOwner: { kind: "session", conversationId: session.conversationId },
       workspaceRoot: canonicalRoot,
+      sessionOnly: owner.sessionOnly,
     });
   }
-  await Promise.all(
-    [...(workspaceOwners.get(canonicalRoot) ?? [])].map((current) => current.scheduler.reschedule()),
-  );
+  if (owner.sessionOnly) {
+    await owner.scheduler.reschedule();
+  } else {
+    await Promise.all(
+      [...(workspaceOwners.get(canonicalRoot) ?? [])].map((current) => current.scheduler.reschedule()),
+    );
+  }
   return owner.scheduler;
 }

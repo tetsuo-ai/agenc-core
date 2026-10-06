@@ -20,11 +20,8 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  createStatusDashboardSnapshot,
-  openStatusDashboard,
-} from "./status-menu.js";
 import { readSessionSelection } from "../session/provider-model-selection.js";
+import { createStatusDashboardSnapshot } from "./status-menu-snapshot.js";
 
 export interface StatusLine {
   key: string;
@@ -61,14 +58,16 @@ const runGit: GitRunner = (args, cwd) =>
       const child = spawn("git", [...args], { cwd });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", data => {
-        stdout += data.toString("utf8");
-      });
-      child.stderr.on("data", data => {
-        stderr += data.toString("utf8");
-      });
+      // A failed spawn reports on the next tick, and EMFILE or ENFILE also
+      // leave stdout and stderr undefined: listen before touching them.
       child.on("error", error => {
         resolve({ stdout, stderr: stderr + String(error), code: -1 });
+      });
+      child.stdout?.on("data", data => {
+        stdout += data.toString("utf8");
+      });
+      child.stderr?.on("data", data => {
+        stderr += data.toString("utf8");
       });
       child.on("close", code => {
         resolve({ stdout, stderr, code });
@@ -171,7 +170,7 @@ export function collectStatus(
   } else {
     lines.push({
       key: "Session ID",
-      value: "(idle — assigned when you send your first message)",
+      value: "(idle; assigned when you send your first message)",
     });
   }
   lines.push({ key: "CWD", value: cwd });
@@ -323,7 +322,10 @@ export const statusCommand: SlashCommand = {
         git: await collectGitStatus(ctx.cwd),
         appState: ctx.appState?.getAppState?.(),
       });
-      if (openStatusDashboard(ctx, dashboard)) return { kind: "skip" };
+      if (
+        typeof ctx.appState?.setToolJSX === "function" &&
+        (await import("./status-menu.js")).openStatusDashboard(ctx, dashboard)
+      ) return { kind: "skip" };
       return { kind: "text", text: formatStatus(lines) };
     }),
 };

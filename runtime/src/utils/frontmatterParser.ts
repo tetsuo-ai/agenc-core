@@ -81,8 +81,10 @@ const YAML_SPECIAL_CHARS = /[{}[\]*&#!|>%@`]|: /
 /**
  * Pre-processes frontmatter text to quote values that contain special YAML characters.
  * This allows glob patterns like **\/*.{ts,tsx} to be parsed correctly.
+ * Exported so the local skill loader gives SKILL.md files the same second
+ * chance this parser gives commands and MCP skills.
  */
-function quoteProblematicValues(frontmatterText: string): string {
+export function quoteProblematicValues(frontmatterText: string): string {
   const lines = frontmatterText.split('\n')
   const result: string[] = []
 
@@ -327,10 +329,11 @@ export function coerceDescriptionToString(
 
 /**
  * Parse a boolean frontmatter value.
- * Only returns true for literal true or "true" string.
+ * Accept a true value even if recovery preserved a trailing YAML comment.
  */
 export function parseBooleanFrontmatter(value: unknown): boolean {
-  return value === true || value === 'true'
+  return value === true ||
+    (typeof value === 'string' && /^true(?:[ \t]+#.*)?$/iu.test(value.trim()))
 }
 
 /**

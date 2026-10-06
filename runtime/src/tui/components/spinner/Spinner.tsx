@@ -180,7 +180,7 @@ function SpinnerWithVerbInner({
   const [randomVerb] = useState(() => sample(spinnerVerbs));
 
   // Honest phase label derived from the real streaming mode. Agrees with the
-  // workbench title-bar indicator (both call verbForMode), so the title bar and
+  // header indicator (both call verbForMode), so the header and
   // the status line never disagree about what the model is doing.
   const phaseVerb = titleVerbForMode(mode);
 
@@ -189,7 +189,7 @@ function SpinnerWithVerbInner({
   // honest phase label rather than a random flavor verb.
   const leaderVerb = overrideMessage ?? currentTask?.activeForm ?? currentTask?.subject ?? phaseVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
-  const message = effectiveVerb + getSpinnerEllipsis();
+  const message = effectiveVerb ?? phaseVerb;
 
   // Track CLI activity when spinner is active
   useEffect(() => {
@@ -233,7 +233,7 @@ function SpinnerWithVerbInner({
   // the ref. The tree is only shown when teammates are running; teammate
   // progress updates to s.tasks trigger re-renders that keep this fresh.
   const leaderTokenCount = Math.round(responseLengthRef.current / 4);
-  const defaultColor: keyof Theme = 'suggestion';
+  const defaultColor: keyof Theme = 'accent';
   const defaultShimmerColor: keyof Theme = 'suggestion';
   const messageColor = overrideColor ?? defaultColor;
   const shimmerColor = overrideShimmerColor ?? defaultShimmerColor;

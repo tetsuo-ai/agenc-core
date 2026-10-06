@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../tui/remoteAuthSessionContext.fixture.js";
 
 const settings = vi.hoisted(() => ({
-  update: vi.fn(),
+  update: vi.fn(async () => ({ error: null })),
 }));
 
 vi.mock("../../src/utils/settings/settings.js", () => ({
@@ -12,6 +12,16 @@ vi.mock("../../src/utils/settings/settings.js", () => ({
 }));
 
 import { effortCommand } from "../../src/commands/effort.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../../src/contracts/run-contracts.js";
+import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
+import { listRegisteredModelCatalogEntries } from "../../src/llm/registry/model-catalog.js";
+import { getEffortNotificationText } from "../../src/tui/components/EffortIndicator.js";
+import {
+  getAvailableEffortLevelsForContext,
+  getNativeDefaultReasoningEffortForContext,
+  getSessionEffortLabelForContext,
+  modelSupportsEffortForContext,
+} from "../../src/utils/effort.js";
 
 function commandContext(
   model: string,
@@ -26,10 +36,12 @@ function commandContext(
       readonly provider: string;
       readonly model: string;
     };
+    readonly effortValue?: string;
   } = {},
 ) {
   const provider = options.provider ?? "grok";
-  let appState: Record<string, unknown> = {};
+  let appState: Record<string, unknown> =
+    options.effortValue === undefined ? {} : { effortValue: options.effortValue };
   const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
     appState = updater(appState) as Record<string, unknown>;
   });
@@ -66,15 +78,15 @@ function commandContext(
 }
 
 describe("/effort Gemini catalog levels", () => {
-  beforeEach(() => settings.update.mockReset());
+  beforeEach(() => settings.update.mockClear());
 
   test("displays the exact Pro levels and provider default", async () => {
     const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
     const result = await effortCommand.execute(context);
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("high effort (model default)");
-      expect(result.text).toContain("low/medium/high");
+      expect(result.text).toContain("high effort");
+      expect(result.text).toContain("low, medium, high");
     }
   });
 
@@ -113,7 +125,7 @@ describe("/effort Gemini catalog levels", () => {
 
 describe("/effort Grok catalog levels", () => {
   beforeEach(() => {
-    settings.update.mockReset();
+    settings.update.mockClear();
   });
 
   test("sets grok-4.6 xhigh through the canonical reasoning_effort setting", async () => {
@@ -123,7 +135,7 @@ describe("/effort Grok catalog levels", () => {
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("xhigh effort set for grok-4.6");
+      expect(result.text).toContain("xhigh effort for grok-4.6");
     }
     expect(settings.update).toHaveBeenCalledWith("userSettings", {
       reasoning_effort: "xhigh",
@@ -174,17 +186,216 @@ describe("/effort Grok catalog levels", () => {
   test("validates effort against the complete pair staged for the next turn", async () => {
     const { context } = commandContext("grok-4.5", "xhigh", {
       provider: "grok",
-      pendingSelection: { provider: "openai", model: "gpt-5" },
+      pendingSelection: { provider: "openai", model: "gpt-5.2" },
     });
 
     const result = await effortCommand.execute(context);
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("xhigh effort set for gpt-5");
+      expect(result.text).toContain("xhigh effort for gpt-5.2");
     }
     expect(settings.update).toHaveBeenCalledWith("userSettings", {
       reasoning_effort: "xhigh",
     });
+  });
+});
+
+describe("/effort picker and live session", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("opens a picker of the current model's levels", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "", { provider: "gemini" });
+    const setToolJSX = vi.fn();
+    (context as { appState: Record<string, unknown> }).appState.setToolJSX = setToolJSX;
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "skip" });
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({ isLocalJSXCommand: true }),
+    );
+  });
+
+  test("applies the chosen level to the running session", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "high", { provider: "gemini" });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "text" });
+    expect(applyDaemonConfig).toHaveBeenCalledWith({ reasoningEffort: "high" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: "high" });
+  });
+
+  test("keeps the saved choice when the first conversation has not started", async () => {
+    const { context } = commandContext("gemini-3.1-pro-preview", "low", { provider: "gemini" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => ({
+      sessionId: "pending",
+      applied: false,
+      summary: "No live session exists; the first conversation will use the current config.",
+    }));
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "text" });
+  });
+
+  test("reports a save failure instead of claiming success", async () => {
+    settings.update.mockResolvedValueOnce({ error: new Error("read-only settings") });
+    const { context } = commandContext("gemini-3.1-pro-preview", "low", { provider: "gemini" });
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toMatchObject({ kind: "error" });
+    if (result.kind === "error") expect(result.message).toContain("read-only settings");
+  });
+});
+
+describe("/effort default with a native none default", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("sends the native none to the running session and says effort is off", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
+      provider: "mistral",
+    });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    // Never a guessed tier: the daemon only accepts none or high here.
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: "none" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: undefined });
+    expect(getAppState().effortValue).toBeUndefined();
+    expect(result).toEqual({
+      kind: "text",
+      text: "Effort follows the mistral-medium-latest default (off).",
+    });
+  });
+
+  test("a busy session that refuses the reset is reported, not claimed", async () => {
+    const { context } = commandContext("mistral-medium-latest", "default", { provider: "mistral" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => {
+      throw new Error("Reasoning effort and response detail can only change between turns");
+    });
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toEqual({
+      kind: "error",
+      message:
+        "Saved for new sessions. This session did not take it: Reasoning effort and response detail can only change between turns",
+    });
+  });
+
+  test("a session that answers not applied is reported too", async () => {
+    const { context } = commandContext("mistral-medium-latest", "high", { provider: "mistral" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => ({
+      sessionId: "s1",
+      applied: false,
+      summary: "a turn is running",
+    }));
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toEqual({
+      kind: "error",
+      message: "Saved for new sessions. This session did not take it: a turn is running",
+    });
+  });
+});
+
+describe("/effort default sends only a truthful default", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  const authContext = (provider: string) => ({ ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider });
+
+  test("a registered model without a native default gets nothing and keeps its effort", async () => {
+    const { context, getAppState } = commandContext("moonshotai/kimi-k3", "default", {
+      provider: "nvidia-nim",
+      effortValue: "low",
+    });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    // A guessed medium is not one of this model's levels; the daemon refused it.
+    expect(applyDaemonConfig).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      kind: "text",
+      text: "Saved: new sessions use the moonshotai/kimi-k3 default. This session keeps its current effort.",
+    });
+    expect(getAppState().effortValue).toBe("low");
+  });
+
+  test("a refused reset leaves the session's effort in app state", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
+      provider: "mistral",
+      effortValue: "high",
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => {
+      throw new Error("Reasoning effort and response detail can only change between turns");
+    });
+
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });
+    // The status line reads app state, and the session still runs at high.
+    expect(getAppState().effortValue).toBe("high");
+    expect(getSessionEffortLabelForContext("mistral-medium-latest", "high", authContext("mistral")))
+      .toBe("high effort");
+  });
+
+  test("every surface reads effort off at a native none default", async () => {
+    const mistral = authContext("mistral");
+    expect(getEffortNotificationText(undefined, "mistral-medium-latest", mistral)).toBe(
+      "effort off · /effort",
+    );
+    expect(getSessionEffortLabelForContext("mistral-medium-latest", undefined, mistral)).toBe(
+      "effort off",
+    );
+    const { context } = commandContext("mistral-medium-latest", "", { provider: "mistral" });
+    const result = await effortCommand.execute(context);
+    expect(result.kind === "text" ? result.text.split("\n")[0] : result).toBe("effort off");
+    // No guessed tier where no truthful default is known.
+    expect(getSessionEffortLabelForContext("moonshotai/kimi-k3", undefined, authContext("nvidia-nim")))
+      .toBeNull();
+    expect(getSessionEffortLabelForContext("gemini-3.5-flash", undefined, authContext("gemini")))
+      .toBe("medium effort");
+  });
+
+  test("across the catalog, every value /effort sends is the native default or a level the daemon accepts", async () => {
+    const accepts = (provider: string, model: string, value: string) =>
+      (RUN_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value) &&
+      resolveReasoningEffort({ provider, model }).levels.includes(value);
+    const problems: string[] = [];
+    let checked = 0;
+    for (const { provider, model } of listRegisteredModelCatalogEntries()) {
+      const auth = authContext(provider);
+      if (!modelSupportsEffortForContext(model, auth)) continue;
+      checked += 1;
+      const send = async (argsRaw: string) => {
+        const { context } = commandContext(model, argsRaw, { provider, effortValue: "high" });
+        const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+        (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+        await effortCommand.execute(context);
+        return (applyDaemonConfig.mock.calls[0]?.[0] as { reasoningEffort?: string } | undefined)
+          ?.reasoningEffort;
+      };
+      const reset = await send("default");
+      const native = getNativeDefaultReasoningEffortForContext(model, auth);
+      if (reset !== undefined && (reset !== native || !accepts(provider, model, reset))) {
+        problems.push(`${provider}/${model} default sent ${reset}`);
+      }
+      for (const level of getAvailableEffortLevelsForContext(model, auth)) {
+        const sent = await send(level);
+        if (sent !== undefined && !accepts(provider, model, sent)) {
+          problems.push(`${provider}/${model} ${level} sent ${sent}`);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+    expect(problems).toEqual([]);
   });
 });

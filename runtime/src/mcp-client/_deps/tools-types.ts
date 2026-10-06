@@ -9,12 +9,14 @@
 
 export type JSONSchema = Record<string, unknown>;
 import type { ToolEffectDispositionEvidence } from "../../contracts/run-contracts.js";
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
 
 export interface ToolResult {
   content: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
   codeModeResult?: unknown;
+  contentItems?: readonly FunctionCallOutputContentItem[];
   effectDisposition?: ToolEffectDispositionEvidence;
 }
 

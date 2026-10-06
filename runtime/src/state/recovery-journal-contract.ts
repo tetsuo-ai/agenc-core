@@ -30,6 +30,8 @@ import {
 } from "../services/compact/transaction-types.js";
 import {
   canonicalizeJson,
+  canonicalizeSourceJson,
+  digestSourceWithDomain,
   digestWithDomain,
 } from "../services/compact/summary-v1.js";
 import {
@@ -368,6 +370,7 @@ export class StrictCanonicalJournalValidator {
       if (!isPlainRecord(sourceHistoryManifest)) continue;
       const sourceHistory = attempt.payloadChunks?.get("source_history");
       if (sourceHistory !== undefined) continue;
+      if (attempt.terminal === "failed") continue;
       if (attempt.terminal !== "committed" || attempt.release !== true) {
         this.#fail(
           "identity_conflict",
@@ -541,7 +544,7 @@ export class StrictCanonicalJournalValidator {
     if (type === "session_meta")
       this.#validateSessionMeta(value.payload, facts);
     if (type === "event_msg") this.#validateEvent(value.payload, facts);
-    const item = parseRolloutLine(JSON.stringify(value));
+    const item = normalizeCanonicalRolloutValue(value);
     if (item === null || item.type === "unknown") {
       this.#fail(
         "schema_invalid",
@@ -611,11 +614,19 @@ export class StrictCanonicalJournalValidator {
         current.lastPayloadKind === undefined
           ? undefined
           : chunks.get(current.lastPayloadKind);
+      // A bundle's chunks must be written back to back: switching kind while
+      // the previous kind is still incomplete, or resuming a kind after
+      // another kind was written, is a break. A kind's own next chunk is not
+      // (it is checked against the chain below). The earlier form failed
+      // every second chunk of the same kind, so any bundle over one canonical
+      // line (4 MiB; a screenshot-heavy source history) could never commit:
+      // "durable compaction commit failed" with this as the hidden cause
+      // (Terminal-Bench `layout-config-recreation2__RtxCUzj`, #2499).
+      const switchedKind =
+        current.lastPayloadKind !== undefined && current.lastPayloadKind !== kind;
       if (
-        previousKindState?.complete === false ||
-        (current.lastPayloadKind !== undefined &&
-          current.lastPayloadKind !== kind &&
-          existing !== undefined)
+        switchedKind &&
+        (previousKindState?.complete === false || existing !== undefined)
       ) {
         this.#fail(
           "identity_conflict",
@@ -721,8 +732,8 @@ export class StrictCanonicalJournalValidator {
         const sourceAuthorityMatches = persistedManifestCommit
           ? canonicalizeJson(source.active_history_refs_manifest) ===
             canonicalizeJson(intentSource.active_history_refs_manifest)
-          : canonicalizeJson(source.active_history_refs) ===
-            canonicalizeJson(intentSource.active_history_refs);
+          : canonicalizeSourceJson(source.active_history_refs) ===
+            canonicalizeSourceJson(intentSource.active_history_refs);
         if (!sourceAuthorityMatches) {
           this.#fail(
             "identity_conflict",
@@ -797,7 +808,7 @@ export class StrictCanonicalJournalValidator {
         item.type === "compaction_failed" ? "failed" : "committed";
       if (item.type === "compaction_committed") {
         if (payload.final_summary_manifest === undefined) {
-          current.commitSha256 = digestWithDomain(
+          current.commitSha256 = digestSourceWithDomain(
             COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
             payload,
           );
@@ -1418,7 +1429,7 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
-    this.#assertNoUnsettledEffects(
+    this.#assertNoDanglingEffectIntents(
       payload.runId as string,
       "run suspend follows an unsettled effect",
       facts,
@@ -1799,21 +1810,9 @@ export class StrictCanonicalJournalValidator {
     if (unknown?.size === 0) this.#unknownOutcomeEffectSteps.delete(runId);
   }
 
-  #assertNoUnsettledEffects(
-    runId: string,
-    message: string,
-    facts: RecoveryIntegrityFacts,
-  ): void {
-    if ((this.#unsettledEffectSteps.get(runId)?.size ?? 0) === 0) return;
-    this.#fail("terminal_binding_mismatch", message, facts);
-  }
-
   /**
-   * Reopen-time variant of {@link #assertNoUnsettledEffects} (#1750/#1751):
-   * a step whose settlement is durably recorded as `unknown_outcome` is
-   * review-pending, not evidence-dangling — the review happens inside the
-   * reopened session while the mutation gate stays armed. Only an intent
-   * with no settlement record at all still refuses the reopen.
+   * A durably unknown outcome remains review-pending inside the reopened
+   * session. Only an intent with no settlement record refuses the reopen.
    */
   #assertNoDanglingEffectIntents(
     runId: string,
@@ -1871,6 +1870,17 @@ export function validateCanonicalJournalText(
   options: StrictCanonicalJournalOptions = {},
 ): StrictCanonicalJournal {
   return validateCanonicalJournalBytes(Buffer.from(text, "utf8"), options);
+}
+
+/**
+ * The item the strict validator records for a JSON value it accepted. A
+ * caller that reuses an earlier validation of the same bytes derives its
+ * items through this same normalization.
+ */
+export function normalizeCanonicalRolloutValue(
+  value: unknown,
+): RolloutItem | null {
+  return parseRolloutLine(JSON.stringify(value));
 }
 
 function decodeCanonicalUtf8(

@@ -96,6 +96,25 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly ownerId?: string;
 }
 
+/**
+ * A command started with `detach: true`: a service the model wants to keep
+ * running after the command returns and after the session ends. The manager
+ * starts it in its own session with stdout/stderr going to a log file, waits
+ * at most `yield_time_ms` for an early exit, and then neither tracks nor
+ * stops it.
+ */
+export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
+  readonly callId?: string;
+  readonly cmd: string;
+  readonly workdir?: string;
+  readonly shell?: string;
+  readonly login?: boolean;
+  /** How long to wait for an early exit before returning with the process still running. */
+  readonly yield_time_ms?: number;
+  readonly max_output_tokens?: number;
+  readonly observer?: UnifiedExecObserver;
+}
+
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   readonly callId?: string;
   readonly session_id: number;
@@ -112,6 +131,66 @@ export interface TerminateProcessRequest {
   readonly ownerId?: string;
 }
 
+/**
+ * The model-facing, owner-scoped view of one yielded session (#2477). A
+ * recovering agent enumerates *its own* live work through this view instead
+ * of matching task filenames against `/proc/*\/cmdline`, which also selects
+ * the AgenC CLI and its process brokers.
+ */
+export interface OwnedProcessView {
+  /** The `session_id` exec_command returned; the handle kill_process accepts. */
+  readonly sessionId: number;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  /**
+   * `stopping` is a stop that has been signalled but whose exit the manager
+   * has not yet observed; it is reported as such rather than as a finished
+   * stop so no cleanup is claimed before it is proven.
+   */
+  readonly status: "running" | "stopping" | "completed" | "failed" | "killed";
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly exitCode?: number;
+}
+
+export interface ListOwnedProcessesRequest {
+  readonly ownerId?: string;
+}
+
+export interface TerminateOwnedProcessesRequest {
+  readonly ownerId?: string;
+  /**
+   * Sessions to stop. Omit to stop every live yielded session the owner
+   * started. Ownership of every named session is checked before any signal
+   * is sent, so a refused batch has no effect.
+   */
+  readonly processIds?: readonly number[];
+}
+
+export interface TerminateOwnedProcessesOutcome {
+  readonly results: readonly {
+    readonly sessionId: number;
+    /** False for an unknown or already-exited id; a benign race, not an error. */
+    readonly terminated: boolean;
+  }[];
+}
+
+/** Operator-visible state; taskId is unique across manager lifetimes. */
+export interface UnifiedExecBackgroundProcess {
+  readonly taskId: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly tty: boolean;
+  readonly ownerId?: string;
+  readonly startedAt: number;
+  readonly endedAt?: number;
+  readonly status: "running" | "completed" | "failed" | "killed";
+  readonly exitCode?: number;
+  readonly outputTail: string;
+  readonly outputBytes: number;
+}
+
 export interface ExecCommandToolOutput {
   readonly output: string;
   readonly stdout: string;
@@ -125,12 +204,38 @@ export interface ExecCommandToolOutput {
   readonly timedOut: boolean;
   readonly truncated: boolean;
   readonly original_token_count: number;
+  /** True when the command ran with `detach: true`; AgenC neither tracks nor stops it. */
+  readonly detached?: boolean;
+  /** OS pid of a detached process that was still running when the yield window closed. */
+  readonly pid?: number;
+  /** File a detached process keeps writing its stdout and stderr to. */
+  readonly log_path?: string;
+  /**
+   * True when processes the command left behind (a shell `&` job, nohup,
+   * setsid, a daemon that forked) were still alive after the command returned
+   * and the supervisor stopped them.
+   */
+  readonly residual_processes_terminated?: boolean;
+  /** The authenticated init observed live descendants after task exit, then
+   * completed cleanup. Does not claim which actor terminated them. */
+  readonly residual_processes_observed?: boolean;
+  /** Cleanup is proven, but the dispatched command has no terminal report.
+   * Neither state authorizes an automatic retry or a no-effect claim. */
+  readonly command_outcome?: "aborted" | "unavailable";
 }
 
 export interface UnifiedExecProcessManagerLike {
   /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
+  /** Shell used when a request names none, when the manager exposes it. */
+  readonly shellPath?: string;
+  /** Whether commands inherit shell startup hooks (BASH_ENV, exported functions, SHELLOPTS). */
+  shellStartupHooksPresent?(): boolean;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
+  /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
+  startDetachedProcess?(
+    request: DetachedProcessRequest,
+  ): Promise<ExecCommandToolOutput>;
   writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput>;
   /**
    * Terminate one live background process by its session/process id.
@@ -140,12 +245,30 @@ export interface UnifiedExecProcessManagerLike {
   terminateProcess?(
     processIdOrRequest: number | TerminateProcessRequest,
   ): { terminated: boolean };
+  /**
+   * Yielded sessions the requesting owner started, live or retained after
+   * exit. Never another owner's work, and never a process table scan.
+   */
+  listOwnedProcesses?(request: ListOwnedProcessesRequest): OwnedProcessView[];
+  /**
+   * Bulk stop through manager-owned identities. Named sessions keep the
+   * per-id ownership rule (`owner_denied` before any signal); an unnamed
+   * request stops only the owner's own live yielded sessions.
+   */
+  terminateOwnedProcesses?(
+    request: TerminateOwnedProcessesRequest,
+  ): TerminateOwnedProcessesOutcome;
+  listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
+  stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
+  /** Concrete managers freeze admission and verify cleanup before sealing. */
+  prepareForDurableClose?(): Promise<void>;
 }
 
 export class UnifiedExecError extends Error {
   readonly code:
     | "create_process"
+    | "tty_unavailable_in_contained_operation"
     | "missing_command"
     | "unknown_process"
     | "stdin_closed"

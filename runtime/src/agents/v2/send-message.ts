@@ -15,7 +15,7 @@ export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
   return {
     name: "send_message",
     description:
-      "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
+      "Queue a message for an existing agent. A running or starting child reads it at its next turn; the root reads it when its mailbox is next drained. The result reports delivered false because the message is lost if the child finishes first. Idle and finished children reject the message; use assign_task to start an idle worker's next turn. Does not trigger a new turn.",
     metadata: toolMetadata("agent", {
       mutating: true,
       virtualNoFsWrites: true,

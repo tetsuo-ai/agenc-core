@@ -40,11 +40,13 @@ describe('endpoint trust', () => {
     expect(isTrustedXaiOauthEndpoint('not a url')).toBe(false)
   })
 
-  test('inference base URL allows api.x.ai and the grok.com CLI proxy', () => {
+  test('inference base URL allows only the canonical xAI API path', () => {
     expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1/')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/proxy/v1')).toBe(false)
     expect(
       isTrustedXaiOauthInferenceBaseUrl('https://cli-chat-proxy.grok.com/v1'),
-    ).toBe(true)
+    ).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('https://attacker.example/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('http://api.x.ai/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl(undefined)).toBe(false)
@@ -173,6 +175,45 @@ describe('authorization code exchange', () => {
 })
 
 describe('device flow', () => {
+  test('does not poll an already cancelled device login', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      access_token: 'late-access', refresh_token: 'late-refresh', expires_in: 21600,
+    }))
+    await expect(pollXaiDeviceToken({
+      tokenEndpoint: 'https://auth.x.ai/oauth2/token',
+      deviceCode: {
+        deviceCode: 'dev-cancelled', userCode: 'TEST-CODE',
+        verificationUri: 'https://auth.x.ai/activate', expiresIn: 30, interval: 1,
+      },
+      signal: controller.signal,
+      fetchImpl,
+    })).rejects.toMatchObject({ code: 'cancelled' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  test('rejects tokens returned after an in-flight device poll was cancelled', async () => {
+    const controller = new AbortController()
+    const fetchImpl = vi.fn(async (_input, init?: RequestInit) => {
+      controller.abort()
+      return jsonResponse({
+        access_token: 'late-access', refresh_token: 'late-refresh', expires_in: 21600,
+      })
+    })
+    await expect(pollXaiDeviceToken({
+      tokenEndpoint: 'https://auth.x.ai/oauth2/token',
+      deviceCode: {
+        deviceCode: 'dev-cancelled', userCode: 'TEST-CODE',
+        verificationUri: 'https://auth.x.ai/activate', expiresIn: 30, interval: 1,
+      },
+      signal: controller.signal,
+      fetchImpl,
+    })).rejects.toMatchObject({ code: 'cancelled' })
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBe(controller.signal)
+  })
+
   test('requests and parses a device code', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
@@ -245,6 +286,22 @@ describe('device flow', () => {
 })
 
 describe('refresh', () => {
+  test('refuses a refresh-token redirect away from the trusted token endpoint', async () => {
+    const leaked: string[] = []
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.redirect !== 'manual') {
+        leaked.push(String(init?.body))
+        return jsonResponse({ access_token: 'attacker-accepted' })
+      }
+      return Response.redirect('https://attacker.example/token', 308)
+    })
+    await expect(refreshXaiOauthTokens({
+      tokenEndpoint: 'https://auth.x.ai/oauth2/token', refreshToken: 'refresh-secret', fetchImpl,
+    })).rejects.toThrow(/token endpoint redirect/u)
+    expect(leaked).toEqual([])
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   test('does NOT retry transport failures (rotating refresh token)', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('connection reset')

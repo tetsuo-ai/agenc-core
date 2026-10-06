@@ -11,8 +11,9 @@
  * one line appended to `<AGENC_HOME>/skill-candidates/ledger.jsonl`.
  *
  * A draft is inert. The local loader (local-loader.ts) discovers skills only
- * from fixed roots (`<dir>/.agenc/skills` and `<dir>/.agents/skills` on the
- * project walk, `<AGENC_HOME>/skills`, `$HOME/.agents/skills`,
+ * from fixed roots (`<dir>/.agenc/skills` and `<dir>/.agents/skills` from the
+ * workspace through its nearest git root, excluding `$HOME` and world-writable
+ * project roots, plus `<AGENC_HOME>/skills`, `$HOME/.agents/skills`,
  * `$AGENC_MANAGED_HOME/.agenc/skills`, and plugin skill roots) and walks
  * downward from each of them. `<AGENC_HOME>/skill-candidates` is a sibling of
  * `<AGENC_HOME>/skills`, never a root and never below one, so nothing written
@@ -40,23 +41,29 @@ import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { scanForSecrets } from "../memory/index.js";
 import { isEnvDefinedFalsy } from "../utils/envBoolean.js";
+import {
+  SKILL_CANDIDATES_DIR_NAME,
+  SKILL_CANDIDATES_LEDGER_FILE,
+  SKILL_CANDIDATES_ENV,
+  MIN_SLUG_LENGTH,
+  MAX_SLUG_LENGTH,
+  isValidSkillCandidateSlug,
+} from "./skill-candidate-names.js";
+export {
+  SKILL_CANDIDATES_DIR_NAME,
+  SKILL_CANDIDATES_LEDGER_FILE,
+  SKILL_CANDIDATES_ENV,
+  isValidSkillCandidateSlug,
+} from "./skill-candidate-names.js";
 
-/** Sibling of `<AGENC_HOME>/skills`; never a skills root. */
-export const SKILL_CANDIDATES_DIR_NAME = "skill-candidates";
-export const SKILL_CANDIDATES_LEDGER_FILE = "ledger.jsonl";
 export const SKILL_CANDIDATE_RECORD_FILE = "candidate.json";
 export const SKILL_CANDIDATE_SKILL_FILE = "SKILL.md";
 /** Info string of the fenced block the extraction child answers with. */
 export const SKILL_CANDIDATE_BLOCK_TAG = "skill-candidates";
-/** `AGENC_SKILL_CANDIDATES=0` switches proposals off. */
-export const SKILL_CANDIDATES_ENV = "AGENC_SKILL_CANDIDATES";
 export const MAX_SKILL_CANDIDATES_PER_RUN = 2;
 export const MAX_SKILL_CANDIDATE_BODY_BYTES = 16 * 1024;
 export const MAX_SKILL_CANDIDATE_EVIDENCE = 8;
 const MAX_ONE_LINE_LENGTH = 300;
-const MIN_SLUG_LENGTH = 3;
-const MAX_SLUG_LENGTH = 64;
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const FENCED_BLOCK_PATTERN = new RegExp(
   "^[ \\t]*```" +
     SKILL_CANDIDATE_BLOCK_TAG +
@@ -129,14 +136,6 @@ export function isSkillCandidatesDisabledByEnv(
   env: Readonly<Record<string, string | undefined>> | undefined,
 ): boolean {
   return isEnvDefinedFalsy((env ?? process.env)[SKILL_CANDIDATES_ENV]);
-}
-
-export function isValidSkillCandidateSlug(value: string): boolean {
-  return (
-    value.length >= MIN_SLUG_LENGTH &&
-    value.length <= MAX_SLUG_LENGTH &&
-    SLUG_PATTERN.test(value)
-  );
 }
 
 export function resolveSkillCandidatesRoot(agencHome: string): string {

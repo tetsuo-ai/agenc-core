@@ -1,6 +1,7 @@
+import { userRuntimeEnvironment } from './runtimeEnvironment.js'
 import { isEnvTruthy } from './envBoolean.js'
 import { isSecretEnvKey } from './secretEnv.js'
-import { assertNoObsoleteConfigEnvironment } from '../config/env.js'
+import { assertNoObsoleteConfigEnvironment } from '../config/obsolete-environment.js'
 import { isAbsolute, normalize } from 'node:path'
 import { convertWindowsPathToPosix } from './windows-path-conversion.js'
 
@@ -68,8 +69,8 @@ export function withChildTempAuthority(
 export { SUBPROCESS_SECRET_ENV } from './secretEnv.js'
 
 /**
- * Returns a copy of `baseEnv` (defaults to process.env) with sensitive secrets
- * stripped, for use when spawning subprocesses (Bash tool, shell snapshot, MCP
+ * Returns a copy of `baseEnv` (defaults to process.env) with Core-only changes
+ * restored to the user values and sensitive secrets stripped, for use when spawning subprocesses (Bash tool, shell snapshot, MCP
  * stdio servers, LSP servers, shell hooks).
  *
  * Scrubbing is the DEFAULT. Set AGENC_SUBPROCESS_ENV_NO_SCRUB to opt out.
@@ -80,7 +81,7 @@ export function subprocessEnv(
   if (baseEnv.AGENC_SUBPROCESS_ENV_SCRUB !== undefined) {
     assertNoObsoleteConfigEnvironment(baseEnv)
   }
-  const env = { ...baseEnv }
+  const env = userRuntimeEnvironment(baseEnv)
 
   // Deliberate opt-out for trusted setups that genuinely need an inherited
   // token.

@@ -39,16 +39,18 @@ describe("daemon runtime info sidecar", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("round-trips the bound websocket url", () => {
+  it("round-trips the bound local endpoint and websocket url", () => {
     const path = resolveAgenCDaemonRuntimeInfoPath(home);
     writeDaemonRuntimeInfo(path, {
       ...BASE_INFO,
       webSocketUrl: "ws://127.0.0.1:40117/",
+      socketPath: "/tmp/agenc-1000/fallback.sock",
     });
 
     expect(readDaemonRuntimeInfo(path)).toEqual({
       ...BASE_INFO,
       webSocketUrl: "ws://127.0.0.1:40117/",
+      socketPath: "/tmp/agenc-1000/fallback.sock",
     });
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(home).filter((entry) => entry.endsWith(".tmp"))).toEqual(

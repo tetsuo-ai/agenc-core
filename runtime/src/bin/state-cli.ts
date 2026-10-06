@@ -580,7 +580,7 @@ function runStateResolveToolCall(
               ? `; unresolved: ${unresolved
                   .map((effect) => `${effect.toolCallId} (${effect.toolName})`)
                   .join(", ")}\n`
-              : ` (state databases are project-scoped — run this from the session's project directory)\n`),
+              : ` (state databases are project-scoped; run this from the session's project directory)\n`),
         );
         return 1;
       }

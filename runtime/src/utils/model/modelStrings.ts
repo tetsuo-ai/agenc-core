@@ -5,7 +5,7 @@ import {
 import { logError } from '../log.js'
 import { sequential } from '../sequential.js'
 import { getExecutionAuthoritySettings } from '../settings/settings.js'
-import { findFirstMatch, getBedrockInferenceProfiles } from './bedrock.js'
+import { findProfileForModel, getBedrockInferenceProfiles } from './bedrock.js'
 import {
   ALL_MODEL_CONFIGS,
   CANONICAL_ID_TO_KEY,
@@ -44,14 +44,15 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
   if (!profiles?.length) {
     return fallback
   }
-  // Each config's firstParty ID is the canonical substring we search for in the
-  // user's inference profile list (e.g. "claude-opus-4-6" matches
-  // "eu.anthropic.agenc-opus-4-6-v1"). Fall back to the hardcoded bedrock ID
-  // when no matching profile is found.
+  // Each config's firstParty ID is matched against the user's inference
+  // profile list by parsed model identity (e.g. "claude-opus-4-6" matches
+  // "eu.anthropic.claude-opus-4-6-v1", and "claude-opus-5" never matches a
+  // claude-opus-5-5 profile). Fall back to the hardcoded bedrock ID when no
+  // matching profile is found.
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
     const needle = ALL_MODEL_CONFIGS[key].firstParty
-    out[key] = findFirstMatch(profiles, needle) || fallback[key]
+    out[key] = findProfileForModel(profiles, needle) || fallback[key]
   }
   return out
 }

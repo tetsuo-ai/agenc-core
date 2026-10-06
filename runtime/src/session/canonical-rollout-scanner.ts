@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable } from "../durability/one-shot-durability.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -31,7 +32,9 @@ import {
   type CompactionPersistedRollbackCommittedV1,
   type CompactionRollbackCommittedV1,
 } from "../services/compact/transaction-types.js";
-import { digestWithDomain } from "../services/compact/summary-v1.js";
+import {
+  digestSourceWithDomain,
+} from "../services/compact/summary-v1.js";
 import { DiskCanonicalIdentityRegistry } from "../state/recovery-file.js";
 import {
   StrictCanonicalJournalValidator,
@@ -57,6 +60,7 @@ import {
   reconstructCompactionPayloadV1,
 } from "../services/compact/payload-manifest.js";
 import {
+  isCompactionRolloutType,
   readCompactionPersistedCommittedV1,
   readCompactionPersistedIntentV1,
   readCompactionPersistedRollbackCommittedV1,
@@ -66,8 +70,43 @@ import {
 const MAX_COMPACTION_LIFECYCLE_RECORDS = MAX_COMPACTION_PIN_HISTORY_TOTAL * 6;
 const COMPACTION_PAYLOAD_REGISTRY_CACHE_KIB = 1_024;
 
-/** Disk-backed payload spool keeps manifest replay bounded by one payload. */
+/** Plain journals need no payload spool; validation itself remains eager. */
 class DiskCompactionPayloadRegistry {
+  #spool: DiskCompactionPayloadSpool | undefined;
+  #closed = false;
+
+  constructor(private readonly temporaryRoot: string) {}
+
+  add(chunk: CompactionPayloadChunkV1): void {
+    this.#getSpool().add(chunk);
+  }
+
+  reconstruct(manifest: CompactionPayloadManifestV1, retained = true): unknown {
+    return this.#getSpool().reconstruct(manifest, retained);
+  }
+
+  get retainedPayloadBytes(): number {
+    return this.#spool?.retainedPayloadBytes ?? 0;
+  }
+
+  hasComplete(manifest: CompactionPayloadManifestV1): boolean {
+    return this.#getSpool().hasComplete(manifest);
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#spool?.close();
+  }
+
+  #getSpool(): DiskCompactionPayloadSpool {
+    if (this.#closed) throw new Error("compaction payload registry is closed");
+    return this.#spool ??= new DiskCompactionPayloadSpool(this.temporaryRoot);
+  }
+}
+
+/** Disk-backed payload spool keeps manifest replay bounded by one payload. */
+class DiskCompactionPayloadSpool {
   readonly #directory: string;
   readonly #database: BetterSqlite3.Database;
   readonly #insert: BetterSqlite3.Statement<[string, string, number, string]>;
@@ -241,7 +280,7 @@ interface MutableAttemptScan {
 }
 
 export interface CanonicalCompactionAttemptScan {
-  readonly intent: CompactionIntentV1;
+  readonly intent?: CompactionIntentV1;
   readonly records: readonly StrictCanonicalJournalRecord[];
   readonly admissionValid: boolean;
   readonly hasLaterCanonicalWork: boolean;
@@ -398,7 +437,8 @@ interface PrefixOwner {
  * payload, and a prefix keyed to one attempt, are released once they have
  * answered.
  *
- * Every prefix owns two disk registries, so a scanner must be closed.
+ * Every prefix owns an identity registry and a lazy payload spool, so a
+ * scanner must be closed even when no payloads were encountered.
  */
 export class CanonicalRolloutScanner {
   readonly #owner: PrefixOwner = { prefixes: [] };
@@ -459,6 +499,7 @@ function scanCanonicalRolloutUntimed(
   checkOperationalBudget();
   const fd = openSync(rolloutPath, fsConstants.O_RDONLY);
   try {
+    assertOneShotRecoverable(rolloutPath, fd);
     const snapshot = fstatSync(fd, { bigint: true });
     if (!snapshot.isFile()) {
       throw new Error("canonical rollout source is not a regular file");
@@ -570,7 +611,9 @@ function scanCanonicalRolloutUntimed(
           [...state.attempts].map(([attemptId, attempt]) => [
             attemptId,
             {
-              intent: attempt.intent!,
+              ...(attempt.intent !== undefined
+                ? { intent: attempt.intent }
+                : {}),
               records: Object.freeze(attempt.records.slice()),
               admissionValid: validAdmission(attempt),
               hasLaterCanonicalWork:
@@ -912,6 +955,26 @@ function observeCanonicalRecord(
     return;
   }
 
+  const incompleteAttempt = [...state.attempts.values()].find(
+    (attempt) =>
+      attempt.persistedIntent !== undefined &&
+      attempt.intent === undefined &&
+      !attempt.terminal,
+  );
+  if (incompleteAttempt?.persistedIntent !== undefined) {
+    const incompleteAttemptId = incompleteAttempt.persistedIntent.attempt_id;
+    const sameAttemptLifecycle =
+      isCompactionRolloutType(item.type) && attemptId === incompleteAttemptId;
+    const sealedWithoutPayloads =
+      item.type === "compaction_committed" ||
+      item.type === "compaction_rollback_committed";
+    if (!sameAttemptLifecycle || sealedWithoutPayloads) {
+      throw new Error(
+        "canonical compaction intent is missing its required source payload bundle",
+      );
+    }
+  }
+
   if (persistedIntent !== undefined) {
     state.attempts.set(persistedIntent.attempt_id, {
       persistedIntent,
@@ -935,18 +998,6 @@ function observeCanonicalRecord(
       );
     }
     return;
-  }
-
-  const incompleteAttempt = [...state.attempts.values()].find(
-    (attempt) =>
-      attempt.persistedIntent !== undefined &&
-      attempt.intent === undefined &&
-      !attempt.terminal,
-  );
-  if (incompleteAttempt !== undefined) {
-    throw new Error(
-      "canonical compaction intent is missing its required source payload bundle",
-    );
   }
 
   const persistedCommit = persistedCommitPayload(item);
@@ -1105,7 +1156,7 @@ function observeCanonicalRecord(
   ) {
     attempt.terminal = true;
     if (item.type === "compaction_committed") {
-      attempt.commitSha256 = digestWithDomain(
+      attempt.commitSha256 = digestSourceWithDomain(
         COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
         item.payload,
       );
@@ -1341,6 +1392,7 @@ function assertAttemptsReconstructed(
   attempts: ReadonlyMap<string, MutableAttemptScan>,
 ): void {
   for (const attempt of attempts.values()) {
+    if (failedAttemptDroppedPayloads(attempt)) continue;
     if (attempt.intent === undefined) {
       throw new Error(
         "canonical compaction intent did not reconstruct its source manifests",
@@ -1360,6 +1412,13 @@ function assertAttemptsReconstructed(
   }
 }
 
+function failedAttemptDroppedPayloads(attempt: MutableAttemptScan): boolean {
+  return (
+    attempt.intent === undefined &&
+    attempt.records.some((record) => record.item.type === "compaction_failed")
+  );
+}
+
 /**
  * Line numbers the digest-anchored second pass must re-read: the caller's
  * additional lines, every attempt's active-history refs, and the live active
@@ -1372,7 +1431,8 @@ function collectSourceLines(
 ): Set<number> {
   const sourceLines = new Set(options.additionalSourceLines ?? []);
   for (const attempt of attempts.values()) {
-    for (const ref of attempt.intent!.source.active_history_refs) {
+    if (attempt.intent === undefined) continue;
+    for (const ref of attempt.intent.source.active_history_refs) {
       sourceLines.add(ref.first_sequence);
     }
   }
@@ -1496,6 +1556,18 @@ function observeAdmission(
   if (attempt.terminal) return;
   const item = record.item;
   if (isUsageObservation(item)) return;
+  // The strict journal validator has already checked this event's complete
+  // schema, sequence and identity. A child status update is observational: it
+  // changes neither source history nor this attempt's execution admissions.
+  // Keep the exception bound to a distinct child of the source session.
+  if (
+    item.type === "event_msg" &&
+    item.payload.msg.type === "collab_agent_status" &&
+    item.payload.msg.payload.senderThreadId === attempt.intent?.source.session_id &&
+    item.payload.msg.payload.callId.length > 0 &&
+    item.payload.msg.payload.threadId.length > 0 &&
+    item.payload.msg.payload.threadId !== item.payload.msg.payload.senderThreadId
+  ) return;
   if (
     (item.type === "compaction_committed" ||
       item.type === "compaction_failed") &&

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { LLMMessage } from "../../../src/llm/types.js";
-import { conservativeBytesPerToken } from "../../../src/llm/token-accounting.js";
 import {
+  compactionInputBytesPerToken,
   accountCompactionCall,
   buildCompactionMapReducePlan,
   type CompactionMapReducePlan,
@@ -32,7 +32,7 @@ const MODEL = "grok-4.5";
 // 63-chunk boundary when accounting adopted catalogued tokenizer ratios.
 const UNIT_TEXT_BYTES = Math.floor(
   (CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS) * 0.8 *
-    conservativeBytesPerToken(PROVIDER, MODEL),
+    compactionInputBytesPerToken(PROVIDER, MODEL),
 );
 const NEAR_MAXIMUM_CHUNKS = MAX_COMPACTION_CHUNKS - 1;
 const STRUCTURED_TRANSCRIPT_VERSION = 1;
@@ -127,6 +127,14 @@ describe("compaction maximal chunk packing", () => {
 
     expect(plan.units).toHaveLength(1);
     expect(plan.units[0]?.messages).toHaveLength(3);
+    // The summarizer reads the calls by per-unit ref and each result, in
+    // completion order, names the ref of its call.
+    expect(
+      plan.units[0]?.messages[0]?.tool_calls?.map((call) => call.id),
+    ).toEqual(["c1", "c2"]);
+    expect(
+      plan.units[0]?.messages.slice(1).map((message) => message.tool_call_id),
+    ).toEqual(["c2", "c1"]);
     expect(
       plan.units[0]?.tool_pairs.map((pair) => pair.tool_call_id),
     ).toEqual(["call-b", "call-a"]);

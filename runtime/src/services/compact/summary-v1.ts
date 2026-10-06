@@ -15,6 +15,9 @@ import {
   MAX_COMPACTION_RECORD_ID_UTF8_BYTES,
   MAX_COMPACTION_RECORD_TEXT_UTF8_BYTES,
   MAX_COMPACTION_SCHEMA_WORK_UNITS_PER_OUTPUT,
+  MAX_COMPACTION_SOURCE_BYTES,
+  MAX_COMPACTION_SOURCE_NODES,
+  MAX_COMPACTION_SOURCE_WORK_UNITS,
   MAX_COMPACTION_SOURCE_REF_ID_UTF8_BYTES,
   MAX_COMPACTION_TOOL_PAIRS_PER_OUTPUT,
   type CompactionBodyRecordV1,
@@ -134,6 +137,208 @@ export function canonicalizeJson(value: unknown): string {
     frames.push({ kind: "literal", value: "{" });
   }
   return output.join("");
+}
+
+/**
+ * Validate one JSON scalar for the source encoder. `remainingBytes` lets an
+ * oversized string be refused before JSON.stringify renders a second copy.
+ */
+function validateSourceScalar(current: unknown, remainingBytes: number): void {
+  if (typeof current === "number" && !Number.isFinite(current)) {
+    throw invalid("compaction source contains a non-JSON scalar");
+  }
+  if (typeof current === "string") {
+    // Every UTF-16 unit costs at least one UTF-8 byte and JSON escaping only
+    // ever adds, so this lower bound is safe.
+    if (current.length + 2 > remainingBytes) {
+      throw limit("compaction source exceeds its canonical byte limit");
+    }
+    assertUnicodeScalarString(current, "compaction source string");
+    return;
+  }
+  if (
+    current !== null &&
+    typeof current !== "boolean" &&
+    typeof current !== "number"
+  ) {
+    throw invalid("compaction source contains a non-JSON scalar");
+  }
+}
+
+/**
+ * Validate a container's own properties through descriptors, exactly as the
+ * provider path does, so a getter or hidden property is rejected rather than
+ * silently rendered. Returns the number of validated dense array indexes.
+ */
+function validateSourceMembers(
+  container: object,
+  isArray: boolean,
+  chargeWork: () => void,
+): number {
+  const descriptors = Object.getOwnPropertyDescriptors(container);
+  let arrayIndex = 0;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    chargeWork();
+    if (typeof key !== "string") {
+      throw invalid("compaction source contains a symbol key");
+    }
+    if (isArray && key === "length") continue;
+    const descriptor = descriptors[key]!;
+    if (
+      !descriptor.enumerable ||
+      descriptor.get !== undefined ||
+      descriptor.set !== undefined
+    ) {
+      throw invalid("compaction source contains a getter or hidden property");
+    }
+    if (isArray) {
+      if (!/^(?:0|[1-9]\d*)$/u.test(key)) {
+        throw invalid("compaction source array contains a named property");
+      }
+      if (Number(key) !== arrayIndex) {
+        throw invalid("compaction source contains a sparse array");
+      }
+      arrayIndex += 1;
+    }
+  }
+  return arrayIndex;
+}
+
+/**
+ * Canonical JSON for OUR OWN compaction source (histories, ref manifests,
+ * accounting payloads), byte-identical to `canonicalizeJson` for every value
+ * both accept. The provider encoder clones and validates the whole value
+ * first, so a legal long history trips ceilings meant for one untrusted
+ * provider response (#2520). This renders in a single pass, validates through
+ * descriptors inline, and charges bytes, nodes and traversal work as it goes,
+ * so it stays bounded without borrowing the provider's ceilings.
+ */
+export function canonicalizeSourceJson(value: unknown): string {
+  type Frame =
+    | { readonly kind: "value"; readonly value: unknown; readonly depth: number }
+    | { readonly kind: "literal"; readonly value: string }
+    | { readonly kind: "pop"; readonly container: object };
+
+  const output: string[] = [];
+  let bytes = 0;
+  let nodes = 0;
+  let work = 0;
+  const ancestors = new Set<object>();
+
+  const emit = (chunk: string): void => {
+    bytes += Buffer.byteLength(chunk, "utf8");
+    if (bytes > MAX_COMPACTION_SOURCE_BYTES) {
+      throw limit("compaction source exceeds its canonical byte limit");
+    }
+    output.push(chunk);
+  };
+
+  const admitChildren = (count: number): void => {
+    if (count > MAX_COMPACTION_SOURCE_NODES - nodes) {
+      throw limit("compaction source exceeds its node limit");
+    }
+  };
+
+  const frames: Frame[] = [{ kind: "value", value, depth: 1 }];
+  while (frames.length > 0) {
+    const frame = frames.pop()!;
+    if (frame.kind === "literal") {
+      emit(frame.value);
+      continue;
+    }
+    if (frame.kind === "pop") {
+      ancestors.delete(frame.container);
+      continue;
+    }
+
+    nodes += 1;
+    if (nodes > MAX_COMPACTION_SOURCE_NODES) {
+      throw limit("compaction source exceeds its node limit");
+    }
+    const current = frame.value;
+
+    if (current === null || typeof current !== "object") {
+      validateSourceScalar(current, MAX_COMPACTION_SOURCE_BYTES - bytes);
+      const rendered = JSON.stringify(current);
+      if (rendered === undefined) throw invalid("value is not canonical JSON");
+      emit(rendered);
+      continue;
+    }
+
+    if (frame.depth > MAX_COMPACTION_OUTPUT_DEPTH) {
+      throw limit("compaction source exceeds its depth limit");
+    }
+    if (utilTypes.isProxy(current)) {
+      throw invalid("compaction source contains a proxy");
+    }
+    if (ancestors.has(current)) {
+      throw invalid("compaction source contains a cycle");
+    }
+    const isArray = Array.isArray(current);
+    if (isArray) {
+      // `length` is a claim, not an allocation: a sparse array names children
+      // that cost nothing to declare. Charge them to the node budget before we
+      // build descriptors or frames for any of them.
+      admitChildren((current as readonly unknown[]).length);
+    } else {
+      const prototype = Object.getPrototypeOf(current);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw invalid("compaction source contains an exotic object");
+      }
+    }
+
+    const arrayIndex = validateSourceMembers(current, isArray, () => {
+      work += 1;
+      if (work > MAX_COMPACTION_SOURCE_WORK_UNITS) {
+        throw limit("compaction source exceeds its traversal work limit");
+      }
+    });
+
+    if (isArray && arrayIndex !== (current as readonly unknown[]).length) {
+      // Descriptors carry no entry for a hole, so a trailing hole validates as
+      // a dense prefix. Compare validated indexes against the claimed length.
+      throw invalid("compaction source contains a sparse array");
+    }
+
+    ancestors.add(current);
+    frames.push({ kind: "pop", container: current });
+
+    if (isArray) {
+      const items = current as readonly unknown[];
+      frames.push({ kind: "literal", value: "]" });
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        frames.push({ kind: "value", value: items[index], depth: frame.depth + 1 });
+        if (index > 0) frames.push({ kind: "literal", value: "," });
+      }
+      frames.push({ kind: "literal", value: "[" });
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+    // JCS requires UTF-16 code-unit order. The relational operators give
+    // exactly that, matching canonicalizeJson. localeCompare is
+    // locale-dependent and would break byte identity with it.
+    const keys = Object.keys(record).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    admitChildren(keys.length);
+    frames.push({ kind: "literal", value: "}" });
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      frames.push(
+        { kind: "value", value: record[key], depth: frame.depth + 1 },
+        { kind: "literal", value: ":" },
+        { kind: "literal", value: JSON.stringify(key) },
+      );
+      if (index > 0) frames.push({ kind: "literal", value: "," });
+    }
+    frames.push({ kind: "literal", value: "{" });
+  }
+
+  return output.join("");
+}
+
+/** `digestWithDomain` for artifacts we produce, bounded by the source budget. */
+export function digestSourceWithDomain(domain: string, value: unknown): string {
+  return sha256Hex(`${domain}${canonicalizeSourceJson(value)}`);
 }
 
 export function createCompactionSummaryV1(

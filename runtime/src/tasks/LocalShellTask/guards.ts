@@ -6,8 +6,12 @@ import type { TaskStateBase } from "../Task.js";
 import type { AgentId } from "../../types/ids.js";
 import type { ShellCommand } from "../../utils/ShellCommand.js";
 import type { SessionQueueOwner } from "../../utils/queueOwnership.js";
+import type { DaemonProcessTask } from "../types.js";
 
 export type LocalShellTaskState = TaskStateBase & {
+  daemonProcess?: DaemonProcessTask;
+  stopRequested?: boolean;
+  stopError?: string;
   queueOwner: SessionQueueOwner;
   type: "local_bash"; // Keep as 'local_bash' for backward compatibility with persisted session state
   command: string;

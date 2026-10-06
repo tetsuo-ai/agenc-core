@@ -298,8 +298,23 @@ export function notificationFromDaemonEvent(
             ? event.eventId!
             : payload.callId,
         callId: payload.callId,
+        ...(typeof payload.sourceConversationId === "string"
+          ? { sourceConversationId: payload.sourceConversationId }
+          : {}),
+        ...(typeof payload.sourceAgentNickname === "string"
+          ? { sourceAgentNickname: payload.sourceAgentNickname }
+          : {}),
+        ...(typeof payload.sourceAgentPath === "string"
+          ? { sourceAgentPath: payload.sourceAgentPath }
+          : {}),
         ...(typeof payload.toolName === "string"
           ? { toolName: payload.toolName }
+          : {}),
+        ...(payload.kind === "cross_provider_spawn"
+          ? { kind: payload.kind }
+          : {}),
+        ...(payload.kind === "cross_provider_spawn" && isJsonObject(payload.crossProvider)
+          ? { crossProvider: payload.crossProvider as unknown as import("../protocol/index.js").CrossProviderSpawnDisclosure }
           : {}),
         ...(typeof payload.turnId === "string"
           ? { turnId: payload.turnId }
@@ -415,6 +430,7 @@ export function notificationFromDaemonEvent(
         agentId: base.agentId ?? sessionId,
         status: terminalStatus,
         runStatus,
+        turnEvent: { type: "run_terminal", payload },
         ...(typeof payload.finalMessage === "string"
           ? { message: payload.finalMessage }
           : typeof payload.stopReason === "string"
@@ -461,7 +477,7 @@ export function notificationFromDaemonEvent(
   const terminal = classifyTurnTerminal(event);
   if (
     (event.type === "turn_started" ||
-      (terminal !== undefined && terminal.outcome !== "errored")) &&
+      ((event.type === "turn_complete" || event.type === "turn_aborted") && terminal !== undefined)) &&
     event.statusProjection !== "session_only" &&
     isJsonObject(payload)
   ) {
@@ -472,7 +488,20 @@ export function notificationFromDaemonEvent(
         ...base,
         agentId: base.agentId ?? sessionId,
         status: event.type === "turn_started" ? "running" : "idle",
-        runStatus: event.type === "turn_started" ? "running" : "completed",
+        // An aborted turn (a Stop or a denied permission request) left the
+        // agent idle, but its run did not complete.
+        runStatus:
+          event.type === "turn_started"
+            ? "running"
+            : event.type === "turn_aborted"
+              ? "stopped"
+              : "completed",
+        // Joining clients have no message.stream response to close their
+        // hydrated turn. Preserve the boundary alongside the status projection.
+        turnEvent: {
+          type: event.type,
+          payload,
+        },
         ...(typeof payload.turnId === "string"
           ? { turnId: payload.turnId }
           : {}),
@@ -492,7 +521,7 @@ export function notificationFromDaemonEvent(
       },
     };
   }
-  return {
+  const notification: AgenCDaemonSessionNotification = {
     jsonrpc: JSON_RPC_VERSION,
     method: "event.session_event",
     params: {
@@ -511,6 +540,38 @@ export function notificationFromDaemonEvent(
       },
     },
   };
+  if (event.type !== "tool_call_completed" || !isJsonObject(payload) ||
+      !Array.isArray(payload.displayAttachments) ||
+      Buffer.byteLength(JSON.stringify(notification) + "\n") <= 1024 * 1024) {
+    return notification;
+  }
+  // The journal keeps validated inline JSON for replay. A live frame has the
+  // smaller SSH limit, and clients can fetch these same bytes by artifact id.
+  const references = payload.displayAttachments.map((attachment) => {
+    if (!isJsonObject(attachment)) return attachment;
+    const { data: _data, ...reference } = attachment;
+    return reference;
+  });
+  const livePayload: JsonObject = { ...payload, displayAttachments: references };
+  const projected: AgenCDaemonSessionNotification = {
+    ...notification,
+    params: { ...notification.params, event: { ...notification.params.event, payload: livePayload } },
+  };
+  if (Buffer.byteLength(JSON.stringify(projected) + "\n") <= 1024 * 1024) return projected;
+  // A large ordinary tool result can accompany valid attachments. Keep the
+  // artifact references and a short notice rather than publishing a bad frame.
+  const bounded: AgenCDaemonSessionNotification = {
+    ...projected,
+    params: { ...projected.params, event: { ...projected.params.event,
+      payload: { callId: payload.callId, isError: payload.isError,
+        result: "[Tool result omitted from live notification; read the transcript]",
+        displayAttachments: references },
+    } },
+  };
+  if (Buffer.byteLength(JSON.stringify(bounded) + "\n") > 1024 * 1024) {
+    throw new Error("live display notification exceeds SSH frame limit");
+  }
+  return bounded;
 }
 
 function eventBaseParams(
@@ -882,7 +943,7 @@ export function daemonEventFromUnboundSessionEvent(event: {
   // `phases/stream-model.ts` (T6 #119) and persisted to the rollout, but
   // never bridged live — so a daemon-attached TUI had no usage source at
   // all: its synthesized assistant messages carry zero usage and the
-  // workbench ctx% read 0 for the whole session. Forward the payload
+  // header ctx% read 0 for the whole session. Forward the payload
   // verbatim; the TUI reducer derives `latestUsage` from it.
   if (type === "token_count" && isJsonObject(payload)) {
     return {

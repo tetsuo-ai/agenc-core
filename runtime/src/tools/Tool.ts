@@ -150,6 +150,11 @@ export type ToolPermissionContext = DeepImmutable<{
   awaitAutomatedChecksBeforeDialog?: boolean;
   /** Stores the permission mode before model-initiated plan mode entry, so it can be restored on exit */
   prePlanMode?: PermissionMode;
+  /**
+   * When true, path checks use only `additionalWorkingDirectories` and do
+   * not treat the process working directory as an allowed root.
+   */
+  excludeProcessWorkingDirectory?: boolean;
 }>;
 
 export const getEmptyToolPermissionContext: () => ToolPermissionContext =
@@ -491,7 +496,6 @@ export type Tool<
   /**
    * When true, enables strict mode for this tool, which causes the API to
    * more strictly adhere to tool instructions and parameter schemas.
-   * Only applied when the tengu_tool_pear is enabled.
    */
   readonly strict?: boolean;
 

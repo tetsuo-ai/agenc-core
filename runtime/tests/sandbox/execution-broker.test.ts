@@ -322,6 +322,69 @@ describe("SandboxExecutionBroker", () => {
     expect(transform).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { sandbox: "linux_seccomp" as const, browserCdp: true, expected: true },
+    { sandbox: "linux_seccomp" as const, browserCdp: false, expected: false },
+    { sandbox: "macos_seatbelt" as const, browserCdp: true, expected: false },
+  ])("marks CDP stdio only for a browser CDP spawn under $sandbox (browserCdp=$browserCdp)",
+    ({ sandbox, browserCdp, expected }) => {
+      const root = tempRoot("agenc-browser-cdp-transport-");
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        sandboxManager: {
+          selectInitial: () => sandbox,
+          transform: () => ({
+            command: ["/sandbox/helper", "--sandbox-policy-cwd", root, "--", "/bin/echo"],
+            cwd: root,
+            env: {},
+          }),
+        } as never,
+        probe: () => readyStatus("workspace_write"),
+      });
+
+      const command = broker.prepareSpawn("browser", {
+        program: "/bin/echo",
+        args: [],
+        cwd: root,
+        env: {},
+        browserCdp,
+      }).runSync(resolved => resolved);
+
+      expect(command.browserCdpOverStdio === true).toBe(expected);
+      expect(command.args.includes("--browser-cdp-over-stdio")).toBe(expected);
+      if (expected) {
+        expect(command.args.indexOf("--browser-cdp-over-stdio"))
+          .toBeLessThan(command.args.indexOf("--"));
+      }
+    },
+  );
+
+  it("refuses CDP stdio for any surface but the browser", () => {
+    const root = tempRoot("agenc-browser-cdp-surface-");
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: () => ({
+          command: ["/sandbox/helper", "--sandbox-policy-cwd", root, "--", "/bin/echo"],
+          cwd: root,
+          env: {},
+        }),
+      } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(() => broker.prepareSpawn("tool", {
+      program: "/bin/echo",
+      args: [],
+      cwd: root,
+      env: {},
+      browserCdp: true,
+    })).toThrow(/only valid for the browser surface/);
+  });
+
   describe("Landlock-fallback pre-flight", () => {
     function fallbackStatus(): SandboxExecutionStatus {
       return {
@@ -344,6 +407,50 @@ describe("SandboxExecutionBroker", () => {
         arg0: "sandbox-helper",
       })),
     } as never;
+
+    it("rejects a git workspace at startup before a model request", () => {
+      const root = tempRoot("agenc-broker-startup-git-");
+      mkdirSync(join(root, ".git"));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        probe: fallbackStatus,
+      });
+      const firstRequest = vi.fn();
+
+      expect(broker.status()).toMatchObject({
+        kind: "unavailable",
+        reason: expect.stringContaining(join(root, ".git")),
+      });
+      expect(() => {
+        broker.assertReady("startup");
+        firstRequest();
+      }).toThrowError(expect.objectContaining({
+        code: "sandbox_policy_unexpressible",
+        message: expect.stringMatching(/\.git.*Install bubblewrap.*unprivileged user namespaces.*Docker.*seccomp\/AppArmor/s),
+      }));
+      expect(() => broker.assertReady("tool")).toThrowError(
+        expect.objectContaining({ code: "sandbox_policy_unexpressible" }),
+      );
+      expect(firstRequest).not.toHaveBeenCalled();
+    });
+
+    it("keeps startup ready with bubblewrap or a read-only policy", () => {
+      const root = tempRoot("agenc-broker-startup-safe-");
+      mkdirSync(join(root, ".git"));
+      const bubblewrap = new SandboxExecutionBroker({
+        mode: "workspace_write", cwd: root, platform: "linux",
+        probe: () => ({ ...readyStatus("workspace_write"), platform: "linux" }),
+      });
+      const readOnly = new SandboxExecutionBroker({
+        mode: "read_only", cwd: root, platform: "linux",
+        probe: () => ({ ...fallbackStatus(), mode: "read_only" }),
+      });
+
+      expect(bubblewrap.assertReady("startup").kind).toBe("ready");
+      expect(readOnly.assertReady("startup").kind).toBe("ready");
+    });
 
     it("refuses an unexpressible policy with the precise reason and the probe-time remediation", () => {
       const root = tempRoot("agenc-broker-preflight-");
@@ -927,6 +1034,28 @@ describe("SandboxExecutionBroker", () => {
     expect(
       resolveDefaultLinuxSandboxExecutable(pathToFileURL(chunk).href),
     ).toBe(helper);
+  });
+
+  it("resolves caller helper selection and omission without daemon environment drift", () => {
+    const previous = process.env.AGENC_LINUX_SANDBOX_EXE;
+    process.env.AGENC_LINUX_SANDBOX_EXE = "/daemon/helper";
+    try {
+      const moduleUrl = pathToFileURL(join(tempRoot("helper-env-"), "module.js")).href;
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "/client/helper" }))
+        .toBe("/client/helper");
+      const bundled = resolveDefaultLinuxSandboxExecutable(moduleUrl, {});
+      expect(bundled).not.toBe("/daemon/helper");
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "" })).toBe(bundled);
+      expect(resolveDefaultLinuxSandboxExecutable(moduleUrl, { AGENC_LINUX_SANDBOX_EXE: "  " })).toBe(bundled);
+      expect(probeSandboxExecutionStatus({
+        mode: "workspace_write", platform: "linux", cwd: tempRoot("helper-client-workspace-"),
+        env: { AGENC_LINUX_SANDBOX_EXE: "/missing-client/helper" },
+      })).toMatchObject({ kind: "unavailable", reason: "sandbox executable does not exist: /missing-client/helper" });
+      expect(process.env.AGENC_LINUX_SANDBOX_EXE).toBe("/daemon/helper");
+    } finally {
+      if (previous === undefined) delete process.env.AGENC_LINUX_SANDBOX_EXE;
+      else process.env.AGENC_LINUX_SANDBOX_EXE = previous;
+    }
   });
 
   it("rejects a structurally spoofed broker carrier", () => {

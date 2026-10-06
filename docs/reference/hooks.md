@@ -56,7 +56,7 @@ options. `PreCompact` may return `newCustomInstructions`; those merge into the
 summary focus prompt and **do** count against the summary window. If
 `PreCompact` fails or throws, compaction continues without its focus text.
 `PostCompact` runs only after a flushed `compaction_committed` and receives
-`compact_summary`. Details:
+`compact_summary`, the summary message text the model sees. Details:
 [mcp.md](mcp.md#compaction-summaries-stay-tool-free).
 
 ### Config map shape
@@ -179,10 +179,7 @@ mentions expand only after the turn is allowed. Hook
 `additionalContext` is appended after that expansion so repository
 text cannot change hook input.
 
-`--bare` / `hardSuppressed` skips the hook loop. Daemon **editor**
-submissions (`editorInteraction` set) skip it too. BUFFER / Neovim
-requests do not start configured lifecycle or prompt hooks. See
-[the embedded Neovim buffer contract](../embedded-neovim-buffer.md).
+`--bare` / `hardSuppressed` skips the hook loop.
 
 #### How a command hook refuses one prompt
 
@@ -275,7 +272,7 @@ See [mid-turn error events](daemon.md#mid-turn-error-events).
 
 The recursion cap is `MAX_STOP_HOOK_BLOCKS` (3). Hitting it emits
 `error` with `cause: "stop_hook_loop"` and returns a non-blocking allow
-so the turn can terminate. Editor interactions skip the ladder.
+so the turn can terminate.
 
 This is distinct from `UserPromptSubmit` throws, which emit a
 `warning` and never flip run status.

@@ -7,12 +7,9 @@ import {
   type ProviderAuthReadContext,
 } from './auth.js'
 import { getAPIProvider } from './model/providers.js'
-import {
-  getAntModelOverrideConfig,
-  resolveAntModel,
-} from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
+import { resolveReasoningEffort } from '../llm/reasoning-effort.js'
 import { isVerifiedOpenAiReasoningModel } from '../llm/registry/openai-reasoning-models.js'
 import { resolveGeminiThinkingModel } from '../llm/registry/gemini-thinking-models.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
@@ -72,18 +69,21 @@ function inferCatalogProvider(
   return undefined
 }
 
+/**
+ * Levels from Core's own effort resolver, the same source the wire layer
+ * validates against and the Desktop catalog is generated from. Undefined
+ * when Core knows nothing about the model, so the legacy heuristics below
+ * still apply to unregistered identities.
+ */
 function getRegisteredEffortLevels(
   model: string,
   context?: ProviderAuthReadContext,
 ): AvailableEffortLevel[] | undefined {
   const provider = inferCatalogProvider(model, context)
   if (provider === undefined) return undefined
-  const entry = resolveRegisteredModelCatalogEntry({
-    provider,
-    model,
-  })
-  if (entry === undefined) return undefined
-  return entry.supportedReasoningLevels.filter(isAvailableEffortLevel)
+  const resolved = resolveReasoningEffort({ provider, model })
+  if (!resolved.registered && resolved.levels.length === 0) return undefined
+  return resolved.levels.filter(isAvailableEffortLevel)
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
@@ -109,8 +109,11 @@ function modelSupportsEffortForOptionalContext(
   ) {
     return true
   }
-  // Supported by a subset of AgenC 4 models
+  // Supported by a subset of AgenC 4 models and the current lineup
+  // (platform.claude.com effort doc, 2026-09-11)
   if (
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
     m.includes('opus-4-8') ||
@@ -160,20 +163,16 @@ function modelSupportsMaxEffortForOptionalContext(
   }
   const m = model.toLowerCase()
   // Fable 5 supports the full effort range incl. 'max' (provider docs,
-  // verified 2026-07-08).
+  // verified 2026-07-08); Opus 5 and Sonnet 5 accept 'max' too (probed
+  // 2026-09-11).
   if (
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
     m.includes('opus-4-8') ||
     m.includes('fable-5')
   ) {
-    return true
-  }
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant' && resolveAntModel(model)) {
     return true
   }
   return false
@@ -457,23 +456,13 @@ export function isValidNumericEffort(value: number): boolean {
 
 function convertEffortValueToLevelForOptionalContext(
   value: EffortValue,
-  context?: ProviderAuthReadContext,
+  _context?: ProviderAuthReadContext,
 ): AvailableEffortLevel {
   if (typeof value === 'string') {
-    // Runtime guard: value may come from remote config (GrowthBook) where
-    // TypeScript types can't help us. Coerce unknown strings to 'high'
-    // rather than passing them through unchecked.
+    // Runtime guard: value may come from config where TypeScript types
+    // can't help us. Coerce unknown strings to 'high' rather than passing
+    // them through unchecked.
     return isAvailableEffortLevel(value) ? value : 'high'
-  }
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant' && typeof value === 'number') {
-    if (value <= 50) return 'low'
-    if (value <= 85) return 'medium'
-    if (value <= 100) return 'high'
-    return 'max'
   }
   return 'high'
 }
@@ -521,10 +510,6 @@ export function getEffortLevelDescription(level: AvailableEffortLevel): string {
  * @returns Human-readable description
  */
 export function getEffortValueDescription(value: EffortValue): string {
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
-    return `[internal-only] Numeric effort value of ${value}`
-  }
-
   if (typeof value === 'string') {
     return getEffortLevelDescription(value)
   }
@@ -557,34 +542,22 @@ function getDefaultEffortForModelForOptionalContext(
   model: string,
   context?: ProviderAuthReadContext,
 ): EffortValue | undefined {
-  const userType =
-    context === undefined
-      ? process.env.USER_TYPE
-      : context.environment.USER_TYPE
-  if (userType === 'ant') {
-    const config = getAntModelOverrideConfig()
-    const isDefaultModel =
-      config?.defaultModel !== undefined &&
-      model.toLowerCase() === config.defaultModel.toLowerCase()
-    if (isDefaultModel && config?.defaultModelEffortLevel) {
-      return config.defaultModelEffortLevel
-    }
-    const antModel = resolveAntModel(model)
-    if (antModel) {
-      if (antModel.defaultEffortLevel) {
-        return antModel.defaultEffortLevel
-      }
-      if (antModel.defaultEffortValue !== undefined) {
-        return antModel.defaultEffortValue
-      }
-    }
-    // Always default ants to undefined/high
-    return undefined
-  }
-
   const registeredProvider = inferCatalogProvider(model, context)
   if (registeredProvider === 'gemini') {
     return resolveGeminiThinkingModel(model)?.defaultLevel
+  }
+  // Core's resolver knows the default the provider applies when no level is
+  // sent; show that rather than guess.
+  if (registeredProvider !== undefined) {
+    const coreDefault = resolveReasoningEffort({
+      provider: registeredProvider,
+      model,
+    }).defaultLevel
+    if (coreDefault !== undefined) {
+      // A native "none" has no UI tier: effort is off by default. Never fall
+      // through to a guessed level the daemon would reject for this model.
+      return isAvailableEffortLevel(coreDefault) ? coreDefault : undefined
+    }
   }
   const registeredEntry =
     registeredProvider === 'meta' ||
@@ -609,7 +582,6 @@ function getDefaultEffortForModelForOptionalContext(
   // that can greatly affect model quality and bashing.
 
   // Default effort on Opus 4.6/4.7/4.8 to medium for Pro.
-  // Max/Team also get medium when the tengu_grey_step2 config is enabled.
   if (
     model.toLowerCase().includes('opus-4-6') ||
     model.toLowerCase().includes('opus-4-7') ||
@@ -654,4 +626,98 @@ export function getDefaultEffortForModelForContext(
   context: ProviderAuthReadContext,
 ): EffortValue | undefined {
   return getDefaultEffortForModelForOptionalContext(model, context)
+}
+
+/**
+ * The effort the provider applies to this model when a session sets none,
+ * in Core's own vocabulary, so a native "none" stays "none". This is the
+ * value to send when a session goes back to the model default. Undefined
+ * when Core registers no default for the model.
+ */
+export function getNativeDefaultReasoningEffortForContext(
+  model: string,
+  context?: ProviderAuthReadContext,
+): string | undefined {
+  const provider = inferCatalogProvider(model, context)
+  if (provider === undefined) return undefined
+  const coreDefault = resolveReasoningEffort({ provider, model }).defaultLevel
+  if (coreDefault !== undefined) return coreDefault
+  // Gemini's documented thinking default lives in Core's Gemini registry,
+  // not in the shared resolver.
+  return provider === 'gemini'
+    ? resolveGeminiThinkingModel(model)?.defaultLevel
+    : undefined
+}
+
+/**
+ * What a session at the model default runs at, as the daemon names it, so
+ * `/effort default` can send it. Core's native default when Core has one.
+ * The TUI's own guess only for a model Core does not register, and only
+ * when Core accepts that level for it. Undefined otherwise: there is nothing
+ * truthful to send, and a guessed tier would either be refused by the
+ * daemon or pin the session at a level nobody chose.
+ */
+export function getModelDefaultReasoningEffortForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): string | undefined {
+  const provider = inferCatalogProvider(model, context)
+  if (provider === undefined) return undefined
+  const resolved = resolveReasoningEffort({ provider, model })
+  const native = getNativeDefaultReasoningEffortForContext(model, context)
+  if (native !== undefined) {
+    return native === 'none' || resolved.levels.includes(native) ? native : undefined
+  }
+  if (resolved.registered) return undefined
+  const guess = getDefaultEffortForModelForOptionalContext(model, context)
+  if (typeof guess !== 'string') return undefined
+  const wire = effortValueToReasoningEffort(
+    guess,
+    getAvailableEffortLevelsForOptionalContext(model, context),
+  )
+  return wire !== undefined && resolved.levels.includes(wire) ? wire : undefined
+}
+
+/**
+ * True while a session runs the model's native "no reasoning" default: no
+ * level is chosen and Core's default for the model is "none". Every effort
+ * surface then reads "off" instead of a guessed tier.
+ */
+export function isEffortOffByDefaultForContext(
+  model: string,
+  effortValue: EffortValue | undefined,
+  context?: ProviderAuthReadContext,
+): boolean {
+  return (
+    effortValue === undefined &&
+    getNativeDefaultReasoningEffortForContext(model, context) === 'none'
+  )
+}
+
+/**
+ * The session's effort for the status line ("high effort", "effort off"):
+ * the chosen level, else the model's default as the daemon would run it.
+ * Null when no level is chosen and no truthful default is known, so the
+ * status line never shows a guessed tier.
+ */
+export function getSessionEffortLabelForContext(
+  model: string,
+  effortValue: EffortValue | undefined,
+  context: ProviderAuthReadContext,
+): string | null {
+  if (effortValue !== undefined) {
+    return `${getDisplayedEffortLevelForContext(model, effortValue, context)} effort`
+  }
+  const modelDefault = getModelDefaultReasoningEffortForContext(model, context)
+  if (modelDefault === undefined) return null
+  return modelDefault === 'none' ? 'effort off' : `${nativeEffortLabel(modelDefault)} effort`
+}
+
+/** How a native effort reads in the TUI: "none" means effort is off. */
+export function nativeEffortLabel(value: string): string {
+  return value === 'none'
+    ? 'off'
+    : isAvailableEffortLevel(value)
+      ? convertEffortValueToLevel(value)
+      : value
 }

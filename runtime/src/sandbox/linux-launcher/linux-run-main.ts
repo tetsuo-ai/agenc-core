@@ -1,4 +1,7 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { capabilityDigest } from "./capability-hint.js";
+import { createProcMountProbeArgs, runProcMountProbe, type ProcMountProbeOptions } from "./proc-probe.js";
+import { userRuntimeEnvironment } from "../../utils/runtimeEnvironment.js";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +10,7 @@ import {
   createBwrapCommandArgs,
   insertInnerCommandArgv0,
   type BwrapNetworkMode,
+  type BwrapOptions,
 } from "./bwrap.js";
 import {
   parseLinuxSandboxLauncherArgs,
@@ -42,7 +46,7 @@ import {
   hasFullDiskReadAccess,
   permissionProfileToRuntimePermissions,
   restrictedFileSystemPolicy,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 
 const ACTIVE_INNER_ENV = "AGENC_LINUX_SANDBOX_ACTIVE";
 
@@ -54,6 +58,8 @@ export interface LinuxSandboxRunDeps {
     options: PreferredBubblewrapLauncherOptions,
   ) => BubblewrapLauncher | null;
   readonly onStderr?: (line: string) => void;
+  /** Whether the kernel runs this file as a native program (tests). */
+  readonly isNativeExecutable?: (file: string) => boolean;
 }
 
 export async function runLinuxSandboxMain(
@@ -74,8 +80,17 @@ async function runLinuxSandboxOptions(
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
   const hostCommandCwd = options.inheritedCwd ? "." : options.commandCwd;
+  // Each launcher process defaults its own React environment again. Restore
+  // the incoming command environment before re-exec or an inner-stage hop.
+  const env = userRuntimeEnvironment(deps.env ?? process.env);
+  if (
+    options.browserCdpOverStdio &&
+    (options.allowNetworkForProxy ||
+      permissionProfileToRuntimePermissions(options.permissionProfile).network !== "enabled")
+  ) {
+    throw new Error("Browser CDP pipe transport requires the browser's enabled-network profile");
+  }
   if (options.applySeccompThenExec) {
-    const env = deps.env ?? process.env;
     if (env[ACTIVE_INNER_ENV] !== "1") {
       throw new Error("inner Linux sandbox stage must run inside bubblewrap");
     }
@@ -96,25 +111,26 @@ async function runLinuxSandboxOptions(
         cwd: options.commandCwd,
         env,
         argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
+        browserCdpOverStdio: options.browserCdpOverStdio,
       });
     } finally {
       activatedProxy?.cleanup();
     }
   }
 
-  const env = deps.env ?? process.env;
   const runtimePermissions = permissionProfileToRuntimePermissions(
     options.permissionProfile,
   );
   if (
     options.inheritedCwd &&
+    options.boundReadOnlyCwd === undefined &&
     !hasFullDiskReadAccess(runtimePermissions.fileSystem)
   ) {
     throw new Error(
       "inherited read-only cwd requires full disk read access in the source permission profile",
     );
   }
-  const fileSystem = options.inheritedCwd
+  const fileSystem = options.inheritedCwd && options.boundReadOnlyCwd === undefined
     ? restrictedFileSystemPolicy(
         [
           {
@@ -135,10 +151,14 @@ async function runLinuxSandboxOptions(
     selfCommand,
     preparedProxy?.serializedSpec ?? null,
   );
+  const execDirectly = bubblewrapCanExecCommand(
+    options,
+    deps.isNativeExecutable ?? isNativeElfExecutable,
+  );
   const extraReadOnlyBindRoots = inferredInnerLauncherBindRoots(selfCommand);
   const extraWritableBindRoots =
     preparedProxy === null ? [] : [preparedProxy.socketDir];
-  const extraDeviceBindPaths = resolveSandboxDeviceBinds(deps.env ?? process.env);
+  const extraDeviceBindPaths = resolveSandboxDeviceBinds(env);
   const proxyRoutedNetwork = options.allowNetworkForProxy;
   const seccompMode = networkSeccompMode(
     network,
@@ -154,35 +174,51 @@ async function runLinuxSandboxOptions(
       )
     : undefined;
   try {
-    let bwrapArgs = createBwrapCommandArgs(
-      innerCommand,
-      fileSystem,
-      options.sandboxPolicyCwd,
-      options.commandCwd,
-      {
-        mountProc: options.mountProc,
-        networkMode,
-        sessionTempRoot: options.sessionTempRoot,
-        ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
-        extraReadOnlyBindRoots,
-        extraWritableBindRoots,
-        extraDeviceBindPaths,
-        inheritedReadOnlyCwd: options.inheritedCwd,
-      },
-    );
+    if (options.boundReadOnlyCwd !== undefined) {
+      if (inheritedCwdFd === undefined) throw new Error("bound inherited cwd descriptor is missing");
+      const identity = fs.fstatSync(inheritedCwdFd, { bigint: true });
+      const expected = options.boundReadOnlyCwd;
+      if (!identity.isDirectory() || String(identity.dev) !== expected.dev || String(identity.ino) !== expected.ino || String(identity.mode) !== expected.mode) {
+        throw new Error("bound inherited cwd descriptor identity changed");
+      }
+    }
+    const bwrapOptions = (mountProc: boolean): BwrapOptions => ({
+      mountProc,
+      networkMode,
+      sessionTempRoot: options.sessionTempRoot,
+      ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
+      extraReadOnlyBindRoots,
+      extraWritableBindRoots,
+      extraDeviceBindPaths,
+      inheritedReadOnlyCwd: options.inheritedCwd,
+      ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
+      ...(execDirectly ? { chdirToCommandCwd: true } : {}),
+    });
+    const buildBwrapArgs = (mountProc: boolean) =>
+      createBwrapCommandArgs(
+        execDirectly ? options.command : innerCommand,
+        fileSystem,
+        options.sandboxPolicyCwd,
+        options.commandCwd,
+        bwrapOptions(mountProc),
+      );
+    let bwrapArgs = buildBwrapArgs(options.mountProc);
     if (!bwrapArgs.usesBubblewrap) {
       return execCommand(options.command, {
         cwd: hostCommandCwd,
         env,
         argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
+        browserCdpOverStdio: options.browserCdpOverStdio,
       });
     }
     const launcher = (deps.preferredLauncher ?? preferredBubblewrapLauncher)({
       cwd: hostCommandCwd,
       env,
       requireNamespaces: true,
+      ...(options.capabilityHint === undefined ? {} : { capabilityHint: options.capabilityHint }),
     });
     if (launcher === null) {
+      if (options.boundReadOnlyCwd !== undefined) throw new Error("narrow descriptor-bound search requires bubblewrap with --ro-bind-fd");
       // Bubblewrap is unusable. Before failing, try the Landlock rung: a
       // kernel allow-list needing no namespaces, carrying the same network
       // seccomp program bwrap would have applied. The plan refuses loudly
@@ -211,32 +247,20 @@ async function runLinuxSandboxOptions(
         sandboxPolicyCwd: options.sandboxPolicyCwd,
         commandCwd: options.commandCwd,
         inheritedCwdFd,
+        ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
         networkMode,
         sessionTempRoot: options.sessionTempRoot,
-      })
+      }, env)
     ) {
-      bwrapArgs = createBwrapCommandArgs(
-        innerCommand,
-        fileSystem,
-        options.sandboxPolicyCwd,
-        options.commandCwd,
-        {
-          mountProc: false,
-          networkMode,
-          sessionTempRoot: options.sessionTempRoot,
-          ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
-          extraReadOnlyBindRoots,
-          extraWritableBindRoots,
-          extraDeviceBindPaths,
-          inheritedReadOnlyCwd: options.inheritedCwd,
-        },
-      );
+      bwrapArgs = buildBwrapArgs(false);
     }
-    const finalArgs = insertInnerCommandArgv0(
-      bwrapArgs.args,
-      launcher.supportsArgv0,
-      selfCommand[0] ?? process.execPath,
-    );
+    const finalArgs = execDirectly
+      ? [...bwrapArgs.args]
+      : insertInnerCommandArgv0(
+          bwrapArgs.args,
+          launcher.supportsArgv0,
+          selfCommand[0] ?? process.execPath,
+        );
     const protectedMonitor = startProtectedCreateMonitor(
       bwrapArgs.protectedCreateTargets,
     );
@@ -321,8 +345,9 @@ async function runUnderLandlockFallback(input: {
     const child = spawn(launcherPath, args, {
       cwd: input.hostCommandCwd,
       env: input.env,
-      stdio:
-        program === null
+      stdio: input.options.browserCdpOverStdio
+        ? ["ignore", "ignore", "inherit", 0, 1]
+        : program === null
           ? "inherit"
           : ["inherit", "inherit", "inherit", program.fd],
     });
@@ -345,6 +370,85 @@ async function runUnderLandlockFallback(input: {
   }
 }
 
+/**
+ * Whether bubblewrap can exec the command itself instead of the inner
+ * launcher stage. Without a managed proxy route or CDP pipes the inner stage
+ * only execve()s the command, because bubblewrap already loads the seccomp
+ * program (`--seccomp`), so running it directly saves a launcher start. That
+ * is exact only for a native ELF program named by a path: bubblewrap's execvp
+ * runs a file the kernel refuses (ENOEXEC) through /bin/sh and looks a bare
+ * name up on a default PATH when PATH is unset, where the inner stage's
+ * execve fails and searches the command's own PATH. An inherited cwd keeps
+ * the inner stage as well.
+ */
+function bubblewrapCanExecCommand(
+  options: LinuxSandboxLauncherOptions,
+  isNativeExecutable: (file: string) => boolean,
+): boolean {
+  if (
+    options.allowNetworkForProxy ||
+    options.browserCdpOverStdio ||
+    options.inheritedCwd ||
+    options.boundReadOnlyCwd !== undefined
+  ) {
+    return false;
+  }
+  const program = options.command[0];
+  if (program === undefined || !program.includes("/")) return false;
+  return isNativeExecutable(path.resolve(options.commandCwd, program));
+}
+
+const ELF_MACHINE: Partial<Record<NodeJS.Architecture, number>> = {
+  arm: 40,
+  arm64: 183,
+  ia32: 3,
+  loong64: 258,
+  ppc64: 21,
+  riscv64: 243,
+  s390x: 22,
+  x64: 62,
+};
+const ELF_64_BIT_ARCHES = new Set<NodeJS.Architecture>([
+  "arm64",
+  "loong64",
+  "ppc64",
+  "riscv64",
+  "s390x",
+  "x64",
+]);
+
+/**
+ * Whether `file` is a regular file starting with an ELF header for this
+ * machine's architecture and word size, so the kernel runs it rather than
+ * refusing it with ENOEXEC. The open never blocks: a FIFO or device is
+ * opened nonblocking and rejected before any read.
+ */
+export function isNativeElfExecutable(
+  file: string,
+  arch: NodeJS.Architecture = process.arch,
+): boolean {
+  const machine = ELF_MACHINE[arch];
+  if (machine === undefined) return false;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOCTTY);
+    if (!fs.fstatSync(fd).isFile()) return false;
+    const header = Buffer.alloc(20);
+    if (fs.readSync(fd, header, 0, header.length, 0) !== header.length) return false;
+    if (header.readUInt32BE(0) !== 0x7f454c46) return false;
+    const wordSize = ELF_64_BIT_ARCHES.has(arch) ? 2 : 1;
+    if (header[4] !== wordSize) return false;
+    const encoding = header[5];
+    if (encoding !== 1 && encoding !== 2) return false;
+    const eMachine = encoding === 1 ? header.readUInt16LE(18) : header.readUInt16BE(18);
+    return eMachine === machine;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function createInnerLauncherCommand(
   options: LinuxSandboxLauncherOptions,
   selfCommand: readonly string[],
@@ -353,6 +457,7 @@ function createInnerLauncherCommand(
   return [
     ...selfCommand,
     "--apply-seccomp-then-exec",
+    ...(options.browserCdpOverStdio ? ["--browser-cdp-over-stdio"] : []),
     "--sandbox-policy-cwd",
     options.sandboxPolicyCwd,
     "--command-cwd",
@@ -420,6 +525,7 @@ export async function runCommandWithSupervision(
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly argv0: string;
+    readonly browserCdpOverStdio?: boolean;
   },
 ): Promise<number> {
   const [program, ...args] = command;
@@ -429,7 +535,9 @@ export async function runCommandWithSupervision(
   const child = spawn(program, args, {
     cwd: options.cwd,
     env: options.env,
-    stdio: "inherit",
+    stdio: options.browserCdpOverStdio
+      ? ["ignore", "ignore", "inherit", 0, 1]
+      : "inherit",
     argv0: options.argv0,
   });
   return await waitForChildWithSignalRelay(child);
@@ -441,8 +549,14 @@ function execCommand(
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly argv0: string;
+    readonly browserCdpOverStdio?: boolean;
   },
-): never {
+): Promise<number> {
+  // Node closes inherited extra descriptors on exec. Remap only the two CDP
+  // channels after confinement, while retaining supervision of the child.
+  if (options.browserCdpOverStdio) {
+    return runCommandWithSupervision(command, options);
+  }
   const [rawProgram, ...args] = command;
   if (rawProgram === undefined) {
     throw new Error("Linux sandbox command is missing");
@@ -464,6 +578,12 @@ function execCommand(
   // authoritative and must not recover the daemon launcher's process PATH.
   const program = resolveProgramOnPath(rawProgram, options.env);
   process.chdir(options.cwd);
+  // Node runs with SIGPIPE and SIGXFSZ ignored, and execve keeps ignored
+  // signals ignored. Caught ones reset to their defaults instead, which is
+  // what every spawned command (and bubblewrap's own exec) starts with.
+  for (const signal of ["SIGPIPE", "SIGXFSZ"] as const) {
+    process.on(signal, () => {});
+  }
   execve(program, [options.argv0, ...args], stringOnlyEnv(options.env));
   throw new Error("Linux sandbox execve returned unexpectedly");
 }
@@ -602,41 +722,13 @@ function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return result;
 }
 
-function preflightProcMountSupport(options: {
-  readonly launcher: BubblewrapLauncher;
-  readonly fileSystem: FileSystemSandboxPolicy;
-  readonly sandboxPolicyCwd: string;
-  readonly commandCwd: string;
-  readonly inheritedCwdFd?: number;
-  readonly networkMode: BwrapNetworkMode;
-  readonly sessionTempRoot: string;
-}): boolean {
-  const args = createBwrapCommandArgs(
-    [resolveTrueCommand()],
-    options.fileSystem,
-    options.sandboxPolicyCwd,
-    options.commandCwd,
-    {
-      mountProc: true,
-      networkMode: options.networkMode,
-      sessionTempRoot: options.sessionTempRoot,
-      inheritedReadOnlyCwd: options.inheritedCwdFd !== undefined,
-    },
-  );
+function preflightProcMountSupport(options: ProcMountProbeOptions, env: NodeJS.ProcessEnv): boolean {
+  const args = createProcMountProbeArgs(options);
   if (!args.usesBubblewrap) return true;
-  const output = spawnSync(options.launcher.program, args.args, {
-    cwd: options.inheritedCwdFd === undefined ? options.commandCwd : ".",
-    encoding: "utf8",
-    stdio:
-      options.inheritedCwdFd === undefined
-        ? ["ignore", "ignore", "pipe"]
-        : ["ignore", "ignore", "pipe", "ignore", options.inheritedCwdFd],
-  });
+  // A cached success only keeps --proc. Never cache the no-proc fallback.
+  if (options.launcher.capabilityHint?.procArgs === capabilityDigest(args.args)) return true;
+  const output = runProcMountProbe(options, args.args, env);
   return output.status === 0 || !isProcMountFailure(output.stderr ?? "");
-}
-
-function resolveTrueCommand(): string {
-  return "/bin/true";
 }
 
 export function isProcMountFailure(stderr: string): boolean {

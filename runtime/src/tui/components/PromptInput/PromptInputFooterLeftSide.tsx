@@ -6,9 +6,8 @@ import { Box, Text, Link } from '../../ink.js';
 import * as React from 'react';
 import figures from 'figures';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import type { VimMode, PromptInputMode } from '../../../types/textInputTypes.js';
+import type { PromptInputMode } from '../../../types/textInputTypes.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
-import { formatVimModeIndicator, isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, getModeColor } from '../../../utils/permissions/PermissionMode.js';
 import { permissionModeFooterChrome } from './permissionModeChrome.js';
@@ -47,7 +46,6 @@ type Props = {
     show: boolean;
     key?: string;
   };
-  vimMode: VimMode | undefined;
   mode: PromptInputMode;
   toolPermissionContext: ToolPermissionContext;
   suppressHint: boolean;
@@ -128,7 +126,6 @@ export function PromptInputFooterLeftSide(t0) {
   const $ = _c(27);
   const {
     exitMessage,
-    vimMode,
     mode,
     toolPermissionContext,
     suppressHint,
@@ -167,16 +164,6 @@ export function PromptInputFooterLeftSide(t0) {
     }
     return t1;
   }
-  let t1;
-  if ($[3] !== isSearching || $[4] !== vimMode) {
-    t1 = isVimModeEnabled() && vimMode !== undefined && !isSearching;
-    $[3] = isSearching;
-    $[4] = vimMode;
-    $[5] = t1;
-  } else {
-    t1 = $[5];
-  }
-  const showVim = t1;
   let t2;
   if ($[6] !== historyFailedMatch || $[7] !== historyQuery || $[8] !== isSearching || $[9] !== setHistoryQuery) {
     t2 = isSearching && <HistorySearchInput value={historyQuery} onChange={setHistoryQuery} historyFailedMatch={historyFailedMatch} />;
@@ -188,12 +175,11 @@ export function PromptInputFooterLeftSide(t0) {
   } else {
     t2 = $[10];
   }
-  const vimModeIndicator = formatVimModeIndicator(vimMode);
-  const t3 = showVim && vimModeIndicator ? <Text dimColor={true} key="vim-mode">{vimModeIndicator}</Text> : null;
-  const t4 = !suppressHint && !showVim;
+  const t3 = null;
+  const t4 = !suppressHint;
   let t5;
   if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== toolPermissionContext) {
-    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;
+    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} onOpenTasksDialog={onOpenTasksDialog} />;
     $[13] = isLoading;
     $[14] = mode;
     $[15] = onOpenTasksDialog;
@@ -226,7 +212,6 @@ type ModeIndicatorProps = {
   tasksSelected: boolean;
   teamsSelected: boolean;
   teammateFooterIndex?: number;
-  exitPending?: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
 };
 function ModeIndicator({
@@ -237,7 +222,6 @@ function ModeIndicator({
   tasksSelected,
   teamsSelected,
   teammateFooterIndex,
-  exitPending,
   onOpenTasksDialog
 }: ModeIndicatorProps): React.ReactNode {
   const {
@@ -307,7 +291,8 @@ function ModeIndicator({
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long task label doesn't push the mode
   // indicator off-screen.
-  const modePart = currentMode && currentModeChrome && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} bold={currentModeChrome.emphasize} key="mode">
+  // Fullscreen shows the mode once, in the status line under the prompt.
+  const modePart = !isFullscreen && currentMode && currentModeChrome && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} bold={currentModeChrome.emphasize} key="mode">
         {currentModeChrome.symbol}{currentModeChrome.symbol ? ' ' : ''}{currentModeChrome.label}
         {shouldShowModeHint && <Text dimColor>
             {' '}
@@ -363,15 +348,6 @@ function ModeIndicator({
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
   const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
-  // Suppress the cold-idle "? for shortcuts" hint while the exit warning is
-  // active — the active "Press X again to exit" text takes precedence and
-  // these two single-line hints must not stack.
-  if (parts.length === 0 && !tasksPart && !modePart && showHint && !exitPending) {
-    parts.push(<Text dimColor key="shortcuts-hint">
-        ? for shortcuts
-      </Text>);
-  }
-
   const copyOnSelect = settings.tui?.copyOnSelect ?? true;
   const selectionHintHasContent = hasSelection && (!copyOnSelect || isXtermJs());
 
@@ -401,8 +377,7 @@ function ModeIndicator({
   // In fullscreen the bottom section is flexShrink:0 — every row here
   // is a row stolen from the ScrollBox. This component must have a STABLE
   // height so the footer never grows/shrinks and shifts scroll content.
-  // Returning null when parts is empty (e.g. StatusLine on → suppressHint
-  // → showHint=false → no "? for shortcuts") would let a later-added
+  // Returning null when parts is empty (the idle footer) would let a later-added
   // part (e.g. the selection copy/native-select hints) grow the column
   // from 0→1 row. Always render 1 row in fullscreen; return a space when
   // empty so Yoga reserves the row without painting anything visible.
@@ -445,9 +420,10 @@ function getSpinnerHintParts(isLoading: boolean, todosShortcut: string, killAgen
     toggleAction = expandedView === 'tasks' ? 'hide tasks' : 'show tasks';
   }
 
-  // Show the toggle hint only when there are task items to display or
-  // teammates to cycle to
-  const showToggleHint = hasTaskItems || hasTeammates;
+  // The tasks toggle keeps its key (ctrl+t) but no footer hint: the task
+  // list already shows under the working line, and the footer stays quiet.
+  void hasTaskItems;
+  const showToggleHint = hasTeammates;
   // "esc to interrupt" is deliberately NOT rendered here: the spinner byline
   // already ends with that affordance (SpinnerAnimationRow), and the codebase
   // convention (see PromptInputQueuedCommands) is to never repeat it.

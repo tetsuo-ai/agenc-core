@@ -87,9 +87,24 @@ describe("ResilientMCPBridge", () => {
         command: "node",
         origin: { scope },
         virtual_no_fs_write_tools: ["browser_navigate"],
-      })).toBeUndefined();
+      })?.virtualNoFsWriteTools).toBeUndefined();
     },
   );
+
+  it("carries only decoded plugin secrets in the catalog policy", () => {
+    const config: MCPServerConfig = {
+      name: "plugin:demo:desktop",
+      command: "node",
+      origin: { scope: "plugin" },
+      env: { DEBUG: "1", LOG_LEVEL: "info", TOKEN: "decoded-secret" },
+      headers: { "X-Mode": "info", Authorization: "Bearer decoded-secret" },
+      pluginSecretValues: ["decoded-secret"],
+    };
+    expect(toToolCatalogPolicyConfig(config)?.sensitiveHeaders).toEqual({
+      "decoded:0": "decoded-secret",
+    });
+    expect(toToolCatalogPolicyConfig({ ...config, pluginSecretValues: [] })).toBeUndefined();
+  });
 
   it("retries a rejected inner disposal and caches the successful retry", async () => {
     const cleanupError = new Error("owned client still alive");
@@ -182,6 +197,7 @@ describe("ResilientMCPBridge", () => {
       undefined,
       undefined,
       EMPTY_MCP_REQUEST_ENVIRONMENT,
+      undefined,
     );
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
@@ -238,6 +254,7 @@ describe("ResilientMCPBridge", () => {
       samplingHandlers,
       undefined,
       EMPTY_MCP_REQUEST_ENVIRONMENT,
+      undefined,
     );
 
     await bridge.dispose();
@@ -406,6 +423,23 @@ describe("ResilientMCPBridge", () => {
     await bridge.dispose();
   });
 
+  it("refuses a catalog replacement while a reconnect is pending and settles on disposal", async () => {
+    vi.useFakeTimers();
+    const inner = makeBridge(
+      "srv",
+      vi.fn().mockResolvedValue({ content: "transport closed", isError: true }),
+    );
+    const bridge = new ResilientMCPBridge({ name: "srv", command: "node" }, inner);
+    await bridge.tools[0]!.execute({});
+    expect(bridge.isReconnecting).toBe(true);
+    expect(bridge.replacePublishedCatalog(makeBridge("srv"))).toBe(false);
+    expect(bridge.tools[0]!.name).toBe("mcp.srv.tool");
+    const settled = bridge.whenReconnectSettled();
+    await bridge.dispose();
+    await expect(settled).resolves.toBeUndefined();
+    expect(mockCreateMCPConnection).not.toHaveBeenCalled();
+  });
+
   it("awaits and closes an in-flight automatic reconnect during disposal", async () => {
     vi.useFakeTimers();
     let resolveClient:
@@ -446,5 +480,100 @@ describe("ResilientMCPBridge", () => {
 
     expect(freshClient.close).toHaveBeenCalledOnce();
     expect(initialBridge.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("resets reconnect backoff after a healthy minute when the catalog was refreshed", async () => {
+    vi.useFakeTimers();
+    const initial = makeBridge("srv");
+    const reconnected = makeBridge("srv");
+    const refreshed = makeBridge("srv");
+    const later = makeBridge("srv");
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(reconnected)
+      .mockResolvedValueOnce(later);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      initial,
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bridge.isReconnecting).toBe(false);
+    expect(bridge.replacePublishedCatalog(refreshed)).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(bridge.isReconnecting).toBe(false);
+    await bridge.dispose();
+  });
+
+  it("keeps the increased reconnect backoff when a catalog refresh happens before the healthy minute", async () => {
+    vi.useFakeTimers();
+    const initial = makeBridge("srv");
+    const reconnected = makeBridge("srv");
+    const refreshed = makeBridge("srv");
+    const later = makeBridge("srv");
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(reconnected)
+      .mockResolvedValueOnce(later);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      initial,
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bridge.isReconnecting).toBe(false);
+    expect(bridge.replacePublishedCatalog(refreshed)).toBe(true);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(bridge.isReconnecting).toBe(false);
+    await bridge.dispose();
+  });
+
+  it("increases reconnect backoff when the connection drops again before the healthy minute", async () => {
+    vi.useFakeTimers();
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValue(makeBridge("srv"));
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      makeBridge("srv"),
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    await bridge.dispose();
+  });
+
+  it("does not reconnect after disposal during the healthy interval", async () => {
+    vi.useFakeTimers();
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValue(makeBridge("srv"));
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      makeBridge("srv"),
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await bridge.dispose();
+    await vi.advanceTimersByTimeAsync(60_000);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
   });
 });

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildReviewerMessages,
   extractBlockers,
+  ReviewInvocationError,
   ReviewParseError,
   runIndependentReview,
   type ReviewerInvoker,
@@ -144,6 +145,26 @@ describe("M5 independent review", () => {
     ).rejects.toThrow(ReviewParseError);
   });
 
+  it("a reviewer that never answered surfaces ReviewInvocationError, not a parse failure", async () => {
+    const invoker: ReviewerInvoker = {
+      invoke: async () => {
+        throw new ReviewInvocationError("grok authentication failed (HTTP 403)");
+      },
+    };
+    await expect(
+      runIndependentReview({
+        spec: SPEC,
+        patchText: "diff",
+        changedFilesText: "",
+        verification: COMMANDS,
+        verificationVerdict: "PASS",
+        invoker,
+        sink: new MemorySink(),
+        step: STEP,
+      }),
+    ).rejects.toBeInstanceOf(ReviewInvocationError);
+  });
+
   it("context hygiene: the invoker receives exactly the assembled prompt and nothing else", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const invoker: ReviewerInvoker = {
@@ -188,6 +209,21 @@ describe("M5 independent review", () => {
     expect(captured[0].systemPrompt).toBe(expected.systemPrompt);
     expect(String(captured[0].userMessage)).toContain("Fix the retry counter.");
     expect(String(captured[0].userMessage)).toContain("+42");
+  });
+
+  it("names each verification command by its script, not its label", () => {
+    // The label is a name for people; the reviewer is told what actually ran.
+    const { userMessage } = buildReviewerMessages({
+      goal: SPEC.goal,
+      patchText: "diff",
+      changedFilesText: "M\tsrc/index.ts",
+      verification: [{ ...COMMANDS[0]!, label: "verify" }],
+      verificationVerdict: "PASS",
+    });
+    expect(userMessage).toContain(
+      "## Verification evidence\n- `npm test`: exit 0 in 900ms\n",
+    );
+    expect(userMessage).not.toMatch(/^- verify\b/mu);
   });
 
   it("forwards a reviewer deadline only when the caller explicitly supplies one", async () => {

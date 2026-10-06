@@ -10,6 +10,10 @@
  *   MiniMax  POST /video_generation → task_id;
  *            GET /query/video_generation until "Success" → file_id;
  *            GET /files/retrieve → download_url on MiniMax's CDN.
+ *   MiniMax H3 (v2 task API, sibling of /v1 on the same host)
+ *            POST /v2/video_generation → task_id;
+ *            GET /v2/query/video_generation/{task_id} until "succeeded" →
+ *            task.content.url on MiniMax's CDN.
  *
  * Auth follows the same rule as ImagineImage: a session generates with its
  * own provider's native route, authorized only by that provider's canonical
@@ -31,7 +35,7 @@ import {
 } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
-  resolveXaiBearerToken,
+  tryResolveXaiBearerTokenForBaseUrl,
 } from "../../llm/xai-capability-config.js";
 import {
   resolveProviderApiKeyEnvironment,
@@ -116,6 +120,8 @@ const OPENAI_VIDEO_RESOLUTIONS = Object.freeze(new Set(["720p", "1080p"]));
 
 const MINIMAX_VIDEO_MODELS = Object.freeze(
   new Set([
+    "MiniMax-H3",
+    "MiniMax-H3-Max",
     "MiniMax-Hailuo-02",
     "MiniMax-Hailuo-2.3",
     "MiniMax-Hailuo-2.3-fast",
@@ -136,6 +142,31 @@ const MINIMAX_VIDEO_RESOLUTIONS = Object.freeze(
  * 512P is only supported when param 'first_frame_image' provided".
  */
 const MINIMAX_FIRST_FRAME_ONLY_RESOLUTION = "512P";
+/**
+ * The H3 generation lives on MiniMax's v2 task API (platform.minimax.io,
+ * 2026-09-11). H3 renders 768P or 2K for 4 to 15 seconds; H3-Max renders
+ * 480P or 768P for 5 to 15 seconds. Hailuo stays on the v1 route above.
+ */
+const MINIMAX_V2_VIDEO_MODELS = Object.freeze(
+  new Set(["MiniMax-H3", "MiniMax-H3-Max"]),
+);
+const MINIMAX_V2_VIDEO_RESOLUTIONS: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  "MiniMax-H3": Object.freeze(["768P", "2K"]),
+  "MiniMax-H3-Max": Object.freeze(["480P", "768P"]),
+});
+const MINIMAX_V2_VIDEO_DURATIONS: Readonly<
+  Record<string, readonly [number, number]>
+> = Object.freeze({
+  "MiniMax-H3": [4, 15],
+  "MiniMax-H3-Max": [5, 15],
+});
+/** Text-to-video on v2 requires a concrete ratio; a first frame fixes it. */
+const MINIMAX_V2_VIDEO_RATIOS = Object.freeze(
+  new Set(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+);
+const MINIMAX_V2_DEFAULT_RATIO = "16:9";
 
 const MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const MAX_VIDEO_DOWNLOAD_REDIRECTS = 5;
@@ -182,12 +213,14 @@ type VideoBackendResolution =
 function environmentVideoBackend(
   kind: "openai" | "minimax",
   env: NodeJS.ProcessEnv,
+  sessionBaseURL?: string,
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
-  const baseURL =
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL);
+  const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
+  const baseURL = kind === "openai"
+    ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
+    : environmentBaseURL ?? sessionBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
@@ -216,36 +249,49 @@ function resolveVideoBackend(
   const env = opts.env ?? process.env;
   const provider = opts.getSession()?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
+  let oauthBaseUrlError: string | undefined;
 
   if (providerIdentity === "openai" || providerIdentity === "minimax") {
-    const backend = environmentVideoBackend(providerIdentity, env);
+    const backend = environmentVideoBackend(
+      providerIdentity,
+      env,
+      provider === undefined
+        ? undefined
+        : readProviderFactoryOptions(provider as never).baseURL,
+    );
     if (backend !== undefined) return { backend };
   }
 
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
-    if (isDirectXaiInferenceHost(factory.baseURL)) {
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
-      if (bearer !== undefined) {
-        return {
-          backend: {
-            kind: "xai",
-            baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
-              /\/$/,
-              "",
-            ),
-            bearer,
-          },
-        };
-      }
+    const sessionKey =
+      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+    );
+    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
+    const bearer = xaiResolution.bearer;
+    if (bearer !== undefined) {
+      return {
+        backend: {
+          kind: "xai",
+          baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
+            /\/$/,
+            "",
+          ),
+          bearer,
+        },
+      };
     }
   }
 
-  // Never pass a non-Grok session key/base URL. A non-direct Grok session
-  // also lands here and must supply independent xAI authority.
-  const bearer = resolveXaiBearerToken(opts.home, env);
+  // Without a usable Grok session key, use only independent xAI authority.
+  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+    opts.home, env,
+    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+  );
+  oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
+  const bearer = xaiResolution.bearer;
   if (bearer !== undefined) {
     const baseURL =
       resolveProviderBaseURLEnvironment("grok", env)?.value ??
@@ -271,7 +317,7 @@ function resolveVideoBackend(
   if (independent !== undefined) return { backend: independent };
 
   return {
-    error:
+    error: oauthBaseUrlError ??
       "ImagineVideo needs a media credential: OPENAI_API_KEY for Sora, " +
       "MINIMAX_API_KEY for Hailuo, or an independent xAI media credential " +
       "via /grok-login, XAI_API_KEY, or GROK_API_KEY.",
@@ -812,17 +858,18 @@ async function runMinimaxVideo(ctx: VideoRunContext): Promise<ToolResult> {
         "MiniMax takes a single first frame; use image_url rather than reference_image_urls",
     });
   }
-  // MiniMax sizes a video by resolution and model, so an aspect_ratio from
-  // the universal schema is dropped and named rather than refused.
-  const ignoredControls: string[] = [];
-  if (stringValue(args.aspect_ratio) !== undefined) {
-    ignoredControls.push("aspect_ratio");
-  }
   const model = stringValue(args.model) ?? MINIMAX_TEXT_TO_VIDEO_MODEL;
   if (!MINIMAX_VIDEO_MODELS.has(model)) {
     return refusal({
       error: `MiniMax video model must be one of ${[...MINIMAX_VIDEO_MODELS].join(", ")}`,
     });
+  }
+  if (MINIMAX_V2_VIDEO_MODELS.has(model)) return runMinimaxV2Video(ctx, model);
+  // MiniMax sizes a Hailuo video by resolution and model, so an aspect_ratio
+  // from the universal schema is dropped and named rather than refused.
+  const ignoredControls: string[] = [];
+  if (stringValue(args.aspect_ratio) !== undefined) {
+    ignoredControls.push("aspect_ratio");
   }
   const requestedResolution = stringValue(args.resolution);
   const resolutionSupported =
@@ -966,6 +1013,158 @@ async function runMinimaxVideo(ctx: VideoRunContext): Promise<ToolResult> {
   });
 }
 
+// ── MiniMax H3 (v2 task API) ──────────────────────────────────────────
+
+/** v2 answers a real HTTP status with an OpenAI-style error body. */
+interface MinimaxV2ErrorEnvelope {
+  readonly type?: string;
+  readonly error?: { readonly type?: string; readonly message?: string };
+}
+
+function minimaxV2Failure(payload: MinimaxV2ErrorEnvelope): string | undefined {
+  if (payload.type !== "error") return undefined;
+  return payload.error?.message ?? "MiniMax request failed";
+}
+
+/** Hailuo lives under /v1; the H3 task API is the sibling /v2 on the host. */
+function minimaxV2BaseURL(baseURL: string): string {
+  return /\/v1$/.test(baseURL) ? baseURL.replace(/\/v1$/, "/v2") : `${baseURL}/v2`;
+}
+
+async function runMinimaxV2Video(
+  ctx: VideoRunContext,
+  model: string,
+): Promise<ToolResult> {
+  const { args, backend, fetchImpl, signal } = ctx;
+  const ignoredControls: string[] = [];
+  const resolutions = MINIMAX_V2_VIDEO_RESOLUTIONS[model] ?? [];
+  const requestedResolution = stringValue(args.resolution)?.toUpperCase();
+  const resolutionSupported =
+    requestedResolution !== undefined &&
+    resolutions.includes(requestedResolution);
+  if (requestedResolution !== undefined && !resolutionSupported) {
+    ignoredControls.push("resolution");
+  }
+  const resolution = resolutionSupported ? requestedResolution : "768P";
+  const [minDuration, maxDuration] = MINIMAX_V2_VIDEO_DURATIONS[model] ?? [4, 15];
+  const duration = Math.min(
+    maxDuration,
+    Math.max(minDuration, requestedDuration(args) ?? 6),
+  );
+  // Text-to-video must name a ratio; with a first frame the image decides
+  // and the API treats anything else as adaptive anyway.
+  const requestedRatio = stringValue(args.aspect_ratio);
+  const ratioSupported =
+    requestedRatio !== undefined && MINIMAX_V2_VIDEO_RATIOS.has(requestedRatio);
+  if (requestedRatio !== undefined && !ratioSupported) {
+    ignoredControls.push("aspect_ratio");
+  }
+  const ratio =
+    ctx.imageUrl !== undefined
+      ? "adaptive"
+      : ratioSupported
+        ? requestedRatio
+        : MINIMAX_V2_DEFAULT_RATIO;
+  const v2 = minimaxV2BaseURL(backend.baseURL);
+
+  const submitRes = await fetchImpl(`${v2}/video_generation`, {
+    method: "POST",
+    headers: authHeaders(backend),
+    body: JSON.stringify({
+      model,
+      content: [
+        { type: "text", text: ctx.prompt },
+        ...(ctx.imageUrl === undefined
+          ? []
+          : [{
+              type: "image_url",
+              image_url: { url: ctx.imageUrl },
+              role: "first_frame",
+            }]),
+      ],
+      resolution,
+      duration,
+      ratio,
+    }),
+    ...signalInit(signal),
+  });
+  const submitJson = (await submitRes.json()) as MinimaxV2ErrorEnvelope & {
+    task_id?: string;
+  };
+  if (!submitRes.ok) {
+    return json(
+      {
+        error:
+          minimaxV2Failure(submitJson) ??
+          `MiniMax video submit HTTP ${submitRes.status}`,
+      },
+      true,
+    );
+  }
+  const taskId = submitJson.task_id;
+  if (!taskId) {
+    return json({ error: "MiniMax response did not include a task_id" }, true);
+  }
+
+  const polled = await pollForVideo(ctx.opts, signal, async () => {
+    const pollRes = await fetchImpl(
+      `${v2}/query/video_generation/${encodeURIComponent(taskId)}`,
+      { method: "GET", headers: authHeaders(backend), ...signalInit(signal) },
+    );
+    const pollJson = (await pollRes.json()) as MinimaxV2ErrorEnvelope & {
+      task?: {
+        status?: string;
+        content?: { url?: string };
+        error?: { message?: string };
+      };
+    };
+    if (!pollRes.ok) {
+      return {
+        state: "failed",
+        error:
+          minimaxV2Failure(pollJson) ??
+          `MiniMax video poll HTTP ${pollRes.status}`,
+      };
+    }
+    // Documented: queued → running → succeeded | failed | cancelled.
+    const status = String(pollJson.task?.status ?? "").toLowerCase();
+    if (status === "succeeded") {
+      const url = pollJson.task?.content?.url;
+      if (!url) {
+        return {
+          state: "failed",
+          error: "MiniMax reported success without a video URL",
+        };
+      }
+      return { state: "done", value: url };
+    }
+    if (status === "failed" || status === "cancelled") {
+      return {
+        state: "failed",
+        error:
+          pollJson.task?.error?.message ?? `MiniMax video generation ${status}`,
+      };
+    }
+    return { state: "pending", status: status || "queued" };
+  });
+  if ("error" in polled) {
+    return json({ error: polled.error, request_id: taskId }, true);
+  }
+  const bytes = await downloadVideo(fetchImpl, polled.value, "minimax", signal);
+  const path = await saveVideoBytes(ctx.opts.workspaceRoot, bytes, signal);
+  return json({
+    model,
+    path,
+    url: polled.value,
+    request_id: taskId,
+    duration,
+    resolution,
+    ratio,
+    modality: ctx.imageUrl === undefined ? "text" : "image",
+    ...(ignoredControls.length > 0 ? { ignoredControls } : {}),
+  });
+}
+
 // ── Tool surface ──────────────────────────────────────────────────────
 
 function imagineVideoDescription(kind: VideoBackendKind | undefined): string {
@@ -977,9 +1176,10 @@ function imagineVideoDescription(kind: VideoBackendKind | undefined): string {
       );
     case "minimax":
       return (
-        "Generate a video with MiniMax Hailuo and save the MP4 under the workspace. " +
+        "Generate a video with MiniMax and save the MP4 under the workspace. " +
         "Text-to-video, or image-to-video by passing image_url as the first frame. " +
-        "Duration is 6 or 10 seconds."
+        "Hailuo (default) takes 6 or 10 seconds; model MiniMax-H3 takes 4 to 15 " +
+        "seconds at 768P or 2K, MiniMax-H3-Max 5 to 15 seconds at 480P or 768P."
       );
     case "xai":
       return (
@@ -1028,12 +1228,22 @@ function imagineVideoInputSchema(
         },
         duration: {
           type: "number",
-          description: "Seconds: 6 or 10; anything else snaps to the nearest (default 6)",
+          description:
+            "Seconds. Hailuo: 6 or 10, anything else snaps to the nearest. " +
+            "MiniMax-H3: 4 to 15; MiniMax-H3-Max: 5 to 15 (default 6)",
         },
         resolution: {
           type: "string",
-          enum: [...MINIMAX_VIDEO_RESOLUTIONS],
-          description: "512P requires image_url; text-to-video uses 768P or 1080P",
+          enum: [...MINIMAX_VIDEO_RESOLUTIONS, "480P", "2K"],
+          description:
+            "Hailuo: 512P (requires image_url), 768P or 1080P. " +
+            "MiniMax-H3: 768P or 2K. MiniMax-H3-Max: 480P or 768P",
+        },
+        aspect_ratio: {
+          type: "string",
+          enum: [...MINIMAX_V2_VIDEO_RATIOS],
+          description:
+            "MiniMax-H3 text-to-video only (default 16:9); Hailuo sizes by resolution",
         },
       },
       required: ["prompt"],
@@ -1081,9 +1291,24 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     advertised !== undefined && "backend" in advertised
       ? advertised.backend.kind
       : undefined;
+  const deferredUntilDiscovered =
+    opts.getSession() === null;
   return {
     name: "ImagineVideo",
     description: imagineVideoDescription(advertisedKind),
+    metadata: {
+      family: "media",
+      source: "builtin",
+      hiddenByDefault: false,
+      mutating: true,
+      deferred: deferredUntilDiscovered,
+      // The only write is the generated media file under this fixed
+      // directory; no argument names a path, so the sandbox must be told
+      // where the output lands or it denies the call as unverifiable.
+      fixedWriteTargets: () => [join(opts.workspaceRoot, ".agenc", "imagine")],
+      keywords: ["video", "generate", "media"],
+      preferredProfiles: ["coding", "operator", "general"],
+    },
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },

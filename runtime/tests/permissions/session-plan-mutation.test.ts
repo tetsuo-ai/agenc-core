@@ -1,10 +1,12 @@
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPlanFilePath, setPlanSlug, clearAllPlanSlugs } from "../../src/planning/plan-files.js";
 import { createFileWriteTool } from "../../src/tools/system/file-write.js";
 import { createFileEditTool, createFileMultiEditTool } from "../../src/tools/system/file-edit.js";
+import { createFileReadTool } from "../../src/tools/system/file-read.js";
+import { createApplyPatchTool } from "../../src/tools/apply-patch/tool.js";
 import { attachContextDefaults, hasPermissionsToUseTool, type ToolEvaluatorContext } from "../../src/permissions/evaluator.js";
 import { createEmptyToolPermissionContext, type PermissionMode } from "../../src/permissions/types.js";
 import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
@@ -18,7 +20,7 @@ import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { planModeProducer } from "../../src/prompts/attachments/plan-mode.js";
 import { getAttachmentTrackingState } from "../../src/session/attachment-state.js";
-import { signSessionId } from "../../src/tools/system/filesystem.js";
+import { recordSessionRead, signSessionId } from "../../src/tools/system/filesystem.js";
 import { enforceRuntimeSandboxAttempt } from "../../src/tools/runtimes/sandboxing.js";
 import { createEnterWorktreeTool } from "../../src/tools/system/worktree.js";
 
@@ -45,11 +47,11 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function context(mode: PermissionMode = "plan", behavior?: "ask" | "deny", ruleContent?: string): ToolEvaluatorContext {
+function context(mode: PermissionMode = "plan", behavior?: "ask" | "deny", ruleContent?: string, toolName = "Write"): ToolEvaluatorContext {
   let permissions = createEmptyToolPermissionContext({ mode });
   if (behavior !== undefined) permissions = applyPermissionUpdate(permissions, {
     type: "addRules", destination: "session", behavior,
-    rules: [{ toolName: "Write", ...(ruleContent !== undefined ? { ruleContent } : {}) }],
+    rules: [{ toolName, ...(ruleContent !== undefined ? { ruleContent } : {}) }],
   });
   return attachContextDefaults({ session, getAppState: () => ({ toolPermissionContext: permissions }) });
 }
@@ -268,5 +270,93 @@ describe("exact owning plan-file mutation authority", () => {
     expect(approval).not.toHaveBeenCalled();
     expect(existsSync(planPath)).toBe(true);
     expect(readFileSync(planPath, "utf8")).toBe(input.content);
+  });
+});
+
+/**
+ * FileRead and apply_patch carve the owning plan file out at execute time
+ * (`safePathAllowingSessionPlanFile`) but, until #2131, asked for approval
+ * at the permission layer, so an attended session prompted and a print-mode
+ * run (which auto-denies requests) could not read or patch its own plan.
+ */
+describe("read and patch parity for the owning plan file (#2131)", () => {
+  const updatePatch = (path: string) =>
+    `*** Begin Patch\n*** Update File: ${path}\n@@\n-old\n+new\n*** End Patch`;
+  const readInput = (file_path: string) => ({ file_path });
+  const patchInput = (path: string) => ({ input: updatePatch(path) });
+  const tools = () => [
+    { name: "FileRead", tool: createFileReadTool({ allowedPaths: [cwd] }), input: readInput },
+    { name: "apply_patch", tool: createApplyPatchTool({ cwd, allowedPaths: [cwd] }), input: patchInput },
+  ] as const;
+
+  beforeEach(() => {
+    mkdirSync(dirname(planPath), { recursive: true });
+    writeFileSync(planPath, "# Plan\nold\n");
+  });
+
+  it.each(["default", "acceptEdits"] as const)("allows the owning plan file to both tools in %s mode without a prompt", async (mode) => {
+    for (const { name, tool, input } of tools()) {
+      const decision = await hasPermissionsToUseTool(tool, input(planPath), context(mode));
+      expect(decision.behavior, name).toBe("allow");
+      // apply_patch folds its per-target decisions into one allow without a
+      // reason; the single-path tool surfaces the carve-out's own reason.
+      if (name === "FileRead") {
+        expect((decision as { decisionReason?: { reason?: string } }).decisionReason)
+          .toMatchObject({ reason: "owning session plan file" });
+      }
+    }
+  });
+
+  it("still asks for a sibling, another home's plan, a symlinked plan, and a session without a home", async () => {
+    const foreignHome = join(root, "foreign");
+    setPlanSlug({ sessionId: session.conversationId, agencHome: foreignHome }, "foreign-plan");
+    const foreignPath = getPlanFilePath({ sessionId: session.conversationId, agencHome: foreignHome });
+    for (const { name, tool, input } of tools()) {
+      for (const target of [planPath.replace(".md", "-other.md"), join(dirname(planPath), ".slugs.json"), foreignPath]) {
+        expect((await hasPermissionsToUseTool(tool, input(target), context("default"))).behavior, `${name} ${target}`).toBe("ask");
+      }
+      const homeless = { ...context("default"), session: { conversationId: session.conversationId, services: {} } as never };
+      expect((await hasPermissionsToUseTool(tool, input(planPath), homeless)).behavior, name).toBe("ask");
+    }
+    const outside = join(root, "outside.md");
+    writeFileSync(outside, "old\n");
+    rmSync(planPath);
+    symlinkSync(outside, planPath);
+    for (const { name, tool, input } of tools()) {
+      expect((await hasPermissionsToUseTool(tool, input(planPath), context("default"))).behavior, name).toBe("ask");
+    }
+  });
+
+  it("keeps explicit ask and deny rules on the plan path ahead of the carve-out", async () => {
+    for (const { name, tool, input } of tools()) {
+      for (const behavior of ["ask", "deny"] as const) {
+        expect((await hasPermissionsToUseTool(tool, input(planPath), context("default", behavior, planPath, tool.name))).behavior, `${name} ${behavior}`).toBe(behavior);
+      }
+    }
+  });
+
+  it("decides a patch per target: the plan file alone passes, a workspace file still follows the mode", async () => {
+    const workspaceFile = join(cwd, "app.mjs");
+    writeFileSync(workspaceFile, "old\n");
+    const tool = createApplyPatchTool({ cwd, allowedPaths: [cwd] });
+    const mixed = { input: `*** Begin Patch\n*** Update File: ${planPath}\n@@\n-old\n+new\n*** Update File: app.mjs\n@@\n-old\n+new\n*** End Patch` };
+    expect((await hasPermissionsToUseTool(tool, mixed, context("default"))).behavior).toBe("ask");
+    expect((await hasPermissionsToUseTool(tool, mixed, context("acceptEdits"))).behavior).toBe("allow");
+    expect((await hasPermissionsToUseTool(tool, { input: "*** Begin Patch\n*** Update File: " + planPath }, context("acceptEdits"))).behavior).toBe("deny");
+  });
+
+  it.each(["FileRead", "apply_patch"] as const)("runs %s on the plan file end to end with no approval requested", async (name) => {
+    const { tool, input } = tools().find((entry) => entry.name === name)!;
+    const args = input(planPath);
+    // The patch tool's read-before-write guard is unrelated to permissions.
+    recordSessionRead(session.conversationId, planPath, { content: readFileSync(planPath, "utf8"), timestamp: statSync(planPath).mtimeMs, viewKind: "full" });
+    const turn = mkCtx({ cwd, sandboxPolicy: { value: "workspace_write" }, approvalPolicy: { value: "on_request" } } as never);
+    const approval = vi.fn(async () => ({ kind: "denied" as const }));
+    const invocation: ToolInvocation = { session, turn, tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} }, callId: `plan-${name}`, toolName: { name: tool.name }, payload: { kind: "function", arguments: JSON.stringify(args) }, source: "direct" };
+    const result = await runToolUse(JSON.stringify(args), { tool, invocation, currentTurnId: turn.subId, canUseTool: hasPermissionsToUseTool, permissionContext: context("default"), approvalResolver: { request: approval } });
+    expect(result.isError, result.content).toBe(false);
+    expect(approval).not.toHaveBeenCalled();
+    if (name === "FileRead") expect(result.content).toContain("# Plan");
+    else expect(readFileSync(planPath, "utf8")).toBe("# Plan\nnew\n");
   });
 });

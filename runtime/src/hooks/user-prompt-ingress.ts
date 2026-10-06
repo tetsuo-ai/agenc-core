@@ -4,7 +4,7 @@ import {
   expandFileMentions,
   extractMentionAllowedRoots,
   formatFileMentionRejection,
-  type FileMentionExpansion,
+  type FileMentionRejection,
 } from "../prompts/file-mentions.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { seedFileMentionSessionReads } from "../session/file-mention-session-reads.js";
@@ -38,11 +38,100 @@ export function userPromptDisplayText(
     .join("\n");
 }
 
+/**
+ * A mention with no path separator and no extension: the shape of a plugin
+ * id or skill name (`@motor3d`), never of a file path (`@src/app.ts`,
+ * `@README.md`). Same token shape `rankSkillsForRequest` treats as a plugin
+ * mention when it surfaces that plugin's skills.
+ */
+const BARE_MENTION_TOKEN = /^[a-z0-9][a-z0-9:_-]*$/iu;
+
+const NO_KNOWN_MENTION_NAMES: ReadonlySet<string> = new Set();
+
+type KnownMentionNamesLoader = () => Promise<ReadonlySet<string>>;
+
+/**
+ * Installed plugin ids plus loaded skill names and aliases, lowercased.
+ *
+ * Read through the session's skills manager with the same config snapshot
+ * `run-turn.ts` hands the skill listing (the source of `rankSkillsForRequest`),
+ * so this hits the snapshot the turn loads anyway. A failing lookup keeps the
+ * plain file-mention behavior rather than blocking the prompt.
+ */
+async function loadKnownMentionNames(params: {
+  readonly session: Session;
+  readonly configStore: Pick<ConfigStore, "current">;
+}): Promise<ReadonlySet<string>> {
+  try {
+    const outcome = await params.session.services.skillsManager.skillsForConfig(
+      params.configStore.current(),
+      null,
+    );
+    const names = new Set<string>();
+    for (const skill of outcome.availableSkills ?? []) {
+      names.add(skill.name.toLowerCase());
+      for (const alias of skill.aliases ?? []) names.add(alias.toLowerCase());
+      if (skill.pluginId !== undefined) names.add(skill.pluginId.toLowerCase());
+    }
+    return names;
+  } catch {
+    return NO_KNOWN_MENTION_NAMES;
+  }
+}
+
+/** Loads the known names at most once per prepared prompt, and only on demand. */
+function createKnownMentionNamesLoader(params: {
+  readonly session: Session;
+  readonly configStore: Pick<ConfigStore, "current">;
+}): KnownMentionNamesLoader {
+  let pending: Promise<ReadonlySet<string>> | undefined;
+  return () => (pending ??= loadKnownMentionNames(params));
+}
+
+/**
+ * A bare token with no regular file behind it. `unreadable` covers a missing
+ * path (and the rare existing file that cannot be read), `not_file` a
+ * directory. Every other reason means a real file was found, so its warning
+ * is about that file and stays.
+ */
+function isBareMentionWithoutFile(rejection: FileMentionRejection): boolean {
+  return (
+    (rejection.reason === "unreadable" || rejection.reason === "not_file") &&
+    BARE_MENTION_TOKEN.test(rejection.raw)
+  );
+}
+
+/**
+ * Drop the "could not be read" warning for `@plugin-id` and `@skill-name`
+ * mentions. Those are first-class mentions: `rankSkillsForRequest` surfaces
+ * the plugin's skills and the model calls the Skill tool, so the file warning
+ * is noise in the transcript and the errors log.
+ *
+ * The file lookup always runs first. A readable regular file named like a
+ * plugin id is attached as usual and never reaches `rejected`, so the file
+ * wins; only the "no such file" outcome is reinterpreted, and only for a
+ * bare token that matches a known plugin id, skill name, or skill alias.
+ */
+async function selectFileMentionWarnings(
+  rejected: readonly FileMentionRejection[],
+  loadKnownNames: KnownMentionNamesLoader,
+): Promise<readonly FileMentionRejection[]> {
+  if (!rejected.some(isBareMentionWithoutFile)) return rejected;
+  const knownNames = await loadKnownNames();
+  return rejected.filter(
+    (rejection) =>
+      !(
+        isBareMentionWithoutFile(rejection) &&
+        knownNames.has(rejection.raw.toLowerCase())
+      ),
+  );
+}
+
 function emitFileMentionWarnings(
   session: Session,
-  expansion: FileMentionExpansion,
+  rejections: readonly FileMentionRejection[],
 ): void {
-  for (const rejection of expansion.rejected) {
+  for (const rejection of rejections) {
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -64,13 +153,20 @@ async function expandTextFileMentions(params: {
   readonly session: Session;
   readonly configStore: Pick<ConfigStore, "current">;
   readonly input: string;
+  readonly loadKnownMentionNames: KnownMentionNamesLoader;
 }): Promise<{ readonly input: string; readonly expanded: boolean }> {
   const cwd = params.session.sessionConfiguration.cwd ?? process.cwd();
   const expansion = await expandFileMentions(params.input, {
     cwd,
     allowedRoots: extractMentionAllowedRoots(params.configStore.current()),
   });
-  emitFileMentionWarnings(params.session, expansion);
+  emitFileMentionWarnings(
+    params.session,
+    await selectFileMentionWarnings(
+      expansion.rejected,
+      params.loadKnownMentionNames,
+    ),
+  );
   if (expansion.attachments.length === 0) {
     return { input: params.input, expanded: false };
   }
@@ -93,11 +189,16 @@ async function expandPromptFileMentions(params: {
   if (params.configStore === undefined) {
     return { input: params.input, displayInput };
   }
+  const loadKnownMentionNames = createKnownMentionNamesLoader({
+    session: params.session,
+    configStore: params.configStore,
+  });
   if (typeof params.input === "string") {
     const expanded = await expandTextFileMentions({
       session: params.session,
       configStore: params.configStore,
       input: params.input,
+      loadKnownMentionNames,
     });
     return { input: expanded.input, displayInput };
   }
@@ -113,6 +214,7 @@ async function expandPromptFileMentions(params: {
       session: params.session,
       configStore: params.configStore,
       input: part.text,
+      loadKnownMentionNames,
     });
     changed ||= expanded.expanded;
     parts.push(expanded.expanded ? { ...part, text: expanded.input } : part);

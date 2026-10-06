@@ -3,13 +3,69 @@ import { describe, expect, it } from "vitest";
 import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner.js";
 import type { Event, EventMsg } from "../../src/session/event-log.js";
 import type { RolloutItem } from "../../src/session/rollout-item.js";
+import type { RunRuntimePermissionMode } from "../../src/contracts/run-contracts.js";
 
 function event(seq: number, eventId: string, msg: EventMsg): RolloutItem {
   const payload: Event = { id: eventId, eventId, seq, msg };
   return { type: "event_msg", payload };
 }
 
+
+function settingsEvent(
+  seq: number,
+  permissionMode: RunRuntimePermissionMode,
+): RolloutItem {
+  return event(seq, `settings-${seq}`, {
+    type: "run_runtime_settings_changed",
+    payload: {
+      runId: "run-1",
+      epoch: 1,
+      previousSettingsEventId: null,
+      rollbackOfSettingsEventId: null,
+      reason: "permission_mode_changed",
+      changedAt: "2026-09-18T07:00:00.000Z",
+      permissionMode,
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "model",
+      provider: "provider",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    },
+  });
+}
+
 describe("session.transcript.v2 durable projection", () => {
+  it("keeps a shutdown notice and the resumed completion on the original turn", () => {
+    const items: RolloutItem[] = [
+      event(1, "user", { type: "user_message", payload: { message: "Write twelve files", messageId: "client-1" } }),
+      event(2, "start", { type: "turn_started", payload: { turnId: "turn-1" } }),
+      event(3, "partial", { type: "agent_message", payload: { message: "Wrote four files" } }),
+      event(4, "shutdown", { type: "turn_aborted", payload: { turnId: "turn-1", reason: "daemon_shutdown" } }),
+      event(5, "resume-start", { type: "turn_started", payload: { turnId: "turn-1" } }),
+      event(6, "resume", { type: "turn_resumed", payload: { turnId: "turn-1", fromCheckpointSeq: 1, fromIteration: 2 } }),
+      event(7, "answer", { type: "agent_message", payload: { message: "Finished all twelve files" } }),
+      event(8, "complete", { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "Finished all twelve files" } }),
+    ];
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.messages.map(message => message.text)).toEqual([
+      "Write twelve files", "Wrote four files", "Finished all twelve files",
+    ]);
+    expect(snapshot.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "turn_aborted", payload: { turnId: "turn-1", reason: "daemon_shutdown" } }),
+    ]));
+    expect(snapshot.turnResults).toEqual([
+      expect.objectContaining({ turnId: "turn-1", outcome: "aborted", committedSequence: 4 }),
+      expect.objectContaining({ turnId: "turn-1", outcome: "completed", committedSequence: 8 }),
+    ]);
+  });
   it.each(["turn_failed", "background_agent_error", "review_task_failed"])(
     "closes %s failures without a later completion and ignores stale identities",
     (failureType) => {
@@ -32,6 +88,56 @@ describe("session.transcript.v2 durable projection", () => {
       expect(snapshot.messages.at(-1)).toMatchObject({ text: "partial answer", turnId: "turn-1" });
     },
   );
+
+  it("names the live turn from the rollout when the caller knows only its id", () => {
+    const items: RolloutItem[] = [
+      event(10, "user-live", {
+        type: "user_message",
+        payload: {
+          message: "keep going",
+          messageId: "client-live",
+          acceptedAt: "2026-09-18T00:00:00.000Z",
+        },
+      }),
+      event(11, "turn-live", {
+        type: "turn_started",
+        payload: { turnId: "turn-live" },
+      }),
+      event(12, "assistant-live", {
+        type: "agent_message",
+        payload: { message: "working" },
+      }),
+    ];
+
+    // A turn continued after a daemon restart: the runtime knows the turn id,
+    // the submission that started it belongs to the previous lifetime.
+    const continued = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-live",
+    });
+    expect(continued.activeTurn).toEqual({
+      turnId: "turn-live",
+      clientMessageId: "client-live",
+    });
+
+    // A caller that knows the client message id keeps its own.
+    const submitted = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-live",
+      clientMessageId: "client-submitted",
+    });
+    expect(submitted.activeTurn).toEqual({
+      turnId: "turn-live",
+      clientMessageId: "client-submitted",
+    });
+
+    // The rollout's open turn is a different one: nothing is borrowed.
+    const other = sessionTranscriptV2FromRollout(items, "session-1", "run-1", {
+      turnId: "turn-other",
+    });
+    expect(other.activeTurn).toEqual({ turnId: "turn-other" });
+
+    // No live turn: no active turn, whatever the rollout left open.
+    expect(sessionTranscriptV2FromRollout(items, "session-1", "run-1").activeTurn).toBeUndefined();
+  });
 
   it("keeps a migrated response_item prefix when canonical events are appended", () => {
     const prefix: RolloutItem[] = [
@@ -515,5 +621,43 @@ describe("session.transcript.v2 durable projection", () => {
       "run-1",
     );
     expect(snapshot.turnResults).toBeUndefined();
+  });
+
+  it.each(["partial_compact", "rewind"] as const)("keeps earlier settings across %s transcript epochs", (reason) => {
+    const snapshot = sessionTranscriptV2FromRollout([
+      settingsEvent(3, "plan"),
+      { type: "compacted", payload: { message: "replacement", replacementHistory: [{ role: "user", content: "kept" }] } },
+      event(20, "new-epoch", { type: "transcript_epoch", payload: { reason } }),
+    ], "session-1", "run-1");
+    expect(snapshot.historyEpoch).toBe("history:run-1:new-epoch");
+    expect(snapshot.asOfSequence).toBe(20);
+    expect(snapshot.planModeActive).toBe(true);
+    expect(snapshot.planModeSequence).toBe(3);
+  });
+
+  it("reports plan-mode state from the latest runtime-settings event by sequence", () => {
+    // The desktop used to replay the whole run journal on every transcript
+    // open to learn this one boolean. It now comes from the same pass that
+    // builds the transcript, chosen by sequence, not by array position.
+    const toggled = sessionTranscriptV2FromRollout(
+      [settingsEvent(9, "default"), settingsEvent(3, "plan")],
+      "session-1",
+      "run-1",
+    );
+    expect(toggled.planModeActive).toBe(false);
+    expect(toggled.planModeSequence).toBe(9);
+    expect(toggled.asOfSequence).toBe(9);
+
+    const planOnly = sessionTranscriptV2FromRollout(
+      [settingsEvent(3, "plan")],
+      "session-1",
+      "run-1",
+    );
+    expect(planOnly.planModeActive).toBe(true);
+    expect(planOnly.planModeSequence).toBe(3);
+
+    const none = sessionTranscriptV2FromRollout([], "session-1", "run-1");
+    expect(none.planModeActive).toBeUndefined();
+    expect(none.planModeSequence).toBeUndefined();
   });
 });

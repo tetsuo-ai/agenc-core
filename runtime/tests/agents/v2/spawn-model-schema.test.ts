@@ -83,4 +83,10 @@ describe("spawn_agent model schema", () => {
     expect(model.enum).toBeUndefined();
     expect(String(model.description)).toMatch(/sonnet\/opus\/haiku/i);
   });
+
+  it("tells the model that ChatGPT and xAI sign-ins can back children", () => {
+    const description = createSpawnAgentTool(makeOptions({ currentSlug: "grok-4" })).description;
+    expect(description).toContain("ChatGPT subscription or xAI sign-in");
+    expect(description).toContain("Sign-in usage counts against the user's subscription limits");
+  });
 });

@@ -27,6 +27,13 @@ type BuildParamsAccess = {
 };
 
 describe("grok reasoning_effort capability gate", () => {
+  it.each(["low", "medium", "high", "xhigh"] as const)("sends Grok 4.7 effort %s unchanged", (reasoningEffort) => {
+    expect(supportsXaiReasoningEffortParam("grok-4.7")).toBe(true);
+    const provider = new GrokProvider({ apiKey: "test-key", model: "grok-4.7", reasoningEffort });
+    const built = (provider as unknown as BuildParamsAccess).buildParams(USER_TURN, { reasoningEffort });
+    expect(built.params.reasoning).toEqual({ effort: reasoningEffort });
+    expect(buildXaiResponsesRequest({ model: "grok-4.7", messages: USER_TURN, options: { reasoningEffort } }).reasoning).toEqual({ effort: reasoningEffort });
+  });
   it("predicate: accepts documented depth and multi-agent models only", () => {
     expect(supportsXaiReasoningEffortParam("grok-4.3")).toBe(true);
     expect(supportsXaiReasoningEffortParam("grok-4.5")).toBe(true);

@@ -15,6 +15,7 @@ import type { Session } from "../session/session.js";
 import type { ApprovalPolicy } from "../session/turn-context.js";
 import type { MCPElicitationHandlers } from "../mcp-client/types.js";
 import { asRecord } from "../utils/record.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import {
   type McpElicitationCompleteEvent,
   type McpElicitationFormRequest,
@@ -504,6 +505,11 @@ export function createSessionMcpElicitationHandlers(
 ): MCPElicitationHandlers {
   return {
     async handleRequest(params) {
+      // A scheduled routine run has nobody attached to answer: decline in
+      // every mode before any pending request exists, rather than wait.
+      if (routineRunOptions(session) !== undefined) {
+        return serializeMcpElicitationResponse({ action: "decline" });
+      }
       const request = normalizeMcpElicitationRequestParams(
         params.request,
         params.contextMeta,

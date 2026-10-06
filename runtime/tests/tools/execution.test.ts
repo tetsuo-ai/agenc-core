@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -196,6 +197,38 @@ describe("trusted parsed arguments", () => {
 });
 
 describe("I-15 capToolResult", () => {
+  test("keeps a large image in rich content while capping only tool text", async () => {
+    const sharp = (await import("sharp")).default;
+    const png = await sharp(randomBytes(450 * 450 * 3), {
+      raw: { width: 450, height: 450, channels: 3 },
+    }).png().toBuffer();
+    const imageUrl = `data:image/png;base64,${png.toString("base64")}`;
+    expect(Buffer.byteLength(imageUrl)).toBeGreaterThan(400_000);
+    const tool: Tool = {
+      name: "ImageTool",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => ({
+        content: "saved image to /tmp/image.png",
+        contentItems: [
+          { type: "input_text", text: "saved image to /tmp/image.png" },
+          { type: "input_image", image_url: imageUrl },
+        ],
+      }),
+    };
+    const opts = {
+      currentTurnId: "image-turn",
+      tool,
+      invocation: makeInvocation("image-call", "ImageTool"),
+    };
+    const output = await runToolUse("{}", opts);
+    expect(output.content).toBe("saved image to /tmp/image.png");
+    expect(JSON.stringify({ content: output.content, metadata: output.metadata })).not.toContain(imageUrl);
+    const dispatch = await executeToolDispatch({ ...opts, rawArgs: "{}" });
+    expect(dispatch.content).toBe("saved image to /tmp/image.png");
+    expect(dispatch.contentItems?.[1]).toEqual({ type: "input_image", image_url: imageUrl });
+  });
+
   test("small result passes through unchanged", () => {
     const out = capToolResult("hello", 1000);
     expect(out.capped).toBe("hello");

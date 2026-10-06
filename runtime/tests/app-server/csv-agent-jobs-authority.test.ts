@@ -1,9 +1,10 @@
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CsvAgentJobsRepositoryAuthority } from "../../src/app-server/csv-agent-jobs-authority.js";
-import type { CsvAgentJobsRepository } from "../../src/state/csv-agent-jobs.js";
+import { CsvAgentJobsRepository } from "../../src/state/csv-agent-jobs.js";
 import type {
   StateDatabasePaths,
   StateSqliteDriver,
@@ -18,6 +19,95 @@ afterEach(async () => {
 });
 
 describe("CsvAgentJobsRepositoryAuthority", () => {
+  it("opens FULL state and recovers CSV jobs without an unused logs connection", async () => {
+    const root = await workspace("authority-state-only-");
+    const paths = fakePaths(root);
+    let opened: StateSqliteDriver | undefined;
+    const authority = new CsvAgentJobsRepositoryAuthority({
+      resolvePaths: fakePaths,
+      openRepository: (driver, options) => {
+        opened = driver;
+        expect(driver.state.pragma("synchronous", { simple: true })).toBe(2);
+        return CsvAgentJobsRepository.open(driver, options);
+      },
+    });
+    try {
+      await authority.withRepository(root, (repository) => {
+        expect(repository.listRunnableJobsPage({ limit: 1 }).jobs).toEqual([]);
+        expect(existsSync(paths.logsDbPath)).toBe(false);
+      });
+      expect(existsSync(paths.stateDbPath)).toBe(true);
+    } finally {
+      await authority.close();
+    }
+    expect(opened!.state.open).toBe(false);
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+  });
+
+  it("still rejects a corrupt state file through the default driver", async () => {
+    const root = await workspace("authority-corrupt-state-");
+    const paths = fakePaths(root);
+    writeFileSync(paths.stateDbPath, "invalid state");
+    const authority = new CsvAgentJobsRepositoryAuthority({ resolvePaths: fakePaths });
+    try {
+      await expect(authority.withRepository(root, () => "unreachable")).rejects.toThrow();
+      expect(existsSync(paths.logsDbPath)).toBe(false);
+    } finally {
+      await authority.close();
+    }
+  });
+
+  it("closes a sessionless review repository after its final lease", async () => {
+    const root = await workspace("authority-sessionless-");
+    const close = vi.fn();
+    const openRepository = vi.fn(async () => ({}) as CsvAgentJobsRepository);
+    const authority = authorityWith({ close, openRepository });
+    try {
+      await authority.withRepository(root, () => "reviewed");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await authority.withRepository(root, () => "reviewed again");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
+      expect(openRepository).toHaveBeenCalledTimes(2);
+    } finally {
+      await authority.close();
+    }
+  });
+
+  it("closes after a lease starts while workspace release waits", async () => {
+    const root = await workspace("authority-release-overlap-");
+    const close = vi.fn();
+    const authority = authorityWith({ close });
+    const releaseWorkspace = authority.retainWorkspace(root);
+    const firstStarted = deferred<void>();
+    const finishFirst = deferred<void>();
+    const secondStarted = deferred<void>();
+    const finishSecond = deferred<void>();
+    const first = authority.withRepository(root, async () => {
+      firstStarted.resolve();
+      await finishFirst.promise;
+    });
+    try {
+      await firstStarted.promise;
+      const release = releaseWorkspace();
+      const second = authority.withRepository(root, async () => {
+        secondStarted.resolve();
+        await finishSecond.promise;
+      });
+      await secondStarted.promise;
+      finishFirst.resolve();
+      await first;
+      await release;
+      expect(close).not.toHaveBeenCalled();
+      finishSecond.resolve();
+      await second;
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    } finally {
+      finishFirst.resolve();
+      finishSecond.resolve();
+      await authority.close();
+    }
+  });
+
   it("shares one canonical database open when one alias waiter aborts", async () => {
     const root = await workspace("authority-alias-");
     const alias = `${root}-alias`;
@@ -377,6 +467,8 @@ describe("CsvAgentJobsRepositoryAuthority", () => {
         }) as unknown as StateSqliteDriver,
       openRepository: async () => ({}) as CsvAgentJobsRepository,
     });
+    authority.retainWorkspace(firstRoot);
+    authority.retainWorkspace(secondRoot);
     await authority.withRepository(firstRoot, () => undefined);
     await authority.withRepository(secondRoot, () => undefined);
 

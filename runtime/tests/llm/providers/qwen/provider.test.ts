@@ -692,7 +692,8 @@ describe.each([
     ) as { messages: Array<Record<string, unknown>> };
     expect(body.messages[2]).toEqual({
       role: "tool",
-      content: "Image Size: 10x10.",
+      content:
+        "Image Size: 10x10.\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
       tool_call_id: "call_read",
     });
     expect(JSON.stringify(body)).not.toContain("image_url");
@@ -776,7 +777,8 @@ describe.each([
     ) as { messages: Array<Record<string, unknown>> };
     expect(body.messages[2]).toEqual({
       role: "tool",
-      content: "Image Size: 10x10.",
+      content:
+        "Image Size: 10x10.\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
       tool_call_id: "call_read",
     });
     expect(JSON.stringify(body)).not.toContain("image_url");

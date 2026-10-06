@@ -1,9 +1,9 @@
 import type { ChildProcess } from 'child_process'
 import { stat } from 'fs/promises'
 import type { Readable } from 'stream'
-import treeKill from 'tree-kill'
 import { generateTaskId } from '../tasks/Task.js'
 import { formatDuration } from './format.js'
+import { signalProcessTree } from './supervisedProcess.js'
 import {
   MAX_TASK_OUTPUT_BYTES,
   MAX_TASK_OUTPUT_BYTES_DISPLAY,
@@ -341,8 +341,15 @@ class ShellCommandImpl implements ShellCommand {
 
   #doKill(code?: number): void {
     this.#status = 'killed'
-    if (this.#childProcess.pid) {
-      treeKill(this.#childProcess.pid, 'SIGKILL')
+    // signalProcessTree kills the descendants it sees in the process table,
+    // then the process group or the leader. It never signals a child without
+    // a pid. tree-kill, used here before, spawned pgrep/ps without an error
+    // listener and rethrew EPERM from any one descendant, so a missing ps or
+    // a root-owned child crashed the daemon and left the whole tree running.
+    try {
+      signalProcessTree(this.#childProcess, 'SIGKILL')
+    } catch {
+      // Best effort; the exit code below still settles the command.
     }
     this.#resolveExitCode(code ?? SIGKILL)
   }

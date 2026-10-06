@@ -2,41 +2,46 @@ import { resolve as resolvePath } from "node:path";
 
 import type { ProviderName } from "../llm/provider.js";
 import {
-  isUserAddressablePermissionMode,
-  USER_ADDRESSABLE_PERMISSION_MODES,
-  type PermissionMode,
-} from "../permissions/types.js";
-import {
   resolveProviderModelLayer,
   resolveProviderSlugOrThrow,
 } from "../config/provider-model-authority.js";
 import { resolveProfileName } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { tokenizeCliOptionRegion } from "./cli-option-region.js";
-import { extractFlagValue, extractFlagValues } from "./route.js";
+import { extractFlagValue } from "./route.js";
 import {
-  assertNoRetiredStartupFlags,
-  AUTONOMOUS_FLAG,
-  DANGEROUS_BYPASS_FLAG,
-} from "./startup-flags.js";
+  parseDeadlineFlag,
+  parseDeadlineReserveFlag,
+  resolveDeadlineReserveMs,
+} from "../session/run-deadline.js";
 import {
   isModelAllowed,
   ModelNotAllowedError,
 } from "../utils/model/modelAllowlist.js";
-import {
-  validateAndDedupeAdditionalWorkingDirectoryInputs,
-} from "../contracts/additional-working-directories.js";
+import type { StartupCliFlags } from "./startup-cli-flags.js";
+export { readStartupCliFlags, type StartupCliFlags } from "./startup-cli-flags.js";
 
-export interface StartupCliFlags {
-  readonly provider?: string;
-  readonly model?: string;
-  readonly profile?: string;
-  readonly configPath?: string;
-  readonly addDirs?: readonly string[];
-  readonly permissionMode?: PermissionMode;
-  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
-  readonly autonomousMode?: boolean;
-  readonly simpleMode?: boolean;
+/**
+ * `--deadline` / `--deadline-reserve` for a print-mode run (#2503), resolved
+ * once against `nowMs` into the runtime options the daemon receives. The
+ * router has already rejected malformed values and non-print modes.
+ */
+export function readRunDeadlineFlags(
+  argv: readonly string[],
+  nowMs: number,
+): { readonly deadlineAt?: number; readonly deadlineReserveMs?: number } {
+  const { optionArgs } = tokenizeCliOptionRegion(argv.slice(2));
+  const deadline = extractFlagValue(optionArgs, "--deadline");
+  if (deadline === null) return {};
+  const deadlineAt = parseDeadlineFlag(deadline, nowMs);
+  const reserve = extractFlagValue(optionArgs, "--deadline-reserve");
+  return {
+    deadlineAt,
+    deadlineReserveMs: resolveDeadlineReserveMs(
+      deadlineAt - nowMs,
+      reserve === null ? undefined : parseDeadlineReserveFlag(reserve),
+    ),
+  };
 }
 
 export interface StartupSelection {
@@ -44,62 +49,6 @@ export interface StartupSelection {
   readonly profileName?: string;
   readonly provider: ProviderName;
   readonly model: string;
-}
-
-export function readStartupCliFlags(
-  argv: readonly string[],
-): StartupCliFlags {
-  const userArgv = argv.slice(2);
-  const { optionArgs } = tokenizeCliOptionRegion(userArgv);
-  assertNoRetiredStartupFlags(optionArgs);
-  const provider = extractFlagValue(optionArgs, "--provider") ?? undefined;
-  const model = extractFlagValue(optionArgs, "--model") ?? undefined;
-  const profile = extractFlagValue(optionArgs, "--profile") ?? undefined;
-  const configPath = extractFlagValue(optionArgs, "--config") ?? undefined;
-  const addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
-    extractFlagValues(optionArgs, "--add-dir"),
-    "agenc --add-dir",
-  );
-  const rawPermissionMode =
-    extractFlagValue(optionArgs, "--permission-mode") ?? undefined;
-  // Distinguish "flag absent" from "flag present but invalid". An invalid
-  // value must not be silently coerced to `undefined` (which would boot in
-  // DEFAULT mode — a silent failure toward a LESS restrictive session). Throw
-  // a helpful error mirroring provider validation and `/permissions mode`,
-  // surfacing as a clean error + non-zero exit at the CLI entrypoint.
-  const permissionMode = resolvePermissionModeOrThrow(rawPermissionMode);
-  const dangerouslyBypassApprovalsAndSandbox =
-    optionArgs.includes(DANGEROUS_BYPASS_FLAG);
-  const autonomousMode = optionArgs.includes(AUTONOMOUS_FLAG);
-  const simpleMode = optionArgs.includes("--bare");
-  return Object.freeze({
-    ...(provider ? { provider } : {}),
-    ...(model ? { model } : {}),
-    ...(profile ? { profile } : {}),
-    ...(configPath ? { configPath } : {}),
-    ...(addDirs.length > 0 ? { addDirs: Object.freeze(addDirs) } : {}),
-    ...(permissionMode ? { permissionMode } : {}),
-    ...(dangerouslyBypassApprovalsAndSandbox
-      ? { dangerouslyBypassApprovalsAndSandbox: true }
-      : {}),
-    ...(autonomousMode ? { autonomousMode: true } : {}),
-    ...(simpleMode ? { simpleMode: true } : {}),
-  });
-}
-
-function resolvePermissionModeOrThrow(
-  raw: string | undefined,
-): PermissionMode | undefined {
-  // Flag absent (or explicitly empty) — keep the default-mode behavior.
-  if (!raw) return undefined;
-  // A user-addressable mode — honor it.
-  if (isUserAddressablePermissionMode(raw)) return raw;
-  // Internal modes and typos are both invalid at the user-facing CLI. Never
-  // recognize a value and then silently discard it: that would boot with a
-  // different permission mode than the operator requested.
-  throw new Error(
-    `unknown permission mode '${raw}'. Expected one of: ${USER_ADDRESSABLE_PERMISSION_MODES.join(", ")}`,
-  );
 }
 
 export interface StartupConfigLayerOptions {

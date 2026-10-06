@@ -84,6 +84,10 @@ import { resolveDurableEffectReview } from "./effect-review.js";
 import { StateRunDurabilityRepository } from "./run-durability.js";
 import type { EffectReviewResolution } from "../contracts/run-contracts.js";
 import { readTrustedWindowsProcessCreationTime } from "../utils/windows-process-identity.js";
+import {
+  childProcessAbortError,
+  stopChildOnAbort,
+} from "../utils/child-signal.js";
 
 export type {
   CsvAgentJobItemStatus,
@@ -1916,7 +1920,15 @@ async function execProcessIdentityQuery(
   },
 ): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
-    execFile(
+    // Nothing starts for an abort that already happened.
+    if (options.signal?.aborted === true) {
+      reject(childProcessAbortError(options.signal.reason));
+      return;
+    }
+    // No `signal` option: Node's own abort handler kills a child whose spawn
+    // failed before its pid-less handle closes, and that kill is kill(0), the
+    // caller's whole process group. stopChildOnAbort only signals a real pid.
+    const child = execFile(
       executable,
       [...args],
       {
@@ -1924,7 +1936,6 @@ async function execProcessIdentityQuery(
         timeout: CSV_PROCESS_START_QUERY_TIMEOUT_MS,
         maxBuffer: CSV_PROCESS_START_QUERY_MAX_BUFFER_BYTES,
         windowsHide: options.windowsHide,
-        signal: options.signal,
       },
       (error, stdout) => {
         if (error !== null) {
@@ -1934,6 +1945,7 @@ async function execProcessIdentityQuery(
         resolve(stdout);
       },
     );
+    stopChildOnAbort(child, options.signal);
   });
 }
 

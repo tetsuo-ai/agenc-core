@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.17.0**; embedding SDK
+Version in tree: **runtime / launcher 0.18.0**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. Managed OpenRouter's paid default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -44,9 +44,9 @@ history; the linked pages below are current product truth.
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Fast `test:fast` classification, typecheck-only native/policy-inventory surfaces, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Provider-independent tool backends plus wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
-| [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, request-scoped Editor turn bounds, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Provider-independent image/video tools backed by Meta Muse Image or direct xAI Imagine |
+| [whisper-local.md](whisper-local.md) | Local whisper.cpp dictation, verified model install, and the [60 s download idle clock](whisper-local.md#download-idle-clock) |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
@@ -56,9 +56,9 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, `agenc skills list`, and `/compact` operator commands |
-| [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
+| [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config`, and `agent.retention.rollout_days` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
-| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v4 / schema 5 pairing, additive journal vs fail-closed reader, compaction recovery fields, and rebuilt transcript `turnResults` |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, the 900 s compaction wall budget, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v4 / schema 5 pairing, additive journal vs fail-closed reader, compaction recovery fields, rebuilt transcript `turnResults`, session rollout retention (30-day default, pending-review keep, startup quarantine), [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) (connectability readiness, hydrating `daemon start`, TUI 10 s lost-turn), and [max-output-tokens recovery](reference/daemon.md#max-output-tokens-recovery) (capped-default escalate, `messagesAtSampleStart` truncate, reasoning-only next step, 3-retry exhaust) |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics, `/compact`, and `/resolve` vs attested agent-validation refusals |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP; autonomous keepalive stops after `compact_failed` |
@@ -70,14 +70,13 @@ history; the linked pages below are current product truth.
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source and update-success redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, Stop-hook throw telemetry that does not close a turn, and PreToolUse allow that cannot skip interactive prompts |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
-| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, safety prompts, and the AskUserQuestion picker that bypass cannot skip |
 
 ## Explanation
 
 | Doc | Summary |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
-| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path, including [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival). |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder including [max-output-tokens recovery](ARCHITECTURE.md#max-output-tokens-recovery), on-disk state |
+| [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path, including [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival) and the [900 s transaction wall budget](design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget). |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |
@@ -86,7 +85,7 @@ history; the linked pages below are current product truth.
 | [design/reconnect-backoff-policy.md](design/reconnect-backoff-policy.md) | Finite full-jitter reconnect policy, typed Retry-After parsing, elapsed accounting, and A1 replay-safety ordering |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, model step identity, durable budgets/queue/cancellation, evidence, rollout, and rollback |
 | [design/provider-aware-token-accounting.md](design/provider-aware-token-accounting.md) | Complete-request native/fallback accounting, bounded cache/single-flight, context enforcement, context estimates, and calibration |
-| [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, resume with pending reviews, in-turn checkpoint resume, checkpoint v4 / schema 5 pairing, prefix-item authentication, additive journal vs fail-closed reader, terminal results, replay-safe cursors, crash matrix, and rollback |
+| [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, resume with pending reviews, in-turn checkpoint resume, checkpoint v4 / schema 5 pairing, prefix-item authentication, additive journal vs fail-closed reader, terminal results, replay-safe cursors, crash matrix, rollback, and session rollout retention that pins pending reviews |
 | [design/shared-run-contracts-v1.md](design/shared-run-contracts-v1.md) | Frozen v1 run, admission, budget, effect, event, and cursor contracts |
 | [design/verified-change-workflow-m5.md](design/verified-change-workflow-m5.md) | Verified-change workflow contract, session bootstrap, child names, review repair, run refs, and evidence |
 | [design/eval-pilot-executor.md](design/eval-pilot-executor.md) | Pilot preflight and offline-agent executor. Phase 2b egress shipped. Evidence-ledger binding in eval-executor is still target |
@@ -100,6 +99,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.18.0.md](releases/0.18.0.md) | AgenC 0.18.0: the `/goal` session goal with independent verification, removal of the embedded editor and workbench, four new providers, and compaction that degrades instead of ending the turn |
 | [releases/0.17.0.md](releases/0.17.0.md) | AgenC 0.17.0: restart-safe resumable sessions, race-safe protocol 1.2 client sync, Linux Landlock fallback, and reliable large tool-output handling |
 | [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: stock-macOS installer repair, live install progress, launcher portability, and reliable supervised-process teardown |
 | [releases/0.16.0.md](releases/0.16.0.md) | AgenC 0.16.0: grok-4.6 as the startup default, first-party security plugin, and recovery from stale workspace process state |
@@ -133,7 +133,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.17.0) |
+| [`../README.md`](../README.md) | Product README (0.18.0) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

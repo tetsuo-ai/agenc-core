@@ -10,10 +10,10 @@
  */
 
 import { Buffer } from "node:buffer";
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadId } from "../agents/registry.js";
-import { discoverStateDatabasePaths } from "../state/sqlite-driver.js";
+import { discoverStateDatabasePaths, resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import {
   FileThreadStore,
   type AppendThreadItemsParams,
@@ -50,18 +50,27 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   readonly #agencHome: string;
   readonly #primaryCwd: string;
   readonly #defaultModelProviderId?: string;
-  readonly #primary: FileThreadStore;
+  readonly #primaryProjectDir: string;
   readonly #byProjectDir = new Map<string, FileThreadStore>();
   readonly #knownProjectDirs = new Set<string>();
   #sortedProjectDirs: readonly string[] | undefined;
   #projectIndexByDir: ReadonlyMap<string, number> | undefined;
   #projectsDirectoryMtimeMs: number | null | undefined;
+  #closed = false;
 
   constructor(opts: MultiProjectFileThreadStoreOpts) {
     this.#agencHome = opts.agencHome;
     this.#primaryCwd = opts.primaryCwd;
     this.#defaultModelProviderId = opts.defaultModelProviderId;
-    this.#primary = this.#openForCwd(opts.primaryCwd);
+    this.#primaryProjectDir = resolveStateDatabasePaths({
+      cwd: opts.primaryCwd,
+      agencHome: opts.agencHome,
+    }).projectDir;
+    // Existing projects retain eager legacy import and pending-unarchive
+    // recovery. A missing project has nothing to recover: open its database
+    // when the first write creates the project. Read-only discovery
+    // does not need to manufacture an empty primary database.
+    if (this.#primaryExists()) this.#openForProjectDir(this.#primaryProjectDir);
     // Pay the one-time project-directory discovery cost at daemon/store
     // construction. Steady-state session.list calls only stat the parent
     // directory and page the cached project order.
@@ -74,120 +83,158 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   }
 
   resumeThread(params: ResumeThreadParams): void {
-    this.#primary.resumeThread(params);
+    this.#withStoreHolding(params.threadId, (store) => store.resumeThread(params));
   }
 
   appendItems(params: AppendThreadItemsParams): void {
-    this.#primary.appendItems(params);
+    this.#withStoreHolding(params.threadId, (store) => store.appendItems(params));
   }
 
   persistThread(threadId: ThreadId): void {
-    this.#primary.persistThread(threadId);
+    this.#withStoreHolding(threadId, (store) => store.persistThread(threadId));
   }
 
   flushThread(threadId: ThreadId): void {
-    this.#primary.flushThread(threadId);
+    this.#withStoreHolding(threadId, (store) => store.flushThread(threadId));
   }
 
   shutdownThread(threadId: ThreadId): void {
-    this.#primary.shutdownThread(threadId);
+    try {
+      this.#storeHolding(threadId).shutdownThread(threadId);
+    } finally {
+      this.#closeIdleProjectStores();
+    }
   }
 
   discardThread(threadId: ThreadId): void {
-    this.#primary.discardThread(threadId);
+    try {
+      this.#storeHolding(threadId).discardThread(threadId);
+    } finally {
+      this.#closeIdleProjectStores();
+    }
   }
 
   loadHistory(params: LoadThreadHistoryParams) {
-    return this.#storeHolding(params.threadId).loadHistory(params);
+    return this.#withStoreHolding(params.threadId, (store) => store.loadHistory(params));
   }
 
   readThread(params: ReadThreadParams): StoredThread {
-    return this.#storeHolding(params.threadId).readThread(params);
+    return this.#withStoreHolding(params.threadId, (store) => store.readThread(params));
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    const store = verifiedProjectDir === undefined
+      ? this.#storeHolding(threadId)
+      : this.#openForProjectDir(verifiedProjectDir);
+    return store.readThreadLightMode(threadId, verifiedProjectDir);
+  }
+
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
+    const store = verifiedProjectDir === undefined
+      ? this.#storeHolding(threadId)
+      : this.#openForProjectDir(verifiedProjectDir);
+    return store.readThreadRuntimeOptions(threadId, verifiedProjectDir);
   }
 
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread {
-    for (const store of this.#allStores()) {
-      try {
-        return store.readThreadByRolloutPath(params);
-      } catch (error) {
-        if (error instanceof ThreadNotFoundError) continue;
-        throw error;
+    try {
+      for (const store of this.#allStores()) {
+        try {
+          return store.readThreadByRolloutPath(params);
+        } catch (error) {
+          if (error instanceof ThreadNotFoundError) continue;
+          throw error;
+        }
       }
+      throw new ThreadNotFoundError(`rollout:${params.rolloutPath}`);
+    } finally {
+      this.#closeIdleProjectStores();
     }
-    throw new ThreadNotFoundError(`rollout:${params.rolloutPath}`);
   }
 
   listThreads(params: ListThreadsParams): ThreadPage {
-    if (isBoundedStateDbListing(params)) {
-      return this.#listThreadsBounded(params);
-    }
-    if (params.cursor?.startsWith(BOUNDED_MULTI_PROJECT_CURSOR_PREFIX)) {
-      throw new ThreadStoreInvalidRequestError(
-        "bounded multi-project cursor cannot be used with filtered listing",
-      );
-    }
-    // Gather full filtered sets from each project, then re-sort/page.
-    // Project counts are typically small; recovery already scans all DBs.
-    const items: StoredThread[] = [];
-    const seen = new Set<string>();
-    for (const store of this.#allStores()) {
-      let cursor: string | undefined;
-      do {
-        const page = store.listThreads({
-          pageSize: 500,
-          archived: params.archived,
-          ...(params.useStateDbOnly !== undefined
-            ? { useStateDbOnly: params.useStateDbOnly }
-            : {}),
-          ...(params.sortKey !== undefined ? { sortKey: params.sortKey } : {}),
-          ...(params.sortDirection !== undefined
-            ? { sortDirection: params.sortDirection }
-            : {}),
-          ...(params.searchTerm !== undefined
-            ? { searchTerm: params.searchTerm }
-            : {}),
-          ...(cursor !== undefined ? { cursor } : {}),
-        });
-        for (const item of page.items) {
-          if (seen.has(item.threadId)) continue;
-          seen.add(item.threadId);
-          items.push(item);
-        }
-        cursor = page.nextCursor;
-      } while (cursor !== undefined);
-    }
+    try {
+      if (isBoundedStateDbListing(params)) {
+        return this.#listThreadsBounded(params);
+      }
+      if (params.cursor?.startsWith(BOUNDED_MULTI_PROJECT_CURSOR_PREFIX)) {
+        throw new ThreadStoreInvalidRequestError(
+          "bounded multi-project cursor cannot be used with filtered listing",
+        );
+      }
+      // Gather full filtered sets from each project, then re-sort/page.
+      // Project counts are typically small; recovery already scans all DBs.
+      const items: StoredThread[] = [];
+      const seen = new Set<string>();
+      for (const store of this.#allStores()) {
+        let cursor: string | undefined;
+        do {
+          const page = store.listThreads({
+            pageSize: 500,
+            archived: params.archived,
+            ...(params.useStateDbOnly !== undefined
+              ? { useStateDbOnly: params.useStateDbOnly }
+              : {}),
+            ...(params.sortKey !== undefined ? { sortKey: params.sortKey } : {}),
+            ...(params.sortDirection !== undefined
+              ? { sortDirection: params.sortDirection }
+              : {}),
+            ...(params.searchTerm !== undefined
+              ? { searchTerm: params.searchTerm }
+              : {}),
+            ...(cursor !== undefined ? { cursor } : {}),
+          });
+          for (const item of page.items) {
+            if (seen.has(item.threadId)) continue;
+            seen.add(item.threadId);
+            items.push(item);
+          }
+          cursor = page.nextCursor;
+        } while (cursor !== undefined);
+      }
 
-    const sortKey = params.sortKey ?? "created_at";
-    const sortDir = params.sortDirection ?? "desc";
-    items.sort((a, b) => {
-      const aKey = sortKey === "created_at" ? a.createdAt : a.updatedAt;
-      const bKey = sortKey === "created_at" ? b.createdAt : b.updatedAt;
-      const cmp =
-        aKey.localeCompare(bKey) || a.threadId.localeCompare(b.threadId);
-      return sortDir === "asc" ? cmp : -cmp;
-    });
+      const sortKey = params.sortKey ?? "created_at";
+      const sortDir = params.sortDirection ?? "desc";
+      items.sort((a, b) => {
+        const aKey = sortKey === "created_at" ? a.createdAt : a.updatedAt;
+        const bKey = sortKey === "created_at" ? b.createdAt : b.updatedAt;
+        const cmp =
+          aKey.localeCompare(bKey) || a.threadId.localeCompare(b.threadId);
+        return sortDir === "asc" ? cmp : -cmp;
+      });
 
-    const pageSize = Math.min(Math.max(params.pageSize ?? 50, 1), 500);
-    const offset = parseOuterOffset(params.cursor);
-    const sliced = items.slice(offset, offset + pageSize);
-    const nextOffset = offset + sliced.length;
-    return {
-      items: sliced,
-      ...(nextOffset < items.length
-        ? { nextCursor: `mp:${nextOffset}` }
-        : {}),
-    };
+      const pageSize = Math.min(Math.max(params.pageSize ?? 50, 1), 500);
+      const offset = parseOuterOffset(params.cursor);
+      const sliced = items.slice(offset, offset + pageSize);
+      const nextOffset = offset + sliced.length;
+      return {
+        items: sliced,
+        ...(nextOffset < items.length
+          ? { nextCursor: `mp:${nextOffset}` }
+          : {}),
+      };
+    } finally {
+      this.#closeIdleProjectStores();
+    }
   }
 
   countThreads(params: {
     readonly archived: boolean;
     readonly excludeThreadIds?: ReadonlySet<string>;
   }): number {
-    let count = 0;
-    for (const projectDir of this.#boundedProjectDirs()) {
-      count += this.#openForProjectDir(projectDir).countThreads(params);
+    try {
+      let count = 0;
+      for (const projectDir of this.#boundedProjectDirs()) {
+        if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) continue;
+        count += this.#openForProjectDir(projectDir).countThreads(params);
+      }
+      return count;
+    } finally {
+      this.#closeIdleProjectStores();
     }
-    return count;
   }
 
   /**
@@ -223,6 +270,12 @@ export class MultiProjectFileThreadStore implements ThreadStore {
       projectsVisited < pageSize
     ) {
       const projectDir = projectDirs[projectIndex]!;
+      if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) {
+        projectIndex += 1;
+        projectsVisited += 1;
+        threadCursor = undefined;
+        continue;
+      }
       const store = this.#openForProjectDir(projectDir);
       const page = store.listThreads({
         pageSize: pageSize - items.length,
@@ -266,29 +319,56 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   }
 
   updateThreadMetadata(params: UpdateThreadMetadataParams): StoredThread {
-    return this.#storeHolding(params.threadId).updateThreadMetadata(params);
+    return this.#withStoreHolding(params.threadId, (store) => store.updateThreadMetadata(params));
   }
 
   archiveThread(params: ArchiveThreadParams): void {
-    this.#storeHolding(params.threadId).archiveThread(params);
+    this.#withStoreHolding(params.threadId, (store) => store.archiveThread(params));
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
-    return this.#storeHolding(params.threadId).unarchiveThread(params);
+    return this.#withStoreHolding(params.threadId, (store) => store.unarchiveThread(params));
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    const errors: unknown[] = [];
     for (const store of this.#byProjectDir.values()) {
-      store.close();
+      try {
+        store.close();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     this.#byProjectDir.clear();
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "multi-project thread store close failed");
+    }
+  }
+
+  #withStoreHolding<T>(threadId: ThreadId, use: (store: FileThreadStore) => T): T {
+    try {
+      return use(this.#storeHolding(threadId));
+    } finally {
+      this.#closeIdleProjectStores();
+    }
+  }
+
+  #closeIdleProjectStores(): void {
+    const primaryDir = this.#primaryProjectDir;
+    for (const [projectDir, store] of this.#byProjectDir) {
+      if (projectDir === primaryDir || store.hasLiveRecorders()) continue;
+      store.close();
+      this.#byProjectDir.delete(projectDir);
+    }
   }
 
   #storeForWrite(cwd: string | undefined): FileThreadStore {
     if (cwd !== undefined && cwd.trim().length > 0) {
       return this.#openForCwd(cwd.trim());
     }
-    return this.#primary;
+    return this.#openForProjectDir(this.#primaryProjectDir);
   }
 
   #storeHolding(threadId: ThreadId): FileThreadStore {
@@ -309,8 +389,9 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   }
 
   #allStores(): FileThreadStore[] {
+    this.#assertOpen();
     this.#refreshDiscovered();
-    const primaryDir = this.#primary.getProjectDir();
+    const primaryDir = this.#primaryProjectDir;
     return [...this.#byProjectDir.values()].sort((a, b) => {
       if (a.getProjectDir() === primaryDir) return -1;
       if (b.getProjectDir() === primaryDir) return 1;
@@ -321,32 +402,37 @@ export class MultiProjectFileThreadStore implements ThreadStore {
   #refreshDiscovered(): void {
     this.#refreshDiscoveredProjectDirs();
     for (const projectDir of this.#knownProjectDirs) {
+      if (projectDir === this.#primaryProjectDir && !this.#primaryExists()) continue;
       this.#openForProjectDir(projectDir);
     }
-    // Always keep primary cwd project present.
-    this.#openForCwd(this.#primaryCwd);
+    // Existing primary state still participates in every discovery pass.
+    if (this.#primaryExists()) this.#openForCwd(this.#primaryCwd);
+  }
+
+  #primaryExists(): boolean {
+    if (this.#byProjectDir.has(this.#primaryProjectDir)) return true;
+    try {
+      lstatSync(this.#primaryProjectDir);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
   }
 
   #openForCwd(cwd: string): FileThreadStore {
-    const store = new FileThreadStore({
+    this.#assertOpen();
+    // Resolve the same project identity before opening SQLite. Cache hits
+    // must not construct, migrate and immediately close a duplicate store.
+    const { projectDir } = resolveStateDatabasePaths({
       cwd,
       agencHome: this.#agencHome,
-      ...(this.#defaultModelProviderId !== undefined
-        ? { defaultModelProviderId: this.#defaultModelProviderId }
-        : {}),
     });
-    const projectDir = store.getProjectDir();
-    const existing = this.#byProjectDir.get(projectDir);
-    if (existing !== undefined) {
-      store.close();
-      return existing;
-    }
-    this.#byProjectDir.set(projectDir, store);
-    this.#rememberProjectDir(projectDir);
-    return store;
+    return this.#openForProjectDir(projectDir);
   }
 
   #openForProjectDir(projectDir: string): FileThreadStore {
+    this.#assertOpen();
     const existing = this.#byProjectDir.get(projectDir);
     if (existing !== undefined) return existing;
     const store = new FileThreadStore({
@@ -361,7 +447,12 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     return store;
   }
 
+  #assertOpen(): void {
+    if (this.#closed) throw new ThreadStoreInvalidRequestError("multi-project thread store is closed");
+  }
+
   #boundedProjectDirs(): readonly string[] {
+    this.#assertOpen();
     this.#refreshDiscoveredProjectDirs();
     this.#ensureProjectOrder();
     return this.#sortedProjectDirs!;
@@ -397,7 +488,7 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     ) {
       return;
     }
-    const primaryDir = this.#primary.getProjectDir();
+    const primaryDir = this.#primaryProjectDir;
     this.#rememberProjectDir(primaryDir);
     const sorted = [...this.#knownProjectDirs].sort((a, b) => {
       if (a === primaryDir) return -1;

@@ -1,7 +1,51 @@
-import { describe, expect, it } from "vitest";
-import { AgentStatusTracker, agentStatusFromEvent, isFinal } from "./status.js";
+import { describe, expect, it, vi } from "vitest";
+import { AgentStatusTracker, agentStatusFromEvent, isFinal,
+  terminalFromAgentStatus, toAgentStatusJson, turnIdFromAgentStatus } from "./status.js";
 
 describe("AgentStatusTracker", () => {
+  it("reads terminal and turn IDs only from object statuses", () => {
+    const terminal = { provider: "fake", model: "fake-model", reason: "completed",
+      retryable: false, dispatch: "sent", completedWork: "done", unfinishedWork: "" } as const;
+    expect(terminalFromAgentStatus("running")).toBeUndefined();
+    expect(turnIdFromAgentStatus("running")).toBeUndefined();
+    expect(terminalFromAgentStatus({ status: "idle", terminal })).toBe(terminal);
+    expect(turnIdFromAgentStatus({ status: "running", turnId: "turn-1" })).toBe("turn-1");
+    expect(toAgentStatusJson("running")).toBe("running");
+    expect(toAgentStatusJson({ completed: "done", terminal })).toEqual({ completed: "done", terminal });
+  });
+  it("records one epoch interval per executing turn and freezes it through idle, duplicate marks and shutdown", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    try {
+      const tracker = new AgentStatusTracker();
+      expect(tracker.timing).toBeUndefined();
+      tracker.markRunning("first");
+      clock.mockReturnValue(105_000);
+      tracker.markRunning("first");
+      expect(tracker.timing).toEqual({ turnId: "first", startedAt: 100_000 });
+      clock.mockReturnValue(120_000);
+      tracker.markIdle("first");
+      clock.mockReturnValue(180_000);
+      tracker.markIdle("first");
+      expect(tracker.timing).toEqual({ turnId: "first", startedAt: 100_000, endedAt: 120_000 });
+      tracker.markRunning("second");
+      expect(tracker.timing).toEqual({ turnId: "second", startedAt: 180_000 });
+      clock.mockReturnValue(195_000);
+      tracker.markCompleted("second");
+      clock.mockReturnValue(250_000);
+      tracker.markDurabilityErrored("second", "close failed");
+      tracker.markShutdown();
+      expect(tracker.timing).toEqual({ turnId: "second", startedAt: 180_000, endedAt: 195_000 });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not infer epoch timing from a restored status or a different unobserved turn", () => {
+    const restored = new AgentStatusTracker({ status: "idle", turnId: "old", endedAtMs: 123 });
+    expect(restored.timing).toBeUndefined();
+    restored.markRunning("known");
+    restored.markIdle("unobserved");
+    expect(restored.timing).toBeUndefined();
+  });
+
   it("starts pending_init", () => {
     const t = new AgentStatusTracker();
     expect(t.value.status).toBe("pending_init");
@@ -44,6 +88,9 @@ describe("AgentStatusTracker", () => {
 
   it("isFinal classifies terminal states", () => {
     expect(isFinal({ status: "pending_init" })).toBe(false);
+    expect(isFinal("running")).toBe(false);
+    expect(isFinal("shutdown")).toBe(true);
+    expect(isFinal({ completed: "done" })).toBe(true);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
     expect(isFinal({ status: "not_found" })).toBe(true);
     // interrupted is non-final (matches AgenC semantics).

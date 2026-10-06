@@ -283,7 +283,9 @@ describe('BackgroundTasksPanel branch coverage', () => {
 
     expect(output).toContain('blank-title-task')
     expect(output).toContain('Reviewer · Agent')
-    expect(output).toContain('—')
+    // A missing start time leaves the elapsed cell empty, never a dash.
+    expect(output).not.toContain('—')
+    expect(detailOutput).not.toContain('elapsed')
 
     appStateMock.state = {
       tasks: {

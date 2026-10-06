@@ -145,7 +145,6 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/vitest.config.ts",
   "runtime/vitest.kernel.config.ts",
   "runtime/vitest.native.config.ts",
-  "runtime/vitest.neovim.config.ts",
   "runtime/vitest.powershell.config.ts",
   "runtime/scripts/build-runtime.mjs",
   "runtime/scripts/check-package-entrypoints.mjs",

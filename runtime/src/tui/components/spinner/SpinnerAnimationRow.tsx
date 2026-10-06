@@ -1,4 +1,3 @@
-import figures from 'figures';
 import * as React from 'react';
 
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
@@ -9,7 +8,7 @@ import { Box, Text } from '../../ink.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
-import { AgenCActivityMark } from './AgenCActivityMark.js';
+import { ShimmerVerb } from './ShimmerVerb.js';
 import type { SpinnerMode } from './types.js';
 import {
   formatStreamQuietWarning,
@@ -23,7 +22,8 @@ const THINKING_BARE_WIDTH = stringWidth('thinking');
 // parity): 30s felt like the indicator was frozen/slow on every normal turn.
 // The tok/s rate keeps its own ≥20-token/≥5s floor, so early reads show the
 // timer and raw token count without a noisy rate.
-const SHOW_TOKENS_AFTER_MS = 3_000;
+// The elapsed time shows from the first second so the line never looks idle.
+const SHOW_TOKENS_AFTER_MS = 1_000;
 // After this long with no new token, surface a heartbeat note so a slow model
 // reads as "alive but slow" instead of "hung". A healthy model streams tokens
 // every fraction of a second, so this only fires on genuinely slow turns.
@@ -226,11 +226,6 @@ export type SpinnerAnimationRowProps = {
   showLeaderTokenStats?: boolean;
 };
 
-function statusGlyph(mode: SpinnerMode, hasActiveTools: boolean): string {
-  if (hasActiveTools || mode === 'tool-use' || mode === 'tool-input') return '◐';
-  return mode === 'requesting' ? figures.arrowUp : figures.arrowDown;
-}
-
 export function SpinnerAnimationRow({
   mode,
   reducedMotion,
@@ -277,9 +272,7 @@ export function SpinnerAnimationRow({
   // Singular when exactly one token so the counter never reads "1 tokens".
   const tokenNoun = totalTokens === 1 ? 'token' : 'tokens';
   const tokensLabel = `${tokenCount} ${tokenNoun}`;
-  const tokensText = hasRunningTeammates
-    ? tokensLabel
-    : `${figures.arrowDown} ${tokensLabel}`;
+  const tokensText = tokensLabel;
   const tokensWidth = stringWidth(tokensText);
   const timerText = formatDuration(elapsedTimeMs);
   const timerWidth = stringWidth(timerText);
@@ -330,9 +323,8 @@ export function SpinnerAnimationRow({
         : null;
   let thinkingWidthValue = thinkingText ? stringWidth(thinkingText) : 0;
 
-  // Two cells for the 4×4 Braille activity matrix plus one stable gap before
-  // the phase label.
-  const messageWidth = stringWidth(visibleMessage) + 3;
+  // Two cells of left inset before the shimmering verb, two after it.
+  const messageWidth = stringWidth(visibleMessage) + 4;
   const wantsThinking = thinkingStatus !== null;
   // The stall note is itself a liveness signal, so surface the timer/tokens
   // alongside it even before the usual 30s threshold.
@@ -368,10 +360,7 @@ export function SpinnerAnimationRow({
     ...(spinnerSuffix ? [<Text dimColor key="suffix">{spinnerSuffix}</Text>] : []),
     ...(showTimer ? [<Text dimColor key="elapsedTime">{timerText}</Text>] : []),
     ...(showTokens ? [
-      <Box flexDirection="row" key="tokens">
-        {!hasRunningTeammates && <SpinnerModeGlyph mode={mode} />}
-        <Text dimColor>{tokensLabel}{showRate ? rateSuffix : ''}</Text>
-      </Box>,
+      <Text dimColor key="tokens">{tokensLabel}{showRate ? rateSuffix : ''}</Text>,
     ] : []),
     ...(fitStallNote && stallNoteText ? [
       <Text color="warning" key="stall">{stallNoteText}</Text>,
@@ -412,38 +401,26 @@ export function SpinnerAnimationRow({
         </>
       ) : (
         <>
-          <Text dimColor>{' ('}</Text>
+          <Text dimColor>{'  '}</Text>
           <Byline>{parts}</Byline>
-          <Text dimColor>)</Text>
         </>
       )
     ) : null;
 
   return (
     <FullWidthRow>
-      <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
-        <Box flexWrap="wrap" height={1} width={3}>
-          {hasActiveTools || mode === 'tool-use' || mode === 'tool-input' ? (
-            <AgenCActivityMark color={messageColor} reducedMotion={reducedMotion} />
-          ) : (
-            <Text color={messageColor}>{statusGlyph(mode, hasActiveTools)}</Text>
-          )}
-        </Box>
-        <Text color={messageColor}>{visibleMessage}</Text>
+      {/* No glyph: the verb itself carries the motion, a band of light
+          sweeping across it while the turn is in flight. */}
+      <Box flexDirection="row" flexWrap="wrap" marginTop={1} paddingLeft={2}>
+        <ShimmerVerb
+          text={visibleMessage}
+          base={messageColor}
+          peak="text"
+          reducedMotion={reducedMotion}
+        />
         {status}
       </Box>
     </FullWidthRow>
   );
 }
 
-function SpinnerModeGlyph({ mode }: { mode: SpinnerMode }): React.ReactNode {
-  switch (mode) {
-    case 'tool-input':
-    case 'tool-use':
-    case 'responding':
-    case 'thinking':
-      return <Box width={2}><Text dimColor>{figures.arrowDown}</Text></Box>;
-    case 'requesting':
-      return <Box width={2}><Text dimColor>{figures.arrowUp}</Text></Box>;
-  }
-}

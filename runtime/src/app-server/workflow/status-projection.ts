@@ -22,21 +22,35 @@ import {
 import type {
   DurableRunEffect,
   DurableRunTerminalRecord,
+  DurableRunSuspension,
 } from "../../state/run-durability.js";
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
+import type { ProviderWait } from "../../recovery/provider-wait.js";
+import type { PermissionMode } from "../../permissions/types.js";
+import type { RunWorkflowCompletedResult, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
+import { workflowControlState } from "./control-state.js";
 
 export interface WorkflowStatusStep {
   readonly stepId: string;
   readonly stage: WorkflowStepId;
   readonly status: WorkflowStepStatus;
   readonly attempts: number;
+  readonly providerWait?: ProviderWait;
   readonly verdict?: string;
   readonly artifacts?: readonly RunArtifactPointer[];
 }
 
 export interface WorkflowRunStatus {
   readonly runId: string;
-  readonly effectivePermissionMode?: WorkflowSpec["permissionMode"];
+  readonly lightMode?: boolean;
+  readonly control: RunWorkflowControlState;
+  /** Volatile execution health; never substitutes for the durable terminal. */
+  readonly runtimeFailure?: RunWorkflowRuntimeFailure;
+  readonly continuationOf?: WorkflowSpec["continuationOf"];
+  readonly completedResult?: RunWorkflowCompletedResult;
+  readonly requestedPermissionMode?: WorkflowSpec["permissionMode"];
+  /** Only a live, owned Session can supply this field; durable projection cannot. */
+  readonly effectivePermissionMode?: PermissionMode;
   readonly steps: readonly WorkflowStatusStep[];
   readonly terminal?: {
     readonly status: RunTerminalStatus;
@@ -68,6 +82,7 @@ export function projectWorkflowStatus(input: {
   readonly runId: string;
   readonly effects: readonly DurableRunEffect[];
   readonly terminal?: DurableRunTerminalRecord;
+  readonly suspensions?: readonly DurableRunSuspension[];
 }): WorkflowRunStatus {
   const projections = deriveAllStageProjections(input.effects);
   const steps: WorkflowStatusStep[] = [];
@@ -116,10 +131,30 @@ export function projectWorkflowStatus(input: {
   const permissionMode = spec !== null && typeof spec === "object"
     ? (spec as Record<string, unknown>).permissionMode
     : undefined;
+  const finalized = input.effects.find(effect => effect.stepId === "workflow.finalize" && effect.outcome === "committed");
+  const delivered = finalized === undefined ? undefined : readWorkflowStepEvidence(finalized).finalize;
+  const sourceSpec = spec !== null && typeof spec === "object" ? spec as WorkflowSpec : undefined;
+  const sourceDigest = intake === undefined ? undefined : readWorkflowStepEvidence(intake).specDigest;
+  const previousCost = sourceSpec?.continuationOf === undefined ? 0 : sourceSpec.continuationOf.previousCostUsd;
+  const usage = input.terminal?.usage;
+  const totalCost = usage != null && usage.costKnown !== false && previousCost !== null
+    && Number.isFinite(previousCost) && previousCost >= 0 && Number.isFinite(usage.costUsd) && usage.costUsd >= 0
+    ? previousCost + usage.costUsd : null;
+  const completedResult = input.terminal?.status === "completed" && sourceSpec !== undefined
+    && sourceDigest !== undefined && delivered?.headCommit !== undefined
+    ? { headCommit: delivered.headCommit, specDigest: sourceDigest, baseCommit: sourceSpec.baseCommit,
+        cumulativeCostUsd: totalCost !== null && Number.isFinite(totalCost) ? totalCost : null,
+        ...(usage?.costEstimated === true || sourceSpec.continuationOf?.previousCostEstimated === true
+          ? { cumulativeCostEstimated: true } : {}) } : undefined;
   return {
     runId: input.runId,
+    ...(sourceSpec !== undefined ? { lightMode: sourceSpec.lightMode === true } : {}),
+    ...(completedResult !== undefined ? { completedResult } : {}),
+    ...((spec as WorkflowSpec | undefined)?.continuationOf !== undefined
+      ? { continuationOf: (spec as WorkflowSpec).continuationOf } : {}),
+    control: workflowControlState({ ...input, suspensions: input.suspensions ?? [], terminal: input.terminal !== undefined }),
     ...(permissionMode === "default" || permissionMode === "plan" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions"
-      ? { effectivePermissionMode: permissionMode }
+      ? { requestedPermissionMode: permissionMode }
       : {}),
     steps,
     ...(input.terminal !== undefined

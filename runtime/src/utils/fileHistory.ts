@@ -1,5 +1,5 @@
 import { createHash, type UUID } from "crypto";
-import { diffLines } from "diff";
+import { loadDiff } from "./lazy-runtime-packages.js";
 import type { Stats } from "fs";
 import {
   chmod,
@@ -24,12 +24,6 @@ import { pathExists } from "./file.js";
 import { logError } from "./log.js";
 import { recordFileHistorySnapshot } from "./sessionStorage.js";
 import { getExecutionAuthoritySettings } from "./settings/settings.js";
-import {
-  completeWorkspaceTopologyMutation,
-  reserveWorkspaceTopologyMutation,
-  workspaceLoadedEditorPathConflict,
-  workspaceMutationPathConflict,
-} from "../workspace/mutation-coordinator.js";
 
 type BackupFileName = string | null; // The null value means the file does not exist in this version
 
@@ -491,33 +485,7 @@ async function applySnapshot(
   state: FileHistoryState,
   targetSnapshot: FileHistorySnapshot,
 ): Promise<string[]> {
-  for (const trackingPath of state.trackedFiles) {
-    const filePath = maybeExpandFilePath(trackingPath);
-    const conflict = workspaceMutationPathConflict(filePath);
-    if (conflict !== null) {
-      throw new Error(
-        `Cannot rewind ${filePath}: ${conflict.path} has ${
-          conflict.authority === "editor_dirty"
-            ? "unsaved editor changes"
-            : "unreconciled editor changes"
-        }. Resolve the Editor buffer first.`,
-      );
-    }
-    const loadedConflict = workspaceLoadedEditorPathConflict(filePath);
-    if (loadedConflict !== null) {
-      throw new Error(
-        `Cannot rewind ${filePath}: ${loadedConflict.path} is loaded in Editor. Close that buffer before rewinding.`,
-      );
-    }
-  }
-  const reservation = await reserveWorkspaceTopologyMutation(
-    [...state.trackedFiles].map((path) => ({
-      path: maybeExpandFilePath(path),
-    })),
-    "rewind",
-  );
   const filesChanged: string[] = [];
-  let outcomeUnknown = false;
   for (const trackingPath of state.trackedFiles) {
     try {
       const filePath = maybeExpandFilePath(trackingPath);
@@ -557,14 +525,9 @@ async function applySnapshot(
         filesChanged.push(filePath);
       }
     } catch (error) {
-      outcomeUnknown = true;
       logError(error);
     }
   }
-  await completeWorkspaceTopologyMutation(
-    reservation,
-    outcomeUnknown ? "unknown_outcome" : "applied",
-  );
   return filesChanged;
 }
 
@@ -680,7 +643,7 @@ async function computeDiffStatsForFile(
     filesChanged.push(originalFile);
 
     // Compute the diff
-    const changes = diffLines(originalContent ?? "", backupContent ?? "");
+    const changes = loadDiff().diffLines(originalContent ?? "", backupContent ?? "");
     changes.forEach((c) => {
       if (c.added) {
         insertions += c.count || 0;

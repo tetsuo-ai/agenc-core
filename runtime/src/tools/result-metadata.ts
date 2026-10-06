@@ -1,4 +1,6 @@
-import { structuredPatch } from "diff";
+import { loadDiff } from "../utils/lazy-runtime-packages.js";
+
+import { isRecord } from "../utils/record.js";
 
 const DIFF_TIMEOUT_MS = 1_000;
 
@@ -24,7 +26,8 @@ export interface FileMutationMetadataInput {
 export type RecoverableToolFailureKind =
   | "input_validation"
   | "mcp_tool_not_shell_command"
-  | "shell_workspace_write_policy";
+  | "shell_workspace_write_policy"
+  | "exec_detach_unavailable";
 
 export function buildRecoverableToolFailureMetadata(
   kind: RecoverableToolFailureKind,
@@ -46,7 +49,8 @@ export function recoverableFailureKind(
   if (metadata.hiddenFromTranscript !== true) return null;
   return metadata.kind === "input_validation" ||
     metadata.kind === "mcp_tool_not_shell_command" ||
-    metadata.kind === "shell_workspace_write_policy"
+    metadata.kind === "shell_workspace_write_policy" ||
+    metadata.kind === "exec_detach_unavailable"
     ? metadata.kind
     : null;
 }
@@ -54,7 +58,7 @@ export function recoverableFailureKind(
 export function buildFileMutationMetadata(
   input: FileMutationMetadataInput,
 ): Record<string, unknown> {
-  const patch = structuredPatch(
+  const patch = loadDiff().structuredPatch(
     input.filePath,
     input.filePath,
     input.beforeText,
@@ -84,4 +88,18 @@ export function buildFileMutationMetadata(
       : {}),
   };
   return { ui };
+}
+
+/**
+ * Whether a tool result's metadata records a workspace file mutation: the
+ * `ui` block a single-file edit or write attaches, or apply_patch's per-file
+ * `fileMutations` entries.
+ */
+export function hasFileMutationMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  const ui = metadata?.ui;
+  if (isRecord(ui) && ui.kind === "file_mutation") return true;
+  const fileMutations = metadata?.fileMutations;
+  return Array.isArray(fileMutations) && fileMutations.length > 0;
 }

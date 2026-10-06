@@ -2,17 +2,24 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { validateCanonicalJournalText } from "../../src/state/recovery-journal-contract.js";
 import { SessionStore } from "../../src/session/session-store.js";
 
 /**
- * Regression for the I-83 host-suspend data-loss gap: when the pending
- * batch was open across a suspend/resume window (> 10s), the suspend
- * detection in flushBatch() used to REPLACE the entire pending batch
- * with the two warning markers, permanently dropping the queued durable
- * response_item / session_state lines that straddled the window.
+ * Regression for the I-83 host-suspend gaps.
  *
- * The fix prepends the markers ahead of the still-pending items so the
- * in-flight history survives the flush.
+ * Data loss: when the pending batch was open across a suspend/resume
+ * window (> 10s), the suspend detection in flushBatch() used to REPLACE the
+ * entire pending batch with two warning markers, permanently dropping the
+ * queued durable response_item / session_state lines that straddled the
+ * window. The queued rows must survive the flush.
+ *
+ * Journal format: those markers were appended outside the EventLog, so they
+ * carried no `seq`. The canonical journal must be entirely sequenced or
+ * entirely legacy, so a single marker row made every later validation of
+ * that rollout fail, which refuses compaction for the rest of the session.
+ * A suspend window is recorded as a diagnostic instead; it reaches the
+ * rollout through the session's stamped emit path.
  */
 describe("session-store I-83 suspend detection preserves pending durable items", () => {
   let home = "";
@@ -77,9 +84,10 @@ describe("session-store I-83 suspend detection preserves pending durable items",
 
     const text = JSON.stringify(lines);
 
-    // (1) Marker events are present.
-    expect(text).toContain("event_log_batch_delayed");
-    expect(text).toContain("system_resumed_from");
+    // (1) The suspend window is reported as a diagnostic, not as a raw row.
+    expect(
+      store.drainBufferedDiagnostics().map((d) => d.cause),
+    ).toContain("event_log_batch_delayed");
 
     // (2) Critically, the in-flight durable response_items are NOT
     // dropped — both rows survived the suspend flush.
@@ -89,17 +97,18 @@ describe("session-store I-83 suspend detection preserves pending durable items",
     const responseItems = lines.filter((l) => l.type === "response_item");
     expect(responseItems).toHaveLength(2);
 
-    // (3) The markers are written ahead of the preserved history rows
-    // (warning + sentinel come before the first response_item).
-    const firstResponseIdx = lines.findIndex((l) => l.type === "response_item");
-    const sentinelIdx = lines.findIndex(
-      (l) =>
-        l.type === "event_msg" &&
-        (l.payload as { msg?: { payload?: { cause?: string } } })?.msg?.payload
-          ?.cause === "system_resumed_from",
-    );
-    expect(sentinelIdx).toBeGreaterThanOrEqual(0);
-    expect(sentinelIdx).toBeLessThan(firstResponseIdx);
+    // (3) Every canonical event row carries its sequence: one unsequenced
+    // row would make the journal mixed-format and refuse compaction.
+    const eventRows = lines.filter((line) => line.type === "event_msg");
+    for (const row of eventRows) {
+      expect(
+        (row.payload as { seq?: number }).seq,
+        `event row without seq: ${JSON.stringify(row).slice(0, 120)}`,
+      ).toBeTypeOf("number");
+    }
+    expect(
+      validateCanonicalJournalText(readFileSync(store.rolloutPath, "utf8")),
+    ).toBeDefined();
 
     store.close();
   });

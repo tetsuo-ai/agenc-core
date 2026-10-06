@@ -26,7 +26,7 @@ import {
   deriveFlatCatalog,
   resolveRegisteredModelCatalogEntry,
 } from "../../src/llm/registry/model-catalog.js";
-import { readModelMenuSnapshot } from "../../src/commands/model-menu.js";
+import { readModelMenuSnapshot } from "../../src/commands/model-menu-snapshot.js";
 import type { SlashCommandContext } from "../../src/commands/types.js";
 import { resolveHomeContext } from "../../src/config/home.js";
 

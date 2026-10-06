@@ -79,12 +79,11 @@ import {
 } from '../utils/frontmatterParser.js'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { findCanonicalGitRoot, findGitRoot } from '../utils/git.js'
-import {
-  executeInstructionsLoadedHooks,
-  hasInstructionsLoadedHook,
-  type InstructionsLoadReason,
-  type InstructionsMemoryType,
+import type {
+  InstructionsLoadReason,
+  InstructionsMemoryType,
 } from '../utils/hooks.js'
+import { hasInstructionsLoadedHook } from '../utils/hooks/instructionsLoaded.js'
 import type { MemoryType } from '../utils/memory/types.js'
 import { expandPath } from '../utils/path.js'
 import { pathInWorkingPath } from '../utils/permissions/filesystem.js'
@@ -1086,6 +1085,7 @@ export const getMemoryFiles = memoize(
     if (!forceIncludeExternal) {
       const eagerLoadReason = consumeNextEagerLoadReason()
       if (eagerLoadReason !== undefined && hasInstructionsLoadedHook()) {
+        const { executeInstructionsLoadedHooks } = await import('../utils/hooks.js')
         for (const file of result) {
           if (!isInstructionsMemoryType(file.type)) continue
           const loadReason = file.parent ? 'include' : eagerLoadReason
@@ -1197,9 +1197,9 @@ export function getLargeMemoryFiles(files: MemoryFileInfo[]): MemoryFileInfo[] {
 }
 
 /**
- * When tengu_moth_copse is on, the findRelevantMemories prefetch surfaces
- * memory files via attachments, so the MEMORY.md index is no longer injected
- * into the system prompt. Callsites that care about "what's actually in
+ * When the findRelevantMemories prefetch surfaces memory files via
+ * attachments, the MEMORY.md index is no longer injected into the system
+ * prompt. Callsites that care about "what's actually in
  * context" (context builder, /context viz) should filter through this.
  */
 export function filterInjectedMemoryFiles(

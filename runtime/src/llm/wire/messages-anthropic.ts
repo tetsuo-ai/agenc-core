@@ -4,12 +4,19 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../reasoning-effort.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
+import {
+  anthropicFastModeRequested,
+  anthropicSupportsFastMode,
+} from "../providers/anthropic/fast-mode.js";
 import type {
   LLMChatOptions,
   LLMMessage,
   LLMResponse,
   LLMTool,
   LLMToolCall,
+  LLMUsage,
 } from "../types.js";
 import {
   ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
@@ -18,10 +25,13 @@ import {
 import {
   coerceUsage,
   collectRequestMetrics,
-  normalizeFinishReason,
   normalizeToolCalls,
+  requireMappedFinishReason,
   parseAnthropicToolChoice,
   prepareMessagesForWire,
+  splitSystemPromptOnDynamicBoundary,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
   toAnthropicMessageContent,
   toAnthropicToolResultContent,
   withEndpointMarkers,
@@ -32,7 +42,13 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
-import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
+import {
+  anthropicAcceptsSamplingParameters,
+  anthropicEffort,
+  anthropicManualBudgetTokens,
+  anthropicSupportsBetweenToolsThinking,
+  anthropicThinkingControl,
+} from "../../utils/model/anthropicThinkingControl.js";
 
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;
@@ -118,11 +134,12 @@ function buildAnthropicStructuredOutputTool(
  * gaphunt3 regression test still asserts it never diverges from
  * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` in `src/prompts/system-prompt.ts`.
  */
-export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
-import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
 
 interface SplitOptionSystemPrompt {
   readonly staticHead: string;
+  /** The session-fixed part of the tail (session-tail caching on). */
+  readonly sessionTail?: string;
   readonly dynamicTail?: string;
 }
 
@@ -136,6 +153,14 @@ interface SplitOptionSystemPrompt {
 function splitOptionSystemPrompt(
   optionSystemPrompt: string,
 ): SplitOptionSystemPrompt {
+  if (optionSystemPrompt.includes(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER)) {
+    const split = splitSystemPromptOnDynamicBoundary(optionSystemPrompt);
+    return {
+      staticHead: split.staticPrefix ?? "",
+      ...(split.sessionSuffix !== undefined ? { sessionTail: split.sessionSuffix } : {}),
+      ...(split.dynamicSuffix !== undefined ? { dynamicTail: split.dynamicSuffix } : {}),
+    };
+  }
   const markerIndex = optionSystemPrompt.indexOf(
     SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
   );
@@ -175,6 +200,12 @@ function buildOptionSystemBlocks(
   if (split.staticHead.length > 0) {
     blocks.push({ type: "text", text: split.staticHead, ...cacheControl });
   }
+  // Fixed for the session: no breakpoint of its own (the message-level
+  // breakpoints after it cover it), and the static head's breakpoint still
+  // serves other sessions.
+  if (split.sessionTail !== undefined) {
+    blocks.push({ type: "text", text: split.sessionTail });
+  }
   if (tailInSystem && split.dynamicTail !== undefined) {
     blocks.push({ type: "text", text: split.dynamicTail });
   }
@@ -213,6 +244,97 @@ function appendDynamicTailBlock(
   message.content = blocks;
 }
 
+/** Serialize a user or assistant message as one Messages API turn. */
+function toAnthropicTurn(message: LLMMessage): Record<string, unknown> {
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    const assistantContent = contentBlocksOf(
+      normalizeAnthropicMessageContent(message),
+    );
+    const toolUseBlocks = message.toolCalls.map((toolCall) => {
+      // History tool-call arguments are not re-validated, so a
+      // malformed JSON string must not throw here — that would
+      // also break parseAnthropicMessagesResponse, which rebuilds
+      // this request purely for metrics after a successful call.
+      let parsedInput: unknown = {};
+      try {
+        parsedInput = JSON.parse(toolCall.arguments || "{}");
+      } catch {
+        parsedInput = {};
+      }
+      return {
+        type: "tool_use",
+        id: toolCall.id,
+        // The messages API enforces the strict
+        // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
+        // dotted MCP form before sending. The response parser
+        // decodes back to the internal-registry form.
+        name: encodeMcpToolNameForWire(toolCall.name),
+        input: parsedInput,
+      };
+    });
+    const content =
+      hasEphemeralCacheControl(message)
+        ? withEphemeralCacheControl([
+          ...assistantContent,
+          ...toolUseBlocks,
+        ])
+        : [
+          ...assistantContent,
+          ...toolUseBlocks,
+        ];
+    return {
+      role: "assistant",
+      content,
+    };
+  }
+  return {
+    role: message.role,
+    content: normalizeAnthropicMessageContent(message),
+  };
+}
+
+function toAnthropicToolResultBlock(
+  message: LLMMessage,
+): Record<string, unknown> {
+  const block = {
+    type: "tool_result",
+    tool_use_id: message.toolCallId,
+    content: toAnthropicToolResultContent(message.content),
+  };
+  return hasEphemeralCacheControl(message)
+    ? { ...block, cache_control: { type: "ephemeral" } }
+    : block;
+}
+
+/**
+ * Serialize the conversation as Messages API turns. The results of one
+ * parallel tool turn go back as the ordered `tool_result` blocks of a single
+ * user message, the format the API documents for parallel tool use: a
+ * separate user message per result teaches Claude to stop calling tools in
+ * parallel. Each block keeps its own message's cache breakpoint, so a marker
+ * stays on the result normalization placed it on (a fork's skipCacheWrite
+ * marker can sit on a result before the last).
+ */
+function toAnthropicTurns(
+  conversation: readonly LLMMessage[],
+): Array<Record<string, unknown>> {
+  const turns: Array<Record<string, unknown>> = [];
+  let toolResults: Array<Record<string, unknown>> | undefined;
+  for (const message of conversation) {
+    if (message.role !== "tool") {
+      toolResults = undefined;
+      turns.push(toAnthropicTurn(message));
+      continue;
+    }
+    if (toolResults === undefined) {
+      toolResults = [];
+      turns.push({ role: "user", content: toolResults });
+    }
+    toolResults.push(toAnthropicToolResultBlock(message));
+  }
+  return turns;
+}
+
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
@@ -220,88 +342,25 @@ export function buildAnthropicMessagesRequest(
   const systemMessages = messages.filter((message) =>
     message.role === "system" || message.role === "developer"
   );
-  const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const optionSystemPrompt = withResponseDetailSystemPrompt(
+    input.options?.systemPrompt?.trim(), input.options?.responseDetailOverride,
+  );
   const optionSplit = optionSystemPrompt
     ? splitOptionSystemPrompt(optionSystemPrompt)
     : undefined;
   const systemMessageHasCacheControl = systemMessages.some((message) =>
     hasEphemeralCacheControl(message)
   );
+  const maxTokens = input.maxTokens ?? 4096;
 
   const body: Record<string, unknown> = {
     model: input.model,
-    messages: messages
-      .filter((message) =>
+    messages: toAnthropicTurns(
+      messages.filter((message) =>
         message.role !== "system" && message.role !== "developer"
-      )
-      .map((message) => {
-        if (message.role === "assistant" && message.toolCalls?.length) {
-          const anthropicContent = normalizeAnthropicMessageContent(message);
-          const assistantContent =
-            typeof anthropicContent === "string"
-              ? anthropicContent.length > 0
-                ? [{
-                  type: "text",
-                  text: anthropicContent,
-                }]
-                : []
-              : anthropicContent;
-          const toolUseBlocks = message.toolCalls.map((toolCall) => {
-            // History tool-call arguments are not re-validated, so a
-            // malformed JSON string must not throw here — that would
-            // also break parseAnthropicMessagesResponse, which rebuilds
-            // this request purely for metrics after a successful call.
-            let parsedInput: unknown = {};
-            try {
-              parsedInput = JSON.parse(toolCall.arguments || "{}");
-            } catch {
-              parsedInput = {};
-            }
-            return {
-              type: "tool_use",
-              id: toolCall.id,
-              // The messages API enforces the strict
-              // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
-              // dotted MCP form before sending. The response parser
-              // decodes back to the internal-registry form.
-              name: encodeMcpToolNameForWire(toolCall.name),
-              input: parsedInput,
-            };
-          });
-          const content =
-            hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([
-                ...assistantContent,
-                ...toolUseBlocks,
-              ])
-              : [
-                ...assistantContent,
-                ...toolUseBlocks,
-              ];
-          return {
-            role: "assistant",
-            content,
-          };
-        }
-        if (message.role === "tool") {
-          const toolResultBlock = {
-            type: "tool_result",
-            tool_use_id: message.toolCallId,
-            content: toAnthropicToolResultContent(message.content),
-          };
-          return {
-            role: "user",
-            content: hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([toolResultBlock])
-              : [toolResultBlock],
-          };
-        }
-        return {
-          role: message.role,
-          content: normalizeAnthropicMessageContent(message),
-        };
-      }),
-    max_tokens: input.maxTokens ?? 4096,
+      ),
+    ),
+    max_tokens: maxTokens,
   };
 
   const wireMessages = body.messages as Array<Record<string, unknown>>;
@@ -349,8 +408,16 @@ export function buildAnthropicMessagesRequest(
   // Task 28: the Fable/Mythos 5 family removed sampling parameters —
   // sending `temperature` returns a 400 (provider docs, verified
   // 2026-07-08). Opus-family behavior is unchanged.
-  const alwaysOnThinking = isAlwaysOnThinkingAnthropicModel(input.model);
-  if (input.options?.temperature !== undefined && !alwaysOnThinking) {
+  const thinkingControl = anthropicThinkingControl(input.model);
+  const alwaysOnThinking = thinkingControl === "always_on";
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(input.model);
+  // `temperature` is "deprecated for this model" (400) on Opus 5, Sonnet 5,
+  // Opus 4.8 and Opus 4.7 as well (probed 2026-09-11); the 4.6 generation
+  // and older still take it.
+  if (
+    input.options?.temperature !== undefined &&
+    anthropicAcceptsSamplingParameters(input.model)
+  ) {
     body.temperature = input.options.temperature;
   }
   if (
@@ -381,16 +448,17 @@ export function buildAnthropicMessagesRequest(
   // by omitting any forced tool_choice (falling back to auto) whenever
   // thinking will be enabled on this request.
   //
-  // Task 28: on the Fable/Mythos 5 family thinking is ALWAYS on server-side
-  // regardless of `reasoningEffort`, so the forced-tool_choice constraint
-  // applies unconditionally there. The docs do not state that the family
-  // relaxed the forced-tool_choice-with-thinking rule, so we conservatively
-  // keep it (falling back to auto never 400s; forcing could).
+  // Task 28: on the always-on family (Fable/Mythos 5, Opus 5.5) thinking is
+  // ALWAYS on server-side regardless of `reasoningEffort`, so the
+  // forced-tool_choice constraint applies unconditionally there. Fable 5.1
+  // and Opus 5.5 reject forced tool use outright ("tool_choice: type "tool"
+  // and "any" are not supported for this model", Opus 5.5 migration guide,
+  // 2026-09-22); falling back to auto never 400s.
   const thinkingEnabled =
-    alwaysOnThinking || input.options?.reasoningEffort !== undefined;
+    alwaysOnThinking || betweenToolsThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
-    if (toolChoice !== undefined && !thinkingEnabled) {
+    if (toolChoice !== undefined && (!thinkingEnabled || input.options.toolChoice === "none")) {
       body.tool_choice = toolChoice;
     }
   }
@@ -400,26 +468,136 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
-  // family — thinking is always on and any explicit configuration other
-  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
-  // returns a 400; omitting the param runs adaptive thinking. Depth is the
-  // effort parameter's job on that family. Opus-family (>= 4.6) behavior
-  // below is unchanged.
-  if (thinkingEnabled && !alwaysOnThinking) {
-    body.thinking = {
-      type: "enabled",
-      budget_tokens:
-        input.options?.reasoningEffort === "high" ||
-          input.options?.reasoningEffort === "xhigh"
-          ? 4096
-          : 2048,
-    };
+  // Task 28: never attach a `thinking` config for the always-on family
+  // (Fable/Mythos 5, Opus 5.5): thinking is always on and any explicit
+  // configuration other than `{type:"adaptive"}` (incl. `disabled` and
+  // `enabled`/budget_tokens) returns a 400; omitting the param runs adaptive
+  // thinking. Depth is the effort parameter's job on that family.
+  //
+  // Opus 5, Sonnet 5, Opus 4.8 and Opus 4.7 return the same 400 for
+  // `enabled` + `budget_tokens` ("Use thinking.type.adaptive and
+  // output_config.effort"); they and the 4.6 generation take adaptive
+  // thinking, with depth steered by effort. Only Opus 4.5, Sonnet 4.5,
+  // Haiku 4.5 and older still budget their thinking. Probed live
+  // 2026-09-11; see anthropicThinkingControl.ts.
+  const effortLevels = resolveReasoningEffort({ provider: "anthropic", model: input.model }).levels;
+  const requestedEffort = input.options?.reasoningEffort;
+  const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
+    !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
+  if (betweenToolsThinking) {
+    // `none` turns off up-front reasoning, but Sonnet 5.5 still produces
+    // progress-update thinking between tools. It accepts no additional
+    // fields in this mode. All actual effort tiers retain adaptive thinking.
+    body.thinking = requestedEffort === "none"
+      ? { type: "between_tools" }
+      : { type: "adaptive", display: "summarized" };
+  } else if (thinkingEnabled && !alwaysOnThinking) {
+    body.thinking = thinkingControl === "adaptive"
+      ? { type: "adaptive" }
+      : {
+          type: "enabled",
+          budget_tokens: anthropicManualBudgetTokens(
+            normalizedEffort,
+            maxTokens,
+          ),
+        };
+  }
+  // The effort dial only means something on the wire as output_config.effort;
+  // Sonnet 4.5 and Haiku 4.5 reject the field, so it stays off for them.
+  const effort = anthropicEffort(normalizedEffort);
+  if (
+    effort !== undefined &&
+    effortLevels.includes(effort)
+  ) {
+    body.output_config = { effort };
+  }
+  // Fast mode rides the session's "priority" service tier. It is sent only
+  // to the models that accept it; the adapter adds the matching beta header.
+  if (
+    anthropicFastModeRequested(input.options) &&
+    anthropicSupportsFastMode(input.model)
+  ) {
+    body.speed = "fast";
   }
   if (input.contextManagement) {
     body.context_management = input.contextManagement;
   }
   return body;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Preserve an explicitly present nested count, even when malformed, so chat
+ * and streaming both suppress flat fallback for an invalid nested value.
+ * In streams the latest explicit count replaces the previous one, including
+ * invalid updates; an omitted count leaves the previous value unchanged.
+ */
+export function readAnthropicThinkingTokenDetails(
+  usageRecord: Record<string, unknown>,
+): { readonly thinking_tokens: unknown } | undefined {
+  const details = asRecord(usageRecord.output_tokens_details);
+  return details && Object.hasOwn(details, "thinking_tokens")
+    ? { thinking_tokens: details.thinking_tokens }
+    : undefined;
+}
+
+/**
+ * Anthropic reports thinking as a subset of inclusive `output_tokens` at
+ * `usage.output_tokens_details.thinking_tokens`. Older payloads may still
+ * emit a flat `reasoning_output_tokens` field.
+ *
+ * A malformed nested count is dropped rather than replaced by the legacy
+ * field. A count above `output_tokens` is clamped to that inclusive total.
+ */
+export function readAnthropicReasoningOutputTokens(
+  usageRecord: Record<string, unknown>,
+): number | undefined {
+  const details = readAnthropicThinkingTokenDetails(usageRecord);
+  let raw: number | undefined;
+  if (details) {
+    if (!isFiniteNumber(details.thinking_tokens) || details.thinking_tokens < 0) {
+      return undefined;
+    }
+    raw = details.thinking_tokens;
+  } else if (
+    isFiniteNumber(usageRecord.reasoning_output_tokens) &&
+    usageRecord.reasoning_output_tokens >= 0
+  ) {
+    raw = usageRecord.reasoning_output_tokens;
+  } else {
+    return undefined;
+  }
+
+  const outputTokens = usageRecord.output_tokens;
+  if (isFiniteNumber(outputTokens) && outputTokens >= 0 && raw > outputTokens) {
+    return outputTokens;
+  }
+  return raw;
+}
+
+/**
+ * Anthropic thinking counts are a subset of inclusive `output_tokens`, which
+ * is stored as `completionTokens`. Mark that subset so the session budget
+ * adds completion once. A reasoning count above completion stays unmarked
+ * and is still added on top.
+ */
+export function markAnthropicReasoningIncludedInCompletion(
+  usage: LLMUsage,
+): LLMUsage {
+  const reasoning = usage.reasoningOutputTokens;
+  if (reasoning === undefined || reasoning > usage.completionTokens) {
+    return usage;
+  }
+  return { ...usage, reasoningIncludedInCompletion: true };
 }
 
 export function parseAnthropicMessagesResponse(
@@ -514,18 +692,33 @@ export function parseAnthropicMessagesResponse(
     request.options,
   );
 
-  return {
-    content,
-    toolCalls,
-    usage: coerceUsage({
+  // `usage.speed` is the speed the turn was actually served at. Fast mode
+  // bills at its own rates, and a request that asked for fast can still be
+  // served (and billed) at standard speed, so cost follows this field.
+  const servedSpeed =
+    usageRecord.speed === "fast" || usageRecord.speed === "standard"
+      ? usageRecord.speed
+      : undefined;
+
+  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
+    coerceUsage({
       promptTokens: usageRecord.input_tokens,
       completionTokens: usageRecord.output_tokens,
       totalTokens: undefined,
       cachedInputTokens: usageRecord.cache_read_input_tokens,
       cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
       webSearchRequests: serverToolUse.web_search_requests,
     }),
+  );
+
+  return {
+    content,
+    toolCalls,
+    usage: {
+      ...normalizedUsage,
+      ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
+    },
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason:
@@ -533,7 +726,7 @@ export function parseAnthropicMessagesResponse(
         toolCalls.length === 0 &&
         structuredOutput
         ? "stop"
-        : normalizeFinishReason(response.stop_reason),
+        : requireMappedFinishReason("anthropic", response.stop_reason),
     requestMetrics: withEndpointMarkers(requestMetrics, "/messages", response),
     ...(structuredOutput ? { structuredOutput } : {}),
     ...(thinking.length > 0 ? { thinking } : {}),

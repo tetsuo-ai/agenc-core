@@ -1,7 +1,27 @@
 import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 
+/**
+ * Shown after the footer when processes outlived the command and cleanup
+ * is complete. Without it the model saw exit 0 for `nginx` or
+ * `nohup server &`, then found nothing listening, and could not learn why:
+ * the containment that stops a command's residue never said so.
+ */
+export const RESIDUAL_PROCESSES_NOTE =
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
+
+/** Model-facing alias only; canonical results and structured facts stay intact. */
+export function compactExecExitFooter(content: string): string {
+  const note = `\n${RESIDUAL_PROCESSES_NOTE}`;
+  const footerEnd = content.endsWith(note) ? content.length - note.length : content.length;
+  return content.slice(0, footerEnd).replace(
+    /(^|\n)\[exec exit_code=(-?\d+)((?: [^\r\n]*)?)\]$/,
+    "$1[exit $2$3]",
+  ) + content.slice(footerEnd);
+}
+
 export function formatUnifiedExecToolContent(
   output: ExecCommandToolOutput,
+  lightMode = false,
 ): string {
   // Output FIRST, metadata after. The previous order put a multi-line
   // "Wall time: ... / Process exited with code 0 / Original token count: N
@@ -18,8 +38,15 @@ export function formatUnifiedExecToolContent(
   sections.push(output.output);
 
   const footerLines: string[] = [];
-  if (output.exitCode !== null) {
+  if (output.command_outcome !== undefined) {
+    footerLines.push(`command_outcome=${output.command_outcome} cleanup_complete=true`);
+  } else if (output.exitCode !== null) {
     footerLines.push(`exit_code=${output.exitCode}`);
+  } else if (output.detached === true && output.pid !== undefined) {
+    // A detached service that was still running when the yield window
+    // closed. AgenC does not track it, so there is no session_id: the pid
+    // and the log file are the handles the model has.
+    footerLines.push(`running=true pid=${output.pid}`);
   } else if (output.process_id !== undefined) {
     // exitCode is null AND a process_id is exposed → process is still
     // alive (yielded to caller, can be resumed via write_stdin / the
@@ -36,16 +63,31 @@ export function formatUnifiedExecToolContent(
     // by an external signal (SIGKILL/SIGTERM/OOM/sandbox kill).
     footerLines.push(`signal_terminated=true`);
   }
-  footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
-  footerLines.push(`tokens=${output.original_token_count}`);
+  const routineLightSuccess = lightMode && output.exitCode === 0 &&
+    !output.truncated && !output.timedOut && output.process_id === undefined &&
+    output.session_id === undefined && output.detached !== true &&
+    output.residual_processes_terminated !== true && output.residual_processes_observed !== true &&
+    output.command_outcome === undefined;
+  if (!routineLightSuccess) {
+    footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
+    footerLines.push(`tokens=${output.original_token_count}`);
+  }
+  if (lightMode && output.truncated) footerLines.push("truncated=true");
   const sessionId = output.process_id ?? output.session_id;
   if (sessionId !== undefined) {
     footerLines.push(`session_id=${sessionId}`);
+  }
+  if (output.detached === true) {
+    footerLines.push("detached=true");
+    if (output.log_path !== undefined) footerLines.push(`log=${output.log_path}`);
   }
   // Compact one-line footer separated from output by a blank line so the
   // model sees the two sections distinctly.
   sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
+  if (output.residual_processes_terminated === true || output.residual_processes_observed === true) {
+    sections.push(RESIDUAL_PROCESSES_NOTE);
+  }
   return sections.join("\n");
 }
 
@@ -58,8 +100,13 @@ export function unifiedExecCodeModeResult(
     output: output.output,
   };
 
-  if (output.exitCode !== null) {
+  if (output.command_outcome !== undefined) {
+    result.command_outcome = output.command_outcome;
+    result.cleanup_complete = true;
+  } else if (output.exitCode !== null) {
     result.exit_code = output.exitCode;
+  } else if (output.detached === true && output.pid !== undefined) {
+    result.running = true;
   } else if (output.process_id !== undefined) {
     // Process yielded and is still alive — see formatUnifiedExecToolContent
     // for the matching content-side decision. timedOut is irrelevant
@@ -75,6 +122,16 @@ export function unifiedExecCodeModeResult(
   if (sessionId !== undefined) {
     result.session_id = sessionId;
   }
+  if (output.detached === true) {
+    result.detached = true;
+    if (output.pid !== undefined) result.pid = output.pid;
+    if (output.log_path !== undefined) result.log_path = output.log_path;
+  }
+  if (output.residual_processes_terminated === true) {
+    result.residual_processes_terminated = true;
+  }
+
+  if (output.residual_processes_observed === true) result.residual_processes_observed = true;
 
   return result;
 }

@@ -86,18 +86,20 @@ describe("ordinary approval keyboard ownership", () => {
       await tick();
       stdin.write("\r1\r");
       await tick();
-      expect(decisions).toEqual([{ kind }]);
+      // A denial from the keyboard is the person's own decision.
+      const first = kind === "denied" ? { kind, decidedBy: "user" } : { kind };
+      expect(decisions).toEqual([first]);
       renderRequest({ ...request, id: "approval-next" });
       await tick();
       stdin.write("2\r");
       await tick();
-      expect(decisions).toEqual([{ kind }, { kind: "approved_for_session" }]);
+      expect(decisions).toEqual([first, { kind: "approved_for_session" }]);
       renderRequest({ ...request, id: "approval-cancelled" });
       await tick();
       signal.abort();
       stdin.write("y\r");
       await tick();
-      expect(decisions).toEqual([{ kind }, { kind: "approved_for_session" }]);
+      expect(decisions).toEqual([first, { kind: "approved_for_session" }]);
     } finally {
       root.unmount();
       stdin.end();

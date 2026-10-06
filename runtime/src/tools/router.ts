@@ -31,7 +31,12 @@
  * @module
  */
 
-import { dirname, isAbsolute, resolve } from "node:path";
+import {
+  buildPayloadForArgs,
+  stringifyToolArgsWithBigInt,
+  invocationForArgs,
+} from "./execution-invocation.js";
+
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import {
@@ -71,12 +76,14 @@ import {
   ApprovalRejectedError,
   approvalDenialEndsTurn,
 } from "./orchestrator.js";
+import { LiveEffectMutationBlockedError } from "../budget/effect-settlement-supervisor.js";
 import {
   executeToolDispatch,
   type ApprovalRequestFn,
   type ModalDecision,
   parseToolArgsWithBigInt,
   validateToolPreflight,
+  prepareModelToolArgs,
   type ToolProgressCallback,
 } from "./execution.js";
 import type {
@@ -96,28 +103,32 @@ import {
   type PermissionAuditLogger,
 } from "../permissions/permission-audit-log.js";
 import {
+  exitPlanApprovedPlan,
+  type ExitPlanApprovedPlan,
+} from "../planning/exit-plan-approval.js";
+import {
   getPlan,
   getPlanFilePath,
   type PlanFileContext,
 } from "../planning/plan-files.js";
 import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
+import { settledNoEffectToolResult } from "./effect-boundary.js";
 import {
+  attachToolRuntimeContext,
   buildToolRuntimeAttemptContext,
   buildToolRuntimeCallContext,
+  readToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
-import { withSignedAllowedRoots } from "./system/filesystem.js";
+import {
+  approvalRootForDispatch,
+  filesystemRootsForDispatch,
+} from "./filesystem-dispatch-roots.js";
 import {
   hasExactLedgerMention,
   REQUEST_LEDGER_TRANSFER_TOOL_NAME,
 } from "../elicitation/request-ledger-transfer.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
-import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceHasProtectedEditorPaths,
-  type WorkspaceToolOperationToken,
-} from "../workspace/mutation-coordinator.js";
 import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
@@ -133,8 +144,9 @@ export interface ConfiguredToolSpec {
   readonly tool: Tool;
   readonly supportsParallelToolCalls: boolean;
   readonly serverId?: string;
-  /** When true, the tool is unavailable for direct invocation but may
-   *  still appear in the spec catalog for telemetry/tracing. */
+  /** When true, the tool stays in `getSpecs()` for telemetry/tracing only:
+   *  it is never advertised or offered to tool search, and every dispatch
+   *  refuses it with `unavailableToolResult`. */
   readonly unavailable?: boolean;
   /** When true, the tool is loaded on demand through system.searchTools and
    *  should not be advertised in `modelVisibleSpecs()`. */
@@ -379,10 +391,11 @@ export class ToolRouter {
   }
 
   /** LLMTool array for provider requests. Deferred tools are hidden
-   *  (loaded on demand through system.searchTools). */
+   *  (loaded on demand through system.searchTools); unavailable ones are
+   *  never offered. */
   modelVisibleSpecs(): ReadonlyArray<LLMTool> {
     return this.specs
-      .filter((config) => config.deferred !== true)
+      .filter((config) => config.deferred !== true && config.unavailable !== true)
       .map((config) => ({
         type: "function",
         function: {
@@ -495,24 +508,10 @@ export class ToolRouter {
     if (spec === undefined) {
       return this.dispatchToolCallUnfenced(invocation, args, opts);
     }
-    let operation: WorkspaceToolOperationToken | null = null;
-    try {
-      operation = beginToolBarrier(invocation.turn.cwd, spec.tool);
-    } catch (error) {
-      return {
-        content: `<tool_use_error>${
-          error instanceof Error ? error.message : String(error)
-        }</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
-    if (operation === null) {
+    if (!dispatchContainsDescendants(invocation.turn.cwd, spec.tool)) {
       return this.dispatchToolCallUnfenced(invocation, args, opts);
     }
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     try {
       return await runWithWorkspaceOperationLifetime(lifetime, () =>
         this.dispatchToolCallUnfenced(invocation, args, opts),
@@ -540,26 +539,16 @@ export class ToolRouter {
         isError: true,
       };
     }
-
-    const coherenceDenial = workspaceEditorToolCoherenceDenial(
-      invocation.turn.cwd,
-      spec.tool,
-    );
-    if (coherenceDenial !== null) {
-      return {
-        content: `<tool_use_error>${coherenceDenial}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
+    if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
 
     try {
       // SECURITY: strip any `__agenc*` keys reaching this dispatch
       // boundary (e.g. code_mode js_repl helper calls). These are a
       // TRUSTED INTERNAL channel for runtime-injected filesystem scoping
       // and must never be supplied by the model; runtime values are
-      // merged in later (execution.ts / withApprovedFilesystemRoot).
-      let executionArgs = stripModelSuppliedAgenCInternalArgs(args);
+      // merged in later (execution.ts / filesystemRootsForDispatch).
+      let executionArgs = stripModelSuppliedAgenCInternalArgs({ ...args });
+      prepareModelToolArgs(spec.tool, executionArgs, invocation.session.eventLog, invocation.callId);
       const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (initialPreflight !== null) return initialPreflight;
       let forcedApprovalReason: string | undefined;
@@ -592,6 +581,11 @@ export class ToolRouter {
       }
       const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
       if (approvalPreflight !== null) return approvalPreflight;
+      // Fixed before any prompt: an approval grants this root and no other.
+      const approvalRoot = approvalRootForDispatch(
+        nameDisplay(invocation.toolName),
+        executionArgs,
+      );
       const effectiveApprovalPolicy = permissionAlreadyAllowed
         ? "never"
         : forcedApprovalReason !== undefined
@@ -677,12 +671,16 @@ export class ToolRouter {
           directDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = dispatchContext.approvalResolved
-            ? withApprovedFilesystemRoot(
-                nameDisplay(invocation.toolName),
-                executionArgs,
-              )
-            : executionArgs;
+          const dispatchArgs = filesystemRootsForDispatch(
+            nameDisplay(invocation.toolName),
+            executionArgs,
+            {
+              approvalResolved: dispatchContext.approvalResolved,
+              approvalRoot,
+              sandboxMode: sandbox,
+              session: invocation.session,
+            },
+          );
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload
@@ -814,34 +812,10 @@ export class ToolRouter {
     if (spec === undefined) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
     }
-    let operation: WorkspaceToolOperationToken | null = null;
-    try {
-      operation = beginToolBarrier(opts.turn.cwd, spec.tool);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await recordToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "runtime-policy",
-        reasonCode: "editor_workspace_uncoordinated_tool_denied",
-        toolName: spec.tool.name,
-        callId: toolCall.id,
-      });
-      emitErrorEvent(opts.session.eventLog, toolCall.id, {
-        cause: "editor_workspace_uncoordinated_tool_denied",
-        message,
-      });
-      return {
-        content: `<tool_use_error>${message}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
-    if (operation === null) {
+    if (!dispatchContainsDescendants(opts.turn.cwd, spec.tool)) {
       return this.dispatchModelToolCallUnfenced(toolCall, opts);
     }
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     try {
       return await runWithWorkspaceOperationLifetime(lifetime, () =>
         this.dispatchModelToolCallUnfenced(toolCall, opts),
@@ -866,33 +840,7 @@ export class ToolRouter {
         isError: true,
       };
     }
-
-    const workspacePath = opts.turn.cwd;
-    const editorCoherenceActive =
-      workspacePath !== undefined &&
-      workspaceHasProtectedEditorPaths(workspacePath);
-    const coherenceDenial = workspaceEditorToolCoherenceDenial(
-      workspacePath,
-      spec.tool,
-    );
-    if (coherenceDenial !== null) {
-      await recordToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "runtime-policy",
-        reasonCode: "editor_workspace_uncoordinated_tool_denied",
-        toolName: spec.tool.name,
-        callId: toolCall.id,
-      });
-      emitErrorEvent(opts.session.eventLog, toolCall.id, {
-        cause: "editor_workspace_uncoordinated_tool_denied",
-        message: coherenceDenial,
-      });
-      return {
-        content: `<tool_use_error>${coherenceDenial}</tool_use_error>`,
-        isError: true,
-        metadata: { editorWorkspaceCoherenceDenied: true },
-      };
-    }
+    if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
 
     if (ledgerTurnBlocksTool(opts, spec.tool)) {
       const message =
@@ -953,6 +901,7 @@ export class ToolRouter {
     // the allowed roots that reach tool.execute. (The validator-only
     // strip in execution.ts left the tool body exposed.)
     let executionArgs = stripModelSuppliedAgenCInternalArgs(parsedArgs);
+    prepareModelToolArgs(spec.tool, executionArgs, invocation.session.eventLog, invocation.callId);
     const initialPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
     if (initialPreflight !== null) return initialPreflight;
     let forcedApprovalReason: string | undefined;
@@ -960,11 +909,7 @@ export class ToolRouter {
     let hookPermissionResult: HookPermissionResult | undefined;
     let prePreventContinuation: { readonly stopReason?: string } | undefined;
     let permissionAlreadyAllowed = false;
-    // Operator/plugin hooks are executable extension code and do not
-    // participate in the editor revision protocol. Suppress them while the
-    // editor owns loaded buffers, even for an otherwise coordinated builtin,
-    // so a post-write hook cannot silently mutate a live Neovim buffer.
-    const preHooks = editorCoherenceActive ? [] : (opts.preHooks ?? []);
+    const preHooks = opts.preHooks ?? [];
     if (preHooks.length > 0) {
       const preDecision = await runPreToolUseHooks(
         preHooks,
@@ -1141,6 +1086,8 @@ export class ToolRouter {
 
     const approvalPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
     if (approvalPreflight !== null) return approvalPreflight;
+    // Fixed before any prompt: an approval grants this root and no other.
+    const approvalRoot = approvalRootForDispatch(toolCall.name, executionArgs);
     const executionPayload = buildPayloadForArgs(routed.payload, executionArgs);
     const executionInvocation: ToolInvocation = {
       ...invocation,
@@ -1155,6 +1102,12 @@ export class ToolRouter {
       executionArgs,
       opts,
     );
+    // ExitPlanMode executes the plan its approval request shows, not the
+    // plan file as it reads after the user answered.
+    const approvedPlan =
+      toolCall.name === "ExitPlanMode"
+        ? exitPlanApprovedPlan(approvalArgs)
+        : undefined;
     const approvalInvocation: ToolInvocation = {
       ...invocation,
       payload: buildPayloadForArgs(routed.payload, approvalArgs),
@@ -1248,10 +1201,10 @@ export class ToolRouter {
           : {}),
         approvalArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
-        ...(!editorCoherenceActive && opts.permissionHooks !== undefined
+        ...(opts.permissionHooks !== undefined
           ? { permissionHooks: opts.permissionHooks }
           : {}),
-        ...(!editorCoherenceActive && opts.permissionDecisionHooks !== undefined
+        ...(opts.permissionDecisionHooks !== undefined
           ? { permissionDecisionHooks: opts.permissionDecisionHooks }
           : {}),
         ...(opts.guardianApprovalReviewer !== undefined
@@ -1285,9 +1238,16 @@ export class ToolRouter {
           orchestrateDispatchAttempt += 1;
           const executionPreflight = preflightToolCall(spec.tool, executionArgs, invocation, opts);
           if (executionPreflight !== null) return executionPreflight;
-          const dispatchArgs = dispatchContext.approvalResolved
-            ? withApprovedFilesystemRoot(toolCall.name, executionArgs)
-            : executionArgs;
+          const dispatchArgs = filesystemRootsForDispatch(
+            toolCall.name,
+            executionArgs,
+            {
+              approvalResolved: dispatchContext.approvalResolved,
+              approvalRoot,
+              sandboxMode: sandbox,
+              session: opts.session,
+            },
+          );
           const dispatchPayload =
             dispatchArgs === executionArgs
               ? executionPayload
@@ -1330,11 +1290,7 @@ export class ToolRouter {
             invoke: ({ abortController, crossEffectBoundary }) =>
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {
-                  ...withoutPermissionEvaluator(
-                    editorCoherenceActive
-                      ? withoutWorkspaceExtensionHooks(opts)
-                      : opts,
-                  ),
+                  ...withoutPermissionEvaluator(opts),
                   tool: spec.tool,
                   parsedArgs: dispatchArgs,
                   invocation: dispatchInvocation,
@@ -1350,6 +1306,7 @@ export class ToolRouter {
                   onEffectBoundaryCrossed: crossEffectBoundary,
                   subId: toolCall.id,
                   runtimeAttemptContext,
+                  ...(approvedPlan !== undefined ? { approvedPlan } : {}),
                 }),
               ),
           });
@@ -1393,16 +1350,6 @@ export class ToolRouter {
   }
 }
 
-const EDITOR_COHERENCE_COORDINATED_BUILTINS = new Set([
-  "Edit",
-  "MultiEdit",
-  "Write",
-  "apply_patch",
-  "NotebookEdit",
-  "system.delete",
-  "system.move",
-]);
-
 function isTrustedBuiltinReadOnly(tool: Tool): boolean {
   return (
     tool.metadata?.source === "builtin" &&
@@ -1412,50 +1359,16 @@ function isTrustedBuiltinReadOnly(tool: Tool): boolean {
   );
 }
 
-function isEditorCoordinatedBuiltin(tool: Tool): boolean {
-  return (
-    tool.metadata?.source === "builtin" &&
-    EDITOR_COHERENCE_COORDINATED_BUILTINS.has(tool.name)
-  );
-}
-
 /**
- * Fence every potentially side-effecting tool from the instant dispatch
- * begins until hooks, approval, and execution have all settled. An Editor
- * lease acquisition cannot cross an operation that started first; an
- * uncoordinated operation cannot start after Editor owns the workspace.
+ * Every potentially side-effecting tool dispatches inside a workspace
+ * operation lifetime, so shell descendants it spawns stay contained until
+ * the process that outlives the call has settled.
  */
-function beginToolBarrier(
+function dispatchContainsDescendants(
   cwd: string | undefined,
   tool: Tool,
-): WorkspaceToolOperationToken | null {
-  if (cwd === undefined || isTrustedBuiltinReadOnly(tool)) return null;
-  if (
-    isEditorCoordinatedBuiltin(tool) &&
-    workspaceHasProtectedEditorPaths(cwd)
-  ) {
-    // These built-ins enter the per-path revision transaction themselves.
-    return null;
-  }
-  return beginWorkspaceToolOperation(cwd, tool.name);
-}
-
-export function workspaceEditorToolCoherenceDenial(
-  cwd: string | undefined,
-  tool: Tool,
-): string | null {
-  if (cwd === undefined || !workspaceHasProtectedEditorPaths(cwd)) {
-    return null;
-  }
-  if (isTrustedBuiltinReadOnly(tool) || isEditorCoordinatedBuiltin(tool)) {
-    return null;
-  }
-  return (
-    `Tool '${tool.name}' is blocked while Editor owns loaded workspace ` +
-    "buffers because that tool cannot participate in AgenC's revision and " +
-    "mutation audit. Use a coordinated built-in file tool, or close the " +
-    "Editor workspace before running it."
-  );
+): boolean {
+  return cwd !== undefined && !isTrustedBuiltinReadOnly(tool);
 }
 
 function ledgerTurnBlocksTool(
@@ -1594,37 +1507,6 @@ function rawPayloadArguments(payload: ToolPayload): string {
   }
 }
 
-function buildPayloadForArgs(
-  payload: ToolPayload,
-  args: Record<string, unknown>,
-): ToolPayload {
-  const serialized = stringifyToolArgsWithBigInt(args);
-  switch (payload.kind) {
-    case "function":
-      return { kind: "function", arguments: serialized };
-    case "mcp":
-      return {
-        kind: "mcp",
-        server: payload.server,
-        tool: payload.tool,
-        rawArguments: serialized,
-      };
-    case "custom":
-    case "tool_search":
-    case "local_shell":
-      return payload;
-  }
-}
-
-function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
-  const { rawJSON } = JSON as typeof JSON & {
-    rawJSON: (text: string) => unknown;
-  };
-  return JSON.stringify(args, (_key, value: unknown) =>
-    typeof value === "bigint" ? rawJSON(value.toString()) : value,
-  );
-}
-
 const AGENC_INTERNAL_ARG_PREFIX = "__agenc";
 
 /**
@@ -1649,47 +1531,13 @@ function stripModelSuppliedAgenCInternalArgs(
     }
   }
   if (!needsStrip) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
-    out[key] = value;
-  }
-  return out;
-}
-
-const APPROVED_FILE_PATH_TOOLS = new Set([
-  "FileRead",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-]);
-
-function approvedFilePathForTool(
-  toolName: string,
-  args: Record<string, unknown>,
-): string | null {
-  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
-  const filePath = args["file_path"];
-  return typeof filePath === "string" && filePath.trim().length > 0
-    ? filePath
-    : null;
-}
-
-function withApprovedFilesystemRoot(
-  toolName: string,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const filePath = approvedFilePathForTool(toolName, args);
-  if (filePath === null) return args;
-
-  const cwd =
-    typeof args["cwd"] === "string" && args["cwd"].trim().length > 0
-      ? args["cwd"]
-      : process.cwd();
-  const resolvedPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-  const approvedRoot = dirname(resolvedPath);
-  return withSignedAllowedRoots(args, [approvedRoot]);
+  // Own data properties only: assigning a model's JSON `__proto__` key onto
+  // `{}` would make it the copy's prototype instead of an argument.
+  return Object.fromEntries(
+    Object.entries(input).filter(
+      ([key]) => !key.startsWith(AGENC_INTERNAL_ARG_PREFIX),
+    ),
+  );
 }
 
 function planFileContextForApproval(
@@ -1762,6 +1610,7 @@ function rawDispatchOptions(
     readonly approvalAlreadyResolved?: boolean;
     readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
     readonly onEffectBoundaryCrossed?: () => void;
+    readonly approvedPlan?: ExitPlanApprovedPlan;
   },
 ) {
   const contextWindowTokens = effectiveContextWindowTokens(opts.turn);
@@ -1809,6 +1658,9 @@ function rawDispatchOptions(
     ...(opts.onEffectBoundaryCrossed !== undefined
       ? { onEffectBoundaryCrossed: opts.onEffectBoundaryCrossed }
       : {}),
+    ...(opts.approvedPlan !== undefined
+      ? { approvedPlan: opts.approvedPlan }
+      : {}),
     ...(opts.permissionAuditLogger !== undefined
       ? { permissionAuditLogger: opts.permissionAuditLogger }
       : {}),
@@ -1843,18 +1695,6 @@ function withoutPermissionEvaluator(
     LiveToolDispatchOptions,
     "canUseTool" | "permissionContext"
   >;
-}
-
-function withoutWorkspaceExtensionHooks(
-  opts: LiveToolDispatchOptions,
-): LiveToolDispatchOptions {
-  const clone: Record<string, unknown> = { ...opts };
-  delete clone["preHooks"];
-  delete clone["postHooks"];
-  delete clone["failureHooks"];
-  delete clone["permissionHooks"];
-  delete clone["permissionDecisionHooks"];
-  return clone as unknown as LiveToolDispatchOptions;
 }
 
 function approvalRequestFromResolver(
@@ -1915,13 +1755,72 @@ function readSessionId(session: Session): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Give a tool's preflight the facts the dispatcher already knows about the
+ * call. Preflight runs before approval and before the attempt context is
+ * built, so a preflight that depends on the session's permission mode or
+ * sandbox (the shell write policy in exec_command, write_stdin and
+ * system.bash) used to decide with no context at all and refused under
+ * `--dangerously-bypass-approvals-and-sandbox` what its execution would then
+ * have allowed. The context carries the session (for the permission mode),
+ * the session's approval policy and requested sandbox mode, and
+ * `approvalResolved: false`; the dispatcher attaches its own context at
+ * execution, which replaces this one. Args that already carry a context keep
+ * it.
+ */
+export function attachPreflightRuntimeContext(
+  tool: Tool,
+  args: Record<string, unknown>,
+  invocation: ToolInvocation,
+  params: {
+    readonly approvalPolicy: ApprovalPolicy;
+    readonly sandboxMode: SandboxMode;
+  },
+): void {
+  const previous = readToolRuntimeContext(args);
+  invocation = invocationForArgs(previous?.invocation ?? invocation, args);
+  const call = buildToolRuntimeCallContext({
+    toolCall: { id: invocation.callId, name: nameDisplay(invocation.toolName) },
+    payload: invocation.payload,
+    tool,
+    args,
+    source: invocation.source,
+  });
+  attachToolRuntimeContext(
+    args,
+    buildToolRuntimeAttemptContext({
+      ...call,
+      ...previous,
+      classification: call.classification,
+    }, {
+      approvalPolicy: params.approvalPolicy,
+      requestedSandboxMode: params.sandboxMode,
+      sandboxMode: params.sandboxMode,
+      approvalResolved: false,
+      ...previous,
+      rawArgs: stringifyToolArgsWithBigInt(args),
+      invocation,
+    }),
+  );
+}
+
 function preflightToolCall(
   tool: Tool,
   args: Record<string, unknown>,
   invocation: ToolInvocation,
-  options: { readonly discoveredToolNames?: ReadonlySet<string> } = {},
+  options: {
+    readonly discoveredToolNames?: ReadonlySet<string>;
+    readonly approvalPolicy?: ApprovalPolicy;
+    readonly sandboxMode?: SandboxMode;
+  } = {},
 ): ToolDispatchResult | null {
-  const result = validateToolPreflight(tool, args, options);
+  const result = validateToolPreflight(tool, args, {
+    ...options, eventLog: invocation.session.eventLog, subId: invocation.callId,
+    onValidatedArgs: () => attachPreflightRuntimeContext(tool, args, invocationForArgs(invocation, args), {
+      approvalPolicy: options.approvalPolicy ?? directDispatchApprovalPolicy(invocation),
+      sandboxMode: options.sandboxMode ?? directDispatchSandboxMode(invocation),
+    }),
+  });
   if (result !== null) {
     emitErrorEvent(invocation.session.eventLog, invocation.callId, {
       cause: "schema_validation_failed",
@@ -1939,6 +1838,24 @@ function workflowPolicyDenial(session: Session, source: string): Partial<ToolDis
 }
 
 function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchResult {
+  if (err instanceof LiveEffectMutationBlockedError) {
+    // The gate refused a side-effecting call because an earlier effect has an
+    // unknown outcome. Unattended runs stop on the first refusal and every
+    // run stops at the streak limit (#2501); the turn ends as a bounded
+    // `effect_review_required` stop, never a completed answer.
+    return {
+      content: JSON.stringify({ error: err.message }),
+      isError: true,
+      ...(err.endsTurn ? { preventContinuation: true } : {}),
+      metadata: {
+        effectReviewBlocked: {
+          callIds: err.blocking.map((effect) => effect.callId),
+          refusals: err.refusals,
+        },
+        ...(err.endsTurn ? { effectReviewStop: { explanation: err.message } } : {}),
+      },
+    };
+  }
   if (err instanceof ApprovalRejectedError) {
     return {
       content: JSON.stringify({ error: err.message }),
@@ -1951,7 +1868,9 @@ function toolDispatchErrorResult(err: unknown, session?: Session): ToolDispatchR
         ? { preventContinuation: true }
         : {}),
       metadata: {
-        ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+        ...(approvalDenialEndsTurn(err)
+          ? { approvalDenied: true, approvalDeniedStage: err.stage }
+          : {}),
         approvalFailure: {
           decision: err.decision.kind,
           source: err.source ?? "policy",
@@ -1984,6 +1903,9 @@ export function routerFromRegistry(
   registry: ToolRegistry,
   opts: ToolRouterOpts = {},
 ): ToolRouter {
+  // `registry.tools` drops spec flags; carry `unavailable` over so the
+  // session router refuses those tools like the registry's own router does.
+  const unavailable = registry.getUnavailableToolNames?.();
   const specs: ConfiguredToolSpec[] = registry.tools.map((tool) => ({
     tool,
     supportsParallelToolCalls:
@@ -1992,8 +1914,21 @@ export function routerFromRegistry(
     ...((tool as Tool & { serverId?: string }).serverId !== undefined
       ? { serverId: (tool as Tool & { serverId?: string }).serverId }
       : {}),
+    ...(unavailable?.has(tool.name) === true ? { unavailable: true } : {}),
   }));
   return new ToolRouter(specs, opts);
+}
+
+/**
+ * The refusal for a spec marked `unavailable`. The tool never ran, so the
+ * result settles as confirmed no effect instead of an unknown outcome.
+ */
+export function unavailableToolResult(toolName: string): ToolDispatchResult {
+  return settledNoEffectToolResult({
+    toolName,
+    message: `<tool_use_error>Error: ${toolName} is unavailable in this session and cannot be called.</tool_use_error>`,
+    evidence: "unavailable",
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────

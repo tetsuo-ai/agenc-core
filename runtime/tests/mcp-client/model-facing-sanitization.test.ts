@@ -163,7 +163,7 @@ describe("canonical model-facing MCP metadata sanitization", () => {
     });
   });
 
-  test("bounds schema strings, arrays, depth, and unsupported primitives", () => {
+  test("bounds schema strings and depth, keeps arrays whole, and drops unsupported primitives", () => {
     let deeplyNested: unknown = "unreachable-tail";
     for (let index = 0; index < 20; index += 1) {
       deeplyNested = { next: deeplyNested };
@@ -184,9 +184,8 @@ describe("canonical model-facing MCP metadata sanitization", () => {
     });
 
     expect(result.issue).toBeUndefined();
-    expect(result.schema.enum).toHaveLength(
-      MCP_MODEL_FACING_METADATA_LIMITS.schemaArrayItems,
-    );
+    // Arrays are not shortened: fewer enum values would change the contract.
+    expect(result.schema.enum).toHaveLength(70);
     expect(Buffer.byteLength(String(result.schema.long), "utf8"))
       .toBeLessThanOrEqual(
         MCP_MODEL_FACING_METADATA_LIMITS.schemaStringBytes,
@@ -204,6 +203,28 @@ describe("canonical model-facing MCP metadata sanitization", () => {
     expect(result.schema).not.toHaveProperty("functionValue");
     expect(result.schema).not.toHaveProperty("symbolValue");
     expect(result.schema).not.toHaveProperty("bigintValue");
+  });
+
+  test("keeps long enums and required lists, and falls back when an array exceeds the byte budget", () => {
+    const values = Array.from({ length: 80 }, (_, index) => `v${String(index).padStart(2, "0")}`);
+    const required = Array.from({ length: 70 }, (_, index) => `field_${index}`);
+    const kept = sanitizeMcpInputSchemaForModel({
+      type: "object",
+      properties: {
+        value: { type: "string", enum: values },
+        ...Object.fromEntries(required.map((name) => [name, { type: "string" }])),
+      },
+      required,
+    });
+    expect(kept.issue).toBeUndefined();
+    expect((kept.schema.properties as { value: { enum: unknown[] } }).value.enum).toEqual(values);
+    expect(kept.schema.required).toEqual(required);
+
+    const huge = sanitizeMcpInputSchemaForModel({
+      type: "object",
+      properties: { value: { type: "string", enum: Array.from({ length: 20_000 }, (_, index) => `v${index}`) } },
+    });
+    expect(huge).toMatchObject({ schema: OPEN_OBJECT_SCHEMA, issue: { code: "too_large" } });
   });
 
   test("falls back for invalid roots, cycles, unsafe keys, and collisions", () => {

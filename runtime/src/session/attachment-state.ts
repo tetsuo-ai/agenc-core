@@ -47,11 +47,6 @@ export interface AttachmentTrackingState {
   lastSwarmRoutingTurnId?: string;
   /** Routing decision paired with `lastSwarmRoutingTurnId`. */
   lastSwarmRoutingDecision?: SwarmRoutingDecision;
-  /**
-   * Exact turn ID whose required initial `spawn_agent` tool choice has
-   * already been attached to a provider request.
-   */
-  lastSwarmSpawnToolChoiceTurnId?: string;
   /** Last local-calendar-date the date_change attachment fired for. */
   lastEmittedDate?: string;
   /** Hash of the deferred-tools set last announced. */
