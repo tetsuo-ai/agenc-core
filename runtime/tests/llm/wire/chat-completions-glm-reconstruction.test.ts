@@ -15,7 +15,10 @@ function request(
     model: MODEL,
     messages: [{ role: "user", content: "inspect" }],
     tools: [TOOL],
+    // The hints Z.AI GLM sessions get on main (capability-gating.ts): known-empty
+    // reasoning is established only when the provider replays reasoning content.
     providerCapabilityHints: {
+      replaysReasoningContent: true,
       replaysReasoningContentOnlyForAdjacentToolContinuation: true,
       reasoningContentProvenance: { provider: "zai", model: MODEL },
     },
