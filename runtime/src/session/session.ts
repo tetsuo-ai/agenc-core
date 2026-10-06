@@ -3317,6 +3317,10 @@ export class Session {
               ? { reasoningEffort: effort.reasoningEffort }
               : {}),
           },
+          // A dropped level is cleared on purpose: settings must not refill it.
+          ...(effort.dropped !== undefined
+            ? { reasoningEffortCleared: true }
+            : {}),
           baseInstructions: prepared.baseInstructions,
           permissionInstructionsDeferred: true,
         } as unknown as SessionConfiguration;

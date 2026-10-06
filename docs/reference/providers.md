@@ -51,8 +51,9 @@ another configured effort would otherwise apply. Neither case disables the
 model's thinking. `/effort default` removes the saved override and clears the
 session's effort. A provider or model switch keeps an effort the new model
 accepts. It drops any other level and says so, and the new model runs at its
-default. A configured `reasoning_effort` that a model does not accept is not
-sent on a turn that carries no effort of its own.
+default. A cleared or dropped effort stays cleared: the configured
+`reasoning_effort` does not refill it, so each model the session switches to
+runs at its own default until a level is chosen again.
 
 Unsupported explicit levels fail before a request is sent. AgenC does not
 translate `minimal`, `xhigh`, or `max` into a different Gemini level. Unknown

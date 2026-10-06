@@ -3,6 +3,7 @@ import type { AgenCConfig } from "../../src/config/schema.js";
 import {
   droppedReasoningEffortNotice,
   reasoningEffortForModel,
+  withSessionReasoningEffort,
 } from "../../src/session/reasoning-effort-for-model.js";
 
 const kept = (reasoningEffort: string) => ({ reasoningEffort });
@@ -77,6 +78,23 @@ describe("reasoning effort across a model switch", () => {
     expect(effort({ modelOverrides: { "claude-opus-5-5": profile } })).toEqual(kept("max"));
     // Unmapped, the profile names no model and cannot take the effort.
     expect(effort({})).toEqual(dropped("max"));
+  });
+
+  test("clears a level on purpose, and a later level ends the cleared state", () => {
+    const configuration = {
+      cwd: "/repo",
+      collaborationMode: { model: "grok-4.6", reasoningEffort: "high" as const },
+    };
+    const cleared = withSessionReasoningEffort(configuration, null);
+    expect(cleared).toEqual({
+      cwd: "/repo",
+      collaborationMode: { model: "grok-4.6" },
+      reasoningEffortCleared: true,
+    });
+    expect(withSessionReasoningEffort(cleared, "low")).toEqual({
+      cwd: "/repo",
+      collaborationMode: { model: "grok-4.6", reasoningEffort: "low" },
+    });
   });
 
   test("tells the user which level the new model does not take", () => {

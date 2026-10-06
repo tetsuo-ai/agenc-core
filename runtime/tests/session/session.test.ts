@@ -99,6 +99,7 @@ import {
 } from "./runtime-options.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
+import { withSessionReasoningEffort } from "./reasoning-effort-for-model.js";
 import {
   clearSessionReadState,
   recordSessionRead,
@@ -953,35 +954,36 @@ describe("Session rollout persistence suspension", () => {
   });
 });
 
-describe("reasoning effort when a model switch takes effect", () => {
-  function geminiSession(reasoningEffort: ReasoningEffort) {
-    return buildSession({
-      services: {
-        provider: createProvider("gemini", {
-          model: "gemini-3.5-flash",
-          extra: {
-            gemini: {
-              credentialPlan: {
-                kind: "api-key",
-                credential: "saved-key",
-                source: "saved-byok",
-              },
-              endpointPlan: createGeminiEndpointPlan(),
+/** A Gemini session on gemini-3.5-flash at `reasoningEffort`. */
+function geminiSession(reasoningEffort: ReasoningEffort): Session {
+  return buildSession({
+    services: {
+      provider: createProvider("gemini", {
+        model: "gemini-3.5-flash",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
             },
+            endpointPlan: createGeminiEndpointPlan(),
           },
-        }),
-        configStore: { current: () => ({}) } as unknown as ConfigStore,
-      },
-      sessionConfiguration: {
-        ...mkSessionConfiguration("gemini-3.5-flash"),
-        provider: { slug: "gemini" },
-        collaborationMode: { model: "gemini-3.5-flash", reasoningEffort },
-      } as unknown as SessionConfiguration,
-      readSavedApiKey: async (provider) =>
-        provider === "gemini" ? "saved-key" : undefined,
-    });
-  }
+        },
+      }),
+      configStore: { current: () => ({}) } as unknown as ConfigStore,
+    },
+    sessionConfiguration: {
+      ...mkSessionConfiguration("gemini-3.5-flash"),
+      provider: { slug: "gemini" },
+      collaborationMode: { model: "gemini-3.5-flash", reasoningEffort },
+    } as unknown as SessionConfiguration,
+    readSavedApiKey: async (provider) =>
+      provider === "gemini" ? "saved-key" : undefined,
+  });
+}
 
+describe("reasoning effort when a model switch takes effect", () => {
   function switchWarnings(emit: ReturnType<typeof vi.spyOn>): string[] {
     return emit.mock.calls.flatMap(([event]: unknown[]) => {
       const msg = (event as { msg?: { type?: string; payload?: { cause?: string; message?: string } } }).msg;
@@ -1006,6 +1008,8 @@ describe("reasoning effort when a model switch takes effect", () => {
     expect(session.sessionConfiguration.collaborationMode).toEqual({
       model: "gemma-4-31b-it",
     });
+    // Cleared on purpose, so the configured reasoning_effort cannot refill it.
+    expect(session.sessionConfiguration.reasoningEffortCleared).toBe(true);
     const turn = session.newDefaultTurn();
     expect(turn.reasoningEffort).toBeUndefined();
     expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
@@ -1029,6 +1033,78 @@ describe("reasoning effort when a model switch takes effect", () => {
     expect(switchWarnings(emit)).toEqual([
       expect.not.stringContaining("reasoning effort"),
     ]);
+  });
+});
+
+describe("reasoning effort of a session that cleared its level", () => {
+  function grokSession(config: Record<string, unknown>) {
+    return buildSession({
+      services: {
+        provider: createProvider("grok", { apiKey: "test-key", model: "grok-4.6" }),
+        configStore: { current: () => config } as unknown as ConfigStore,
+      },
+      sessionConfiguration: {
+        ...mkSessionConfiguration("grok-4.6"),
+        provider: { slug: "grok" },
+      } as unknown as SessionConfiguration,
+    });
+  }
+
+  it("is not refilled from the configured reasoning_effort", async () => {
+    // A saved /effort high stays in the daemon's config snapshot until a
+    // reload, and the built-in default is medium.
+    const session = grokSession({ reasoning_effort: "high" });
+    const nextRequestEffort = () =>
+      runWithCanonicalSettingsAuthority(session.services.configStore!, () =>
+        resolveMainLoopReasoningEffort(session, session.newDefaultTurn()),
+      );
+    // A session without a level of its own still takes the configured one.
+    expect(nextRequestEffort()).toBe("high");
+
+    await session.state.with((state) => {
+      state.sessionConfiguration = withSessionReasoningEffort(
+        state.sessionConfiguration,
+        null,
+      );
+    });
+
+    // grok-4.6 now runs at its own default.
+    expect(nextRequestEffort()).toBeUndefined();
+  });
+});
+
+describe("reasoning effort when a switch does not apply cleanly", () => {
+  it("keeps the level when the staged switch fails to publish", async () => {
+    const session = geminiSession("medium");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+    vi.spyOn(session.providerService, "commit").mockImplementation(() => {
+      throw new Error("failpoint before provider commit");
+    });
+
+    await expect(
+      consumePendingProviderSwitchTransaction(session),
+    ).resolves.toMatchObject({ status: "clean-rejection" });
+
+    // The old model keeps running at the user's level.
+    expect(session.sessionConfiguration.collaborationMode).toEqual({
+      model: "gemini-3.5-flash",
+      reasoningEffort: "medium",
+    });
+    expect(session.sessionConfiguration.reasoningEffortCleared).toBeUndefined();
+  });
+
+  it("gives a turn the re-judged level when a model fallback switches its model mid-turn", async () => {
+    const session = geminiSession("medium");
+    // The turn's effort is frozen for gemini-3.5-flash when it starts.
+    const turn = session.newDefaultTurn();
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    // What run-turn does on a model_fallback transition.
+    await consumePendingProviderSwitch(session);
+
+    expect(turn.reasoningEffort).toBe("medium");
+    // Main sent the frozen medium to Gemma, which Gemini refuses.
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
   });
 });
 

@@ -43,7 +43,10 @@ import {
 } from "../../permissions/unattended-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
-import { reasoningEffortForModel } from "../../session/reasoning-effort-for-model.js";
+import {
+  reasoningEffortForModel,
+  withSessionReasoningEffort,
+} from "../../session/reasoning-effort-for-model.js";
 import { isRecord } from "../../utils/record.js";
 import {
   RUN_RUNTIME_MODEL_VERBOSITIES,
@@ -577,11 +580,19 @@ function captureRuntimeSettings(
       readonly sessionConfiguration?: Session["sessionConfiguration"];
     }
   ).sessionConfiguration;
-  const reasoningEffort = normalizeRuntimeSetting(
-    configuration?.collaborationMode.reasoningEffort,
-    RUN_RUNTIME_REASONING_EFFORTS,
-    "reasoning effort",
-  );
+  // While a switch is staged, the run carries what its next turn runs: the
+  // live level judged against the staged model.
+  const liveSelection = readSessionSelection(session);
+  const liveEffort = liveRuntimeReasoningEffort(session);
+  const reasoningEffort =
+    liveSelection.provider !== selection.provider ||
+    liveSelection.model !== selection.model
+      ? reasoningEffortForStagedModel(
+          bootstrap.configStore.current(),
+          selection,
+          liveEffort,
+        ).reasoningEffort
+      : liveEffort;
   const modelVerbosity = normalizeRuntimeSetting(
     configuration?.modelVerbosityOverride,
     RUN_RUNTIME_MODEL_VERBOSITIES,
@@ -614,6 +625,22 @@ function captureRuntimeSettings(
     serviceTier,
     hooksDisabled: session.services?.hooksRuntime?.isDisabled() === true,
   });
+}
+
+/** The session's live reasoning effort, in journal vocabulary. */
+function liveRuntimeReasoningEffort(
+  session: LocalRuntimeBootstrap["session"],
+): RunRuntimeSettingsSnapshot["reasoningEffort"] {
+  const configuration = (
+    session as Session & {
+      readonly sessionConfiguration?: Session["sessionConfiguration"];
+    }
+  ).sessionConfiguration;
+  return normalizeRuntimeSetting(
+    configuration?.collaborationMode.reasoningEffort,
+    RUN_RUNTIME_REASONING_EFFORTS,
+    "reasoning effort",
+  );
 }
 
 /**
@@ -985,14 +1012,10 @@ async function applyRestoredRuntimeSettings(
     const inheritedModelVerbosity = configuration.modelVerbosityOverride === undefined
       ? configuration.modelVerbosity
       : configuration.inheritedModelVerbosity;
+    // A journaled null is a session without a level (seeding gives every
+    // other session one), so it keeps following the model default.
     state.sessionConfiguration = {
-      ...configuration,
-      collaborationMode: {
-        ...configuration.collaborationMode,
-        ...(settings.reasoningEffort !== null
-          ? { reasoningEffort: settings.reasoningEffort }
-          : { reasoningEffort: undefined }),
-      } as typeof configuration.collaborationMode,
+      ...withSessionReasoningEffort(configuration, settings.reasoningEffort),
       modelVerbosityOverride: settings.modelVerbosity,
       inheritedModelVerbosity,
       modelVerbosity: settings.modelVerbosity ?? inheritedModelVerbosity,
@@ -1543,6 +1566,7 @@ export {
   captureRuntimeSettings,
   normalizeRuntimeSetting,
   reasoningEffortForStagedModel,
+  liveRuntimeReasoningEffort,
   installRuntimeSettingsPreCommit,
   withRuntimeSettingsMutation,
   ensureInitialRuntimeSettings,

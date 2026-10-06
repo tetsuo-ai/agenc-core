@@ -20,10 +20,7 @@ import {
   completedEventReplayRequired,
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
-import {
-  modelContextWindow,
-  type CollaborationMode,
-} from "../session/turn-context.js";
+import { modelContextWindow } from "../session/turn-context.js";
 import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
 import {
   bootstrapLocalRuntimeSession,
@@ -96,7 +93,10 @@ import {
 } from "../permissions/permission-updates.js";
 import { applyModelSwitch } from "../commands/model.js";
 import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
-import { droppedReasoningEffortNotice } from "../session/reasoning-effort-for-model.js";
+import {
+  droppedReasoningEffortNotice,
+  withSessionReasoningEffort,
+} from "../session/reasoning-effort-for-model.js";
 import type {
   ProviderModelSelectionOutcome,
 } from "../contracts/provider-model-selection.js";
@@ -320,6 +320,7 @@ import {
   captureRuntimeSettings,
   normalizeRuntimeSetting,
   reasoningEffortForStagedModel,
+  liveRuntimeReasoningEffort,
   installRuntimeSettingsPreCommit,
   withRuntimeSettingsMutation,
   ensureInitialRuntimeSettings,
@@ -1361,18 +1362,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             const overrideEventId = active.runtimeSettingsEventId!;
             try {
               await applyRestoredRuntimeSettings(bootstrap, restoreOverrides);
+              const resumeDroppedEffort = previousSettings.reasoningEffort;
               if (
-                previousSettings.reasoningEffort !== null &&
+                resumeDroppedEffort !== null &&
                 restoreOverrides.reasoningEffort === null
               ) {
-                emitDurableResumeWarning(
-                  bootstrap.session,
-                  "provider_switched",
-                  droppedReasoningEffortNotice(
-                    restoreOverrides.model,
-                    previousSettings.reasoningEffort,
-                  ),
-                );
+                // The journal names what the next turn runs on the resumed
+                // model. The level stays live until that switch applies,
+                // which drops it and says so.
+                await bootstrap.session.state.with((state) => {
+                  state.sessionConfiguration = withSessionReasoningEffort(
+                    state.sessionConfiguration,
+                    resumeDroppedEffort,
+                  );
+                });
               }
             } catch (error) {
               const cleanupErrors: unknown[] = [];
@@ -3684,7 +3687,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const session = active.bootstrap.session;
       const previousPending = session.pendingProviderSwitch;
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
-      const previousConfiguration = session.sessionConfiguration;
       let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
       let preparedSettings: RunRuntimeSettingsSnapshot | undefined;
       let preparedProviderSwitch: PreparedSessionProviderSwitch | undefined;
@@ -3707,15 +3709,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               () => session.prepareProviderSwitch(selection),
             ),
         );
-        const capturedSettings = captureRuntimeSettings(active);
-        // The run keeps its effort only when the new model accepts it.
+        // The journal names what the next turn runs: the live level when the
+        // new model accepts it, otherwise none. The live level itself changes
+        // only when the switch applies, so a switch that never applies keeps
+        // the user's level.
         const effort = reasoningEffortForStagedModel(
           active.bootstrap.configStore.current(),
           selection,
-          capturedSettings.reasoningEffort,
+          liveRuntimeReasoningEffort(session),
         );
+        droppedReasoningEffort = effort.dropped;
         const nextSettings: RunRuntimeSettingsSnapshot = {
-          ...capturedSettings,
+          ...captureRuntimeSettings(active),
           provider: selection.provider,
           model: selection.model,
           reasoningEffort: effort.reasoningEffort,
@@ -3732,20 +3737,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           previousPending,
         );
         stagedProviderSwitch = preparedProviderSwitch;
-        if (effort.dropped !== undefined) {
-          // Clear it now, with the journaled successor: a switch back before
-          // the next turn must not find the dropped level still live.
-          await session.state.with((state) => {
-            state.sessionConfiguration = {
-              ...state.sessionConfiguration,
-              collaborationMode: collaborationModeWithEffort(
-                state.sessionConfiguration.collaborationMode,
-                null,
-              ),
-            };
-          });
-          droppedReasoningEffort = effort.dropped;
-        }
       };
       let outcome: ProviderModelSelectionOutcome;
       try {
@@ -3810,15 +3801,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ) {
             try {
               session.setPendingProviderSwitch(previousPending);
-            } catch (rollbackError) {
-              rollbackErrors.push(rollbackError);
-            }
-          }
-          if (droppedReasoningEffort !== undefined) {
-            try {
-              await session.state.with((state) => {
-                state.sessionConfiguration = previousConfiguration;
-              });
             } catch (rollbackError) {
               rollbackErrors.push(rollbackError);
             }
@@ -4311,10 +4293,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         try {
           await session.state.with(state => {
             state.sessionConfiguration = {
-              ...state.sessionConfiguration,
               ...(params.reasoningEffort !== undefined
-                ? { collaborationMode: collaborationModeWithEffort(state.sessionConfiguration.collaborationMode, level) }
-                : {}),
+                ? withSessionReasoningEffort(state.sessionConfiguration, level)
+                : state.sessionConfiguration),
               ...(params.modelVerbosity !== undefined
                 ? {
                     modelVerbosityOverride: modelVerbosity,
@@ -4569,23 +4550,31 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ? { model: targetModel, provider: stageProvider }
           : {}),
         ...(params.profile !== undefined ? { profile: params.profile } : {}),
-        ...(nextReasoning !== null ? { reasoningEffort: nextReasoning } : {}),
         // A config reload updates the inherited default, not a live session override.
         modelVerbosity: previousSettings.modelVerbosity,
         ...(nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
       };
-      // A model switch keeps the effort only when the new model accepts it.
+      // The journal names what the next turn runs: the configured or live
+      // level, judged against the model a staged switch brings. The live
+      // level changes only when that switch applies.
+      const liveSelection = readSessionSelection(session);
+      const sessionEffort = nextReasoning ?? liveRuntimeReasoningEffort(session);
       const stagedEffort: ReturnType<typeof reasoningEffortForStagedModel> =
+        configuredSettings.provider !== liveSelection.provider ||
+        configuredSettings.model !== liveSelection.model
+          ? reasoningEffortForStagedModel(
+              canonicalConfig,
+              configuredSettings,
+              sessionEffort,
+            )
+          : { reasoningEffort: sessionEffort };
+      // Report a drop for a switch this reload makes; a staged one already did.
+      const droppedReasoningEffort =
         pendingSelection !== undefined &&
         (pendingSelection.provider !== previousSettings.provider ||
           pendingSelection.model !== previousSettings.model)
-          ? reasoningEffortForStagedModel(
-              canonicalConfig,
-              pendingSelection,
-              configuredSettings.reasoningEffort,
-            )
-          : { reasoningEffort: configuredSettings.reasoningEffort };
-      const droppedReasoningEffort = stagedEffort.dropped;
+          ? stagedEffort.dropped
+          : undefined;
       const nextSettings: RunRuntimeSettingsSnapshot = {
         ...configuredSettings,
         reasoningEffort: stagedEffort.reasoningEffort,
@@ -4605,21 +4594,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       try {
         if (
           nextReasoning !== null ||
-          droppedReasoningEffort !== undefined ||
           inheritedVerbosityChanged ||
           nextServiceTier !== null
         ) {
           await session.state.with((state) => {
             const configuration = state.sessionConfiguration;
             state.sessionConfiguration = {
-              ...configuration,
-              collaborationMode:
-                nextReasoning !== null || droppedReasoningEffort !== undefined
-                  ? collaborationModeWithEffort(
-                      configuration.collaborationMode,
-                      nextSettings.reasoningEffort,
-                    )
-                  : configuration.collaborationMode,
+              ...(nextReasoning !== null
+                ? withSessionReasoningEffort(configuration, nextReasoning)
+                : configuration),
               inheritedModelVerbosity: nextVerbosity ?? undefined,
               modelVerbosity: previousSettings.modelVerbosity ?? nextVerbosity ?? undefined,
               ...(nextServiceTier !== null
@@ -5792,15 +5775,6 @@ function prepareDaemonUserPrompt(params: {
         : {}),
     }),
   );
-}
-
-/** The collaboration mode at `reasoningEffort`; null leaves the model at its default. */
-function collaborationModeWithEffort(
-  collaborationMode: CollaborationMode,
-  reasoningEffort: RunRuntimeSettingsSnapshot["reasoningEffort"],
-): CollaborationMode {
-  const { reasoningEffort: _replaced, ...rest } = collaborationMode;
-  return reasoningEffort === null ? rest : { ...rest, reasoningEffort };
 }
 
 async function consumeDaemonPendingProviderSwitches(

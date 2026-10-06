@@ -17,6 +17,7 @@ import { resolveProviderModelCapabilities } from "../llm/capabilities.js";
 import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import { anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
+import type { ReasoningEffort, SessionConfiguration } from "./turn-context.js";
 
 export interface ReasoningEffortForModel {
   /** The level the session keeps; undefined follows the model default. */
@@ -82,6 +83,24 @@ export function reasoningEffortForModel(input: {
   return reasoningEffortAcceptedByModel({ ...input, reasoningEffort })
     ? { reasoningEffort }
     : { reasoningEffort: undefined, dropped: reasoningEffort };
+}
+
+/**
+ * The session configuration at `reasoningEffort`. Null clears the level on
+ * purpose: requests then carry none, so the model runs at its own default,
+ * and the configured `reasoning_effort` does not refill it.
+ */
+export function withSessionReasoningEffort<
+  T extends Pick<SessionConfiguration, "collaborationMode" | "reasoningEffortCleared">,
+>(configuration: T, reasoningEffort: ReasoningEffort | null): T {
+  const { reasoningEffort: _replacedEffort, ...collaborationMode } =
+    configuration.collaborationMode;
+  const { reasoningEffortCleared: _replacedMarker, ...rest } = configuration;
+  return (
+    reasoningEffort === null
+      ? { ...rest, collaborationMode, reasoningEffortCleared: true }
+      : { ...rest, collaborationMode: { ...collaborationMode, reasoningEffort } }
+  ) as T;
 }
 
 /** What the user reads when a model switch drops the session's effort. */
