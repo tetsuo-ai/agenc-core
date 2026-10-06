@@ -25,6 +25,20 @@ afterEach(() => {
   driver.close(); rmSync(root, { recursive: true, force: true });
 });
 describe("thread upsert persistence", () => {
+  it("reads only pending unarchive cleanup rows and sees external transitions", () => {
+    const pending = { ...initial, threadId: "pending", archivedRolloutPath: "/old.jsonl", archiveCleanupGeneration: "generation" };
+    threads.upsertThread(pending);
+    threads.upsertThread({ ...pending, threadId: "archived", archivedAt: "2026-10-02T00:00:00Z" });
+    expect(threads.listPendingUnarchiveCleanup()).toEqual([pending]);
+    const other = open();
+    try {
+      new StateThreadRepository(other).upsertThread({ ...pending, archivedAt: "2026-10-03T00:00:00Z" });
+      expect(threads.listPendingUnarchiveCleanup()).toEqual([]);
+      new StateThreadRepository(other).upsertThread(pending);
+      expect(threads.listPendingUnarchiveCleanup()).toEqual([pending]);
+    } finally { other.close(); }
+  });
+
   it("leaves an identical row and WAL unchanged, including after reopen", () => {
     const wal = `${driver.stateDbPath}-wal`;
     const before = statSync(wal, { bigint: true });
