@@ -64,6 +64,16 @@ describe("collectShellMutationTargets", () => {
     ]);
   });
 
+  it("reports what find removes, writes and runs", () => {
+    expect(targets("find build -name '*.o' -delete").targets).toEqual([join(ROOT, "build")]);
+    expect(
+      targets("find . -fprint list.txt -exec rm -f stale.log \\;").targets,
+    ).toEqual([join(ROOT, "list.txt"), join(ROOT, "stale.log")]);
+    const found = targets("find src -name '*.pyc' -exec rm {} +");
+    expect(found.targets).toEqual([join(ROOT, "src")]);
+    expect(found.indeterminate).toBe(true);
+  });
+
   it("ends a subshell's cd with the subshell", () => {
     expect(targets("(cd sub && rm a) && rm b").targets).toEqual([join(ROOT, "sub/a"), join(ROOT, "b")]);
   });
