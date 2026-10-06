@@ -172,10 +172,11 @@ AGENC_DAEMON_MAX_OLD_SPACE_MB=4096   # default 4096
 ```bash
 agenc daemon status
 agenc daemon start                 # detached
-agenc daemon start --foreground    # current process (systemd/launchd/docker)
+agenc daemon start --foreground    # current process (systemd/launchd/docker/WinSW)
 agenc daemon reload                # in-place config reload
 agenc daemon restart
 agenc daemon stop
+agenc daemon install-service       # write WinSW XML; does not install the service
 ```
 
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
@@ -197,7 +198,19 @@ that request is its only clean stop. Ending the process there (Task Manager,
 start logs `the previous daemon (pid N) exited without recording a reason`.
 
 Packaging units under `packaging/` (systemd, launchd, Windows service) run
-`agenc daemon start --foreground`.
+`agenc daemon start --foreground`. On Windows the one-line installer places
+the CLI and writes the generated service definition (`agenc-daemon.xml` in the
+install prefix); it does not install the service. `agenc daemon install-service`
+regenerates that XML. WinSW install/start/stop
+is a separate elevated step and must use that generated file, not the
+example template unchanged. The definition is pinned to WinSW 2.12.0
+(`<domain>` and `<user>`, no password). Name the v2.12.0 binary to match the
+XML basename, run `install` with no `/p`, set the account password in the
+Services Log On tab, and confirm `SERVICE_START_NAME` with
+`sc.exe qc agenc-daemon` before `start`. `start` fails with error 1069 until
+that password is set. The service account is the installing user, and the
+XML sets `AGENC_HOME` to the path the installer resolved (the user-profile
+known folder plus `.agenc`, `%USERPROFILE%\.agenc` unless `AGENC_HOME` is set).
 
 ## Files under `AGENC_HOME` (default `~/.agenc`)
 

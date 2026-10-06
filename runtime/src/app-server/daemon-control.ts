@@ -1,4 +1,5 @@
 import { resolveHomeContext } from "../config/home.js";
+import { installAgencDaemonWinSWService } from "../packaging/windows-winsw-service.js";
 import { readAgenCDaemonPid } from "./daemon-discovery.js";
 export { readAgenCDaemonPid, AGENC_DAEMON_PID_MAX_BYTES } from "./daemon-discovery.js";
 import { withAgenCDaemonLifecycleLock, acquireAgenCDaemonLifecycleLock } from "./daemon-lifecycle-lock.js";
@@ -305,6 +306,7 @@ export type AgenCDaemonCliAction =
 
 export type AgenCDaemonCliCommand =
   | { readonly kind: "command"; readonly action: AgenCDaemonCliAction }
+  | { readonly kind: "install-service" }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -972,7 +974,7 @@ export function safeStringifyLogArg(arg: unknown): string {
 
 export function formatAgenCDaemonCliHelpText(): string {
   return [
-    "Usage: agenc daemon <start|stop|status|reload|restart>",
+    "Usage: agenc daemon <start|stop|status|reload|restart|install-service>",
     "       agenc daemon start --foreground",
     "",
     "Commands:",
@@ -982,6 +984,8 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  status                Show local AgenC daemon status",
     "  reload                Reload daemon configuration in place",
     "  restart               Stop and start the local AgenC daemon",
+    "  install-service       Write a WinSW XML definition for this install.",
+    "                        Service install/start is a separate elevated step.",
     "",
     "Examples:",
     "  agenc daemon status",
@@ -989,7 +993,21 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  agenc daemon start --foreground",
     "  agenc daemon reload",
     "  agenc daemon restart",
+    "  agenc daemon install-service",
   ].join("\n");
+}
+
+
+function parseDaemonInstallServiceArgs(
+  extra: readonly string[],
+): AgenCDaemonCliCommand {
+  if (extra.length > 0) {
+    return {
+      kind: "error",
+      message: `unknown daemon install-service option: ${extra[0]}`,
+    };
+  }
+  return { kind: "install-service" };
 }
 
 
@@ -1029,6 +1047,9 @@ export function parseAgenCDaemonCliArgs(
     }
     return { kind: "command", action };
   }
+  if (action === "install-service") {
+    return parseDaemonInstallServiceArgs(extra);
+  }
   if (action === "run") {
     return {
       kind: "error",
@@ -1058,8 +1079,23 @@ export async function runAgenCDaemonCli(
       io.stderr.write(`agenc: ${command.message}\n`);
       io.stderr.write(`${formatAgenCDaemonCliHelpText()}\n`);
       return 1;
+    case "install-service":
+      return installAgencDaemonWinSWService({
+        env: host.env,
+        agencHome: resolveAgenCDaemonHome(host.env, host.userHome),
+        stdout: (line) => {
+          io.stdout.write(`${line}\n`);
+        },
+        stderr: (line) => {
+          io.stderr.write(`${line}\n`);
+        },
+      });
     case "command":
       return runAgenCDaemonAction(command.action, host, io, options);
+    default: {
+      const _exhaustive: never = command;
+      throw new Error(`unexpected daemon CLI command: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -1120,6 +1156,10 @@ export async function runAgenCDaemonAction(
         inspectLegacyDaemonProcess: options.inspectLegacyDaemonProcess,
         findLegacyDaemonProcesses: options.findLegacyDaemonProcesses,
       });
+    default: {
+      const _exhaustive: never = action;
+      throw new Error(`unexpected daemon CLI action: ${String(_exhaustive)}`);
+    }
   }
 }
 

@@ -32,6 +32,7 @@ const intentionalEntryPointIssueIgnores = {
 const serviceTestContractExportFiles = [
   // Contract tests and service-level harnesses import these directly; the
   // production Knip graph intentionally excludes test-only callers.
+  "src/packaging/windows-winsw-service.ts",
   "src/services/AgentSummary/agentSummary.ts",
   "src/services/MagicDocs/magicDocs.ts",
   "src/services/MagicDocs/prompts.ts",
