@@ -363,6 +363,29 @@ function hasWrapperScriptOperand(args: readonly string[]): boolean {
   return false;
 }
 
+/**
+ * `eval [arg]...` joins its words with blanks and runs the result as shell
+ * code in this shell, so it writes what that code writes, read like
+ * `sh -c`. bash, zsh and ksh skip a leading `--`. A word the shell still
+ * expands (`eval "$CMD"`, `eval $(ssh-agent)`) leaves the code unknown;
+ * the targets its literal words name are still judged.
+ */
+function collectEvalWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const words = params.args[0] === "--" ? params.args.slice(1) : params.args;
+  const collection = collectShellCommandWriteTargets(
+    words.join(" "),
+    params.cwd,
+    params.environment,
+  );
+  collection.indeterminate ||= params.argsRequiringExpansion?.includes(true) === true;
+  return collection;
+}
+
 function collectTeeTargets(
   args: readonly string[],
   cwd: string,
@@ -717,6 +740,9 @@ function collectDirectCommandWriteTargets(params: {
       : hasWrapperScriptOperand(params.args)
         ? emptyTargetCollection()
         : indeterminateTargetCollection();
+  }
+  if (command === "eval") {
+    return collectEvalWriteTargets(params);
   }
   if (command === "tee") {
     return collectTeeTargets(params.args, params.cwd);

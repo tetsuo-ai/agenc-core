@@ -396,6 +396,35 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     expect(decision.message ?? "").not.toContain("s/color");
   });
 
+  it.each([
+    "eval 'rm -rf .git'",
+    "eval rm -rf .git",
+    'eval "rm -rf .git"',
+    "eval rm '-rf' \".git\"",
+    "eval -- rm -rf .git",
+    "eval \"eval 'rm -rf .git'\"",
+  ])("refuses the protected removal eval runs: %s", (command) => {
+    const decision = classifyBypassed(command);
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    expect(decision).toEqual(classifyBypassed("rm -rf .git"));
+  });
+
+  it("refuses a protected removal next to a word eval expands", () => {
+    const decision = classifyBypassed('eval rm -rf .git "$X"');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+  });
+
+  it("lets eval of a word the shell expands run, as the word alone does", () => {
+    const decision = classifyBypassed('eval "$CMD"');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(false);
+    expect(decision).toEqual(classifyBypassed('"$CMD"'));
+  });
+
   it("changes nothing while a prompt or a sandbox still gates the command", () => {
     const decision = classify('echo "$(id)" > /tmp/agenc-bypass/out.txt', true);
     expect(decision.blocked).toBe(true);
@@ -592,6 +621,90 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
       expect(decision.blocked).toBe(true);
       expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
     }
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for eval", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "darwin",
+      ...mode,
+    });
+  }
+
+  it.each([
+    ["eval 'echo x > src/a.ts'", "echo x > src/a.ts"],
+    // eval reads the escaped `>` again, as a redirection.
+    ["eval echo x \\> src/a.ts", "echo x > src/a.ts"],
+    ["eval touch src/a.ts", "touch src/a.ts"],
+    ["eval \"sed -i 's/a/b/' src/a.ts\"", "sed -i 's/a/b/' src/a.ts"],
+    ["eval rm src/a.ts", "rm src/a.ts"],
+    ["eval 'mv src/a.ts src/b.ts'", "mv src/a.ts src/b.ts"],
+    ["eval rm ../outside.txt", "rm ../outside.txt"],
+    ["eval 'rm .git/config && touch tmp/x'", "rm .git/config && touch tmp/x"],
+    ["eval 'echo x > tmp/out.txt'", "echo x > tmp/out.txt"],
+    ["eval -- 'npm test'", "npm test"],
+  ])("gives %s the verdict of %s", (command, bare) => {
+    for (const mode of MODES) {
+      expect(classifyIn(command, mode), JSON.stringify(mode)).toEqual(classifyIn(bare, mode));
+    }
+  });
+
+  it.each([
+    'eval "$CMD"',
+    "eval $CMD",
+    // Read alone, the code eval runs would name no target: the quotes are
+    // the shell's until $X expands into them.
+    "eval \"echo '$X'\"",
+    "eval rm tmp/*.log",
+    "eval $'rm -rf .git'",
+    "eval $(ssh-agent)",
+    'eval "$(ssh-agent -s)"',
+    "eval 'touch \"$F\"'",
+  ])("fails closed when it cannot read the code eval runs: %s", (command) => {
+    const decision = classify(command, true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).toContain("Unable to confirm workspace write targets");
+  });
+
+  it("still judges the targets the literal words name", () => {
+    const decision = classify('eval touch src/a.ts "$X"', true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.ts"]);
+  });
+
+  it.each(["eval", "eval ''", "eval 'echo hi'", "eval echo \"'rm -rf .git'\""])(
+    "allows eval of code that writes nothing: %s",
+    (command) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(false);
+      expect(decision.indeterminate).toBe(false);
+      expect(decision.observedTargets).toEqual([]);
+    },
+  );
+
+  it("backs up the workspace file an eval removes", () => {
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "eval 'rm src/a.ts'" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.ts"]);
   });
 });
 
