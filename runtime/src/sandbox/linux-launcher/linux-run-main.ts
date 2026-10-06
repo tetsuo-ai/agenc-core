@@ -1,6 +1,7 @@
+import { capabilityDigest } from "./capability-hint.js";
+import { createProcMountProbeArgs, runProcMountProbe, type ProcMountProbeOptions } from "./proc-probe.js";
 import { userRuntimeEnvironment } from "../../utils/runtimeEnvironment.js";
-import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -214,6 +215,7 @@ async function runLinuxSandboxOptions(
       cwd: hostCommandCwd,
       env,
       requireNamespaces: true,
+      ...(options.capabilityHint === undefined ? {} : { capabilityHint: options.capabilityHint }),
     });
     if (launcher === null) {
       if (options.boundReadOnlyCwd !== undefined) throw new Error("narrow descriptor-bound search requires bubblewrap with --ro-bind-fd");
@@ -248,7 +250,7 @@ async function runLinuxSandboxOptions(
         ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
         networkMode,
         sessionTempRoot: options.sessionTempRoot,
-      })
+      }, env)
     ) {
       bwrapArgs = buildBwrapArgs(false);
     }
@@ -720,43 +722,13 @@ function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return result;
 }
 
-function preflightProcMountSupport(options: {
-  readonly launcher: BubblewrapLauncher;
-  readonly fileSystem: FileSystemSandboxPolicy;
-  readonly sandboxPolicyCwd: string;
-  readonly commandCwd: string;
-  readonly inheritedCwdFd?: number;
-  readonly boundReadOnlyCwd?: BoundReadOnlyCwdIdentity;
-  readonly networkMode: BwrapNetworkMode;
-  readonly sessionTempRoot: string;
-}): boolean {
-  const args = createBwrapCommandArgs(
-    [resolveTrueCommand()],
-    options.fileSystem,
-    options.sandboxPolicyCwd,
-    options.commandCwd,
-    {
-      mountProc: true,
-      networkMode: options.networkMode,
-      sessionTempRoot: options.sessionTempRoot,
-      inheritedReadOnlyCwd: options.inheritedCwdFd !== undefined,
-      ...(options.boundReadOnlyCwd === undefined ? {} : { boundReadOnlyCwd: options.boundReadOnlyCwd }),
-    },
-  );
+function preflightProcMountSupport(options: ProcMountProbeOptions, env: NodeJS.ProcessEnv): boolean {
+  const args = createProcMountProbeArgs(options);
   if (!args.usesBubblewrap) return true;
-  const output = spawnSync(options.launcher.program, args.args, {
-    cwd: options.inheritedCwdFd === undefined ? options.commandCwd : ".",
-    encoding: "utf8",
-    stdio:
-      options.inheritedCwdFd === undefined
-        ? ["ignore", "ignore", "pipe"]
-        : ["ignore", "ignore", "pipe", "ignore", options.inheritedCwdFd],
-  });
+  // A cached success only keeps --proc. Never cache the no-proc fallback.
+  if (options.launcher.capabilityHint?.procArgs === capabilityDigest(args.args)) return true;
+  const output = runProcMountProbe(options, args.args, env);
   return output.status === 0 || !isProcMountFailure(output.stderr ?? "");
-}
-
-function resolveTrueCommand(): string {
-  return "/bin/true";
 }
 
 export function isProcMountFailure(stderr: string): boolean {

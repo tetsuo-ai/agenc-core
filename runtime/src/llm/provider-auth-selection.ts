@@ -39,3 +39,32 @@ export function providerAuthSelection(
     available: Object.freeze({ ...available }),
   });
 }
+
+/** The `[providers.<openai|grok>] auth` settings a config may carry. */
+export type ConfiguredProviderAuth = {
+  readonly providers?: Readonly<
+    Partial<Record<SelectableAuthProvider, { readonly auth?: ProviderAuthPreference }>>
+  >;
+};
+
+/**
+ * The environment with each provider's configured `auth` filled in where
+ * the environment leaves `OPENAI_AUTH_MODE` / `GROK_AUTH_MODE` unset, so an
+ * exported variable always wins and every reader of the environment sees
+ * the config choice. Returns the same object when nothing changes.
+ */
+export function withConfiguredProviderAuth<T extends ProviderAuthEnvironment>(
+  environment: T,
+  config: ConfiguredProviderAuth | undefined,
+): T {
+  let next: Record<string, string | undefined> | undefined;
+  for (const provider of Object.keys(PROVIDER_AUTH_ENV) as SelectableAuthProvider[]) {
+    const configured = config?.providers?.[provider]?.auth;
+    if (configured === undefined || configured === "auto") continue;
+    const name = PROVIDER_AUTH_ENV[provider];
+    if ((environment[name]?.trim() ?? "") !== "") continue;
+    next ??= { ...environment };
+    next[name] = configured;
+  }
+  return next === undefined ? environment : (Object.freeze(next) as unknown as T);
+}

@@ -9,6 +9,7 @@
 
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
+import { isNativeDeepSeekModel } from "./registry/deepseek-models.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
 import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
@@ -59,17 +60,21 @@ export interface ProviderReasoningProvenance {
   readonly model: string;
 }
 
-/** An explicit empty GLM replay is different from unavailable reasoning. */
+/** An explicit empty supported tool-response replay differs from unavailable reasoning. */
 export function isKnownEmptyProviderReasoning(
   content: unknown,
   provenance: unknown,
 ): boolean {
-  return content === "" && isRecord(provenance) &&
-    typeof provenance.provider === "string" &&
-    ["zai", "zai-coding-plan"].includes(provenance.provider.trim().toLowerCase()) &&
-    typeof provenance.model === "string" &&
-    /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
-      .test(provenance.model.trim());
+  if (content !== "" || !isRecord(provenance) ||
+      typeof provenance.provider !== "string" || typeof provenance.model !== "string") {
+    return false;
+  }
+  const provider = provenance.provider.trim().toLowerCase();
+  return provider === "deepseek"
+    ? isNativeDeepSeekModel(provenance.model)
+    : ["zai", "zai-coding-plan"].includes(provider) &&
+      /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
+        .test(provenance.model.trim());
 }
 
 /** Legacy unbound durable replay state; readable but never safe to replay. */
@@ -764,6 +769,8 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Disable thinking for one reasoning-only output-cap recovery sample, on supported routes only. */
+  readonly disableThinkingForRecovery?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */

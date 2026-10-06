@@ -44,15 +44,18 @@ function signedGeminiParts(value: unknown): RecordValue[] | undefined {
 }
 
 /** Only validated ciphertext escapes ordinary redaction, never sibling fields. */
-function redactReplay(value: unknown): unknown {
+function redactReplay(
+  value: unknown,
+  redact: typeof redactSecretsInValue,
+): unknown {
   const geminiParts = signedGeminiParts(value);
   const items = geminiParts ?? encryptedItems(value);
   if (!items) return undefined;
   const signatureKey = geminiParts ? "thoughtSignature" : "encrypted_content";
   return {
-    ...redactSecretsInValue(value as RecordValue),
+    ...redact(value as RecordValue),
     content: JSON.stringify(items.map((item) => ({
-      ...redactSecretsInValue(item),
+      ...redact(item),
       ...(item[signatureKey] !== undefined ? { [signatureKey]: item[signatureKey] } : {}),
     }))),
   };
@@ -60,14 +63,18 @@ function redactReplay(value: unknown): unknown {
 
 // Scopes are supplied by durable callers, never inferred from nested key names.
 export type DurableRedactionScope = "response" | "history" | "source_history" | "rollout" | "ordinary";
-export function redactDurableSecrets<T>(value: T, scope: DurableRedactionScope): T {
-  const redacted = redactSecretsInValue(value);
+export function redactDurableSecrets<T>(
+  value: T,
+  scope: DurableRedactionScope,
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
+): T {
+  const redacted = redact(value);
   const restoreResponse = (original: unknown, target: unknown, key: string): void => {
     if (!record(original) || !record(target) || original.role !== "assistant") return;
     const replay = original[key];
     if (!record(replay) || replay.version !== 2 ||
         (replay.provider !== "grok" && replay.provider !== "gemini")) return;
-    const safe = redactReplay(replay);
+    const safe = redactReplay(replay, redact);
     if (safe === undefined && replay.provider === "gemini") return;
     if (safe === undefined) delete target[key];
     else target[key] = safe;

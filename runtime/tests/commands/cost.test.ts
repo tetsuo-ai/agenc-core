@@ -167,7 +167,7 @@ describe("/cost", () => {
       }),
     );
     expect(report.agents[0]!.estimatedCostUsd).toBeUndefined();
-    expect(formatCostReport(report)).toMatch(/warming up · runner: — · —/);
+    expect(formatCostReport(report)).toMatch(/warming up · runner: tokens unknown · cost unknown/);
   });
 
   it("degrades gracefully when no cost sidecar AND no agents", () => {
@@ -175,7 +175,7 @@ describe("/cost", () => {
     expect(report.totalCostUsd).toBeUndefined();
     expect(report.totalIsEstimated).toBeUndefined();
     expect(formatCostReport(report)).toContain(
-      "Session cost: — (cost tracking unavailable)",
+      "Session cost: unknown (cost tracking unavailable)",
     );
   });
 

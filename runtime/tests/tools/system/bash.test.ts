@@ -2162,6 +2162,134 @@ describe("system.bash tool", () => {
     });
   });
 
+  // ---- Code a direct shell wrapper runs ----
+
+  describe("shell wrapper code", () => {
+    async function executeWrapper(command: string, args: string[]) {
+      const tool = createBashTool();
+      mockSuccess("");
+      mockSpawnSuccess("");
+      return tool.execute({ command, args });
+    }
+
+    async function expectRefused(command: string, args: string[], message = "Recursive deletion") {
+      const result = await executeWrapper(command, args);
+      expect(result.isError).toBe(true);
+      expect(parseContent(result).error).toContain(message);
+      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockExecFile).not.toHaveBeenCalled();
+    }
+
+    async function expectRun(command: string, args: string[]) {
+      const result = await executeWrapper(command, args);
+      expect(result.isError).toBeUndefined();
+      const calls = [...mockSpawn.mock.calls, ...mockExecFile.mock.calls];
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[0]).toBe(command);
+      expect(calls[0]?.[1]).toEqual(args);
+    }
+
+    it.each([
+      ["bash", ["-c", "-e", "rm -rf /"]],
+      ["bash", ["-c", "-o", "pipefail", "rm -rf /"]],
+      ["bash", ["-c", "+o", "errexit", "rm -rf /"]],
+      ["bash", ["-c", "-O", "extglob", "rm -rf /"]],
+      ["bash", ["-c", "--", "rm -rf /"]],
+      ["bash", ["-c", "-", "rm -rf /"]],
+      ["bash", ["--noprofile", "--norc", "-c", "-x", "rm -rf /"]],
+      ["bash", ["-ec", "rm -rf /"]],
+      ["bash", ["+c", "rm -rf /"]],
+      ["/bin/bash", ["-c", "-e", "rm -rf /"]],
+      ["sh", ["-c", "-eu", "rm -rf /"]],
+      ["zsh", ["-fc", "-x", "rm -rf /"]],
+      ["dash", ["-c", "-e", "rm -rf /"]],
+      ["ksh", ["-c", "-e", "rm -rf /"]],
+    ])("judges the code %s runs after all of its options: %j", async (command, args) => {
+      await expectRefused(command, args);
+    });
+
+    it("judges code behind options against every dangerous pattern", async () => {
+      await expectRefused("bash", ["-c", "-e", "sudo id"], "Privilege escalation");
+    });
+
+    it.each([
+      ["bash", ["-opipefail", "-c", "rm -rf /"]],
+      ["bash", ["-rcfile", "echo hi", "-c", "rm -rf /"]],
+      ["bash", ["--command", "rm -rf /"]],
+      ["bash", ["+", "-c", "rm -rf /"]],
+      ["bash", ["-cs", "rm -rf /"]],
+      ["sh", ["-c", "-O", "extglob", "rm -rf /"]],
+      ["zsh", ["-c", "-O", "rm -rf /", "echo hi"]],
+      ["zsh", ["--emulate", "sh", "-c", "rm -rf /"]],
+    ])("judges every word that could be the code when %s's options are unknown: %j", async (command, args) => {
+      await expectRefused(command, args);
+    });
+
+    it.each([
+      [["rm -rf /"]],
+      [["rm -rf", "/"]],
+      [["-e", "rm -rf", "/"]],
+      [["--", "rm -rf", "/"]],
+      [["-R", "trace", "rm -rf", "/"]],
+    ])("judges a ksh script operand as the code ksh93 runs when it cannot open it: %j", async (args) => {
+      await expectRefused("ksh", args);
+    });
+
+    it.each([
+      ["tcsh", ["-c", "echo hi", "-c", "rm -rf /"]],
+      ["csh", ["-c", "echo hi", "-c", "rm -rf /"]],
+      ["tcsh", ["-c", "echo hi", "-x", "-c", "rm -rf /"]],
+      ["tcsh", ["-cc", "echo hi", "rm -rf /"]],
+      ["tcsh", ["-fc", "rm -rf /"]],
+      ["tcsh", ["-F", "-c", "rm -rf /"]],
+      ["tcsh", ["-bc", "rm -rf /"]],
+      ["tcsh", ["-D", "-c", "rm -rf /"]],
+    ])("judges every word %s takes as code: %j", async (command, args) => {
+      await expectRefused(command, args);
+    });
+
+    it.each([
+      [["-C", "rm -rf /"]],
+      [["-c", "echo hi", "-c", "rm -rf /"]],
+      [["-crm -rf /"]],
+      [["-ic", "rm -rf /"]],
+      [["--command=rm -rf /"]],
+      [["--comm", "rm -rf /"]],
+      [["--init-command", "rm -rf /", "-c", "echo hi"]],
+      [["-p", "profile.txt", "-C", "rm -rf /"]],
+      [["--in", "rm -rf /"]],
+      [["--new-option", "-crm -rf /"]],
+    ])("judges every code fish takes: %j", async (args) => {
+      await expectRefused("fish", args);
+    });
+
+    it.each([
+      ["bash", ["-c", "echo hi", "sudo id"]],
+      ["bash", ["script.sh", "-c", "sudo id"]],
+      ["bash", ["--", "-c", "sudo id"]],
+      ["tcsh", ["-c", "-e", "sudo id"]],
+      ["fish", ["-ci", "sudo id"]],
+      ["fish", ["--", "-c", "sudo id"]],
+    ])("does not judge a word %s does not run as code: %j", async (command, args) => {
+      await expectRun(command, args);
+    });
+
+    it.each([
+      ["bash", ["-c", "-e", "echo a | wc -l"]],
+      ["tcsh", ["-c", "echo a", "-c", "echo b | wc -l"]],
+      ["fish", ["--command=echo a | wc -l"]],
+      ["ksh", ["echo a | wc -l"]],
+    ])("accepts shell syntax in the code %s runs: %j", async (command, args) => {
+      await expectRun(command, args);
+    });
+
+    it("reads shell syntax after a script operand as an argument of the script", async () => {
+      const result = await executeWrapper("bash", ["script.sh", "-c", "a && b"]);
+      expect(result.isError).toBe(true);
+      expect(parseContent(result).error).toContain("Invalid direct-mode args");
+    });
+  });
+
   // ---- shellMode: false config ----
 
   describe("shellMode: false", () => {

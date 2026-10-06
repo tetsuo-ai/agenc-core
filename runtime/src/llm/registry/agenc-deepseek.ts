@@ -1,6 +1,8 @@
 /** Exact route identities, never a public entitlement or an automatic migration. */
 export const AGENC_DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731";
 export const AGENC_DEEPSEEK_V41_MODEL = "deepseek/deepseek-v4.1-flash";
+/** OpenRouter's dated generation id for V4.1 Flash. A managed response can report it. */
+export const AGENC_DEEPSEEK_V41_GENERATION = "deepseek/deepseek-v4.1-flash-20260910";
 export const AGENC_DEEPSEEK_MODELS = [
   { model: AGENC_DEEPSEEK_MODEL, label: "DeepSeek V4 Flash 0731", vision: false },
   { model: AGENC_DEEPSEEK_V41_MODEL, label: "DeepSeek V4.1 Flash", vision: true },

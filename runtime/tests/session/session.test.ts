@@ -2220,6 +2220,32 @@ describe("Session turn-driver hooks", () => {
     await expect(session.conversation.runningState()).resolves.toBeUndefined();
   });
 
+  it.each([false, true])("requires concrete exec cleanup proof before durable finalization (failure=%s)", async failure => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const manager = {
+      prepareForDurableClose: async () => {
+        order.push("cleanup");
+        await gate;
+        if (failure) throw new Error("unproven process cleanup");
+      },
+    } as unknown as SessionServices["unifiedExecManager"];
+    const session = buildSession({ services: { unifiedExecManager: manager } });
+    session.onBeforeDurableClose(() => { order.push("terminal"); });
+    const stopping = session.shutdown();
+    void stopping.catch(() => {});
+    await vi.waitFor(() => expect(order).toEqual(["cleanup"]));
+    release();
+    if (failure) {
+      await expect(stopping).rejects.toThrow("unproven process cleanup");
+      expect(order).toEqual(["cleanup"]);
+    } else {
+      await stopping;
+      expect(order).toEqual(["cleanup", "terminal"]);
+    }
+  });
+
   it("drains durable continuations before finalizing and sealing the journal", async () => {
     const session = buildSession();
     const appended: Event[] = [];

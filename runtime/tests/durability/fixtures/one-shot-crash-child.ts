@@ -1,3 +1,6 @@
+import { AgenCSessionSnapshotPolicy } from "../../../src/state/snapshot-policy.js";
+import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
+import { writeSessionSnapshotAtomically } from "../../../src/state/atomic-snapshot-writes.js";
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ErrorLogSidecar } from "../../../src/session/error-log.js";
@@ -21,6 +24,26 @@ if (command === "crash") {
   writeFileSync(pathRecord, store.rolloutPath);
   const kill = () => { process.kill(process.pid, "SIGKILL"); throw new Error("SIGKILL returned"); };
   if (boundary === "opened") kill();
+  const snapshotDriver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+  snapshotDriver.prepareState("INSERT INTO session_agent_links(session_id, agent_id) VALUES (?, ?)").run("snapshot-session", "crash-run");
+  writeSessionSnapshotAtomically(snapshotDriver, {
+    sessionId: "snapshot-session", snapshotAt: meta.timestamp,
+    conversationJson: '["snapshot"]', toolStateJson: '{}', mcpConnectionStateJson: '{}',
+  }, { replayOnStartup: true, verifyExisting: true, oneShotRunId: "crash-run" });
+  if (boundary === "tool-index") {
+    const policy = new AgenCSessionSnapshotPolicy(snapshotDriver, { agencHome: home });
+    policy.trackSession("snapshot-session", "crash-run");
+    policy.recordSessionEvent("snapshot-session", { method: "event.tool_request", params: {
+      requestId: "index-call", toolName: "Bash", input: { command: "echo ok" }, recoveryCategory: "side-effecting",
+    } });
+    const row = snapshotDriver.prepareState<[], { status: string }>(
+      "SELECT status FROM in_flight_tool_calls WHERE tool_call_id = 'index-call'",
+    ).get();
+    if (row?.status !== "running") throw new Error("observer index missing before crash");
+    kill();
+  }
+  snapshotDriver.close();
+  if (boundary === "snapshot") kill();
   if (boundary === "pending-logs") {
     const projectDir = dirname(dirname(dirname(store.rolloutPath)));
     const sidecar = new ErrorLogSidecar({ projectDir, sessionId: "crash-run", deferStartupIndex: true });

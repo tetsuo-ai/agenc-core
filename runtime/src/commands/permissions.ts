@@ -429,7 +429,7 @@ async function addRuleFromCommand(
   if (persistTo) {
     if (behavior === "allow" && persistTo !== "userSettings") {
       persistNote =
-        " (session only — repository files cannot store permission approvals)";
+        " (session only: repository files cannot store permission approvals)";
     } else {
       const wrote = await addPermissionRulesToConfig({
         destination: persistTo,
@@ -439,7 +439,7 @@ async function addRuleFromCommand(
       });
       persistNote = wrote
         ? ` (persisted to ${persistTo})`
-        : ` (persist skipped — managed settings or no writable target)`;
+        : ` (persist skipped: managed settings or no writable target)`;
     }
   }
 
@@ -736,7 +736,7 @@ async function handleAcceptBypassSubcommand(
   // proceed with the bypass activation in this session.
   let persistNote = "";
   if (configStore === null) {
-    persistNote = " (persist skipped — runtime-state authority unavailable)";
+    persistNote = " (persist skipped: runtime-state authority unavailable)";
   } else {
     try {
       recordBypassPermissionsConsent(

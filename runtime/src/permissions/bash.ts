@@ -58,6 +58,7 @@ import {
   getSimpleCommandPrefix,
   parseShellCommand,
   parseShellWrapperSubcommandsForPermission,
+  shellWrapperCodeSubcommandsForPermission,
   splitCommand,
 } from "../shell-command/parser.js";
 import {
@@ -264,6 +265,25 @@ function evaluateSubcommand(
   };
 }
 
+/**
+ * The commands that shell wrappers among `subcommands` run, nested wrappers
+ * included, whatever their options (`bash -ec 'rm foo'`, `ls && sh -c 'rm
+ * foo'`), so deny and ask rules see them. Null past the subcommand limit.
+ */
+function wrappedShellCodeSubcommands(
+  subcommands: readonly string[],
+): readonly string[] | null {
+  const wrapped: string[] = [];
+  let pending = subcommands;
+  for (let depth = 0; depth < 8 && pending.length > 0; depth += 1) {
+    pending = pending.flatMap((subcommand) =>
+      shellWrapperCodeSubcommandsForPermission(subcommand));
+    wrapped.push(...pending);
+    if (wrapped.length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) return null;
+  }
+  return wrapped;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Aggregation
 // ─────────────────────────────────────────────────────────────────────
@@ -433,6 +453,15 @@ export async function bashToolHasPermission(
     };
   }
 
+  const wrappedSubcommands = wrappedShellCodeSubcommands(subcommands);
+  if (wrappedSubcommands === null) {
+    return {
+      behavior: "ask",
+      message: "Shell wrappers in this command run too many subcommands to safety-check individually.",
+      decisionReason: { type: "other", reason: "bash_parse_unavailable" },
+    };
+  }
+
   // If argv parse failed AND the split did not break the command into
   // recognizable parts (still contains exotic shell chars), fall back
   // to ask. Never silently allow.
@@ -457,6 +486,14 @@ export async function bashToolHasPermission(
   const subresults: BashSubcommandResult[] = [];
   for (const subcommand of subcommands) {
     subresults.push({ subcommand, result: evaluateSubcommand(subcommand, ctx) });
+  }
+  // The code a shell wrapper runs can only refuse or ask: an allow rule for
+  // that code does not allow the wrapper, whose options may run other code.
+  for (const subcommand of wrappedSubcommands) {
+    const result = evaluateSubcommand(subcommand, ctx);
+    if (result.behavior === "deny" || result.behavior === "ask") {
+      subresults.push({ subcommand, result });
+    }
   }
 
   // Yield after subcommand loop — classifier result would attach here.

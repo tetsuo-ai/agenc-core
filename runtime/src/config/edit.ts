@@ -69,6 +69,28 @@ export class AgenCConfigEditsBuilder {
     return this;
   }
 
+  /** Write `[providers.<provider>] auth`; `auto` removes the setting. */
+  setProviderAuth(provider: string, auth: "auto" | "oauth" | "api-key"): this {
+    const normalizedProvider = provider.trim();
+    this.edits.push((raw) => {
+      if (normalizedProvider.length === 0) return;
+      const providers = isPlainRecord(raw.providers)
+        ? cloneRecord(raw.providers)
+        : {};
+      const existing = isPlainRecord(providers[normalizedProvider])
+        ? cloneRecord(providers[normalizedProvider] as Record<string, unknown>)
+        : {};
+      if (auth === "auto") {
+        delete existing.auth;
+      } else {
+        existing.auth = auth;
+      }
+      providers[normalizedProvider] = existing;
+      raw.providers = providers;
+    });
+    return this;
+  }
+
   setCoordinatorMode(enabled: boolean | null): this {
     this.edits.push((raw) => {
       if (enabled === null) {

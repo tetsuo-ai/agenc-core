@@ -35,6 +35,14 @@ describe("shortAgentTaskTitle", () => {
     );
   });
 
+  it("prefers the model's description label over the task name", () => {
+    expect(shortAgentTaskTitle("mod_audio", PROMPT, "  Procedural\nWebAudio  mod ")).toBe(
+      "Procedural WebAudio mod",
+    );
+    expect(shortAgentTaskTitle("mod_audio", PROMPT, "   ")).toBe("mod audio");
+    expect(shortAgentTaskTitle("mod_audio", PROMPT, "a".repeat(200)).length).toBeLessThanOrEqual(60);
+  });
+
   it("bounds the length (rail rows must not overflow)", () => {
     const long = "a".repeat(200);
     const title = shortAgentTaskTitle(long, PROMPT);

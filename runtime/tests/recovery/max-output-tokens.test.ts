@@ -166,6 +166,7 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
       expect(runMaxOutputTokensRecovery({ session, state, escalateAllowed: false })).toEqual({ kind: "continuation" });
       expect(JSON.stringify(state.messages)).not.toBe(before);
       expect(state.messages.at(-1)).toEqual({ role: "user", content: RETRY_REASONING_ONLY_CONTENT });
+      expect(state.reasoningOnlyRecoveryPending).toBe(true);
       expect(state.maxOutputTokensOverride).toBeUndefined();
       expect(state.maxOutputTokensRecoveryCount).toBe(retry + 1);
     }
@@ -198,6 +199,7 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     });
     runMaxOutputTokensRecovery({ session: mkSession(new EventLog()), state, escalateAllowed: false });
     expect(state.messages.at(-1)?.content).not.toBe(RETRY_REASONING_ONLY_CONTENT);
+    expect(state.reasoningOnlyRecoveryPending).toBeUndefined();
     expect(state.messages.at(-1)?.content).toContain(tools.length ? "complete valid JSON" : "Pick up at the next token");
   });
 

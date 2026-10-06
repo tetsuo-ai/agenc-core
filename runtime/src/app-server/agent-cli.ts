@@ -1515,6 +1515,9 @@ export function defaultEnsureDaemonReady(
  */
 function withDaemonStartupLogContext(error: unknown): Error {
   const base = error instanceof Error ? error : new Error(String(error));
+  // A daemon answer is not a connection failure, and wrapping it would drop
+  // its code and data.
+  if (base instanceof AgenCDaemonResponseError) return base;
   if (!/ECONNREFUSED|ENOENT/.test(base.message)) return base;
   if (base.message.includes("daemon startup log:")) return base;
   const stderrTail = readAgenCDaemonSpawnStderrTail();
@@ -1598,14 +1601,17 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");
   }
+  // Keep the daemon's code and data, exactly like the persistent client:
+  // callers branch on them (a cold resume that races a startup restore gets
+  // CANONICAL_SESSION_ALREADY_ACTIVE and attaches to the restored agent).
   if (isErrorResponse(initializeResponse)) {
-    throw new Error(initializeResponse.error.message);
+    throw new AgenCDaemonResponseError(initializeResponse.error);
   }
   if (response === undefined) {
     throw new Error(`daemon did not return an ${method} response`);
   }
   if (isErrorResponse(response)) {
-    throw new Error(response.error.message);
+    throw new AgenCDaemonResponseError(response.error);
   }
   return resultFromDaemonResponse<Method>(response);
 }

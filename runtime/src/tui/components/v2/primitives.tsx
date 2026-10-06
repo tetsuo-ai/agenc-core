@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
-import { AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
+import { AURA_PLAN_GLYPHS, supportsRowTints, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useQueuedMessage } from '../../context/QueuedMessageContext.js'
 import { ContentWidthProvider, insetContentWidth, useContentWidth } from '../../context/contentWidthContext.js'
@@ -11,7 +11,6 @@ import wrapText from '../../ink/wrap-text.js'
 import { TerminalWriteContext } from '../../ink/useTerminalNotification.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
-import { ToolStateGlyph } from '../ToolStateGlyph.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
   AGENC_LOGO_BRAILLE_COMPACT_LINES,
@@ -140,18 +139,6 @@ const variantWash: Partial<Record<BadgeVariant, ThemeColor>> = {
   success: 'successWash',
   error: 'errorWash',
   plan: 'planModeWash',
-}
-
-const toolColor: Record<ToolKind, ThemeColor> = {
-  read: 'text2',
-  grep: 'text2',
-  edit: 'agenc',
-  bash: 'worker',
-  delegate: 'worker',
-  proof: 'agenc',
-  claim: 'worker',
-  settle: 'success',
-  stake: 'worker',
 }
 
 function capitalize(value: string): string {
@@ -1082,41 +1069,79 @@ export function Msg({
   // for the content column; keep the inset in sync with the gap so wrapped body
   // text measures against the right width.
   const contentWidth = insetContentWidth(inheritedWidth, 2 + queuedPaddingWidth)
+  // One glyph marks who speaks: the user's ❯ and AgenC's ● in the brand
+  // purple, a worker's ● in its own color. The glyph (1 cell) + gap (1 cell)
+  // keeps the same 2-cell content inset the old border used, so wrapped body
+  // widths are unchanged. AgenC's own name is not repeated on every reply.
+  const glyph = role === 'user' ? '❯' : '●'
+  const glyphColor: ThemeColor =
+    role === 'user' || role === 'agenc' ? 'accent' : colors[role]
+  const showLabel = label !== undefined && role !== 'agenc'
   return (
-    // Gutter identity: a role-colored left border runs the FULL height of the
-    // message (header + body), replacing the old single-row ▮ marker — the
-    // colored line now spans the complete message, blockquote-style. The
-    // border (1 cell) + paddingLeft (1 cell) preserves the same 2-cell
-    // content inset the marker + gap used, so body widths are unchanged.
-    <ThemedBox
-      borderStyle="single"
-      borderTop={false}
-      borderRight={false}
-      borderBottom={false}
-      borderLeft
-      borderLeftColor={colors[role]}
-      paddingLeft={1}
-      flexDirection="column"
-      flexGrow={1}
-    >
-      {label !== undefined || time !== undefined || isQueued ? (
-        <Box flexDirection="row" gap={1}>
-          {label !== undefined ? (
-          <ThemedText color={colors[role]} bold>
-            {label.toUpperCase()}
-          </ThemedText>
-          ) : null}
-          {time ? (
-            <ThemedText color="inactive">{time}</ThemedText>
-          ) : isQueued ? (
-            <ThemedText color="inactive">queued</ThemedText>
-          ) : null}
-        </Box>
-      ) : null}
-      <ContentWidthProvider width={contentWidth}>
-        <Content color="text2">{children}</Content>
-      </ContentWidthProvider>
-    </ThemedBox>
+    <Box flexDirection="row" flexGrow={1}>
+      <Box width={2} flexShrink={0}>
+        <ThemedText color={glyphColor} bold={role === 'user'}>
+          {glyph}
+        </ThemedText>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+        {showLabel || time !== undefined || isQueued ? (
+          <Box flexDirection="row" gap={1}>
+            {showLabel ? (
+              <ThemedText color={colors[role]} bold>
+                {label}
+              </ThemedText>
+            ) : null}
+            {time ? (
+              <ThemedText color="inactive">{time}</ThemedText>
+            ) : isQueued ? (
+              <ThemedText color="inactive">queued</ThemedText>
+            ) : null}
+          </Box>
+        ) : null}
+        <ContentWidthProvider width={contentWidth}>
+          <Content color={role === 'user' ? 'text' : 'text2'}>{children}</Content>
+        </ContentWidthProvider>
+      </Box>
+    </Box>
+  )
+}
+
+/** Past tense for a finished step: "Ran ls", "Edited stats.py". */
+const PAST_TENSE: Readonly<Record<string, string>> = {
+  Run: 'Ran',
+  Edit: 'Edited',
+  MultiEdit: 'Edited',
+  Write: 'Wrote',
+  Search: 'Searched',
+  Grep: 'Searched',
+  Glob: 'Listed',
+  Fetch: 'Fetched',
+  Plan: 'Planned',
+}
+
+/**
+ * The quiet line under a tool step: "└ 9 lines", "└ +4 lines",
+ * "└ exit 5, no tests collected". Indented one level under the step.
+ */
+export function ResultLine({
+  failed = false,
+  children,
+}: {
+  readonly failed?: boolean
+  readonly children: ReactNode
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row" paddingLeft={2}>
+      <Box flexShrink={0}>
+        <ThemedText color="subtle">{'└ '}</ThemedText>
+      </Box>
+      <Box flexShrink={1} minWidth={0}>
+        <ThemedText color={failed ? 'stepFail' : 'inactive'} wrap="truncate-end">
+          {children}
+        </ThemedText>
+      </Box>
+    </Box>
   )
 }
 
@@ -1146,7 +1171,11 @@ export function Tool({
   readonly expanded?: boolean
   readonly time?: string
 }): React.ReactNode {
-  const color = state === 'failed' ? 'error' : state === 'queued' ? 'inactive' : toolColor[kind]
+  // One static dot says how the step ended: green done, red failed, gray
+  // while queued or running. Nothing animates on finished rows.
+  const dotColor: ThemeColor =
+    state === 'failed' ? 'stepFail' : state === 'done' ? 'stepOk' : 'inactive'
+  const verb = label ?? capitalize(kind)
   // The detail box below indents its content by `marginLeft={2}` + the
   // `borderLeft` rule (1) + `paddingLeft={1}` = 4 columns. An embedded
   // `DiffInline` therefore has exactly `inheritedContentWidth − 4` columns to
@@ -1166,38 +1195,23 @@ export function Tool({
           `● Run` intact and forces all shrinkage onto the args text below.
         */}
         <Box flexShrink={0}>
-          <ToolStateGlyph state={state} color={color} />
+          <ThemedText color={dotColor}>●</ThemedText>
         </Box>
         <Box flexShrink={0}>
-          <ThemedText color={toolColor[kind]} bold>
-            {label ?? capitalize(kind)}
+          <ThemedText color="text" bold>
+            {state === 'done' ? (PAST_TENSE[verb] ?? verb) : verb}
           </ThemedText>
         </Box>
         {/*
-          The parenthesized args render as a single gap={0} unit so the parens
-          hug the argument (`Write (index.html)`) instead of the outer gap={1}
-          inserting a stray space on the inside of each paren (`Write ( index.html )`).
-          The single space between the bold tool label and the opening paren is
-          still supplied by the parent row's gap={1}.
-
-          The whole group shrinks (flexShrink={1} minWidth={0}), but only the
-          inner args text gives way: both parens are pinned flexShrink={0} so
-          the opening `(` is never dropped and the closing `)` always survives,
-          while the args text truncates in the middle. Without this, Yoga shrank
-          the parens too and dropped the opening `(` while keeping the close `)`.
+          The args follow the verb after one space (the row's gap={1}), with no
+          parentheses. Only the args give way under overflow (flexShrink={1}
+          minWidth={0}) and they truncate in the middle, so the start and the
+          end of a long command both stay readable.
         */}
-        <Box flexDirection="row" gap={0} flexShrink={1} minWidth={0}>
-          <Box flexShrink={0}>
-            <ThemedText color="inactive">(</ThemedText>
-          </Box>
-          <Box flexShrink={1} minWidth={0}>
-            <ThemedText color="text2" wrap="truncate-middle">
-              {args}
-            </ThemedText>
-          </Box>
-          <Box flexShrink={0}>
-            <ThemedText color="inactive">)</ThemedText>
-          </Box>
+        <Box flexShrink={1} minWidth={0}>
+          <ThemedText color="text2" wrap="truncate-middle">
+            {args}
+          </ThemedText>
         </Box>
         {time ? <ThemedText color="inactive">{time}</ThemedText> : null}
       </Box>
@@ -1205,13 +1219,9 @@ export function Tool({
         <ToolResultLines state={state}>{result}</ToolResultLines>
       ) : null}
       {expanded && detail ? (
-        <ThemedBox
-          flexDirection="column"
-          marginLeft={2}
-          paddingLeft={1}
-          borderLeft
-          borderLeftColor="lineSoft"
-        >
+        // Detail sits one level under the step, like the └ result line,
+        // without a rule of its own (same 4-column inset as before).
+        <ThemedBox flexDirection="column" marginLeft={2} paddingLeft={2}>
           <DiffInlineWidthContext.Provider value={detailContentWidth}>
             {detail}
           </DiffInlineWidthContext.Provider>
@@ -1234,11 +1244,11 @@ function ToolResultLines({
   readonly state: ToolState
   readonly children: string | ReactNode
 }): React.ReactNode {
-  const color: ThemeColor = state === 'failed' ? 'error' : 'subtle'
+  const color: ThemeColor = state === 'failed' ? 'stepFail' : 'inactive'
   if (typeof children !== 'string') {
     return (
-      <Box flexDirection="row" paddingLeft={1} gap={1}>
-        <ThemedText color="muted3">⎿</ThemedText>
+      <Box flexDirection="row" paddingLeft={2} gap={1}>
+        <ThemedText color="subtle">└</ThemedText>
         <Box flexDirection="column" flexGrow={1}>
           {children}
         </Box>
@@ -1247,8 +1257,8 @@ function ToolResultLines({
   }
   const lines = children.split('\n')
   return (
-    <Box flexDirection="row" paddingLeft={1} gap={1}>
-      <ThemedText color="muted3">⎿</ThemedText>
+    <Box flexDirection="row" paddingLeft={2} gap={1}>
+      <ThemedText color="subtle">└</ThemedText>
       <Box flexDirection="column" flexGrow={1}>
         {lines.map((line, index) => (
           <ThemedText key={index} color={color} wrap="wrap">
@@ -1328,6 +1338,7 @@ export function DiffInline({
   stats,
   lines,
   op = 'DIFF',
+  compact = false,
 }: {
   readonly file: string
   readonly stats?: string
@@ -1344,6 +1355,11 @@ export function DiffInline({
    * and any caller that doesn't know the operation.
    */
   readonly op?: string
+  /**
+   * Transcript form: no frame and no header, because the step row above
+   * already names the file. Only the colored rows remain.
+   */
+  readonly compact?: boolean
 }): React.ReactNode {
   // When a render context supplies the box's exact outer width (the transcript
   // DIFF card), size the code cell deterministically instead of leaving it to
@@ -1355,45 +1371,46 @@ export function DiffInline({
   const explicitBoxWidth = React.useContext(DiffInlineWidthContext)
   const codeCellWidth =
     explicitBoxWidth !== null ? diffInlineCodeCellWidth(explicitBoxWidth) : null
+  const rowTints = supportsRowTints()
   return (
     <ThemedBox
       flexDirection="column"
-      borderStyle="single"
-      borderColor="lineSoft"
+      {...(compact ? {} : { borderStyle: 'single' as const, borderColor: 'lineSoft' as const })}
       {...(explicitBoxWidth !== null ? { width: explicitBoxWidth } : {})}
     >
-      <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
-        <ThemedText color="subtle">{op}</ThemedText>
-        <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
-        <Box flexGrow={1} />
-        {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
-      </ThemedBox>
+      {compact ? null : (
+        <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft" gap={1}>
+          <ThemedText color="subtle">{op}</ThemedText>
+          <ThemedText color="text2" wrap="truncate-middle">{file}</ThemedText>
+          <Box flexGrow={1} />
+          {stats ? <ThemedText color="subtle">{stats}</ThemedText> : null}
+        </ThemedBox>
+      )}
       <Box flexDirection="column">
         {lines.map((line, index) => {
-          const bg =
-            line.kind === 'add'
-              ? 'successWash'
+          const bg = !rowTints
+            ? undefined
+            : line.kind === 'add'
+              ? 'diffAdded'
               : line.kind === 'rem'
-                ? 'errorWash'
-                : line.kind === 'hunk'
-                  ? 'agencWash'
-                  : undefined
+                ? 'diffRemoved'
+                : undefined
           const sigil = { add: '+', rem: '-', ctx: ' ', hunk: '@' }[line.kind]
           const sigilColor: ThemeColor =
             line.kind === 'add'
-              ? 'success'
+              ? 'stepOk'
               : line.kind === 'rem'
-                ? 'error'
+                ? 'stepFail'
                 : line.kind === 'hunk'
-                  ? 'agenc'
+                  ? 'accentSoft'
                   : 'muted3'
           const codeColor: ThemeColor =
             line.kind === 'add'
-              ? 'success'
+              ? 'stepOk'
               : line.kind === 'rem'
-                ? 'error'
+                ? 'stepFail'
                 : line.kind === 'hunk'
-                  ? 'agenc'
+                  ? 'accentSoft'
                   : 'text2'
           return (
             // The gutter cells (old/new line nums + sigil) are fixed-width and
@@ -1402,12 +1419,23 @@ export function DiffInline({
             // wide code line lets Yoga squeeze the gutter (eating a pad space)
             // and wrap the row, which silently drops the truncation marker.
             <ThemedBox key={index} flexDirection="row" backgroundColor={bg} paddingX={1}>
-              <Box flexShrink={0}>
-                <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
-              </Box>
-              <Box flexShrink={0}>
-                <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
-              </Box>
+              {compact ? (
+                // One number per row: where the line was, or where it is now.
+                <Box flexShrink={0}>
+                  <ThemedText color="muted3">
+                    {((line.kind === 'rem' ? line.oldLine : line.newLine) ?? '').padStart(4, ' ')}
+                  </ThemedText>
+                </Box>
+              ) : (
+                <>
+                  <Box flexShrink={0}>
+                    <ThemedText color="muted3">{(line.oldLine ?? '').padStart(4, ' ')}</ThemedText>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <ThemedText color="muted3">{(line.newLine ?? '').padStart(4, ' ')}</ThemedText>
+                  </Box>
+                </>
+              )}
               <Box flexShrink={0}>
                 <ThemedText color={sigilColor}> {sigil} </ThemedText>
               </Box>
@@ -1871,6 +1899,7 @@ export function MenuModal<T>({
   columnGap = 1,
   modalMinHeight,
   rowMinHeight = 1,
+  closeHint,
 }: {
   readonly title: string
   readonly count?: string
@@ -1890,6 +1919,8 @@ export function MenuModal<T>({
   readonly columnGap?: number
   readonly modalMinHeight?: number
   readonly rowMinHeight?: number
+  /** What Esc does, top right. Defaults to the popup's "esc to close". */
+  readonly closeHint?: string
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
   const resolvedListWidth = preview
@@ -1925,6 +1956,7 @@ export function MenuModal<T>({
   return (
     <Popup
       title={popupTitle}
+      {...(closeHint === undefined ? {} : { headerRight: closeHint })}
       status={popupStatus || undefined}
       footer={footer}
       bodyPaddingX={paddingX}

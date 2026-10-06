@@ -91,7 +91,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   mcpResource: "◇",
   pointer: figures.pointer,
   promptBypass: "▶",
-  responseGutter: "⎿",
+  responseGutter: "└",
   redactedThinkingPrefix: "✻",
   separator: "·",
   statusError: "✗",

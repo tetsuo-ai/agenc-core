@@ -10,6 +10,7 @@ vi.mock("./ink.js", () => {
   return { Box, Text };
 });
 
+import { ResultLine } from "./components/v2/primitives.js";
 import { GlobPathsView } from "./tool-rendering.js";
 
 interface ChildProps {
@@ -35,10 +36,20 @@ function flatten(node: unknown): ChildElement[] {
 
 describe("GlobPathsView", () => {
   test("renders explicit truncation state separately from the path list", () => {
-    const node = GlobPathsView({
-      content:
-        "<glob-pattern>*.ts</glob-pattern>\n<glob-paths>a.ts\nb.ts</glob-paths>\n<glob-truncated>true</glob-truncated>",
-    });
+    const content =
+      "<glob-pattern>*.ts</glob-pattern>\n<glob-paths>a.ts\nb.ts</glob-paths>\n<glob-truncated>true</glob-truncated>";
+
+    // Transcript form: one result line whose count carries a "+" when the
+    // result was truncated (more paths exist than were returned).
+    const compact = GlobPathsView({ content }) as unknown as {
+      readonly type: unknown;
+      readonly props: { readonly children?: unknown };
+    };
+    expect(compact.type).toBe(ResultLine);
+    expect(compact.props.children).toBe("2+ paths");
+
+    // Verbose (ctrl+o) lists the paths and states the truncation on its own row.
+    const node = GlobPathsView({ content, verbose: true });
     const children = flatten(node);
 
     expect(children.find((child) => child.props.children === "a.ts")).toBeDefined();

@@ -170,7 +170,7 @@ export function collectStatus(
   } else {
     lines.push({
       key: "Session ID",
-      value: "(idle — assigned when you send your first message)",
+      value: "(idle; assigned when you send your first message)",
     });
   }
   lines.push({ key: "CWD", value: cwd });

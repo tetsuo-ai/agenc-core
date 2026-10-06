@@ -1,3 +1,5 @@
+import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
+import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
   type ChildProcess,
@@ -61,6 +63,7 @@ import {
 } from "../utils/shell/commandExecution.js";
 import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 import { withWritableGoBuildCache } from "./go-build-cache.js";
+import { withNetworkRetryDefaults } from "./network-retry-defaults.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -330,6 +333,8 @@ interface ProcessEntry {
    * server &` that vanished is explained and pointed at `detach: true`.
    */
   residualProcessesTerminated?: boolean;
+  residualProcessesObserved?: boolean;
+  commandOutcome?: "aborted" | "unavailable";
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
@@ -439,6 +444,8 @@ function createResult(params: {
   readonly timedOut: boolean;
   readonly maxOutputTokens?: number;
   readonly residualProcessesTerminated?: boolean;
+  readonly residualProcessesObserved?: boolean;
+  readonly commandOutcome?: "aborted" | "unavailable";
   readonly detached?: {
     readonly pid?: number;
     readonly logPath: string;
@@ -470,6 +477,8 @@ function createResult(params: {
     ...(params.residualProcessesTerminated === true
       ? { residual_processes_terminated: true }
       : {}),
+    ...(params.residualProcessesObserved === true ? { residual_processes_observed: true } : {}),
+    ...(params.commandOutcome === undefined ? {} : { command_outcome: params.commandOutcome }),
     ...(params.detached !== undefined
       ? {
           detached: true,
@@ -528,6 +537,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private sandboxAuthorityGeneration = 0;
   private sandboxAuthorityQuiesced = false;
   private sandboxAuthorityCleanupFailure: Error | undefined;
+  private durableCloseTask: Promise<void> | undefined;
+  private durableCloseStarted = false;
   private activeSandboxAuthorityQuiesce:
     | UnifiedExecSandboxAuthorityQuiesceToken
     | undefined;
@@ -698,6 +709,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         : {}),
       ...(ownerId !== undefined ? { ownerId } : {}),
       tty,
+      allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
       startedAt,
       signal: request.__abortSignal,
       sandboxAuthorityGeneration,
@@ -1144,11 +1156,45 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     await Promise.allSettled(
       entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
     );
-    this.processes.clear();
+    // A best-effort timeout is not cleanup proof. Retain unsettled owners so
+    // strict disposal and the durable-close boundary can still drain them.
+    for (const entry of entries) {
+      if (entry.exitState !== null) this.releaseProcessId(entry.processId);
+    }
+  }
+
+  /** Freeze admission and prove containment before a durable terminal tail. */
+  prepareForDurableClose(): Promise<void> {
+    if (this.durableCloseTask !== undefined) return this.durableCloseTask;
+    this.durableCloseStarted = true;
+    const task = Promise.resolve().then(async () => {
+      if (this.sandboxAuthorityCleanupFailure !== undefined) {
+        throw this.sandboxAuthorityCleanupFailure;
+      }
+      const entries = [...this.processes.values()];
+      const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
+      const failures: unknown[] = [];
+      for (const [index, outcome] of outcomes.entries()) {
+        if (outcome.status === "rejected") failures.push(outcome.reason);
+        else this.releaseProcessId(entries[index]!.processId);
+      }
+      if (this.sandboxAuthorityCleanupFailure !== undefined) {
+        failures.push(this.sandboxAuthorityCleanupFailure);
+      }
+      if (failures.length > 0) {
+        const error = new AggregateError(failures,
+          "unified exec cleanup is unproven at durable close");
+        this.poisonSandboxAuthority(error);
+        throw error;
+      }
+    });
+    this.durableCloseTask = task;
+    return task;
   }
 
   private assertSandboxAuthorityAdmission(expectedGeneration?: number): number {
     if (
+      this.durableCloseStarted ||
       this.sandboxAuthorityCleanupFailure !== undefined ||
       this.sandboxAuthorityQuiesced ||
       (expectedGeneration !== undefined &&
@@ -1156,7 +1202,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ) {
       throw new UnifiedExecError(
         "create_process",
-        this.sandboxAuthorityCleanupFailure === undefined
+        this.durableCloseStarted
+          ? "unified exec is closed for durable session finalization"
+          : this.sandboxAuthorityCleanupFailure === undefined
           ? "unified exec is quiesced while sandbox runtime authority changes"
           : "unified exec is permanently closed because process-tree cleanup could not be proven",
       );
@@ -1296,6 +1344,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly ownerId?: string;
     readonly argv0?: string;
     readonly tty: boolean;
+    readonly allowDirectBwrap: boolean;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
     readonly sandboxAuthorityGeneration: number;
@@ -1405,14 +1454,26 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+    const probeHint = params.runtimeSandbox === undefined ? undefined
+      : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnContainedProcess(params.program, params.args, {
+      child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),
+        ...(params.allowDirectBwrap && params.runtimeSandbox !== undefined ? {
+          directBwrap: {
+            protocol: "v3",
+            prepare: () => prepareDirectBwrapV3Plan({ program: params.program,
+              args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
+            validateAdmission: () => this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration),
+            signal: abortController.signal,
+          },
+        } : {}),
       });
     } catch (error) {
+      probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir
       // was removed after its check), the gate or broker did not start, or
@@ -1453,6 +1514,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ): void => {
       if (settlementStarted) return;
       settlementStarted = true;
+      if (state.exitCode !== 0 || spawnError !== undefined) probeHint?.invalidate();
       void waitForContainedProcessSettlement(child).then(() => {
         void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
@@ -1462,6 +1524,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             if (outcome?.residualProcessesTerminated === true) {
               entry.residualProcessesTerminated = true;
             }
+            if (outcome?.residualProcessesObserved === true) entry.residualProcessesObserved = true;
+            const command = outcome?.commandOutcome;
+            if (command?.kind === "reported") {
+              state = { exitCode: command.result.kind === "exit" ? command.result.code : 128 + command.result.signal };
+            } else if (command !== undefined) {
+              entry.commandOutcome = command.kind;
+              probeHint?.invalidate();
+              state = { exitCode: null };
+              if (command.kind === "unavailable") notifyData("stderr",
+                "Command outcome unavailable after dispatch; cleanup is complete. Do not replay automatically.");
+            }
             if (spawnError !== undefined) {
               notifyData("stderr", spawnError.message);
             }
@@ -1470,6 +1543,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           (error) => {
             const cleanupFailure =
               error instanceof Error ? error : new Error(String(error));
+            probeHint?.invalidate();
             entry.cleanupFailure = cleanupFailure;
             this.poisonSandboxAuthority(cleanupFailure);
             notifyData(
@@ -1558,7 +1632,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           args: params.args,
           cwd: params.cwd,
           env: withWritableGoBuildCache(
-            params.env,
+            sandbox === "none" ? params.env : withNetworkRetryDefaults(
+              params.env,
+              permissions,
+              params.runtimeSandbox.additionalPermissions,
+              params.runtimeSandbox.network !== undefined || params.runtimeSandbox.enforceManagedNetwork === true,
+            ),
             permissions,
             params.runtimeSandbox.additionalPermissions,
             params.runtimeSandbox.sandboxPolicyCwd,
@@ -1685,6 +1764,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
       timedOut: entry.hardTimeoutExpired === true || timedOut,
       maxOutputTokens: options.maxOutputTokens,
+      ...(entry.residualProcessesObserved === true ? { residualProcessesObserved: true } : {}),
+      ...(entry.commandOutcome === undefined ? {} : { commandOutcome: entry.commandOutcome }),
       ...(entry.residualProcessesTerminated === true
         ? { residualProcessesTerminated: true }
         : {}),

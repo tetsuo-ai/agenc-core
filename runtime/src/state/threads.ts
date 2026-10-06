@@ -237,6 +237,17 @@ export class StateThreadRepository {
   }
 
   listThreads(): ReadonlyArray<IndexedThreadRecord> {
+    return this.selectThreads("");
+  }
+
+  /** Only these rows can carry unfinished unarchive artifact cleanup. */
+  listPendingUnarchiveCleanup(): ReadonlyArray<IndexedThreadRecord> {
+    return this.selectThreads(
+      "WHERE archived_at IS NULL AND archived_rollout_path IS NOT NULL",
+    );
+  }
+
+  private selectThreads(predicate: string): ReadonlyArray<IndexedThreadRecord> {
     return this.driver
       .prepareState<[], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
@@ -244,7 +255,7 @@ export class StateThreadRepository {
           rollout_path, archived_rollout_path, archive_cleanup_generation,
           (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
            WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
-         FROM threads`,
+         FROM threads ${predicate}`,
       )
       .all()
       .map((row: ThreadRow) => rowToThread(row));

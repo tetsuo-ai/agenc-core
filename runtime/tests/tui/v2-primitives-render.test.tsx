@@ -2,8 +2,8 @@ import React from 'react'
 import { describe, expect, test } from 'vitest'
 
 import { Msg, Tool } from '../../src/tui/components/v2/primitives.js'
-import { toolStaticGlyph } from '../../src/tui/components/ToolStateGlyph.js'
 import { Box, Text } from '../../src/tui/ink.js'
+import { stringWidth } from '../../src/tui/ink/stringWidth.js'
 import {
   ContentWidthProvider,
   useContentWidth,
@@ -51,7 +51,8 @@ async function probeBodyWidth(node: React.ReactNode): Promise<number> {
   return (row.match(/#/g) ?? []).length
 }
 
-const DONE = toolStaticGlyph('done', false)
+// A finished step leads with a static dot (no ✶/✕ state glyphs).
+const DONE = '●'
 
 describe('Msg queued body wrap width (BUG 1)', () => {
   test('non-queued message body width is unchanged (marker inset only)', async () => {
@@ -96,16 +97,17 @@ describe('Msg queued body wrap width (BUG 1)', () => {
 // ---------------------------------------------------------------------------
 // BUG A — Tool call header collapses when the args overflow the content width.
 //
-// `● Run (cmd)` renders correctly only when the args FIT. When the args overflow
+// `● Ran cmd` renders correctly only when the args FIT. When the args overflow
 // (the common case for any real bash/Read/Edit/Grep command) Yoga shrank the
-// leading glyph, the bold label, AND the parens along with the args, so the row
-// degraded to `●Run  cmd…)` — the glyph/label gap collapsed (`●Run`), a doubled
-// space appeared after the label, the opening `(` was DROPPED, and the closing
-// `)` survived (unbalanced parens).
+// leading glyph and the bold label along with the args, so the row degraded to
+// `●Run  cmd…`: the glyph/label gap collapsed (`●Run`) and a doubled space
+// appeared after the label. (The row used to wrap the args in parens, and the
+// opening `(` was dropped too; the A2 row has no parens.)
 //
-// The fix pins the glyph, the label, and both parens flexShrink={0} and lets ONLY
-// the inner args text (flexShrink={1} minWidth={0}, truncate-middle) give way.
-// The asserted shape `● Run (…)` is the same hug as the short-fitting case.
+// The fix pins the glyph and the label flexShrink={0} and lets ONLY the args
+// text (flexShrink={1} minWidth={0}, truncate-middle) give way. The asserted
+// shape `● Ran …` is the same as the short-fitting case: dot, one space,
+// past-tense verb, one space, args.
 // ---------------------------------------------------------------------------
 
 const LONG_TOOL_ARGS =
@@ -121,50 +123,66 @@ async function firstToolRow(node: React.ReactNode, contentWidth: number): Promis
 }
 
 describe('Tool call header under arg overflow (BUG A)', () => {
-  test('a fitting arg keeps the canonical `● Run (cmd)` shape', async () => {
+  test('a fitting arg keeps the canonical `● Ran cmd` shape', async () => {
     const row = await firstToolRow(<Tool kind="bash" label="Run" args="short cmd" />, 90)
-    expect(row).toBe(`${DONE} Run (short cmd)`)
+    expect(row).toBe(`${DONE} Ran short cmd`)
   })
 
-  test('an overflowing bash arg keeps glyph/space/label/space/open-paren and the closing paren', async () => {
+  test('an unfinished step keeps the present-tense verb', async () => {
+    const row = await firstToolRow(
+      <Tool kind="bash" label="Run" state="running" args="short cmd" />,
+      90,
+    )
+    expect(row).toBe(`${DONE} Run short cmd`)
+  })
+
+  test('an overflowing bash arg keeps glyph/space/label/space and the args tail', async () => {
     const row = await firstToolRow(<Tool kind="bash" label="Run" args={LONG_TOOL_ARGS} />, 90)
 
-    // Glyph, single space, bold label, single space, opening paren — all intact.
-    // Against the pre-fix code the row started `●Run  ` (glyph touching label, no
-    // space; doubled space after label) and the `(` was missing entirely, so this
-    // exact prefix is the revert-sensitive guard.
-    expect(row.startsWith(`${DONE} Run (`)).toBe(true)
-    // The opening paren is present and the args text was truncated in the middle
-    // (the ellipsis appears between the open paren and the close paren).
+    // Glyph, single space, bold label, single space, then the args, all
+    // intact. Against the pre-fix code the row started `●Run  ` (glyph touching
+    // label, no space; doubled space after label), so this exact prefix is the
+    // revert-sensitive guard.
+    expect(row.startsWith(`${DONE} Ran python3 `)).toBe(true)
+    // The args text was truncated in the middle: the ellipsis sits inside the
+    // args and the tail of the command survives.
     expect(row).toContain('…')
-    // The closing paren survives — and balances the opening one.
-    expect(row.endsWith(')')).toBe(true)
-    expect((row.match(/\(/g) ?? []).length).toBe(1)
-    expect((row.match(/\)/g) ?? []).length).toBe(1)
+    expect(row.endsWith('--another-flag')).toBe(true)
+    expect(stringWidth(row)).toBeLessThanOrEqual(100)
+    // No parens around the args.
+    expect(row).not.toContain('(')
+    expect(row).not.toContain(')')
     // Revert-sensitivity, negative form: the collapsed defects must be gone.
-    expect(row.startsWith(`${DONE}Run`)).toBe(false)
-    expect(row).not.toContain('Run  ')
+    expect(row.startsWith(`${DONE}Ran`)).toBe(false)
+    expect(row).not.toContain('Ran  ')
   })
 
-  test.each(['edit', 'read', 'grep'] as const)(
+  test.each([
+    ['edit', 'Edited'],
+    ['read', 'Read'],
+    ['grep', 'Searched'],
+  ] as const)(
     'kind=%s collapses the same way and is fixed by the same pinning',
-    async kind => {
-      const expectedLabel = kind.charAt(0).toUpperCase() + kind.slice(1)
+    async (kind, expectedLabel) => {
+      // The label defaults to the capitalized kind, shown in past tense once
+      // the step is done (Read stays Read).
       const row = await firstToolRow(<Tool kind={kind} args={LONG_TOOL_ARGS} />, 90)
-      expect(row.startsWith(`${DONE} ${expectedLabel} (`)).toBe(true)
-      expect(row.endsWith(')')).toBe(true)
-      expect((row.match(/\(/g) ?? []).length).toBe(1)
-      expect((row.match(/\)/g) ?? []).length).toBe(1)
-      // The collapsed `<glyph>Edit` (no space after the glyph) must not reappear.
+      expect(row.startsWith(`${DONE} ${expectedLabel} python3 `)).toBe(true)
+      expect(row).toContain('…')
+      expect(row.endsWith('--another-flag')).toBe(true)
+      expect(row).not.toContain('(')
+      // The collapsed `<glyph>Edited` (no space after the glyph) must not reappear.
       expect(row.startsWith(`${DONE}${expectedLabel}`)).toBe(false)
+      expect(row).not.toContain(`${expectedLabel}  `)
     },
   )
 
   test('the defect reproduces across narrow widths and the fix holds at each', async () => {
     for (const width of [70, 60, 50]) {
       const row = await firstToolRow(<Tool kind="bash" label="Run" args={LONG_TOOL_ARGS} />, width)
-      expect(row.startsWith(`${DONE} Run (`)).toBe(true)
-      expect(row.endsWith(')')).toBe(true)
+      expect(row.startsWith(`${DONE} Ran python3 `)).toBe(true)
+      expect(row.endsWith('--another-flag')).toBe(true)
+      expect(stringWidth(row)).toBeLessThanOrEqual(width + 10)
     }
   })
 })

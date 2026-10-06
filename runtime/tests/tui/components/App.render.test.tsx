@@ -655,6 +655,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onOpenModelMenu,
       onboardingInput,
       onBashSubmit,
+      draftRestoreRevision,
     }: {
       input: string;
       onSubmit: (
@@ -684,6 +685,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onSubmissionBlocked?: (reason: string) => void;
       onOpenModelMenu?: () => Promise<void> | void;
       onboardingInput?: unknown;
+      draftRestoreRevision?: number;
       onBashSubmit?: (
         command: string,
         admittedCwd?: string,
@@ -724,6 +726,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onOpenModelMenu,
         onboardingInput,
         onBashSubmit,
+        draftRestoreRevision,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -2173,6 +2176,24 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
+  test("bumps the draft restore revision when a rejected submission restores its draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async () => {
+        throw new Error("re-attach is required");
+      }),
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      expect(providerProbe.promptProps.at(-1)?.draftRestoreRevision).toBe(0);
+      await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, submitHelpers: typeof helpers) => Promise<void>)("and again", helpers);
+      expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "and again", draftRestoreRevision: 1 }));
+    });
+  });
+
   test.each(["second prompt", "/reviewer audit this", "$reviewer audit this"])("keeps the newer %s submission and its retry identity when an old response fails late", async secondInput => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();
@@ -2210,7 +2231,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       first.reject(new Error("old response dropped"));
       await firstAttempt;
       await new Promise(resolve => setTimeout(resolve, 25));
-      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true });
+      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true, draftRestoreRevision: 0 });
       loaded.resolve([{ type: "text", text: "expanded delayed skill" }]);
       await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
       second.reject(new Error("new response dropped"));
@@ -5045,10 +5066,12 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
           // Frames after the first are cell diffs, so each marker is short
           // text that is new on its step.
-          await submit("", "Whichmodelprovider");
-          await submit("2", "OPENAI_API_KEY");
-          await submit("sk-onboarding-app-fixture", "Savethiskey?");
-          await submit("yes", "acceptedthekey");
+          await submit("", "Whichprovider");
+          // By name: the mocked fetch makes local runtimes look running,
+          // and running providers move to the top of the list.
+          await submit("openai", "OPENAI_API_KEY");
+          // A key the provider accepts is saved at once; its models follow.
+          await submit("sk-onboarding-app-fixture", "acceptedthekey");
           await submit("", "Ready");
           await submit("", "messages:0");
 
@@ -5129,8 +5152,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               );
             };
 
-            await submit("1", "Whichmodelprovider");
-            await submit("2", "OPENAI_API_KEY");
+            await submit("1", "Whichprovider");
+            await submit("openai", "OPENAI_API_KEY");
             await submit("skip", "Ready");
 
             const completeOnboarding = providerProbe.promptSubmits.at(-1);
@@ -5160,7 +5183,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     },
   );
 
-  test("routes BYOK key approval through the real first-run TUI submission path", async () => {
+  test("routes a checked BYOK key through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
@@ -5205,23 +5228,22 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           };
 
           await submit("1");
-          await submit("1");
+          await submit("grok");
           await submit("xai-app-key-for-tests");
 
           // Ink represents unchanged spaces with cursor-forward controls. Read
           // one synchronized frame, then normalize those renderer artifacts so
           // tokens from unrelated historical frames cannot satisfy the check.
-          const approvalFrame = stripAnsi(
+          const savedFrame = stripAnsi(
             extractLastSynchronizedFrame(output()),
           ).replace(/\s+/gu, "");
-          expect(approvalFrame).toContain("Savethiskey?");
-          expect(approvalFrame).toContain("...ests");
-          expect(approvalFrame).not.toContain("xai-app-key-for-tests");
+          // Saved on the check, with no separate yes; the models follow.
+          expect(savedFrame).toContain("acceptedthekey,anditissaved.");
+          expect(savedFrame).toContain("WhichxAIGrok");
+          expect(savedFrame).not.toContain("xai-app-key-for-tests");
           // The full terminal history must also remain secret-free: checking
           // only the latest frame would miss a transient disclosure.
           expect(output()).not.toContain("xai-app-key-for-tests");
-
-          await submit("yes");
           expect(savedKeys.get("grok")).toBe("xai-app-key-for-tests");
         },
       );
@@ -5280,9 +5302,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
           await submit("1");
           await submit("deepseek");
+          // Saved on the check; Enter keeps the highlighted default model.
           await submit("sk-deepseek-onboarding-test");
-          await submit("yes");
-          await submit("next");
+          await submit("");
           await submit("done");
 
           expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);

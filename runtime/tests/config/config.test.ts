@@ -916,6 +916,22 @@ describe("schema: closed config block validators (CF-13)", () => {
     }
   });
 
+  test("validateProviderConfig accepts auth only for the providers with an account sign-in", () => {
+    expect(validateProviderConfig({ openai: { auth: "oauth" }, grok: { auth: "api-key" } })).toEqual({
+      openai: { auth: "oauth" },
+      grok: { auth: "api-key" },
+    });
+    expect(validateProviderConfig({ grok: { auth: "auto" } })).toEqual({ grok: { auth: "auto" } });
+    expect(() => validateProviderConfig({ openai: { auth: "token" } })).toThrow(
+      /must be auto, oauth, or api-key/u,
+    );
+    for (const provider of ["anthropic", "deepseek", "openrouter"]) {
+      expect(() => validateProviderConfig({ [provider]: { auth: "oauth" } })).toThrow(
+        /only under providers\.openai and providers\.grok/u,
+      );
+    }
+  });
+
   test("validateProviderConfig rejects unknown nested provider fields", () => {
     expect(() =>
       validateProviderConfig({

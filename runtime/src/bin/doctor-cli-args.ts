@@ -6,7 +6,7 @@ export type AgenCDoctorCliCommand =
 
 export function formatAgenCDoctorCliHelpText(): string {
   return [
-    "agenc doctor — diagnose the AgenC installation and environment",
+    "agenc doctor: diagnose the AgenC installation and environment",
     "",
     "Usage:",
     "  agenc doctor            Print installation, version, ripgrep, update,",

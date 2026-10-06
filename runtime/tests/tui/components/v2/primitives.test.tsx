@@ -2,7 +2,7 @@ import React from 'react'
 import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
-import { renderToString } from '../../../utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../../utils/staticRender.js'
 import { Box, Text } from '../../ink.js'
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -359,7 +359,8 @@ describe('Msg queued header marker', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('YOU')
+    // Labels render as written (lowercase), after the user's ❯ glyph.
+    expect(output).toContain('❯ you')
     expect(output).toContain('pending prompt body')
     // The neutral marker stands in for the missing per-item enqueue time.
     // (Body text deliberately avoids the word "queued" so this assertion is
@@ -383,28 +384,47 @@ describe('Msg queued header marker', () => {
   })
 })
 
-describe('Tool call header paren spacing', () => {
-  it('hugs the args with parens — no space on the inside of either paren', async () => {
+describe('Tool call header arg spacing', () => {
+  it('puts the args one space after the verb, with no parentheses', async () => {
     const output = await renderToString(
       <Tool kind="edit" label="Write" args="index.html" />,
       { columns: 100, rows: 12 },
     )
 
-    // Industry convention: `Tool(arg)` with the parens hugging the argument.
-    // Revert-sensitive: putting the `(`, args, and `)` back as separate
-    // children of the gap={1} row re-introduces `( index.html )` and fails
-    // both assertions (the negative one most directly).
-    expect(output).toContain('(index.html)')
-    expect(output).not.toContain('( index.html )')
-    // The single space between the bold tool label and the opening paren is
-    // still supplied by the row's gap — `Write (index.html)`.
-    expect(output).toContain('Write (index.html)')
+    // A finished step reads `● Wrote index.html`: static dot, past-tense
+    // verb, one space from the row's gap, then the bare args. Revert-sensitive:
+    // bringing the `(`/`)` wrappers back, or dropping the past tense, fails it.
+    expect(output).toContain('● Wrote index.html')
+    expect(output).not.toContain('(index.html)')
+    expect(output).not.toContain('Wrote  index.html')
+  })
+
+  it('says the step state with the static dot color only, never a state glyph', async () => {
+    const dot = async (state: 'queued' | 'running' | 'done' | 'failed') => {
+      const ansi = await renderToAnsiString(<Tool kind="bash" label="Run" state={state} args="ls" />, {
+        columns: 40,
+        rows: 5,
+        color: true,
+      })
+      expect(ansi).not.toMatch(/[✶✕◐○]/u)
+      // eslint-disable-next-line no-control-regex
+      return /(\x1b\[[0-9;]*m)●/u.exec(ansi)?.[1]
+    }
+    const done = await dot('done')
+    const failed = await dot('failed')
+    const running = await dot('running')
+    expect(done).toBeDefined()
+    expect(failed).toBeDefined()
+    expect(running).toBeDefined()
+    // Green done, red failed, gray while queued or running.
+    expect(new Set([done, failed, running]).size).toBe(3)
+    expect(await dot('queued')).toBe(running)
   })
 })
 
-describe('Msg role gutter', () => {
+describe('Msg role glyph', () => {
 
-  it('renders a full-height left gutter (no single-row ▮ marker)', async () => {
+  it('marks an agenc reply with a single ● glyph and hides its label', async () => {
     const output = await renderToString(
       <Msg role="agenc" label="agenc">
         <Text>body</Text>
@@ -412,15 +432,16 @@ describe('Msg role gutter', () => {
       { columns: 100, rows: 12 },
     )
 
-    // The role identity is a left border spanning the WHOLE message (header
-    // AND body rows), blockquote-style, with exactly one padding space before
-    // the label. Revert-sensitive: restoring the ▮ marker fails all three.
-    expect(output).toContain('│ AGENC')
-    expect(output).toContain('│ body')
+    // The speaker is a one-cell glyph column, not a left border, and AgenC's
+    // own name is not repeated on every reply. Revert-sensitive: restoring the
+    // `│` gutter, the ▮ marker, or the AGENC label fails these.
+    expect(output).toContain('● body')
+    expect(output).not.toContain('│')
     expect(output).not.toContain('▮')
+    expect(output.toLowerCase()).not.toContain('agenc')
   })
 
-  it('renders the system role with the same gutter treatment', async () => {
+  it('renders the system role with the ● glyph and a lowercase label', async () => {
     const output = await renderToString(
       <Msg role="system" label="system">
         <Text>body</Text>
@@ -428,7 +449,10 @@ describe('Msg role gutter', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('│ SYSTEM')
-    expect(output).not.toContain('∙ SYSTEM')
+    expect(output).toContain('● system')
+    // The body sits in the content column, two cells in under the glyph.
+    expect(output).toContain('\n  body')
+    expect(output).not.toContain('SYSTEM')
+    expect(output).not.toContain('│')
   })
 })

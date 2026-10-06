@@ -45,12 +45,14 @@ describe("transcript delta coalescing (appendBatch)", () => {
       createSessionTranscriptStateForTesting([]),
       [delta(0, "a "), delta(1, "b ")] as never,
     );
-    // Re-send seq 1 plus a new seq 2 — seq 1 must not duplicate.
+    // Re-send seq 1 plus a new seq 2 — seq 1 must not duplicate. The run of
+    // deltas folds into one stored event.
     const next = appendSessionTranscriptBatchForTesting(base, [
       delta(1, "b "),
       delta(2, "c "),
     ] as never);
-    expect(next.events.length).toBe(3);
+    expect(next.events.length).toBe(1);
+    expect(adaptTranscriptEvents(next.events).streamingText).toBe("a b c ");
   });
 
   test("an empty batch is a no-op (same state reference)", () => {

@@ -46,6 +46,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
+import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
@@ -824,13 +825,14 @@ function processObservationDisposition(
       ? "tool:system.exec-command:process-yield"
       : "tool:system.exec-command:process-exit";
   return createToolEffectDispositionEvidence({
-    disposition: "confirmed_committed",
+    disposition: output.command_outcome === undefined ? "confirmed_committed" : "remains_unknown",
     evidenceKind: "provider_receipt",
     evidenceRef,
     evidenceMaterial: JSON.stringify({
       cmd,
       cwd,
       exitCode: output.exitCode,
+      commandOutcome: output.command_outcome ?? "reported",
       processId: output.process_id ?? null,
       ...(output.detached === true
         ? { detached: true, pid: output.pid ?? null }
@@ -1313,6 +1315,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         // produced a silent success on signal kill.
         const stillAlive = processStillAlive(output);
         const isError =
+          output.command_outcome !== undefined ||
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
         // An OS-level sandbox refusal reaches us only as the child's own
@@ -1330,12 +1333,24 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           sandboxApplied: runtimeSandbox !== undefined,
           escalationAvailable:
             runtimeContext === undefined ||
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
         });
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const notice = denial?.notice ?? (confinedWorktree === undefined
+        const notice = denial?.notice ?? execNetworkFailureNotice({
+          output: execContent,
+          exitCode: output.exitCode,
+          runtimeSandbox,
+          escalationAvailable: runtimeContext !== undefined &&
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
+        }) ?? (confinedWorktree === undefined
           ? null
           : worktreeWriteDenialNotice({
               output: execContent,
@@ -1372,6 +1387,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                   ...(output.log_path !== undefined ? { logPath: output.log_path } : {}),
                 }
               : {}),
+            ...(output.command_outcome === undefined ? {} : { commandOutcome: output.command_outcome }),
+            ...(output.residual_processes_observed === true ? { residualProcessesObserved: true } : {}),
             ...(output.residual_processes_terminated === true
               ? { residualProcessesTerminated: true }
               : {}),

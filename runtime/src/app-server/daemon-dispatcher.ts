@@ -787,6 +787,10 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #printHome: string | undefined;
   readonly #prints = new Map<AgenCDaemonJsonRpcConnection, PrintInvocation>();
   #printsClosed = false;
+  readonly #printAgents = new Map<AgenCDaemonJsonRpcConnection, Set<{
+    agentId?: string;
+    stop(): Promise<void>;
+  }>>();
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -865,7 +869,10 @@ export class AgenCDaemonJsonRpcDispatcher {
 
   async close(): Promise<void> {
     this.#printsClosed = true;
-    await Promise.all([...this.#prints.values()].map(invocation => invocation.close()));
+    await Promise.all([
+      ...[...this.#prints.values()].map(invocation => invocation.close()),
+      ...[...this.#printAgents.keys()].map(connection => connection.close()),
+    ]);
     this.#prints.clear();
     for (const unsubscribe of this.#routineSubscriptions.values()) unsubscribe();
     this.#routineSubscriptions.clear();
@@ -880,14 +887,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
     return connection.runClose(async () => {
-      await this.#prints.get(connection)?.close();
-      this.#prints.delete(connection);
       this.#attachmentClients.delete(connection);
       this.#routineSubscriptions.get(connection)?.();
       this.#routineSubscriptions.delete(connection);
       connection.cancelAllInFlightRequests("connection closed");
       // One failed detach must not strand the other clients or command jobs.
       const cleanup = await Promise.allSettled([
+        this.#prints.get(connection)?.close(),
+        ...[...(this.#printAgents.get(connection) ?? [])].map(owner => owner.stop()),
         ...connection.trackedClientIds.map(async (clientId) => {
           try {
             await this.#clientMultiplexer?.removeClient(clientId, connection.cancellationScope);
@@ -899,6 +906,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         }),
         this.#commandExec.closeConnection(connection.cancellationScope),
       ]);
+      this.#prints.delete(connection);
+      this.#printAgents.delete(connection);
       const failures = cleanup.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason), "daemon connection cleanup failed");
@@ -1130,6 +1139,60 @@ export class AgenCDaemonJsonRpcDispatcher {
     });
   }
 
+  #forgetPrintAgent(agentId: string): void {
+    for (const [connection, owners] of this.#printAgents) {
+      for (const owner of owners) if (owner.agentId === agentId) owners.delete(owner);
+      if (owners.size === 0) this.#printAgents.delete(connection);
+    }
+  }
+
+  async #createConnectionAgent(
+    connection: AgenCDaemonJsonRpcConnection,
+    params: AgentCreateParams,
+    signal: AbortSignal,
+  ) {
+    // Resident print already owns its invocation. Ordinary fresh print must
+    // also remain owned after agent.create's request waiter has completed.
+    // Interactive, resumed and detached agent APIs keep their existing lifetime.
+    const owned = !connection.printUsed && params.resumeSessionId === undefined &&
+      params.resumeRolloutPath === undefined && params.runtimeOptions?.nonInteractive === true &&
+      params.metadata?.source === "agenc.prompt" && params.metadata?.mode === "one-shot";
+    if (!owned) return this.#agentManager.createAgent(params, { signal });
+    connection.assertOpen();
+    const created = this.#agentManager.createAgent(params, { signal });
+    let stopping: Promise<void> | undefined;
+    const owners = this.#printAgents.get(connection) ?? new Set();
+    const owner: { agentId?: string; stop(): Promise<void> } = {
+      stop: () => stopping ??= created.then(async result => {
+        await this.#agentManager.stopAgent({ agentId: result.agentId, reason: "one_shot_cancelled" });
+      }, () => {}).finally(() => {
+        owners.delete(owner);
+        if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      }),
+    };
+    owners.add(owner);
+    this.#printAgents.set(connection, owners);
+    try {
+      const result = await created;
+      owner.agentId = result.agentId;
+      // A non-cooperative or already-finishing create can resolve after close.
+      // Join its normal stop, never discard a late-created agent.
+      if (connection.closed || signal.aborted) {
+        await owner.stop();
+        throw new AgenCDaemonConnectionClosedError();
+      }
+      return result;
+    } catch (error) {
+      owners.delete(owner);
+      if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      throw error;
+    }
+  }
+
   async #dispatchPrint(connection: AgenCDaemonJsonRpcConnection, id: RequestId, method: AgenCDaemonKnownMethod, params: JsonObject): Promise<AgenCDaemonResponse> {
     if (method === "print.invoke") {
       if (this.#printsClosed) throw invalidParams("daemon print service is closed");
@@ -1304,10 +1367,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "agent.create":
         return successResponse(
           id,
-          await this.#agentManager.createAgent(
-            validateAgentCreateParams(params),
-            { signal },
-          ),
+          await this.#createConnectionAgent(connection, validateAgentCreateParams(params), signal),
         );
       case "agent.list":
         return successResponse(
@@ -1316,11 +1376,12 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "agent.attach":
         return this.#attachAgent(id, connection, params);
-      case "agent.stop":
-        return successResponse(
-          id,
-          await this.#agentManager.stopAgent(validateAgentStopParams(params)),
-        );
+      case "agent.stop": {
+        const request = validateAgentStopParams(params);
+        const result = await this.#agentManager.stopAgent(request);
+        this.#forgetPrintAgent(request.agentId);
+        return successResponse(id, result);
+      }
       case "agent.logs":
         return successResponse(
           id,

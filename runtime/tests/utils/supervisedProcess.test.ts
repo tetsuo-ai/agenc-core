@@ -1601,7 +1601,7 @@ describe("process-tree root safety", () => {
       );
       expect(
         brokerSource.match(/write_status\(\s*broker_ready_status,/gu),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
 
       const mainDefinition = brokerSource.indexOf(
         "int main(int argc, char **argv) {",
@@ -1637,9 +1637,12 @@ describe("process-tree root safety", () => {
             sigset_t wait_mask;
             int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 
-            (void)argv;
-            if (launch_supervised_target(argc, &wait_mask) !=
-                AGENC_BROKER_SUCCESS) {
+            if (argc == 2 && strcmp(argv[1], "--describe-protocol") == 0)
+              return describe_v2_protocol();
+            int launch_status = argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
+                ? launch_v2_supervised_target(&wait_mask)
+                : launch_supervised_target(argc, &wait_mask);
+            if (launch_status != AGENC_BROKER_SUCCESS) {
               return AGENC_BROKER_ERROR_EXIT;
             }
             if (monitor_root_process(&wait_mask, &root_status) !=

@@ -243,7 +243,7 @@ function mkStubMcpManager(
       }
       if (behavior.kind === "required-failure") {
         throw new Error(
-          `MCP aggregate startup failure — required server(s) not ready: ${(
+          `MCP aggregate startup failure: required server(s) not ready: ${(
             opts.requiredServers ?? []
           ).join(", ")} (test-failure)`,
         );

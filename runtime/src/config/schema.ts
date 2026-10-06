@@ -681,7 +681,22 @@ export interface ProviderConfig {
    * response instead of re-uploading the full history.
    */
   readonly incremental_continuation?: boolean;
+  /**
+   * OpenAI and Grok only: use the account sign-in (`oauth`) or the API key
+   * (`api-key`) when both are present. `auto` (the default) prefers the
+   * sign-in. `OPENAI_AUTH_MODE` / `GROK_AUTH_MODE` in the environment win
+   * over this setting.
+   */
+  readonly auth?: ProviderAuthSetting;
 }
+
+export type ProviderAuthSetting = "auto" | "oauth" | "api-key";
+
+/** Providers whose credential can be an account sign-in or an API key. */
+export const PROVIDER_AUTH_SETTING_PROVIDERS: ReadonlySet<string> = new Set([
+  "openai",
+  "grok",
+]);
 
 /**
  * `[providers.grok]` native server-tool capability profile.
@@ -1619,6 +1634,7 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "remote_mcp",
   "incremental_continuation",
   "zero_data_retention",
+  "auth",
 ]);
 
 /** Providers whose API takes a per-request zero-data-retention control. */
@@ -2031,6 +2047,19 @@ function validateSingleProviderConfig(
       );
     }
     out.zero_data_retention = zeroDataRetention;
+  }
+  if (record.auth !== undefined) {
+    const field = fieldPath(providerId, "auth");
+    if (!PROVIDER_AUTH_SETTING_PROVIDERS.has(providerId)) {
+      throw new InvalidProviderConfigError(
+        field,
+        "auth applies only under providers.openai and providers.grok, the providers that offer an account sign-in",
+      );
+    }
+    if (record.auth !== "auto" && record.auth !== "oauth" && record.auth !== "api-key") {
+      throw new InvalidProviderConfigError(field, "must be auto, oauth, or api-key");
+    }
+    out.auth = record.auth;
   }
   return Object.freeze(out as ProviderConfig);
 }
@@ -4311,7 +4340,7 @@ export class AmbiguousModelError extends Error {
       .map((c) => `${c.provider}:${c.model}`)
       .join(", ");
     super(
-      `Model slug "${slug}" is ambiguous — matches ${candidates.length} providers. ` +
+      `Model slug "${slug}" is ambiguous: it matches ${candidates.length} providers. ` +
         `Recommend explicit provider:model form. Candidates: ${recommended}`,
     );
     this.name = "AmbiguousModelError";

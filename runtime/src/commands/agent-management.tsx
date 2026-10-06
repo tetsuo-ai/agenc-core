@@ -16,7 +16,7 @@ import {
 
 export const agentsCommand: SlashCommand = {
   name: "agents",
-  description: "Manage agents — opens a picker",
+  description: "Manage agents (opens a picker)",
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {

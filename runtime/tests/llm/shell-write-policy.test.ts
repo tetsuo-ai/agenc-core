@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyShellWorkspaceWritePolicy,
@@ -396,10 +396,315 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     expect(decision.message ?? "").not.toContain("s/color");
   });
 
+  it.each([
+    "eval 'rm -rf .git'",
+    "eval rm -rf .git",
+    'eval "rm -rf .git"',
+    "eval rm '-rf' \".git\"",
+    "eval -- rm -rf .git",
+    "eval \"eval 'rm -rf .git'\"",
+  ])("refuses the protected removal eval runs: %s", (command) => {
+    const decision = classifyBypassed(command);
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    expect(decision).toEqual(classifyBypassed("rm -rf .git"));
+  });
+
+  it("refuses a protected removal next to a word eval expands", () => {
+    const decision = classifyBypassed('eval rm -rf .git "$X"');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+  });
+
+  it("lets eval of a word the shell expands run, as the word alone does", () => {
+    const decision = classifyBypassed('eval "$CMD"');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(false);
+    expect(decision).toEqual(classifyBypassed('"$CMD"'));
+  });
+
   it("changes nothing while a prompt or a sandbox still gates the command", () => {
     const decision = classify('echo "$(id)" > /tmp/agenc-bypass/out.txt', true);
     expect(decision.blocked).toBe(true);
     expect(decision.message).toContain("Unable to confirm workspace write targets");
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy names only the session's file tools", () => {
+  /** Every name a refusal could send the model to. */
+  const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
+
+  /** `listed` is the model's tool list; `unlisted` tools need system.searchTools. */
+  function classifyWithTools(
+    command: string,
+    listed: readonly string[],
+    allowWorkspaceDeletions = true,
+    unlisted: readonly string[] = [],
+  ) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions,
+      fileWriteTools: () => ({ listed, unlisted, loadWith: "system.searchTools" }),
+    });
+  }
+
+  it("names Edit and Write when the session has them, and nothing else", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", [
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "apply_patch",
+    ]);
+    expect(decision.message).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
+        "use Edit or Write instead. Blocked target(s): /repo/notes.txt",
+    );
+  });
+
+  it("names only the one the session has", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", ["Write"]);
+    expect(decision.message).toContain("use Write instead");
+    expect(decision.message).not.toMatch(/\bEdit\b/u);
+  });
+
+  it("falls back to MultiEdit or apply_patch when the session has neither Edit nor Write", () => {
+    expect(classifyWithTools("echo hi > notes.txt", ["apply_patch"]).message).toContain(
+      "use apply_patch instead",
+    );
+    expect(
+      classifyWithTools("echo hi > notes.txt", ["MultiEdit", "apply_patch"]).message,
+    ).toContain("use MultiEdit or apply_patch instead");
+  });
+
+  // An OpenAI Light session lists apply_patch and keeps Edit and Write behind
+  // system.searchTools; the refusal points at the listed one.
+  it("prefers the listed editing tool over Edit and Write the model has not loaded", () => {
+    const decision = classifyWithTools("echo hi > notes.txt", ["apply_patch"], true, [
+      "Edit",
+      "Write",
+      "MultiEdit",
+    ]);
+    expect(decision.message).toContain("use apply_patch instead.");
+    expect(decision.message).not.toMatch(/\b(?:Edit|Write)\b/u);
+    expect(decision.message).not.toContain("system.searchTools");
+  });
+
+  it("names unlisted editing tools with the way to load them", () => {
+    expect(
+      classifyWithTools("echo hi > notes.txt", [], true, ["Edit", "Write"]).message,
+    ).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
+        "use Edit or Write instead. Their schemas are not loaded yet; " +
+        "system.searchTools with select:Edit,Write loads them. " +
+        "Blocked target(s): /repo/notes.txt",
+    );
+    expect(
+      classifyWithTools('echo hi > "$OUT"', [], true, ["Write"]).message,
+    ).toContain(
+      "use Write for workspace files. Its schema is not loaded yet; " +
+        "system.searchTools with select:Write loads it.",
+    );
+  });
+
+  it("never says apply_patch cannot delete files", () => {
+    const patchOnly = classifyWithTools(REFACTOR_CLEANUP, ["apply_patch"], false);
+    expect(patchOnly.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(patchOnly.message).not.toContain("cannot delete files");
+
+    const fallback = classifyWithTools(REFACTOR_CLEANUP, ["MultiEdit", "apply_patch"], false);
+    expect(fallback.message).toContain(" MultiEdit cannot delete files.");
+    expect(fallback.message).not.toContain("apply_patch cannot");
+  });
+
+  // The live verification subagent: its role denies every file tool, the fence
+  // said "use Edit or Write instead", and the model's Write call came back
+  // "No such tool available: Write".
+  it("names no file tool in a session without any, and says what it can do instead", () => {
+    const decision = classifyWithTools("echo hi > ./.vr-probe.txt", []);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).not.toMatch(FILE_TOOL_NAME_RE);
+    expect(decision.message).toBe(
+      "shell_workspace_file_write_disallowed: shell commands may not write " +
+        "workspace files except under build, dist, logs, .cache, tmp, or coverage. " +
+        "This session has no file editing tool, so it cannot change these files: " +
+        "put scratch files under one of those directories (tmp/, for example) and " +
+        "describe any other change in your reply instead of making it. " +
+        "Blocked target(s): /repo/.vr-probe.txt",
+    );
+    // The way out it names is one the policy lets through.
+    expect(classifyWithTools("echo hi > tmp/vr-probe.txt", []).blocked).toBe(false);
+  });
+
+  it("words an unconfirmable target without naming a missing tool", () => {
+    const withTools = classifyWithTools('echo hi > "$TMPDIR/vr-probe.txt"', ["Edit", "Write"]);
+    expect(withTools.message).toBe(
+      "shell_workspace_file_write_disallowed: Unable to confirm workspace write targets " +
+        "for this shell command. Name each file it writes with a literal path, without " +
+        "variables or globs, and leave out command substitution; use Edit or Write for " +
+        "workspace files.",
+    );
+
+    const without = classifyWithTools('echo hi > "$TMPDIR/vr-probe.txt"', []);
+    expect(without.blocked).toBe(true);
+    expect(without.message).not.toMatch(FILE_TOOL_NAME_RE);
+    expect(without.message).toContain("Name each file it writes with a literal path");
+    expect(without.message).toContain("This session has no file editing tool");
+  });
+
+  it("drops the file tools from the approval message when the session has none", () => {
+    const withTools = classifyWithTools(REFACTOR_CLEANUP, ["Edit", "Write"], false);
+    expect(withTools.message).toContain("Edit and Write cannot delete files.");
+
+    const without = classifyWithTools(REFACTOR_CLEANUP, [], false);
+    expect(without.blocked).toBe(true);
+    expect(without.message).toContain("shell_workspace_file_delete_requires_approval");
+    expect(without.message).not.toMatch(FILE_TOOL_NAME_RE);
+  });
+
+  it("never lists the session's tools for a command it allows", () => {
+    for (const command of [
+      "echo hi > tmp/vr-probe.txt",
+      "ls -la src",
+      "npm test 2>&1 | tail -20",
+      REFACTOR_CLEANUP,
+    ]) {
+      const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command },
+        workspaceRoot: WORKSPACE_ROOT,
+        allowWorkspaceDeletions: true,
+        fileWriteTools,
+      });
+      expect(decision.blocked).toBe(false);
+      expect(fileWriteTools).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lists them at most once for a refusal with several messages", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: 'echo hi > notes.txt; rm src/a.js; echo "$(id)" > "$OUT"' },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: false,
+      fileWriteTools,
+    });
+    expect(decision.message).toContain("use Write instead.");
+    expect(decision.message).toContain("Write cannot delete files.");
+    expect(decision.message).toContain("use Write for workspace files.");
+    expect(fileWriteTools).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not list them for a refusal that names no tool", () => {
+    const fileWriteTools = vi.fn(() => ({ listed: ["Edit", "Write"], unlisted: [] }));
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: "rm -rf .git" },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      fileWriteTools,
+    });
+    expect(decision.blocked).toBe(true);
+    expect(fileWriteTools).not.toHaveBeenCalled();
+  });
+
+  it("keeps the refusal itself: the tools a session has never widen what a shell may write", () => {
+    for (const tools of [[], ["Edit", "Write"]]) {
+      const decision = classifyWithTools("cat > src/x.js <<'EOF'\nx\nEOF", tools);
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
+    }
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for eval", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "darwin",
+      ...mode,
+    });
+  }
+
+  it.each([
+    ["eval 'echo x > src/a.ts'", "echo x > src/a.ts"],
+    // eval reads the escaped `>` again, as a redirection.
+    ["eval echo x \\> src/a.ts", "echo x > src/a.ts"],
+    ["eval touch src/a.ts", "touch src/a.ts"],
+    ["eval \"sed -i 's/a/b/' src/a.ts\"", "sed -i 's/a/b/' src/a.ts"],
+    ["eval rm src/a.ts", "rm src/a.ts"],
+    ["eval 'mv src/a.ts src/b.ts'", "mv src/a.ts src/b.ts"],
+    ["eval rm ../outside.txt", "rm ../outside.txt"],
+    ["eval 'rm .git/config && touch tmp/x'", "rm .git/config && touch tmp/x"],
+    ["eval 'echo x > tmp/out.txt'", "echo x > tmp/out.txt"],
+    ["eval -- 'npm test'", "npm test"],
+  ])("gives %s the verdict of %s", (command, bare) => {
+    for (const mode of MODES) {
+      expect(classifyIn(command, mode), JSON.stringify(mode)).toEqual(classifyIn(bare, mode));
+    }
+  });
+
+  it.each([
+    'eval "$CMD"',
+    "eval $CMD",
+    // Read alone, the code eval runs would name no target: the quotes are
+    // the shell's until $X expands into them.
+    "eval \"echo '$X'\"",
+    "eval rm tmp/*.log",
+    "eval $'rm -rf .git'",
+    "eval $(ssh-agent)",
+    'eval "$(ssh-agent -s)"',
+    "eval 'touch \"$F\"'",
+  ])("fails closed when it cannot read the code eval runs: %s", (command) => {
+    const decision = classify(command, true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.message).toContain("Unable to confirm workspace write targets");
+  });
+
+  it("still judges the targets the literal words name", () => {
+    const decision = classify('eval touch src/a.ts "$X"', true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.ts"]);
+  });
+
+  it.each(["eval", "eval ''", "eval 'echo hi'", "eval echo \"'rm -rf .git'\""])(
+    "allows eval of code that writes nothing: %s",
+    (command) => {
+      const decision = classify(command);
+
+      expect(decision.blocked).toBe(false);
+      expect(decision.indeterminate).toBe(false);
+      expect(decision.observedTargets).toEqual([]);
+    },
+  );
+
+  it("backs up the workspace file an eval removes", () => {
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "eval 'rm src/a.ts'" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.ts"]);
   });
 });
 
@@ -1031,6 +1336,19 @@ describe("classifyShellWorkspaceWritePolicy for sed in a real workspace", () => 
     expect(decision.message).toContain("may not write protected paths");
   });
 
+  it("judges sed -i after a cd on the file in that directory", () => {
+    // Read in the tool call's directory, app.ts did not exist and the edit passed.
+    const decision = classifyIn("cd src && sed -i 's/a/b/' app.ts");
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual([join(workspace, "src/app.ts")]);
+  });
+
+  it("counts sed -i on a file it cannot check after a cd the line does not spell out", () => {
+    const decision = classifyIn('cd "$DIR" && sed -i \'s/a/b/\' app.ts');
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
   it("edits a word the readings dispute only when it is a file", () => {
     // GNU edits .env, .bak and tmp/one.txt as files; BSD takes each as the
     // backup suffix. Only .bak does not exist.
@@ -1075,5 +1393,443 @@ describe("classifyShellWorkspaceWritePolicy with added directories", () => {
     const decision = classifyWithAdded("rm /srv/agenc-elsewhere/file.txt", true);
     expect(decision.blocked).toBe(true);
     expect(decision.message).toContain("only inside the workspace");
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
+  beforeEach(() => {
+    vi.stubEnv("CDPATH", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function classifyBypassed(command: string) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+  }
+
+  it("resolves a copy where cd && moved the shell", () => {
+    // Refused live as a write to /repo/full.
+    const decision = classify("cd tmp/scratch && cp -R game full");
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual(["/repo/tmp/scratch/full"]);
+
+    const absolute = classify("cd /repo/tmp/vr-verify && cp -R /repo/game full");
+    expect(absolute.blocked).toBe(false);
+    expect(absolute.observedTargets).toEqual(["/repo/tmp/vr-verify/full"]);
+  });
+
+  it("refuses a workspace write that climbs out of the directory cd moved to", () => {
+    // Read in the tool call's directory, this was /src/a.js, outside the workspace.
+    const decision = classify("cd tmp && echo x > ../src/a.js");
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.js"]);
+  });
+
+  it.each(['cd "$DIR"', "cd -", "cd ~/scratch", "pushd +1", "popd", "cd", "$CD tmp"])(
+    "makes a write after %s indeterminate",
+    (change) => {
+      const decision = classify(`HOME=/x; ${change} && echo x > a.js`);
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.blocked).toBe(true);
+    },
+  );
+
+  it("leaves a command that writes nothing after an unknown directory alone", () => {
+    for (const command of ['cd "$DIR" && npm test', "pushd build && make && popd", "cd - && ls"]) {
+      const decision = classify(command);
+      expect(decision.indeterminate, command).toBe(false);
+      expect(decision.blocked, command).toBe(false);
+    }
+  });
+
+  it("ends a subshell's cd with the subshell", () => {
+    const decision = classify("(cd tmp && echo x > a.txt) && echo y > b.txt");
+    expect(decision.observedTargets).toEqual(["/repo/tmp/a.txt", "/repo/b.txt"]);
+    expect(decision.blockedTargets).toEqual(["/repo/b.txt"]);
+    expect(classify("(cd tmp && echo x > a.txt)").blocked).toBe(false);
+  });
+
+  it("follows pushd, and popd to a directory the line does not name", () => {
+    const pushed = classify("pushd tmp && echo x > a.txt && popd");
+    expect(pushed.blocked).toBe(false);
+    expect(pushed.observedTargets).toEqual(["/repo/tmp/a.txt"]);
+
+    const popped = classify("pushd tmp && popd && echo x > a.txt");
+    expect(popped.indeterminate).toBe(true);
+    expect(popped.blocked).toBe(true);
+    expect(popped.observedTargets).toEqual(["/repo/tmp/a.txt", "/repo/a.txt"]);
+  });
+
+  it.each([
+    ["cd tmp; echo x > a.js", ["/repo/tmp/a.js", "/repo/a.js"]],
+    ["cd tmp || echo x > a.js", ["/repo/a.js"]],
+    ["cd tmp & echo x > a.js", ["/repo/a.js"]],
+    ["cd tmp | echo x > a.js", ["/repo/a.js"]],
+    // zsh runs a pipeline's last command in this shell.
+    ["true | cd tmp; echo x > a.js", ["/repo/a.js", "/repo/tmp/a.js"]],
+    ["cd tmp && true || echo x > a.js", ["/repo/a.js", "/repo/tmp/a.js"]],
+  ])("reads a command after a cd that may not have happened where it may run: %s", (command, targets) => {
+    const decision = classify(command);
+    expect(decision.observedTargets).toEqual(targets);
+    expect(decision.blockedTargets).toEqual(["/repo/a.js"]);
+    expect(decision.indeterminate).toBe(false);
+  });
+
+  it("does not let a cd inside a substitution leak into the command", () => {
+    const decision = classifyBypassed("cd tmp && echo `cd ../src` > a.js");
+    expect(decision.observedTargets).toEqual(["/repo/tmp/a.js"]);
+    expect(decision.blocked).toBe(false);
+    expect(classify("cd tmp && echo `cd ../src` > a.js").blocked).toBe(true);
+  });
+
+  it("follows cd inside a wrapped shell command", () => {
+    expect(classify("bash -c 'cd tmp && echo x > a.txt'").blocked).toBe(false);
+    expect(classify("bash -c 'cd tmp && echo x > ../a.txt'").blockedTargets).toEqual(["/repo/a.txt"]);
+  });
+
+  it("refuses a write after a cd under a compound command, also where the line starts", () => {
+    const decision = classify("cd tmp && if true; then cd ../src; fi; echo x > a.js");
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.js", "/repo/a.js"]);
+    expect(classify("if [ -d build ]; then cd build && make; fi").blocked).toBe(false);
+  });
+
+  it("keeps the line's old reading in play where the full bypass lifts indeterminate targets", () => {
+    // $DIR may be the workspace root: a.md there is a content write.
+    const unknown = classifyBypassed('cd tmp && cd "$DIR" && echo x > notes.md');
+    expect(unknown.indeterminate).toBe(true);
+    expect(unknown.blocked).toBe(true);
+    expect(unknown.blockedTargets).toEqual(["/repo/notes.md"]);
+
+    const sourced = classifyBypassed("cd tmp && source env.sh && echo x > notes.md");
+    expect(sourced.blockedTargets).toEqual(["/repo/notes.md"]);
+
+    const compound = classifyBypassed(
+      "cd tmp && for i in 1 2; do echo x > a.js; cd ../src; done",
+    );
+    expect(compound.blocked).toBe(true);
+    expect(compound.blockedTargets).toContain("/repo/a.js");
+
+    // As before: indeterminate, run, nothing in the workspace named.
+    expect(classifyBypassed('cd "$DIR" && echo x > tmp/a.txt').blocked).toBe(false);
+  });
+
+  it.each([
+    "trap 'cd ../src' DEBUG; cd tmp && echo x > a.js",
+    "shopt -s cdable_vars; cd tmp && echo x > a.js",
+    "enable -n cd; cd tmp && echo x > a.js",
+  ])("does not follow cd in a line that changes how the shell behaves: %s", (command) => {
+    const decision = classify(command);
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/a.js"]);
+  });
+
+  it("does not follow a relative cd that CDPATH may send elsewhere", () => {
+    expect(classify("CDPATH=src cd tmp && echo x > a.txt").indeterminate).toBe(true);
+    vi.stubEnv("CDPATH", "/srv/projects");
+    expect(classify("cd tmp && echo x > a.txt").indeterminate).toBe(true);
+    const dotted = classify("cd ./tmp && echo x > a.txt");
+    expect(dotted.indeterminate).toBe(false);
+    expect(dotted.blocked).toBe(false);
+  });
+
+  it("removes and backs up the file in the directory cd moved to", () => {
+    const decision = classify("cd src && rm a.js", true);
+    expect(decision.blocked).toBe(false);
+    expect(decision.deletionTargets).toEqual(["/repo/src/a.js"]);
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "cd src && rm a.js" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.js"]);
+    expect(classify('cd "$DIR" && rm a.js', true).blocked).toBe(true);
+  });
+
+  it("reads a line without cd as it always did", () => {
+    expect(classify("echo x > tmp/a.txt; rm -f build/x; touch src/b.js").observedTargets).toEqual([
+      "/repo/tmp/a.txt",
+      "/repo/src/b.js",
+      "/repo/build/x",
+    ]);
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for sh -c", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+  const BYPASS = MODES[2];
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "darwin",
+      ...mode,
+    });
+  }
+
+  it.each([
+    // Read alone, the code would name no target: the quotes are the outer
+    // shell's until $X expands into them, and X="'; rm -rf .git; '" removes .git.
+    "bash -c \"echo '$X'\"",
+    "sh -c \"echo '$X'\"",
+    "zsh -c \"echo '$X'\"",
+    "dash -c \"echo '$X'\"",
+    "ksh -c \"echo '$X'\"",
+    "/bin/sh -c \"echo '$X'\"",
+    "bash -lc \"echo '$X'\"",
+    "bash -ic \"echo '$X'\"",
+    "bash --command \"echo '$X'\"",
+    "env bash -c \"echo '$X'\"",
+    "bash -c \"echo '${X}'\"",
+    'bash -c "echo $HOME"',
+    "bash -c 'echo hi'*",
+    // A word before the code could expand into an option that moves it.
+    "bash \"$OPTS\" -c 'echo hi'",
+    "bash $OPTS -c 'echo hi'",
+  ])("gives %s the verdict of bash -c \"$CMD\"", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(decision, JSON.stringify(mode)).toEqual(classifyIn('bash -c "$CMD"', mode));
+    }
+  });
+
+  it("refuses code the shell still expands unless approvals and the sandbox are bypassed", () => {
+    const command = "bash -c \"echo '$X'\"";
+    for (const allowWorkspaceDeletions of [false, true]) {
+      const decision = classify(command, allowWorkspaceDeletions);
+      expect(decision.blocked).toBe(true);
+      expect(decision.message).toContain("Unable to confirm workspace write targets");
+    }
+    const bypassed = classifyIn(command, BYPASS);
+    expect(bypassed.blocked).toBe(false);
+    expect(bypassed.indeterminate).toBe(true);
+  });
+
+  it("still judges the targets the literal code names", () => {
+    const removal = classifyIn("bash -c \"rm -rf .git; echo '$X'\"", BYPASS);
+    expect(removal.indeterminate).toBe(true);
+    expect(removal.blocked).toBe(true);
+    expect(removal.blockedDeletions).toEqual(["/repo/.git"]);
+
+    const write = classify("sh -c \"touch src/a.ts; echo '$X'\"", true);
+    expect(write.indeterminate).toBe(true);
+    expect(write.blockedTargets).toEqual(["/repo/src/a.ts"]);
+  });
+
+  it.each([
+    "bash -c 'echo hi'",
+    'bash -c "echo hi"',
+    // The inner shell expands $X without reading its value as code.
+    "bash -c 'echo \"$X\"'",
+    'bash -c "echo \\"\\$X\\""',
+    // Words after the code are its $0 and positional parameters.
+    "bash -c 'echo hi' \"$X\"",
+    "bash -c 'echo \"$1\"' _ \"$X\"",
+  ])("allows literal code that writes nothing: %s", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.observedTargets, JSON.stringify(mode)).toEqual([]);
+    }
+  });
+
+  it("reads an argument vector's code as sh receives it", () => {
+    // No shell runs before sh, so the single quotes are sh's.
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "system.bash",
+      args: { command: "bash", args: ["-c", "echo '$X'"] },
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blocked).toBe(false);
+  });
+
+  it("backs up the workspace file literal code removes", () => {
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "bash -c 'rm src/a.ts'" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/a.ts"]);
+  });
+
+  describe("options around -c", () => {
+    /** Expects `command` to get the verdict `reference` gets, in every mode. */
+    function expectVerdictOf(command: string, reference: string) {
+      for (const mode of MODES) {
+        expect(classifyIn(command, mode), JSON.stringify(mode)).toEqual(classifyIn(reference, mode));
+      }
+    }
+
+    it.each([
+      // `c` in a cluster asks for code like `-c` does.
+      "bash -ec 'rm -rf .git'",
+      "bash -xc 'rm -rf .git'",
+      "bash -xec 'rm -rf .git'",
+      "bash +c 'rm -rf .git'",
+      "sh -euc 'rm -rf .git'",
+      "/bin/sh -ec 'rm -rf .git'",
+      "dash -ec 'rm -rf .git'",
+      "ksh -ec 'rm -rf .git'",
+      "zsh -fc 'rm -rf .git'",
+      "env bash -ec 'rm -rf .git'",
+      // The code is the first word after every option, not the word after -c.
+      "bash -c -e 'rm -rf .git'",
+      "bash -c -x -e 'rm -rf .git'",
+      "bash -c -o pipefail 'rm -rf .git'",
+      "bash -c +o errexit 'rm -rf .git'",
+      "bash -c -O extglob 'rm -rf .git'",
+      "bash -c -eo pipefail 'rm -rf .git'",
+      "bash -c -- 'rm -rf .git'",
+      "bash -c - 'rm -rf .git'",
+      "bash -eo pipefail -c 'rm -rf .git'",
+      "bash --norc --noprofile -c 'rm -rf .git'",
+      "bash --rcfile /dev/null -c 'rm -rf .git'",
+      "bash --login -c 'rm -rf .git' name arg",
+    ])("reads the code of %s as the code of bash -c", (command) => {
+      expectVerdictOf(command, "bash -c 'rm -rf .git'");
+      const bypassed = classifyIn(command, BYPASS);
+      expect(bypassed.blocked).toBe(true);
+      expect(bypassed.indeterminate).toBe(false);
+      expect(bypassed.blockedDeletions).toEqual(["/repo/.git"]);
+    });
+
+    it("judges a workspace removal behind options by the session's permissions", () => {
+      expectVerdictOf("bash -c -x 'rm src/a.ts'", "bash -c 'rm src/a.ts'");
+      expect(classify("bash -ec 'rm src/a.ts'").blocked).toBe(true);
+      expect(classify("bash -ec 'rm src/a.ts'", true).blocked).toBe(false);
+      expect(
+        collectShellWorkspaceDeletionTargets({
+          toolName: "exec_command",
+          args: { command: "bash -c -e 'rm src/a.ts'" },
+          workspaceRoot: WORKSPACE_ROOT,
+        }),
+      ).toEqual(["/repo/src/a.ts"]);
+    });
+
+    it("reads an argument vector's options the same way", () => {
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "system.bash",
+        args: { command: "bash", args: ["-c", "-e", "rm -rf .git"] },
+        workspaceRoot: WORKSPACE_ROOT,
+        allowWorkspaceDeletions: true,
+        bypassesApprovalsAndSandbox: true,
+      });
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    });
+
+    it.each([
+      "bash -euo pipefail -c 'npm test'",
+      "bash -O extglob -c 'echo hi'",
+      "bash --noprofile --norc -c 'echo hi'",
+      "bash -c -e 'echo hi' _ \"$X\"",
+      "bash -x script.sh",
+      "bash -o pipefail script.sh arg",
+      "sh -e ./configure --prefix=/usr",
+      "bash -e -- script.sh arg",
+      // A script named -c.
+      "bash -- -c 'rm -rf .git'",
+      // As the last word, an expanding word moves no code.
+      "bash \"$SCRIPT\"",
+      "bash -e ~/bin/build.sh",
+      // bash, dash and zsh report a missing script; they never run it as code.
+      "bash 'rm -rf .git'",
+    ])("allows %s", (command) => {
+      for (const mode of MODES) {
+        const decision = classifyIn(command, mode);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+        expect(decision.observedTargets, JSON.stringify(mode)).toEqual([]);
+      }
+    });
+
+    it.each([
+      // F=-c runs the next word as code; C=-e moves the code onto it.
+      "bash $F 'echo hi'",
+      "bash \"$SCRIPT\" arg",
+      "bash ~/bin/build.sh arg",
+      "bash -c \"$C\" 'echo hi'",
+      "bash -o \"$X\" script.sh",
+      "bash -- $EMPTY 'echo hi'",
+      // The shells read these differently, or this reader does not know them.
+      "bash -opipefail -c 'echo hi'",
+      "zsh -O extglob -c 'echo hi'",
+      "sh -O extglob -c 'echo hi'",
+      "bash -rcfile x -c 'echo hi'",
+      "bash -b -c 'echo hi'",
+      "bash -T -c 'echo hi'",
+      "bash + -c 'echo hi'",
+      "bash --command 'echo hi'",
+      "zsh --emulate sh -c 'echo hi'",
+      // The code comes from stdin.
+      "bash -s -- --yes",
+      "dash -cs 'echo hi'",
+      "bash -c -e",
+    ])("gives %s the verdict of bash -c \"$CMD\"", (command) => {
+      for (const mode of MODES) {
+        expect(classifyIn(command, mode).indeterminate, JSON.stringify(mode)).toBe(true);
+      }
+      expectVerdictOf(command, 'bash -c "$CMD"');
+    });
+
+    it.each([
+      "bash $F 'rm -rf .git'",
+      "bash -e \"$F\" 'rm -rf .git'",
+      "bash -c \"$C\" 'rm -rf .git'",
+      // zsh reads -O as a flag and runs `rm -rf .git`; bash would run `echo hi`.
+      "zsh -c -O 'rm -rf .git' 'echo hi'",
+      // bash reads -rcfile as --rcfile and runs `rm -rf .git`; zsh would run `echo hi`.
+      "bash -rcfile 'echo hi' -c 'rm -rf .git'",
+      "dash -cs 'rm -rf .git'",
+    ])("still refuses a protected removal any word of %s could run", (command) => {
+      for (const mode of MODES) {
+        const decision = classifyIn(command, mode);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+        expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual(["/repo/.git"]);
+      }
+    });
+
+    it.each([
+      "ksh 'rm -rf .git'",
+      "ksh -e 'rm -rf .git'",
+      "ksh -- 'rm -rf .git'",
+    ])("reads the script %s names as ksh93 does when no such file exists", (command) => {
+      expectVerdictOf(command, "bash -c 'rm -rf .git'");
+    });
+
+    it("passes ksh's script words to the code ksh93 runs in its place", () => {
+      // ksh93 runs `rm "$@"` with rm, -rf and .git as the words.
+      expectVerdictOf("ksh 'rm' -rf .git", 'bash -c "$CMD"');
+      expectVerdictOf("ksh 'rm src/a.ts' arg", "bash -c 'rm src/a.ts \"$@\"' _ arg");
+      for (const mode of MODES) {
+        const decision = classifyIn("ksh ./build.sh arg", mode);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      }
+    });
   });
 });

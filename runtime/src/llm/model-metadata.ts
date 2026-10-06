@@ -1,3 +1,4 @@
+import { EndpointMetadataCache, type EndpointMetadataScope } from "./endpoint-metadata-cache.js";
 import {
   readProviderConfig,
 } from "../config/resolve-provider.js";
@@ -78,6 +79,8 @@ export interface ModelMetadataResolverOptions {
    * map) with other resolvers. Without it, this resolver downloads its own.
    */
   readonly publicCatalogs?: PublicModelCatalogCache;
+  /** Explicitly opt this resolver into one private transport partition. */
+  readonly endpointCatalogs?: EndpointMetadataCache;
 }
 
 interface LookupParams {
@@ -166,11 +169,13 @@ export class ModelMetadataResolver {
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
   private readonly publicCatalogs?: PublicModelCatalogCache;
-  private readonly inFlightJson = new Map<
+  private readonly endpointCatalogs?: EndpointMetadataCache;
+  private endpointRevision = -1;
+  private inFlightJson = new Map<
     string,
     Promise<MetadataJson | undefined>
   >();
-  private readonly jsonCache = new Map<string, MetadataJson | undefined>();
+  private jsonCache = new Map<string, MetadataJson | undefined>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
@@ -179,6 +184,36 @@ export class ModelMetadataResolver {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
     this.onWarn = options.onWarn;
     this.publicCatalogs = options.publicCatalogs;
+    this.endpointCatalogs = options.endpointCatalogs;
+  }
+
+  /** Observe authority changes even when an upper-level model cache has a hit. */
+  cacheRevision(params: LookupParams): number {
+    this.endpointScope(params);
+    const revision = this.endpointCatalogs?.revision ?? 0;
+    if (revision !== this.endpointRevision) {
+      // Replace maps, do not clear them: an old pending download owns the old
+      // maps and must not republish data into this generation.
+      this.inFlightJson = new Map();
+      this.jsonCache = new Map();
+      this.endpointRevision = revision;
+    }
+    return revision;
+  }
+
+  private endpointScope(params: LookupParams): EndpointMetadataScope | undefined {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return this.endpointCatalogs?.observe(provider, this.endpointConfiguration(params));
+  }
+
+  private endpointConfiguration(params: LookupParams): unknown {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return {
+      config: readProviderConfig(params.config, provider),
+      baseUrl: providerBaseUrl(params.config, provider, this.env),
+      headers: authHeaders(provider, params.config, this.env),
+      timeoutMs: this.timeoutMs,
+    };
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -201,6 +236,23 @@ export class ModelMetadataResolver {
   }
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
+    const scope = this.endpointScope(params);
+    this.cacheRevision(params);
+    const metadata = await this.resolveMetadata(params);
+    // Other sessions may rotate the shared scope while this request is in
+    // flight. Their rotation only revokes shared publication. If this caller's
+    // own authority changed, fail explicitly rather than using old limits or
+    // extending the discovery timeout with an automatic retry.
+    if (scope !== undefined && !this.endpointCatalogs!.matchesConfiguration(
+      scope, this.endpointConfiguration(params),
+    )) {
+      this.endpointCatalogs!.invalidate(scope);
+      throw new Error("Provider metadata configuration changed during discovery; retry with the current configuration");
+    }
+    return metadata;
+  }
+
+  private async resolveMetadata(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
     if (shouldPreferLiveEndpointOverExplicit(params, this.env)) {
       const live = await this.resolveLiveEndpointMetadata(params);
@@ -321,7 +373,7 @@ export class ModelMetadataResolver {
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama" && provider !== "ollama-cloud") {
-      const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
+      const response = await this.fetchEndpointJson(params, baseUrl, modelsUrlFromBaseUrl(baseUrl), {
         headers,
       });
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
@@ -352,11 +404,33 @@ export class ModelMetadataResolver {
     params: LookupParams,
     headers: Readonly<Record<string, string>> | undefined,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(ollamaShowUrlFromBaseUrl(baseUrl), {
+    const response = await this.fetchEndpointJson(params, baseUrl, ollamaShowUrlFromBaseUrl(baseUrl), {
       ...(headers !== undefined ? { headers } : {}),
       jsonBody: { model: params.model },
     });
     return metadataFromOllamaShowResponse(response);
+  }
+
+  private async fetchEndpointJson(
+    params: LookupParams,
+    baseUrl: string,
+    url: string,
+    options: FetchJsonOptions,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.endpointCatalogs;
+    const scope = this.endpointScope(params);
+    if (shared === undefined || scope === undefined) return this.fetchJson(url, options);
+    return this.fetchJson(url, options, () => shared.get(scope, {
+      baseUrl,
+      url,
+      method: options.jsonBody === undefined ? "GET" : "POST",
+      headers: {
+        ...options.headers,
+        ...(options.jsonBody !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(options.jsonBody !== undefined ? { body: JSON.stringify(options.jsonBody) } : {}),
+      timeoutMs: this.timeoutMs,
+    }, () => this.fetchJsonUncached(url, options)));
   }
 
   private async resolveOpenRouterMetadata(
