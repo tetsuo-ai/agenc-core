@@ -67,6 +67,12 @@ describe("collectShellMutationTargets", () => {
     }).targets).toEqual([join(ROOT, "src/a.js")]);
   });
 
+  it("reads the code eval runs", () => {
+    expect(targets("eval 'rm ../outside.txt'").targets).toEqual(["/work/outside.txt"]);
+    expect(targets("eval 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
+    expect(targets('eval "$CMD"').indeterminate).toBe(true);
+  });
+
   it("returns nothing for a tool that is not a shell", () => {
     expect(collectShellMutationTargets({
       toolName: "Write",
