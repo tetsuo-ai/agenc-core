@@ -16,8 +16,9 @@ export class StaticModelsManager implements ModelsManager {
   private readonly configDefaultProvider?: string;
   private availableModels: readonly ModelInfo[] | undefined;
   private readonly modelRegistry: ModelRegistry;
-  private readonly inFlightModelInfo = new Map<string, Promise<ModelInfo>>();
-  private readonly modelInfoCache = new Map<string, ModelInfo>();
+  private metadataRevision = 0;
+  private inFlightModelInfo = new Map<string, Promise<ModelInfo>>();
+  private modelInfoCache = new Map<string, ModelInfo>();
 
   constructor(params: {
     readonly config: AgenCConfig;
@@ -68,6 +69,13 @@ export class StaticModelsManager implements ModelsManager {
     readonly provider: string;
     readonly model: string;
   }): Promise<ModelInfo> {
+    const revision = this.modelRegistry.metadataRevision(params);
+    if (revision !== this.metadataRevision) {
+      this.inFlightModelInfo = new Map();
+      this.modelInfoCache = new Map();
+      this.availableModels = undefined;
+      this.metadataRevision = revision;
+    }
     const key = `${params.provider}:${params.model}`;
     return await rememberSuccessfulLookup(
       { inFlight: this.inFlightModelInfo, success: this.modelInfoCache },

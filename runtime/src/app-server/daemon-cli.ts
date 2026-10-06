@@ -1,3 +1,4 @@
+import { refreshEndpointMetadata } from "../llm/endpoint-metadata-cache.js";
 /**
  * AgenC daemon foreground runtime: the daemon process itself (startup state
  * recovery, request dispatch, health, snapshots, agent runtimes).
@@ -1216,6 +1217,7 @@ async function runAgenCDaemonForegroundLocked(
             if (shuttingDown) {
               throw new Error("daemon is shutting down");
             }
+            refreshEndpointMetadata();
             reloadableAuthBackend.replace(next.authBackend);
             configuredRunner?.updateRuntimeConfig(
               createAgenCDaemonDelegateRunnerRuntimeConfig(

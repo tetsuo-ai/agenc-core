@@ -1,3 +1,4 @@
+import { endpointMetadataFailureHandler } from "./endpoint-metadata-cache.js";
 /**
  * Turn-scoped provider HTTP session.
  *
@@ -1406,12 +1407,20 @@ export class ProviderHttpClientSession {
     }
 
     const fetchImpl = this.config.fetchImpl ?? fetch;
-    return await fetchProviderRequest(url, {
-      method,
-      headers,
-      body,
-      signal,
-    }, fetchImpl);
+    const fail = endpointMetadataFailureHandler(this.config.providerName);
+    try {
+      const response = await fetchProviderRequest(url, {
+        method,
+        headers,
+        body,
+        signal,
+      }, fetchImpl);
+      if (!response.ok) fail();
+      return response;
+    } catch (error) {
+      fail();
+      throw error;
+    }
   }
 
   private prepareRequest(

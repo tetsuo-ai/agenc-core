@@ -4,6 +4,7 @@
  * @module
  */
 
+import { observeEndpointMetadataFailures } from "./endpoint-metadata-cache.js";
 import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
 import { LLMMissingCredentialsError } from "./errors.js";
 import type {
@@ -383,7 +384,7 @@ function markFactoryProvider<T extends LLMProvider>(
     configurable: false,
     writable: false,
   });
-  return provider;
+  return observeEndpointMetadataFailures(provider, state.provider);
 }
 
 /** Preserve canonical factory identity when wrapping a provider object. */
