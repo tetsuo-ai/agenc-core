@@ -28,7 +28,7 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | `AGENC_EFFORT_LEVEL` | Reasoning effort captured into canonical session config: `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected |
 | `AGENC_PROFILE` | Named config profile (`--profile`) |
 | `AGENC_AUTONOMOUS` | Truthy enables autonomous tick mode |
-| `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget |
+| `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). It does not change the 3-retry continuation limit or the 64_000 escalate target. See [daemon.md](daemon.md#max-output-tokens-recovery) |
 | `AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS` | Boolean-like; 8k default plus retry mode |
 | `AGENC_MAX_BUDGET_USD` | Positive number session cost budget |
 | `AGENC_MAX_TURNS` | Positive integer turn-loop cap when `max_turns` is not in TOML |
