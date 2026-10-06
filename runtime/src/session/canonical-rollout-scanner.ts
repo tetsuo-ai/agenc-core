@@ -1390,7 +1390,9 @@ function assertAttemptsReconstructed(
       attempt.persistedIntent !== undefined &&
       attempt.sourceHistoryValidated !== true &&
       !attempt.records.some(
-        (record) => record.item.type === "compaction_source_release",
+        (record) =>
+          record.item.type === "compaction_source_release" ||
+          record.item.type === "compaction_failed",
       )
     ) {
       throw new Error(
