@@ -48,8 +48,11 @@ supported-level metadata.
 An unconfigured Gemini session leaves thinking controls out of the request.
 An explicit `reasoning_effort = "none"` also omits the control, even when
 another configured effort would otherwise apply. Neither case disables the
-model's thinking. `/effort default` removes the saved override. A compatible
-effort already stamped on a session remains in effect after a provider switch.
+model's thinking. `/effort default` removes the saved override and clears the
+session's effort. A provider or model switch keeps an effort the new model
+accepts. It drops any other level and says so, and the new model runs at its
+default. A configured `reasoning_effort` that a model does not accept is not
+sent on a turn that carries no effort of its own.
 
 Unsupported explicit levels fail before a request is sent. AgenC does not
 translate `minimal`, `xhigh`, or `max` into a different Gemini level. Unknown

@@ -1400,6 +1400,17 @@ function runtimeSettingsWithRestoreOverrides(
       ...(params.model !== undefined ? { model: params.model } : {}),
     },
   );
+  // Resuming on another model is a model switch: the effort stays only when
+  // that model accepts it.
+  const reasoningEffort =
+    resolvedSelection.provider !== canonical.provider ||
+    resolvedSelection.model !== canonical.model
+      ? reasoningEffortForStagedModel(
+          config,
+          resolvedSelection,
+          canonical.reasoningEffort,
+        ).reasoningEffort
+      : canonical.reasoningEffort;
   return {
     ...canonical,
     permissionMode,
@@ -1414,6 +1425,7 @@ function runtimeSettingsWithRestoreOverrides(
     model: resolvedSelection.model,
     provider: resolvedSelection.provider,
     profile: params.profile ?? canonical.profile,
+    reasoningEffort,
   };
 }
 

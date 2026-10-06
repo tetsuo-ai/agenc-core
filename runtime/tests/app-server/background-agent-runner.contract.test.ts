@@ -3766,6 +3766,56 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it.each([
+    { label: "drops", effort: "medium", journaled: null },
+    { label: "keeps", effort: "high", journaled: "high" },
+  ] as const)("a resume onto another model $label an effort it may not take", async (entry) => {
+    const runId = `session-settings-resume-effort-${entry.label}`;
+    const baseline = canonicalRuntimeSettings({
+      provider: "gemini",
+      model: "gemini-3.5-flash",
+      reasoningEffort: entry.effort,
+    });
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "resume on another model",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        provider: "gemini",
+        model: "gemma-4-31b-it",
+      }),
+    ).resolves.toBe(true);
+
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject({
+      reason: "model_provider_changed",
+      model: "gemma-4-31b-it",
+      reasoningEffort: entry.journaled,
+    });
+    expect(
+      (harness.sessionState.sessionConfiguration.collaborationMode as { reasoningEffort?: string })
+        .reasoningEffort,
+    ).toBe(entry.journaled ?? undefined);
+    const notices = vi.mocked(harness.session.emit).mock.calls.flatMap(([event]) => {
+      const msg = (event as { msg?: { type?: string; payload?: { message?: string } } }).msg;
+      return msg?.type === "warning" ? [msg.payload?.message] : [];
+    });
+    expect(notices).toEqual(
+      entry.journaled === null
+        ? ["gemma-4-31b-it does not support medium reasoning effort, so the session now uses its default effort."]
+        : [],
+    );
+  });
+
+  it.each([
     {
       label: "a conflicting pair",
       override: { provider: "grok", model: "gpt-5" },

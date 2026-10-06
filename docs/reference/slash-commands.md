@@ -31,9 +31,9 @@ Order matches `buildDefaultRegistry`.
 | `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
 | `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
-| `/model` | | Switch the model (picker or pass a name) |
-| `/provider` | | Switch the LLM provider for subsequent turns |
-| `/effort` | | Show or set reasoning effort for the current model (the exact model catalog levels, including `minimal` where supported; `default` restores the model default) |
+| `/model` | | Switch the model (picker or pass a name). The session keeps its reasoning effort if the new model accepts it; otherwise the new model runs at its default and the switch says so |
+| `/provider` | | Switch the LLM provider for subsequent turns. Reasoning effort carries over as with `/model` |
+| `/effort` | | Show or set reasoning effort for the current model (the exact model catalog levels, including `minimal` where supported; `default` clears the session's effort, so every model it switches to runs at its own default) |
 | `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> [<evidence-ref> <evidence-sha256>]`). Resume a settled terminal first. |
 | `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |

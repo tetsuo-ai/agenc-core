@@ -1361,6 +1361,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             const overrideEventId = active.runtimeSettingsEventId!;
             try {
               await applyRestoredRuntimeSettings(bootstrap, restoreOverrides);
+              if (
+                previousSettings.reasoningEffort !== null &&
+                restoreOverrides.reasoningEffort === null
+              ) {
+                emitDurableResumeWarning(
+                  bootstrap.session,
+                  "provider_switched",
+                  droppedReasoningEffortNotice(
+                    restoreOverrides.model,
+                    previousSettings.reasoningEffort,
+                  ),
+                );
+              }
             } catch (error) {
               const cleanupErrors: unknown[] = [];
               try {
