@@ -1323,18 +1323,23 @@ const TEST_COMMAND_WORDS = new Set(["[", "[["]);
  * Index of a simple command's command word: after assignments, `time` and
  * the options it reads before its pipeline, and the words in `reserved`.
  * Both the write reading and the directory walk find the command here.
+ * After an assignment `time` is the program, not the reserved word; with
+ * `assignedTimeIsCommand` it is then the command word.
  */
 function commandWordIndexAfter(
   words: readonly ShellToken[],
   reserved: ReadonlySet<string>,
+  assignedTimeIsCommand = false,
 ): number {
   let index = 0;
   let timed = false;
+  let assigned = false;
   for (; index < words.length; index += 1) {
     const value = words[index]!.value;
     if (timed && TIME_OPTIONS.has(value)) continue;
-    timed = value === "time";
+    timed = value === "time" && !(assignedTimeIsCommand && assigned);
     if (!timed && !ENV_ASSIGNMENT_RE.test(value) && !reserved.has(value)) break;
+    assigned ||= ENV_ASSIGNMENT_RE.test(value);
   }
   return index;
 }
@@ -1439,17 +1444,21 @@ function directoryChangeContext(tokens: readonly ShellToken[]): DirectoryChangeC
   };
 }
 
-/** Index of the command word the directory walk reads. */
+/**
+ * Index of the command word the directory walk reads. `X=1 time cd /` runs
+ * the time program, whose `cd` does not move this shell.
+ */
 function commandWordIndex(words: readonly ShellToken[]): number {
-  return commandWordIndexAfter(words, COMPOUND_RESERVED_WORDS);
+  return commandWordIndexAfter(words, COMPOUND_RESERVED_WORDS, true);
 }
 
 /**
- * A word that runs the builtin named after it, or an option word where a
- * command belongs (`time -x cd`), which a shell might read either way.
+ * A word that runs the builtin named after it, the time program, or an
+ * option word where a command belongs (`time -x cd`): what the command
+ * after it does to this shell's directory differs between shells.
  */
 function isBuiltinPrefix(command: string): boolean {
-  return BUILTIN_PREFIX_COMMANDS.has(command) || command.startsWith("-");
+  return BUILTIN_PREFIX_COMMANDS.has(command) || command === "time" || command.startsWith("-");
 }
 
 /** Whether these words run `cd`, `pushd` or `popd` in this shell. */

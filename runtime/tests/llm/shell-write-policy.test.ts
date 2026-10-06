@@ -1792,13 +1792,30 @@ describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
       "cd /tmp && time -p cd /repo && touch src/a.js",
       "cd /tmp && time -p pushd /repo && touch src/a.js",
       "cd /tmp && time -p -- cd /repo && touch src/a.js",
-      "cd /tmp && X=1 time -p cd /repo && touch src/a.js",
       "cd /tmp && ! time -p cd /repo && touch src/a.js",
     ]) {
       const decision = classify(command);
       expect(decision.blocked, command).toBe(true);
       expect(decision.blockedTargets, command).toContain("/repo/src/a.js");
     }
+  });
+
+  it("reads a cd behind the time program, after an assignment, as an unknown change", () => {
+    // bash and sh on macOS run /usr/bin/time and /usr/bin/cd, which exit 0
+    // and leave the shell where it was; zsh and Linux fail the command.
+    for (const command of [
+      "X=1 time cd /tmp && touch src/a.js",
+      "X=1 time -p cd /tmp && touch src/a.js",
+      "cd /tmp && X=1 time -p cd /repo && touch src/a.js",
+    ]) {
+      const decision = classify(command);
+      expect(decision.indeterminate, command).toBe(true);
+      expect(decision.blocked, command).toBe(true);
+      expect(decision.blockedTargets, command).toContain("/repo/src/a.js");
+    }
+    const removal = classify("X=1 time cd /tmp && rm -rf src", true);
+    expect(removal.blocked).toBe(true);
+    expect(removal.observedTargets).toContain("/repo/src");
   });
 
   it("reads an option word where a command belongs as an unknown change", () => {
