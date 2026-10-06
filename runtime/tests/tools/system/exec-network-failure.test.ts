@@ -15,7 +15,7 @@ describe("network-disabled command failure guidance", () => {
     for (const output of ["npm error getaddrinfo EAI_AGAIN registry.npmjs.org",
       "curl: (6) Could not resolve host: example.org",
       "fatal: unable to access https://example.org: Could not resolve host: example.org",
-      "Temporary failure in name resolution", "connect ENETUNREACH", "Network is unreachable"]) {
+      "Temporary failure in name resolution", "[Errno -2] Name or service not known", "connect ENETUNREACH", "Network is unreachable"]) {
       expect(notice({ output })).toContain("network access was disabled");
       expect(notice({ output })).toContain("approval is unavailable");
       expect(notice({ output })).not.toContain("request it");

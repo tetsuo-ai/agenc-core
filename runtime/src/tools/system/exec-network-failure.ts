@@ -1,7 +1,7 @@
 import { effectivePermissionProfile } from "../../sandbox/engine/policy-transforms.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
-const LOOKUP_FAILURE = /\bEAI_AGAIN\b|\bENETUNREACH\b|could not resolve (?:host|proxy)|temporary failure in name resolution|network is unreachable/iu;
+const LOOKUP_FAILURE = /\bEAI_AGAIN\b|\bENETUNREACH\b|could not resolve (?:host|proxy)|temporary failure in name resolution|name or service not known|network is unreachable/iu;
 
 /** Explain a failed lookup without changing the command, resolver, or package configuration. */
 export function execNetworkFailureNotice(params: {
