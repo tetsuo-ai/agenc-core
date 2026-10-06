@@ -1062,7 +1062,8 @@ export class OpenAIProvider implements LLMProvider {
     } catch (error) {
       // Structured provider failures are already classified; their prose is
       // not evidence of a second, transport-level failure.
-      if (error instanceof LLMProviderError || error instanceof LLMServerError) throw error;
+      if (error instanceof LLMProviderError || error instanceof LLMServerError ||
+        error instanceof LLMAuthenticationError) throw error;
       if (isFallbackTriggeredError(error)) {
         throw error;
       }
