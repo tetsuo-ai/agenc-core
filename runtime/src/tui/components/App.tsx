@@ -85,6 +85,12 @@ import {
 } from "../state/AppState.js";
 import { useSettings } from "../hooks/useSettings.js";
 import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
+import { StatusEffortContext } from "../context/statusEffortContext.js";
+import { readSessionSelection } from "../../session/provider-model-selection.js";
+import {
+  getSessionEffortLabelForContext,
+  modelSupportsEffortForContext,
+} from "../../utils/effort.js";
 import {
   FullscreenModeProvider,
 } from "../context/fullscreenModeContext.js";
@@ -2654,6 +2660,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // The status line and /context share the daemon's resident estimate. Custom
   // StatusLine scripts retain their separate provider-reported usage contract.
   const resolvedMainLoopModel = useMainLoopModel();
+  // "high effort" in the status line: the level the session runs at, or the
+  // model's default when none is chosen. Follows /effort and model switches.
+  const statusEffortValue = useAppState((state) => state.effortValue);
+  const statusEffortLabel = useMemo(() => {
+    const selection = readSessionSelection(props.session, { includePending: true });
+    if (selection.provider === "unknown" || selection.model === "unknown") return null;
+    const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
+    if (!modelSupportsEffortForContext(selection.model, context)) return null;
+    // The chosen level, else the default the daemon runs ("effort off" for a
+    // native none); nothing when no truthful default is known.
+    return getSessionEffortLabelForContext(
+      selection.model,
+      statusEffortValue as never,
+      context,
+    );
+  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel]);
   const contextPctLabel = useMemo(() => {
     if (props.session.getDaemonSessionSnapshot !== undefined) {
       if (residentContext?.session !== props.session ||
@@ -4894,6 +4916,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const body = (
     <StatusLineExecutionContext value={props.session.executeDaemonStatusLine}>
     <SessionUsageContext value={transcript.sessionUsage ?? null}>
+    <StatusEffortContext value={statusEffortLabel}>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
         screen={screen as any}
@@ -4962,6 +4985,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           onClose={handleCloseMessageSelector}
         />
       ) : null}
+    </StatusEffortContext>
     </SessionUsageContext>
     </StatusLineExecutionContext>
   );

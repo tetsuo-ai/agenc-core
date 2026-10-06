@@ -118,6 +118,7 @@ describe("FullscreenLayout modal viewport", () => {
     ).toEqual({
       folder: "~/project",
       model: "grok-4-fast",
+      effort: null,
       mode: "bypass mode",
       branch: "main",
       spend: "$0.04",
@@ -139,12 +140,19 @@ describe("FullscreenLayout modal viewport", () => {
     ).toMatchObject({ folder: null, branch: null, model: "grok-4-fast" });
   });
 
+  test("shows the session effort next to the model", () => {
+    expect(
+      statusLineSegments(100, "~/project", "deepseek-flash", "default", "main", "", "high effort").effort,
+    ).toBe("high effort");
+  });
+
   test("hides the branch outside git and the spend until usage arrives", () => {
     expect(
       statusLineSegments(100, "~/project", "grok-4-fast", "default", null, ""),
     ).toEqual({
       folder: "~/project",
       model: "grok-4-fast",
+      effort: null,
       mode: "default mode",
       branch: null,
       spend: null,

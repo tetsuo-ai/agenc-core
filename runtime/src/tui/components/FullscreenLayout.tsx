@@ -27,6 +27,7 @@ import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { PlanModeBanner } from './v2/primitives.js';
+import { useStatusEffort } from '../context/statusEffortContext.js';
 import ThemedText from './design-system/ThemedText.js';
 import { LedgerStatus } from './LedgerStatus.js';
 import { SwarmStatusIndicator } from './SwarmStatusIndicator.js';
@@ -621,6 +622,7 @@ const STATUS_BRANCH_MIN_COLUMNS = 64;
 export type StatusLineSegments = {
   readonly folder: string | null;
   readonly model: string;
+  readonly effort: string | null;
   readonly mode: string;
   readonly branch: string | null;
   readonly spend: string | null;
@@ -638,10 +640,12 @@ export function statusLineSegments(
   mode: PermissionMode,
   branch: string | null,
   spend: string,
+  effort: string | null = null,
 ): StatusLineSegments {
   return {
     folder: columns >= STATUS_FOLDER_MIN_COLUMNS ? folder : null,
     model: modelLabel,
+    effort,
     mode: statusModeLabel(mode),
     branch: branch !== null && columns >= STATUS_BRANCH_MIN_COLUMNS ? branch : null,
     spend: spend === '' ? null : spend,
@@ -673,7 +677,8 @@ function StatusLineChrome({ columns }: { columns: number }): React.ReactNode {
   const folder = React.useMemo(() => workspaceFolderLabel(columns), [columns]);
   const spend = useSessionSpendLabel();
   const branch = useGitChromeLabel();
-  const segments = statusLineSegments(columns, folder, modelDisplayString(model), mode, branch, spend);
+  const effort = useStatusEffort();
+  const segments = statusLineSegments(columns, folder, modelDisplayString(model), mode, branch, spend, effort);
   const bypass = mode === 'bypassPermissions';
   const separator = <ThemedText color="subtle">{STATUS_SEPARATOR}</ThemedText>;
   return (
@@ -689,6 +694,12 @@ function StatusLineChrome({ columns }: { columns: number }): React.ReactNode {
       <Box flexShrink={1} minWidth={0}>
         <ThemedText color="text" bold wrap="truncate-end">{segments.model}</ThemedText>
       </Box>
+      {segments.effort !== null ? (
+        <>
+          {separator}
+          <ThemedText color="text2" wrap="truncate-end">{segments.effort}</ThemedText>
+        </>
+      ) : null}
       {separator}
       <ThemedText color={bypass ? 'error' : 'text2'} bold={bypass} wrap="truncate-end">
         {segments.mode}
