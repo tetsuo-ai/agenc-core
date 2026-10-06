@@ -180,7 +180,11 @@ int main(int argc, char **argv) {
             ["/bin/sh", "-c", 'read -r line; printf "out:%s" "$line"; printf err >&2; exit 126'],
             stdin_data=b"input\n")
         self.assertEqual((code, output, proof), (126, b"out:inputerr", v3.expected(code=126)))
-        code, output, proof = v3.invoke(["/does-not-exist"])
+        broken = WORK / "broken-interpreter"
+        broken.write_text("#!/does-not-exist\n")
+        broken.chmod(0o700)
+        code, output, proof = v3.invoke([str(broken)],
+            mutations=lambda args: args + ["--bind", str(WORK), str(WORK)])
         self.assertEqual((code, proof), (127, v3.expected(code=127)))
         self.assertIn(b"command exec failed", output)
 
