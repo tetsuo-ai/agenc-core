@@ -88,9 +88,7 @@ import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
 import { StatusEffortContext } from "../context/statusEffortContext.js";
 import { readSessionSelection } from "../../session/provider-model-selection.js";
 import {
-  convertEffortValueToLevel,
-  getDisplayedEffortLevelForContext,
-  getNativeDefaultReasoningEffortForContext,
+  getSessionEffortLabelForContext,
   modelSupportsEffortForContext,
 } from "../../utils/effort.js";
 import {
@@ -2651,20 +2649,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (selection.provider === "unknown" || selection.model === "unknown") return null;
     const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
     if (!modelSupportsEffortForContext(selection.model, context)) return null;
-    // A model whose native default is no reasoning runs without effort
-    // until one is chosen; there is no tier to show for it.
-    if (
-      statusEffortValue === undefined &&
-      getNativeDefaultReasoningEffortForContext(selection.model, context) === "none"
-    ) {
-      return "effort off";
-    }
-    const level = getDisplayedEffortLevelForContext(
+    // The chosen level, else the default the daemon runs ("effort off" for a
+    // native none); nothing when no truthful default is known.
+    return getSessionEffortLabelForContext(
       selection.model,
       statusEffortValue as never,
       context,
     );
-    return `${convertEffortValueToLevel(level)} effort`;
   }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel]);
   const contextPctLabel = useMemo(() => {
     if (props.session.getDaemonSessionSnapshot !== undefined) {

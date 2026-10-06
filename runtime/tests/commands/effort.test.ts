@@ -12,6 +12,16 @@ vi.mock("../../src/utils/settings/settings.js", () => ({
 }));
 
 import { effortCommand } from "../../src/commands/effort.js";
+import { RUN_RUNTIME_REASONING_EFFORTS } from "../../src/contracts/run-contracts.js";
+import { resolveReasoningEffort } from "../../src/llm/reasoning-effort.js";
+import { listRegisteredModelCatalogEntries } from "../../src/llm/registry/model-catalog.js";
+import { getEffortNotificationText } from "../../src/tui/components/EffortIndicator.js";
+import {
+  getAvailableEffortLevelsForContext,
+  getNativeDefaultReasoningEffortForContext,
+  getSessionEffortLabelForContext,
+  modelSupportsEffortForContext,
+} from "../../src/utils/effort.js";
 
 function commandContext(
   model: string,
@@ -26,10 +36,12 @@ function commandContext(
       readonly provider: string;
       readonly model: string;
     };
+    readonly effortValue?: string;
   } = {},
 ) {
   const provider = options.provider ?? "grok";
-  let appState: Record<string, unknown> = {};
+  let appState: Record<string, unknown> =
+    options.effortValue === undefined ? {} : { effortValue: options.effortValue };
   const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
     appState = updater(appState) as Record<string, unknown>;
   });
@@ -292,5 +304,98 @@ describe("/effort default with a native none default", () => {
       kind: "error",
       message: "Saved for new sessions. This session did not take it: a turn is running",
     });
+  });
+});
+
+describe("/effort default sends only a truthful default", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  const authContext = (provider: string) => ({ ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider });
+
+  test("a registered model without a native default gets nothing and keeps its effort", async () => {
+    const { context, getAppState } = commandContext("moonshotai/kimi-k3", "default", {
+      provider: "nvidia-nim",
+      effortValue: "low",
+    });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    // A guessed medium is not one of this model's levels; the daemon refused it.
+    expect(applyDaemonConfig).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      kind: "text",
+      text: "Saved: new sessions use the moonshotai/kimi-k3 default. This session keeps its current effort.",
+    });
+    expect(getAppState().effortValue).toBe("low");
+  });
+
+  test("a refused reset leaves the session's effort in app state", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
+      provider: "mistral",
+      effortValue: "high",
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => {
+      throw new Error("Reasoning effort and response detail can only change between turns");
+    });
+
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });
+    // The status line reads app state, and the session still runs at high.
+    expect(getAppState().effortValue).toBe("high");
+    expect(getSessionEffortLabelForContext("mistral-medium-latest", "high", authContext("mistral")))
+      .toBe("high effort");
+  });
+
+  test("every surface reads effort off at a native none default", async () => {
+    const mistral = authContext("mistral");
+    expect(getEffortNotificationText(undefined, "mistral-medium-latest", mistral)).toBe(
+      "effort off · /effort",
+    );
+    expect(getSessionEffortLabelForContext("mistral-medium-latest", undefined, mistral)).toBe(
+      "effort off",
+    );
+    const { context } = commandContext("mistral-medium-latest", "", { provider: "mistral" });
+    const result = await effortCommand.execute(context);
+    expect(result.kind === "text" ? result.text.split("\n")[0] : result).toBe("effort off");
+    // No guessed tier where no truthful default is known.
+    expect(getSessionEffortLabelForContext("moonshotai/kimi-k3", undefined, authContext("nvidia-nim")))
+      .toBeNull();
+    expect(getSessionEffortLabelForContext("gemini-3.5-flash", undefined, authContext("gemini")))
+      .toBe("medium effort");
+  });
+
+  test("across the catalog, every value /effort sends is the native default or a level the daemon accepts", async () => {
+    const accepts = (provider: string, model: string, value: string) =>
+      (RUN_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value) &&
+      resolveReasoningEffort({ provider, model }).levels.includes(value);
+    const problems: string[] = [];
+    let checked = 0;
+    for (const { provider, model } of listRegisteredModelCatalogEntries()) {
+      const auth = authContext(provider);
+      if (!modelSupportsEffortForContext(model, auth)) continue;
+      checked += 1;
+      const send = async (argsRaw: string) => {
+        const { context } = commandContext(model, argsRaw, { provider, effortValue: "high" });
+        const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+        (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+        await effortCommand.execute(context);
+        return (applyDaemonConfig.mock.calls[0]?.[0] as { reasoningEffort?: string } | undefined)
+          ?.reasoningEffort;
+      };
+      const reset = await send("default");
+      const native = getNativeDefaultReasoningEffortForContext(model, auth);
+      if (reset !== undefined && (reset !== native || !accepts(provider, model, reset))) {
+        problems.push(`${provider}/${model} default sent ${reset}`);
+      }
+      for (const level of getAvailableEffortLevelsForContext(model, auth)) {
+        const sent = await send(level);
+        if (sent !== undefined && !accepts(provider, model, sent)) {
+          problems.push(`${provider}/${model} ${level} sent ${sent}`);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+    expect(problems).toEqual([]);
   });
 });

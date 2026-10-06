@@ -640,7 +640,77 @@ export function getNativeDefaultReasoningEffortForContext(
 ): string | undefined {
   const provider = inferCatalogProvider(model, context)
   if (provider === undefined) return undefined
-  return resolveReasoningEffort({ provider, model }).defaultLevel
+  const coreDefault = resolveReasoningEffort({ provider, model }).defaultLevel
+  if (coreDefault !== undefined) return coreDefault
+  // Gemini's documented thinking default lives in Core's Gemini registry,
+  // not in the shared resolver.
+  return provider === 'gemini'
+    ? resolveGeminiThinkingModel(model)?.defaultLevel
+    : undefined
+}
+
+/**
+ * What a session at the model default runs at, as the daemon names it, so
+ * `/effort default` can send it. Core's native default when Core has one.
+ * The TUI's own guess only for a model Core does not register, and only
+ * when Core accepts that level for it. Undefined otherwise: there is nothing
+ * truthful to send, and a guessed tier would either be refused by the
+ * daemon or pin the session at a level nobody chose.
+ */
+export function getModelDefaultReasoningEffortForContext(
+  model: string,
+  context: ProviderAuthReadContext,
+): string | undefined {
+  const provider = inferCatalogProvider(model, context)
+  if (provider === undefined) return undefined
+  const resolved = resolveReasoningEffort({ provider, model })
+  const native = getNativeDefaultReasoningEffortForContext(model, context)
+  if (native !== undefined) {
+    return native === 'none' || resolved.levels.includes(native) ? native : undefined
+  }
+  if (resolved.registered) return undefined
+  const guess = getDefaultEffortForModelForOptionalContext(model, context)
+  if (typeof guess !== 'string') return undefined
+  const wire = effortValueToReasoningEffort(
+    guess,
+    getAvailableEffortLevelsForOptionalContext(model, context),
+  )
+  return wire !== undefined && resolved.levels.includes(wire) ? wire : undefined
+}
+
+/**
+ * True while a session runs the model's native "no reasoning" default: no
+ * level is chosen and Core's default for the model is "none". Every effort
+ * surface then reads "off" instead of a guessed tier.
+ */
+export function isEffortOffByDefaultForContext(
+  model: string,
+  effortValue: EffortValue | undefined,
+  context?: ProviderAuthReadContext,
+): boolean {
+  return (
+    effortValue === undefined &&
+    getNativeDefaultReasoningEffortForContext(model, context) === 'none'
+  )
+}
+
+/**
+ * The session's effort for the status line ("high effort", "effort off"):
+ * the chosen level, else the model's default as the daemon would run it.
+ * Null when no level is chosen and no truthful default is known, so the
+ * status line never shows a guessed tier.
+ */
+export function getSessionEffortLabelForContext(
+  model: string,
+  effortValue: EffortValue | undefined,
+  context: ProviderAuthReadContext,
+): string | null {
+  if (effortValue !== undefined) {
+    return `${getDisplayedEffortLevelForContext(model, effortValue, context)} effort`
+  }
+  const modelDefault = getModelDefaultReasoningEffortForContext(model, context)
+  if (modelDefault === undefined) return null
+  return modelDefault === 'none' ? 'effort off' : `${nativeEffortLabel(modelDefault)} effort`
 }
 
 /** How a native effort reads in the TUI: "none" means effort is off. */

@@ -11,11 +11,11 @@
 import {
   convertEffortValueToLevel,
   getAvailableEffortLevelsForContext,
-  getDefaultEffortForModelForContext,
   getDisplayedEffortLevelForContext,
   getEffortLevelLabel,
-  getNativeDefaultReasoningEffortForContext,
+  getModelDefaultReasoningEffortForContext,
   isAvailableEffortLevel,
+  isEffortOffByDefaultForContext,
   nativeEffortLabel,
   modelSupportsEffortForContext,
   effortValueToReasoningEffort,
@@ -47,23 +47,6 @@ function currentEffortValue(ctx: SlashCommandContext): unknown {
 
 type ProviderAuthContext = Parameters<typeof getAvailableEffortLevelsForContext>[1];
 
-/**
- * The effort a session at the model default runs at, as the daemon names
- * it: Core's native default ("none" included), else the TUI's own default
- * for models Core does not register. Undefined when neither knows one.
- */
-function modelDefaultEffort(
-  model: string,
-  providerAuthContext: ProviderAuthContext,
-  available: readonly AvailableEffortLevel[],
-): string | undefined {
-  const native = getNativeDefaultReasoningEffortForContext(model, providerAuthContext);
-  if (native !== undefined) return native;
-  const fallback = getDefaultEffortForModelForContext(model, providerAuthContext);
-  return typeof fallback === "string"
-    ? effortValueToReasoningEffort(fallback, available)
-    : undefined;
-}
 
 /**
  * Save the choice as the default for new sessions, mirror it in app state,
@@ -86,15 +69,19 @@ async function applyEffortChoice(
   if (saved.error !== null) {
     return { ok: false, message: `Could not save effort: ${saved.error.message}` };
   }
-  ctx.appState?.setAppState?.((prev: unknown) => ({
-    ...(prev as Record<string, unknown>),
-    effortValue: choice === "default" ? undefined : choice,
-  }));
+  // App state is what this session runs at (the status line reads it), so it
+  // moves only once the session takes the change.
+  const mirrorInAppState = (): void => {
+    ctx.appState?.setAppState?.((prev: unknown) => ({
+      ...(prev as Record<string, unknown>),
+      effortValue: choice === "default" ? undefined : choice,
+    }));
+  };
   // Apply only the effort to the live session. A full config reload would
   // also re-read model and provider and undo a session-only /model switch.
   // The daemon cannot clear a session's effort, so "default" sends the level
   // the model runs at when none is set, in the daemon's own vocabulary.
-  const defaultEffort = modelDefaultEffort(model, providerAuthContext, available);
+  const defaultEffort = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
   const liveEffort = choice === "default"
     ? defaultEffort
     : effortValueToReasoningEffort(choice, available);
@@ -130,6 +117,7 @@ async function applyEffortChoice(
       };
     }
   }
+  mirrorInAppState();
   if (choice === "default") {
     return {
       ok: true,
@@ -154,7 +142,7 @@ function effortMenuSnapshot(
     typeof explicit === "string" && (levels as readonly string[]).includes(explicit)
       ? explicit
       : "default";
-  const modelDefault = modelDefaultEffort(model, providerAuthContext, levels);
+  const modelDefault = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
   const rows: EffortMenuRow[] = [
     {
       choice: "default",
@@ -235,6 +223,11 @@ export const effortCommand: SlashCommand = {
         ) {
           return { kind: "skip" };
         }
+        const off = isEffortOffByDefaultForContext(
+          model,
+          currentEffortValue(ctx) as never,
+          providerAuthContext,
+        );
         const displayed = getDisplayedEffortLevelForContext(
           model,
           currentEffortValue(ctx) as never,
@@ -247,7 +240,7 @@ export const effortCommand: SlashCommand = {
         return {
           kind: "text",
           text: [
-            `${effortLevelToSymbol(displayed)} ${displayed} effort`,
+            off ? "effort off" : `${effortLevelToSymbol(displayed)} ${displayed} effort`,
             `Available for ${model}: ${levels}`,
             `Use /effort <level> to change it, or /effort default to follow the model.`,
           ].join("\n"),
