@@ -2048,3 +2048,68 @@ async function writeForgedRecord(
     ...extra,
   })}\n`);
 }
+
+
+it("RV: rollback of alpha preserves a committed beta enablement", async () => {
+  const world = await createWorld();
+  try {
+    const configPath = join(world.agencHome, "config.toml");
+    await writeFile(configPath, "config_version = 2\n\n[plugins]\nenabled = false\n");
+    const alpha = await writePlugin(world.root, "alpha", "1.0.0");
+    const beta = await writePlugin(world.root, "beta", "1.0.0");
+    let betaInstalled = false;
+    let betaDestination = "";
+    await expect(installPluginOp({ ...world.authority, source: alpha,
+      installTransactionHooks: { afterPublishConfig: async () => {
+        const result = await installPluginOp({ ...world.authority, source: beta });
+        betaDestination = result.destination;
+        betaInstalled = true;
+        throw new Error("review simulated alpha post-publication failure");
+      } },
+    })).rejects.toThrow("review simulated alpha post-publication failure");
+    const config = parseToml(await readFile(configPath, "utf8")) as ParsedPluginsConfig;
+    expect(betaInstalled).toBe(true);
+    expect(config.plugins?.plugins?.beta?.enabled).toBe(true);
+    expect(await readPluginVersion(betaDestination)).toBe("1.0.0");
+    expect(config.plugins?.enabled).toBe(true);
+  } finally { await rm(world.root, { recursive: true, force: true }); }
+});
+
+
+it.each(["afterPublishConfig", "config-published"] as const)(
+  "preserves beta's committed enablement when alpha crashes at %s and recovers",
+  async (crashPoint) => {
+    const world = await createWorld();
+    try {
+      const configPath = join(world.agencHome, "config.toml");
+      await writeFile(configPath, "config_version = 2\n\n[plugins]\nenabled = false\n");
+      const alpha = await writePlugin(world.root, "alpha", "1.0.0");
+      const beta = await writePlugin(world.root, "beta", "1.0.0");
+      let betaDestination = "";
+      const commitBetaThenCrash = async () => {
+        betaDestination = (await installPluginOp({ ...world.authority, source: beta })).destination;
+        throw new PluginInstallTransactionSimulatedCrash("config-published");
+      };
+      await expect(installPluginOp({
+        ...world.authority,
+        source: alpha,
+        installTransactionHooks: crashPoint === "afterPublishConfig"
+          ? { afterPublishConfig: commitBetaThenCrash }
+          : { afterPhase: async (phase) => {
+            if (phase === "config-published") await commitBetaThenCrash();
+          } },
+      })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+      const recovered = await recoverLikeDaemon(world);
+      expect(recovered.issues).toEqual([]);
+      expect(recovered.recovered).toBe(1);
+      const config = parseToml(await readFile(configPath, "utf8")) as ParsedPluginsConfig;
+      expect(config.plugins?.plugins?.alpha).toBeUndefined();
+      expect(config.plugins?.plugins?.beta?.enabled).toBe(true);
+      expect(await readPluginVersion(betaDestination)).toBe("1.0.0");
+      expect(config.plugins?.enabled).toBe(true);
+      expect((await recoverLikeDaemon(world)).recovered).toBe(0);
+    } finally {
+      await rm(world.root, { recursive: true, force: true });
+    }
+  },
+);
