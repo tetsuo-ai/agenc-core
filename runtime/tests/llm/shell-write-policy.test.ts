@@ -378,11 +378,31 @@ describe("classifyShellWorkspaceWritePolicy", () => {
       "! grep -q x src/a.js",
       "for f in a b; do echo $f; done",
       "while false; do :; done",
+      "if [ -d build ]; then make; fi",
+      "if [[ -d build ]]; then make; fi",
+      "while [ -f lock ]; do sleep 1; done",
+      "if ! [ -d build ]; then mkdir build; fi",
     ])("allows a command after them that writes nothing: %s", (command) => {
       const decision = classify(command, true);
       expect(decision.blocked).toBe(false);
+      expect(decision.indeterminate).toBe(false);
       expect(decision.observedTargets).toEqual([]);
     });
+
+    it("still reads the writes of a test command's branch", () => {
+      expect(classify("if [ -d build ]; then touch src/a.js; fi", true).blockedTargets).toEqual([
+        "/repo/src/a.js",
+      ]);
+    });
+
+    it.each(["if $CMD; then :; fi", "then ~/bin/check", "while [ab] x; do :; done"])(
+      "keeps a command word the shell expands indeterminate after them: %s",
+      (command) => {
+        const decision = classify(command, true);
+        expect(decision.indeterminate).toBe(true);
+        expect(decision.blocked).toBe(true);
+      },
+    );
 
     it("keeps a brace group indeterminate and reads the command inside it", () => {
       const harmless = classify("{ echo hi; }", true);

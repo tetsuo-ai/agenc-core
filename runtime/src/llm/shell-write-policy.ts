@@ -847,9 +847,15 @@ const COMMAND_PREFIX_RESERVED_WORDS = new Set([
 ]);
 /** What `time` reads before its pipeline. */
 const TIME_OPTIONS = new Set(["-p", "--"]);
+/** The test commands. The lexer marks them as globs, but without a closing `]` they do not expand. */
+const TEST_COMMAND_WORDS = new Set(["[", "[["]);
 
-/** Index of a simple command's command word: after assignments and reserved words. */
-function commandWordIndex(words: readonly ShellToken[]): number {
+/**
+ * Index of the command word whose writes a segment makes: after assignments
+ * and the reserved words a command follows. The directory walk reads its
+ * command word with `commandWordIndex`.
+ */
+function writeCommandWordIndex(words: readonly ShellToken[]): number {
   let index = 0;
   let timed = false;
   for (; index < words.length; index += 1) {
@@ -870,15 +876,21 @@ function collectSegmentCommandWriteTargets(
   if (stripped.length === 0) {
     return emptyTargetCollection();
   }
-  const commandIndex = commandWordIndex(stripped);
+  const commandIndex = writeCommandWordIndex(stripped);
+  const prefix = stripped.slice(0, commandIndex);
   // The lexer reads a lone `{` as a brace expansion, so a brace group stays
   // indeterminate; the command inside it is read as well.
-  const opensBraceGroup = stripped.slice(0, commandIndex).some((word) => word.value === "{");
+  const opensBraceGroup = prefix.some((word) => word.value === "{");
   const command = stripped[commandIndex];
   if (command === undefined || command.value.length === 0) {
     return opensBraceGroup ? indeterminateTargetCollection() : emptyTargetCollection();
   }
-  if (command.requiresExpansion) return indeterminateTargetCollection();
+  // After a reserved word, `[` and `[[` are read as the test commands they
+  // are (`if [ -d build ]`); a segment that starts with one stays indeterminate.
+  const testCommand =
+    TEST_COMMAND_WORDS.has(command.value) &&
+    prefix.some((word) => COMMAND_PREFIX_RESERVED_WORDS.has(word.value));
+  if (command.requiresExpansion && !testCommand) return indeterminateTargetCollection();
   const args = stripped.slice(commandIndex + 1);
   const collection = collectDirectCommandWriteTargets({
     command: command.value,
