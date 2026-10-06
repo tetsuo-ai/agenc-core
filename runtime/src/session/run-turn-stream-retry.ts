@@ -16,6 +16,7 @@ import {
   LLMRequestRebuiltError,
   LLMServerError,
   LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMTimeoutError,
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
@@ -296,6 +297,7 @@ export function isRetryableStreamError(error: unknown): boolean {
   if (!(error instanceof StreamModelError)) return false;
   if (isPartialProviderResponseError(error)) return false;
   const cause = error.cause;
+  if (cause instanceof LLMStreamRetryDeniedError) return false;
   if (cause instanceof StreamProgressError) return true;
 
   // Explicitly non-retryable typed causes — fail closed before any

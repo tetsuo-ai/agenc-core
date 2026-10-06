@@ -1,7 +1,7 @@
-import { execa } from 'execa'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 
 async function whichNodeAsync(command: string): Promise<string | null> {
+  const { execa } = await import('execa')
   if (process.platform === 'win32') {
     // On Windows, use where.exe and return the first result
     const result = await execa(`where.exe ${command}`, {

@@ -226,6 +226,7 @@ export interface WorkflowDurabilityContext {
  */
 export interface WorkflowRunSessionPolicy {
   readonly permissionMode: WorkflowSpec["permissionMode"];
+  readonly lightMode?: boolean;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   /**
@@ -385,6 +386,7 @@ export interface VerifiedChangeWorkflowControllerDeps {
 export interface WorkflowStartParams {
   readonly continuation?: { readonly sourceRunId: string; readonly requestId: string };
   readonly goal: string;
+  readonly lightMode?: boolean;
   readonly repoPath: string;
   readonly model?: string;
   readonly provider?: string;
@@ -407,6 +409,7 @@ export interface WorkflowStartResult {
   readonly replayed?: boolean;
   readonly continuationOf?: WorkflowContinuation;
   readonly runId: string;
+  readonly lightMode?: boolean;
   readonly requestedPermissionMode: WorkflowSpec["permissionMode"];
   readonly effectivePermissionMode?: PermissionMode;
   readonly specDigest: Sha256Digest;
@@ -660,7 +663,8 @@ export class VerifiedChangeWorkflowController {
         throw new TypeError("This continuation request ID is already recorded with different instructions or incomplete intake. Inspect its run before retrying.");
       }
       return { runId, specDigest: evidence.specDigest!, baseCommit: spec.baseCommit, baseDirty: spec.baseDirty,
-        requestedPermissionMode: spec.permissionMode, continuationOf: spec.continuationOf, replayed: true };
+        requestedPermissionMode: spec.permissionMode, lightMode: spec.lightMode === true,
+        continuationOf: spec.continuationOf, replayed: true };
     }
     if (repo.currentEpoch(runId) !== undefined) {
       throw new TypeError("This continuation request already opened a run but did not commit intake. Inspect its run before creating another request.");
@@ -668,9 +672,14 @@ export class VerifiedChangeWorkflowController {
     if (Date.parse(params.budget.deadlineAt) <= this.#now().getTime()) throw new TypeError("The continuation deadline must be in the future.");
     const source = completedContinuationSource({ repo: this.#deps.durability({ runId: request.sourceRunId }),
       sourceRunId: request.sourceRunId, repoPath: params.repoPath, requestId: request.requestId, requestDigest });
+    const sourceIntake = this.#deps.durability({ runId: request.sourceRunId }).getEffect(request.sourceRunId, "workflow.intake")!;
+    const sourceSpec = readWorkflowStepEvidence(sourceIntake).spec as WorkflowSpec;
+    const continuationParams = params.lightMode === undefined
+      ? { ...params, lightMode: sourceSpec.lightMode === true }
+      : params;
     // Reserve the request before bootstrap can yield. The durable intake is
     // the retry authority once this short-lived promise is removed.
-    const promise = this.#start({ ...params, runId }, envOverrides, source);
+    const promise = this.#start({ ...continuationParams, runId }, envOverrides, source);
     this.#continuationRequests.set(runId, { digest: requestDigest, promise });
     try { return await promise; }
     finally { if (this.#continuationRequests.get(runId)?.promise === promise) this.#continuationRequests.delete(runId); }
@@ -722,6 +731,7 @@ export class VerifiedChangeWorkflowController {
         ...(envOverrides !== undefined ? { envOverrides } : {}),
         policy: {
           permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
+          ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
           ...(params.unattendedAllow !== undefined
             ? { unattendedAllow: params.unattendedAllow }
             : {}),
@@ -806,6 +816,7 @@ export class VerifiedChangeWorkflowController {
     this.#active.set(runId, pipeline);
     return {
       runId,
+      lightMode: ctx.spec.lightMode === true,
       specDigest: ctx.specDigest,
       baseCommit: ctx.spec.baseCommit,
       baseDirty: ctx.spec.baseDirty,
@@ -3086,6 +3097,7 @@ function freezeWorkflowSpec(
   return {
     runId,
     goal: params.goal,
+    ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
     repoPath: params.repoPath,
     baseCommit: base.baseCommit,
     ...(continuationOf !== undefined ? { continuationOf } : {}),

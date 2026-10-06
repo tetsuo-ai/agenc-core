@@ -617,7 +617,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox` | Sandbox detail block. |
 | `sandbox.network_access` | Explicit network boolean. |
 | `sandbox.allow_gpu` | macOS Metal GPU opt-in. |
-| `sandbox.autoAllowBashIfSandboxed` | Bash auto-approval policy inside the sandbox. |
+| `sandbox.autoAllowBashIfSandboxed` | On unless set to `false`. Bash and `exec_command` calls that will run inside the OS sandbox proceed without a prompt in the `default`, `acceptEdits`, `auto` and `dontAsk` modes. Escalation requests, detached services, TTY sessions, flagged commands and deny or ask rules still ask. Set `false` to be asked for every command. |
 | `sandbox.allowUnsandboxedCommands` | Explicit unsandboxed-command escape policy. |
 | `sandbox.enableWeakerNestedSandbox` | Weaker nested-isolation opt-in. |
 | `sandbox.enableWeakerNetworkIsolation` | Weaker network-isolation opt-in. |
@@ -665,6 +665,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.web_search`, `providers.<provider>.x_search`, `providers.<provider>.code_execution` | Grok-only native web, X, and code capabilities; rejected on every other provider. |
 | `providers.<provider>.enable_image_search`, `providers.<provider>.enable_image_understanding`, `providers.<provider>.enable_video_understanding` | Grok-only native media capabilities; rejected on every other provider. |
 | `providers.<provider>.incremental_continuation` | Grok-only boolean (`AGENC_XAI_INCREMENTAL`) for Responses `previous_response_id` continuation on streaming turns; on for Grok unless set to `false`. |
+| `providers.<provider>.auth` | OpenAI and Grok only: `auto` (default), `oauth`, or `api-key`. Which credential to use when both an account sign-in and an API key are present; `auto` prefers the sign-in. `OPENAI_AUTH_MODE` / `GROK_AUTH_MODE` in the environment win over it. Applies to new sessions; `/providers` writes it. Rejected under every other provider table. |
 | `providers.<provider>.zero_data_retention` | OpenRouter-only boolean. Every request carries `provider.zdr = true`, so OpenRouter routes only to endpoints with a zero-data-retention policy and refuses a model that has none instead of serving it elsewhere. Rejected under every other provider table: those providers control retention per account, project or team on their own console (see [providers.md](providers.md#zero-data-retention)). |
 | `providers.<provider>.collections` | Grok-only native collection-search block. |
 | `providers.<provider>.collections.enabled`, `providers.<provider>.collections.max_num_results`, `providers.<provider>.collections.vector_store_ids` | Collection enablement, positive result cap, and vector-store ID list. |

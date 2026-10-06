@@ -56,15 +56,14 @@ describe('Messages welcome state', () => {
 
     expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).not.toContain('a netrunner with hands on every file')
-    expect(output).toContain(
+    expect(output).toContain('/ commands')
+    // The model, folder and mode live in the status line under the prompt,
+    // so the welcome does not repeat them.
+    expect(output).not.toContain(
       parseUserSpecifiedModel(getDefaultMainLoopModelSetting()),
     )
     expect(output).not.toContain('default model')
-    expect(output).toContain('workspace')
-    // The recent card renders only with real session data (see the
-    // WelcomeColdPanel comment: a fabricated resume list is worse than no
-    // card at all); an empty transcript passes no recentSessions, so the
-    // "recent" section must not appear.
+    expect(output).not.toContain('workspace')
     expect(output).not.toContain('recent')
     expect(output).not.toContain('18.40')
     expect(output).not.toContain('/claim')

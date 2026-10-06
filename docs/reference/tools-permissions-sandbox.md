@@ -554,6 +554,17 @@ sandbox at preflight as well as at execution (the dispatcher attaches a
 provisional runtime context before a tool's `preflight`), so the two phases
 decide alike.
 
+A refusal names only the editing tools the session has, read from the
+session's own tool registry, and prefers the ones in the model's tool list:
+an OpenAI Light session, which lists apply_patch, is pointed at apply_patch.
+When the session's editing tools are not listed yet, the refusal names them
+and says that `system.searchTools` with `select:` loads them. A session with
+none of Edit, Write, MultiEdit or apply_patch (the read-only `verification`,
+`Plan` and `scanner` subagents) is told it cannot change those workspace
+files, to keep scratch files under a generated directory such as `tmp/`, and
+to write each target as a literal path. The refusal never sends the model to
+a tool the session does not have.
+
 The file tools (`FileRead`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`)
 confine themselves to the workspace root plus the roots the permission layer
 signs onto their input. When the layer allows a path outside the cwd on its

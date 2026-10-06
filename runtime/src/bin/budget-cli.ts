@@ -22,7 +22,7 @@ export type AgenCBudgetCliCommand =
 
 export function formatAgenCBudgetCliHelpText(): string {
   return [
-    "agenc budget — inspect cost-bounded execution admission",
+    "agenc budget: inspect cost-bounded execution admission",
     "",
     "Usage:",
     "  agenc budget status [--json]     Show configured admission policy",

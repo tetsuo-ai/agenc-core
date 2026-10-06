@@ -53,6 +53,7 @@ describe("git helpers with a failed spawn", () => {
       cwd: dir,
       home: dir,
       argsRaw: "",
+      appState: { setToolJSX: vi.fn() },
     });
     await Promise.all(failures.children.map((child) => child.reported));
 

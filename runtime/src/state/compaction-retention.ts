@@ -970,15 +970,15 @@ export class CompactionRetentionRepository {
   }
 
   resetReconciliationCursor(sessionId: string, updatedAtMs: number): void {
+    // No row already means the beginning of the scan. Do not create a durable
+    // zero cursor merely because a fresh session has no pins to reconcile.
     this.driver
-      .prepareState<[string, number]>(
-        `INSERT INTO compaction_reconciliation_cursors (
-           cursor_name, created_at_ms, attempt_id, updated_at_ms
-         ) VALUES (?, 0, '', ?)
-         ON CONFLICT(cursor_name) DO UPDATE SET
-           created_at_ms = 0, attempt_id = '', updated_at_ms = excluded.updated_at_ms`,
+      .prepareState<[number, string]>(
+        `UPDATE compaction_reconciliation_cursors
+         SET created_at_ms = 0, attempt_id = '', updated_at_ms = ?
+         WHERE cursor_name = ?`,
       )
-      .run(sessionId, updatedAtMs);
+      .run(updatedAtMs, sessionId);
   }
 
   createDeferral(params: {

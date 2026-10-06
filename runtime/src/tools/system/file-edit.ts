@@ -55,17 +55,15 @@ import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
   FILE_TOOL_PATH_SCHEMA,
   FILE_TOOL_PATH_USAGE,
+  workspaceRelativeToolPath,
 } from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
 export const FILE_MULTI_EDIT_TOOL_NAME = "MultiEdit";
@@ -271,6 +269,7 @@ function preserveQuoteStyle(
 // ── tool config / errors ──────────────────────────────────────────────
 
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
+  readonly lightMode?: boolean;
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
   /** FileRead numbers only some lines (the session's `AGENC_SPARSE_LINE_NUMBERS`). */
@@ -899,6 +898,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         return preMutationErrorResult(validated.error, FILE_EDIT_TOOL_NAME);
       }
       const { file_path, old_string, new_string, replace_all } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       // Verbatim from AgenC FileEditTool.ts:148-156.
       if (old_string === new_string) {
@@ -999,7 +999,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1112,7 +1112,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `${successText(file_path, false)}${lspFeedback}`,
+          content: `${successText(displayPath, false)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1160,7 +1160,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${successText(file_path, replace_all)}${lspFeedback}`,
+        content: `${successText(displayPath, replace_all)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
@@ -1267,6 +1267,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
       const { file_path, edits } = validated;
+      const displayPath = workspaceRelativeToolPath(file_path, config.allowedPaths[0], config.lightMode === true);
 
       const firstEdit = edits[0];
       if (firstEdit === undefined) {
@@ -1365,7 +1366,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${displayPath}.${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1473,7 +1474,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}`,
+          content: `${multiEditSuccessText(displayPath, 1, 1)}${lspFeedback}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1551,7 +1552,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}`,
+        content: `${multiEditSuccessText(displayPath, edits.length, replacements)}${lspFeedback}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",

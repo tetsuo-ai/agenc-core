@@ -67,7 +67,7 @@ export const resolveCommand: SlashCommand = {
         return {
           kind: "error",
           message:
-            "This session cannot resolve effects here — close the session and run `agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` from the project directory.",
+            "This session cannot resolve effects here. Close the session and run `agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>` from the project directory.",
         };
       }
       const [toolCallId, disposition, evidenceRef, evidenceSha256, extra] =
@@ -103,7 +103,7 @@ export const resolveCommand: SlashCommand = {
       );
       lines.push(
         result.remaining === 0
-          ? "Mutation gate lifted — side-effecting tools are unblocked."
+          ? "Mutation gate lifted. Side-effecting tools are unblocked."
           : `${result.remaining} unknown-outcome effect(s) still pending.`,
       );
       return { kind: "text", text: lines.join("\n") };

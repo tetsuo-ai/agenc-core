@@ -172,10 +172,12 @@ describe("Linux cgroup owner watchdog", () => {
       if (gate === undefined) throw new Error("unexpected spawn");
       return gate;
     }) as never);
+    const directPrepare = vi.fn(() => { throw new Error("must not replace a selected cgroup"); });
     const launch = () =>
       spawnContainedProcess(process.execPath, ["-e", "0"], {
         cwd: tmpdir(),
         env: {},
+        directBwrap: { prepare: directPrepare, validateAdmission() {}, signal: new AbortController().signal },
       });
 
     // Two contained commands in the same tick, before Node reports the
@@ -187,5 +189,6 @@ describe("Linux cgroup owner watchdog", () => {
     expect(watchdogs).toHaveLength(2);
     expect(watchdogs.flatMap((watchdog) => watchdog.uncaught)).toEqual([]);
     expect(watchdogs.flatMap((watchdog) => watchdog.groupSignals)).toEqual([]);
+    expect(directPrepare).not.toHaveBeenCalled();
   });
 });

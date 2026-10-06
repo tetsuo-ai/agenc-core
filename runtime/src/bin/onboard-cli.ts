@@ -33,7 +33,7 @@ import {
 import {
   readAgenCDaemonPid,
   resolveAgenCDaemonPidPath,
-} from "../app-server/daemon-cli.js";
+} from "../app-server/daemon-control.js";
 
 export type AgenCOnboardCliCommand =
   | { readonly kind: "launch" }
@@ -45,16 +45,16 @@ export type AgenCOnboardCliCommand =
 
 export function formatAgenCOnboardCliHelpText(): string {
   return [
-    "agenc onboard — set up AgenC: provider, key, theme, first chat",
+    "agenc onboard: set up AgenC (provider, key, theme, first chat)",
     "",
     "Usage:",
     "  agenc onboard            Launch the interactive setup wizard (re-runs",
     "                           even after a completed first run)",
-    "  agenc onboard identity   Act 2a — name your agent (persona workspace +",
+    "  agenc onboard identity   Act 2a: name your agent (persona workspace +",
     "                           the one-time naming ritual)",
-    "  agenc onboard channel    Act 2b — connect Telegram/Discord/Slack/WebChat",
+    "  agenc onboard channel    Act 2b: connect Telegram/Discord/Slack/WebChat",
     "                           with live token checks + the pairing walkthrough",
-    "  agenc onboard autonomy   Act 3 — budget cap, heartbeat, cron, webhooks",
+    "  agenc onboard autonomy   Act 3: budget cap, heartbeat, cron, webhooks",
     "                           (guardrails first, always)",
     "  agenc onboard recap      Posture summary + starter prompts",
     "  agenc onboard --status   Print wizard completion + daemon status",
@@ -262,7 +262,7 @@ export function formatOnboardStatusText(report: OnboardStatusReport): string {
     report.onboarding.completed
       ? nextAct !== null
         ? `  Next: ${nextAct}`
-        : "  All acts complete — recap with: agenc onboard recap"
+        : "  All acts complete. Recap with: agenc onboard recap"
       : "  Start the wizard with: agenc onboard",
   );
   return lines.join("\n");
@@ -313,7 +313,7 @@ export async function runAgenCOnboardCli(
       const agencHome = resolveAgencHome(env);
       resetFirstRunOnboarding({ agencHome });
       stdout(
-        "Onboarding reset — the setup wizard will show on the next interactive start (or run: agenc onboard).",
+        "Onboarding reset. The setup wizard will show on the next interactive start (or run: agenc onboard).",
       );
       return 0;
     }

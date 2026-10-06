@@ -1,3 +1,4 @@
+import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
 import {
   copyFileSync,
   existsSync,
@@ -2278,6 +2279,13 @@ describe("AgenC background agent lifecycle", () => {
     });
     await agents.applyConfigToSession({ sessionId: "session-applyconfig", reasoningEffort: "max" });
     expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", reasoningEffort: "max" });
+    applyAgentConfig.mockResolvedValueOnce({
+      applied: true, modelVerbosity: null, runtimeSettingsEventId: "settings:2",
+      summary: "Response detail set to inherited",
+    });
+    await expect(agents.applyConfigToSession({ sessionId: "session-applyconfig", modelVerbosity: null }))
+      .resolves.toMatchObject({ sessionId: "session-applyconfig", modelVerbosity: null, runtimeSettingsEventId: "settings:2" });
+    expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", modelVerbosity: null });
   });
 
   it("rejects session.applyConfig when no runner is available", async () => {
@@ -2762,6 +2770,24 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it.each([false, true])("attachment promotes live print durability unless collecting initial output (%s)", async oneShotOutput => {
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => "attach-session", createAttachmentId: () => "attach-output" });
+    const runtimeSettings = canonicalRuntimeSettings("default", process.cwd());
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({ agentId: "print-agent", agentPath: "/root", startedAt: "2026-10-03T00:00:00Z", status: "running" }),
+      getAgentSnapshot: async () => ({ status: "running", lastActiveAt: "2026-10-03T00:00:00Z", runtimeSettings, runtimeSettingsEventId: "settings" }),
+    };
+    const agents = new AgenCDaemonAgentManager({ defaultCwd: () => process.cwd(), runner, sessionManager: sessions });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "work", metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, nonInteractive: true, relaxedOneShot: true } });
+    const promote = vi.spyOn(oneShotDurability, "promoteOneShotRun").mockImplementation(() => { throw new Error("checkpoint blocked"); });
+    try {
+      const attached = agents.attachAgent({ agentId: "print-agent", oneShotOutput }, registerNoopSessionRoute);
+      if (oneShotOutput) { await expect(attached).resolves.toMatchObject({ runtimeOptions: { relaxedOneShot: true } }); expect(promote).not.toHaveBeenCalled(); }
+      else { await expect(attached).rejects.toThrow("checkpoint blocked"); expect(promote).toHaveBeenCalledWith("print-agent"); }
+    } finally { promote.mockRestore(); }
+  });
+
   it.each([false, true])("agent.create persists actual Light mode (%s), ignoring caller metadata", async (lightMode) => {
     const selectedRuntimeOptions = { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode };
     const sessions = new AgenCDaemonSessionManager({
@@ -2820,6 +2846,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: selectedRuntimeOptions,
       },
       sessionId: "session_1",
@@ -2837,6 +2864,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: [],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: selectedRuntimeOptions,
         },
         unattendedAllow: [],
@@ -2862,6 +2890,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: selectedRuntimeOptions,
       },
     });
@@ -2884,6 +2913,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: selectedRuntimeOptions,
           },
         },
@@ -2918,6 +2948,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: selectedRuntimeOptions,
           },
           activeAttachmentIds: ["attachment_1"],
@@ -3469,6 +3500,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: { AGENC_MODEL: "grok-4.3" }, withheldKeys: [] },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       restoreAttemptId: expect.any(String),
@@ -5339,6 +5371,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
@@ -5675,6 +5708,7 @@ describe("AgenC background agent lifecycle", () => {
               unattendedAllow: [],
               unattendedDeny: [],
               commandEnvironment: { PATH: "" },
+              sessionEnvironment: { values: {}, withheldKeys: [] },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -5865,6 +5899,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -5880,6 +5915,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -7221,6 +7257,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: [],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
@@ -7267,6 +7304,7 @@ describe("AgenC background agent lifecycle", () => {
               unattendedAllow: [],
               unattendedDeny: [],
               commandEnvironment: { PATH: "" },
+              sessionEnvironment: { values: {}, withheldKeys: [] },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -7898,6 +7936,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: ["FileRead"],

@@ -3422,7 +3422,6 @@ function PromptInput({
         justifyContent="center"
         width="100%"
         paddingX={1}
-        backgroundColor="surfaceBackground"
         opaque
       >
         <Text dimColor italic>
@@ -3435,10 +3434,11 @@ function PromptInput({
     <ConfiguredPromptTextInput baseProps={baseProps} />
   );
   return (
+    // Opaque without a color of its own: the area clears to the screen's
+    // background, so the gray band never sits inside a darker frame.
     <Box
       flexDirection="column"
       marginTop={briefOwnsGap ? 0 : 1}
-      backgroundColor="surfaceBackground"
       opaque
     >
       {!isFullscreen && (
@@ -3485,15 +3485,16 @@ function PromptInput({
           </Text>
         </>
       ) : (
+        // Borderless input: a filled band one row taller than the text, so
+        // the prompt reads as its own surface without a frame around it.
         <Box
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          borderColor="text"
-          borderStyle="single"
-          width="100%"
+          marginX={2}
           paddingX={1}
-          backgroundColor="surfaceBackground"
+          paddingY={1}
+          backgroundColor="promptBackground"
           opaque
         >
           <PromptInputModeIndicator
@@ -3594,7 +3595,6 @@ function PromptInput({
           flexDirection="column"
           justifyContent="flex-end"
           overflow="hidden"
-          backgroundColor="surfaceBackground"
           opaque
         >
           <Notifications

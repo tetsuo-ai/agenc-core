@@ -33,17 +33,13 @@ import {
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
 import { readCommandConfig } from "./config-context.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
 import {
   safeExecute,
   type SlashCommand,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  modelMenuFallback,
-  openModelMenu,
-  readModelMenuSnapshot,
-} from "./model-menu.js";
 import {
   formatSessionSelectionError,
   readSessionSelection,
@@ -321,7 +317,7 @@ function updateModelChrome(ctx: SlashCommandContext, model: string): void {
 
 export const modelCommand: SlashCommand = {
   name: "model",
-  description: "Switch the model — opens a picker (or pass a model name)",
+  description: "Choose a model (or pass a model name)",
   supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,
   immediate: true,
@@ -329,53 +325,13 @@ export const modelCommand: SlashCommand = {
     safeExecute(async () => {
       const target = ctx.argsRaw.trim();
       if (target.length === 0) {
-        const snapshot = readModelMenuSnapshot(ctx);
         if (
-          openModelMenu(ctx, snapshot, async (provider, model) => {
-            const selection = resolveCommandSelection(ctx, {
-              model_provider: provider,
-              model,
-            });
-            if (!selection.ok) {
-              return {
-                message: selection.error,
-                shouldClose: false,
-              };
-            }
-            const access = createProviderCommandAccessOverlay(ctx).inspect({
-              provider: selection.provider,
-              model: selection.model,
-            });
-            const rejection = formatProviderCommandRejection(access, "model");
-            if (rejection !== undefined) {
-              return {
-                message: rejection,
-                shouldClose: false,
-              };
-            }
-            if (access.effect === "unchanged") {
-              return {
-                message: `Model unchanged: ${selection.provider}/${selection.model}.`,
-                shouldClose: true,
-              };
-            }
-            const outcome = await applyModelSwitch(
-              ctx.session,
-              selection.model,
-              selection.provider,
-            );
-            if (outcome.applied) {
-              updateModelChrome(ctx, outcome.model);
-            }
-            return {
-              message: outcome.summary,
-              shouldClose: outcome.applied,
-            };
-          })
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./providers-hub.js")).openProvidersHub(ctx, { currentModels: true })
         ) {
           return { kind: "skip" };
         }
-        return { kind: "text", text: modelMenuFallback(snapshot) };
+        return { kind: "text", text: modelMenuFallback(readModelMenuSnapshot(ctx)) };
       }
       const selection = resolveCommandSelection(ctx, { model: target });
       if (!selection.ok) {

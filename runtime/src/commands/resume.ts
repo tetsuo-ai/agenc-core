@@ -23,7 +23,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openResumeMenu } from "./resume-menu.js";
 
 const MAX_SCAN_FILES = 2_000;
 const DEFAULT_LIST_LIMIT = 20;
@@ -224,7 +223,7 @@ function formatEntries(entries: ReadonlyArray<RolloutEntry>): string {
   for (const e of entries) {
     const ts = new Date(e.mtimeMs).toISOString();
     const preview = e.firstUserPreview || "(no preview)";
-    lines.push(`  ${ts}  ${e.sessionId}  — ${preview}`);
+    lines.push(`  ${ts}  ${e.sessionId}  ${preview}`);
     lines.push(`    ${basename(e.filePath)}`);
   }
   lines.push("");
@@ -286,7 +285,12 @@ async function runResumeCommand(
   const parsed = parseResumeArgs(ctx.argsRaw);
   const all = listResumableSessions(ctx.cwd, { agencHome: ctx.agencHome });
 
-  if (!parsed.sessionId && !parsed.last && openResumeMenu(ctx, all)) {
+  if (
+    !parsed.sessionId &&
+    !parsed.last &&
+    typeof ctx.appState?.setToolJSX === "function" &&
+    (await import("./resume-menu.js")).openResumeMenu(ctx, all)
+  ) {
     return { kind: "skip" };
   }
   if (parsed.sessionId) {

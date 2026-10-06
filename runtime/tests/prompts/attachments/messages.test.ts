@@ -233,6 +233,19 @@ describe("attachmentsToMessages", () => {
     expect(exit[0]?.content).toContain("clarifying questions");
   });
 
+  test("renders the Light auto_mode variant as one short paragraph with the same limits", () => {
+    const full = attachmentsToMessages([{ kind: "auto_mode", variant: "full" }]);
+    const light = attachmentsToMessages([{ kind: "auto_mode", variant: "light" }]);
+    const content = String(light[0]?.content);
+    // The marker keeps the producer's throttle and full/sparse cycle counting this reminder.
+    expect(content).toContain("Auto mode is active");
+    expect(content).toContain("<system-reminder>");
+    expect(content).toContain("explicit user confirmation");
+    expect(content).toContain("Never share secrets");
+    expect(content).not.toContain("Auto Mode Active");
+    expect(content.length).toBeLessThan(String(full[0]?.content).length / 3);
+  });
+
   test("renders date_change with the new date", () => {
     const out = attachmentsToMessages([
       { kind: "date_change", newDate: "2026-04-26" },

@@ -183,7 +183,8 @@ export function pickToolResultDispatch(
   }
   if (
     toolName === FILE_READ_TOOL_NAME_FOR_DISPATCH &&
-    joinedContent.includes("<read-content>")
+    (joinedContent.includes("<read-content>") ||
+      joinedContent.includes("<read-lines>"))
   ) {
     return "file-read-view";
   }

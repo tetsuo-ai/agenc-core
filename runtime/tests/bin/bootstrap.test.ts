@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdir,
+  chmod,
   lstat,
   mkdtemp,
   readFile,
@@ -9,7 +10,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import * as oneShotDurability from "../durability/one-shot-durability.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { StateSqliteReader } from "../state/sqlite-driver.js";
 
 import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import { readStartupCliFlags } from "../bin/startup-selection.js";
@@ -1335,6 +1340,10 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("replays MCP tool call events into resumed transcript state", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    // Keep writable temp authority separate from the protected home. The
+    // module-load temp fallback can be their shared parent in hermetic workers,
+    // which correctly emits a sandbox warning unrelated to MCP replay.
+    const sessionTempRoot = await mkdtemp(join(tmpdir(), "agenc-bootstrap-tmp-"));
     const conversationId = "conv-mcp-tool-call-replay";
 
     const providerMod = await import("../llm/provider.js");
@@ -1365,6 +1374,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1408,6 +1418,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         env: {
           ...process.env,
           AGENC_HOME: home,
+          AGENC_TMPDIR: sessionTempRoot,
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
@@ -1460,10 +1471,11 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
+      await rm(sessionTempRoot, { recursive: true, force: true });
     }
   });
 
-  it("replays token ledger events into resumed transcript state", async () => {
+  it("replays token usage events into resumed state without transcript rows", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const conversationId = "conv-token-ledger-replay";
@@ -1549,6 +1561,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       const transcript = adaptTranscriptEvents(
         initialTranscriptEvents as Parameters<typeof adaptTranscriptEvents>[0],
       );
+      // Usage feeds the status line spend and /cost, not the transcript.
       expect(
         transcript.messages.some(
           (message) =>
@@ -1556,7 +1569,8 @@ describe("bootstrapLocalRuntimeSession", () => {
             typeof message.content === "string" &&
             message.content.startsWith("Token ledger update:"),
         ),
-      ).toBe(true);
+      ).toBe(false);
+      expect(Number.isFinite(transcript.sessionCostUsd)).toBe(true);
     } finally {
       await resumedShutdown?.().catch(() => {
         /* best effort */
@@ -4603,6 +4617,334 @@ required = true
       });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("fresh startup diagnostic index policy", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it.each([
+    { name: "eligible print", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: true },
+    { name: "unsupported full fallback", relaxedOneShot: true, nonInteractive: true, routineRun: false, buffered: false, supported: false },
+    { name: "full opt-out", relaxedOneShot: false, nonInteractive: true, routineRun: false, buffered: false },
+    { name: "interactive", relaxedOneShot: true, nonInteractive: false, routineRun: false, buffered: false },
+    { name: "routine", relaxedOneShot: true, nonInteractive: true, routineRun: true, buffered: false },
+  ])("keeps the real cron warning immediate for $name", async selection => {
+    if (selection.supported === false) vi.spyOn(oneShotDurability, "supportsRelaxedOneShot").mockReturnValue(false);
+    const home = await mkdtemp(join(tmpdir(), "bootstrap-log-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bootstrap-log-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    await chmod(workspace, 0o775);
+    trustWorkspaceForTest(home, workspace);
+    await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { relaxedOneShot: selection.relaxedOneShot,
+          nonInteractive: selection.nonInteractive, routineRun: selection.routineRun }), fetchImpl: offlineFetchFixture() });
+      shutdown = boot.shutdown;
+      const projectDir = dirname(dirname(dirname(boot.rolloutStore.rolloutPath)));
+      const paths = { projectDir, stateDbPath: join(projectDir, "agenc-state_1.sqlite"), logsDbPath: join(projectDir, "agenc-logs_1.sqlite") };
+      boot.rolloutStore.flushDurable();
+      const warnings = boot.rolloutStore.readAll().flatMap(item => item.type === "event_msg" &&
+        item.payload.msg.type === "warning" && item.payload.msg.payload.cause === "cron_storage_unavailable" ? [item.payload.msg.payload] : []);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.message).toContain("Durable scheduled tasks could not be restored");
+      if (selection.supported === false) {
+        expect(oneShotDurability.relaxedOneShotTransaction(projectDir, boot.session.conversationId)).toBe(false);
+        expect(existsSync(`${boot.rolloutStore.rolloutPath}.durability.json`)).toBe(false);
+      }
+      expect(existsSync(paths.logsDbPath)).toBe(!selection.buffered);
+      boot.session.services.flushStartupLogIndex?.();
+      const reader = new StateSqliteReader(paths);
+      try {
+        expect(reader.prepareLogs("SELECT message FROM logs WHERE event_type = 'cron_storage_unavailable'").all())
+          .toEqual([{ message: warnings[0]!.message }]);
+      } finally { reader.close(); }
+    } finally {
+      await shutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("warm daemon auxiliary setup ceiling", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+  it("keeps canonical rollout and admission eager while auxiliary projection and sidecars wait for POST", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      await providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" });
+      expect(project).toHaveBeenCalledOnce();
+      expect(boot.sidecarManager.getSidecarNames()).toEqual(expect.arrayContaining(["file-history", "cost"]));
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+  it("drains RV pending cost load before shutdown and never publishes sidecars after closure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        return new Response("done");
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { CostSidecar } = await import("../session/cost.js");
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    let releaseLoad!: () => void;
+    let enteredLoad!: () => void;
+    const loadGate = new Promise<void>(resolve => { releaseLoad = resolve; });
+    const loadEntered = new Promise<void>(resolve => { enteredLoad = resolve; });
+    vi.spyOn(CostSidecar.prototype, "loadFromDisk").mockImplementation(async () => {
+      enteredLoad();
+      await loadGate;
+    });
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    const costStop = vi.spyOn(CostSidecar.prototype, "stop");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await loadEntered;
+      let shutdownSettled = false;
+      const closing = boot.shutdown().then(() => { shutdownSettled = true; });
+      expect(boot.session.isShuttingDown).toBe(true);
+      await Promise.resolve();
+      expect(shutdownSettled).toBe(false);
+      const startsAtShutdown = sidecarStart.mock.calls.length;
+      const activeAtShutdown = getActiveCostSidecar();
+      releaseLoad();
+      const outcome = await pending;
+      await closing;
+      cleanupManager = boot.sidecarManager;
+      const lateStarts = sidecarStart.mock.calls.length - startsAtShutdown;
+      expect(outcome).toBe("rejected");
+      expect(startsAtShutdown).toBe(0);
+      expect(activeAtShutdown).toBeNull();
+      expect(lateStarts).toBe(0);
+      expect(costStop).toHaveBeenCalledOnce();
+      expect(boot.session.services.costSidecar).toBeUndefined();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseLoad();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  it("closes deferred admission while POST is pending and discards its late response", async () => {
+    const home = await mkdtemp(join(tmpdir(), "warm-setup-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "warm-setup-workspace-"));
+    await mkdir(join(workspace, ".git"));
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(join(home, "config.toml"), 'config_version = 2\nmodel = "deepseek-flash"\nmodel_provider = "deepseek"\n');
+    const { FileThreadStore } = await import("../thread-store/store.js");
+    const project = vi.spyOn(FileThreadStore.prototype, "createThread");
+    const providerModule = await import("../llm/provider.js");
+    let providerFetch: typeof fetch | undefined;
+    vi.spyOn(providerModule, "createProvider").mockImplementation((_name, opts) => {
+      providerFetch = opts?.extra?.fetchImpl as typeof fetch | undefined;
+      return { name: "deepseek", chat: async () => ({ content: "ok", toolCalls: [], usage: {
+        promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      } }) } as never;
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    let releaseTransport!: () => void, enteredTransport!: () => void;
+    const transportGate = new Promise<void>(resolve => { releaseTransport = resolve; });
+    const transportEntered = new Promise<void>(resolve => { enteredTransport = resolve; });
+    const cancel = vi.fn();
+    let transportSignal: AbortSignal | null | undefined;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        expect(project).not.toHaveBeenCalled();
+        transportSignal = init.signal;
+        enteredTransport();
+        await transportGate;
+        return new Response(new ReadableStream({ cancel }));
+      }
+      return jsonResponse({ data: [] });
+    });
+    const { getActiveCostSidecar, bindActiveCostSidecar } = await import("../cost/tracker.js");
+    const sidecarStart = vi.spyOn(SidecarManager.prototype, "start");
+    let cleanupManager: SidecarManager | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      const env = { ...process.env, HOME: home, AGENC_HOME: home };
+      const boot = await bootstrapLocalRuntimeSession({ apiKey: "test-key", cwd: workspace,
+        argv: ["node", "agenc"], env, fetchImpl: transport,
+        runtimeOptions: resolveAgentRuntimeOptions(env, { nonInteractive: true, lightMode: true }),
+        deferAuxiliarySetupUntilRequest: true,
+      });
+      shutdown = boot.shutdown;
+      expect(boot.session.services.executionAdmission).toBeDefined();
+      expect(boot.session.services.admissionRequired).toBe(true);
+      expect(boot.rolloutStore.readAll().some(item => item.type === "session_meta")).toBe(true);
+      expect(existsSync(boot.rolloutStore.rolloutPath)).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(providerFetch).toBeTypeOf("function");
+      const pending = providerFetch!("https://provider.invalid/chat", { method: "POST", body: "{}" })
+        .then(() => "fulfilled", () => "rejected");
+      await transportEntered;
+      await boot.shutdown();
+      expect(transportSignal?.aborted).toBe(true);
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      releaseTransport();
+      expect(await pending).toBe("rejected");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(project).not.toHaveBeenCalled();
+      expect(sidecarStart).not.toHaveBeenCalled();
+      expect(boot.sidecarManager).toBeNull();
+      expect(getActiveCostSidecar()).toBeNull();
+    } finally {
+      releaseTransport();
+      await cleanupManager?.stop().catch(() => {});
+      bindActiveCostSidecar(null);
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+});
+
+describe("bootstrap private endpoint metadata reuse", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+
+  it("shares only default transport discovery across fresh projects, preserves model limits, and rotates accounts/endpoints", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-metadata-home-"));
+    const projects: string[] = [];
+    let limit = 64000;
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const requests: string[] = [];
+    // Unknown local models also issue an independent capability health probe.
+    // Keep that probe real and count its GET separately from metadata reuse.
+    const { OpenAIProvider } = await import("../llm/providers/openai/adapter.js");
+    const healthChecks = vi.spyOn(OpenAIProvider.prototype, "healthCheck");
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(String(input));
+      return jsonResponse({ data: [
+        { id: "local-model", context_length: limit, max_output_tokens: 8192 },
+        { id: "other-model", context_length: 32000, max_output_tokens: 4096 },
+      ] });
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const start = async (model: string, key = "a", base = "http://localhost:8888/v1", injected = false) => {
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-metadata-project-"));
+      projects.push(workspace);
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          AGENC_HOME: home, AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "openai-compatible", AGENC_MODEL: model,
+          OPENAI_COMPATIBLE_API_KEY: key, OPENAI_COMPATIBLE_BASE_URL: base,
+          HOME: home, SHELL: "/bin/sh",
+        },
+        ...(injected ? { fetchImpl: transport } : {}),
+        argv: ["node", "agenc"],
+      });
+      try { return boot.modelInfo; }
+      finally { await boot.shutdown(); }
+    };
+    const discoveries = () => requests.filter((url) => url.endsWith("/models")).length - healthChecks.mock.calls.length;
+    try {
+      expect((await start("local-model")).contextWindow).toBe(64000);
+      expect((await start("other-model")).contextWindow).toBe(32000);
+      expect(discoveries()).toBe(1);
+      limit = 16000;
+      now = 600001;
+      expect((await start("local-model")).contextWindow).toBe(16000);
+      expect(discoveries()).toBe(2);
+      await start("local-model", "b");
+      await start("local-model", "a");
+      expect(discoveries()).toBe(4);
+      await start("local-model", "a", "http://localhost:8889/v1");
+      expect(discoveries()).toBe(5);
+      await start("local-model", "a", "http://localhost:8889/v1", true);
+      expect(discoveries()).toBe(6);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await Promise.all(projects.map((path) => rm(path, { recursive: true, force: true })));
     }
   });
 });

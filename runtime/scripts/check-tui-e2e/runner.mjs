@@ -105,6 +105,7 @@ function createScenarioSession(scenario, scenarioCwd, gateState) {
       ? { sandboxMode: scenario.meta.sandboxMode }
       : {}),
     ...(scenario.meta.env ? { env: scenario.meta.env } : {}),
+    ...(scenario.meta.preTrust === false ? { preTrust: false } : {}),
     ...(scenario.meta.cwd
       ? { cwd: scenario.meta.cwd }
       : { cwd: scenarioCwd }),

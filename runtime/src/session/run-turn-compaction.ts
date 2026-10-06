@@ -10,7 +10,7 @@
 import type { LLMMessage } from "../llm/types.js";
 import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import type { CompactionResult } from "../services/compact/types.js";
-import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
+import { getAutoCompactThreshold } from "../services/compact/thresholds.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   extractMessageText,

@@ -24,7 +24,7 @@ describe("alternate fullscreen canonical spend", () => {
     [{ costUsd: 0.5, hasUnknownCost: true }, "$0.500 +?"],
     [{ costUsd: 0.045, hasUnknownCost: false, costEstimated: true }, "$0.045 est."],
     [{ costUsd: 0.045, hasUnknownCost: true, costEstimated: true }, "$0.045 est. +?"],
-    [null, "—"],
+    [null, null],
   ] as const)("renders the scoped snapshot %j without sidecar polling", async (usage, label) => {
     const timer = vi.spyOn(globalThis, "setInterval");
     const output = await renderToString(
@@ -37,7 +37,14 @@ describe("alternate fullscreen canonical spend", () => {
       </AppStateProvider>,
       { columns: 100, rows: 24 },
     );
-    expect(output).toContain(`spend ${label}`);
+    if (label === null) {
+      // No usage yet: the status line shows no figure and no placeholder.
+      expect(output).not.toContain("$");
+      expect(output).not.toContain("—");
+    } else {
+      expect(output).toContain(label);
+    }
+    expect(output).not.toContain("spend");
     expect(mocks.getTotalCost).not.toHaveBeenCalled();
     expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(false);
   });
@@ -51,7 +58,7 @@ describe("alternate fullscreen canonical spend", () => {
       </AppStateProvider>,
       { columns: 100, rows: 24 },
     );
-    expect(output).toContain("spend $9.00");
+    expect(output).toContain("$9.00");
     expect(mocks.getTotalCost).toHaveBeenCalled();
   });
 });

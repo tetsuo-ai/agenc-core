@@ -1,3 +1,5 @@
+import { AgenCDaemonRunInspectionError } from "./run-inspection-error.js";
+export { AgenCDaemonRunInspectionError, type AgenCDaemonRunInspectionErrorCode } from "./run-inspection-error.js";
 import { ALL_PERMISSION_MODES, type InternalPermissionMode } from "../types/permissions.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -45,22 +47,6 @@ import { projectWorkflowStatus } from "./workflow/status-projection.js";
 
 export const DEFAULT_RUN_REPLAY_LIMIT = 100;
 export const MAX_RUN_REPLAY_LIMIT = 200;
-
-export type AgenCDaemonRunInspectionErrorCode =
-  | "INVALID_ARGUMENT"
-  | "RUN_ID_AMBIGUOUS"
-  | "RUN_NOT_FOUND"
-  | "RUN_NOT_TERMINAL";
-
-export class AgenCDaemonRunInspectionError extends Error {
-  readonly code: AgenCDaemonRunInspectionErrorCode;
-
-  constructor(code: AgenCDaemonRunInspectionErrorCode, message: string) {
-    super(message);
-    this.name = "AgenCDaemonRunInspectionError";
-    this.code = code;
-  }
-}
 
 export interface AgenCDaemonRunInspectionOptions {
   /** Read only from an already-owned live workflow session; never open or resume it. */

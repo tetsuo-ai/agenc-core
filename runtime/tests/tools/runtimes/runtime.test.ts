@@ -229,11 +229,19 @@ describe("tools/runtimes", () => {
     expect(external.network).toBe("restricted");
   });
 
+  test("live sandbox profiles require captured session temp authority", () => {
+    expect(() => permissionProfileForRuntimeContext({
+      sandboxMode: "workspace_write",
+      invocation: { turn: { cwd: "/repo" } },
+    } as never, { cwd: "/repo" })).toThrow(/no absolute captured temp-root authority/);
+  });
+
   test("live default workspace-write policy preserves unrestricted reads", () => {
     const profile = permissionProfileForRuntimeContext(
       {
         sandboxMode: "workspace_write",
         invocation: {
+          session: { services: TEST_RUNTIME_SERVICES },
           turn: {
             cwd: "/repo",
             fileSystemSandboxPolicy: {
@@ -256,6 +264,7 @@ describe("tools/runtimes", () => {
       {
         sandboxMode: "workspace_write",
         invocation: {
+          session: { services: TEST_RUNTIME_SERVICES },
           turn: {
             cwd: "/repo",
             fileSystemSandboxPolicy: {

@@ -21,7 +21,7 @@ import {
   readAgenCDaemonSpawnStderrTail,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonSocketPath,
-} from "./daemon-cli.js";
+} from "./daemon-control.js";
 import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -159,6 +159,17 @@ export interface AgenCJsonLineDaemonClientOptions {
   readonly socketPath?: string;
   readonly timeoutMs?: number;
   readonly userHome?: string;
+}
+
+/** @internal Invocation-local authority guard for the fresh print connection. */
+export interface AgenCDaemonClientStartupGuard {
+  /** Preserve the control probe's deadline until the first agent is admitted. */
+  readinessTimeoutMs(): number | undefined;
+  initialized(client: AgenCJsonLineDaemonTuiClient, result: AgenCDaemonResultByMethod["initialize"]): void;
+  canReconnect(): boolean;
+  /** Synchronous: runs after ensureConnected and immediately before dispatch. */
+  beforeRequest(client: AgenCJsonLineDaemonTuiClient, method: AgenCDaemonMethod): void;
+  afterRequest(client: AgenCJsonLineDaemonTuiClient, method: AgenCDaemonMethod): void;
 }
 
 // 30s default: most RPCs return in milliseconds, but agent.create blocks on
@@ -387,6 +398,7 @@ export function createAgenCJsonLineDaemonRequestClient(
 
 export async function createConnectedAgenCJsonLineDaemonTuiClient(
   options: AgenCJsonLineDaemonClientOptions = {},
+  startupGuard?: AgenCDaemonClientStartupGuard,
 ): Promise<AgenCJsonLineDaemonTuiClient> {
   const socketPath =
     options.socketPath ??
@@ -405,6 +417,7 @@ export async function createConnectedAgenCJsonLineDaemonTuiClient(
   return createReconnectableDaemonTuiClient({
     socketPath,
     timeoutMs,
+    startupGuard,
     initializeParams: {
       protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
@@ -419,6 +432,7 @@ async function createReconnectableDaemonTuiClient(options: {
   readonly socketPath: string;
   readonly timeoutMs: number;
   readonly initializeParams: JsonObject;
+  readonly startupGuard?: AgenCDaemonClientStartupGuard;
 }): Promise<AgenCJsonLineDaemonTuiClient> {
   const { socketPath, timeoutMs, initializeParams } = options;
   let advertisedMethods = new Set<string>();
@@ -562,10 +576,12 @@ async function createReconnectableDaemonTuiClient(options: {
       const nextClient = await connectPersistentDaemonClient(
         socketPath,
         timeoutMs,
+        options.startupGuard?.readinessTimeoutMs,
       );
       let nextMethods: string[] = [];
       try {
         const initialized = await nextClient.request("initialize", initializeParams);
+        options.startupGuard?.initialized(nextClient, initialized);
         const methods = isRecord(initialized.capabilities)
           ? initialized.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]
           : undefined;
@@ -616,6 +632,9 @@ async function createReconnectableDaemonTuiClient(options: {
     if (current?.getConnectionState().status === "connected") {
       return current;
     }
+    if (options.startupGuard !== undefined && !options.startupGuard.canReconnect()) {
+      throw new Error("Daemon startup connection changed before admission");
+    }
     if (reconnecting !== null) return reconnecting;
     const staleClient = innerClient;
     detachInnerClient();
@@ -634,7 +653,9 @@ async function createReconnectableDaemonTuiClient(options: {
         throw new Error("Daemon request cancelled");
       }
       const current = await ensureConnected();
+      options.startupGuard?.beforeRequest(current, method);
       const result = await current.request(method, params, requestOptions);
+      options.startupGuard?.afterRequest(current, method);
       // gaphunt3 #2: record the daemon-side session attachments this client
       // established so a later reconnect can replay `session.attach` and
       // recover event routing. Both `agent.attach` (whose result carries the
@@ -706,7 +727,10 @@ async function createReconnectableDaemonTuiClient(options: {
     },
   };
 
-  await ensureConnected();
+  // The canonical identity probe has one bounded connection/response attempt.
+  // Do not turn authentication or invalid identity failures into TUI retries.
+  if (options.startupGuard !== undefined) await connectAndInitializeOnce();
+  else await ensureConnected();
   return client;
 }
 
@@ -1013,8 +1037,12 @@ function requestTimeoutMsForMethod(
 function connectPersistentDaemonClient(
   socketPath: string,
   timeoutMs: number,
+  readinessTimeoutMs?: () => number | undefined,
 ): Promise<AgenCJsonLineDaemonTuiClient> {
   return new Promise((resolve, reject) => {
+    const initialReadinessTimeout = readinessTimeoutMs?.();
+    const initializeDeadline = initialReadinessTimeout === undefined
+      ? undefined : Date.now() + initialReadinessTimeout;
     const socket = createConnection(socketPath);
     const pending = new Map<
       RequestId,
@@ -1043,7 +1071,7 @@ function connectPersistentDaemonClient(
     const timeout = setTimeout(() => {
       reject(new Error(`Timed out connecting to daemon at ${socketPath}`));
       socket.destroy();
-    }, timeoutMs);
+    }, initialReadinessTimeout ?? timeoutMs);
 
     const failPending = (error: Error) => {
       for (const waiter of pending.values()) {
@@ -1113,7 +1141,10 @@ function connectPersistentDaemonClient(
           const sendAbortCancel = (): void => {
             sendCancel(String(options.signal?.reason ?? "request.cancel"));
           };
-          const requestTimeoutMs = requestTimeoutMsForMethod(method, timeoutMs);
+          const pingTimeoutMs = method === "health.ping" ? readinessTimeoutMs?.() : undefined;
+          const requestTimeoutMs = method === "initialize" && initializeDeadline !== undefined
+            ? Math.max(1, initializeDeadline - Date.now())
+            : pingTimeoutMs ?? requestTimeoutMsForMethod(method, timeoutMs);
           const requestTimeout =
             requestTimeoutMs === null
               ? null
@@ -1484,6 +1515,9 @@ export function defaultEnsureDaemonReady(
  */
 function withDaemonStartupLogContext(error: unknown): Error {
   const base = error instanceof Error ? error : new Error(String(error));
+  // A daemon answer is not a connection failure, and wrapping it would drop
+  // its code and data.
+  if (base instanceof AgenCDaemonResponseError) return base;
   if (!/ECONNREFUSED|ENOENT/.test(base.message)) return base;
   if (base.message.includes("daemon startup log:")) return base;
   const stderrTail = readAgenCDaemonSpawnStderrTail();
@@ -1567,14 +1601,17 @@ async function requestDaemonInner<Method extends AgenCDaemonMethod>(
   if (initializeResponse === undefined) {
     throw new Error("daemon did not return an initialize response");
   }
+  // Keep the daemon's code and data, exactly like the persistent client:
+  // callers branch on them (a cold resume that races a startup restore gets
+  // CANONICAL_SESSION_ALREADY_ACTIVE and attaches to the restored agent).
   if (isErrorResponse(initializeResponse)) {
-    throw new Error(initializeResponse.error.message);
+    throw new AgenCDaemonResponseError(initializeResponse.error);
   }
   if (response === undefined) {
     throw new Error(`daemon did not return an ${method} response`);
   }
   if (isErrorResponse(response)) {
-    throw new Error(response.error.message);
+    throw new AgenCDaemonResponseError(response.error);
   }
   return resultFromDaemonResponse<Method>(response);
 }

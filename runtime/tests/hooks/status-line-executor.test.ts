@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
@@ -139,7 +139,9 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
       mode: "workspace_write",
       cwd: owner.cwd,
       env: { HOME: owner.home, AGENC_HOME: owner.home, PATH: "" },
-      sessionTempRoot: owner.home,
+      // A writable ancestor outside protected home still needs a read-only
+      // carve-out, which Landlock cannot express.
+      sessionTempRoot: dirname(owner.home),
       probe: () => ({
         kind: "ready",
         mode: "workspace_write",

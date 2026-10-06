@@ -23,7 +23,8 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
-import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
+import { lightPresentation } from "./tools/light-presentation.js";
+import { LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES, LIGHT_INITIAL_TOOL_NAMES, lightEditsWithApplyPatch } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -721,14 +722,19 @@ export function buildToolRegistry(
   });
   const shellTools = [
     createExecCommandTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      ...(options.lightMode === true
+        ? { onSessionYielded: () => markDiscovered(["write_stdin"]) }
+        : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
     createWriteStdinTool({
+      lightMode: options.lightMode,
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -768,18 +774,22 @@ export function buildToolRegistry(
   } as const;
   const firstClassFileTools = [
     createFileReadTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.lightMode || options.sparseLineNumbers === true) ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
     }),
     createFileWriteTool({
+      lightMode: options.lightMode,
       allowedPaths: [options.workspaceRoot],
       onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
@@ -1169,7 +1179,8 @@ export function buildToolRegistry(
     return specs.filter(
       (spec) =>
         (options.lightMode === true
-          ? LIGHT_INITIAL_TOOL_NAMES.has(spec.tool.name) ||
+          ? (lightEditsWithApplyPatch(options.getSession?.()?.services?.provider?.name)
+            ? LIGHT_APPLY_PATCH_INITIAL_TOOL_NAMES : LIGHT_INITIAL_TOOL_NAMES).has(spec.tool.name) ||
             (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
           : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
     );
@@ -1256,7 +1267,17 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const visible = visibleSpecs();
+      // The lean exec_command points at system.searchTools for its advanced fields, so it is lean
+      // only while that discovery tool is presented; otherwise the full schema is shown, as other
+      // capabilities fall back when discovery is unavailable.
+      const leanExec = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) &&
+        !discoveredToolNames.has("exec_command");
+      const tools = visible.map((spec) => {
+        const tool = toolToLLMTool(spec.tool);
+        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
+          ? lightPresentation(tool, { leanExec }) : tool;
+      });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(
         allSpecs()

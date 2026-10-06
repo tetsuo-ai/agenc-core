@@ -1,3 +1,4 @@
+import { withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import {
   closeSync,
   existsSync,
@@ -27,6 +28,8 @@ export interface SessionSnapshotWriteRecord {
 }
 
 export interface SessionSnapshotAtomicWriteOptions {
+  /** Cached owner hint; the active writer and persisted session link are rechecked. */
+  readonly oneShotRunId?: string;
   readonly updateRunLastSnapshotAt?: boolean;
   readonly replayOnStartup?: boolean;
   readonly verifyExisting?: boolean;
@@ -57,6 +60,26 @@ export function writeSessionSnapshotAtomically(
 ): void {
   if (options.verifyExisting && driver.state.inTransaction) {
     throw new Error("retryable snapshot writes require their own transaction");
+  }
+  const runId = options.oneShotRunId;
+  // This is an auxiliary snapshot of an explicitly active relaxed print run.
+  // Its canonical active marker already refuses recovery after a crash, and
+  // the existing close/promote seal checkpoints this same project's SQLite
+  // WAL before publishing success. Keep the write visible now, but avoid a
+  // second filesystem intent journal and its three per-snapshot syncs.
+  // Existing staged retries, foreign owners/scopes and full/resumed sessions
+  // retain the original durable staging path.
+  if (runId !== undefined && driver.isRelaxedOneShotRun(runId) &&
+      driver.prepareState<[string], { agent_id: string }>(
+        "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+      ).get(record.sessionId)?.agent_id === runId &&
+      !existsSync(pendingSnapshotPath(driver.projectDir, record))) {
+    const pending = describeSessionSnapshotWrite(driver.projectDir, record, options);
+    withOneShotWriteScope(driver.projectDir, runId, () => driver.transaction(() => {
+      insertPendingSessionSnapshotWrite(driver.state, pending, options.verifyExisting ? "verify" : "strict");
+      updateRunLastSnapshotAt(driver.state, pending);
+    }));
+    return;
   }
   const pending = stageSessionSnapshotWrite(driver.projectDir, record, options);
   try {
@@ -128,14 +151,7 @@ export function stageSessionSnapshotWrite(
   record: SessionSnapshotWriteRecord,
   options: SessionSnapshotAtomicWriteOptions = {},
 ): PendingSessionSnapshotWrite {
-  const pending: PendingSessionSnapshotWrite = {
-    path: pendingSnapshotPath(projectDir, record),
-    directory: pendingSnapshotDirectory(projectDir),
-    record,
-    updateRunLastSnapshotAt: options.updateRunLastSnapshotAt === true,
-    replayOnStartup: options.replayOnStartup === true,
-    verifyExisting: options.verifyExisting === true,
-  };
+  const pending = describeSessionSnapshotWrite(projectDir, record, options);
   const payload: SessionSnapshotWriteFile = {
     format: SNAPSHOT_WRITE_FORMAT,
     schemaVersion: SNAPSHOT_WRITE_SCHEMA_VERSION,
@@ -146,6 +162,21 @@ export function stageSessionSnapshotWrite(
   };
   atomicWriteFile(pending.directory, pending.path, `${JSON.stringify(payload)}\n`);
   return pending;
+}
+
+function describeSessionSnapshotWrite(
+  projectDir: string,
+  record: SessionSnapshotWriteRecord,
+  options: SessionSnapshotAtomicWriteOptions,
+): PendingSessionSnapshotWrite {
+  return {
+    path: pendingSnapshotPath(projectDir, record),
+    directory: pendingSnapshotDirectory(projectDir),
+    record,
+    updateRunLastSnapshotAt: options.updateRunLastSnapshotAt === true,
+    replayOnStartup: options.replayOnStartup === true,
+    verifyExisting: options.verifyExisting === true,
+  };
 }
 
 function commitPendingSessionSnapshotWrite(

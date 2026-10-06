@@ -300,6 +300,8 @@ describe("durable checkpoint reader", () => {
       role: "user",
       content: "resume this turn",
     });
+    source.reasoningOnlyRecoveryPending = true;
+    source.reasoningOnlyRecoveryCount = 2;
     source.textToolCallCorrectionCount = 2;
     source.textToolCallCorrection = { toolName: "mcp.qa.lookup", reason: "not_advertised" };
     source.modelSampleResumePrompt = "text_tool_call_correction";
@@ -328,6 +330,12 @@ describe("durable checkpoint reader", () => {
       content: "resume this turn",
     });
     restoreFromCheckpoint(restored, readable.checkpoint.resumableState);
+    expect(restored.reasoningOnlyRecoveryPending).toBe(true);
+    expect(restored.reasoningOnlyRecoveryCount).toBe(2);
+    for (const bad of [-1, 0.5, "2", null]) {
+      expect(() => readTurnCheckpoint({ ...event, resumableState: { ...event.resumableState, reasoningOnlyRecoveryCount: bad } })).toThrow(/reasoningOnlyRecoveryCount/);
+    }
+    expect(() => readTurnCheckpoint({ ...event, resumableState: { ...event.resumableState, reasoningOnlyRecoveryPending: "true" } })).toThrow(/reasoningOnlyRecoveryPending/);
     expect(restored.textToolCallCorrectionCount).toBe(2);
     expect(restored.textToolCallCorrection).toEqual(source.textToolCallCorrection);
     expect(restored.modelSampleResumePrompt).toBe("text_tool_call_correction");

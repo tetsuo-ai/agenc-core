@@ -76,6 +76,19 @@ export type Theme = {
   muted3: string
   line: string
   lineSoft: string
+  /** Fill behind the prompt input. It replaces the prompt border, so it must
+   *  stay visible against the terminal's own background. */
+  promptBackground: string
+  /** Brand purple: the user's ❯, the reply ●, and the working line. */
+  accent: string
+  /** Softer brand violet: file names, the model name, the shimmer peak. */
+  accentSoft: string
+  /** A tool step that finished. */
+  stepOk: string
+  /** A tool step that failed. */
+  stepFail: string
+  /** Band behind the user's own messages. */
+  userBand: string
   briefLabelWorker: string
   planModeWash: string
 
@@ -129,371 +142,6 @@ export const AURA_PLAN_GLYPHS = {
  * follows the terminal dark/light mode and resolves to a ThemeName at runtime.
  */
 export type ThemeSetting = TuiThemeSetting
-
-/**
- * Light theme using explicit RGB values to avoid inconsistencies
- * from users' custom terminal ANSI color definitions
- */
-const lightTheme: Theme = {
-  autoAccept: 'rgb(135,0,255)', // Electric violet
-  bashBorder: 'rgb(255,0,135)', // Vibrant pink
-  agenc: 'rgb(215,119,87)', // AgenC orange
-  agencShimmer: 'rgb(245,149,117)', // Lighter agenc orange for shimmer effect
-  agencBlue_FOR_SYSTEM_SPINNER: 'rgb(87,105,247)', // Medium blue for system spinner
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(117,135,255)', // Lighter blue for system spinner shimmer
-  permission: 'rgb(87,105,247)', // Medium blue
-  permissionShimmer: 'rgb(137,155,255)', // Lighter blue for shimmer effect
-  planMode: 'rgb(0,102,102)', // Muted teal
-  ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(153,153,153)', // Medium gray
-  promptBorderShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer effect
-  text: 'rgb(0,0,0)', // Black
-  inverseText: 'rgb(255,255,255)', // White
-  inactive: 'rgb(102,102,102)', // Dark gray
-  inactiveShimmer: 'rgb(142,142,142)', // Lighter gray for shimmer effect
-  subtle: 'rgb(175,175,175)', // Light gray
-  suggestion: 'rgb(87,105,247)', // Medium blue
-  remember: 'rgb(0,0,255)', // Blue
-  background: 'rgb(0,153,153)', // Cyan
-  success: 'rgb(44,122,57)', // Green
-  error: 'rgb(171,43,63)', // Red
-  warning: 'rgb(150,108,30)', // Amber
-  merged: 'rgb(135,0,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(200,158,80)', // Lighter amber for shimmer effect
-  diffAdded: 'rgb(105,219,124)', // Light green
-  diffRemoved: 'rgb(255,168,180)', // Light red
-  diffAddedDimmed: 'rgb(199,225,203)', // Very light green
-  diffRemovedDimmed: 'rgb(253,210,216)', // Very light red
-  diffAddedWord: 'rgb(47,157,68)', // Medium green
-  diffRemovedWord: 'rgb(209,69,75)', // Medium red
-  // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
-  green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
-  // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
-  // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
-  clawd_background: 'rgb(0,0,0)',
-  surfaceBackground: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(240, 240, 240)', // Slightly darker grey for optimal contrast
-  userMessageBackgroundHover: 'rgb(252, 252, 252)', // ≥250 to quantize distinct from base at 256-color level
-  messageActionsBackground: 'rgb(232, 236, 244)', // cool gray — darker than userMsg 240 (visible on white), slight blue toward `suggestion`
-  selectionBg: 'rgb(180, 213, 255)', // classic light-mode selection blue (macOS/VS Code-ish); dark fgs stay readable
-  bashMessageBackgroundColor: 'rgb(250, 245, 250)',
-  agencWash: 'rgb(248,236,255)',
-  worker: 'rgb(255,106,47)',
-  workerWash: 'rgb(255,235,226)',
-  successWash: 'rgb(230,248,236)',
-  errorWash: 'rgb(255,232,237)',
-  text2: 'rgb(45,45,45)',
-  muted3: 'rgb(190,190,190)',
-  line: 'rgb(210,210,210)',
-  lineSoft: 'rgb(235,235,235)',
-  briefLabelWorker: 'rgb(234,88,12)',
-  planModeWash: 'rgb(235,248,248)',
-
-  memoryBackgroundColor: 'rgb(230, 245, 250)',
-  rate_limit_fill: 'rgb(87,105,247)', // Medium blue
-  rate_limit_empty: 'rgb(39,47,111)', // Dark blue
-  // Brief/assistant mode
-  briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelAgenC: 'rgb(215,119,87)', // Brand orange
-  rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
-  rainbow_yellow: 'rgb(250,195,95)',
-  rainbow_green: 'rgb(145,200,130)',
-  rainbow_blue: 'rgb(130,170,220)',
-  rainbow_indigo: 'rgb(155,130,200)',
-  rainbow_violet: 'rgb(200,130,180)',
-  rainbow_red_shimmer: 'rgb(250,155,147)',
-  rainbow_orange_shimmer: 'rgb(255,185,137)',
-  rainbow_yellow_shimmer: 'rgb(255,225,155)',
-  rainbow_green_shimmer: 'rgb(185,230,180)',
-  rainbow_blue_shimmer: 'rgb(180,205,240)',
-  rainbow_indigo_shimmer: 'rgb(195,180,230)',
-  rainbow_violet_shimmer: 'rgb(230,180,210)',
-}
-
-/**
- * Light ANSI theme using only the 16 standard ANSI colors
- * for terminals without true color support
- */
-const lightAnsiTheme: Theme = {
-  autoAccept: 'ansi:magenta',
-  bashBorder: 'ansi:magenta',
-  agenc: 'ansi:redBright',
-  agencShimmer: 'ansi:yellowBright',
-  agencBlue_FOR_SYSTEM_SPINNER: 'ansi:blue',
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
-  permission: 'ansi:blue',
-  permissionShimmer: 'ansi:blueBright',
-  planMode: 'ansi:cyan',
-  ide: 'ansi:blueBright',
-  promptBorder: 'ansi:white',
-  promptBorderShimmer: 'ansi:whiteBright',
-  text: 'ansi:black',
-  inverseText: 'ansi:white',
-  inactive: 'ansi:blackBright',
-  inactiveShimmer: 'ansi:white',
-  subtle: 'ansi:blackBright',
-  suggestion: 'ansi:blue',
-  remember: 'ansi:blue',
-  background: 'ansi:cyan',
-  success: 'ansi:green',
-  error: 'ansi:red',
-  warning: 'ansi:yellow',
-  merged: 'ansi:magenta',
-  warningShimmer: 'ansi:yellowBright',
-  diffAdded: 'ansi:green',
-  diffRemoved: 'ansi:red',
-  diffAddedDimmed: 'ansi:green',
-  diffRemovedDimmed: 'ansi:red',
-  diffAddedWord: 'ansi:greenBright',
-  diffRemovedWord: 'ansi:redBright',
-  // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'ansi:red',
-  blue_FOR_SUBAGENTS_ONLY: 'ansi:blue',
-  green_FOR_SUBAGENTS_ONLY: 'ansi:green',
-  yellow_FOR_SUBAGENTS_ONLY: 'ansi:yellow',
-  purple_FOR_SUBAGENTS_ONLY: 'ansi:magenta',
-  orange_FOR_SUBAGENTS_ONLY: 'ansi:redBright',
-  pink_FOR_SUBAGENTS_ONLY: 'ansi:magentaBright',
-  cyan_FOR_SUBAGENTS_ONLY: 'ansi:cyan',
-  // Grove colors
-  professionalBlue: 'ansi:blueBright',
-  // Chrome colors
-  chromeYellow: 'ansi:yellow', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'ansi:redBright',
-  clawd_background: 'ansi:black',
-  surfaceBackground: 'ansi:black',
-  userMessageBackground: 'ansi:white',
-  userMessageBackgroundHover: 'ansi:whiteBright',
-  messageActionsBackground: 'ansi:white',
-  selectionBg: 'ansi:cyan', // lighter named bg for light-ansi; dark fgs stay readable
-  bashMessageBackgroundColor: 'ansi:whiteBright',
-  agencWash: 'ansi:white',
-  worker: 'ansi:redBright',
-  workerWash: 'ansi:whiteBright',
-  successWash: 'ansi:white',
-  errorWash: 'ansi:whiteBright',
-  text2: 'ansi:black',
-  muted3: 'ansi:blackBright',
-  line: 'ansi:white',
-  lineSoft: 'ansi:white',
-  briefLabelWorker: 'ansi:redBright',
-  planModeWash: 'ansi:whiteBright',
-
-  memoryBackgroundColor: 'ansi:white',
-  rate_limit_fill: 'ansi:yellow',
-  rate_limit_empty: 'ansi:black',
-  briefLabelYou: 'ansi:blue',
-  briefLabelAgenC: 'ansi:redBright',
-  rainbow_red: 'ansi:red',
-  rainbow_orange: 'ansi:redBright',
-  rainbow_yellow: 'ansi:yellow',
-  rainbow_green: 'ansi:green',
-  rainbow_blue: 'ansi:cyan',
-  rainbow_indigo: 'ansi:blue',
-  rainbow_violet: 'ansi:magenta',
-  rainbow_red_shimmer: 'ansi:redBright',
-  rainbow_orange_shimmer: 'ansi:yellow',
-  rainbow_yellow_shimmer: 'ansi:yellowBright',
-  rainbow_green_shimmer: 'ansi:greenBright',
-  rainbow_blue_shimmer: 'ansi:cyanBright',
-  rainbow_indigo_shimmer: 'ansi:blueBright',
-  rainbow_violet_shimmer: 'ansi:magentaBright',
-}
-
-/**
- * Dark ANSI theme using only the 16 standard ANSI colors
- * for terminals without true color support
- */
-const darkAnsiTheme: Theme = {
-  autoAccept: 'ansi:magentaBright',
-  bashBorder: 'ansi:magentaBright',
-  agenc: 'ansi:magentaBright',
-  agencShimmer: 'ansi:whiteBright',
-  agencBlue_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
-  permission: 'ansi:magentaBright',
-  permissionShimmer: 'ansi:whiteBright',
-  planMode: 'ansi:magentaBright',
-  ide: 'ansi:cyan',
-  promptBorder: 'ansi:magentaBright',
-  promptBorderShimmer: 'ansi:whiteBright',
-  text: 'ansi:whiteBright',
-  inverseText: 'ansi:black',
-  inactive: 'ansi:white',
-  inactiveShimmer: 'ansi:whiteBright',
-  subtle: 'ansi:blackBright',
-  suggestion: 'ansi:magentaBright',
-  remember: 'ansi:magentaBright',
-  background: 'ansi:magenta',
-  success: 'ansi:greenBright',
-  error: 'ansi:redBright',
-  warning: 'ansi:yellowBright',
-  merged: 'ansi:magentaBright',
-  warningShimmer: 'ansi:yellowBright',
-  diffAdded: 'ansi:green',
-  diffRemoved: 'ansi:red',
-  diffAddedDimmed: 'ansi:green',
-  diffRemovedDimmed: 'ansi:red',
-  diffAddedWord: 'ansi:greenBright',
-  diffRemovedWord: 'ansi:redBright',
-  // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'ansi:redBright',
-  blue_FOR_SUBAGENTS_ONLY: 'ansi:blueBright',
-  green_FOR_SUBAGENTS_ONLY: 'ansi:greenBright',
-  yellow_FOR_SUBAGENTS_ONLY: 'ansi:yellowBright',
-  purple_FOR_SUBAGENTS_ONLY: 'ansi:magentaBright',
-  orange_FOR_SUBAGENTS_ONLY: 'ansi:redBright',
-  pink_FOR_SUBAGENTS_ONLY: 'ansi:magentaBright',
-  cyan_FOR_SUBAGENTS_ONLY: 'ansi:cyanBright',
-  // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
-  // Chrome colors
-  chromeYellow: 'ansi:yellowBright', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'ansi:magentaBright',
-  clawd_background: 'ansi:black',
-  surfaceBackground: 'ansi:black',
-  userMessageBackground: 'ansi:blackBright',
-  userMessageBackgroundHover: 'ansi:magenta',
-  messageActionsBackground: 'ansi:blackBright',
-  selectionBg: 'ansi:magenta', // darker named bg for dark-ansi; bright fgs stay readable
-  bashMessageBackgroundColor: 'ansi:black',
-  agencWash: 'ansi:magenta',
-  worker: 'ansi:redBright',
-  workerWash: 'ansi:black',
-  successWash: 'ansi:black',
-  errorWash: 'ansi:black',
-  text2: 'ansi:white',
-  muted3: 'ansi:blackBright',
-  line: 'ansi:blackBright',
-  lineSoft: 'ansi:black',
-  briefLabelWorker: 'ansi:redBright',
-  planModeWash: 'ansi:black',
-
-  memoryBackgroundColor: 'ansi:blackBright',
-  rate_limit_fill: 'ansi:yellow',
-  rate_limit_empty: 'ansi:white',
-  briefLabelYou: 'ansi:blueBright',
-  briefLabelAgenC: 'ansi:magentaBright',
-  rainbow_red: 'ansi:red',
-  rainbow_orange: 'ansi:redBright',
-  rainbow_yellow: 'ansi:yellow',
-  rainbow_green: 'ansi:green',
-  rainbow_blue: 'ansi:cyan',
-  rainbow_indigo: 'ansi:blue',
-  rainbow_violet: 'ansi:magenta',
-  rainbow_red_shimmer: 'ansi:redBright',
-  rainbow_orange_shimmer: 'ansi:yellow',
-  rainbow_yellow_shimmer: 'ansi:yellowBright',
-  rainbow_green_shimmer: 'ansi:greenBright',
-  rainbow_blue_shimmer: 'ansi:cyanBright',
-  rainbow_indigo_shimmer: 'ansi:blueBright',
-  rainbow_violet_shimmer: 'ansi:magentaBright',
-}
-
-/**
- * Light daltonized theme (color-blind friendly) using explicit RGB values
- * to avoid inconsistencies from users' custom terminal ANSI color definitions
- */
-const lightDaltonizedTheme: Theme = {
-  autoAccept: 'rgb(135,0,255)', // Electric violet
-  bashBorder: 'rgb(0,102,204)', // Blue instead of pink
-  agenc: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
-  agencShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
-  agencBlue_FOR_SYSTEM_SPINNER: 'rgb(51,102,255)', // Bright blue for system spinner
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(101,152,255)', // Lighter bright blue for system spinner shimmer
-  permission: 'rgb(51,102,255)', // Bright blue
-  permissionShimmer: 'rgb(101,152,255)', // Lighter bright blue for shimmer
-  planMode: 'rgb(51,102,102)', // Muted blue-gray (works for color-blind)
-  ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(153,153,153)', // Medium gray
-  promptBorderShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer
-  text: 'rgb(0,0,0)', // Black
-  inverseText: 'rgb(255,255,255)', // White
-  inactive: 'rgb(102,102,102)', // Dark gray
-  inactiveShimmer: 'rgb(142,142,142)', // Lighter gray for shimmer effect
-  subtle: 'rgb(175,175,175)', // Light gray
-  suggestion: 'rgb(51,102,255)', // Bright blue
-  remember: 'rgb(51,102,255)', // Bright blue
-  background: 'rgb(0,153,153)', // Cyan (color-blind friendly)
-  success: 'rgb(0,102,153)', // Blue instead of green for deuteranopia
-  error: 'rgb(204,0,0)', // Pure red for better distinction
-  warning: 'rgb(255,153,0)', // Orange adjusted for deuteranopia
-  merged: 'rgb(135,0,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(255,183,50)', // Lighter orange for shimmer
-  diffAdded: 'rgb(153,204,255)', // Light blue instead of green
-  diffRemoved: 'rgb(255,204,204)', // Light red
-  diffAddedDimmed: 'rgb(209,231,253)', // Very light blue
-  diffRemovedDimmed: 'rgb(255,233,233)', // Very light red
-  diffAddedWord: 'rgb(51,102,204)', // Medium blue (less intense than deep blue)
-  diffRemovedWord: 'rgb(153,51,51)', // Softer red (less intense than deep red)
-  // Agent colors (daltonism-friendly)
-  red_FOR_SUBAGENTS_ONLY: 'rgb(204,0,0)', // Pure red
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(0,102,204)', // Pure blue
-  green_FOR_SUBAGENTS_ONLY: 'rgb(0,204,0)', // Pure green
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(255,204,0)', // Golden yellow
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(128,0,128)', // True purple
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(255,128,0)', // True orange
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(255,102,178)', // Adjusted pink
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(0,178,178)', // Adjusted cyan
-  // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
-  // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
-  clawd_background: 'rgb(0,0,0)',
-  surfaceBackground: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(220, 220, 220)', // Slightly darker grey for optimal contrast
-  userMessageBackgroundHover: 'rgb(232, 232, 232)', // ≥230 to quantize distinct from base at 256-color level
-  messageActionsBackground: 'rgb(210, 216, 226)', // cool gray — darker than userMsg 220, slight blue
-  selectionBg: 'rgb(180, 213, 255)', // light selection blue; daltonized fgs are yellows/blues, both readable on light blue
-  bashMessageBackgroundColor: 'rgb(250, 245, 250)',
-  agencWash: 'rgb(242,235,255)',
-  worker: 'rgb(255,128,0)',
-  workerWash: 'rgb(255,240,224)',
-  successWash: 'rgb(226,242,255)',
-  errorWash: 'rgb(255,232,232)',
-  text2: 'rgb(45,45,45)',
-  muted3: 'rgb(185,185,185)',
-  line: 'rgb(205,205,205)',
-  lineSoft: 'rgb(232,232,232)',
-  briefLabelWorker: 'rgb(255,128,0)',
-  planModeWash: 'rgb(240,246,250)',
-
-  memoryBackgroundColor: 'rgb(230, 245, 250)',
-  rate_limit_fill: 'rgb(51,102,255)', // Bright blue
-  rate_limit_empty: 'rgb(23,46,114)', // Dark blue
-  briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
-  rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
-  rainbow_yellow: 'rgb(250,195,95)',
-  rainbow_green: 'rgb(145,200,130)',
-  rainbow_blue: 'rgb(130,170,220)',
-  rainbow_indigo: 'rgb(155,130,200)',
-  rainbow_violet: 'rgb(200,130,180)',
-  rainbow_red_shimmer: 'rgb(250,155,147)',
-  rainbow_orange_shimmer: 'rgb(255,185,137)',
-  rainbow_yellow_shimmer: 'rgb(255,225,155)',
-  rainbow_green_shimmer: 'rgb(185,230,180)',
-  rainbow_blue_shimmer: 'rgb(180,205,240)',
-  rainbow_indigo_shimmer: 'rgb(195,180,230)',
-  rainbow_violet_shimmer: 'rgb(230,180,210)',
-}
 
 /**
  * Dark theme using explicit RGB values to avoid inconsistencies
@@ -562,6 +210,12 @@ const chromaticDarkTheme: Theme = {
   muted3: 'rgb(64,64,70)',
   line: 'rgb(52,53,57)',
   lineSoft: 'rgb(34,35,39)',
+  promptBackground: 'rgb(34,35,39)',
+  accent: 'rgb(206,92,255)',
+  accentSoft: 'rgb(178,140,255)',
+  stepOk: 'rgb(44,214,139)',
+  stepFail: 'rgb(255,79,122)',
+  userBand: 'rgb(36,25,49)',
   briefLabelWorker: 'rgb(255,151,72)',
   planModeWash: 'rgb(46,26,22)',
 
@@ -586,9 +240,13 @@ const chromaticDarkTheme: Theme = {
   rainbow_violet_shimmer: 'rgb(230,180,210)',
 }
 
-// The default dark experience is deliberately absolute monochrome: every
-// painted surface is black and every semantic foreground is white. Meaning is
-// carried by copy, glyphs, weight, and layout rather than hue.
+// Every theme starts monochrome: painted surfaces take one background
+// (black or white) and every foreground takes the opposite ink, so hierarchy
+// comes from weight and gray steps. A few accents then carry meaning: the
+// brand purple marks who speaks, green and red mark how a step ended and
+// what an edit changed. Glyphs and copy still carry the same meaning, so
+// color is never the only signal. The chromatic palette above supplies the
+// token list.
 const monochromeBackgroundTokens = new Set<keyof Theme>([
   'background',
   'diffAdded',
@@ -611,128 +269,162 @@ const monochromeBackgroundTokens = new Set<keyof Theme>([
   'rate_limit_empty',
 ])
 
-const monochromeToneOverrides: Partial<Theme> = {
+function monochromeTheme(
+  surface: string,
+  ink: string,
+  tones: Partial<Theme>,
+): Theme {
+  return Object.fromEntries(
+    (Object.keys(chromaticDarkTheme) as Array<keyof Theme>).map((token) => [
+      token,
+      tones[token] ??
+        (monochromeBackgroundTokens.has(token) || token === 'inverseText'
+          ? surface
+          : ink),
+    ]),
+  ) as Theme
+}
+
+const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
   inactive: 'rgb(112,112,112)',
   inactiveShimmer: 'rgb(142,142,142)',
   subtle: 'rgb(82,82,82)',
   muted3: 'rgb(68,68,68)',
   line: 'rgb(48,48,48)',
   lineSoft: 'rgb(34,34,34)',
-}
+  promptBackground: 'rgb(34,34,34)',
+  // Color only where it carries meaning: the brand purple marks who speaks,
+  // green and red mark how a step ended and what an edit changed.
+  accent: 'rgb(206,92,255)',
+  accentSoft: 'rgb(178,140,255)',
+  stepOk: 'rgb(44,214,139)',
+  stepFail: 'rgb(255,79,122)',
+  userBand: 'rgb(36,25,49)',
+  success: 'rgb(44,214,139)',
+  error: 'rgb(255,79,122)',
+  diffAdded: 'rgb(14,48,34)',
+  diffRemoved: 'rgb(56,20,32)',
+  diffAddedDimmed: 'rgb(10,30,22)',
+  diffRemovedDimmed: 'rgb(36,14,22)',
+  diffAddedWord: 'rgb(44,214,139)',
+  diffRemovedWord: 'rgb(255,79,122)',
+})
 
-const darkTheme = Object.fromEntries(
-  (Object.keys(chromaticDarkTheme) as Array<keyof Theme>).map((token) => [
-    token,
-    monochromeToneOverrides[token] ??
-      (monochromeBackgroundTokens.has(token) || token === 'inverseText'
-        ? 'rgb(0,0,0)'
-        : 'rgb(255,255,255)'),
-  ]),
-) as Theme
+// The light grays keep the dark theme's contrast against the surface, so
+// muted text reads the same weight on a white terminal.
+const lightTheme = monochromeTheme('rgb(255,255,255)', 'rgb(0,0,0)', {
+  inactive: 'rgb(118,118,118)',
+  inactiveShimmer: 'rgb(96,96,96)',
+  subtle: 'rgb(158,158,158)',
+  muted3: 'rgb(176,176,176)',
+  line: 'rgb(204,204,204)',
+  lineSoft: 'rgb(225,225,225)',
+  promptBackground: 'rgb(232,232,232)',
+  accent: 'rgb(134,46,200)',
+  accentSoft: 'rgb(110,70,190)',
+  stepOk: 'rgb(16,140,84)',
+  stepFail: 'rgb(204,32,72)',
+  userBand: 'rgb(244,238,252)',
+  success: 'rgb(16,140,84)',
+  error: 'rgb(204,32,72)',
+  diffAdded: 'rgb(222,246,232)',
+  diffRemoved: 'rgb(253,228,234)',
+  diffAddedDimmed: 'rgb(236,250,242)',
+  diffRemovedDimmed: 'rgb(254,240,243)',
+  diffAddedWord: 'rgb(16,140,84)',
+  diffRemovedWord: 'rgb(204,32,72)',
+})
+
+// Sixteen-color terminals have one gray on each side, so the ANSI themes use
+// the terminal's own palette for the muted tones and the prompt fill.
+const darkAnsiTheme = monochromeTheme('ansi:black', 'ansi:whiteBright', {
+  inactive: 'ansi:white',
+  inactiveShimmer: 'ansi:whiteBright',
+  subtle: 'ansi:blackBright',
+  muted3: 'ansi:blackBright',
+  line: 'ansi:blackBright',
+  lineSoft: 'ansi:blackBright',
+  promptBackground: 'ansi:blackBright',
+  accent: 'ansi:magentaBright',
+  accentSoft: 'ansi:magenta',
+  stepOk: 'ansi:greenBright',
+  stepFail: 'ansi:redBright',
+  userBand: 'ansi:blackBright',
+  success: 'ansi:greenBright',
+  error: 'ansi:redBright',
+  diffAddedWord: 'ansi:greenBright',
+  diffRemovedWord: 'ansi:redBright',
+})
+
+const lightAnsiTheme = monochromeTheme('ansi:whiteBright', 'ansi:black', {
+  inactive: 'ansi:blackBright',
+  inactiveShimmer: 'ansi:black',
+  subtle: 'ansi:white',
+  muted3: 'ansi:white',
+  line: 'ansi:white',
+  lineSoft: 'ansi:white',
+  promptBackground: 'ansi:white',
+  accent: 'ansi:magenta',
+  accentSoft: 'ansi:magenta',
+  stepOk: 'ansi:green',
+  stepFail: 'ansi:red',
+  userBand: 'ansi:white',
+  success: 'ansi:green',
+  error: 'ansi:red',
+  diffAddedWord: 'ansi:green',
+  diffRemovedWord: 'ansi:red',
+})
 
 /**
- * Dark daltonized theme (color-blind friendly) using explicit RGB values
- * to avoid inconsistencies from users' custom terminal ANSI color definitions
+ * Without truecolor (Apple Terminal, most 256-color terminals) a dark tint
+ * such as the user band's rgb(36,25,49) rounds to a saturated palette entry
+ * (#5f005f, a loud magenta), and a light tint rounds to plain white. Tinted
+ * backgrounds then fall back to the neutral prompt gray and the surface, so
+ * diffs keep only their green and red text. Foreground accents survive the
+ * 256-color palette and stay.
  */
-const darkDaltonizedTheme: Theme = {
-  autoAccept: 'rgb(175,135,255)', // Electric violet
-  bashBorder: 'rgb(51,153,255)', // Bright blue
-  agenc: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
-  agencShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
-  agencBlue_FOR_SYSTEM_SPINNER: 'rgb(153,204,255)', // Light blue for system spinner
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(183,224,255)', // Lighter blue for system spinner shimmer
-  permission: 'rgb(153,204,255)', // Light blue
-  permissionShimmer: 'rgb(183,224,255)', // Lighter blue for shimmer
-  planMode: 'rgb(102,153,153)', // Muted gray-teal (works for color-blind)
-  ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(136,136,136)', // Medium gray
-  promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
-  text: 'rgb(255,255,255)', // White
-  inverseText: 'rgb(0,0,0)', // Black
-  inactive: 'rgb(153,153,153)', // Light gray
-  inactiveShimmer: 'rgb(193,193,193)', // Lighter gray for shimmer effect
-  subtle: 'rgb(80,80,80)', // Dark gray
-  suggestion: 'rgb(153,204,255)', // Light blue
-  remember: 'rgb(153,204,255)', // Light blue
-  background: 'rgb(0,204,204)', // Bright cyan (color-blind friendly)
-  success: 'rgb(51,153,255)', // Blue instead of green
-  error: 'rgb(255,102,102)', // Bright red
-  warning: 'rgb(255,204,0)', // Yellow-orange for deuteranopia
-  merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(255,234,50)', // Lighter yellow-orange for shimmer
-  diffAdded: 'rgb(0,68,102)', // Dark blue
-  diffRemoved: 'rgb(102,0,0)', // Dark red
-  diffAddedDimmed: 'rgb(62,81,91)', // Dimmed blue
-  diffRemovedDimmed: 'rgb(62,44,44)', // Dimmed red
-  diffAddedWord: 'rgb(0,119,179)', // Medium blue
-  diffRemovedWord: 'rgb(179,0,0)', // Medium red
-  // Agent colors (daltonism-friendly, dark mode)
-  red_FOR_SUBAGENTS_ONLY: 'rgb(255,102,102)', // Bright red
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(102,178,255)', // Bright blue
-  green_FOR_SUBAGENTS_ONLY: 'rgb(102,255,102)', // Bright green
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(255,255,102)', // Bright yellow
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(178,102,255)', // Bright purple
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(255,178,102)', // Bright orange
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(255,153,204)', // Bright pink
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(102,204,204)', // Bright cyan
-  // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
-  // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
-  // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
-  clawd_background: 'rgb(0,0,0)',
-  surfaceBackground: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(55, 55, 55)', // Lighter grey for better visual contrast
-  userMessageBackgroundHover: 'rgb(70, 70, 70)',
-  messageActionsBackground: 'rgb(44, 50, 62)', // cool gray, slight blue
-  selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
-  bashMessageBackgroundColor: 'rgb(65, 60, 65)',
-  agencWash: 'rgb(35,40,48)',
-  worker: 'rgb(255,178,102)',
-  workerWash: 'rgb(45,39,29)',
-  successWash: 'rgb(18,34,45)',
-  errorWash: 'rgb(46,26,28)',
-  text2: 'rgb(206,205,212)',
-  muted3: 'rgb(64,64,70)',
-  line: 'rgb(52,53,57)',
-  lineSoft: 'rgb(34,35,39)',
-  briefLabelWorker: 'rgb(255,178,102)',
-  planModeWash: 'rgb(45,39,29)',
+const lowColorThemes = new WeakMap<Theme, Theme>()
+/**
+ * Whether row tints (a faint green or red behind a diff line) render as
+ * tints. Without truecolor they quantize to saturated palette colors, so
+ * rows carry their meaning in colored text alone.
+ */
+export function supportsRowTints(): boolean {
+  return chalk.level >= 3
+}
 
-  memoryBackgroundColor: 'rgb(55, 65, 70)',
-  rate_limit_fill: 'rgb(153,204,255)', // Light blue
-  rate_limit_empty: 'rgb(69,92,115)', // Dark blue
-  briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
-  rainbow_red: 'rgb(235,95,87)',
-  rainbow_orange: 'rgb(245,139,87)',
-  rainbow_yellow: 'rgb(250,195,95)',
-  rainbow_green: 'rgb(145,200,130)',
-  rainbow_blue: 'rgb(130,170,220)',
-  rainbow_indigo: 'rgb(155,130,200)',
-  rainbow_violet: 'rgb(200,130,180)',
-  rainbow_red_shimmer: 'rgb(250,155,147)',
-  rainbow_orange_shimmer: 'rgb(255,185,137)',
-  rainbow_yellow_shimmer: 'rgb(255,225,155)',
-  rainbow_green_shimmer: 'rgb(185,230,180)',
-  rainbow_blue_shimmer: 'rgb(180,205,240)',
-  rainbow_indigo_shimmer: 'rgb(195,180,230)',
-  rainbow_violet_shimmer: 'rgb(230,180,210)',
+function forTerminalColorDepth(theme: Theme): Theme {
+  if (chalk.level >= 3) return theme
+  let lowColor = lowColorThemes.get(theme)
+  if (lowColor === undefined) {
+    lowColor = {
+      ...theme,
+      userBand: theme.promptBackground,
+      diffAdded: theme.surfaceBackground,
+      diffRemoved: theme.surfaceBackground,
+      diffAddedDimmed: theme.surfaceBackground,
+      diffRemovedDimmed: theme.surfaceBackground,
+    }
+    lowColorThemes.set(theme, lowColor)
+  }
+  return lowColor
 }
 
 export function getTheme(themeName: ThemeName): Theme {
+  return forTerminalColorDepth(getBaseTheme(themeName))
+}
+
+function getBaseTheme(themeName: ThemeName): Theme {
   switch (themeName) {
     case 'light':
+    // Monochrome has no red/green pairs, so the color-blind variants share
+    // the base themes.
+    case 'light-daltonized':
       return lightTheme
     case 'light-ansi':
       return lightAnsiTheme
     case 'dark-ansi':
       return darkAnsiTheme
-    case 'light-daltonized':
-      return lightDaltonizedTheme
-    case 'dark-daltonized':
-      return darkDaltonizedTheme
     default:
       return darkTheme
   }

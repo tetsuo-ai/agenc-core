@@ -23,13 +23,9 @@ import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
-import { BrowserManager } from "../../browser/manager.js";
+import type { BrowserManager } from "../../browser/manager.js";
 import { resolveBrowserProjectRootSync } from "../../browser/profile-root.js";
-import {
-  BROWSER_NAMED_KEYS,
-  readBrowserNavigationFailureReceipt,
-  readBrowserNavigationPolicyRefusal,
-} from "../../browser/page.js";
+import { BROWSER_NAMED_KEYS } from "../../browser/named-keys.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
@@ -184,6 +180,10 @@ export function createBrowserTool(
     const initializing = (async () => {
       let created = injectedManager;
       if (created === undefined) {
+        const { BrowserManager } = await import("../../browser/manager.js");
+        if (isSandboxExecutionBrokerDisposed(sandboxExecutionBroker)) {
+          throw new Error("browser sandbox authority has been disposed");
+        }
         const policy = resolveBrowserPolicy(options.config);
         const agencHome = safeAgencHome(options.agencHome);
         created = new BrowserManager({
@@ -589,6 +589,7 @@ export function createBrowserTool(
             },
           };
         }
+        const { readBrowserNavigationPolicyRefusal, readBrowserNavigationFailureReceipt } = await import("../../browser/page.js");
         const refusal = readBrowserNavigationPolicyRefusal(err);
         if (
           refusal !== undefined &&

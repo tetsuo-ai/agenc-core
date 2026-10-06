@@ -41,6 +41,7 @@
  */
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
+import { isLightPrintRun } from "../prompts/light-print.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -163,7 +164,7 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
-  llmMessageToCheckpointResponseItem,
+  createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
 import {
@@ -924,6 +925,7 @@ async function prepareSamplingRequestBoundary(
   const attachments = await getAttachments({
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
+    lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -1614,6 +1616,7 @@ export async function drainInFlight(
           toolName,
           result.content,
           classifyUntrustedToolResult(toolName, registryTool),
+          session.services.runtimeOptions?.lightMode === true,
         );
         // Emit the tool_call_completed event so rollouts + observers
         // close the turn boundary with the synthetic result (I-8).
@@ -2434,6 +2437,7 @@ async function* runTurnKernelInner(
   // rollout) — only the cursor + content hash + the resumable TurnState
   // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
   const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
+  const projectCheckpointMessage = createCheckpointResponseItemProjector();
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
@@ -2470,7 +2474,7 @@ async function* runTurnKernelInner(
     const durablePrefix = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => llmMessageToCheckpointResponseItem(message));
+      .map((message) => projectCheckpointMessage(message));
     for (const message of durablePrefix) requireSealedToolResult(message);
     const prefixHash = computeCheckpointPrefixHashV3(
       durablePrefix,

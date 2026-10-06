@@ -1,10 +1,11 @@
-import { getGlobalDispatcher, type Dispatcher } from "undici";
+import type { Dispatcher } from "undici";
+import { getUndiciGlobalDispatcher } from "../undici-dispatcher.js";
 
 /** Keep a streaming POST from queuing other model requests in Node's H2 pool. */
 export function concurrentChatFetch(): typeof fetch {
   // Retain the existing dispatcher's proxy/TLS policy. This only changes ALPN
   // for these requests; it neither mutates nor takes ownership of that pool.
-  const dispatcher = getGlobalDispatcher().compose(
+  const dispatcher = getUndiciGlobalDispatcher().compose(
     (dispatch) => (options, handler) => {
       const http1Options = { ...options, allowH2: false };
       return dispatch(http1Options, handler);

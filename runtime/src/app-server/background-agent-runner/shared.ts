@@ -63,7 +63,7 @@ import type {
   SessionStatusLineExecuteResult,
 } from "../protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "../realtime.js";
-import type { AgenCRealtimeCallClient } from "../realtime-transport.js";
+import type { AgenCRealtimeCallClientLike } from "../realtime-transport.js";
 import type {
   RealtimeTransportConnection,
   RealtimeTransportRequest,
@@ -448,6 +448,7 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 export interface AgenCBackgroundAgentApplyConfigParams {
   readonly sessionId: string;
   readonly reasoningEffort?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly profile?: string;
   readonly reload?: boolean;
 }
@@ -457,6 +458,7 @@ export interface AgenCBackgroundAgentApplyConfigResult {
   readonly provider?: string;
   readonly model?: string;
   readonly runtimeSettingsEventId?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly summary: string;
 }
 
@@ -877,7 +879,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
-  readonly realtimeCallClient?: AgenCRealtimeCallClient;
+  readonly realtimeCallClient?: AgenCRealtimeCallClientLike;
   readonly realtimeConnectTransport?: AgenCBackgroundRealtimeTransportConnector;
   readonly onActiveAgentTerminated?: (
     agentId: string,

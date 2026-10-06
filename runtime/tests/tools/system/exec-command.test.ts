@@ -1,3 +1,4 @@
+import { createWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
+  LIGHT_DEFAULT_EXEC_YIELD_TIME_MS,
   createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
@@ -21,6 +23,9 @@ import {
   prepareReadOnlyInspectionInvocation,
 } from "../../permissions/readonly-inspection.js";
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
+import { buildFilteredRegistry, mergeRoleDisallowlist } from "../../agents/run-agent.js";
+import { BUILTIN_READONLY_DISALLOWLIST } from "../../agents/built-in-prompts.js";
+import { buildToolRegistry, type ToolRegistry } from "../../tool-registry.js";
 import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
@@ -143,13 +148,16 @@ describe("exec_command tool", () => {
       readonly added?: readonly string[];
       readonly approvalResolved?: boolean;
       readonly platformSandbox?: boolean;
+      readonly toolName?: string;
+      /** The session's tool registry, read for the file tools a refusal names. */
+      readonly registry?: ToolRegistry;
     } = {},
   ): Record<string, unknown> {
     const args: Record<string, unknown> = { ...overrides };
     const sandboxMode = options.sandboxMode ?? "danger_full_access";
     attachToolRuntimeContext(args, {
       callId: "call-context",
-      toolName: "exec_command",
+      toolName: options.toolName ?? "exec_command",
       runtimeKind: "function",
       classification: "exclusive",
       supportsParallelToolCalls: false,
@@ -174,7 +182,10 @@ describe("exec_command tool", () => {
                 },
               }
             : {}),
-          services: { runtimeOptions: { sessionTempRoot: root } },
+          services: {
+            runtimeOptions: { sessionTempRoot: root },
+            ...(options.registry !== undefined ? { registry: options.registry } : {}),
+          },
         },
         payload: { kind: "function", arguments: "{}" },
         turn: {
@@ -272,6 +283,67 @@ describe("exec_command tool", () => {
       );
       expect(result.content).toContain("require_escalated");
       expect(result.content).not.toContain("Do not run this command again");
+    });
+
+    test.each(["exec_command", "write_stdin"])("%s explains a finished DNS failure under disabled network", async toolName => {
+      const output = failedExecOutput("npm error getaddrinfo EAI_AGAIN registry.npmjs.org", 1);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "npx --no-install missing" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        sandboxMode: "read_only", platformSandbox: true, toolName,
+      }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("npm error getaddrinfo EAI_AGAIN");
+      expect(result.content).toContain("network access was disabled");
+      expect(result.content).toContain("approval is unavailable");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
+      const outside = await tool.execute(contextArgs(raw, { toolName }));
+      expect(outside.content).not.toContain("[sandbox]");
+    });
+
+    // Bypass runs under the never policy, but its escalation request is
+    // granted without asking and its prompt says so in a workspace-write
+    // sandbox. The notice must agree instead of calling the retry pointless.
+    test("a bypass session in a workspace-write sandbox is asked for one escalated retry", async () => {
+      const { tool } = toolWith(BIND_DENIED);
+      const options = { approvalPolicy: "never", sandboxMode: "workspace_write", platformSandbox: true };
+      const bypass = await tool.execute(
+        contextArgs({ cmd: "npm start", workdir: root }, { ...options, mode: "bypassPermissions" }),
+      );
+      expect(bypass.content).toContain("require_escalated");
+      expect(bypass.content).not.toContain("Do not run this command again");
+      const plain = await tool.execute(
+        contextArgs({ cmd: "npm start", workdir: root }, { ...options, mode: "default" }),
+      );
+      expect(plain.content).toContain("Do not run this command again");
+    });
+
+    test.each(["exec_command", "write_stdin"])("%s offers a bypass session the escalated retry for disabled network", async toolName => {
+      const output = failedExecOutput("npm error getaddrinfo EAI_AGAIN registry.npmjs.org", 1);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "npx --no-install missing" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true, toolName,
+      }));
+      expect(result.content).toContain("network access was disabled");
+      expect(result.content).toContain("approval flow before retrying");
+      expect(result.content).not.toContain("approval is unavailable");
     });
 
     test("an ordinary failure is left alone", async () => {
@@ -816,6 +888,176 @@ describe("exec_command tool", () => {
     });
   });
 
+  describe("the shell write fence in a bypassPermissions session with the sandbox on", () => {
+    /** Every name a refusal could send the model to. */
+    const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
+
+    function registryOf(names: readonly string[]): ToolRegistry {
+      const tools = names.map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: "object" } as const,
+        execute: async () => ({ content: "{}" }),
+      }));
+      return {
+        tools,
+        toLLMTools: () =>
+          tools.map((tool) => ({
+            type: "function" as const,
+            function: { name: tool.name, description: tool.name, parameters: { type: "object" } },
+          })),
+        dispatch: async () => ({ content: "{}" }),
+      } as unknown as ToolRegistry;
+    }
+
+    const PARENT_TOOLS = ["exec_command", "write_stdin", "FileRead", "Edit", "MultiEdit", "Write", "apply_patch"];
+
+    /** The registry a verification child gets: its role denies every file tool. */
+    function verificationRegistry(): ToolRegistry {
+      return buildFilteredRegistry(registryOf(PARENT_TOOLS), {
+        childConversationId: "verify-child",
+        disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
+      });
+    }
+
+    /**
+     * The live session: TUI bypass mode, approvals off, workspace_write
+     * sandbox. With the sandbox on, a command the fence allows still needs a
+     * platform sandbox to run: macOS always has one, Linux only with the
+     * helper, so the turn names one as the neighboring sandboxed tests do.
+     * Without it, Linux refuses the allowed commands with
+     * sandbox_required_unavailable before they reach the mock manager.
+     */
+    function liveArgs(cmd: string, registry: ToolRegistry): Record<string, unknown> {
+      return contextArgs({ cmd, workdir: root }, {
+        mode: "bypassPermissions",
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        approvalResolved: false,
+        platformSandbox: true,
+        registry,
+      });
+    }
+
+    test("a read-only subagent's refusal names no file tool it lacks", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const cmd = "echo hi > ./.vr-probe.txt";
+
+      // Preflight is where the live refusal came from (InputValidationError).
+      const preflight = tool.preflight?.(liveArgs(cmd, verificationRegistry()));
+      expect(preflight?.message).toContain("shell_workspace_file_write_disallowed");
+      expect(preflight?.message).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(preflight?.message).toContain("This session has no file editing tool");
+
+      const result = await tool.execute(liveArgs(cmd, verificationRegistry()));
+      expect(result.isError).toBe(true);
+      expect(result.content).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(result.content).toContain("tmp/, for example");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("an OpenAI Light session is pointed at its listed apply_patch", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      const registry = buildToolRegistry({
+        workspaceRoot: root,
+        lightMode: true,
+        requireAdmission: false,
+        getSession: () => ({ services: { provider: { name: "openai" } } }) as never,
+      });
+
+      const result = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("use apply_patch instead.");
+      expect(result.content).not.toMatch(/\b(?:Edit|Write)\b/u);
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("the main session's refusal still names Edit and Write", async () => {
+      const { tool, execCommand } = mockManagerTool();
+
+      const result = await tool.execute(
+        liveArgs("echo hi > ./.vr-probe.txt", registryOf(PARENT_TOOLS)),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("use Edit or Write instead");
+      expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test("still refuses a write target it cannot confirm, as the docs and the full-bypass tests define", async () => {
+      // bypassPermissions alone keeps every guard: the sandbox is still on.
+      // Only approvals bypassed AND no sandbox lift the unconfirmable-target
+      // refusal (see "runs a command with an unresolvable write target under
+      // the full bypass" above).
+      const { tool, execCommand } = mockManagerTool();
+      const cmd = 'echo hi > "$TMPDIR/vr-probe.txt"';
+
+      const sandboxed = await tool.execute(liveArgs(cmd, verificationRegistry()));
+      expect(sandboxed.isError).toBe(true);
+      expect(sandboxed.content).toContain("Unable to confirm workspace write targets");
+      expect(sandboxed.content).toContain("Name each file it writes with a literal path");
+      expect(sandboxed.content).not.toMatch(FILE_TOOL_NAME_RE);
+      expect(execCommand).not.toHaveBeenCalled();
+
+      const fullBypass = await tool.execute(
+        contextArgs({ cmd, workdir: root }, {
+          mode: "bypassPermissions",
+          approvalPolicy: "never",
+          sandboxMode: "danger_full_access",
+          registry: verificationRegistry(),
+        }),
+      );
+      expect(fullBypass.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+
+    test("an allowed command never lists the session's tools", async () => {
+      // Per-command overhead: listing the tools runs only while a refusal is
+      // written, never on the path an allowed command takes.
+      const base = registryOf(PARENT_TOOLS);
+      const toLLMTools = vi.fn(() => base.toLLMTools());
+      const getUnavailableToolNames = vi.fn(() => new Set<string>());
+      const toolsRead = vi.fn(() => base.tools);
+      const registry = {
+        get tools() {
+          return toolsRead();
+        },
+        toLLMTools,
+        getUnavailableToolNames,
+        dispatch: base.dispatch,
+      } as unknown as ToolRegistry;
+      const { tool, execCommand } = mockManagerTool();
+      await mkdir(join(root, "tmp"), { recursive: true });
+
+      for (const cmd of ["echo hi > tmp/vr-probe.txt", "ls -la", "rm -f tmp/vr-probe.txt"]) {
+        expect(tool.preflight?.(liveArgs(cmd, registry))).toBeNull();
+        const result = await tool.execute(liveArgs(cmd, registry));
+        expect(result.isError).toBeUndefined();
+      }
+      expect(execCommand).toHaveBeenCalledTimes(3);
+      expect(toLLMTools).not.toHaveBeenCalled();
+      expect(getUnavailableToolNames).not.toHaveBeenCalled();
+      expect(toolsRead).not.toHaveBeenCalled();
+
+      const refused = await tool.execute(liveArgs("echo hi > ./.vr-probe.txt", registry));
+      expect(refused.content).toContain("use Edit or Write instead");
+      expect(toLLMTools).toHaveBeenCalledTimes(1);
+    });
+
+    test("lets the way out it names through: a scratch file under the workspace's tmp", async () => {
+      const { tool, execCommand } = mockManagerTool();
+      await mkdir(join(root, "tmp"), { recursive: true });
+
+      const result = await tool.execute(
+        liveArgs("echo hi > tmp/vr-probe.txt", verificationRegistry()),
+      );
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test(
     "returns a session id for live PTY commands and write_stdin can resume it",
     async () => {
@@ -1003,6 +1245,33 @@ describe("exec_command tool", () => {
       expect(execCommand).not.toHaveBeenCalled();
     });
 
+    test.each(["aborted", "unavailable"] as const)("keeps %s effects unresolved and never classifies them as no-effect", async command_outcome => {
+      const { tool, execCommand } = mockManagerTool({ execCommand: vi.fn(async () => ({
+        ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome,
+      })) });
+      const result = await tool.execute(fullAccessArgs({ cmd: "printf partial" }));
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.metadata).toMatchObject({ commandOutcome: command_outcome });
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
+      expect(result.content).not.toContain("left processes");
+    });
+
+    test.each(["aborted", "unavailable"] as const)("write_stdin preserves %s uncertainty after a yielded command settles", async command_outcome => {
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30000,
+        execCommand: vi.fn(async () => completedExecOutput("")),
+        writeStdin: vi.fn(async () => ({ ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome })),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = createWriteStdinTool({ unifiedExecManager: manager, cwd: root, allowedPaths: [root] });
+      const result = await tool.execute(fullAccessArgs({ session_id: 17, chars: "" }));
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
+    });
+
     test("the residue note follows the footer when leftover processes were stopped", async () => {
       // Before: `nginx` returned exit 0, the daemon was gone, and the model
       // had no way to learn why. Now the result says so and points at detach.
@@ -1021,6 +1290,45 @@ describe("exec_command tool", () => {
       expect(result.content).toContain(RESIDUAL_PROCESSES_NOTE);
       expect(result.metadata).toMatchObject({ residualProcessesTerminated: true });
       expect(result.codeModeResult).toMatchObject({ residual_processes_terminated: true });
+    });
+  });
+
+  describe("Light default yield", () => {
+    function lightTool(lightMode: boolean) {
+      const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+        async () => completedExecOutput("ran"),
+      );
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand,
+        writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () => completedExecOutput("")),
+        closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+      };
+      return {
+        execCommand,
+        tool: createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager, lightMode }),
+      };
+    }
+
+    test("Light waits up to the yield ceiling when the model gives no yield, so a slow test run returns its result", async () => {
+      const { tool, execCommand } = lightTool(true);
+      await tool.execute(contextArgs({ cmd: "go test ./..." }));
+      expect(execCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ cmd: "go test ./...", yield_time_ms: LIGHT_DEFAULT_EXEC_YIELD_TIME_MS }),
+      );
+      expect(LIGHT_DEFAULT_EXEC_YIELD_TIME_MS).toBe(30_000);
+    });
+
+    test("an explicit yield, a tty and a Standard session keep their own windows", async () => {
+      const light = lightTool(true);
+      await light.tool.execute(contextArgs({ cmd: "npm run dev", yield_time_ms: 1_000 }));
+      expect(light.execCommand).toHaveBeenLastCalledWith(expect.objectContaining({ yield_time_ms: 1_000 }));
+      await light.tool.execute(contextArgs({ cmd: "python3", tty: true }));
+      expect(light.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
+
+      const standard = lightTool(false);
+      await standard.tool.execute(contextArgs({ cmd: "go test ./..." }));
+      expect(standard.execCommand.mock.calls.at(-1)?.[0]).not.toHaveProperty("yield_time_ms");
     });
   });
 

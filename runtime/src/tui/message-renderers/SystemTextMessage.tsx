@@ -3,7 +3,6 @@ import { Box, Text } from '../ink.js';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useState } from 'react';
-import sample from 'lodash-es/sample.js';
 import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../constants/figures.js';
 import { ToolStateGlyph } from '../components/ToolStateGlyph.js';
 import figures from 'figures';
@@ -13,7 +12,6 @@ import { FilePathLink } from '../components/FilePathLink';
 import { openPath } from '../../utils/browser.js';
 import * as teamMemSavedModule from './teamMemSaved';
 const teamMemSaved = feature('TEAMMEM') ? teamMemSavedModule : null;
-import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
 import { useContentWidth } from '../context/contentWidthContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemMemorySavedMessage } from '../../types/message';
@@ -390,7 +388,6 @@ function TurnDurationMessage({
 }): React.ReactNode {
   const bg = useSelectedMessageBg();
   const settings = useSettings();
-  const [verb] = useState(_temp4);
   const store = useAppStateStore();
   const [backgroundTaskSummary] = useState(() => {
     const tasks = store.getState().tasks;
@@ -413,20 +410,19 @@ function TurnDurationMessage({
   if (!showTurnDuration && !hasBudget) {
     return null;
   }
-  const turnDuration = showTurnDuration && `${verb} for ${duration}`;
+  const modelCalls = typeof message.modelCalls === "number" && message.modelCalls > 1
+    ? ` \u00B7 ${message.modelCalls} model calls`
+    : "";
+  const turnDuration = showTurnDuration && `done in ${duration}${modelCalls}`;
   const backgroundSuffix = backgroundTaskSummary && ` \u00B7 ${backgroundTaskSummary} still running`;
 
+  // A quiet closing line under each finished turn, aligned with the reply
+  // glyphs: no glyph of its own and the faintest gray.
   return (
     <Box flexDirection="row" marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
-      <Box minWidth={2}>
-        <Text dimColor={true}>{TEARDROP_ASTERISK}</Text>
-      </Box>
-      <Text dimColor={true}>{turnDuration}{budgetSuffix}{backgroundSuffix}</Text>
+      <ThemedText color="subtle">{turnDuration}{budgetSuffix}{backgroundSuffix}</ThemedText>
     </Box>
   );
-}
-function _temp4() {
-  return sample(TURN_COMPLETION_VERBS) ?? "Worked";
 }
 function MemorySavedMessage({
   message,

@@ -83,10 +83,11 @@ describe("session home authority architecture", () => {
       expect(source(name), name).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
     }
 
-    const sandboxEngine = source("sandbox/engine/index.ts")
-    expect(sandboxEngine).toContain("readonly sessionTempRoot: string")
-    expect(sandboxEngine).not.toContain("resolveSessionTempRoot")
-    expect(sandboxEngine).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
+    for (const name of ["sandbox/engine/index.ts", "sandbox/engine/policy.ts"]) {
+      expect(source(name), name).not.toContain("resolveSessionTempRoot")
+      expect(source(name), name).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
+    }
+    expect(source("sandbox/engine/policy.ts")).toContain("readonly sessionTempRoot: string")
     const sandboxManager = source("sandbox/engine/manager.ts")
     expect(sandboxManager).toContain("sessionTempRoot: string")
     expect(sandboxManager).not.toContain("resolveSessionTempRoot")

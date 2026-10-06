@@ -320,6 +320,8 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   applyDaemonConfig?(params: {
     profile?: string;
     reload?: boolean;
+    /** Apply only this effort to the idle session. */
+    reasoningEffort?: string;
   }): Promise<SessionApplyConfigResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   executeShellCommand?(
@@ -718,7 +720,7 @@ export function createDaemonTuiSession<
             cause: "daemon_delivery_failed",
             action: "session.cancelTurn",
             message:
-              "interrupt not acknowledged by the daemon (it may be unresponsive) — try ESC again, or restart the daemon",
+              "interrupt not acknowledged by the daemon (it may be unresponsive). Try ESC again, or restart the daemon",
           },
         });
       }
@@ -1666,6 +1668,9 @@ export function createDaemonTuiSession<
             sessionId,
             ...(p.profile !== undefined ? { profile: p.profile } : {}),
             ...(p.reload !== undefined ? { reload: p.reload } : {}),
+            ...(p.reasoningEffort !== undefined
+              ? { reasoningEffort: p.reasoningEffort }
+              : {}),
           } satisfies SessionApplyConfigParams);
           if (!result.applied) return result;
           if (
@@ -2445,6 +2450,18 @@ function createRuntimeSettingsReconciler(params: {
     barrier: async () => {
       await queue;
       if (failure !== null) throw failure;
+      // A connection gap cannot heal: the next "connected" state fails this
+      // reconciler because no authoritative snapshot is replayed. Fail now,
+      // before authority-dependent work (a submission) waits inside the
+      // client's reconnect and reaches the restarted daemon after the fence.
+      if (observedConnectionGap) {
+        fail(
+          new Error(
+            "daemon disconnected and cannot resume without an authoritative runtime-settings snapshot; re-attach is required",
+          ),
+        );
+        if (failure !== null) throw failure;
+      }
     },
     waitFor: async (eventId) => {
       if (eventId.length === 0) {

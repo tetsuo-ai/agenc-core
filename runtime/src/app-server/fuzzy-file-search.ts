@@ -1,3 +1,5 @@
+import { FuzzyFileSearchBoundaryError, MAX_FUZZY_QUERY_CODEPOINTS, MAX_FUZZY_RAW_ROOTS, MAX_FUZZY_RESULTS, MAX_FUZZY_FILE_ROOTS_UTF8_BYTES, MAX_FUZZY_FILE_ROOT_UTF8_BYTES } from "./fuzzy-file-search-boundary.js";
+export { FuzzyFileSearchBoundaryError, type FuzzyFileSearchBoundaryReason, MAX_FUZZY_QUERY_CODEPOINTS, MAX_FUZZY_RAW_ROOTS, MAX_FUZZY_RESULTS, MAX_FUZZY_FILE_ROOTS_UTF8_BYTES, MAX_FUZZY_FILE_ROOT_UTF8_BYTES } from "./fuzzy-file-search-boundary.js";
 /** Persistent, cancellation-safe fuzzy-file search for the daemon protocol. */
 
 import { watch, type FSWatcher } from "node:fs";
@@ -43,12 +45,7 @@ import type {
 } from "./protocol/index.js";
 
 export const DEFAULT_FUZZY_RESULTS = 50;
-export const MAX_FUZZY_RESULTS = 1_000;
-export const MAX_FUZZY_QUERY_CODEPOINTS = 256;
-export const MAX_FUZZY_RAW_ROOTS = 64;
 export const MAX_FUZZY_FILE_ROOTS = 32;
-export const MAX_FUZZY_FILE_ROOT_UTF8_BYTES = 16_384;
-export const MAX_FUZZY_FILE_ROOTS_UTF8_BYTES = 262_144;
 export const MAX_FUZZY_FILE_ACTIVE_ROOT_STATES = 64;
 export const MAX_FUZZY_WATCHERS = 64;
 export const MAX_FUZZY_CACHE_BYTES = 536_870_912;
@@ -1563,30 +1560,6 @@ function matcherMetadata(
     evaluatedCandidates,
     totalCandidates,
   };
-}
-
-export type FuzzyFileSearchBoundaryReason =
-  | "QUERY_LIMIT"
-  | "QUERY_ENCODING"
-  | "RAW_ROOT_COUNT_LIMIT"
-  | "UNAUTHORIZED_ROOT"
-  | "ROOT_PATH_LIMIT"
-  | "ROOT_BYTES_LIMIT"
-  | "ROOT_COUNT_LIMIT"
-  | "RESULT_LIMIT"
-  | "REFRESH_FLAG"
-  | "CACHE_LIMIT"
-  | "TRAVERSAL_LIMIT"
-  | "BUILD_QUEUE_LIMIT";
-
-export class FuzzyFileSearchBoundaryError extends Error {
-  constructor(
-    readonly reason: FuzzyFileSearchBoundaryReason,
-    message: string,
-  ) {
-    super(message);
-    this.name = "FuzzyFileSearchBoundaryError";
-  }
 }
 
 function validateSearchParamsBeforeIo(params: FuzzyFileSearchParams): void {

@@ -3158,6 +3158,40 @@ describe("AgenC daemon CLI", () => {
     },
   );
 
+  it("notifies the parent only after identity publication and lifecycle lock release", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const signalProcess = createSignalProcess();
+    let beforeReadyFinished = false;
+    const notifyReady = vi.fn(async () => {
+      expect(beforeReadyFinished).toBe(true);
+      expect(await readAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).toBe(host.pid);
+      expect(readDaemonRuntimeInfo(resolveAgenCDaemonRuntimeInfoPath(agencHome))?.pid).toBe(host.pid);
+      // This acquire would block if notification preceded the publication
+      // transaction's release. The parent uses the same barrier before proof.
+      const release = await acquireAgenCDaemonLifecycleLock(host);
+      await release();
+      signalProcess.emit("SIGTERM");
+    });
+    const host: AgenCDaemonCliHost = {
+      ...baseHost,
+      startupGuardReceiver: {
+        requested: new Promise<void>(() => {}), wasRequested: () => false,
+        notifyReady, acknowledgeAfterCleanup: async () => {}, close: () => {},
+      },
+    };
+    try {
+      await expect(runAgenCDaemonCli({ kind: "command", action: "run" }, {
+        host, io: createIo(), signalProcess,
+        beforeDaemonReady: () => {
+          expect(notifyReady).not.toHaveBeenCalled();
+          beforeReadyFinished = true;
+        },
+      })).resolves.toBe(0);
+      expect(notifyReady).toHaveBeenCalledOnce();
+    } finally { await rm(agencHome, { recursive: true, force: true }); }
+  });
+
   it("honors startup cancellation immediately after a blocked lifecycle lock", async () => {
     const agencHome = await tempAgencHome();
     const baseHost = createHost(agencHome);
@@ -3165,11 +3199,13 @@ describe("AgenC daemon CLI", () => {
     const releaseBlocker = await acquireAgenCDaemonLifecycleLock(baseHost);
     const acknowledgeAfterCleanup = vi.fn(async () => {});
     const beforeDaemonReady = vi.fn();
+    const notifyReady = vi.fn(async () => {});
     const host: AgenCDaemonCliHost = {
       ...baseHost,
       startupGuardReceiver: {
         requested: Promise.resolve(),
         wasRequested: () => true,
+        notifyReady,
         acknowledgeAfterCleanup,
         close: () => {},
       },
@@ -3190,6 +3226,7 @@ describe("AgenC daemon CLI", () => {
       await releaseBlocker();
       await expect(running).resolves.toBe(1);
       expect(beforeDaemonReady).not.toHaveBeenCalled();
+      expect(notifyReady).not.toHaveBeenCalled();
       expect(acknowledgeAfterCleanup).toHaveBeenCalledExactlyOnceWith(true);
       await expect(
         readAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome)),
@@ -3223,6 +3260,7 @@ describe("AgenC daemon CLI", () => {
       startupGuardReceiver: {
         requested: requestedPromise,
         wasRequested: () => requested,
+        notifyReady: async () => {},
         acknowledgeAfterCleanup,
         close: () => {},
       },
@@ -8262,6 +8300,9 @@ snapshot_max_bytes = 64
 
   it("retains a failed snapshot policy and its driver for a later close retry", async () => {
     const agencHome = await tempAgencHome();
+    // This fault injection needs an existing default-project policy. Fresh,
+    // unused projects intentionally no longer manufacture one at startup.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const host = createHost(agencHome);
     const io = createIo();
     const signalProcess = createSignalProcess();
@@ -8311,6 +8352,8 @@ snapshot_max_bytes = 64
 
   it("periodic snapshot failure in one project does not starve another project", async () => {
     const agencHome = await tempAgencHome();
+    // Exercise two real project policies, including the failing default one.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-periodic-other-"));
     await mkdir(join(otherCwd, ".git"));
     const host = createHost(agencHome);
@@ -8407,6 +8450,7 @@ function seedRecoverableDaemonState(
           ...(params.includeCommandEnvironment === false
             ? {}
             : { commandEnvironment: { PATH: "/usr/bin:/bin" } }),
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver
@@ -8626,6 +8670,7 @@ function seedRecoverableCompletedToolState(
           agentPath: `/root/${params.runId}`,
           runtimeOptions: TEST_RUNTIME_OPTIONS,
           commandEnvironment: { PATH: "/usr/bin:/bin" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver

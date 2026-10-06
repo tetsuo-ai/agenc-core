@@ -3829,13 +3829,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       // instead of "Welcome to AgenC"; the active step title still proves the
       // first-run wizard (not the transcript) is on screen.
       expect(output).toContain("agenc");
-      expect(output).toContain("Preflight");
+      expect(output).toContain("Theme");
       expect(output).not.toContain("messages:0");
       expect(providerProbe.promptProps.at(-1)).toEqual(
         expect.objectContaining({
           apiKeyStatus: "valid",
           onboardingInput: expect.objectContaining({
-            placeholder: "Press Enter to start setup",
+            placeholder: "Enter keeps dark",
             allowEmptySubmit: true,
           }),
         }),
@@ -3862,7 +3862,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
 
       expect(output).toContain("messages:0");
-      expect(output).not.toContain("Preflight");
+      expect(output).not.toContain("Theme");
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -5005,8 +5005,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     // for the hosted-access path, breaking the scripted anonymous flow.
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
-    // A starter turn requires verified model access; configuring later must
-    // finish onboarding without silently admitting an unauthenticated turn.
+    // Finishing setup never sends a message on the user's behalf.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response(JSON.stringify({ data: [] }), { status: 200 }),
     );
@@ -5041,26 +5040,19 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             );
           };
 
-          expect(output()).toContain("Preflight");
-          // This marker already exists before the invalid submission, so the
-          // next input can arrive before its error frame commits. That keeps
-          // this regression sensitive to stale passive-effect state writes.
-          await submit(
-            "summarize this repository",
-            "PressEntertocontinue,ortypenext.",
-          );
-          expect(output()).toContain("Preflight");
+          expect(output()).toContain("Theme");
+          await submit("summarize this repository", "Chooseathemenumber");
           expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
-          await submit("", "Use↑/↓andpressEnter,ortypeanumberorthemename.");
-          await submit(
-            "1",
-            "Use↑/↓andpressEnter,ortypeanumberorproviderslug.",
-          );
-          await submit("2", "OPENAI_API_KEY");
-          await submit("sk-onboarding-app-fixture", "ApproveBYOKAPIkey");
-          await submit("yes", "PressEntertokeepthesedefaults.");
-          await submit("", "PressEntertofinishonboarding");
-          await submit("", "spinner:requesting:");
+          // Frames after the first are cell diffs, so each marker is short
+          // text that is new on its step.
+          await submit("", "Whichprovider");
+          // By name: the mocked fetch makes local runtimes look running,
+          // and running providers move to the top of the list.
+          await submit("openai", "OPENAI_API_KEY");
+          // A key the provider accepts is saved at once; its models follow.
+          await submit("sk-onboarding-app-fixture", "acceptedthekey");
+          await submit("", "Ready");
+          await submit("", "messages:0");
 
           expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);
           expect(session.setPendingProviderSwitch).toHaveBeenCalledWith({
@@ -5068,12 +5060,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             model: "gpt-5",
           });
           expect(readOnboardingState({ agencHome }).completed).toBe(true);
-          expect(session.submit).toHaveBeenCalledTimes(1);
-          expect(session.submit).not.toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ source: "user" }),
-          );
-          expect(output()).toContain("spinner:requesting:");
+          // No starter message: the first turn is the user's own.
+          expect(session.submit).not.toHaveBeenCalled();
+          expect(output()).not.toContain("spinner:requesting:");
         },
       );
     } finally {
@@ -5142,18 +5131,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               );
             };
 
-            await submit(
-              "next",
-              "Use↑/↓andpressEnter,ortypeanumberorthemename.",
-            );
-            await submit(
-              "1",
-              "Use↑/↓andpressEnter,ortypeanumberorproviderslug.",
-            );
-            await submit("2", "OPENAI_API_KEY");
-            await submit("skip", "PressEntertoruntheconnectioncheck");
-            await submit("test", "Sandboxworkspace-write");
-            await submit("", "PressEntertofinishonboarding");
+            await submit("1", "Whichprovider");
+            await submit("openai", "OPENAI_API_KEY");
+            await submit("skip", "Ready");
 
             const completeOnboarding = providerProbe.promptSubmits.at(-1);
             expect(completeOnboarding).toBeDefined();
@@ -5182,7 +5162,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     },
   );
 
-  test("routes BYOK key approval through the real first-run TUI submission path", async () => {
+  test("routes a checked BYOK key through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const savedKeys = new Map<string, string>();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
@@ -5226,26 +5206,24 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             await new Promise((resolve) => setTimeout(resolve, 25));
           };
 
-          await submit("next");
           await submit("1");
-          await submit("1");
-          await submit("xai-app-key");
+          await submit("grok");
+          await submit("xai-app-key-for-tests");
 
           // Ink represents unchanged spaces with cursor-forward controls. Read
           // one synchronized frame, then normalize those renderer artifacts so
           // tokens from unrelated historical frames cannot satisfy the check.
-          const approvalFrame = stripAnsi(
+          const savedFrame = stripAnsi(
             extractLastSynchronizedFrame(output()),
           ).replace(/\s+/gu, "");
-          expect(approvalFrame).toContain("ApproveBYOKAPIkey");
-          expect(approvalFrame).toContain("...-key");
-          expect(approvalFrame).not.toContain("xai-app-key");
+          // Saved on the check, with no separate yes; the models follow.
+          expect(savedFrame).toContain("acceptedthekey,anditissaved.");
+          expect(savedFrame).toContain("WhichxAIGrok");
+          expect(savedFrame).not.toContain("xai-app-key-for-tests");
           // The full terminal history must also remain secret-free: checking
           // only the latest frame would miss a transient disclosure.
-          expect(output()).not.toContain("xai-app-key");
-
-          await submit("yes");
-          expect(savedKeys.get("grok")).toBe("xai-app-key");
+          expect(output()).not.toContain("xai-app-key-for-tests");
+          expect(savedKeys.get("grok")).toBe("xai-app-key-for-tests");
         },
       );
     } finally {
@@ -5301,12 +5279,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             await new Promise((resolve) => setTimeout(resolve, 50));
           };
 
-          await submit("next");
           await submit("1");
           await submit("deepseek");
+          // Saved on the check; Enter keeps the highlighted default model.
           await submit("sk-deepseek-onboarding-test");
-          await submit("yes");
-          await submit("next");
+          await submit("");
           await submit("done");
 
           expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);

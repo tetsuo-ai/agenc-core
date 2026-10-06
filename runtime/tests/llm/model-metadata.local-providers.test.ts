@@ -180,6 +180,103 @@ describe("provider metadata identity", () => {
   });
 });
 
+describe("official provider base URLs", () => {
+  const liveOpenAiListing = {
+    "https://api.openai.com/v1/models": {
+      json: { data: [{ id: "gpt-5", context_window: 8_192 }] },
+    },
+  };
+
+  test.each([
+    "https://api.openai.com/v1",
+    "https://api.openai.com/v1/",
+    "https://API.OPENAI.COM:443/v1/",
+  ])("OPENAI_BASE_URL=%s uses the curated catalog without a live request", async (baseUrl) => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a configured official OpenAI base URL uses the curated catalog", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://api.openai.com/v1/" } },
+    });
+    const resolved = await new ModelMetadataResolver({ fetchImpl: impl, env: {} })
+      .resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("an official environment URL takes precedence over a configured proxy", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://proxy.example/v1" } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: "https://api.openai.com/v1" },
+    }).resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    ["https://proxy.example/v1", "https://proxy.example/v1/models"],
+    ["https://api.openai.com/other", "https://api.openai.com/other/v1/models"],
+    ["http://api.openai.com/v1", "http://api.openai.com/v1/models"],
+    ["https://api.openai.com:444/v1", "https://api.openai.com:444/v1/models"],
+  ])("a different OpenAI base URL %s still uses live metadata", async (baseUrl, modelsUrl) => {
+    const { impl, calls } = recordingFetch({
+      [modelsUrl]: { json: { data: [{ id: "gpt-5", context_window: 8_192 }] } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 8_192,
+      source: "live_endpoint",
+    });
+    expect(calls.map((call) => call.url)).toEqual([modelsUrl]);
+  });
+
+  test("another hosted provider also skips only its official default", async () => {
+    const { impl, calls } = recordingFetch({
+      "https://api.deepseek.com/v1/models": {
+        json: { data: [{ id: "deepseek-flash", context_window: 8_192 }] },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1/" },
+    }).resolve({ provider: "deepseek", model: "deepseek-flash", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 1_048_576,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("local providers resolve the real context window", () => {
   test("ollama reads the architecture-prefixed context length", async () => {
     const { impl, calls } = recordingFetch({
@@ -304,7 +401,7 @@ describe("local providers resolve the real context window", () => {
 
     const info = await manager.getModelInfo("unlisted-model");
     expect(info.contextWindow).toBeGreaterThan(0);
-    if (baseUrl) {
+    if (baseUrl && baseUrl !== "https://api.openai.com/v1") {
       expect(calls[0]).toMatchObject({
         url: modelsUrl,
         authorization: "Bearer hosted-openai-key",

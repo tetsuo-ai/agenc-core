@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, transform } from "esbuild";
+import { verifyFreshStateSchemaSources } from "./fresh-state-schema-artifact.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,10 +87,21 @@ async function runBundle(config) {
     format: config.format?.[0] ?? "esm",
     loader: {},
     logLevel: "info",
+    // V8 parses every loaded chunk in full before running it, so source size
+    // is startup time. Identifiers and function names stay as written;
+    // dist/*.map maps positions back to the sources.
+    minifySyntax: true,
+    minifyWhitespace: true,
     outbase: "src",
     outdir: distDir,
     platform: config.platform ?? "node",
-    plugins: config.esbuildPlugins ?? [],
+    plugins: [{
+      name: "micro-print-entry-boundary",
+      setup(build) {
+        build.onResolve({ filter: /^\.\/micro-print-entry\.js$/ }, args =>
+          args.importer.endsWith("/src/bin/agenc.ts") ? { path: args.path, external: true } : null);
+      },
+    }, ...(config.esbuildPlugins ?? [])],
     sourcemap: config.sourcemap ?? true,
     splitting: true,
     target: config.target ?? "es2022",
@@ -98,6 +110,16 @@ async function runBundle(config) {
 
   config.esbuildOptions?.(options);
   await build(options);
+  // No shared application chunks in the resident client graph. The ordinary
+  // entry remains available as a dynamic fallback before session admission.
+  const micro = await build({
+    ...options,
+    entryPoints: ["src/bin/micro-print-entry.ts"],
+    splitting: false,
+    metafile: true,
+    plugins: (config.esbuildPlugins ?? []).filter(plugin => plugin.name !== "agenc-runtime-assets"),
+  });
+  await writeFile(join(distDir, "micro-print-imports.json"), JSON.stringify(micro.metafile, null, 2) + "\n");
 }
 
 function runDeclarations() {
@@ -148,9 +170,20 @@ function ensureSdkWorkspaceBuilt() {
 }
 
 async function main() {
+  await verifyFreshStateSchemaSources(runtimeRoot);
   ensureSdkWorkspaceBuilt();
   const config = normalizeConfig(await loadConfig());
   await runBundle(config);
+  const nativeBuild = spawnSync(
+    process.execPath,
+    [resolve(distDir, "bin/prepare-peer-credentials.js"), "--build"],
+    { cwd: runtimeRoot, stdio: "inherit" },
+  );
+  if (nativeBuild.error !== undefined || nativeBuild.status !== 0) {
+    throw new Error("peer credential native binding build failed", {
+      cause: nativeBuild.error,
+    });
+  }
   runDeclarations();
 }
 

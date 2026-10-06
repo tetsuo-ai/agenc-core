@@ -74,7 +74,7 @@ import {
   type ProviderTraceSink,
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
-import { resolveMainLoopReasoningEffort } from "../session/session-reasoning-effort.js";
+import { resolveMainLoopReasoningEffort, supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -87,6 +87,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  /** Snapshot of durable output-recovery intent, not a session config change. */
+  readonly reasoningOnlyRecovery?: true;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
@@ -292,8 +294,13 @@ export function buildProviderOptions(
         : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
+    ...(request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      session.services.provider.name,
+      session.config?.model ?? ctx.modelInfo.slug,
+    ) ? { disableThinkingForRecovery: true as const } : {}),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
+    responseDetailOverride: ctx.responseDetailOverride ?? undefined,
     serviceTier:
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"
@@ -653,7 +660,7 @@ function assistantMessageFromResponse(
   // clear user-visible body so the renderer doesn't show a blank turn.
   const text =
     apiError === "refusal" && visible.text.length === 0
-      ? "The model declined to answer this request (stop reason: refusal). No content was returned — rephrase the request or try a different model."
+      ? "The model declined to answer this request (stop reason: refusal). No content was returned. Rephrase the request or try a different model."
       : visible.text;
   return {
     uuid: crypto.randomUUID(),
@@ -1090,6 +1097,12 @@ export async function streamModel(
   const malformedToolNames = new Set<string>();
   state.truncatedToolCallNames = undefined;
   let receivedProviderChunk = false;
+  let startupLogIndexFlushed = false;
+  const flushStartupLogIndex = (): void => {
+    if (startupLogIndexFlushed) return;
+    startupLogIndexFlushed = true;
+    session.services.flushStartupLogIndex?.();
+  };
   let streamedCanonicalAssistantText = "";
 
   const resetCanonicalAssistantOutput = (): void => {
@@ -1116,6 +1129,8 @@ export async function streamModel(
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     if (scoped.signal.aborted) return;
+    // Includes tool-only chunks, before the early streaming executor can run.
+    flushStartupLogIndex();
     receivedProviderChunk = true;
     const previousVisibleText = display.visibleText;
     const previousPlanText = display.parser.planText;
@@ -1259,6 +1274,20 @@ export async function streamModel(
     resetCanonicalAssistantOutput();
     const messages = buildProviderMessages(request);
     const options = buildProviderOptions(request, ctx, scoped.signal, session);
+    if (options.disableThinkingForRecovery === true) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: {
+          cause: "thinking_disabled_recovery",
+          message: JSON.stringify({
+            configuredEffort: resolveMainLoopReasoningEffort(session, ctx),
+            effectiveThinking: "disabled",
+            maxOutputTokens: options.maxOutputTokens,
+            scope: "reasoning_only_output_recovery_sample",
+          }),
+        } },
+      });
+    }
     const recoveryFallback = state.pendingAdmissionFallback;
     const clearRecoveryFallback = (): void => {
       // Do not clear a newer recovery decision installed while this attempt
@@ -1303,6 +1332,8 @@ export async function streamModel(
       invoke: (admittedOptions) =>
         provider.chatStream(messages, onChunk, admittedOptions),
     });
+    // Some providers return an empty/nonstreamed result without any chunks.
+    flushStartupLogIndex();
     // Legacy admission-disabled providers can resolve after an abort. Never
     // accept that response as success. Admitted calls settle usage first.
     if (scoped.signal.aborted) throw scoped.signal.reason;
@@ -1339,6 +1370,7 @@ export async function streamModel(
     // error propagates so a retried attempt (reconnect ladder or the prewarm
     // fallback below) streams into fresh blocks instead of appending to, or
     // duplicating, reasoning the UI already rendered.
+    flushStartupLogIndex();
     closeOpenThinkingDisplays(thinkingDisplays, session);
     thinkingDisplays.clear();
     if (
@@ -1524,6 +1556,9 @@ export async function streamModel(
   // `tryRunSamplingRequest` can thread it through SamplingRequestResult
   // instead of returning a hardcoded {0,0,0}. Downstream auto-compact
   // and the outer runTurn usage accumulator depend on real numbers.
+  // This sample completed. A new cap can re-arm recovery in Phase 3;
+  // ordinary tool/final continuations return to normal thinking.
+  state.reasoningOnlyRecoveryPending = undefined;
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
@@ -1692,6 +1727,17 @@ export async function streamModel(
       throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
     }
     state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };
+  }
+  // A completed thinking-off recovery that yields a validated tool call or
+  // final answer is productive. Do not forgive visible/truncated retries,
+  // empty replies, rejected calls, caps, or transport failures.
+  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      providerName, session.config?.model ?? ctx.modelInfo.slug,
+    ) && state.pendingTextToolCallCorrection === undefined &&
+    (response.finishReason === "stop" || response.finishReason === "tool_calls") &&
+    (assistant.toolCalls.length > 0 ||
+      (response.finishReason === "stop" && Boolean(assistant.text?.trim())))) {
+    state.reasoningOnlyRecoveryCount = 0;
   }
   return state;
 }

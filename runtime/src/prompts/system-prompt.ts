@@ -34,6 +34,13 @@
  * @module
  */
 
+import {
+  lightBudgetWorkflow,
+  lightBudgetSystem,
+  lightBudgetActions,
+  LIGHT_BUDGET_DEADLINE,
+} from "./light-budget-prompt.js";
+import { lightEditsWithApplyPatch } from "../tools/light-profile.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -52,6 +59,7 @@ import { feature } from "bun:bundle";
 import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
+import { getResponseDetailSection } from "./response-detail.js";
 import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
@@ -75,6 +83,8 @@ import {
   selectOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import { isLightPrintRun } from "./light-print.js";
+import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -220,6 +230,9 @@ export const COMPLETION_CONTRACT_COHERENT_ENV = "AGENC_COMPLETION_CONTRACT_COHER
  * environment switch exists so one run can be measured with and without
  * it.
  */
+export const HEADLESS_DEADLINE_GUIDANCE =
+  `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`;
+
 export function getHeadlessCompletionSection(input: {
   readonly nonInteractive: boolean | undefined;
   readonly env: NodeJS.ProcessEnv;
@@ -243,7 +256,7 @@ export function getHeadlessCompletionSection(input: {
       ? // A deadline-bounded run (#2503) was killed mid-optimization with a
         // broken file on disk hours after it had a passing one. Keep the
         // verified result safe and finish inside the budget.
-        `This run has a fixed time budget and is stopped when it runs out; the runtime reports the remaining time at the start of each turn and on every tool result (time_remaining_sec). As soon as a result passes your checks, keep it: improve on a copy, and never leave the deliverable in a broken intermediate state. When the runtime says time is nearly up, stop exploring, restore your best verified state, and write the final message.`
+        HEADLESS_DEADLINE_GUIDANCE
       : `Turns and time are not the constraint; an unverified answer is. Keep working until every item on the checklist has been observed to pass, then stop.`,
     `The final message lists which requirements you verified and how, in a few lines.`,
   ];
@@ -526,7 +539,7 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    });
+    }, session.services?.providerEnvironment);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -776,6 +789,7 @@ export interface SystemPromptSessionSnapshot {
 }
 
 export interface AssembleSystemPromptOpts {
+  readonly lightProfile?: boolean;
   /** Captured session services that affect prompt assembly. */
   readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
@@ -932,8 +946,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "light":
-      // Light changes tool exposure only; keep the canonical work instructions.
-      return assembleSystemPrompt(opts);
+      return assembleSystemPrompt({ ...opts, lightProfile: true });
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(
@@ -1125,6 +1138,12 @@ export async function assembleSystemPrompt(
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
   const agentsEnabled = opts.agentsEnabled ?? false;
+  const light = opts.lightProfile === true || session.services?.runtimeOptions?.lightMode === true;
+  const lightPrint = isLightPrintRun(
+    { ...session.services?.runtimeOptions, lightMode: light },
+    session.services?.providerEnvironment,
+  );
+  const memorySection = getMemorySection(opts.memoryPrompt);
 
   const clientRendering = getClientRenderingSection(
     session.services?.providerEnvironment,
@@ -1144,6 +1163,10 @@ export async function assembleSystemPrompt(
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
       : {}),
   };
+  // Managed routing is resolved later by the delegated concrete adapter.
+  const responseDetail = envInfoInputs.provider === "openai" || envInfoInputs.provider === "agenc"
+    ? null
+    : getResponseDetailSection(ctx.responseDetailOverride);
 
   // Session-scoped reduced-prompt path. Never re-read process.env here: a
   // daemon can host concurrent sessions with different startup options.
@@ -1154,6 +1177,7 @@ export async function assembleSystemPrompt(
     const env = buildEnvInfoSection(envInfoInputs);
     const dynamicParts = [
       env,
+      ...(responseDetail === null ? [] : [responseDetail]),
       ...(clientRendering === null ? [] : [clientRendering]),
     ];
     const sections = [intro, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ...dynamicParts];
@@ -1191,7 +1215,18 @@ export async function assembleSystemPrompt(
   // descriptions; its default depends on the provider
   // (prompts/lean-system-prompt.ts).
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
-  const staticSections: Array<string | null> = lean
+  const staticSections: Array<string | null> = light
+    ? [
+        lightBudgetWorkflow(opts.outputStyle != null, lightEditsWithApplyPatch(envInfoInputs.provider)),
+        lightBudgetSystem(),
+        lightBudgetActions(),
+        session.services?.runtimeOptions?.nonInteractive === true
+          ? null : getMemoryInstructionsSection(opts.memoryInstructions),
+        typeof session.services?.runtimeOptions?.deadlineAt === "number"
+          ? LIGHT_BUDGET_DEADLINE
+          : null,
+      ]
+    : lean
     ? [
         getLeanIntroSection(opts.outputStyle != null),
         getLeanSystemSection(),
@@ -1236,6 +1271,10 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
+            }, {
+              light,
+              lightPrint,
+              escalationConfined: escalationStaysConfined(session),
             }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
@@ -1251,7 +1290,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
-      () => getMemorySection(opts.memoryPrompt),
+      () => lightPrint && memorySection !== null
+        ? `Workspace: ${cwd}. ${memorySection}`
+        : memorySection,
       "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1264,7 +1305,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => lightPrint && memorySection !== null
+        ? null
+        : light ? `Workspace: ${cwd}` : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1278,6 +1321,11 @@ export async function assembleSystemPrompt(
       "output style is a per-turn preference",
     ),
     DANGEROUS_uncachedSystemPromptSection(
+      "response_detail",
+      () => responseDetail,
+      "response detail can change between turns without changing the cached head",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
       "mcp_instructions",
       () => getMcpInstructionsSection(opts.mcpServers),
       "MCP servers connect/disconnect between turns",
@@ -1289,7 +1337,7 @@ export async function assembleSystemPrompt(
     ),
     // The lean head leaves the token-target explanation to the continuation
     // message the runtime sends when a target is set.
-    ...(feature("TOKEN_BUDGET") && !lean
+    ...(feature("TOKEN_BUDGET") && !lean && !light
       ? [
           systemPromptSection(
             "token_budget",

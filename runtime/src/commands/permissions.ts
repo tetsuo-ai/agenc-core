@@ -73,9 +73,8 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  openPermissionsMenu,
-  type PermissionsMenuController,
+import type {
+  PermissionsMenuController,
 } from "./permissions-menu.js";
 import {
   configStoreFromCommandContext,
@@ -430,7 +429,7 @@ async function addRuleFromCommand(
   if (persistTo) {
     if (behavior === "allow" && persistTo !== "userSettings") {
       persistNote =
-        " (session only — repository files cannot store permission approvals)";
+        " (session only: repository files cannot store permission approvals)";
     } else {
       const wrote = await addPermissionRulesToConfig({
         destination: persistTo,
@@ -440,7 +439,7 @@ async function addRuleFromCommand(
       });
       persistNote = wrote
         ? ` (persisted to ${persistTo})`
-        : ` (persist skipped — managed settings or no writable target)`;
+        : ` (persist skipped: managed settings or no writable target)`;
     }
   }
 
@@ -737,7 +736,7 @@ async function handleAcceptBypassSubcommand(
   // proceed with the bypass activation in this session.
   let persistNote = "";
   if (configStore === null) {
-    persistNote = " (persist skipped — runtime-state authority unavailable)";
+    persistNote = " (persist skipped: runtime-state authority unavailable)";
   } else {
     try {
       recordBypassPermissionsConsent(
@@ -824,7 +823,12 @@ export const permissionsCommand: SlashCommand = {
       }
       const raw = ctx.argsRaw.trim();
       if (raw === "") {
-        if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
+        if (
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./permissions-menu.js")).openPermissionsMenu(
+            ctx, registry.current(), permissionsMenuController(registry, ctx),
+          )
+        ) {
           return { kind: "skip" };
         }
         return { kind: "text", text: formatRuleList(registry.current()) };
@@ -835,7 +839,12 @@ export const permissionsCommand: SlashCommand = {
 
       switch (sub) {
         case "list":
-          if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
+          if (
+            typeof ctx.appState?.setToolJSX === "function" &&
+            (await import("./permissions-menu.js")).openPermissionsMenu(
+              ctx, registry.current(), permissionsMenuController(registry, ctx),
+            )
+          ) {
             return { kind: "skip" };
           }
           return { kind: "text", text: formatRuleList(registry.current()) };

@@ -140,14 +140,14 @@ async function changeSwarmMode(ctx: SlashCommandContext, requested: boolean): Pr
   return {
     kind: "text",
     text: effective
-      ? "swarm mode ON — adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy)."
-      : "swarm mode OFF — the agent works sequentially unless a swarm is explicitly requested.",
+      ? "swarm mode ON. Adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy)."
+      : "swarm mode OFF. The agent works sequentially unless a swarm is explicitly requested.",
   };
 }
 
 export const swarmCommand: SlashCommand = {
   name: "swarm",
-  description: "Enable adaptive multi-agent routing — /swarm on|off",
+  description: "Enable adaptive multi-agent routing (/swarm on|off)",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) =>

@@ -42,6 +42,7 @@ export interface WorkflowStatusStep {
 
 export interface WorkflowRunStatus {
   readonly runId: string;
+  readonly lightMode?: boolean;
   readonly control: RunWorkflowControlState;
   /** Volatile execution health; never substitutes for the durable terminal. */
   readonly runtimeFailure?: RunWorkflowRuntimeFailure;
@@ -147,6 +148,7 @@ export function projectWorkflowStatus(input: {
           ? { cumulativeCostEstimated: true } : {}) } : undefined;
   return {
     runId: input.runId,
+    ...(sourceSpec !== undefined ? { lightMode: sourceSpec.lightMode === true } : {}),
     ...(completedResult !== undefined ? { completedResult } : {}),
     ...((spec as WorkflowSpec | undefined)?.continuationOf !== undefined
       ? { continuationOf: (spec as WorkflowSpec).continuationOf } : {}),

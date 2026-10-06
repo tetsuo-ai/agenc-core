@@ -712,7 +712,8 @@ export function createWorkflowSessionSeams(
         : mergeDaemonClientEnvironment(environment, envOverrides)!;
       const boot = await bootstrap({
         env: runEnvironment,
-        runtimeOptions: resolveAgentRuntimeOptions(runEnvironment),
+        runtimeOptions: resolveAgentRuntimeOptions(runEnvironment,
+          resolvedPolicy?.lightMode !== undefined ? { lightMode: resolvedPolicy.lightMode } : {}),
         ...(options.authBackend !== undefined
           ? { authBackend: options.authBackend }
           : {}),

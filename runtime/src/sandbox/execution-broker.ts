@@ -67,6 +67,7 @@ import {
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
+import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "./agenc-home-protection.js";
 import { protectDaemonSocket } from "./daemon-socket-protection.js";
 import {
   confineProfileToWorktree,
@@ -137,6 +138,8 @@ export interface SandboxExecutionStatus {
     readonly reason: string;
     readonly remediation: string;
   };
+  /** The workspace policy cannot be enforced by the active fallback. */
+  readonly landlockPolicyRefusal?: string;
 }
 
 export interface SandboxSpawnCommand {
@@ -255,9 +258,11 @@ export function requiredSandboxExecutionError(
   status: SandboxExecutionStatus,
 ): SandboxExecutionError {
   return new SandboxExecutionError({
-    code: status.reason?.startsWith("probe:")
-      ? "sandbox_probe_failed"
-      : "sandbox_required_unavailable",
+    code: status.landlockPolicyRefusal !== undefined
+      ? "sandbox_policy_unexpressible"
+      : status.reason?.startsWith("probe:")
+        ? "sandbox_probe_failed"
+        : "sandbox_required_unavailable",
     surface,
     status,
   });
@@ -560,6 +565,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #desktopAuthorityRoot: string;
+  readonly #agencHome: string;
   readonly #cronAuthorityRoots: readonly string[];
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
@@ -586,6 +592,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
     this.#desktopAuthorityRoot = desktopAuthorityRoot(undefined, this.#env);
+    this.#agencHome = sandboxAgencHome(undefined, this.#env);
     this.#cronAuthorityRoots = cronLockAuthorityRoots();
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
@@ -1077,7 +1084,30 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
         : {}),
     });
-    return this.#status;
+    const host = this.#status;
+    if (
+      this.#platform !== "linux" || this.mode !== "workspace_write" ||
+      host.kind !== "ready" || host.landlockFallback === undefined
+    ) return host;
+    const profile = this.#protectedProfile();
+    const plan = this.#planLandlockPolicy({
+      fileSystem: this.#confineToWorktree("tool", profile, this.#sessionTempRoot).fileSystem,
+      sandboxPolicyCwd: this.#cwd,
+      sessionTempRoot: this.#sessionTempRoot,
+      allowNetworkForProxy: false,
+      inheritedCwd: false,
+    });
+    if (plan.kind === "ok") return host;
+    return {
+      ...host,
+      kind: "unavailable",
+      landlockPolicyRefusal: plan.reason,
+      reason: `the Landlock fallback cannot express the workspace-write policy: ${plan.reason}`,
+      remediation:
+        "Install bubblewrap and allow unprivileged user namespaces. " +
+        "In Docker, use seccomp/AppArmor settings that permit bubblewrap, or run outside the container. " +
+        host.landlockFallback.remediation,
+    };
   }
 
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus {
@@ -1087,9 +1117,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   #assertReadyAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
+    allowPolicyRefusal = false,
   ): SandboxExecutionStatus {
     const status = this.status();
-    if (!this.required || status.kind === "ready") return status;
+    if (
+      !this.required || status.kind === "ready" ||
+      (allowPolicyRefusal && status.landlockPolicyRefusal !== undefined)
+    ) return status;
     throw requiredSandboxExecutionError(surface, status);
   }
 
@@ -1103,6 +1137,21 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   #routineConfines(surface: SandboxExecutionSurface): boolean {
     return this.#routineChildTempRoot !== undefined &&
       !ROUTINE_SERVICE_SURFACES.has(surface);
+  }
+
+  #protectedProfile(): PermissionProfile {
+    return this.#protectProfile(this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
+      cwd: this.#cwd,
+    }));
+  }
+
+  #protectProfile(profile: PermissionProfile): PermissionProfile {
+    return protectAgencHomeUnderWritableRoot(
+      protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+        profile, this.#desktopAuthorityRoot,
+      ), this.#cronAuthorityRoots)),
+      this.#agencHome, this.#cwd, this.#sessionTempRoot,
+    );
   }
 
   /** A worktree child's command surface: its profile writes inside the worktree only. */
@@ -1121,14 +1170,10 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
-    const status = this.#assertReadyAfterLifecycleAdmission(surface);
-    const profile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
-      this.#permissionProfile ??
-      permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
-      this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots));
+    // A spawn may tighten the session profile; its exact policy is checked
+    // immediately before launch by #preflightLandlockPlan.
+    const status = this.#assertReadyAfterLifecycleAdmission(surface, true);
+    const profile = this.#protectedProfile();
     const confined = this.#routineConfines(surface);
     const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {
@@ -1184,7 +1229,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       // A surface may TIGHTEN its own boundary (plugin MCP servers confined
       // to their data dir) — never widen a stricter global mode, so the
       // override applies only under workspace_write.
-      const runtimeSandbox =
+      let runtimeSandbox =
         modeSandbox !== undefined &&
         command.permissionProfileOverride !== undefined &&
         this.mode === "workspace_write"
@@ -1192,11 +1237,25 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
               ...modeSandbox,
               permissionProfile: this.#confineToWorktree(
                 surface,
-                protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots)),
+                this.#protectProfile(command.permissionProfileOverride),
                 modeSandbox.sessionTempRoot,
               ),
             }
           : modeSandbox;
+      if (runtimeSandbox !== undefined && command.additionalPermissions !== undefined &&
+          !this.#routineConfines(surface)) {
+        // A per-command grant can introduce a containing root after the base
+        // profile was protected. Inspect the final grants, but add only the
+        // reservation here; the existing transform still owns their merge.
+        runtimeSandbox = {
+          ...runtimeSandbox,
+          permissionProfile: protectAgencHomeUnderWritableRoot(
+            runtimeSandbox.permissionProfile, this.#agencHome, this.#cwd,
+            runtimeSandbox.sessionTempRoot,
+            effectivePermissionProfile(runtimeSandbox.permissionProfile, command.additionalPermissions),
+          ),
+        };
+      }
       const resolvedProgram = resolveSpawnExecutable({
         program: command.program,
         cwd: command.cwd,
@@ -1716,7 +1775,7 @@ function probeLinuxSandbox(options: {
   readonly agencLinuxSandboxExe?: string;
 }): SandboxExecutionStatus {
   const helper = resolveTrustedLinuxSandboxExecutable(
-    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(),
+    options.agencLinuxSandboxExe ?? resolveDefaultLinuxSandboxExecutable(undefined, options.env),
     options.cwd,
   );
   if (helper.error !== undefined) {
@@ -1939,12 +1998,13 @@ function executableFile(
 
 export function resolveDefaultLinuxSandboxExecutable(
   moduleUrl = import.meta.url,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   // Dev checkouts live inside the writable workspace, which trips the
   // "helper must be outside the workspace" trust invariant enforced by
   // resolveTrustedLinuxSandboxExecutable. AGENC_LINUX_SANDBOX_EXE points at a
   // helper installed outside the workspace; packaged installs never need it.
-  const override = process.env.AGENC_LINUX_SANDBOX_EXE;
+  const override = env.AGENC_LINUX_SANDBOX_EXE;
   if (override !== undefined && override.trim() !== "") {
     return override;
   }

@@ -499,7 +499,7 @@ async function runConfigValidate(
   }
   if (warnings.length > 0) {
     io.stderr.write(
-      `agenc: config validation produced ${warnings.length} warning(s) — see above. Treating as failure.\n`,
+      `agenc: config validation produced ${warnings.length} warning(s). See above. Treating as failure.\n`,
     );
     return 1;
   }

@@ -24,6 +24,7 @@ async function statusRow() {
     cwd: workspace,
     home: workspace,
     argsRaw: "",
+    appState: { setToolJSX: vi.fn() },
   });
   expect(result.kind).toBe("skip");
   const snapshot = vi.mocked(openStatusDashboard).mock.lastCall?.[1];

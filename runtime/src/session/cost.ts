@@ -29,7 +29,7 @@ import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
-import { OPENROUTER_MODELS } from "../llm/registry/openrouter-models.js";
+import { OPENROUTER_PRICING } from "../llm/registry/openrouter-pricing.js";
 import {
   AGENC_DEEPSEEK_V41_GENERATION,
   AGENC_DEEPSEEK_V41_MODEL,
@@ -1113,7 +1113,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // them as a known bill or use them directly for admission. Only explicit
     // free routes with no additional charges are known zero. Response cost wins.
     // https://openrouter.ai/docs/guides/routing/provider-selection
-    ...Object.fromEntries(OPENROUTER_MODELS.flatMap((model) => {
+    ...Object.fromEntries(OPENROUTER_PRICING.flatMap((model) => {
       const input = Number(model.pricing.prompt);
       const output = Number(model.pricing.completion);
       if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0 ||

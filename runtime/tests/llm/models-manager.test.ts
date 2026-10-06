@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { mergeConfigs, defaultConfig } from "../config/schema.js";
 import { StaticModelsManager } from "./models-manager.js";
+import { ModelRegistry } from "../../src/llm/model-registry.js";
 import { CONSERVATIVE_CONTEXT_WINDOW_TOKENS } from "./model-metadata.js";
 
 function jsonResponse(value: unknown): Response {
@@ -12,6 +13,27 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("StaticModelsManager", () => {
+  it("defers picker enumeration until requested and shares the cached list", async () => {
+    const enumerate = vi.spyOn(ModelRegistry.prototype, "listEntriesSync");
+    try {
+      const manager = new StaticModelsManager({
+        config: defaultConfig(),
+        fallbackProvider: "openai",
+      });
+      expect(enumerate).not.toHaveBeenCalled();
+      expect(await manager.getModelInfo("gpt-5")).toMatchObject({ slug: "gpt-5" });
+      expect(enumerate).not.toHaveBeenCalled();
+      const picker = manager.tryListModels();
+      expect(picker?.length).toBeGreaterThan(0);
+      expect(enumerate).toHaveBeenCalledTimes(1);
+      expect(await manager.listModels()).toBe(picker);
+      expect(manager.tryListModels()).toBe(picker);
+      expect(enumerate).toHaveBeenCalledTimes(1);
+    } finally {
+      enumerate.mockRestore();
+    }
+  });
+
   it("returns concrete metadata for known built-in models", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),

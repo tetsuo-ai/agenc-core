@@ -23,7 +23,7 @@ export function assertNonEmptyApiKey(
   const value = apiKey?.trim();
   if (!value) {
     throw new Error(
-      `${providerName} provider requires an API key — set ${envVarHint} or pass apiKey in the provider config`,
+      `${providerName} provider requires an API key: set ${envVarHint} or pass apiKey in the provider config`,
     );
   }
   return value;

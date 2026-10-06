@@ -465,7 +465,7 @@ function getRestoreOptionConversationText(option: RestoreOption): string {
     case 'summarize':
       return 'Messages after this point will be summarized.';
     case 'summarize_up_to':
-      return 'Preceding messages will be summarized. This and subsequent messages will remain unchanged — you will stay at the end of the conversation.';
+      return 'Preceding messages will be summarized. This and subsequent messages will remain unchanged. You will stay at the end of the conversation.';
     case 'both':
     case 'conversation':
       return 'The conversation will be forked.';

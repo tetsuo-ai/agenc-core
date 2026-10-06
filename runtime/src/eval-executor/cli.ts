@@ -116,7 +116,7 @@ run-agent-real-batch  Run run-agent-real across every lock task (or --tasks, in
              the given order): resumable (tasks with an existing report are
              skipped), continue-on-error, per-task image pull, and optional
              per-task key refresh via --key-command (an executable whose
-             stdout becomes the key — no shell). Writes batch-progress.log
+             stdout becomes the key, no shell). Writes batch-progress.log
              and batch-summary.json under --output. Exit 0 only when every
              task ends with a report. This is the documented reproduction
              path for the real-agent baseline report.

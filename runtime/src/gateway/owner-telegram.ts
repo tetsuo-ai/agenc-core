@@ -1,8 +1,8 @@
+import type { OwnerTelegramStartupState } from "./lazy-owner-telegram.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { normalizeDaemonClientEnvOverrides } from "../app-server/client-env-snapshot.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { telegramSessionFailure } from "./telegram-session-failure.js";
-import QRCode from "qrcode";
 import type { AgenCDaemonResponse, JsonObject } from "../app-server/protocol/index.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "../app-server/protocol/index.js";
 import { canonicalRemoteWorkspace, RemoteAccessBoundary, type RemoteSessionLookup } from "../remote/access.js";
@@ -56,7 +56,7 @@ class OwnerTelegramRuntime {
   #instructionsSent = false;
   readonly #notifiedApprovals = new Set<string>();
 
-  constructor(options: OwnerTelegramOptions) { this.#options = options; this.#binding = options.storage.load(); }
+  constructor(options: OwnerTelegramOptions, binding = options.storage.load()) { this.#options = options; this.#binding = binding; }
   capabilities(): OwnerTelegramCapabilities { return { available: true, contractVersion: 2, multiAgent: true, providerSelection: true, accountLinking: "local-confirmation", ownerOnly: true, privateChatOnly: true, nativeCredentialStorage: true, approvals: "host-only", commands: ["new", "status", "cancel"] }; }
   status(): OwnerTelegramStatus { return { configured: this.#binding !== null, enabled: this.#enabled, state: (this.#sessionError ?? this.#error) ? "error" : !this.#binding ? "unconfigured" : !this.#enabled ? "stopped" : this.#connected ? "connected" : "connecting", ownerUserId: this.#binding?.ownerUserId ?? null, ownerChatId: this.#binding?.ownerChatId ?? null, workspacePath: this.#binding?.workspacePath ?? null, sessionId: this.#sessionId, botUsername: this.#botUsername, error: this.#sessionError ?? this.#error, lastUpdateAt: this.#lastUpdateAt }; }
   configure(params: OwnerTelegramConfigureParams): OwnerTelegramStatus {
@@ -255,10 +255,10 @@ export class OwnerTelegramService {
   readonly #operations = new AbortController();
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(options: OwnerTelegramOptions) {
+  constructor(options: OwnerTelegramOptions, startup?: OwnerTelegramStartupState) {
     this.#options = options;
-    this.#legacy = new OwnerTelegramRuntime(options);
-    for (const record of options.storage.agents?.load() ?? []) this.#addEntry(record);
+    this.#legacy = new OwnerTelegramRuntime(options, startup?.binding);
+    for (const record of startup?.records ?? options.storage.agents?.load() ?? []) this.#addEntry(record);
   }
   #store() {
     if (!this.#options.storage.agents) throw new RemoteError("TELEGRAM_MULTI_AGENT_UNAVAILABLE");
@@ -422,6 +422,7 @@ export class OwnerTelegramService {
     this.#store().save(record); entry.record = record;
     const nonce = randomBytes(32).toString("base64url");
     const url = `https://t.me/${identity.username}?start=${nonce}`;
+    const { default: QRCode } = await import("qrcode");
     const qrDataUrl = await QRCode.toDataURL(url, { width: 256, margin: 2 });
     this.#operations.signal.throwIfAborted();
     signal.throwIfAborted();

@@ -50,10 +50,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.27 adds explicit, idempotent continuation of completed verified results.
  * 1.28 adds requirement_conflict for a failed structured planner report.
  * 1.29 adds the model_loop child terminal reason.
+ * 1.30 adds authenticated local resident print invocations.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.29.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.30.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -84,6 +85,10 @@ export const AGENC_DAEMON_METHODS = [
     "telegram.agents.pair.cancel",
     "initialize",
     "request.cancel",
+    "print.invoke",
+    "print.admit",
+    "print.ack",
+    "print.cancel",
     "agent.create",
     "agent.list",
     "agent.attach",
@@ -160,6 +165,8 @@ export const AGENC_DAEMON_METHODS = [
 ] as const;
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
+    "print.admission",
+    "print.output",
     "routine.updated",
     "routine.session.prepare",
     "commandExec.outputDelta",
@@ -445,6 +452,38 @@ export interface AgenCDaemonRequestWithParams<Method extends AgenCDaemonMethod, 
     readonly params: Params;
 }
 
+export interface PrintInvokeParams extends JsonObject {
+    readonly invocationId: string;
+    /** User argv, excluding executable and script. */
+    readonly argv: readonly string[];
+    readonly cwd: string;
+    /** Ephemeral complete ingress snapshot, never journaled or logged. */
+    readonly env: Readonly<Record<string, string>>;
+    readonly caller: {
+        readonly pid: number;
+        readonly stdinIsTTY: boolean;
+        readonly stdoutIsTTY: boolean;
+        readonly stderrIsTTY: boolean;
+    };
+}
+
+export interface PrintAdmitParams extends JsonObject {
+    readonly invocationId: string;
+    readonly challenge: string;
+}
+
+export interface PrintAckParams extends JsonObject {
+    readonly invocationId: string;
+    readonly sequence: number;
+}
+
+export interface PrintCancelParams extends JsonObject {
+    readonly invocationId: string;
+    readonly reason: "signal" | "broken_pipe";
+    readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
+    readonly stream?: "stdout" | "stderr";
+}
+
 export type EmptyParams = Record<string, never>;
 
 export interface AgenCDaemonRequestWithoutParams<Method extends AgenCDaemonMethod> {
@@ -611,6 +650,8 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
     readonly nonInteractive?: boolean;
     /** Skip the completion checklist for an explicit machine-readable output contract. */
     readonly exactOutput?: boolean;
+    /** Fresh print-run request only; the daemon rechecks eligibility. */
+    readonly relaxedOneShot?: boolean;
     readonly stdinDataMode: boolean;
     readonly remoteMode: boolean;
     readonly remoteMemoryRoot?: string;
@@ -713,6 +754,8 @@ export interface AgentListParams extends JsonObject {
 }
 
 export interface AgentAttachParams extends JsonObject {
+    /** Collect only the initial print turn; new messages always restore full durability. */
+    readonly oneShotOutput?: boolean;
     readonly agentId: string;
     readonly clientId?: string;
 }
@@ -790,6 +833,8 @@ export interface RunStartParams extends JsonObject {
     };
     /** The engineering goal / issue text driving the change. */
     readonly goal: string;
+    /** Run the Goal and all of its child sessions in Light mode. Defaults to standard mode. */
+    readonly lightMode?: boolean;
     /** Absolute directory inside the target git repository (daemon cwd default). */
     readonly cwd?: string;
     readonly model?: string;
@@ -1221,7 +1266,14 @@ export interface DaemonShutdownParams extends JsonObject {
     readonly instanceId: string;
 }
 
-export type AgenCDaemonRequest = AgenCDaemonRequestWithParams<"telegram.capabilities" | "telegram.status" | "telegram.configure" | "telegram.start" | "telegram.stop" | "telegram.revoke", JsonObject> | AgenCDaemonRequestWithParams<"telegram.agents.list" | "telegram.agents.create" | "telegram.agents.update" | "telegram.agents.start" | "telegram.agents.stop" | "telegram.agents.remove" | "telegram.agents.pair.begin" | "telegram.agents.pair.confirm" | "telegram.agents.pair.cancel", JsonObject> | AgenCDaemonRequestWithParams<"remote.capabilities" | "remote.status" | "remote.start" | "remote.stop" | "remote.pair.begin" | "remote.pair.refresh" | "remote.pair.cancel" | "remote.devices" | "remote.pending" | "remote.approve" | "remote.revoke", JsonObject> | AgenCDaemonRequestWithoutParams<"routine.capabilities"> | AgenCDaemonRequestWithoutParams<"routine.list"> | AgenCDaemonRequestWithParams<"routine.get", RoutineIdParams> | AgenCDaemonRequestWithParams<"routine.create", RoutineCreateParams> | AgenCDaemonRequestWithParams<"routine.update", RoutineUpdateParams> | AgenCDaemonRequestWithParams<"routine.delete", RoutineDeleteParams> | AgenCDaemonRequestWithParams<"routine.run", RoutineRunParams> | AgenCDaemonRequestWithParams<"routine.runs", RoutineRunsParams> | AgenCDaemonRequestWithParams<"routine.cancel", RoutineCancelParams> | AgenCDaemonRequestWithParams<"routine.session.prepare.respond", RoutineSessionPrepareResponse> | AgenCDaemonRequestWithParams<"initialize", InitializeParams> | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams> | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams> | AgenCDaemonRequestWithParams<"agent.list", AgentListParams> | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams> | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams> | AgenCDaemonRequestWithParams<"agent.logs", AgentLogsParams> | AgenCDaemonRequestWithParams<"run.status", RunStatusParams> | AgenCDaemonRequestWithParams<"run.result", RunResultParams> | AgenCDaemonRequestWithParams<"run.replay", RunReplayParams> | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams> | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams> | AgenCDaemonRequestWithParams<"run.pause", RunPauseParams> | AgenCDaemonRequestWithParams<"run.resume", RunResumeParams> | AgenCDaemonRequestWithParams<"run.start", RunStartParams> | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams> | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams> | AgenCDaemonRequestWithParams<"csvJob.review.resolve", CsvJobReviewResolveParams> | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams> | AgenCDaemonRequestWithParams<"session.list", SessionListParams> | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams> | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams> | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams> | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams> | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams> | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams> | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams> | AgenCDaemonRequestWithParams<"session.goal", SessionGoalParams> | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams> | AgenCDaemonRequestWithParams<"session.transcript.v2", SessionTranscriptV2Params> | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams> | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams> | AgenCDaemonRequestWithParams<"session.resolveToolCall", SessionResolveToolCallParams> | AgenCDaemonRequestWithParams<"session.mcp.status", SessionMcpStatusParams> | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams> | AgenCDaemonRequestWithParams<"plugin.settings.get", PluginSettingsParams> | AgenCDaemonRequestWithParams<"plugin.settings.set", PluginSettingsSetParams> | AgenCDaemonRequestWithParams<"plugin.settings.reset", PluginSettingsParams> | AgenCDaemonRequestWithParams<"message.send", MessageSendParams> | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams> | AgenCDaemonRequestWithParams<"thread/realtime/start", ThreadRealtimeStartParams> | AgenCDaemonRequestWithParams<"thread/realtime/appendAudio", ThreadRealtimeAppendAudioParams> | AgenCDaemonRequestWithParams<"thread/realtime/appendText", ThreadRealtimeAppendTextParams> | AgenCDaemonRequestWithParams<"thread/realtime/stop", ThreadRealtimeStopParams> | AgenCDaemonRequestWithoutParams<"thread/realtime/listVoices"> | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams> | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams> | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams> | AgenCDaemonRequestWithParams<"elicitation.respond", ElicitationRespondParams> | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams> | AgenCDaemonRequestWithParams<"project.trustStatus", ProjectTrustStatusParams> | AgenCDaemonRequestWithParams<"project.trust", ProjectTrustParams> | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams> | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams> | AgenCDaemonRequestWithParams<"commandExec.write", CommandExecWriteParams> | AgenCDaemonRequestWithParams<"commandExec.resize", CommandExecResizeParams> | AgenCDaemonRequestWithParams<"commandExec.terminate", CommandExecTerminateParams> | AgenCDaemonRequestWithoutParams<"health.ping"> | AgenCDaemonRequestWithoutParams<"health.ready"> | AgenCDaemonRequestWithoutParams<"health.stats"> | AgenCDaemonRequestWithoutParams<"daemon.reload"> | AgenCDaemonRequestWithParams<"daemon.shutdown", DaemonShutdownParams> | AgenCDaemonRequestWithoutParams<"auth.login"> | AgenCDaemonRequestWithoutParams<"auth.whoami"> | AgenCDaemonRequestWithoutParams<"auth.logout">;
+export type AgenCDaemonRequest = AgenCDaemonRequestWithParams<"print.invoke", PrintInvokeParams> | AgenCDaemonRequestWithParams<"print.admit", PrintAdmitParams> | AgenCDaemonRequestWithParams<"print.ack", PrintAckParams> | AgenCDaemonRequestWithParams<"print.cancel", PrintCancelParams> | AgenCDaemonRequestWithParams<"telegram.capabilities" | "telegram.status" | "telegram.configure" | "telegram.start" | "telegram.stop" | "telegram.revoke", JsonObject> | AgenCDaemonRequestWithParams<"telegram.agents.list" | "telegram.agents.create" | "telegram.agents.update" | "telegram.agents.start" | "telegram.agents.stop" | "telegram.agents.remove" | "telegram.agents.pair.begin" | "telegram.agents.pair.confirm" | "telegram.agents.pair.cancel", JsonObject> | AgenCDaemonRequestWithParams<"remote.capabilities" | "remote.status" | "remote.start" | "remote.stop" | "remote.pair.begin" | "remote.pair.refresh" | "remote.pair.cancel" | "remote.devices" | "remote.pending" | "remote.approve" | "remote.revoke", JsonObject> | AgenCDaemonRequestWithoutParams<"routine.capabilities"> | AgenCDaemonRequestWithoutParams<"routine.list"> | AgenCDaemonRequestWithParams<"routine.get", RoutineIdParams> | AgenCDaemonRequestWithParams<"routine.create", RoutineCreateParams> | AgenCDaemonRequestWithParams<"routine.update", RoutineUpdateParams> | AgenCDaemonRequestWithParams<"routine.delete", RoutineDeleteParams> | AgenCDaemonRequestWithParams<"routine.run", RoutineRunParams> | AgenCDaemonRequestWithParams<"routine.runs", RoutineRunsParams> | AgenCDaemonRequestWithParams<"routine.cancel", RoutineCancelParams> | AgenCDaemonRequestWithParams<"routine.session.prepare.respond", RoutineSessionPrepareResponse> | AgenCDaemonRequestWithParams<"initialize", InitializeParams> | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams> | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams> | AgenCDaemonRequestWithParams<"agent.list", AgentListParams> | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams> | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams> | AgenCDaemonRequestWithParams<"agent.logs", AgentLogsParams> | AgenCDaemonRequestWithParams<"run.status", RunStatusParams> | AgenCDaemonRequestWithParams<"run.result", RunResultParams> | AgenCDaemonRequestWithParams<"run.replay", RunReplayParams> | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams> | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams> | AgenCDaemonRequestWithParams<"run.pause", RunPauseParams> | AgenCDaemonRequestWithParams<"run.resume", RunResumeParams> | AgenCDaemonRequestWithParams<"run.start", RunStartParams> | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams> | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams> | AgenCDaemonRequestWithParams<"csvJob.review.resolve", CsvJobReviewResolveParams> | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams> | AgenCDaemonRequestWithParams<"session.list", SessionListParams> | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams> | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams> | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams> | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams> | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams> | AgenCDaemonRequestWithParams<"session.processes.list", SessionProcessesListParams> | AgenCDaemonRequestWithParams<"session.processes.stop", SessionProcessesStopParams> | AgenCDaemonRequestWithParams<"session.goal", SessionGoalParams> | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams> | AgenCDaemonRequestWithParams<"session.transcript.v2", SessionTranscriptV2Params> | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams> | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams> | AgenCDaemonRequestWithParams<"session.resolveToolCall", SessionResolveToolCallParams> | AgenCDaemonRequestWithParams<"session.mcp.status", SessionMcpStatusParams> | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams> | AgenCDaemonRequestWithParams<"plugin.settings.get", PluginSettingsParams> | AgenCDaemonRequestWithParams<"plugin.settings.set", PluginSettingsSetParams> | AgenCDaemonRequestWithParams<"plugin.settings.reset", PluginSettingsParams> | AgenCDaemonRequestWithParams<"message.send", MessageSendParams> | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams> | AgenCDaemonRequestWithParams<"thread/realtime/start", ThreadRealtimeStartParams> | AgenCDaemonRequestWithParams<"thread/realtime/appendAudio", ThreadRealtimeAppendAudioParams> | AgenCDaemonRequestWithParams<"thread/realtime/appendText", ThreadRealtimeAppendTextParams> | AgenCDaemonRequestWithParams<"thread/realtime/stop", ThreadRealtimeStopParams> | AgenCDaemonRequestWithoutParams<"thread/realtime/listVoices"> | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams> | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams> | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams> | AgenCDaemonRequestWithParams<"elicitation.respond", ElicitationRespondParams> | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams> | AgenCDaemonRequestWithParams<"project.trustStatus", ProjectTrustStatusParams> | AgenCDaemonRequestWithParams<"project.trust", ProjectTrustParams> | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams> | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams> | AgenCDaemonRequestWithParams<"commandExec.write", CommandExecWriteParams> | AgenCDaemonRequestWithParams<"commandExec.resize", CommandExecResizeParams> | AgenCDaemonRequestWithParams<"commandExec.terminate", CommandExecTerminateParams> | AgenCDaemonRequestWithoutParams<"health.ping"> | AgenCDaemonRequestWithoutParams<"health.ready"> | AgenCDaemonRequestWithoutParams<"health.stats"> | AgenCDaemonRequestWithoutParams<"daemon.reload"> | AgenCDaemonRequestWithParams<"daemon.shutdown", DaemonShutdownParams> | AgenCDaemonRequestWithoutParams<"auth.login"> | AgenCDaemonRequestWithoutParams<"auth.whoami"> | AgenCDaemonRequestWithoutParams<"auth.logout">;
+
+export type PrintInvokeResult = {
+    readonly kind: "fallback";
+} | {
+    readonly kind: "exit";
+    readonly exitCode: number;
+};
 
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 
@@ -1261,10 +1313,17 @@ export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY = "routine.sessionAuthor
 
 export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
 
+export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as const;
+
+/** Optional per-session response-detail mutation on session.applyConfig. */
+export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY = "session.applyConfig.modelVerbosity" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
     readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
+    readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
+    readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {
@@ -1673,6 +1732,8 @@ export type RunEffectivePermissionMode = "default" | "acceptEdits" | "plan" | "b
  */
 export interface RunWorkflowStatus extends JsonObject {
     readonly steps: readonly RunWorkflowStatusStep[];
+    /** Frozen at intake and available after recovery. */
+    readonly lightMode?: boolean;
     /** Absent on daemons without durable workflow controls. */
     readonly control?: RunWorkflowControlState;
     readonly runtimeFailure?: RunWorkflowRuntimeFailure;
@@ -1909,6 +1970,7 @@ export interface RunStartResult extends JsonObject {
     readonly replayed?: boolean;
     readonly continuationOf?: RunWorkflowContinuation;
     readonly runId: string;
+    readonly lightMode?: boolean;
     /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
     readonly specDigest: string;
     /** Exact base commit recorded before any work began. */
@@ -2800,6 +2862,16 @@ export interface AuthLogoutResult extends JsonObject {
 }
 
 export interface AgenCDaemonResultByMethod {
+    readonly "print.invoke": PrintInvokeResult;
+    readonly "print.admit": {
+        readonly ok: true;
+    };
+    readonly "print.ack": {
+        readonly ok: true;
+    };
+    readonly "print.cancel": {
+        readonly ok: true;
+    };
     readonly initialize: InitializeResult;
     readonly "request.cancel": RequestCancelResult;
     readonly "agent.create": AgentCreateResult;
@@ -2903,6 +2975,13 @@ export interface AgenCDaemonResultByMethod {
     readonly "auth.login": AuthLoginResult;
     readonly "auth.whoami": AuthWhoamiResult;
     readonly "auth.logout": AuthLogoutResult;
+}
+
+export interface PrintOutputParams extends JsonObject {
+    readonly invocationId: string;
+    readonly sequence: number;
+    readonly stream: "stdout" | "stderr";
+    readonly data: string;
 }
 
 /** Invalidation only: clients refresh list/detail; no instructions or results are broadcast. */
@@ -3072,6 +3151,8 @@ export interface ThreadRealtimeClosedParams extends ThreadRealtimeBaseParams {
 }
 
 export interface AgenCDaemonNotificationParamsByMethod {
+    readonly "print.admission": PrintAdmitParams;
+    readonly "print.output": PrintOutputParams;
     readonly "routine.updated": RoutineUpdatedEvent;
     readonly "routine.session.prepare": RoutineSessionPrepareEvent;
     readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;

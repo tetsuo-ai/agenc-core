@@ -1,3 +1,8 @@
+import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
+import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
+import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
+import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
+import { readStartupCronTasks } from "../utils/cron-startup.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { fstatSync, lstatSync, realpathSync } from "node:fs";
@@ -12,6 +17,7 @@ import {
 import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
+import { endpointMetadataForTransport } from "../llm/endpoint-metadata-cache.js";
 import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
@@ -610,6 +616,8 @@ function createMemoryAutoSaveSidecar(): Sidecar {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
+  /** Scratch warm-daemon ceiling; canonical rollout and admission stay eager. */
+  readonly deferAuxiliarySetupUntilRequest?: boolean;
   readonly signal?: AbortSignal;
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
@@ -881,7 +889,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
-  const providerEnvironment = options.providerEnvironment;
   const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
@@ -911,6 +918,12 @@ async function bootstrapLocalRuntimeSessionScoped(
     }),
   });
   await configStore.reload();
+  // `[providers.<openai|grok>] auth` fills OPENAI_AUTH_MODE / GROK_AUTH_MODE
+  // where the environment leaves them unset; an exported variable wins.
+  const providerEnvironment = withConfiguredProviderAuth(
+    options.providerEnvironment,
+    configStore.current(),
+  );
   const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
     ...(profileName !== undefined ? { profileName } : {}),
@@ -1198,7 +1211,12 @@ async function bootstrapLocalRuntimeSessionScoped(
       initialSandboxExecutionAuthority.windowsSandboxLevel,
     allowGpu: initialSandboxExecutionAuthority.allowGpu,
   });
-  if (options.requireSandboxReadyAtStartup === true) {
+  const sandboxStartupStatus = sandboxExecutionBroker.status();
+  if (
+    options.requireSandboxReadyAtStartup === true &&
+    (runtimeOptions.nonInteractive === true ||
+      sandboxStartupStatus.landlockPolicyRefusal === undefined)
+  ) {
     sandboxExecutionBroker.assertReady("startup");
   }
   const permissionModeRegistry = new PermissionModeRegistry(
@@ -1219,6 +1237,11 @@ async function bootstrapLocalRuntimeSessionScoped(
     subscriptionTier: authSubscriptionTier,
   });
   const resolvedProvider = modelSelection.provider;
+  const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
+    runtimeOptions.lightMode === true && runtimeOptions.nonInteractive === true &&
+    !resumeConversation && options.resumeRolloutPath === undefined && resolvedProvider === "deepseek"
+    ? createWarmSessionSetupCeiling(agencHome, conversationId) : undefined;
+
   const providerModel = modelSelection.model;
   return runWithStartupProviderSelection({
     provider: resolvedProvider,
@@ -1425,7 +1448,9 @@ async function bootstrapLocalRuntimeSessionScoped(
         // global fetch here makes providers unable to distinguish the normal
         // runtime path from an authority-boundary/custom transport. Qwen uses
         // that distinction to install its official-host DNS recovery path.
-        ...(options.fetchImpl !== undefined ? { fetchImpl } : {}),
+        ...(deferredSetup !== undefined && provider === "deepseek"
+          ? { fetchImpl: deferredSetup.wrap(options.fetchImpl ?? concurrentChatFetch()) }
+          : options.fetchImpl !== undefined ? { fetchImpl } : {}),
         sandboxExecutionBroker,
       },
     });
@@ -1520,7 +1545,10 @@ async function bootstrapLocalRuntimeSessionScoped(
       // Sessions on the real network share one download of each public model
       // catalog. An injected fetch keeps its own, so it sees only its data.
       ...(options.fetchImpl === undefined
-        ? { publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS }
+        ? {
+          publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS,
+          endpointCatalogs: endpointMetadataForTransport(globalThis.fetch),
+        }
         : {}),
       onWarn: (message) =>
         emitProviderWarning({
@@ -1659,6 +1687,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
+  let errorLogSidecar: ErrorLogSidecar | undefined;
+  const flushStartupLogIndex = (): void => errorLogSidecar?.flushStartupIndex();
   let clearActiveCostSidecar: (() => void) | null = null;
   let shutdownTask: Promise<void> | null = null;
   let shutdownComplete = false;
@@ -1682,6 +1712,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
+      flushStartupLogIndex,
       provider,
       providerName: resolvedProvider,
       ...(options.authBackend !== undefined
@@ -1711,6 +1742,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       sandboxExecutionBroker,
       executionAdmission,
       admissionRequired: true,
+      ...(deferredSetup !== undefined ? { deferThreadProjection: deferredSetup.register } : {}),
     });
 
   const shutdown = (reason: "session_shutdown" | "daemon_shutdown" = "session_shutdown"): Promise<void> => {
@@ -1719,6 +1751,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     // Close startup admission synchronously. The task body intentionally
     // begins on a microtask, and sidecar stop may await; neither may leave a
     // window where a late submit can activate MCP/cron/job startup.
+    const deferredSetupClosed = deferredSetup?.close();
     sessionForShutdown?.beginShutdown();
     let partialMcpDisposeTask: Promise<void> | undefined;
     if (sessionForShutdown === null) {
@@ -1734,6 +1767,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     const task = Promise.resolve().then(async (): Promise<void> => {
       const errors: unknown[] = [];
       if (!shutdownPrepared) {
+        // A deferred callback can own allocated sidecars/watchers while it
+        // awaits I/O. Drain it before stopping them or closing their Session.
+        await deferredSetupClosed;
         shutdownPrepared = true;
         if (sessionForShutdown !== null) {
           clearCurrentRuntimeSession(sessionForShutdown);
@@ -1862,6 +1898,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       modelInfo,
       initialTranscriptEvents,
       enablePrewarm: false,
+      ...(deferredSetup !== undefined
+        ? { deferSkillsWatcherUntilRequest: deferredSetup.register } : {}),
       ...(options.deferSessionStartHooks === true
         ? { deferSessionStartHooks: true }
         : {}),
@@ -1947,12 +1985,16 @@ async function bootstrapLocalRuntimeSessionScoped(
         // canonical rollout descriptor is claimed and any resumed writer is
         // activated.
         assertPinnedResumeCwd(options, workspaceRoot);
+        const relaxedOneShot = runtimeOptions.relaxedOneShot === true && runtimeOptions.nonInteractive === true &&
+          runtimeOptions.routineRun !== true && !resumeConversation && options.resumeRolloutPath === undefined;
         const rolloutStore = new RolloutStore({
           cwd: workspaceRoot,
           sessionId: conversationId,
           agencVersion: VERSION,
           agencHome,
           sessionTempRoot,
+          relaxedOneShot,
+          beforeOneShotCheckpoint: flushStartupLogIndex,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }
@@ -2085,6 +2127,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           });
         }
 
+        const initializeSidecars = async (): Promise<void> => {
+        s.abortController.signal.throwIfAborted();
         const projectDir = getProjectDir(
           workspaceRoot,
           sessionProjectRootMarkers,
@@ -2121,12 +2165,15 @@ async function bootstrapLocalRuntimeSessionScoped(
         );
         s.attachFileHistory(fileHistory);
 
-        sidecarManager.register(
-          new ErrorLogSidecar({
-            projectDir,
-            sessionId: conversationId,
-          }),
-        );
+        errorLogSidecar = new ErrorLogSidecar({
+          projectDir,
+          sessionId: conversationId,
+          // The store may have fallen back to FULL or been promoted since
+          // the request. Only its active run-bound authority allows buffering.
+          deferStartupIndex: relaxedOneShot &&
+            relaxedOneShotTransaction(projectDir, conversationId),
+        });
+        sidecarManager.register(errorLogSidecar);
 
         const costSidecar = new CostSidecar({
           defaultModel: model,
@@ -2150,12 +2197,20 @@ async function bootstrapLocalRuntimeSessionScoped(
               at: Date.now(),
             }),
         });
+        // Register before the await so partial initialization is always owned
+        // by the ordinary shutdown cleanup, even if loading fails or closes.
+        sidecarManager.register(costSidecar);
         await costSidecar.loadFromDisk();
+        deferredSetup?.assertOpen();
+        s.abortController.signal.throwIfAborted();
         (s.services as { costSidecar?: CostSidecar }).costSidecar = costSidecar;
         clearActiveCostSidecar?.();
         clearActiveCostSidecar = bindActiveCostSidecar(costSidecar);
-        sidecarManager.register(costSidecar);
         sidecarManager.register(createMemoryAutoSaveSidecar());
+        if (deferredSetup !== undefined) await sidecarManager.start(s.eventLog);
+        };
+        if (deferredSetup !== undefined) deferredSetup.register(initializeSidecars);
+        else await initializeSidecars();
 
         ctxForReturn = buildTurnContext({
           conversationId,
@@ -2188,6 +2243,26 @@ async function bootstrapLocalRuntimeSessionScoped(
             },
           },
         ]);
+
+        if (
+          runtimeOptions.nonInteractive !== true &&
+          sandboxStartupStatus.landlockPolicyRefusal !== undefined
+        ) {
+          const { buildLandlockFallbackWarning } = await import("../utils/doctorDiagnostic.js");
+          const warning = buildLandlockFallbackWarning(sandboxStartupStatus);
+          if (warning !== null) {
+            s.emit({
+              id: s.nextInternalSubId(),
+              msg: {
+                type: "warning",
+                payload: {
+                  cause: "sandbox_policy_unexpressible",
+                  message: `${warning.issue}. ${warning.fix}`,
+                },
+              },
+            });
+          }
+        }
 
         // Start sidecars AFTER session_configured so they cannot emit
         // earlier events.
@@ -2229,9 +2304,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           const rearmPersistedCron = async (): Promise<void> => {
             assertStartupActive();
             try {
-              const { readCronTasks } = await import("../utils/cronTasks.js");
-              assertStartupActive();
-              const persisted = await readCronTasks(workspaceRoot);
+              const persisted = await readStartupCronTasks(workspaceRoot, assertStartupActive);
               assertStartupActive();
               if (persisted.length > 0) {
                 const { startCronSchedulerRunner } =
@@ -2364,7 +2437,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       mcpManager,
       session,
       rolloutStore: rolloutStoreForReturn,
-      sidecarManager: sidecarManager!,
+      get sidecarManager() { return sidecarManager!; },
       ctx: ctxForReturn,
       authSubscriptionTier,
       memoryDir,

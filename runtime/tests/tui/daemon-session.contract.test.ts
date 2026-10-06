@@ -721,6 +721,70 @@ describe("AgenC TUI daemon session adapter", () => {
     ).toBe(false);
   });
 
+  it("rejects a submission made while the client is reconnecting instead of sending it after the fenced reconnect", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    client.connectionState = { status: "connected", id: "c1" };
+    // Mirror the persistent client: a request made while reconnecting waits
+    // for the new socket and is then sent. The restarted daemon keeps that
+    // turn running, so a dispatched message.stream never settles here.
+    let connected = Promise.resolve();
+    let markConnected = (): void => {};
+    const emitConnection = client.emitConnection.bind(client);
+    client.emitConnection = (state) => {
+      if (state.status === "connected") {
+        emitConnection(state);
+        markConnected();
+        return;
+      }
+      if (client.connectionState?.status === "connected") {
+        connected = new Promise<void>((resolve) => {
+          markConnected = resolve;
+        });
+      }
+      emitConnection(state);
+    };
+    const request = client.request.bind(client);
+    client.request = (async (method, params, options) => {
+      if (method !== "message.stream") return request(method, params, options);
+      await connected;
+      client.requests.push({ method, params });
+      return new Promise(() => {});
+    }) as typeof client.request;
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_reconnecting_submit",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+
+    client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+    client.emitConnection({ status: "reconnecting" });
+    let outcome: "pending" | "resolved" | Error = "pending";
+    void session.submit("and again").then(
+      () => {
+        outcome = "resolved";
+      },
+      (error: unknown) => {
+        outcome = error as Error;
+      },
+    );
+    await flush();
+    client.emitConnection({ status: "connected", id: "c2" });
+
+    await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error));
+    expect((outcome as unknown as Error).message).toMatch(/re-attach is required/u);
+    await flush();
+    expect(
+      client.requests.some((entry) => entry.method === "message.stream"),
+    ).toBe(false);
+    expect(authority.abortTerminal).toHaveBeenCalledTimes(1);
+    expect(authority.abortTerminal).toHaveBeenCalledWith(
+      "runtime_settings_authority_gap",
+    );
+  });
+
   it("fails closed on an explicit pre-subscribe authority overflow marker", async () => {
     const authority = runtimeAuthorityBase();
     const client = createClient();

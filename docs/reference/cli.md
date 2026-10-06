@@ -48,6 +48,7 @@ From `formatCliHelpText()`:
 | `-h`, `--help` | Show top-level help |
 | `--version` | Print `agenc <version>` |
 | `-p`, `--print` | Headless one-shot print mode |
+| `--full-durability` | Keep per-write durable syncing in fresh one-shot print runs |
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--deadline <+seconds\|ISO-8601>` | Print mode: the instant the run must end by, as `+<seconds>` from now or an ISO 8601 time with a zone. See the print-mode notes. |
@@ -62,7 +63,7 @@ From `formatCliHelpText()`:
 | `--model <id\|provider:id>` | Override model for this session |
 | `--permission-mode <mode>` | Override startup mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is an explicit session-only opt-in bound to the current workspace. Internal `unattended` / `bubble` modes are not CLI addressable. |
 | `--autonomous` | Enable autonomous tick mode |
-| `--bypass-approvals` | Skip approval prompts but keep the OS sandbox (same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`). On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
+| `--bypass-approvals` | Skip approval prompts, sandbox escalation requests included: commands start in the OS sandbox, and one that asks to run outside it (`sandbox_permissions: "require_escalated"`) is allowed without a prompt. In a workspace-write sandbox the model is told it may ask only for GUI apps and blocked network, and to keep file changes inside the workspace; elsewhere it is told such requests are rejected. Same session-only `bypassPermissions` opt-in as `--permission-mode bypassPermissions`. On a host that cannot sandbox at all the run continues without kernel confinement and prints one stderr notice naming the reason. Conflicts with a different `--permission-mode`. |
 | `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks everywhere (the explicit no-sandbox opt-out) |
 | `--image <file\|url\|data-url>` | Attach a startup image |
 
@@ -421,6 +422,11 @@ policy and model rather than the daemon default. The CLI has no
 model name can be overridden per child. The command returns after the
 durable intake commit (`runId`, `specDigest`, `baseCommit`); `--follow`
 then tails the run journal until the terminal result.
+
+The `run.start` RPC and SDK `startRun` accept `lightMode: true` to run the
+Goal and its child sessions in Light mode. Omit it for standard mode. The
+frozen setting appears in `run.status.workflow.lightMode` and is inherited
+by a continuation unless that request supplies its own boolean value.
 
 Workflow runs default to `acceptEdits` when `--permission-mode` is omitted.
 Use `--permission-mode default` for normal per-tool approval checks. `run start`
@@ -1074,3 +1080,24 @@ its working directory.
 - Documentation map: [`../INDEX.md`](../INDEX.md)
 - Architecture: [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 - Product README: [`../../README.md`](../../README.md)
+
+### Print-mode durability
+
+Fresh, noninteractive one-shot print runs use buffered canonical appends and
+run-scoped SQLite `NORMAL` transactions by default on Linux and macOS. Other
+platforms keep full syncing until they support the durable directory-marker
+proof. A process crash ordinarily
+preserves page-cache bytes; a host crash or power loss can lose the unsynced
+suffix. Interactive, Desktop, routine, goal, child-agent, and resumed (`-c` or
+`--resume`) sessions keep full syncing. Use `agenc -p --full-durability "…"`
+to opt out for a fresh print run. Starting a goal or spawning an agent first
+promotes the current run to full durability.
+
+Before buffered work begins, AgenC durably marks its canonical history as
+incomplete. A clean close syncs the canonical file and SQLite WAL, then seals
+its exact length and hash. Continuing an incomplete run or a history that no
+longer matches its seal fails closed and preserves the evidence for review.
+This includes loss of complete JSONL rows: uncertain effects are never silently
+replayed as new work. A killed process can therefore require review even when
+its page-cache bytes survived. A verified clean run can be continued with full
+syncing.
