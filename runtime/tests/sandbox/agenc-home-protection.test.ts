@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { protectAgencHomeUnderWritableRoot } from "../../src/sandbox/agenc-home-protection.js";
+import {
+  protectAgencHomeUnderWritableRoot,
+  sandboxAgencHome,
+} from "../../src/sandbox/agenc-home-protection.js";
 import { canWritePathWithCwd } from "../../src/sandbox/engine/index.js";
 import { effectivePermissionProfile } from "../../src/sandbox/engine/policy-transforms.js";
 import { createBwrapCommandArgs } from "../../src/sandbox/linux-launcher/bwrap.js";
@@ -60,6 +63,36 @@ describe("AgenC home beneath writable roots", () => {
       f.home, f.cwd, join(data, "tmp"));
     expect(canWritePathWithCwd(profile.fileSystem, join(data, "state.json"), f.cwd, data)).toBe(true);
     expect(canWritePathWithCwd(profile.fileSystem, join(f.home, "config.toml"), f.cwd, data)).toBe(false);
+  });
+
+  it("uses the granted profile to detect a writable ancestor without widening the base profile", () => {
+    const f = fixture();
+    const temp = join(f.cwd, "tmp");
+    mkdirSync(temp);
+    const profile = permissionProfileForSandboxMode("workspace_write", { cwd: f.cwd });
+    const grantedProfile = effectivePermissionProfile(profile, { fileSystem: { entries: [
+      { path: { kind: "path", path: f.root }, access: "write" },
+    ] } });
+    expect(canWritePathWithCwd(profile.fileSystem, join(f.home, "config.toml"), f.cwd, temp)).toBe(false);
+    expect(canWritePathWithCwd(grantedProfile.fileSystem, join(f.home, "config.toml"), f.cwd, temp)).toBe(true);
+    const protectedProfile = protectAgencHomeUnderWritableRoot(
+      profile, f.home, f.cwd, temp, grantedProfile,
+    );
+    expect(canWritePathWithCwd(protectedProfile.fileSystem, join(f.home, "config.toml"), f.cwd, temp))
+      .toBe(false);
+    expect(canWritePathWithCwd(protectedProfile.fileSystem, join(f.cwd, "ordinary.txt"), f.cwd, temp))
+      .toBe(true);
+    const unchanged = protectAgencHomeUnderWritableRoot(profile, f.home, f.cwd, temp);
+    expect(unchanged).toBe(profile);
+  });
+
+  it("canonicalizes the bound sandbox home and prefers it over the environment", () => {
+    const f = fixture();
+    const alias = join(f.root, "home-alias");
+    symlinkSync(f.home, alias);
+    expect(sandboxAgencHome(`${f.home}/`, { AGENC_HOME: join(f.root, "other") })).toBe(f.home);
+    expect(sandboxAgencHome(alias, { AGENC_HOME: join(f.root, "other") })).toBe(f.home);
+    expect(sandboxAgencHome(undefined, { AGENC_HOME: f.home })).toBe(f.home);
   });
 
   it("reserves home when a per-command grant introduces the writable ancestor", () => {
