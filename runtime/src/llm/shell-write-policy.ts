@@ -207,11 +207,16 @@ interface ShellWriteTargetCollection {
    */
   unresolvedProtectedFirst: string[];
   deletions: string[];
+  /**
+   * Removals that are a find starting point: find removes what it finds
+   * under it, which a narrower starting point reaches as well.
+   */
+  findStartingPoints: string[];
   moves: ShellMove[];
   indeterminate: boolean;
 }
 
-type DeletionBlockReason = "needs_approval" | "outside" | "protected";
+type DeletionBlockReason = "needs_approval" | "outside" | "protected" | "find_starting_point";
 
 function resolveWorkingDirectory(
   workspaceRoot: string,
@@ -227,7 +232,15 @@ function resolveWorkingDirectory(
 }
 
 function emptyTargetCollection(): ShellWriteTargetCollection {
-  return { targets: [], protectedFirstTargets: [], unresolvedProtectedFirst: [], deletions: [], moves: [], indeterminate: false };
+  return {
+    targets: [],
+    protectedFirstTargets: [],
+    unresolvedProtectedFirst: [],
+    deletions: [],
+    findStartingPoints: [],
+    moves: [],
+    indeterminate: false,
+  };
 }
 
 function indeterminateTargetCollection(): ShellWriteTargetCollection {
@@ -246,6 +259,7 @@ function mergeTargetCollections(
   for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
   for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
+  for (const target of from.findStartingPoints) pushUnique(into.findStartingPoints, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
 }
@@ -1206,6 +1220,362 @@ function collectWrappedCommandWriteTargets(
   return wrapper.collect?.(params, read) ?? collectCommandWordWriteTargets(params, read.end);
 }
 
+/**
+ * find's primaries that only test, print or set an option, GNU's and BSD's
+ * together, by the number of words they take after their name.
+ */
+const FIND_PRIMARY_ARGUMENTS: ReadonlyMap<string, number> = new Map([
+  ...[
+    "--help", "--version", "-acl", "-d", "-daystart", "-empty", "-executable",
+    "-false", "-help", "-ignore_readdir_race", "-ls", "-mount", "-noignore_readdir_race",
+    "-noleaf", "-nogroup", "-nouser", "-nowarn", "-print", "-print0", "-prune",
+    "-quit", "-readable", "-sparse", "-true", "-version", "-warn", "-writable",
+    "-xattr", "-xdev",
+  ].map((name) => [name, 0] as const),
+  ...[
+    "-Bmin", "-Bnewer", "-Btime", "-amin", "-anewer", "-atime", "-cmin", "-cnewer",
+    "-context", "-ctime", "-flags", "-fstype", "-gid", "-group", "-ilname", "-iname",
+    "-inum", "-ipath", "-iregex", "-iwholename", "-links", "-lname", "-maxdepth",
+    "-mindepth", "-mmin", "-mnewer", "-mtime", "-name", "-newer", "-path", "-perm",
+    "-printf", "-regex", "-regextype", "-samefile", "-size", "-type", "-uid", "-used",
+    "-user", "-wholename", "-xattrname", "-xtype",
+  ].map((name) => [name, 1] as const),
+]);
+/** `-newermt DATE` and the other `-newerXY REFERENCE` tests. */
+const FIND_NEWER_RE = /^-newer[aBcmt][aBcmt]$/u;
+/** The words that combine primaries. */
+const FIND_OPERATORS = new Set(["!", "(", ")", ",", "-a", "-and", "-not", "-o", "-or"]);
+/** Primaries that write the file named by their first word, and how many words they take. */
+const FIND_FILE_PRIMARIES: ReadonlyMap<string, number> = new Map([
+  ["-fls", 1],
+  ["-fprint", 1],
+  ["-fprint0", 1],
+  ["-fprintf", 2],
+]);
+/** Primaries that run a command; it ends at `;`, or at `+` right after `{}`. */
+const FIND_COMMAND_PRIMARIES = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+/**
+ * Options before the starting points: BSD's getopt letters, among them
+ * `-f PATH`, which names a starting point, and GNU's `-H`, `-L` and `-P`.
+ */
+const FIND_OPTION_RE = /^-([EHLPXdsx]*)(?:f(.*))?$/u;
+/**
+ * What `{}` stands for where the starting points are not on the line: a
+ * word the shell still expands, the way `rm "$@"` is read.
+ */
+const FIND_UNSEEN_FILE = "$@";
+
+/** A word of a find command line, and whether the shell still expands it. */
+interface FindWord {
+  readonly value: string;
+  readonly expands: boolean;
+}
+
+/** A command `-exec`, `-execdir`, `-ok` or `-okdir` runs. */
+interface FindCommand {
+  readonly words: readonly FindWord[];
+  /** `-execdir` and `-okdir` run it in the directory of each file found. */
+  readonly inFileDirectory: boolean;
+}
+
+/** What a find command line writes, besides what it prints. */
+interface FindReading {
+  /** The starting points the line names, the ones the shell expands among them. */
+  readonly startingPoints: readonly FindWord[];
+  /** `-files0-from` reads the starting points from a file. */
+  readonly startingPointsFromFile: boolean;
+  /** `-H`, `-L` or `-follow`: what find reaches through a symlink is not under the path it names. */
+  readonly followsLinks: boolean;
+  readonly deletes: boolean;
+  readonly commands: readonly FindCommand[];
+  /** The files `-fprint`, `-fprint0`, `-fprintf` and `-fls` write. */
+  readonly files: readonly FindWord[];
+  /** A word this reading does not know, or one the shell may turn into any primary. */
+  readonly unread: boolean;
+  /** It read a word before the starting points as options that GNU find reads as a primary. */
+  readonly readPrimaryAsOptions: boolean;
+}
+
+/** Whether find documents this word as a primary. */
+function isFindPrimary(name: string): boolean {
+  return (
+    FIND_PRIMARY_ARGUMENTS.has(name) ||
+    FIND_FILE_PRIMARIES.has(name) ||
+    FIND_COMMAND_PRIMARIES.has(name) ||
+    FIND_NEWER_RE.test(name) ||
+    ["-delete", "-depth", "-files0-from", "-follow"].includes(name)
+  );
+}
+
+/** The word that ends a command find runs: `;`, or `+` right after `{}`. */
+function findCommandEnd(args: readonly string[], start: number): number | undefined {
+  for (let index = start; index < args.length; index += 1) {
+    if (args[index] === ";") return index;
+    if (args[index] === "+" && index > start && args[index - 1] === "{}") return index;
+  }
+  return undefined;
+}
+
+/**
+ * Reads `find [option]... [starting-point]... [expression]` the way GNU and
+ * BSD find read it. The starting points run up to the first word that starts
+ * with `-` or is `!` or `(`; without one, GNU starts at `.`. A primary is
+ * read with the words it takes, so `-name -delete` deletes nothing, and the
+ * words of a command it runs are that command's. A primary neither find
+ * documents, and one the shell may change (`$ACTION`), leave the line unread.
+ *
+ * Before the starting points BSD's getopt reads `-follow` as `-f ollow`,
+ * a starting point, where GNU reads the primary. With `primariesFirst` such
+ * a word starts the expression, as GNU reads it.
+ */
+function readFindCommandLine(
+  args: readonly string[],
+  argsRequiringExpansion: readonly boolean[] | undefined,
+  primariesFirst: boolean,
+): FindReading {
+  const word = (index: number): FindWord => ({
+    value: args[index]!,
+    expands: argsRequiringExpansion?.[index] === true,
+  });
+  const startingPoints: FindWord[] = [];
+  let followsLinks = false;
+  let readPrimaryAsOptions = false;
+  let index = 0;
+  while (index < args.length) {
+    const value = args[index]!;
+    if (value === "--") {
+      index += 1;
+      break;
+    }
+    // GNU's `-D LIST` and `-OLEVEL`.
+    if (value === "-D") {
+      index += 2;
+      continue;
+    }
+    if (/^-O\d*$/u.test(value)) {
+      index += 1;
+      continue;
+    }
+    const option = FIND_OPTION_RE.exec(value);
+    if (value.length < 2 || option === null || (primariesFirst && isFindPrimary(value))) break;
+    readPrimaryAsOptions ||= isFindPrimary(value);
+    followsLinks ||= /[HL]/u.test(option[1]!);
+    index += 1;
+    const path = option[2];
+    if (path !== undefined && path.length > 0) {
+      startingPoints.push({ value: path, expands: word(index - 1).expands });
+    } else if (path !== undefined && index < args.length) {
+      startingPoints.push(word(index));
+      index += 1;
+    }
+  }
+  while (index < args.length) {
+    const value = args[index]!;
+    if ((value.length > 1 && value.startsWith("-")) || value === "!" || value === "(") break;
+    startingPoints.push(word(index));
+    index += 1;
+  }
+  const commands: FindCommand[] = [];
+  const files: FindWord[] = [];
+  let startingPointsFromFile = false;
+  let deletes = false;
+  let unread = false;
+  while (index < args.length) {
+    const current = word(index);
+    const name = current.value;
+    index += 1;
+    if (current.expands) {
+      unread = true;
+      continue;
+    }
+    if (FIND_OPERATORS.has(name)) continue;
+    if (name === "-delete") {
+      deletes = true;
+      continue;
+    }
+    if (name === "-follow") {
+      followsLinks = true;
+      continue;
+    }
+    // BSD's `-depth N` tests the depth; `-depth` alone is an option.
+    if (name === "-depth") {
+      if (/^[-+]?\d+$/u.test(args[index] ?? "")) index += 1;
+      continue;
+    }
+    if (FIND_COMMAND_PRIMARIES.has(name)) {
+      const end = findCommandEnd(args, index);
+      // find runs nothing without a command or its end, but what follows is not read.
+      if (end === undefined || end === index) {
+        unread = true;
+        break;
+      }
+      const words: FindWord[] = [];
+      for (let at = index; at < end; at += 1) words.push(word(at));
+      commands.push({ words, inFileDirectory: name.endsWith("dir") });
+      index = end + 1;
+      continue;
+    }
+    const arity =
+      FIND_FILE_PRIMARIES.get(name) ??
+      FIND_PRIMARY_ARGUMENTS.get(name) ??
+      (name === "-files0-from" || FIND_NEWER_RE.test(name) ? 1 : undefined);
+    if (arity === undefined || index + arity > args.length) {
+      unread = true;
+      continue;
+    }
+    if (FIND_FILE_PRIMARIES.has(name)) files.push(word(index));
+    startingPointsFromFile ||= name === "-files0-from";
+    index += arity;
+  }
+  return {
+    startingPoints,
+    startingPointsFromFile,
+    followsLinks,
+    deletes,
+    commands,
+    files,
+    unread,
+    readPrimaryAsOptions,
+  };
+}
+
+/**
+ * The words of a command find runs with `{}` replaced by a file it finds,
+ * as GNU and BSD find replace it anywhere in a word. The lexer marks `{}`
+ * as a brace expansion, but the shell leaves it as written, so a word
+ * expands only where the rest of it does or the file is not on the line.
+ */
+function substituteFoundFile(
+  words: readonly FindWord[],
+  found: FindWord,
+): { readonly values: readonly string[]; readonly expands: readonly boolean[] } {
+  return {
+    values: words.map((word) => word.value.split("{}").join(found.value)),
+    expands: words.map((word) =>
+      word.value.includes("{}")
+        ? found.expands || (word.expands && DYNAMIC_SHELL_TARGET_RE.test(word.value.split("{}").join("")))
+        : word.expands,
+    ),
+  };
+}
+
+/**
+ * What a command find runs writes. `{}` stands for each file found: a
+ * starting point, read as written, or a file under it. `-execdir` and
+ * `-okdir` run the command in the directory of each file found: the
+ * starting point's own directory, or the starting point and the
+ * directories under it. Neither the files nor the directories under a
+ * starting point are on the line, so a command that writes through `{}` or
+ * from such a directory is indeterminate, the way a glob is. A command the
+ * shell still expands, or one that is the file found, is not read.
+ */
+function collectFindCommandWriteTargets(params: {
+  readonly command: FindCommand;
+  /** The starting points as written, and `{}` as an unseen file when some are not on the line. */
+  readonly found: readonly FindWord[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const { command, cwd } = params;
+  const name = command.words[0]!;
+  if (name.expands || name.value.includes("{}")) return indeterminateTargetCollection();
+  const usesFound = command.words.some((word) => word.value.includes("{}"));
+  const environment = command.inFileDirectory
+    ? { ...params.environment, directoryUnknown: true }
+    : params.environment;
+  const collection = emptyTargetCollection();
+  const read = (found: FindWord, directory: string): void => {
+    const { values, expands } = substituteFoundFile(command.words, found);
+    if (usesFound && !found.expands) pushUnique(collection.findStartingPoints, resolvePath(directory, found.value));
+    mergeTargetCollections(collection, collectCommandWordWriteTargets(
+      { args: values, argsRequiringExpansion: expands, cwd: directory, environment },
+      0,
+    ));
+  };
+  if (!command.inFileDirectory) {
+    for (const found of usesFound ? params.found : params.found.slice(0, 1)) read(found, cwd);
+  } else {
+    for (const found of params.found) {
+      if (found.expands) {
+        read(found, cwd);
+        continue;
+      }
+      const path = resolvePath(cwd, found.value);
+      const absolute = { value: path, expands: false };
+      read(absolute, resolvePath(cwd, dirname(found.value)));
+      read(absolute, path);
+    }
+  }
+  if ((usesFound || command.inFileDirectory) && writesAnything(collection)) {
+    collection.indeterminate = true;
+  }
+  return collection;
+}
+
+/**
+ * `find` writes what its actions write: `-delete` removes what it finds,
+ * which is under each starting point, so a starting point is judged as
+ * `rm -r` judges it; the commands `-exec`, `-execdir`, `-ok` and `-okdir`
+ * run are read as written, the prompts of `-ok` and `-okdir` as answered
+ * yes; and `-fprint`, `-fprint0`, `-fprintf` and `-fls` write the file they
+ * name. Starting points the line does not show (`"$DIR"`, `-files0-from`),
+ * and the symlinks `-H`, `-L` and `-follow` follow out of a starting point,
+ * leave a removal indeterminate.
+ */
+function collectFindWriteTargets(params: CommandArguments): ShellWriteTargetCollection {
+  const reading = readFindCommandLine(params.args, params.argsRequiringExpansion, false);
+  const collection = collectFindReadingWriteTargets(reading, params);
+  // `find -fprint out`: BSD starts at `print` and `out`, GNU writes `out`.
+  if (reading.readPrimaryAsOptions) {
+    const gnu = readFindCommandLine(params.args, params.argsRequiringExpansion, true);
+    mergeTargetCollections(collection, collectFindReadingWriteTargets(gnu, params));
+  }
+  return collection;
+}
+
+/** What one reading of a find command line writes. */
+function collectFindReadingWriteTargets(
+  reading: FindReading,
+  params: CommandArguments,
+): ShellWriteTargetCollection {
+  const { cwd, environment } = params;
+  const collection = emptyTargetCollection();
+  collection.indeterminate = reading.unread;
+  // find creates these files while it reads its expression, before it finds anything.
+  for (const file of reading.files) {
+    if (isSafePseudoDevicePath(file.value)) continue;
+    mergeTargetCollections(collection, normalizeConcreteTargetPath(file.value, cwd));
+  }
+  const named = reading.startingPoints.filter((point) => !point.expands);
+  const unseen = reading.startingPointsFromFile || named.length < reading.startingPoints.length;
+  const startingPoints =
+    reading.startingPoints.length === 0 && !reading.startingPointsFromFile
+      ? [{ value: ".", expands: false }]
+      : named;
+  if (reading.deletes) {
+    collection.indeterminate ||= unseen || reading.followsLinks;
+    for (const point of startingPoints) {
+      // To find, a starting point named `-` is a file, not stdin.
+      const removed = normalizeConcreteTargetPath(point.value === "-" ? "./-" : point.value, cwd);
+      collection.indeterminate ||= removed.indeterminate;
+      for (const target of removed.targets) {
+        pushUnique(collection.deletions, target);
+        pushUnique(collection.findStartingPoints, target);
+      }
+    }
+  }
+  const found = unseen
+    ? [...startingPoints, { value: FIND_UNSEEN_FILE, expands: true }]
+    : startingPoints;
+  for (const command of reading.commands) {
+    mergeTargetCollections(
+      collection,
+      collectFindCommandWriteTargets({ command, found, cwd, environment }),
+    );
+  }
+  return collection;
+}
+
 function collectDirectCommandWriteTargets(
   params: CommandArguments & { readonly command: string },
 ): ShellWriteTargetCollection {
@@ -1271,6 +1641,10 @@ function collectDirectCommandWriteTargets(
       return emptyTargetCollection();
     }
     return collectOperandTargets(params.args, params.cwd);
+  }
+  if (command === "find" || command === "gfind") {
+    // `gfind` is GNU find installed next to a BSD `find`.
+    return collectFindWriteTargets(params);
   }
   return emptyTargetCollection();
 }
@@ -1998,6 +2372,24 @@ function classifyDeletionTarget(
     : { kind: "blocked", reason: "needs_approval" };
 }
 
+/**
+ * Whether a removal was refused only for what it holds: the workspace root,
+ * `/` or the home, or the system temp directory itself. As a find starting
+ * point it stands for the files find removes under it, which a narrower
+ * starting point can reach.
+ */
+function isRefusedAsSearchRoot(
+  target: string,
+  reason: DeletionBlockReason,
+  workspaceRoot: string,
+): boolean {
+  if (reason === "outside") return shellTempRoots().includes(target);
+  return (
+    reason === "protected" &&
+    (workspaceRelation(target, workspaceRoot) !== "outside" || isDangerousRemovalRoot(target))
+  );
+}
+
 /** The editing tools a refusal names, and the tool that loads them if they are not listed. */
 interface NamedFileWriteTools {
   readonly names: readonly string[];
@@ -2103,6 +2495,16 @@ function buildDeletionPolicyMessage(
         "move protected paths (the workspace root, .git, .agenc, .agents, the " +
         "AgenC home, shell and git config files); ask the user to remove them " +
         "themselves.",
+    );
+  }
+  if (reasons.has("find_starting_point")) {
+    parts.push(
+      "shell_workspace_file_delete_disallowed: find's -delete, and an -exec, " +
+        "-execdir, -ok or -okdir command that removes or moves {}, are read as " +
+        "removing each starting point, and a starting point that is or holds the " +
+        "workspace root, /, the home or the system temp directory may not be " +
+        "removed; name the subdirectories to search instead, for example " +
+        "`find src tests -name '*.pyc' -delete`.",
     );
   }
   return `${parts.join(" ")} Blocked target(s): ${blockedDeletions.join(", ")}`;
@@ -2275,7 +2677,12 @@ export function classifyShellWorkspaceWritePolicy(
         continue;
       }
       blockedDeletions.push(target);
-      deletionReasons.add(verdict.reason);
+      deletionReasons.add(
+        collected.findStartingPoints.includes(target) &&
+          isRefusedAsSearchRoot(target, verdict.reason, workspaceRoot)
+          ? "find_starting_point"
+          : verdict.reason,
+      );
     }
   }
 
