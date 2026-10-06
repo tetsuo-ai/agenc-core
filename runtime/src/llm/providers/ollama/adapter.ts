@@ -34,8 +34,13 @@ import { salvageTextToolCalls, streamableLength } from "./salvage-tool-calls.js"
 import { diagnoseRejectedTextToolCall } from "./text-tool-call-recovery.js";
 import { projectOllamaTextTools } from "./text-tools.js";
 import { ollamaTemplateRequiresTextTools } from "./template-tool-support.js";
+import {
+  assertOllamaToolChoiceResponse,
+  resolveOllamaToolChoice,
+  type OllamaToolChoiceResolution,
+} from "./tool-choice.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
-import { LLMProviderError, mapLLMError } from "../../errors.js";
+import { LLMInvalidResponseError, LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 import {
@@ -114,6 +119,7 @@ interface OllamaCapabilityProfile {
 function collectParamDiagnostics(
   params: Record<string, unknown>,
   selection?: ToolSelectionDiagnostics,
+  toolChoice?: OllamaToolChoiceResolution,
 ): LLMRequestMetrics {
   const messages = Array.isArray(params.messages)
     ? (params.messages as Array<Record<string, unknown>>)
@@ -185,9 +191,10 @@ function collectParamDiagnostics(
     toolResolution: selection?.toolResolution,
     providerCatalogToolCount: selection?.providerCatalogToolCount,
     toolsAttached: tools.length > 0,
-    toolSuppressionReason: selection?.tools.length && !Array.isArray(params.tools)
-      ? "text_tool_protocol" : selection?.toolSuppressionReason,
-    toolChoice: undefined,
+    toolSuppressionReason: toolChoice?.toolSuppressionReason
+      ?? (selection?.tools.length && !Array.isArray(params.tools)
+        ? "text_tool_protocol" : selection?.toolSuppressionReason),
+    toolChoice: toolChoice?.effective,
     toolSchemaChars,
     serializedChars,
     store: undefined,
@@ -297,6 +304,7 @@ function emitProviderTraceEvent(
 function buildToolSelectionTraceContext(
   selection: ToolSelectionDiagnostics,
   timeoutMs?: number,
+  toolChoice?: OllamaToolChoiceResolution,
 ): Record<string, unknown> {
   return {
     requestedToolNames: selection.requestedToolNames,
@@ -306,6 +314,15 @@ function buildToolSelectionTraceContext(
     providerCatalogToolCount: selection.providerCatalogToolCount,
     toolsAttached: selection.toolsAttached,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(toolChoice !== undefined
+      ? {
+          requestedToolChoice: toolChoice.requested,
+          effectiveToolChoice: toolChoice.effective,
+        }
+      : {}),
+    ...(toolChoice?.toolSuppressionReason
+      ? { toolSuppressionReason: toolChoice.toolSuppressionReason }
+      : {}),
   };
 }
 
@@ -570,8 +587,9 @@ export class OllamaProvider implements LLMProvider {
       options?.toolRouting?.allowedToolNames,
       requestTools,
     );
-    const params = this.buildParams(messages, options, toolSelection);
-    const requestMetrics = collectParamDiagnostics(params, toolSelection);
+    const toolChoice = this.resolveToolChoice(options);
+    const params = this.buildParams(messages, options, toolSelection, toolChoice);
+    const requestMetrics = collectParamDiagnostics(params, toolSelection, toolChoice);
     const requestTimeoutMs = resolveRequestTimeoutMs(
       this.config.timeoutMs,
       options?.timeoutMs,
@@ -589,6 +607,7 @@ export class OllamaProvider implements LLMProvider {
         params,
         options,
         toolSelection,
+        toolChoice,
         requestTimeoutMs,
         requestMetrics,
         signal,
@@ -601,11 +620,12 @@ export class OllamaProvider implements LLMProvider {
     readonly params: Record<string, unknown>;
     readonly options: LLMChatOptions | undefined;
     readonly toolSelection: ReturnType<OllamaProvider["selectTools"]>;
+    readonly toolChoice: OllamaToolChoiceResolution;
     readonly requestTimeoutMs: number | undefined;
     readonly requestMetrics: ReturnType<typeof collectParamDiagnostics>;
     readonly signal: AbortSignal;
   }): Promise<LLMResponse> {
-    const { client, params, options, toolSelection, requestTimeoutMs, requestMetrics, signal } = args;
+    const { client, params, options, toolSelection, toolChoice, requestTimeoutMs, requestMetrics, signal } = args;
     try {
       emitProviderTraceEvent(options, {
         kind: "request",
@@ -615,7 +635,11 @@ export class OllamaProvider implements LLMProvider {
         payload:
           cloneProviderTracePayload(params) ??
           { error: "provider_request_trace_unavailable" },
-        context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
+        context: buildToolSelectionTraceContext(
+          toolSelection,
+          requestTimeoutMs,
+          toolChoice,
+        ),
       });
       const response = await withTimeout(
         async (timeoutSignal) => invokeOllamaChat(client, params, timeoutSignal),
@@ -665,11 +689,12 @@ export class OllamaProvider implements LLMProvider {
       options?.toolRouting?.allowedToolNames,
       requestTools,
     );
+    const toolChoice = this.resolveToolChoice(options);
     const params: Record<string, unknown> = {
-      ...this.buildParams(messages, options, toolSelection),
+      ...this.buildParams(messages, options, toolSelection, toolChoice),
       stream: true,
     };
-    const requestMetrics = collectParamDiagnostics(params, toolSelection);
+    const requestMetrics = collectParamDiagnostics(params, toolSelection, toolChoice);
     const requestTimeoutMs = resolveRequestTimeoutMs(
       this.config.timeoutMs,
       options?.timeoutMs,
@@ -696,7 +721,11 @@ export class OllamaProvider implements LLMProvider {
         payload:
           cloneProviderTracePayload(params) ??
           { error: "provider_request_trace_unavailable" },
-        context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
+        context: buildToolSelectionTraceContext(
+          toolSelection,
+          requestTimeoutMs,
+          toolChoice,
+        ),
       });
       await withOllamaHealthSidecar({
         signal: options?.signal,
@@ -735,7 +764,7 @@ export class OllamaProvider implements LLMProvider {
                 // salvage has decided; see streamableLength.
                 // Scan each delta once. Re-scanning the whole accumulated
                 // prose for every token makes a long answer quadratic.
-                const safeDeltaLength = toolSelection.tools.length > 0
+                const safeDeltaLength = toolChoice.advertisedWireTools.length > 0
                   ? holdingText ? 0 : streamableLength(chunkContent)
                   : chunkContent.length;
                 if (safeDeltaLength < chunkContent.length) holdingText = true;
@@ -790,19 +819,40 @@ export class OllamaProvider implements LLMProvider {
       const normalizedDoneReason = normalizeOllamaDoneReason(doneReason);
       const acceptToolCalls = ollamaAcceptsToolCalls(normalizedDoneReason);
       if (toolCalls.length === 0 && acceptToolCalls) {
-        const salvaged = salvageTextToolCalls(content, execution.names.salvageTools);
+        const salvaged = salvageTextToolCalls(
+          content,
+          toolChoice.advertisedNames.salvageTools,
+        );
         if (salvaged.toolCalls.length > 0) {
           toolCalls = [...salvaged.toolCalls];
           content = salvaged.content;
         } else {
-          toolCallRecovery = diagnoseRejectedTextToolCall(content, execution.names.salvageTools);
+          toolCallRecovery = diagnoseRejectedTextToolCall(
+            content,
+            toolChoice.advertisedNames.salvageTools,
+          );
           if (toolCallRecovery) content = "";
         }
       }
-      toolCalls = acceptToolCalls ? this.canonicalizeCalls(toolCalls, execution) : [];
+      // Calls are withheld for truncation and for an unknown done_reason.
+      // Skip the choice check in both cases so that finish reason, and the
+      // unknown-reason error, stay visible to recovery.
+      if (acceptToolCalls && toolChoice.effective === "none" && toolCalls.length > 0) {
+        assertOllamaToolChoiceResponse(toolChoice, toolCalls);
+      }
+      toolCalls = acceptToolCalls
+        ? this.canonicalizeCalls(toolCalls, toolChoice.advertisedNames)
+        : [];
+      // `none` already failed above, before an empty catalog could hide it
+      // as an unadvertised-tool error. This check is the named-function case.
+      if (acceptToolCalls && toolChoice.effective !== "none") {
+        assertOllamaToolChoiceResponse(toolChoice, toolCalls);
+      }
       if (toolCallRecovery) toolCallRecovery = {
         ...toolCallRecovery,
-        toolName: execution.names.toCanonicalName(toolCallRecovery.toolName) ?? toolCallRecovery.toolName,
+        toolName: toolChoice.advertisedNames.toCanonicalName(toolCallRecovery.toolName)
+          ?? execution.names.toCanonicalName(toolCallRecovery.toolName)
+          ?? toolCallRecovery.toolName,
       };
       // Whatever was held back and is still part of the answer goes out now.
       // When the held text WAS the tool call, salvage removed it and there is
@@ -870,6 +920,9 @@ export class OllamaProvider implements LLMProvider {
         model,
         payload: buildProviderTraceErrorPayload(err),
       });
+      if (err instanceof LLMInvalidResponseError) {
+        throw err;
+      }
       if (content.length > 0) {
         const mappedError = this.mapError(err, requestTimeoutMs);
         // A failed stream is not authority to execute anything. Release held
@@ -964,10 +1017,27 @@ export class OllamaProvider implements LLMProvider {
     return execution;
   }
 
-  private canonicalizeCalls(calls: readonly LLMToolCall[], execution: ReturnType<OllamaProvider["requireExecution"]>): LLMToolCall[] {
+  private resolveToolChoice(
+    options: LLMChatOptions | undefined,
+  ): OllamaToolChoiceResolution {
+    return resolveOllamaToolChoice(
+      options?.toolChoice,
+      this.requireExecution(options ?? {}).names,
+    );
+  }
+
+  private canonicalizeCalls(
+    calls: readonly LLMToolCall[],
+    names: ReturnType<OllamaProvider["requireExecution"]>["names"],
+  ): LLMToolCall[] {
     return calls.map((call) => {
-      const canonical = execution.names.canonicalizeToolCall(call);
-      if (!canonical) throw new Error("Ollama returned a tool outside the advertised request catalog");
+      const canonical = names.canonicalizeToolCall(call);
+      if (!canonical) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          "Ollama returned a tool outside the advertised request catalog",
+        );
+      }
       return canonical;
     });
   }
@@ -1002,13 +1072,28 @@ export class OllamaProvider implements LLMProvider {
 
   projectRequestForAccounting(messages: readonly LLMMessage[], options: LLMChatOptions) {
     const execution = this.requireExecution(options);
+    return this.projectExecutionRequest(
+      messages,
+      options,
+      execution,
+      resolveOllamaToolChoice(options.toolChoice, execution.names),
+    );
+  }
+
+  private projectExecutionRequest(
+    messages: readonly LLMMessage[],
+    options: LLMChatOptions,
+    execution: ReturnType<OllamaProvider["requireExecution"]>,
+    toolChoice: OllamaToolChoiceResolution,
+  ) {
     validateAgentInvocationMessageSequence([...messages]);
     const repaired = repairToolTurnSequence([...messages]);
     validateToolTurnSequence(repaired, { providerName: this.name });
     const wireMessages = projectOllamaHistoryToolNames(repaired);
-    const wireOptions = { ...options, tools: execution.names.wireTools };
+    const advertisedTools = [...toolChoice.advertisedWireTools];
+    const wireOptions = { ...options, tools: advertisedTools };
     return execution.mode === "text"
-      ? projectOllamaTextTools(wireMessages, wireOptions, execution.names.wireTools, execution.toolResultImagePolicy)
+      ? projectOllamaTextTools(wireMessages, wireOptions, advertisedTools, execution.toolResultImagePolicy)
       : { messages: wireMessages, options: wireOptions };
   }
 
@@ -1049,9 +1134,16 @@ export class OllamaProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
+    toolChoice?: OllamaToolChoiceResolution,
   ): Record<string, unknown> {
     const execution = this.requireExecution(options ?? {});
-    const projection = this.projectRequestForAccounting(messages, options ?? {});
+    const resolution = toolChoice ?? this.resolveToolChoice(options);
+    const projection = this.projectExecutionRequest(
+      messages,
+      options ?? {},
+      execution,
+      resolution,
+    );
     options = projection.options;
     const requestMessages =
       options?.systemPrompt?.trim()
@@ -1087,9 +1179,15 @@ export class OllamaProvider implements LLMProvider {
     if (this.config.keepAlive !== undefined)
       params.keep_alive = this.config.keepAlive;
 
-    // Tools use the provider-compatible function schema.
-    if (execution.mode === "native" && (toolSelection?.providerCatalogToolCount ?? execution.names.wireTools.length) > 0) {
-      params.tools = execution.names.wireTools;
+    // Native Ollama chat accepts a tools list but no tool_choice. `none`
+    // omits the catalog so the provider cannot call tools. `auto` keeps
+    // the selected catalog. A specific function ships only that tool.
+    if (
+      resolution.effective !== "none" &&
+      execution.mode === "native" &&
+      (toolSelection?.providerCatalogToolCount ?? resolution.advertisedWireTools.length) > 0
+    ) {
+      params.tools = [...resolution.advertisedWireTools];
     }
 
     return params;
@@ -1245,17 +1343,32 @@ export class OllamaProvider implements LLMProvider {
     const message = isRecord(record.message) ? record.message : {};
     const rawContent = readString(message.content);
     const execution = this.requireExecution(options ?? {});
+    const toolChoice = resolveOllamaToolChoice(options?.toolChoice, execution.names);
     const normalizedDoneReason = normalizeOllamaDoneReason(record.done_reason);
     const acceptToolCalls = ollamaAcceptsToolCalls(normalizedDoneReason);
     const reported = acceptToolCalls ? normalizeOllamaToolCalls(message.tool_calls) : [];
     // Same recovery as the streaming path: a reply that IS a call becomes one.
+    // `none` advertises an empty salvage catalog so text cannot become a call.
+    // Skip the choice check whenever calls are withheld (truncation or an
+    // unknown done_reason) so main's finish reason stays visible.
+    if (acceptToolCalls && toolChoice.effective === "none" && reported.length > 0) {
+      assertOllamaToolChoiceResponse(toolChoice, reported);
+    }
     const salvaged =
       reported.length === 0 && acceptToolCalls
-        ? salvageTextToolCalls(rawContent, execution.names.salvageTools)
+        ? salvageTextToolCalls(rawContent, toolChoice.advertisedNames.salvageTools)
         : { toolCalls: [], content: rawContent };
-    const toolCalls = this.canonicalizeCalls(salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported, execution);
+    const toolCalls = this.canonicalizeCalls(
+      salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported,
+      toolChoice.advertisedNames,
+    );
+    // `none` already failed above, before an empty catalog could hide it
+    // as an unadvertised-tool error. This check is the named-function case.
+    if (acceptToolCalls && toolChoice.effective !== "none") {
+      assertOllamaToolChoiceResponse(toolChoice, toolCalls);
+    }
     const toolCallRecovery = toolCalls.length === 0 && acceptToolCalls
-      ? diagnoseRejectedTextToolCall(rawContent, execution.names.salvageTools)
+      ? diagnoseRejectedTextToolCall(rawContent, toolChoice.advertisedNames.salvageTools)
       : undefined;
     const content = toolCallRecovery ? "" : salvaged.toolCalls.length > 0 ? salvaged.content : rawContent;
     const finishReason = ollamaFinishReason(normalizedDoneReason, toolCalls.length);
@@ -1278,7 +1391,9 @@ export class OllamaProvider implements LLMProvider {
       content,
       ...(toolCallRecovery ? { toolCallRecovery: {
         ...toolCallRecovery,
-        toolName: execution.names.toCanonicalName(toolCallRecovery.toolName) ?? toolCallRecovery.toolName,
+        toolName: toolChoice.advertisedNames.toCanonicalName(toolCallRecovery.toolName)
+          ?? execution.names.toCanonicalName(toolCallRecovery.toolName)
+          ?? toolCallRecovery.toolName,
       } } : {}),
       toolCalls,
       usage,
