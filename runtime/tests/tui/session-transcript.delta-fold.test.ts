@@ -197,4 +197,36 @@ describe("transcript store folds stream deltas", () => {
     streamed = appendSessionTranscriptBatchForTesting(streamed, more as never);
     expect(streamed.keys.has("seq:1")).toBe(false);
   });
+
+  test("a stored reset at the head of the store keeps folded keys through a rebuild (sequenced)", () => {
+    const delta = (seq: number, text: string) => at(seq, "agent_message_delta", { delta: text });
+    let state = createSessionTranscriptStateForTesting([
+      at(1, "history_cleared", {}),
+      at(2, "user_message", { message: "hi" }),
+      at(3, "turn_started", { turnId: "turn-1" }),
+    ] as never);
+    state = appendSessionTranscriptBatchForTesting(state, [delta(10, "A"), delta(11, "B"), delta(12, "C")] as never);
+    // A late sequenced event forces a rebuild, which re-runs the stored reset.
+    state = appendSessionTranscriptEventForTesting(state, at(7, "token_count", {}) as never);
+    expect(adaptTranscriptEvents(state.events as never).streamingText).toBe("ABC");
+    // The folded delta is still recognized afterwards.
+    const replayed = appendSessionTranscriptEventForTesting(state, delta(11, "B") as never);
+    expect(adaptTranscriptEvents(replayed.events as never).streamingText).toBe("ABC");
+  });
+
+  test("a stored reset keeps folded keys when a batch repeats it (daemon id keys)", () => {
+    const delta = (id: string, text: string) => ({
+      id,
+      type: "agent_message_delta",
+      payload: { delta: text },
+    });
+    const reset = { id: "daemon:a:event:r", type: "history_replaced", payload: { messages: [] } };
+    let state = createSessionTranscriptStateForTesting([reset] as never);
+    state = appendSessionTranscriptBatchForTesting(state, [delta("a", "A"), delta("b", "B"), delta("c", "C")] as never);
+    // A live delta coalesced with the re-delivered, already known reset.
+    state = appendSessionTranscriptBatchForTesting(state, [delta("d", "D"), reset] as never);
+    expect(adaptTranscriptEvents(state.events as never).streamingText).toBe("ABCD");
+    state = appendSessionTranscriptEventForTesting(state, delta("b", "B") as never);
+    expect(adaptTranscriptEvents(state.events as never).streamingText).toBe("ABCD");
+  });
 });

@@ -3164,10 +3164,14 @@ function pushStoredEvent(
   }
   events[events.length - 1] = folded;
   foldedKeys.push(eventKey(previous));
-  if (foldedKeys.length > MAX_FOLDED_DELTA_KEYS + FOLDED_DELTA_KEYS_SLACK) {
-    const aged = foldedKeys.splice(0, foldedKeys.length - MAX_FOLDED_DELTA_KEYS);
-    for (const key of aged) keys.delete(key);
-  }
+  trimFoldedKeys(keys, foldedKeys);
+}
+
+/** Drop the oldest folded delta keys past the window, from both lists. */
+function trimFoldedKeys(keys: Set<string>, foldedKeys: string[]): void {
+  if (foldedKeys.length <= MAX_FOLDED_DELTA_KEYS + FOLDED_DELTA_KEYS_SLACK) return;
+  const aged = foldedKeys.splice(0, foldedKeys.length - MAX_FOLDED_DELTA_KEYS);
+  for (const key of aged) keys.delete(key);
 }
 
 /**
@@ -3195,8 +3199,8 @@ function buildTranscriptState(
   /** Folded delta keys to keep recognizing when rebuilding a live store. */
   carriedFoldedKeys: readonly string[] = [],
 ): TranscriptState {
-  const keys = new Set<string>(carriedFoldedKeys);
-  const foldedKeys = [...carriedFoldedKeys];
+  const keys = new Set<string>();
+  const foldedKeys: string[] = [];
   const events: SessionTranscriptEvent[] = [];
   let maxSeq: number | null = null;
   let sessionCostUsd = 0;
@@ -3220,6 +3224,17 @@ function buildTranscriptState(
     sessionUsage = latestSessionUsage(sessionUsage, event);
     pushStoredEvent(events, clampEventForStorage(event), keys, foldedKeys);
     maxSeq = maxEventSeq(maxSeq, event);
+  }
+
+  // Carried keys join after the loop: a reset event kept at the head of the
+  // store re-runs on every rebuild and would drop them. Nothing in the input
+  // repeats them, because stored events keep only their own keys and the
+  // caller already checked new events against the live store. They are
+  // older than the folds above, so they go first in the window.
+  if (carriedFoldedKeys.length > 0) {
+    for (const key of carriedFoldedKeys) keys.add(key);
+    foldedKeys.unshift(...carriedFoldedKeys);
+    trimFoldedKeys(keys, foldedKeys);
   }
 
   evictOldestEvents(events, keys);
