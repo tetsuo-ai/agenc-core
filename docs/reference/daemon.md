@@ -1232,9 +1232,9 @@ Two recovery paths apply; if both are spent the turn fails:
 
 | Path | When | What happens |
 | --- | --- | --- |
-| Escalate | First withheld sample, `maxOutputTokensOverride` unset, the effective budget is a **capped default** (`capped_default_max_output_tokens` / catalog `maxOutputTokensCappedDefault`), and the operator did **not** set `max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS`. Skipped when every truncated tool is `spawn_agent` and the root human turn has usable text. | Sets `maxOutputTokensOverride` to `escalatedMaxOutputTokensForModel` — `min(64000, model upper limit)` (`ESCALATED_MAX_OUTPUT_TOKENS`). Transition `max_output_tokens_escalate`. Truncates durable `state.messages` to `messagesAtSampleStart` (the length when this sample was prepared). Does **not** copy `messagesForQuery`. |
-| Continuation | Escalate is not allowed or already used, and `maxOutputTokensRecoveryCount` is under **3** (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). | Appends a user meta message, increments the counter, transition `max_output_tokens_recovery`. Incomplete streamed tools are not executed. |
-| Exhausted | Three continuations already ran. | Emits `error` cause `max_output_tokens_exhausted` (`max_output_tokens_recovery_limit (3)`), then the turn terminals as `model_error`: `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.` `run-agent` maps that to `stopReason: "error"`. |
+| Escalate | No escalated override is active (`maxOutputTokensOverride` unset), the effective budget is a **capped default** (`capped_default_max_output_tokens` / catalog `maxOutputTokensCappedDefault`), and there is no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). Skipped when every truncated tool is `spawn_agent` and the root human turn has usable text. | Sets `maxOutputTokensOverride` to `escalatedMaxOutputTokensForModel`, which is `min(64000, model upper limit)` (`ESCALATED_MAX_OUTPUT_TOKENS`). Transition `max_output_tokens_escalate`. Truncates durable `state.messages` to `messagesAtSampleStart` (the length when this sample was prepared). Does **not** copy `messagesForQuery`. Escalation is not a counted retry. Commit clears the override after each completed iteration, so a later cap in the same turn can escalate again. |
+| Continuation | Escalation is not allowed or its override is still active, and `maxOutputTokensRecoveryCount` plus `reasoningOnlyRecoveryCount` is under 3 (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). | Appends a user meta message, transition `max_output_tokens_recovery`. A reasoning-only retry on native DeepSeek increments `reasoningOnlyRecoveryCount`. Any other retry increments `maxOutputTokensRecoveryCount`. Incomplete streamed tools are not executed. |
+| Exhausted | The counted retries reached 3. | Emits `error` cause `max_output_tokens_exhausted` (`max_output_tokens_recovery_limit (3)`), then the turn ends as `model_error`: `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.` `run-agent` maps that to `stopReason: "error"`. |
 
 The escalate retry drops the truncated assistant batch. `messagesAtSampleStart`
 is recorded by `prepareAgenCTurnContext` on every sampling request. Copying
@@ -1249,20 +1249,26 @@ Continuation text depends on what was truncated:
 - Truncated tool-call arguments: ask for complete JSON, not a string
   continuation. `spawn_agent` plus a non-empty root human prompt also
   mentions `message_ref`.
-- Reasoning-only (no text, no tool calls, `reasoningOutputTokens > 0` on
-  every withheld assistant in the turn): ask for one short complete tool
-  call or a concise final answer. The same instruction is added on the
-  escalate retry. The generic "continue from where you left off" line is
-  not used — there is nothing visible to continue.
+- Reasoning-only (the capped sample has no text and no tool calls, and the
+  last response reports `reasoningOutputTokens > 0`): ask for one short
+  complete tool call or a concise final answer. The same instruction is
+  added on the escalate retry. The generic "continue from where you left
+  off" line is not used. There is nothing visible to continue.
+
+  On native DeepSeek, the call after a reasoning-only cap is sent with
+  thinking disabled. If it returns a tool call or a final answer,
+  `reasoningOnlyRecoveryCount` resets to 0, so only unproductive
+  reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
+  and sent back, so the next thinking-on call is accepted.
 - Otherwise: `Continue generating directly from where you left off…`
 
 There is no env or `config.toml` override for the 3-retry limit or the
-64_000 escalate target. `AGENC_MAX_OUTPUT_TOKENS` / `max_output_tokens`
-is the request budget and makes escalate skip. Distinct from
+64_000 escalate target. Escalation runs only with no explicit budget
+(`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or
+`providers.<provider>.max_output_tokens`). Distinct from
 `compact_failed`, `prompt_too_long_exhausted`, and streaming-fallback
 retries. Both recovery paths discard the in-flight
 `StreamingToolExecutor` (`executor_discarded` / `max_output_tokens`).
-The TUI lists `max_output_tokens_exhausted` as a turn-outcome warning.
 
 See the [recovery ladder](../ARCHITECTURE.md#max-output-tokens-recovery).
 
@@ -1417,7 +1423,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status`, `run_error`, or failed `run_terminal`. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
 | `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Current writers emit a compact warning and canonical `turn_failed` with code `compact_failed`; legacy diagnostic `error` events carry `statusProjection: "session_only"`. The daemon-backed one-shot CLI exits 1, and the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
 | Compact runs ~15 min then `compaction_failed` / `wall_time_exceeded` | The whole-transaction 900 s wall budget fired. History should be unchanged. Manual `/compact` retries; two durable auto failures for the same digest suppress later autos. Distinct from `provider_timeout` and `mid_turn_compact_skipped`. See [compaction transaction wall budget](#compaction-transaction-wall-budget). |
-| `Output recovery is exhausted` / `max_output_tokens_exhausted` | The model hit its output ceiling three continuation times (plus one escalate only when the budget is a capped default and was not set explicitly). History should still be an ordered projection of the canonical rollout — the escalate retry truncates to `messagesAtSampleStart`, not `messagesForQuery`. Reasoning-only replies ask for a next step instead of "continue from where you left off". Distinct from `compact_failed` and `prompt_too_long_exhausted`. See [max-output-tokens recovery](#max-output-tokens-recovery). |
+| `Output recovery is exhausted` / `max_output_tokens_exhausted` | The turn used its three counted retries. Escalation does not count. History should still be an ordered projection of the canonical rollout. The escalate retry truncates to `messagesAtSampleStart`, not `messagesForQuery`. Reasoning-only replies ask for a next step instead of "continue from where you left off". Distinct from `compact_failed` and `prompt_too_long_exhausted`. See [max-output-tokens recovery](#max-output-tokens-recovery). |
 | Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |

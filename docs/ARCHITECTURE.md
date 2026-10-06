@@ -431,28 +431,6 @@ Related modules: `api-errors.ts` (match predicates), `image-rejection.ts`,
 `withhold-cascading.ts`. Do not reorder the trigger array without updating
 the I-10 tests that pin `I10_TRIGGER_ORDER`.
 
-### Max-output-tokens recovery
-
-`isWithheldMaxOutputTokens` matches `apiError: "max_output_tokens"` on the
-last assistant. `post-sample-recovery.ts` `onMaxOutputTokens` then calls
-`runMaxOutputTokensRecovery`:
-
-1. **Escalate** once when the effective budget is a capped default and the
-   operator did not set `max_output_tokens` / `AGENC_MAX_OUTPUT_TOKENS`.
-   Override becomes `min(64000, model upper limit)`
-   (`ESCALATED_MAX_OUTPUT_TOKENS`). Durable history is truncated to
-   `messagesAtSampleStart`, never copied from `messagesForQuery`.
-2. **Continuation** up to **3** times (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`).
-   Reasoning-only replies (no text, no tool calls, reasoning tokens
-   reported) ask for a next concrete step. Truncated tool arguments ask
-   for complete JSON. Ordinary truncated text uses the resume-from-here
-   line.
-3. **Exhausted** terminals the turn as `model_error`:
-   `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.`
-
-Operator runbook:
-[daemon.md](reference/daemon.md#max-output-tokens-recovery).
-
 A refused image is recorded for the session and replaced in every later
 request by a short note (`session/query-image-safety.ts`), so a replayed tool
 result cannot fail each turn that follows. The same projection leaves out
@@ -460,6 +438,40 @@ every image for a model the registry documents as text-only
 (`resolveImageInputSupport` in `llm/capabilities.ts`) and any tool-result
 image whose bytes are not a complete PNG, JPEG, GIF or WebP image
 (`utils/image-validation.ts`). Durable history keeps the original content.
+
+### Max-output-tokens recovery
+
+`isWithheldMaxOutputTokens` matches `apiError: "max_output_tokens"` on the
+last assistant. `post-sample-recovery.ts` `onMaxOutputTokens` then calls
+`runMaxOutputTokensRecovery`:
+
+1. **Escalate** when no escalated override is active, the effective budget
+   is a capped default, and there is no explicit budget
+   (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or
+   `providers.<provider>.max_output_tokens`). Override becomes
+   `min(64000, model upper limit)` (`ESCALATED_MAX_OUTPUT_TOKENS`). Commit
+   clears the override after each completed iteration. Durable history is
+   truncated to `messagesAtSampleStart`, never copied from
+   `messagesForQuery`.
+2. **Continuation** while `maxOutputTokensRecoveryCount` plus
+   `reasoningOnlyRecoveryCount` is under 3
+   (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). Reasoning-only replies (the capped
+   sample has no text and no tool calls, and the last response reports
+   `reasoningOutputTokens > 0`) ask for a next concrete step. Truncated
+   tool arguments ask for complete JSON. Ordinary truncated text uses the
+   resume-from-here line.
+3. **Exhausted** ends the turn as `model_error` when the counted retries
+   reach 3:
+   `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.`
+
+On native DeepSeek, the call after a reasoning-only cap is sent with
+thinking disabled. If it returns a tool call or a final answer,
+`reasoningOnlyRecoveryCount` resets to 0, so only unproductive
+reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
+and sent back, so the next thinking-on call is accepted.
+
+Operator runbook:
+[daemon.md](reference/daemon.md#max-output-tokens-recovery).
 
 ## LLM / providers
 

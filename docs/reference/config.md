@@ -522,8 +522,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `project_doc_max_bytes` | Positive instruction-document byte ceiling. |
 | `experimental_realtime_start_instructions` | Realtime start instruction override. |
 | `experimental_realtime_ws_backend_prompt` | Realtime websocket backend prompt override. |
-| `max_output_tokens` | Positive global model-output limit. An explicit value makes max-output-tokens escalate skip. |
-| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. When true (or the catalog marks the model capped), a withheld `max_output_tokens` sample may escalate once to `min(64000, model upper limit)` before the 3 continuation retries. See [daemon.md](daemon.md#max-output-tokens-recovery). |
+| `max_output_tokens` | Positive global model-output limit. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). |
+| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. When true (or the catalog marks the model capped) and there is no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`), a withheld `max_output_tokens` sample may escalate to `min(64000, model upper limit)` when no escalated override is active. Escalation does not count toward the 3 retries. See [daemon.md](daemon.md#max-output-tokens-recovery). |
 | `max_turns` | Positive loop backstop. |
 | `max_budget_usd` | Positive shared cost cap for the session and its child agents. |
 | `autonomous_mode` | Boolean autonomous runtime mode. |
@@ -655,7 +655,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.base_url` | Provider API base URL. |
 | `providers.<provider>.default_model` | Provider fallback model. |
 | `providers.<provider>.context_window_tokens` | Positive context window. On `ollama` / `lmstudio` this explicit value wins; on `openai-compatible` a live `/v1/models` window overrides it. See [providers.md](providers.md#local-context-windows). |
-| `providers.<provider>.max_output_tokens` | Positive provider output cap. |
+| `providers.<provider>.max_output_tokens` | Positive provider output cap. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). See [daemon.md](daemon.md#max-output-tokens-recovery). |
 | `providers.<provider>.timeout_ms` | Non-negative provider request/stream idle timeout; `0` disables. |
 | `providers.<provider>.capability_overrides` | Capability override block. |
 | `providers.<provider>.capability_overrides.supportsToolUse`, `providers.<provider>.capability_overrides.supportsPromptCaching`, `providers.<provider>.capability_overrides.supportsContextEdits` | Boolean tool/cache/context capabilities. |
