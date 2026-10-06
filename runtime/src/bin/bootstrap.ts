@@ -16,6 +16,7 @@ import {
 import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
+import { endpointMetadataForTransport } from "../llm/endpoint-metadata-cache.js";
 import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
@@ -1538,7 +1539,10 @@ async function bootstrapLocalRuntimeSessionScoped(
       // Sessions on the real network share one download of each public model
       // catalog. An injected fetch keeps its own, so it sees only its data.
       ...(options.fetchImpl === undefined
-        ? { publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS }
+        ? {
+          publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS,
+          endpointCatalogs: endpointMetadataForTransport(globalThis.fetch),
+        }
         : {}),
       onWarn: (message) =>
         emitProviderWarning({
