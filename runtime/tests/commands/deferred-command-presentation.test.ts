@@ -21,16 +21,14 @@ vi.mock("../../src/commands/diff-menu.js", async (original) => {
   evaluations.diff++;
   return original();
 });
-vi.mock("../../src/commands/model-menu.js", async (original) => {
+// `/model` and `/provider` both open the providers screen.
+vi.mock("../../src/commands/providers-hub.js", async (original) => {
   evaluations.model++;
+  evaluations.provider++;
   return original();
 });
 vi.mock("../../src/commands/plan-menu.js", async (original) => {
   evaluations.plan++;
-  return original();
-});
-vi.mock("../../src/commands/provider-menu.js", async (original) => {
-  evaluations.provider++;
   return original();
 });
 vi.mock("../../src/commands/status-menu.js", async (original) => {
@@ -182,22 +180,13 @@ describe("deferred command presentation", () => {
   });
 
   it("preserves snapshot and text-formatter bindings for existing menu importers", async () => {
-    const [diffMenu, diffSnapshot, statusMenu, statusSnapshot, modelMenu, modelSnapshot,
-      providerMenu, providerSnapshot] = await Promise.all([
+    const [diffMenu, diffSnapshot, statusMenu, statusSnapshot] = await Promise.all([
       import("../../src/commands/diff-menu.js"),
       import("../../src/commands/diff-menu-snapshot.js"),
       import("../../src/commands/status-menu.js"),
       import("../../src/commands/status-menu-snapshot.js"),
-      import("../../src/commands/model-menu.js"),
-      import("../../src/commands/model-menu-snapshot.js"),
-      import("../../src/commands/provider-menu.js"),
-      import("../../src/commands/provider-menu-snapshot.js"),
     ]);
     expect(diffMenu.createDiffMenuSnapshot).toBe(diffSnapshot.createDiffMenuSnapshot);
     expect(statusMenu.createStatusDashboardSnapshot).toBe(statusSnapshot.createStatusDashboardSnapshot);
-    expect(modelMenu.readModelMenuSnapshot).toBe(modelSnapshot.readModelMenuSnapshot);
-    expect(modelMenu.modelMenuFallback).toBe(modelSnapshot.modelMenuFallback);
-    expect(providerMenu.readProviderMenuSnapshot).toBe(providerSnapshot.readProviderMenuSnapshot);
-    expect(providerMenu.providerMenuFallback).toBe(providerSnapshot.providerMenuFallback);
   });
 });

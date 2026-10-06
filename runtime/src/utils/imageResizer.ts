@@ -430,7 +430,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // Image is too large and we failed to compress it - fail with user-friendly error
     throw new ImageResizeError(
       overDim
-        ? `Unable to resize image — dimensions exceed the ${IMAGE_MAX_WIDTH}x${IMAGE_MAX_HEIGHT}px limit and image processing failed. ` +
+        ? `Unable to resize image: dimensions exceed the ${IMAGE_MAX_WIDTH}x${IMAGE_MAX_HEIGHT}px limit and image processing failed. ` +
             `Please resize the image to reduce its pixel dimensions.`
         : `Unable to resize image (${formatFileSize(originalSize)} raw, ${formatFileSize(base64Size)} base64). ` +
             `The image exceeds the 5MB API limit and compression failed. ` +

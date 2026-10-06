@@ -80,6 +80,11 @@ static int v2_sealed_snapshot(const unsigned char *bytes, size_t size);
 static void v2_free_payload(struct launch_payload *payload);
 static int v2_seccomp_argv(const struct launch_payload *payload, bool has_fd);
 static int read_v2_payload(struct launch_payload *payload, int *snapshot_fd);
+static int read_owned_payload(struct launch_payload *payload, int *snapshot_fd,
+                              const char *magic);
+static int describe_v3_protocol(void);
+static int launch_v3_supervised_target(sigset_t *wait_mask);
+static int complete_v3_cleanup(int root_status);
 static _Noreturn void run_v2_target_child(struct launch_payload *payload, int snapshot_fd, pid_t broker_pid);
 static int launch_supervised_target(int argc, sigset_t *wait_mask);
 static int complete_broker_cleanup(void);
@@ -139,6 +144,7 @@ static volatile sig_atomic_t requested_signal = AGENC_BROKER_NO_SIGNAL;
 static pid_t root_pid = AGENC_BROKER_INVALID_ROOT_PID;
 static bool v2_reporting = false;
 static bool v2_descendant_terminated = false;
+static bool v3_reporting = false;
 
 int main(int argc, char **argv) {
   sigset_t wait_mask;
@@ -146,7 +152,11 @@ int main(int argc, char **argv) {
 
   if (argc == 2 && strcmp(argv[1], "--describe-protocol") == 0)
     return describe_v2_protocol();
-  int launch_status = argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
+  if (argc == 2 && strcmp(argv[1], "--describe-protocol-v3") == 0)
+    return describe_v3_protocol();
+  v3_reporting = argc == 2 && strcmp(argv[1], "--bootstrap-v3") == 0;
+  int launch_status = v3_reporting ? launch_v3_supervised_target(&wait_mask)
+      : argc == 2 && strcmp(argv[1], "--bootstrap-v2") == 0
       ? launch_v2_supervised_target(&wait_mask)
       : launch_supervised_target(argc, &wait_mask);
   if (launch_status != AGENC_BROKER_SUCCESS) {
@@ -155,6 +165,7 @@ int main(int argc, char **argv) {
   if (monitor_root_process(&wait_mask, &root_status) != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_ERROR_EXIT;
   }
+  if (v3_reporting) return complete_v3_cleanup(root_status);
   if (complete_broker_cleanup() != AGENC_BROKER_SUCCESS) {
     return AGENC_BROKER_ERROR_EXIT;
   }
@@ -927,12 +938,17 @@ static int v2_seccomp_argv(const struct launch_payload *payload, bool has_fd) {
 }
 
 static int read_v2_payload(struct launch_payload *payload, int *snapshot_fd) {
+  return read_owned_payload(payload, snapshot_fd, "AGB2");
+}
+
+static int read_owned_payload(struct launch_payload *payload, int *snapshot_fd,
+                              const char *magic) {
   unsigned char header[28];
   int64_t now = monotonic_milliseconds();
   if (now < 0) return -1;
   int64_t deadline = now + AGENC_BROKER_BOOTSTRAP_TIMEOUT_MS;
   if (v2_read(header, sizeof(header), deadline, false) != 0 ||
-      memcmp(header, "AGB2", 4) != 0) return -1;
+      memcmp(header, magic, 4) != 0) return -1;
   uint32_t size = bootstrap_u32(header + 4), argc = bootstrap_u32(header + 8);
   uint32_t envc = bootstrap_u32(header + 12), maps = bootstrap_u32(header + 20);
   uint32_t owner = bootstrap_u32(header + 24);
@@ -1052,4 +1068,281 @@ static int launch_v2_supervised_target(sigset_t *wait_mask) {
   if (snapshot_fd >= 0) (void)close(snapshot_fd);
   v2_free_payload(&payload);
   return result;
+}
+
+/* AGB3 is selected only by the trusted direct planner. The image header is
+ * generated from this build's static helper, never from task input. */
+#ifdef AGENC_NAMESPACE_INIT_IMAGE_HEADER
+#include AGENC_NAMESPACE_INIT_IMAGE_HEADER
+static const bool v3_has_image = true;
+#else
+static const unsigned char agenc_namespace_init_image[] = {0};
+static const bool v3_has_image = false;
+#endif
+
+static const char v3_placeholder_bytes[] = "AGENC_NAMESPACE_INIT_ENTRY_V1\n";
+static int v3_report_reader = -1;
+
+static int v3_high_fd(int fd) {
+  if (fd < 0 || fd >= 7) return fd;
+  int moved = fcntl(fd, F_DUPFD_CLOEXEC, 7);
+  (void)close(fd);
+  return moved;
+}
+
+static bool v3_path_contains(const char *parent, const char *path) {
+  size_t length = strlen(parent);
+  if (strcmp(parent, "/") == 0) return path[0] == '/';
+  return strncmp(parent, path, length) == 0 &&
+      (path[length] == '\0' || path[length] == '/');
+}
+
+static bool v3_paths_overlap(const char *left, const char *right) {
+  return v3_path_contains(left, right) || v3_path_contains(right, left);
+}
+
+static bool v3_normal_path(const char *path) {
+  size_t size = strlen(path);
+  return path[0] == '/' && size < PATH_MAX &&
+      (size == 1 || path[size - 1] != '/') && strstr(path, "//") == NULL &&
+      strstr(path, "/./") == NULL && strstr(path, "/../") == NULL &&
+      (size < 2 || strcmp(path + size - 2, "/.") != 0) &&
+      (size < 3 || strcmp(path + size - 3, "/..") != 0);
+}
+
+static int v3_artifact_path(char *target, char *parent) {
+  if (!v3_has_image || sizeof(agenc_namespace_init_image) < 64 ||
+      sizeof(agenc_namespace_init_image) > 2 * 1024 * 1024) return -1;
+  char executable[PATH_MAX];
+  if (realpath("/proc/self/exe", executable) == NULL) return -1;
+  char *basename = strrchr(executable, '/');
+  if (basename == NULL || strcmp(basename, "/agenc-process-broker") != 0) return -1;
+  *basename = '\0';
+  basename = strrchr(executable, '/');
+  if (basename == NULL || strcmp(basename, "/dist") != 0) return -1;
+  if (snprintf(target, PATH_MAX, "%s/agenc-namespace-init-entry", executable) >= PATH_MAX)
+    return -1;
+  strcpy(parent, executable);
+  struct stat st;
+  char canonical[PATH_MAX];
+  if (lstat(target, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+      (st.st_mode & 0022) != 0 || (st.st_uid != geteuid() && st.st_uid != 0) ||
+      st.st_size != (off_t)(sizeof(v3_placeholder_bytes) - 1) ||
+      realpath(target, canonical) == NULL || strcmp(canonical, target) != 0) return -1;
+  int fd = open(target, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return -1;
+  char bytes[sizeof(v3_placeholder_bytes)];
+  ssize_t count;
+  do { count = read(fd, bytes, sizeof(bytes)); } while (count < 0 && errno == EINTR);
+  int closed = close(fd);
+  return count == (ssize_t)(sizeof(v3_placeholder_bytes) - 1) && closed == 0 &&
+      memcmp(bytes, v3_placeholder_bytes, sizeof(v3_placeholder_bytes) - 1) == 0 ? 0 : -1;
+}
+
+/* Strict grammar for this one generated route, not a generic bwrap API. */
+static char **v3_init_argv(const struct launch_payload *payload, char *target,
+                            const char *parent) {
+  bool pid = false, user = false, death = false, proc = false, readonly = false, readonly_root = false;
+  size_t delimiter = 0, argc = 0;
+  for (; payload->argv[argc] != NULL; ++argc) {}
+  for (size_t i = 1; i < argc;) {
+    const char *arg = payload->argv[i++];
+    if (strcmp(arg, "--") == 0) { delimiter = i - 1; break; }
+    if (strcmp(arg, "--unshare-pid") == 0) { if (pid) return NULL; pid = true; continue; }
+    if (strcmp(arg, "--unshare-user") == 0) { if (user) return NULL; user = true; continue; }
+    if (strcmp(arg, "--die-with-parent") == 0) { if (death) return NULL; death = true; continue; }
+    if (strcmp(arg, "--new-session") == 0 || strcmp(arg, "--unshare-net") == 0) continue;
+    bool bind = strcmp(arg, "--bind") == 0 || strcmp(arg, "--ro-bind") == 0 ||
+                strcmp(arg, "--dev-bind") == 0;
+    bool symlink = strcmp(arg, "--symlink") == 0;
+    bool mount = bind || symlink || strcmp(arg, "--tmpfs") == 0 ||
+                 strcmp(arg, "--dev") == 0 || strcmp(arg, "--proc") == 0 ||
+                 strcmp(arg, "--remount-ro") == 0 || strcmp(arg, "--dir") == 0;
+    if (!mount && strcmp(arg, "--seccomp") != 0 && strcmp(arg, "--chdir") != 0) return NULL;
+    size_t values = bind || symlink ? 2 : 1;
+    if (values > argc - i) return NULL;
+    const char *source = payload->argv[i];
+    const char *dest = payload->argv[i + values - 1];
+    i += values;
+    if (!mount) continue;
+    if (!v3_normal_path(dest)) return NULL;
+    char canonical[PATH_MAX];
+    if (realpath(dest, canonical) != NULL && strcmp(canonical, dest) != 0 &&
+        (v3_paths_overlap(dest, target) || v3_paths_overlap(canonical, target))) return NULL;
+    if (strcmp(arg, "--proc") == 0 && strcmp(dest, "/proc") == 0) proc = true;
+    if (strcmp(arg, "--ro-bind") == 0 && strcmp(source, parent) == 0 && strcmp(dest, parent) == 0) {
+      if (readonly) return NULL;
+      readonly = true;
+      continue;
+    }
+    /* The generated launcher repeats mkdir scaffolding for existing
+     * canonical ancestors already exposed by the initial read-only root.
+     * Before the trusted bind these operations create no new mount/alias. */
+    if (strcmp(arg, "--dir") == 0 && readonly_root && !readonly &&
+        strcmp(dest, target) != 0 && v3_path_contains(dest, target)) {
+      struct stat directory;
+      if (realpath(dest, canonical) != NULL && strcmp(canonical, dest) == 0 &&
+          stat(dest, &directory) == 0 && S_ISDIR(directory.st_mode)) continue;
+      return NULL;
+    }
+    if (v3_paths_overlap(dest, target)) {
+      /* Only the initial read-only root may precede the narrower trusted
+       * runtime bind. No writable root, mask, alias or later overlay. */
+      if (readonly || strcmp(arg, "--ro-bind") != 0 ||
+          strcmp(source, "/") != 0 || strcmp(dest, "/") != 0) return NULL;
+      readonly_root = true;
+    }
+    if (bind && strcmp(arg, "--ro-bind") != 0 &&
+        realpath(source, canonical) != NULL && v3_paths_overlap(canonical, target)) return NULL;
+  }
+  if (!pid || !user || !death || !proc || !readonly || delimiter == 0 ||
+      delimiter + 1 >= argc || payload->argv[delimiter + 1][0] != '/') return NULL;
+  struct stat command, artifact;
+  if (stat(payload->argv[delimiter + 1], &command) != 0 || stat(target, &artifact) != 0 ||
+      (command.st_dev == artifact.st_dev && command.st_ino == artifact.st_ino)) return NULL;
+  char **argv = calloc(argc + 9, sizeof(char *));
+  if (argv == NULL) return NULL;
+  size_t position = 0;
+  for (size_t i = 0; i < delimiter; ++i) argv[position++] = payload->argv[i];
+  argv[position++] = "--as-pid-1";
+  argv[position++] = "--perms"; argv[position++] = "0500";
+  argv[position++] = "--ro-bind-data"; argv[position++] = "6";
+  argv[position++] = target;
+  argv[position++] = "--"; argv[position++] = target;
+  argv[position++] = "--namespace-init-v1";
+  for (size_t i = delimiter + 1; i < argc; ++i) argv[position++] = payload->argv[i];
+  return argv;
+}
+
+static int v3_image_reference(void) {
+  int writable = v2_sealed_snapshot(agenc_namespace_init_image, sizeof(agenc_namespace_init_image));
+  if (writable < 0) return -1;
+  char path[64];
+  int length = snprintf(path, sizeof(path), "/proc/self/fd/%d", writable);
+  int reference = length > 0 && (size_t)length < sizeof(path)
+      ? open(path, O_RDONLY | O_CLOEXEC) : -1;
+  int closed = close(writable);
+  if (closed != 0) { if (reference >= 0) (void)close(reference); return -1; }
+  reference = v3_high_fd(reference);
+  if (reference < 0) return -1;
+  struct stat st;
+  unsigned char buffer[4096];
+  if (fstat(reference, &st) != 0 || st.st_size != (off_t)sizeof(agenc_namespace_init_image) ||
+      fcntl(reference, F_GET_SEALS) != (F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)) goto fail;
+  for (size_t offset = 0; offset < sizeof(agenc_namespace_init_image);) {
+    size_t count = sizeof(agenc_namespace_init_image) - offset;
+    if (count > sizeof(buffer)) count = sizeof(buffer);
+    ssize_t read_count = pread(reference, buffer, count, (off_t)offset);
+    if (read_count < 0 && errno == EINTR) continue;
+    if (read_count <= 0 || (size_t)read_count > count ||
+        memcmp(buffer, agenc_namespace_init_image + offset, (size_t)read_count) != 0) goto fail;
+    offset += (size_t)read_count;
+  }
+  if (lseek(reference, 0, SEEK_SET) == 0) return reference;
+fail:
+  (void)close(reference);
+  return -1;
+}
+
+static int describe_v3_protocol(void) {
+  char target[PATH_MAX], parent[PATH_MAX];
+  if (v3_artifact_path(target, parent) != 0) return AGENC_BROKER_ERROR_EXIT;
+  int reference = v3_image_reference();
+  if (reference < 0 || close(reference) != 0) return AGENC_BROKER_ERROR_EXIT;
+  return puts("AGB3 owner-pid sealed-static-init-ro-artifact-v1") < 0 ? AGENC_BROKER_ERROR_EXIT : 0;
+}
+
+static _Noreturn void run_v3_target_child(struct launch_payload *payload,
+    char **argv, int snapshot, int reference, int writer, pid_t broker) {
+  if (getppid() != broker || prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0 ||
+      getppid() != broker || setsid() < 0 || v2_pending_stop() != 0) _exit(125);
+  reset_child_signals();
+  if (getppid() != broker || write_status("S", 1) != 0 || close(3) != 0) _exit(125);
+  if (snapshot >= 0 && dup2(snapshot, 3) != 3) _exit(125);
+  if (dup2(writer, 4) != 4 || dup2(reference, 5) != 5 || dup2(reference, 6) != 6 ||
+      close(writer) != 0 || close(reference) != 0 || close(v3_report_reader) != 0 ||
+      (snapshot >= 0 && close(snapshot) != 0)) _exit(125);
+  /* dup2 cleared CLOEXEC on exactly the four intended roles. FD6 shares the
+   * reference offset, initially zero; the init verifies FD5 with pread. */
+  if (getppid() != broker) _exit(125);
+  execve(payload->program, argv, payload->environment);
+  _exit(127);
+}
+
+static int launch_v3_supervised_target(sigset_t *wait_mask) {
+  struct launch_payload payload = {0};
+  int snapshot = -1, reference = -1, writer = -1, result = -1;
+  char target[PATH_MAX], parent[PATH_MAX];
+  char **argv = NULL;
+  if (block_control_signals(wait_mask) != 0 || install_broker_handlers() != 0 ||
+      enable_child_subreaper() != 0) return -1;
+  if (read_owned_payload(&payload, &snapshot, "AGB3") != 0 ||
+      verify_initial_child_ownership() != 0 || v2_owner_alive() != 0 ||
+      v3_artifact_path(target, parent) != 0 ||
+      (argv = v3_init_argv(&payload, target, parent)) == NULL) goto done;
+  if (close(4) != 0) goto done;
+  if (snapshot >= 0 && (snapshot = v3_high_fd(snapshot)) < 0) goto done;
+  reference = v3_image_reference();
+  if (reference < 0) goto done;
+  int pipe_fds[2];
+  if (pipe2(pipe_fds, O_CLOEXEC) != 0) goto done;
+  v3_report_reader = v3_high_fd(pipe_fds[0]);
+  writer = v3_high_fd(pipe_fds[1]);
+  if (v3_report_reader < 0 || writer < 0 ||
+      fcntl(v3_report_reader, F_SETFL, O_NONBLOCK) != 0 || v2_owner_alive() != 0) goto done;
+  pid_t broker = getpid();
+  root_pid = fork();
+  if (root_pid == 0) run_v3_target_child(&payload, argv, snapshot, reference, writer, broker);
+  if (root_pid < 0) goto done;
+  result = 0;
+  (void)close(STDIN_FILENO);
+done:
+  if (snapshot >= 0) (void)close(snapshot);
+  if (reference >= 0) (void)close(reference);
+  if (writer >= 0) (void)close(writer);
+  if (result != 0 && v3_report_reader >= 0) { (void)close(v3_report_reader); v3_report_reader = -1; }
+  free(argv);
+  v2_free_payload(&payload);
+  return result;
+}
+
+static bool v3_trusted_abort(void) {
+  if (requested_signal != 0) return true;
+  sigset_t pending;
+  if (sigpending(&pending) != 0) return false;
+  const int controls[] = {SIGTERM, SIGINT, SIGHUP, SIGUSR2};
+  for (size_t i = 0; i < AGENC_BROKER_ARRAY_LENGTH(controls); ++i)
+    if (sigismember(&pending, controls[i]) == 1) return true;
+  return false;
+}
+
+static int complete_v3_cleanup(int root_status) {
+  bool unused;
+  if (observe_residual_descendants(&unused) != 0 || force_cleanup_descendants() != 0)
+    return AGENC_BROKER_ERROR_EXIT;
+  unsigned char report[17];
+  size_t length = 0;
+  bool eof = false;
+  while (length < sizeof(report)) {
+    ssize_t count = read(v3_report_reader, report + length, sizeof(report) - length);
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) break;
+    if (count == 0) { eof = true; break; }
+    length += (size_t)count;
+  }
+  (void)close(v3_report_reader); v3_report_reader = -1;
+  bool valid = eof && length == 16 && memcmp(report, "AGI1", 4) == 0 &&
+      report[4] == 1 && report[5] <= 1 && report[6] <= 1 && report[7] == 0 &&
+      bootstrap_u32(report + 12) == 0;
+  uint32_t value = valid ? bootstrap_u32(report + 8) : 0;
+  valid = valid && (report[5] == 0 ? value <= 255 : value >= 1 && value <= 64);
+  int normalized = valid ? (int)value + (report[5] == 1 ? 128 : 0) : 125;
+  valid = valid && WIFEXITED(root_status) && WEXITSTATUS(root_status) == normalized;
+  unsigned char terminal[12] = {'A','G','C','3',
+      valid ? 0 : v3_trusted_abort() ? 1 : 2,
+      valid ? report[6] : 2, valid ? report[5] : 2,
+      valid ? (unsigned char)value : 0, 0,0,0,0};
+  if (write_status((const char *)terminal, sizeof(terminal)) != 0 || close(3) != 0)
+    return AGENC_BROKER_ERROR_EXIT;
+  return valid ? normalized : AGENC_BROKER_ERROR_EXIT;
 }

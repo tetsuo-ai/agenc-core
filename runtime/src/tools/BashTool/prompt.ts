@@ -186,7 +186,7 @@ function getSimpleSandboxSection(): string {
   const items: Array<string | string[]> = [
     'Commands MUST run in sandbox mode. If a command fails due to sandbox restrictions, explain the likely restriction and work with the user to adjust sandbox settings or run an explicit user-initiated shell command.',
     'Do not suggest adding sensitive paths like ~/.bashrc, ~/.zshrc, ~/.ssh/*, or credential files to the sandbox allowlist.',
-    'For temporary files, always use the `$TMPDIR` environment variable. TMPDIR is automatically set to the correct sandbox-writable directory in sandbox mode. Do NOT use `/tmp` directly - use `$TMPDIR` instead.',
+    'For temporary files, use the directory in the `$TMPDIR` environment variable, which is set to the correct sandbox-writable directory in sandbox mode. Run `echo "$TMPDIR"` first and write to the literal path it prints: a write target that contains `$TMPDIR` or any other variable is refused because its destination cannot be confirmed. Do NOT use `/tmp` directly.',
   ]
 
   return [

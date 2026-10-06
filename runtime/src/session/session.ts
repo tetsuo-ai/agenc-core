@@ -6258,6 +6258,9 @@ export class Session {
         }
       }
 
+      // Best-effort lifecycle closeAll may time out or retain cleanup failure.
+      // Neither permits a cancellation/suspension terminal to authorize seal.
+      await this.services.unifiedExecManager?.prepareForDurableClose?.();
       const finalizers = [...this.beforeDurableCloseListeners];
       this.beforeDurableCloseListeners.clear();
       for (const finalize of finalizers) {

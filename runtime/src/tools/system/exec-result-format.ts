@@ -1,13 +1,13 @@
 import type { ExecCommandToolOutput } from "../../unified-exec/types.js";
 
 /**
- * Shown after the footer when the supervisor had to stop processes the
- * command left behind. Without it the model saw exit 0 for `nginx` or
+ * Shown after the footer when processes outlived the command and cleanup
+ * is complete. Without it the model saw exit 0 for `nginx` or
  * `nohup server &`, then found nothing listening, and could not learn why:
  * the containment that stops a command's residue never said so.
  */
 export const RESIDUAL_PROCESSES_NOTE =
-  "[note: this command left processes running (a trailing '&', nohup, setsid, or a daemon that forked) and AgenC stopped them when the command returned. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
+  "[note: this command left processes running after it exited. Cleanup is complete; those processes are no longer running. To start a service that must keep running after the command returns and after this session ends, call exec_command again with detach: true.]";
 
 /** Model-facing alias only; canonical results and structured facts stay intact. */
 export function compactExecExitFooter(content: string): string {
@@ -38,7 +38,9 @@ export function formatUnifiedExecToolContent(
   sections.push(output.output);
 
   const footerLines: string[] = [];
-  if (output.exitCode !== null) {
+  if (output.command_outcome !== undefined) {
+    footerLines.push(`command_outcome=${output.command_outcome} cleanup_complete=true`);
+  } else if (output.exitCode !== null) {
     footerLines.push(`exit_code=${output.exitCode}`);
   } else if (output.detached === true && output.pid !== undefined) {
     // A detached service that was still running when the yield window
@@ -64,7 +66,8 @@ export function formatUnifiedExecToolContent(
   const routineLightSuccess = lightMode && output.exitCode === 0 &&
     !output.truncated && !output.timedOut && output.process_id === undefined &&
     output.session_id === undefined && output.detached !== true &&
-    output.residual_processes_terminated !== true;
+    output.residual_processes_terminated !== true && output.residual_processes_observed !== true &&
+    output.command_outcome === undefined;
   if (!routineLightSuccess) {
     footerLines.push(`wall_time=${output.wall_time_seconds.toFixed(4)}s`);
     footerLines.push(`tokens=${output.original_token_count}`);
@@ -82,7 +85,7 @@ export function formatUnifiedExecToolContent(
   // model sees the two sections distinctly.
   sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
-  if (output.residual_processes_terminated === true) {
+  if (output.residual_processes_terminated === true || output.residual_processes_observed === true) {
     sections.push(RESIDUAL_PROCESSES_NOTE);
   }
   return sections.join("\n");
@@ -97,7 +100,10 @@ export function unifiedExecCodeModeResult(
     output: output.output,
   };
 
-  if (output.exitCode !== null) {
+  if (output.command_outcome !== undefined) {
+    result.command_outcome = output.command_outcome;
+    result.cleanup_complete = true;
+  } else if (output.exitCode !== null) {
     result.exit_code = output.exitCode;
   } else if (output.detached === true && output.pid !== undefined) {
     result.running = true;
@@ -124,6 +130,8 @@ export function unifiedExecCodeModeResult(
   if (output.residual_processes_terminated === true) {
     result.residual_processes_terminated = true;
   }
+
+  if (output.residual_processes_observed === true) result.residual_processes_observed = true;
 
   return result;
 }

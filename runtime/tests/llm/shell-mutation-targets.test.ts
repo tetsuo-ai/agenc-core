@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyShellWorkspaceWritePolicy,
@@ -20,6 +20,14 @@ function targets(command: string, cwd = ROOT) {
 }
 
 describe("collectShellMutationTargets", () => {
+  beforeEach(() => {
+    vi.stubEnv("CDPATH", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("reports writes, removals and both ends of a move", () => {
     expect(targets("echo x > out.txt; rm old.txt; mv a.js lib/a.js").targets).toEqual([
       join(ROOT, "out.txt"),
@@ -32,7 +40,9 @@ describe("collectShellMutationTargets", () => {
   it("resolves each command where an earlier cd left the shell", () => {
     expect(targets("cd sub && echo x > f.txt").targets).toEqual([join(ROOT, "sub/f.txt")]);
     expect(targets("cd ../.. && rm src/a.js").targets).toEqual(["/src/a.js"]);
-    expect(targets("cd -P sub; cd -- deeper && rm a").targets).toEqual([join(ROOT, "sub/deeper/a")]);
+    expect(targets("cd -P sub && cd -- deeper && rm a").targets).toEqual([join(ROOT, "sub/deeper/a")]);
+    // After `;` the next command runs even when the cd failed.
+    expect(targets("cd sub; rm a").targets).toEqual([join(ROOT, "sub/a"), join(ROOT, "a")]);
     expect(targets("pushd sub && rm a").targets).toEqual([join(ROOT, "sub/a")]);
     expect(targets("cd && rm x").targets).toEqual([join(homedir(), "x")]);
     expect(targets("bash -c 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
@@ -72,6 +82,12 @@ describe("collectShellMutationTargets", () => {
     }).targets).toEqual([join(ROOT, "src/a.js")]);
   });
 
+  it("reads the code eval runs", () => {
+    expect(targets("eval 'rm ../outside.txt'").targets).toEqual(["/work/outside.txt"]);
+    expect(targets("eval 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
+    expect(targets('eval "$CMD"').indeterminate).toBe(true);
+  });
+
   it("returns nothing for a tool that is not a shell", () => {
     expect(collectShellMutationTargets({
       toolName: "Write",
@@ -80,7 +96,7 @@ describe("collectShellMutationTargets", () => {
     })).toEqual({ targets: [], indeterminate: false });
   });
 
-  it("leaves the workspace write policy's own reading of cd unchanged", () => {
+  it("reads cd the way the workspace write policy does", () => {
     const decision = classifyShellWorkspaceWritePolicy({
       toolName: "exec_command",
       args: { command: "cd sub && rm a" },
@@ -88,6 +104,6 @@ describe("collectShellMutationTargets", () => {
       allowWorkspaceDeletions: true,
       platform: "linux",
     });
-    expect(decision.observedTargets).toEqual([join(ROOT, "a")]);
+    expect(decision.observedTargets).toEqual([join(ROOT, "sub/a")]);
   });
 });

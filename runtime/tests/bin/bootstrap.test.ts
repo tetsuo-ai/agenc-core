@@ -4887,3 +4887,64 @@ describe("warm daemon auxiliary setup ceiling", () => {
 
 
 });
+
+describe("bootstrap private endpoint metadata reuse", () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetAgentRolesForTesting(); });
+
+  it("shares only default transport discovery across fresh projects, preserves model limits, and rotates accounts/endpoints", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-metadata-home-"));
+    const projects: string[] = [];
+    let limit = 64000;
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const requests: string[] = [];
+    // Unknown local models also issue an independent capability health probe.
+    // Keep that probe real and count its GET separately from metadata reuse.
+    const { OpenAIProvider } = await import("../llm/providers/openai/adapter.js");
+    const healthChecks = vi.spyOn(OpenAIProvider.prototype, "healthCheck");
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(String(input));
+      return jsonResponse({ data: [
+        { id: "local-model", context_length: limit, max_output_tokens: 8192 },
+        { id: "other-model", context_length: 32000, max_output_tokens: 4096 },
+      ] });
+    });
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const start = async (model: string, key = "a", base = "http://localhost:8888/v1", injected = false) => {
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-metadata-project-"));
+      projects.push(workspace);
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          AGENC_HOME: home, AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "openai-compatible", AGENC_MODEL: model,
+          OPENAI_COMPATIBLE_API_KEY: key, OPENAI_COMPATIBLE_BASE_URL: base,
+          HOME: home, SHELL: "/bin/sh",
+        },
+        ...(injected ? { fetchImpl: transport } : {}),
+        argv: ["node", "agenc"],
+      });
+      try { return boot.modelInfo; }
+      finally { await boot.shutdown(); }
+    };
+    const discoveries = () => requests.filter((url) => url.endsWith("/models")).length - healthChecks.mock.calls.length;
+    try {
+      expect((await start("local-model")).contextWindow).toBe(64000);
+      expect((await start("other-model")).contextWindow).toBe(32000);
+      expect(discoveries()).toBe(1);
+      limit = 16000;
+      now = 600001;
+      expect((await start("local-model")).contextWindow).toBe(16000);
+      expect(discoveries()).toBe(2);
+      await start("local-model", "b");
+      await start("local-model", "a");
+      expect(discoveries()).toBe(4);
+      await start("local-model", "a", "http://localhost:8889/v1");
+      expect(discoveries()).toBe(5);
+      await start("local-model", "a", "http://localhost:8889/v1", true);
+      expect(discoveries()).toBe(6);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await Promise.all(projects.map((path) => rm(path, { recursive: true, force: true })));
+    }
+  });
+});

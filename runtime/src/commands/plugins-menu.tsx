@@ -30,7 +30,7 @@ function pluginRows(snapshot: PluginSnapshot): PluginRow[] {
         id,
         name,
         ...(plugin.root !== undefined ? { root: plugin.root } : {}),
-        version: plugin.version ?? "—",
+        version: plugin.version ?? "",
         status: "enabled",
         detail: id === name ? "loaded" : `manifest ${name}, loaded`,
       };
@@ -42,7 +42,7 @@ function pluginRows(snapshot: PluginSnapshot): PluginRow[] {
         id,
         name,
         ...(plugin.root !== undefined ? { root: plugin.root } : {}),
-        version: plugin.version ?? "—",
+        version: plugin.version ?? "",
         status: "disabled",
         detail: id === name ? "disabled" : `manifest ${name}, disabled`,
       };
@@ -50,7 +50,7 @@ function pluginRows(snapshot: PluginSnapshot): PluginRow[] {
     ...snapshot.errors.map((error, index): PluginRow => ({
       id: `error-${index + 1}`,
       name: `error-${index + 1}`,
-      version: "—",
+      version: "",
       status: "error",
       detail: error.message ?? "unknown plugin error",
     })),
@@ -189,7 +189,7 @@ export function PluginsMenuView({
           id: installed.id,
           name: installed.name,
           root: installed.root,
-          version: installed.version ?? "—",
+          version: installed.version ?? "",
           status: "enabled",
           detail: installed.id === installed.name
             ? "installed, restart to load"
@@ -312,7 +312,7 @@ export function PluginsMenuView({
           marketplace === null
             ? [
                 <ThemedText key="name" color="inactive">none</ThemedText>,
-                <ThemedText key="count" color="inactive">—</ThemedText>,
+                <ThemedText key="count" color="inactive">{""}</ThemedText>,
                 <ThemedText key="path" color="subtle" wrap="truncate-end">
                   {busy ? "loading marketplaces…" : "no marketplaces configured"}
                 </ThemedText>,
@@ -370,7 +370,7 @@ export function PluginsMenuView({
           plugin === null
             ? [
                 <ThemedText key="name" color="inactive">none</ThemedText>,
-                <ThemedText key="type" color="inactive">—</ThemedText>,
+                <ThemedText key="type" color="inactive">{""}</ThemedText>,
                 <ThemedText key="source" color="subtle" wrap="truncate-end">
                   no installable plugins in this marketplace
                 </ThemedText>,
@@ -406,7 +406,7 @@ export function PluginsMenuView({
   const displayRows = rows.length > 0 ? rows : [{
     id: "no plugins",
     name: "no plugins",
-    version: "—",
+    version: "",
     status: "disabled" as const,
     detail: "no plugin records loaded",
   }];

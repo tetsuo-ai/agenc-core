@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import type { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { providerEnvironmentKeys } from "../llm/registry/provider-ingress.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type { RoutineDesktopTools } from "./types.js";
 import { RoutineExecutionUnsettledError, type RoutineExecutor } from "./service.js";
@@ -10,18 +10,7 @@ import { RoutineExecutionUnsettledError, type RoutineExecutor } from "./service.
 /** Tool execution needs the user's PATH, exactly as every desktop-created session gets it. */
 const ROUTINE_ENV_ALWAYS: readonly string[] = ["PATH"];
 
-/** Variables the selected provider itself reads: its credential fields and base-URL override. */
-export function providerEnvironmentKeys(provider: string | undefined): readonly string[] {
-  const info = resolveBuiltInProviderInfo(provider);
-  if (info === undefined) return [];
-  const keys = [...info.baseURLEnvVars];
-  const credentials = info.credentials;
-  if (credentials.kind === "api-key") keys.push(...credentials.apiKey.envVars);
-  else if (credentials.kind === "aws-sigv4") {
-    keys.push(...credentials.accessKeyId.envVars, ...credentials.secretAccessKey.envVars, ...credentials.sessionToken.envVars, ...credentials.regionEnvVars);
-  }
-  return keys;
-}
+export { providerEnvironmentKeys };
 
 /**
  * Session environment for one routine agent: PATH plus the selected provider's

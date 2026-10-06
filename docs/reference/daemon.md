@@ -1057,7 +1057,11 @@ durable session id, and by its daemon session id, wherever the id appears in
 the params. A request that waits moves a restore that has not started to the
 front of the queue, so it waits for about one restore plus the ones already
 running. `agent.create` with the `resumeSessionId` of a session still
-restoring waits the same way and never rebuilds it a second time.
+restoring waits the same way and never rebuilds it a second time. When that
+session comes back with a live runtime, the create fails with the error data
+code `CANONICAL_SESSION_ALREADY_ACTIVE`, and the client attaches to the
+restored agent instead. `agenc --continue` and `agenc --resume`, headless or
+in the TUI, do this, so they work right after a daemon restart.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
 `session.list`, `agent.list`, and every request that names no session still
@@ -1070,6 +1074,18 @@ restoring. When they are all settled the daemon logs
 `daemon restored N session(s) open at its last shutdown` with how many came
 back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the startup phase
 `startup session restore complete`.
+
+A restored session gets the session environment its client supplied at
+creation (`envOverrides`), not the daemon's values. The daemon records the non-secret
+values with the run: provider endpoints, model and tool settings, proxies,
+and `PATH`. It never writes a credential value to disk, only the credential's
+name. When the client supplied a credential the session's model provider
+needs (its API key, a custom auth header or token, the mTLS key, or an
+endpoint or proxy URL that embeds a credential), the daemon cannot rebuild
+the same runtime. It publishes the session without one, and the next client
+resume supplies the credential again. A credential the provider does not read,
+such as a web search key, is left out of the rebuilt runtime. A run recorded
+before the daemon kept this record is published without a runtime once.
 
 A session whose runtime cannot be rebuilt is still published without one, as
 before. A session whose publication fails is rolled back and stays

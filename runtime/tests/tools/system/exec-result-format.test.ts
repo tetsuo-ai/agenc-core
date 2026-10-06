@@ -152,3 +152,25 @@ describe("compactExecExitFooter", () => {
     );
   });
 });
+
+
+test("authenticated residue is an observation and ordinary clean success remains compact", () => {
+  const result = output({ residual_processes_observed: true });
+  expect(formatUnifiedExecToolContent(result, true)).toContain("Cleanup is complete; those processes are no longer running.");
+  expect(formatUnifiedExecToolContent(result, true)).not.toContain("AgenC stopped");
+  expect(unifiedExecCodeModeResult(result)).toMatchObject({ exit_code: 0, residual_processes_observed: true });
+  expect(unifiedExecCodeModeResult(result)).not.toHaveProperty("residual_processes_terminated");
+  expect(formatUnifiedExecToolContent(output({}), true)).toBe("hello\n\n[exec exit_code=0]");
+});
+
+test.each(["aborted", "unavailable"] as const)("%s is neither normal exit nor running nor a false residual claim", command_outcome => {
+  const result = output({ exitCode: null, exit_code: null, command_outcome });
+  const text = formatUnifiedExecToolContent(result, true);
+  expect(text).toContain(`command_outcome=${command_outcome} cleanup_complete=true`);
+  expect(text).not.toMatch(/exit_code=|running=true|yielded=true|signal_terminated|left processes/);
+  const structured = unifiedExecCodeModeResult(result);
+  expect(structured).toMatchObject({ command_outcome, cleanup_complete: true });
+  for (const key of ["exit_code", "running", "yielded", "signal_terminated", "residual_processes_terminated", "residual_processes_observed"]) {
+    expect(structured).not.toHaveProperty(key);
+  }
+});

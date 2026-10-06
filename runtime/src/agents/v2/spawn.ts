@@ -285,18 +285,23 @@ function requestsOtherProvider(
 
 /**
  * The short, human-readable title shown for a spawned agent on the rail /
- * transcript / `/cost` (the task's `description`). Derived from the validated
+ * transcript / `/cost` (the task's `description`). The model's optional
+ * `description` label wins; otherwise it is derived from the validated
  * `task_name` (separators humanized) — NEVER the full prompt, which floods the
  * rail with the agent's entire instruction block. Falls back to the first line
- * of the prompt only when no task name is available, always length-bounded.
+ * of the prompt only when neither is available, always length-bounded.
  */
 export function shortAgentTaskTitle(
   taskName: string | undefined,
   prompt: string,
+  label?: string,
 ): string {
+  const fromLabel = label?.replace(/\s+/gu, " ").trim();
   const fromName = taskName?.trim().replace(/[_-]+/gu, " ").trim();
   const base =
-    fromName && fromName.length > 0
+    fromLabel && fromLabel.length > 0
+      ? fromLabel
+      : fromName && fromName.length > 0
       ? fromName
       : (prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ??
         prompt.trim());
@@ -523,6 +528,10 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
         description:
           "Task name for the new agent. Lowercase letters, digits, and underscores are canonical; hyphens and spaces are accepted and normalized to underscores.",
       },
+      description: {
+        type: "string",
+        description: "Optional short label (3-5 words) shown for the agent in the UI. Defaults to the task name.",
+      },
       agent_type: {
         type: "string",
         enum: roleNames,
@@ -592,6 +601,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "message",
         "message_ref",
         "task_name",
+        "description",
         "agent_type",
         "model",
         "provider",
@@ -609,6 +619,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     for (const key of [
       "message",
       "task_name",
+      "description",
       "agent_type",
       "model",
       "provider",
@@ -1112,10 +1123,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       registerAgentThreadTask(lifecycle, thread, {
         toolUseId: callId,
         runtimeOptions: session.services.runtimeOptions,
-        // Short title (from task_name), not the full prompt — the rail /
-        // transcript / `/cost` show this as the agent's label. The full prompt
-        // is preserved separately on the task's `prompt` field.
-        description: shortAgentTaskTitle(taskName, prompt),
+        // Short title (the model's label, else task_name), not the full
+        // prompt — the rail / transcript / `/cost` show this as the agent's
+        // label. The full prompt is preserved separately on the task's
+        // `prompt` field.
+        description: shortAgentTaskTitle(taskName, prompt, stringValue(args.description)),
         prompt,
         registerAgentPathAlias,
       });

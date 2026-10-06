@@ -15,7 +15,7 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).ellipsis).toBe("…");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
     expect(selectAgenCTuiGlyphs({}).ideSelection).toBe("⧉");
-    expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("⎿");
+    expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("└");
     expect(selectAgenCTuiGlyphs({}).spinnerFrames).toEqual([
       "·",
       "✢",

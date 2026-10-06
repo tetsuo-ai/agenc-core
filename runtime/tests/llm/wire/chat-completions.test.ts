@@ -4,6 +4,7 @@ import {
   collectChatCompletionsRequestMetadata,
   parseChatCompletionsResponse,
 } from "./chat-completions.js";
+import { chatCompletionsCapabilityHintsForProvider } from "./capability-gating.js";
 import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 describe("buildChatCompletionsRequest", () => {
@@ -91,6 +92,27 @@ describe("buildChatCompletionsRequest", () => {
         content: "current ask",
       },
     ]);
+  });
+
+  test("disables thinking only on the measured recovery switch, for one sample", () => {
+    const native = chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-flash");
+    const build = (hints: typeof native, disableThinkingForRecovery?: true) =>
+      buildChatCompletionsRequest({
+        model: "deepseek-flash",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { reasoningEffort: "high", ...(disableThinkingForRecovery ? { disableThinkingForRecovery } : {}) },
+        providerCapabilityHints: hints,
+      });
+
+    expect(build(native, true).thinking).toEqual({ type: "disabled" });
+    expect(build(native).thinking).toEqual({ type: "enabled" });
+    expect(
+      build(chatCompletionsCapabilityHintsForProvider("minimax", "minimax-m3"), true).thinking,
+    ).toEqual({ type: "adaptive" });
+    expect(
+      build(chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"), true).thinking,
+    ).toBeUndefined();
   });
 
   test("always sends a positive output-token budget", () => {

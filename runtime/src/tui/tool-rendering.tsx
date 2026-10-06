@@ -7,6 +7,8 @@ import { Ansi } from "./ink/Ansi.js";
 import { stringWidth } from "./ink/stringWidth.js";
 import { stripUnderlineAnsi } from "./components/shell/OutputLine.js";
 import { selectAgenCTuiGlyphs } from "./glyphs.js";
+import { ResultLine } from "./components/v2/primitives.js";
+import { parseClampMarker, summarizeToolError } from "./tool-error-text.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
 import { isRecord } from "../utils/record.js";
@@ -149,6 +151,35 @@ export function EditDiffView({
  * visual contract without importing it (same bun:bundle / config.ts
  * resolution issue as the Bash and Edit renderers).
  */
+/**
+ * One line that says what a result holds: the line itself when there is a
+ * single short one, otherwise a count. A clamp marker left by
+ * `clampGenericToolResult` adds its hidden lines to the count and is never
+ * shown. The full text stays in the ctrl+o transcript view.
+ */
+export function summarizeResultText(text: string): string {
+  let hidden = 0;
+  let clamped = false;
+  const lines: string[] = [];
+  for (const line of text.trim().split("\n")) {
+    const marker = parseClampMarker(line);
+    if (marker === null) {
+      lines.push(line);
+      continue;
+    }
+    clamped = true;
+    if (marker.unit === "lines") hidden += marker.hidden;
+  }
+  if (lines.length === 1 && lines[0] === "") lines.length = 0;
+  const total = lines.length + hidden;
+  if (total === 0) return "no output";
+  const only = lines[0] ?? "";
+  if (total === 1 && !clamped && stringWidth(stripAnsi(only)) <= 60) {
+    return stripAnsi(only).trim();
+  }
+  return `${total} ${total === 1 ? "line" : "lines"}`;
+}
+
 export function FileReadView({
   content,
 }: {
@@ -184,11 +215,9 @@ export function FileReadView({
     }
   }
   if (lineCount === null) {
-    return <Text dimColor>(empty file)</Text>;
+    return <ResultLine>empty file</ResultLine>;
   }
-  return (
-    <Text dimColor>{`Read ${lineCount} ${lineCount === 1 ? "line" : "lines"}`}</Text>
-  );
+  return <ResultLine>{`${lineCount} ${lineCount === 1 ? "line" : "lines"}`}</ResultLine>;
 }
 
 /**
@@ -217,28 +246,26 @@ export function GrepMatchesView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  // Capped preview: a single "Found N match(es)/file(s)" summary line rather
-  // than the full match list under the call row.
+  // One result line, like every other step: what the search found ("3
+  // matches", "2 files"), never the match list itself.
   const tagged = extractToolTag(content, "grep-matches");
   if (tagged !== null) {
     const matchLines = tagged
       .split("\n")
       .filter((line) => line.trim().length > 0);
-    if (matchLines.length === 0) {
-      return <Text dimColor>No matches</Text>;
-    }
     return (
-      <Text dimColor>{`Found ${matchLines.length} ${
-        matchLines.length === 1 ? "match" : "matches"
-      }`}</Text>
+      <ResultLine>
+        {matchLines.length === 0
+          ? "no matches"
+          : `${matchLines.length} ${matchLines.length === 1 ? "match" : "matches"}`}
+      </ResultLine>
     );
   }
   // LIVE format: the result has NO envelope. It is one of:
   //   - files-with-matches: `Found N file(s)\n<path>\n...`
   //   - count summary:      `...\nFound N total occurrences across M files.`
   //   - bare match/count list: `path:line:content` or `path:count` per line.
-  const summary = summarizeRawGrepResult(content);
-  return <Text dimColor>{summary}</Text>;
+  return <ResultLine>{summarizeRawGrepResult(content)}</ResultLine>;
 }
 
 /**
@@ -258,7 +285,7 @@ function summarizeRawGrepResult(content: string): string {
   if (occ) {
     const n = Number.parseInt(occ[1]!, 10);
     const f = Number.parseInt(occ[2]!, 10);
-    return `Found ${n} ${n === 1 ? "match" : "matches"} in ${f} ${
+    return `${n} ${n === 1 ? "match" : "matches"} in ${f} ${
       f === 1 ? "file" : "files"
     }`;
   }
@@ -266,18 +293,18 @@ function summarizeRawGrepResult(content: string): string {
   const filesHeader = content.match(/Found (\d+) files?/);
   if (filesHeader) {
     const n = Number.parseInt(filesHeader[1]!, 10);
-    return `Found ${n} ${n === 1 ? "file" : "files"}`;
+    return `${n} ${n === 1 ? "file" : "files"}`;
   }
   const matchesHeader = content.match(/Found (\d+) match(?:es)?/);
   if (matchesHeader) {
     const n = Number.parseInt(matchesHeader[1]!, 10);
-    return `Found ${n} ${n === 1 ? "match" : "matches"}`;
+    return `${n} ${n === 1 ? "match" : "matches"}`;
   }
   // Bare list with no header — count the entries.
   if (lines.length === 0) {
-    return "No matches";
+    return "no matches";
   }
-  return `Found ${lines.length} ${lines.length === 1 ? "match" : "matches"}`;
+  return `${lines.length} ${lines.length === 1 ? "match" : "matches"}`;
 }
 
 /**
@@ -286,13 +313,25 @@ function summarizeRawGrepResult(content: string): string {
  */
 export function GlobPathsView({
   content,
+  verbose = false,
 }: {
   readonly content: string;
+  readonly verbose?: boolean;
 }): React.ReactElement {
   const pattern = extractToolTag(content, "glob-pattern") ?? "";
   const pathsBlock = extractToolTag(content, "glob-paths") ?? "";
   const truncated = extractToolTag(content, "glob-truncated") === "true";
   const paths = pathsBlock.length > 0 ? pathsBlock.split("\n") : [];
+  // The transcript shows one line per step; ctrl+o (verbose) lists the paths.
+  if (!verbose) {
+    return (
+      <ResultLine>
+        {paths.length === 0
+          ? "no paths"
+          : `${paths.length}${truncated ? "+" : ""} ${paths.length === 1 ? "path" : "paths"}`}
+      </ResultLine>
+    );
+  }
   if (paths.length === 0) {
     const emptyHeader = pattern.length > 0 ? `Glob: ${pattern}` : null;
     return (
@@ -337,35 +376,11 @@ export function ToolErrorView({
 }: {
   readonly content: string;
 }): React.ReactElement {
-  const toolName = extractToolTag(content, "tool-error-name") ?? "";
+  // One red line under the failed step, like every other result: the reason
+  // without wrappers or machine prefixes. ctrl+o keeps the raw text.
   const message = extractToolTag(content, "tool-error") ?? content;
-  return (
-    <Box flexDirection="column">
-      <Text bold color={"red" as TextColor}>
-        {toolName.length > 0 ? `${toolName} error` : "Tool error"}
-      </Text>
-      <Text>{message}</Text>
-    </Box>
-  );
+  return <ResultLine failed>{summarizeToolError(message)}</ResultLine>;
 }
-
-/**
- * Stdout lines shown inline under a SUCCEEDED Run/Bash call row.
- *
- * One. A tool call that worked is a receipt, not a document: the operator
- * asked for the transcript to stop being a scroll of command output they never
- * read ("run — what a lot of lines I see, nooo"). The `… +N lines` note keeps
- * the volume visible and ctrl+o still has every byte.
- *
- * Failures keep more (BASH_PREVIEW_FAILURE_MAX_LINES): there the output IS the
- * answer, and hiding the reason behind a keystroke would trade noise for a
- * worse problem.
- */
-const BASH_PREVIEW_MAX_LINES = 1;
-/** A failed command shows head + tail, so the trailing verdict survives. */
-const BASH_PREVIEW_FAILURE_MAX_LINES = 5;
-/** Width cap for an individual previewed line (keeps the gutter tidy). */
-const MAX_PREVIEW_LINE_WIDTH = 200;
 
 /**
  * Whether a line carries its OWN ANSI SGR (program color/style). Such a line is
@@ -377,105 +392,6 @@ const MAX_PREVIEW_LINE_WIDTH = 200;
 function lineHasOwnAnsi(line: string): boolean {
   return stripAnsi(line) !== line;
 }
-
-function truncatePreviewWidth(line: string): string {
-  // Measure VISIBLE width (ANSI escapes are zero-width). Counting escape BYTES
-  // as visible characters truncated colored lines early and miscapped the
-  // gutter; `stringWidth` strips ANSI before measuring. A line that is within
-  // the visible cap is returned unchanged (escapes intact). When it overflows,
-  // strip the ANSI before slicing so the truncation marker math stays on a
-  // clean string and we never cut through the middle of an escape sequence.
-  if (stringWidth(line) <= MAX_PREVIEW_LINE_WIDTH) return line;
-  const plain = stripAnsi(line);
-  return `${plain.slice(0, MAX_PREVIEW_LINE_WIDTH - 1)}… [${
-    plain.length - (MAX_PREVIEW_LINE_WIDTH - 1)
-  } chars truncated]`;
-}
-
-/**
- * Result of capping a block for the `⎿`-gutter preview. `lines` is the HEAD
- * block (rendered first), `remaining` is the count of HIDDEN middle lines
- * surfaced as a `… +K lines` elision, and `tailLines` (when non-empty) is the
- * TAIL block rendered AFTER the elision. For the head-only success cap
- * `tailLines` is empty, so the elision lands after `lines` exactly as before.
- */
-interface CappedPreview {
-  readonly lines: readonly string[];
-  readonly remaining: number;
-  readonly tailLines: readonly string[];
-}
-
-/**
- * Cap a block to the first `maxLines` non-trailing-whitespace lines (each line
- * also width-capped), appending a "… +K lines" continuation when the block is
- * longer. Matches the common CLI-agent `output_lines` convention.
- *
- * When `verbose` is set (the transcript is expanded via `app:toggleTranscript`)
- * the cap is lifted: every line is returned uncapped and un-width-truncated so
- * the FULL output is reachable — the "view full output" path the `… +K lines`
- * affordance advertises. `remaining` stays 0 so no elision marker renders.
- */
-function capPreviewLines(
-  value: string,
-  maxLines: number,
-  verbose = false,
-): CappedPreview {
-  const trimmed = value.replace(/\s+$/, "");
-  if (verbose) {
-    return { lines: trimmed.split("\n"), remaining: 0, tailLines: [] };
-  }
-  const all = trimmed.split("\n").map(truncatePreviewWidth);
-  if (all.length <= maxLines)
-    return { lines: all, remaining: 0, tailLines: [] };
-  return {
-    lines: all.slice(0, maxLines),
-    remaining: all.length - maxLines,
-    tailLines: [],
-  };
-}
-
-/**
- * Failure-aware cap. For a FAILED command the diagnostic payload — the
- * `AssertionError:` / `Traceback` exception line and the
- * `Ran N tests` / `FAILED (failures=1)` verdict — lives at the END of the
- * output, so a head-only cap truncates exactly the lines a developer needs in
- * an error→diagnose→fix loop. This keeps the same ~`maxLines` inline footprint
- * but splits it into a HEAD block (early context: what ran) and a TAIL block
- * (the exception + verdict), with the hidden middle surfaced as `… +K lines`.
- *
- * Reused for both the stdout failure cap (the live-daemon path folds
- * stdout+stderr into one stream) and the stderr failure cap (the envelope path
- * carries the traceback there). When the block already fits within `maxLines`
- * it returns the full block head-only (no elision), identical to
- * `capPreviewLines`.
- */
-function capPreviewLinesHeadTail(
-  value: string,
-  maxLines: number,
-  headLines: number,
-  verbose = false,
-): CappedPreview {
-  const trimmed = value.replace(/\s+$/, "");
-  // Expanded transcript: lift the cap entirely (full output, un-truncated).
-  if (verbose) {
-    return { lines: trimmed.split("\n"), remaining: 0, tailLines: [] };
-  }
-  const all = trimmed.split("\n").map(truncatePreviewWidth);
-  if (all.length <= maxLines)
-    return { lines: all, remaining: 0, tailLines: [] };
-  // Clamp the head so at least one tail line always survives, then give the
-  // remainder of the budget to the tail (where the verdict/exception live).
-  const head = Math.max(1, Math.min(headLines, maxLines - 1));
-  const tail = maxLines - head;
-  return {
-    lines: all.slice(0, head),
-    remaining: all.length - head - tail,
-    tailLines: all.slice(all.length - tail),
-  };
-}
-
-/** Head lines reserved for the failure-aware head+tail cap (tail gets the rest). */
-const BASH_PREVIEW_FAILURE_HEAD_LINES = 2;
 
 /**
  * Live `exec_command` trailer line, e.g.
@@ -590,6 +506,26 @@ export function BashOutputView({
   // column + a flex content column. stdout uses the dim/secondary tone the
   // sibling result bodies use (it's nested detail, not headline text); stderr
   // stays red so a failure is still visually distinct.
+  // The transcript shows one line per step; ctrl+o (verbose) shows the output.
+  if (!verbose) {
+    if (isFailure) {
+      // The reason is the last line of stderr when there is one (stdout may
+      // end with unrelated progress), else the last line of the output.
+      const lastLine = (text: string) =>
+        text
+          .split("\n")
+          .map((line) => stripAnsi(line).trim())
+          .filter((line) => line.length > 0 && parseClampMarker(line) === null)
+          .at(-1);
+      const tail = lastLine(stderrTrimmed) ?? lastLine(stdoutTrimmed);
+      return (
+        <ResultLine failed>
+          {`exit ${exitCode}${tail !== undefined ? `, ${tail}` : ""}`}
+        </ResultLine>
+      );
+    }
+    return <ResultLine>{summarizeResultText(stdoutTrimmed)}</ResultLine>;
+  }
   const glyphs = selectAgenCTuiGlyphs();
   const responseGutter = `  ${glyphs.responseGutter}  `;
   const isSilent = stdoutTrimmed.length === 0 && stderrTrimmed.length === 0;
@@ -610,68 +546,29 @@ export function BashOutputView({
       </Box>
     );
   }
-  // On a FAILED command the verdict/exception lives at the END of the output,
-  // so cap head+tail (keep early context AND the trailing reason) instead of
-  // head-only. Success stays byte-identical (head-only). This applies to BOTH
-  // the stdout cap — the live-daemon path folds stderr into stdout — and the
-  // stderr cap that carries the traceback in the envelope path.
-  const stdoutCap = isFailure
-    ? capPreviewLinesHeadTail(
-        stdoutTrimmed,
-        BASH_PREVIEW_FAILURE_MAX_LINES,
-        BASH_PREVIEW_FAILURE_HEAD_LINES,
-        verbose,
-      )
-    : capPreviewLines(stdoutTrimmed, BASH_PREVIEW_MAX_LINES, verbose);
-  const showStderr = isFailure && stderrTrimmed.length > 0;
-  const stderrCap = showStderr
-    ? capPreviewLinesHeadTail(
-        stderrTrimmed,
-        BASH_PREVIEW_FAILURE_MAX_LINES,
-        BASH_PREVIEW_FAILURE_HEAD_LINES,
-        verbose,
-      )
-    : null;
-  // Compact non-zero-exit indicator. The plain exec result folds stderr into
-  // stdout (no separate stderr stream), so on a failed command with no tagged
-  // stderr we still surface the exit code as a small red note.
-  const showExitNote = isFailure && stderrCap === null;
+  // The expanded (ctrl+o) view shows every line. On a failure the stderr
+  // follows in red; the plain exec result folds stderr into stdout, so a
+  // failure without a separate stderr gets a small exit-code note instead.
+  const stdoutLines = stdoutTrimmed.length > 0 ? stdoutTrimmed.split("\n") : [];
+  const stderrLines =
+    isFailure && stderrTrimmed.length > 0 ? stderrTrimmed.split("\n") : null;
+  const showExitNote = isFailure && stderrLines === null;
   return (
     <Box flexDirection="row">
       <Box flexShrink={0}>
         <Text dimColor>{responseGutter}</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        {stdoutCap.lines.map((line, idx) =>
+        {stdoutLines.map((line, idx) =>
           // stdout: plain lines dim; lines with their own SGR keep program color.
           renderBashOutputLine(line, `o${idx}`, "dim"),
         )}
-        {stdoutCap.remaining > 0 ? (
-          <Text dimColor>{`… +${stdoutCap.remaining} ${
-            stdoutCap.remaining === 1 ? "line" : "lines"
-          }`}</Text>
-        ) : null}
-        {/* TAIL block (failure head+tail cap): the trailing verdict/exception
-            lines that survive AFTER the `… +K lines` elision. Empty on success. */}
-        {stdoutCap.tailLines.map((line, idx) =>
-          renderBashOutputLine(line, `ot${idx}`, "dim"),
-        )}
-        {stderrCap
-          ? stderrCap.lines.map((line, idx) =>
+        {stderrLines
+          ? stderrLines.map((line, idx) =>
               // stderr: a plain line keeps the red failure tone; a line that
               // carries its OWN program SGR is rendered via <Ansi> so its colors
               // stay intact (and don't emit raw escape bytes inside a <Text>).
               renderBashOutputLine(line, `e${idx}`, "red" as TextColor),
-            )
-          : null}
-        {stderrCap && stderrCap.remaining > 0 ? (
-          <Text dimColor>{`… +${stderrCap.remaining} ${
-            stderrCap.remaining === 1 ? "line" : "lines"
-          }`}</Text>
-        ) : null}
-        {stderrCap
-          ? stderrCap.tailLines.map((line, idx) =>
-              renderBashOutputLine(line, `et${idx}`, "red" as TextColor),
             )
           : null}
         {showExitNote ? (
@@ -874,7 +771,7 @@ function todoSummaryForInput(record: Record<string, unknown>): string | null {
   const highlightLabel =
     (inProgress !== undefined ? todoLabel(inProgress) : null) ??
     (total > 0 ? todoLabel(todos[0]) : null);
-  const countText = `${total} ${total === 1 ? "todo" : "todos"}`;
+  const countText = `${total} ${total === 1 ? "step" : "steps"}`;
   return highlightLabel !== null ? `${countText} · ${highlightLabel}` : countText;
 }
 
@@ -963,6 +860,8 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
 function userFacingNameForTool(name: string): string {
   if (name === "exec_command") return "Run";
   if (name === "system.searchTools") return "Tool search";
+  if (name === "TodoWrite") return "Plan";
+  if (name === "TodoRead") return "Read plan";
   return name;
 }
 
@@ -1101,13 +1000,17 @@ export function createTuiTool(name: string): any {
         case "grep-matches-view":
           return <GrepMatchesView content={joined} />;
         case "glob-paths-view":
-          return <GlobPathsView content={joined} />;
+          return (
+            <GlobPathsView content={joined} verbose={options?.verbose ?? false} />
+          );
         case "generic":
         default:
-          return (
+          return options?.verbose === true ? (
             <Box flexDirection="column">
               <Text>{joined}</Text>
             </Box>
+          ) : (
+            <ResultLine>{summarizeResultText(joined)}</ResultLine>
           );
       }
     },

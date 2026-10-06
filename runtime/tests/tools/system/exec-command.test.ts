@@ -309,6 +309,43 @@ describe("exec_command tool", () => {
       expect(outside.content).not.toContain("[sandbox]");
     });
 
+    // Bypass runs under the never policy, but its escalation request is
+    // granted without asking and its prompt says so in a workspace-write
+    // sandbox. The notice must agree instead of calling the retry pointless.
+    test("a bypass session in a workspace-write sandbox is asked for one escalated retry", async () => {
+      const { tool } = toolWith(BIND_DENIED);
+      const options = { approvalPolicy: "never", sandboxMode: "workspace_write", platformSandbox: true };
+      const bypass = await tool.execute(
+        contextArgs({ cmd: "npm start", workdir: root }, { ...options, mode: "bypassPermissions" }),
+      );
+      expect(bypass.content).toContain("require_escalated");
+      expect(bypass.content).not.toContain("Do not run this command again");
+      const plain = await tool.execute(
+        contextArgs({ cmd: "npm start", workdir: root }, { ...options, mode: "default" }),
+      );
+      expect(plain.content).toContain("Do not run this command again");
+    });
+
+    test.each(["exec_command", "write_stdin"])("%s offers a bypass session the escalated retry for disabled network", async toolName => {
+      const output = failedExecOutput("npm error getaddrinfo EAI_AGAIN registry.npmjs.org", 1);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "npx --no-install missing" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        approvalPolicy: "never", mode: "bypassPermissions", sandboxMode: "workspace_write", platformSandbox: true, toolName,
+      }));
+      expect(result.content).toContain("network access was disabled");
+      expect(result.content).toContain("approval flow before retrying");
+      expect(result.content).not.toContain("approval is unavailable");
+    });
+
     test("an ordinary failure is left alone", async () => {
       const { tool } = toolWith(failedExecOutput("npm ERR! missing script: start", 1));
       const result = await tool.execute(sandboxedArgs({ cmd: "npm start", workdir: root }));
@@ -1206,6 +1243,33 @@ describe("exec_command tool", () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain("detach cannot be combined with tty");
       expect(execCommand).not.toHaveBeenCalled();
+    });
+
+    test.each(["aborted", "unavailable"] as const)("keeps %s effects unresolved and never classifies them as no-effect", async command_outcome => {
+      const { tool, execCommand } = mockManagerTool({ execCommand: vi.fn(async () => ({
+        ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome,
+      })) });
+      const result = await tool.execute(fullAccessArgs({ cmd: "printf partial" }));
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.metadata).toMatchObject({ commandOutcome: command_outcome });
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
+      expect(result.content).not.toContain("left processes");
+    });
+
+    test.each(["aborted", "unavailable"] as const)("write_stdin preserves %s uncertainty after a yielded command settles", async command_outcome => {
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30000,
+        execCommand: vi.fn(async () => completedExecOutput("")),
+        writeStdin: vi.fn(async () => ({ ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome })),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = createWriteStdinTool({ unifiedExecManager: manager, cwd: root, allowedPaths: [root] });
+      const result = await tool.execute(fullAccessArgs({ session_id: 17, chars: "" }));
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
     });
 
     test("the residue note follows the footer when leftover processes were stopped", async () => {

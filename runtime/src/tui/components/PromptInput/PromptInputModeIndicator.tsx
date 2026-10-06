@@ -53,7 +53,8 @@ function PromptChar(t0) {
     themeColor
   } = t0;
   const teammateColor = themeColor;
-  const color = teammateColor ?? (false ? "subtle" : undefined);
+  // The prompt glyph carries the brand purple, like the ❯ on sent messages.
+  const color = teammateColor ?? "accent";
   const glyph = promptGlyphForPermissionMode(permissionMode);
   let t1;
   if ($[0] !== color || $[1] !== isLoading || $[2] !== glyph) {

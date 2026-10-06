@@ -11,24 +11,15 @@
 
 import { env as hostEnv } from "../utils/env.js";
 import {
-  runXaiBrowserLogin,
-  runXaiDeviceLogin,
-  XaiOauthError,
-  type XaiBrowserLoginResult,
-} from "../services/xai/oauth.js";
-import {
   clearXaiOauthCredentials,
   readXaiOauthCredentials,
-  saveXaiOauthCredentials,
-  xaiOauthTokensToBlob,
 } from "../utils/xaiOauthCredentials.js";
 import { resolveApiKey } from "../config/env.js";
-import { openUrlInBrowser } from "./auth.js";
 import {
   providerEnvironmentFromCommandContext,
   requireCommandConfigStore,
 } from "./config-context.js";
-import { applyProviderSwitch } from "./provider.js";
+import { signInToProvider } from "./provider-sign-in.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -94,60 +85,50 @@ async function executeGrokLogin(
 
     // Keep notices synchronous after loading so cancellation and browser
     // fallback cannot paint a notice after the login has completed.
-    const showLoginNotice: ShowLoginNotice = typeof ctx.appState?.setToolJSX === "function"
+    const showLoginNotice = typeof ctx.appState?.setToolJSX === "function"
       ? (await import("./xai-auth-menu.js")).showLoginNotice
       : () => {};
     const controller = new AbortController();
-    let login: XaiBrowserLoginResult;
+    const onCancel = () => controller.abort();
+    let result;
     try {
       // The browser flow redirects to 127.0.0.1 on THIS machine and opens
-      // the browser on THIS machine's desktop. Over SSH the user sees neither:
-      // their own browser cannot reach the loopback callback, so the sign-in
-      // waited out its timeout with input paused. The device-code flow works
-      // from any browser, so a remote session goes straight to it.
-      const remote = hostEnv.isSSH();
-      login = arg === "device" || remote
-        ? await runDeviceFlow(ctx, controller, showLoginNotice, { openBrowser: !remote })
-        : await runBrowserFlowWithDeviceFallback(ctx, controller, showLoginNotice);
-      if (controller.signal.aborted) {
-        return { kind: "text", text: "xAI sign-in cancelled." };
-      }
-    } catch (error) {
-      if (controller.signal.aborted) {
-        return { kind: "text", text: "xAI sign-in cancelled." };
-      }
-      throw error;
+      // the browser on THIS machine's desktop. Over SSH the user sees
+      // neither, so a remote session goes straight to the device code.
+      result = await signInToProvider({
+        provider: "grok",
+        home,
+        environment,
+        signal: controller.signal,
+        device: arg === "device",
+        canOpenBrowser: !hostEnv.isSSH(),
+        onProgress: (progress) => {
+          showLoginNotice(ctx, {
+            heading: progress.heading,
+            url: progress.url ?? "",
+            ...(progress.userCode === undefined ? {} : { userCode: progress.userCode }),
+            onCancel,
+          });
+        },
+      });
     } finally {
       clearLoginNotice(ctx);
     }
-
-    const blob = xaiOauthTokensToBlob(login.tokens, {
-      tokenEndpoint: login.tokenEndpoint,
-    });
-    const saved = saveXaiOauthCredentials(home, blob);
-    if (!saved.success) {
-      return {
-        kind: "error",
-        message: `Signed in, but storing tokens failed: ${saved.warning ?? "unknown error"}`,
-      };
+    if (!result.ok) {
+      return result.cancelled
+        ? { kind: "text", text: "xAI sign-in cancelled." }
+        : { kind: "error", message: result.message };
     }
 
-    const who = blob.accountLabel ?? login.identity.sub ?? "xAI account";
-    const lines = [`Signed in to xAI as ${who}.`];
-
-    // OAuth always wins over env BYOK — switch to grok regardless of keys.
-    const switchOutcome = await applyProviderSwitch(ctx.session, "grok");
-    lines.push(switchOutcome.summary);
-    lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
-    lines.push(
-      "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +
-        "in the environment (subscription Grok Build access).",
-    );
-    const envKey = resolveApiKey(environment);
-    if (envKey !== undefined) {
+    const lines = [
+      `Signed in to xAI as ${result.account}.`,
+      "Open /providers to use Grok with this account.",
+      "Unless auth is set to api-key, this sign-in is used before any " +
+        "XAI_API_KEY / GROK_API_KEY in the environment (subscription Grok Build access).",
+    ];
+    if (resolveApiKey(environment) !== undefined) {
       lines.push(
-        "Note: an API key is also set in the environment but is ignored " +
-          "while you are signed in. /grok-logout to fall back to API-key billing.",
+        "Note: an API key is also set in the environment. /grok-logout to fall back to API-key billing.",
       );
     }
     lines.push(
@@ -156,91 +137,6 @@ async function executeGrokLogin(
     );
     return { kind: "text", text: lines.join("\n") };
   });
-}
-
-type ShowLoginNotice = typeof import("./xai-auth-menu.js").showLoginNotice;
-
-async function runBrowserFlowWithDeviceFallback(
-  ctx: SlashCommandContext,
-  controller: AbortController,
-  showLoginNotice: ShowLoginNotice,
-): Promise<XaiBrowserLoginResult> {
-  const onCancel = () => controller.abort();
-  let pending = true;
-  showLoginNotice(ctx, {
-    heading: "Preparing xAI browser sign-in...", url: "", onCancel,
-  });
-  try {
-    return await runXaiBrowserLogin({
-      signal: controller.signal,
-      onAuthorizeUrl: (url) => {
-        showLoginNotice(ctx, {
-          heading: "Sign in with your X / xAI account to continue.",
-          url, onCancel,
-        });
-        // Browser startup must not delay the callback wait or cancellation.
-        void openUrlInBrowser(url).catch(() => {
-          if (!pending || controller.signal.aborted) return;
-          showLoginNotice(ctx, {
-            heading: "Open this URL in your browser to sign in:",
-            url, onCancel,
-          });
-        });
-      },
-    });
-  } catch (error) {
-    // Loopback unavailable (e.g. the Grok CLI holds port 56121, or a
-    // headless host): fall back to the device-code flow.
-    if (!controller.signal.aborted && error instanceof XaiOauthError && error.code === "callback_failed") {
-      return runDeviceFlow(ctx, controller, showLoginNotice);
-    }
-    throw error;
-  } finally {
-    pending = false;
-  }
-}
-
-async function runDeviceFlow(
-  ctx: SlashCommandContext,
-  controller: AbortController,
-  showLoginNotice: ShowLoginNotice,
-  options: { readonly openBrowser?: boolean } = {},
-): Promise<XaiBrowserLoginResult> {
-  const onCancel = () => controller.abort();
-  let pending = true;
-  showLoginNotice(ctx, {
-    heading: "Requesting an xAI device sign-in code...", url: "", onCancel,
-  });
-  try {
-    return await runXaiDeviceLogin({
-      signal: controller.signal,
-      onUserCode: ({ userCode, verificationUri, verificationUriComplete }) => {
-        const url = verificationUriComplete ?? verificationUri;
-        if (options.openBrowser === false) {
-          // A browser launched here would open on the remote desktop.
-          showLoginNotice(ctx, {
-            heading: "Open this URL in a browser on your own device to sign in:",
-            url, userCode, onCancel,
-          });
-          return;
-        }
-        showLoginNotice(ctx, {
-          heading: "Sign in with your X / xAI account to continue.",
-          url, userCode, onCancel,
-        });
-        // Browser startup must not delay polling or prevent cancellation.
-        void openUrlInBrowser(url).catch(() => {
-          if (!pending || controller.signal.aborted) return;
-          showLoginNotice(ctx, {
-            heading: "Open this URL in your browser to sign in:",
-            url, userCode, onCancel,
-          });
-        });
-      },
-    });
-  } finally {
-    pending = false;
-  }
 }
 
 function clearLoginNotice(ctx: SlashCommandContext): void {

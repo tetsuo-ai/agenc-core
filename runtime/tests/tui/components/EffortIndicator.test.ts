@@ -16,6 +16,8 @@ vi.mock("../../utils/effort.js", () => ({
   getDisplayedEffortLevelForContext: (_model: string, effortValue: string | undefined) =>
     effortValue ?? "medium",
   modelSupportsEffortForContext: (model: string) => model !== "basic-model",
+  isEffortOffByDefaultForContext: (model: string, effortValue: string | undefined) =>
+    model === "no-reasoning-default" && effortValue === undefined,
 }));
 
 describe("EffortIndicator", () => {
@@ -25,6 +27,14 @@ describe("EffortIndicator", () => {
     );
     expect(getEffortNotificationText(undefined, "reasoning-model", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
       `${EFFORT_MEDIUM} medium · /effort`,
+    );
+ 
+    // A model whose native default is no reasoning reads "off", not a tier.
+    expect(getEffortNotificationText(undefined, "no-reasoning-default", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
+      "effort off · /effort",
+    );
+    expect(getEffortNotificationText("high", "no-reasoning-default", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
+      `${EFFORT_HIGH} high · /effort`,
     );
   });
 

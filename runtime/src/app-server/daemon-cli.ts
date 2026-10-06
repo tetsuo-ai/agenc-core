@@ -1,3 +1,4 @@
+import { refreshEndpointMetadata } from "../llm/endpoint-metadata-cache.js";
 /**
  * AgenC daemon foreground runtime: the daemon process itself (startup state
  * recovery, request dispatch, health, snapshots, agent runtimes).
@@ -161,7 +162,11 @@ import type { ToolRecoveryCategory } from "../tools/types.js";
 
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 
-import { readRecoverableCommandEnvironment } from "./client-env-snapshot.js";
+import {
+  readRecoverableCommandEnvironment,
+  readRecoverableSessionEnvironment,
+  withheldModelProviderCredentials,
+} from "./client-env-snapshot.js";
 
 import { loadCanonicalDaemonConfig } from "../config/repository.js";
 
@@ -1212,6 +1217,7 @@ async function runAgenCDaemonForegroundLocked(
             if (shuttingDown) {
               throw new Error("daemon is shutting down");
             }
+            refreshEndpointMetadata();
             reloadableAuthBackend.replace(next.authBackend);
             configuredRunner?.updateRuntimeConfig(
               createAgenCDaemonDelegateRunnerRuntimeConfig(
@@ -3375,7 +3381,25 @@ export async function restoreRecoveredAgentRuntime(
   const commandEnvironment = readRecoverableCommandEnvironment(
     run.metadata?.commandEnvironment,
   );
-  if (runtimeOptions === null || commandEnvironment === undefined) {
+  const sessionEnvironment = readRecoverableSessionEnvironment(
+    run.metadata?.sessionEnvironment,
+  );
+  // The runtime must reach and authenticate to the same provider as before
+  // the restart. A run recorded without its session environment, or whose
+  // client supplied a provider credential (never written to disk), cannot be
+  // rebuilt that way here. It stays published without a runtime, and the
+  // next client resume supplies its snapshot again.
+  if (
+    runtimeOptions === null ||
+    commandEnvironment === undefined ||
+    sessionEnvironment === undefined ||
+    withheldModelProviderCredentials(
+      sessionEnvironment,
+      resumeSource.activeRuntimeSettings?.provider ??
+        optionalMetadataString(run.metadata, "provider").provider ??
+        sessionEnvironment.values.AGENC_PROVIDER,
+    ).length > 0
+  ) {
     resumeSource.close();
     return { available: false };
   }
@@ -3400,7 +3424,7 @@ export async function restoreRecoveredAgentRuntime(
       explicitColdResume: true,
       restoreAttemptId,
       runtimeOptions,
-      envOverrides: commandEnvironment,
+      envOverrides: { ...sessionEnvironment.values, ...commandEnvironment },
       ...(resumeSource.activeStartupActivationResumeEventId !== undefined
         ? { resumeStartupActivationPending: true }
         : {}),

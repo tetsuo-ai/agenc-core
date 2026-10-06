@@ -1,4 +1,5 @@
 import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
+import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { readStartupCronTasks } from "../utils/cron-startup.js";
@@ -16,6 +17,7 @@ import {
 import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
+import { endpointMetadataForTransport } from "../llm/endpoint-metadata-cache.js";
 import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
@@ -887,7 +889,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
-  const providerEnvironment = options.providerEnvironment;
   const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
@@ -917,6 +918,12 @@ async function bootstrapLocalRuntimeSessionScoped(
     }),
   });
   await configStore.reload();
+  // `[providers.<openai|grok>] auth` fills OPENAI_AUTH_MODE / GROK_AUTH_MODE
+  // where the environment leaves them unset; an exported variable wins.
+  const providerEnvironment = withConfiguredProviderAuth(
+    options.providerEnvironment,
+    configStore.current(),
+  );
   const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
     ...(profileName !== undefined ? { profileName } : {}),
@@ -1538,7 +1545,10 @@ async function bootstrapLocalRuntimeSessionScoped(
       // Sessions on the real network share one download of each public model
       // catalog. An injected fetch keeps its own, so it sees only its data.
       ...(options.fetchImpl === undefined
-        ? { publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS }
+        ? {
+          publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS,
+          endpointCatalogs: endpointMetadataForTransport(globalThis.fetch),
+        }
         : {}),
       onWarn: (message) =>
         emitProviderWarning({

@@ -36,7 +36,7 @@ function LoginNotice(info: LoginNoticeInfo) {
     <Box flexDirection="column" paddingX={1} borderStyle="round">
       <Text>{info.heading}</Text>
       <Text dimColor>
-        The consent page may say "Grok Build" — that is xAI's shared sign-in.
+        The consent page may say "Grok Build". That is xAI's shared sign-in.
       </Text>
       {info.userCode ? <Text>Code: {info.userCode}</Text> : null}
       {info.url ? <Text>URL: {info.url}</Text> : null}

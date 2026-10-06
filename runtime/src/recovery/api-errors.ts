@@ -17,6 +17,7 @@ import {
   LLMInvalidResponseError,
   LLMRequestRebuiltError,
   LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMMessageValidationError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
@@ -450,6 +451,7 @@ export function isResampleableStreamInterruption(
 
 function isExplicitNonTransientProviderError(err: unknown): boolean {
   return (
+    err instanceof LLMStreamRetryDeniedError ||
     err instanceof LLMFundsError ||
     err instanceof LLMAuthenticationError ||
     err instanceof LLMContextWindowExceededError ||
@@ -469,6 +471,7 @@ function isTransientProviderErrorInner(
 ): boolean {
   if (depth > 4) return false;
   if (isExplicitNonTransientProviderError(err)) return false;
+  if (err instanceof Error && isExplicitNonTransientProviderError(err.cause)) return false;
   if (err instanceof LLMStreamTruncatedError) return true;
   if (err instanceof LLMRequestRebuiltError) return true;
   if (err instanceof Error) {

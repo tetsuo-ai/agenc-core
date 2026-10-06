@@ -133,12 +133,14 @@ describe('messagePrimitives coverage swarm 053', () => {
       120,
     )
 
-    expect(output).toContain('SHELL')
+    // Worker rows lead with ●, user rows with ❯; labels stay lowercase.
+    expect(output).toContain('● shell')
     expect(output).toContain('! npm test -- --runInBand <ci> &')
-    expect(output).toContain('SKILL')
+    expect(output).toContain('❯ skill')
     expect(output).toContain('$lint')
+    expect(output).toContain('❯ command')
     expect(output).toContain('/status')
-    expect(output).toContain('IMAGE')
+    expect(output).toContain('❯ image')
     expect(output).toContain('#53')
     expect(output).toContain('worker failed checks')
     expect(output).toContain('worker was stopped')
@@ -200,7 +202,7 @@ describe('messagePrimitives coverage swarm 053', () => {
       adjacentOutput,
     ].join('\n')
 
-    expect(output).toContain('MCP')
+    expect(output).toContain('● mcp')
     expect(output).toContain('files:')
     expect(output).toContain('/tmp/')
     expect(output).toContain('cache:')
@@ -246,10 +248,10 @@ describe('messagePrimitives coverage swarm 053', () => {
       120,
     )
 
-    expect(output).toContain('MEMORY')
+    expect(output).toContain('● memory')
     expect(output).toContain('keep the API token local')
     expect(output).toContain('Noted.')
-    expect(output).toContain('CHANNEL')
+    expect(output).toContain('● channel')
     expect(output).toContain('irc:')
     expect(output).toContain('one two three')
     expect(output).toContain('ops · sam')
@@ -278,12 +280,18 @@ describe('messagePrimitives coverage swarm 053', () => {
       />,
     )
 
-    // Collapsed streaming hint is just the expand affordance — the activity
-    // spinner already says "thinking", so the row intentionally omits the
-    // "Thinking" word and glyph (UX request; see ThinkingMessage).
-    expect(collapsed).not.toContain('Thinking')
-    expect(collapsed).toContain('ctrl+o')
-    expect(collapsed).not.toContain('private chain of thought')
+    // Collapsed reasoning takes no row at all: the working line already says
+    // the model is thinking, and ctrl+o opens the full transcript. No word,
+    // no glyph, no expand hint (see ThinkingMessage).
+    expect(collapsed.trim()).toBe('')
+    expect(
+      ThinkingMessage({
+        param: { type: 'thinking', thinking: 'private chain of thought' },
+        addMargin: true,
+        isTranscriptMode: false,
+        verbose: false,
+      }),
+    ).toBeNull()
     expect(verbose).toContain('Reasoning')
     expect(verbose).toContain('visible reasoning summary')
   })

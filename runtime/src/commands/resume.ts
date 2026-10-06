@@ -223,7 +223,7 @@ function formatEntries(entries: ReadonlyArray<RolloutEntry>): string {
   for (const e of entries) {
     const ts = new Date(e.mtimeMs).toISOString();
     const preview = e.firstUserPreview || "(no preview)";
-    lines.push(`  ${ts}  ${e.sessionId}  — ${preview}`);
+    lines.push(`  ${ts}  ${e.sessionId}  ${preview}`);
     lines.push(`    ${basename(e.filePath)}`);
   }
   lines.push("");

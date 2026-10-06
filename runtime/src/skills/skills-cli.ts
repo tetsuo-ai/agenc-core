@@ -220,7 +220,7 @@ async function runList(json: boolean, options: SkillsCliOptions): Promise<number
     return 0;
   }
   for (const skill of inventory.skills) {
-    const suffix = skill.description !== undefined ? ` — ${skill.description}` : "";
+    const suffix = skill.description !== undefined ? `: ${skill.description}` : "";
     process.stdout.write(`[${skill.origin}] ${skill.name}${suffix}\n`);
   }
   for (const error of inventory.errors) {

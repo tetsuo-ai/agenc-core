@@ -244,6 +244,10 @@ export class ModelRegistry {
     });
   }
 
+  metadataRevision(params: { readonly provider: string; readonly model: string }): number {
+    return this.metadataResolver.cacheRevision({ ...params, config: this.config });
+  }
+
   listEntriesSync(): readonly ModelRegistryEntry[] {
     return Object.freeze(
       Object.entries(this.catalog).flatMap(([provider, models]) =>

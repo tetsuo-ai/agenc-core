@@ -231,6 +231,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const stillAlive =
           output.exitCode === null && output.process_id !== undefined;
         const isError =
+          output.command_outcome !== undefined ||
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
         const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
@@ -240,18 +241,20 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           exitCode: output.exitCode,
           runtimeSandbox,
           escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
         });
         return {
           content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
-          // The manager returned an authoritative process observation. A
-          // non-zero exit or timeout is a command failure, not an unknown
-          // stdin delivery. This receipt settles this call only; it does not
-          // claim that the command succeeded or left the workspace unchanged.
+          // Ordinary terminal receipts settle this call without claiming
+          // command success. Missing authenticated outcomes remain unknown
+          // even when descendant cleanup has independently completed.
           effectDisposition: createToolEffectDispositionEvidence({
-            disposition: "confirmed_committed",
+            disposition: output.command_outcome === undefined ? "confirmed_committed" : "remains_unknown",
             evidenceKind: "provider_receipt",
             evidenceRef: stillAlive
               ? "tool:system.write-stdin:process-yield"
@@ -260,6 +263,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
               sessionId,
               chars,
               exitCode: output.exitCode,
+              commandOutcome: output.command_outcome ?? "reported",
               processId: output.process_id ?? null,
               timedOut: output.timedOut,
               durationMs: output.durationMs,
@@ -273,6 +277,8 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
               ? { processId: output.process_id }
               : {}),
             durationMs: output.durationMs,
+            ...(output.command_outcome === undefined ? {} : { commandOutcome: output.command_outcome }),
+            ...(output.residual_processes_observed === true ? { residualProcessesObserved: true } : {}),
           },
         };
       } catch (error) {

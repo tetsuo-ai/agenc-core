@@ -10,6 +10,7 @@ vi.mock("../ink.js", () => {
   return { Box, Text };
 });
 
+import { ResultLine } from "../components/v2/primitives.js";
 import {
   BashOutputView,
   createTuiTool,
@@ -31,9 +32,14 @@ interface ChildElement {
   readonly props: ChildProps;
 }
 
+interface ResultLineElement {
+  readonly type: unknown;
+  readonly props: { readonly children?: unknown; readonly failed?: boolean };
+}
+
 function flatten(node: unknown): ChildElement[] {
   // Recurse through the element tree. BashOutputView now nests its stdout/stderr
-  // lines one level deeper inside the `⎿`-gutter content column, so a shallow
+  // lines one level deeper inside the `└`-gutter content column, so a shallow
   // (immediate-children only) walk would miss them.
   const out: ChildElement[] = [];
   const visit = (value: unknown): void => {
@@ -95,25 +101,30 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
     expect(diffChildren.some((child) => child.props.color === "green")).toBe(true);
   });
 
-  test("FileReadView summarizes ranged content as 'Read N lines'", () => {
+  test("FileReadView summarizes ranged content as an 'N lines' result line", () => {
+    // The step row already says "Read", so the result line is the bare count.
     const ranged = FileReadView({
       content:
         "<read-file>src/a.ts</read-file><read-lines>10-12</read-lines><read-content>body</read-content>",
-    }) as { props: ChildProps };
-    expect(ranged.props.children).toBe("Read 3 lines");
+    }) as unknown as ResultLineElement;
+    expect(ranged.type).toBe(ResultLine);
+    expect(ranged.props.children).toBe("3 lines");
 
     const bodyOnly = FileReadView({
       content: "<read-content>body only</read-content>",
-    }) as { props: ChildProps };
-    expect(bodyOnly.props.children).toBe("Read 1 line");
+    }) as unknown as ResultLineElement;
+    expect(bodyOnly.type).toBe(ResultLine);
+    expect(bodyOnly.props.children).toBe("1 line");
   });
 
   test("GrepMatchesView summarizes singular and plural match counts", () => {
     const single = GrepMatchesView({
       content:
         "<grep-pattern>needle</grep-pattern><grep-matches>src/a.ts:1:needle</grep-matches>",
-    }) as { props: ChildProps };
-    expect(single.props.children).toBe("Found 1 match");
+    }) as unknown as ResultLineElement;
+    // One result line with the bare count: no "Found" prefix.
+    expect(single.type).toBe(ResultLine);
+    expect(single.props.children).toBe("1 match");
 
     const matches = Array.from(
       { length: 202 },
@@ -121,15 +132,21 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
     ).join("\n");
     const many = GrepMatchesView({
       content: `<grep-pattern>hit</grep-pattern><grep-matches>${matches}</grep-matches>`,
-    }) as { props: ChildProps };
-    expect(many.props.children).toBe("Found 202 matches");
+    }) as unknown as ResultLineElement;
+    expect(many.type).toBe(ResultLine);
+    expect(many.props.children).toBe("202 matches");
   });
 
-  test("GlobPathsView renders singular headers, headerless lists, and truncation", () => {
+  test("GlobPathsView summarizes to a path count, and verbose renders singular headers, headerless lists, and truncation", () => {
+    const singleContent =
+      "<glob-pattern>*.ts</glob-pattern><glob-paths>src/a.ts</glob-paths>";
+    const single = GlobPathsView({ content: singleContent }) as unknown as ResultLineElement;
+    expect(single.type).toBe(ResultLine);
+    expect(single.props.children).toBe("1 path");
+
+    // Verbose (ctrl+o) keeps the full path list under a Glob header.
     const singleChildren = flatten(
-      GlobPathsView({
-        content: "<glob-pattern>*.ts</glob-pattern><glob-paths>src/a.ts</glob-paths>",
-      }),
+      GlobPathsView({ content: singleContent, verbose: true }),
     );
 
     expect(
@@ -148,10 +165,14 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
       { length: 201 },
       (_, index) => `src/${index}.ts`,
     ).join("\n");
+    const manyContent = `<glob-paths>${paths}</glob-paths><glob-truncated>true</glob-truncated>`;
+    // A truncated result marks its count with "+": more paths exist.
+    const many = GlobPathsView({ content: manyContent }) as unknown as ResultLineElement;
+    expect(many.type).toBe(ResultLine);
+    expect(many.props.children).toBe("201+ paths");
+
     const manyChildren = flatten(
-      GlobPathsView({
-        content: `<glob-paths>${paths}</glob-paths><glob-truncated>true</glob-truncated>`,
-      }),
+      GlobPathsView({ content: manyContent, verbose: true }),
     );
 
     expect(manyChildren.find((child) => child.props.bold === true))
@@ -173,10 +194,20 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
   });
 
   test("BashOutputView shows stdout + red stderr on failure, no metadata line", () => {
+    // Transcript form: one failed result line, "exit N, <reason>".
+    const compact = BashOutputView({
+      content: "<bash-stdout></bash-stdout><bash-stderr>err</bash-stderr>[exit_code=2 duration_ms=3]",
+    }) as unknown as ResultLineElement;
+    expect(compact.type).toBe(ResultLine);
+    expect(compact.props.failed).toBe(true);
+    expect(compact.props.children).toBe("exit 2, err");
+
+    // Verbose (ctrl+o) shows the full stdout and stderr bodies.
     const failedChildren = flatten(
       BashOutputView({
         content:
           "<bash-stdout>ok</bash-stdout><bash-stderr>err</bash-stderr>[exit_code=2 duration_ms=3]",
+        verbose: true,
       }),
     );
 
@@ -195,8 +226,16 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
     expect(failedChildren.some((child) => child.props.children === "(No output)"))
       .toBe(false);
 
+    // A short single-line success shows that line itself on the result line.
+    const plain = BashOutputView({
+      content: "<bash-stdout>ok</bash-stdout>",
+    }) as unknown as ResultLineElement;
+    expect(plain.type).toBe(ResultLine);
+    expect(plain.props.failed).toBeUndefined();
+    expect(plain.props.children).toBe("ok");
+
     const plainChildren = flatten(
-      BashOutputView({ content: "<bash-stdout>ok</bash-stdout>" }),
+      BashOutputView({ content: "<bash-stdout>ok</bash-stdout>", verbose: true }),
     );
     expect(plainChildren.find((child) => child.props.children === "ok"))
       .toBeDefined();
@@ -205,23 +244,17 @@ describe("coverage swarm row 017 tool-rendering branches", () => {
   });
 
   test("ToolErrorView uses named error envelopes", () => {
-    const children = flatten(
-      ToolErrorView({
-        content:
-          "<tool-error-name>CustomTool</tool-error-name><tool-error>bad input</tool-error>",
-      }),
-    );
+    // The failed step row already names the tool, so the envelope renders as
+    // one failed result line with just the message (no "CustomTool error"
+    // header row).
+    const node = ToolErrorView({
+      content:
+        "<tool-error-name>CustomTool</tool-error-name><tool-error>bad input</tool-error>",
+    }) as unknown as ResultLineElement;
 
-    expect(
-      children.find(
-        (child) =>
-          child.props.bold === true &&
-          child.props.color === "red" &&
-          child.props.children === "CustomTool error",
-      ),
-    ).toBeDefined();
-    expect(children.find((child) => child.props.children === "bad input"))
-      .toBeDefined();
+    expect(node.type).toBe(ResultLine);
+    expect(node.props.failed).toBe(true);
+    expect(node.props.children).toBe("bad input");
   });
 
   test("createTuiTool covers read, command, search, MCP, Skill, and Bash summaries", () => {

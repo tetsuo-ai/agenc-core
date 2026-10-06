@@ -488,6 +488,29 @@ function collectWrappedShellWriteTargets(params: {
   return collectShellCommandWriteTargets(code, cwd, environment);
 }
 
+/**
+ * `eval [arg]...` joins its words with blanks and runs the result as shell
+ * code in this shell, so it writes what that code writes, read like
+ * `sh -c`. bash, zsh and ksh skip a leading `--`. A word the shell still
+ * expands (`eval "$CMD"`, `eval $(ssh-agent)`) leaves the code unknown;
+ * the targets its literal words name are still judged.
+ */
+function collectEvalWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const words = params.args[0] === "--" ? params.args.slice(1) : params.args;
+  const collection = collectShellCommandWriteTargets(
+    words.join(" "),
+    params.cwd,
+    params.environment,
+  );
+  collection.indeterminate ||= params.argsRequiringExpansion?.includes(true) === true;
+  return collection;
+}
+
 function collectTeeTargets(
   args: readonly string[],
   cwd: string,
@@ -617,8 +640,11 @@ interface ShellWriteEnvironment {
   /** `sed` may be BSD sed on this host (macOS and the BSDs). */
   readonly bsdSed: boolean;
   readonly workspaceRoot: string;
-  /** Resolve each command against the directory a `cd` earlier in the line moved to. */
-  readonly followDirectoryChanges?: boolean;
+  /**
+   * The command runs where a change the line does not spell out may have
+   * moved the shell, so whether a file exists there is not known.
+   */
+  readonly directoryUnknown?: boolean;
 }
 
 /** Hosts whose `sed` is BSD sed unless GNU sed comes first on the PATH. */
@@ -733,7 +759,14 @@ function collectSedWriteTargets(params: {
   }
   for (const edit of writes.edits) {
     // sed -i never creates a file.
-    if (edit.onlyIfExists && !pathExists(kernelPath(cwd, edit.file))) continue;
+    // Where the directory is not known, neither is whether the file exists.
+    if (
+      edit.onlyIfExists &&
+      !environment.directoryUnknown &&
+      !pathExists(kernelPath(cwd, edit.file))
+    ) {
+      continue;
+    }
     for (const name of edit.backup === undefined ? [edit.file] : [edit.file, edit.backup]) {
       addTarget(name, resolveInPlaceTarget(kernelPath(cwd, name), environment.workspaceRoot));
     }
@@ -837,6 +870,9 @@ function collectDirectCommandWriteTargets(params: {
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     return collectWrappedShellWriteTargets({ ...params, shell: command });
+  }
+  if (command === "eval") {
+    return collectEvalWriteTargets(params);
   }
   if (command === "tee") {
     return collectTeeTargets(params.args, params.cwd);
@@ -955,48 +991,431 @@ function collectSegmentCommandWriteTargets(
 
 /** The shell builtins that change the directory the rest of a line runs in. */
 const DIRECTORY_CHANGE_COMMANDS = new Set(["cd", "pushd", "popd"]);
-
+/** Builtins that run, in this shell, shell code the line does not show. */
+const SHELL_CODE_COMMANDS = new Set([".", "eval", "source"]);
+/** Prefixes that run the builtin named after them. */
+const BUILTIN_PREFIX_COMMANDS = new Set(["-", "builtin", "command", "exec", "nocorrect", "noglob"]);
 /**
- * Where a `cd`, `pushd` or `popd` segment leaves the shell: undefined for
- * any other segment, null when the command line does not say (`cd "$DIR"`,
- * `cd -`, `popd`).
+ * Reserved words of compound commands. In a loop a command can run after a
+ * `cd` written later in the line; under `if`, `!` or `case` a command runs
+ * on a status this module does not follow.
  */
-function directoryAfterSegment(
-  segment: readonly ShellToken[],
-  cwd: string,
-): string | null | undefined {
-  const words = stripRedirections(segment);
+const COMPOUND_RESERVED_WORDS = new Set([
+  "!", "{", "}", "case", "coproc", "do", "done", "elif", "else", "esac",
+  "fi", "for", "function", "if", "select", "then", "until", "while",
+]);
+/**
+ * Builtins that change how later commands, or `cd` itself, behave: a trap
+ * or an alias runs code the line does not show, `enable -n cd` turns `cd`
+ * into a program, and shell options can make `cd` read a name as a variable.
+ */
+const SHELL_BEHAVIOR_COMMANDS = new Set([
+  "alias", "emulate", "enable", "setopt", "shopt", "trap", "unsetopt",
+]);
+const LIST_SEPARATORS = new Set([";", ";;", ";&", ";;&", "&"]);
+const PIPE_SEPARATORS = new Set(["|", "|&"]);
+
+/** Where a directory change leaves the shell when it succeeds. */
+type DirectoryChange =
+  | { readonly kind: "to"; readonly path: string }
+  /** A place the line does not spell out: `cd "$DIR"`, `cd -`, `popd`. */
+  | { readonly kind: "unknown" }
+  /** `source`, `.` or `eval`: shell code the line does not show may change it. */
+  | { readonly kind: "shell-code" };
+
+const UNKNOWN_DIRECTORY: DirectoryChange = { kind: "unknown" };
+
+/** What the whole line says about the variables `cd` reads. */
+interface DirectoryChangeContext {
+  /** The line names HOME, which a bare `cd` goes to. */
+  readonly homeMayChange: boolean;
+  /** CDPATH is set, or the line names it: `cd name` may go elsewhere. */
+  readonly cdpathMayBeSet: boolean;
+}
+
+function directoryChangeContext(tokens: readonly ShellToken[]): DirectoryChangeContext {
+  return {
+    homeMayChange: tokens.some((token) => token.value.includes("HOME")),
+    cdpathMayBeSet:
+      (process.env.CDPATH ?? "").length > 0 ||
+      tokens.some((token) => /cdpath/iu.test(token.value)),
+  };
+}
+
+/** Index of a simple command's command word: after assignments, `time` and reserved words. */
+function commandWordIndex(words: readonly ShellToken[]): number {
   let index = 0;
-  while (index < words.length && ENV_ASSIGNMENT_RE.test(words[index]?.value ?? "")) {
+  while (index < words.length) {
+    const value = words[index]!.value;
+    const skipped =
+      ENV_ASSIGNMENT_RE.test(value) || value === "time" || COMPOUND_RESERVED_WORDS.has(value);
+    if (!skipped) break;
     index += 1;
   }
-  const command = words[index];
-  if (command === undefined || !DIRECTORY_CHANGE_COMMANDS.has(command.value)) {
-    return undefined;
+  return index;
+}
+
+/** Whether these words run `cd`, `pushd` or `popd` in this shell. */
+function namesDirectoryChange(words: readonly ShellToken[]): boolean {
+  const stripped = stripRedirections(words);
+  const index = commandWordIndex(stripped);
+  const command = stripped[index]?.value;
+  if (command === undefined) return false;
+  if (DIRECTORY_CHANGE_COMMANDS.has(command)) return true;
+  return BUILTIN_PREFIX_COMMANDS.has(command) &&
+    stripped.slice(index + 1).some((word) => DIRECTORY_CHANGE_COMMANDS.has(word.value));
+}
+
+function lineChangesDirectory(tokens: readonly ShellToken[]): boolean {
+  let segment: ShellToken[] = [];
+  for (const token of tokens) {
+    if (!isShellCommandSeparator(token)) {
+      segment.push(token);
+      continue;
+    }
+    if (namesDirectoryChange(segment)) return true;
+    segment = [];
   }
-  if (command.requiresExpansion || command.value === "popd") return null;
-  let operands = words.slice(index + 1);
-  while (operands.length > 0 && /^-[LPe@]+$/u.test(operands[0]!.value)) {
-    operands = operands.slice(1);
-  }
-  if (operands[0]?.value === "--") operands = operands.slice(1);
-  const operand = operands[0];
-  if (operand === undefined) return command.value === "cd" ? homedir() : null;
-  if (
-    operand.requiresExpansion ||
-    operand.value.length === 0 ||
-    /^[-+]\d*$/u.test(operand.value)
-  ) {
-    return null;
-  }
-  return resolvePath(cwd, operand.value);
+  return namesDirectoryChange(segment);
+}
+
+/** Whether the walk reads this command as written: not compound, not a shell behavior change. */
+function segmentIsFollowed(segment: readonly ShellToken[]): boolean {
+  const first = segment.find((token) => !ENV_ASSIGNMENT_RE.test(token.value));
+  if (first?.kind === "word" && COMPOUND_RESERVED_WORDS.has(first.value)) return false;
+  const words = stripRedirections(segment);
+  return !SHELL_BEHAVIOR_COMMANDS.has(words[commandWordIndex(words)]?.value ?? "");
+}
+
+/** `$(`, `<(`, `>(` and `name=(`: a `(` that does not define a function. */
+function opensSubstitution(previous: ShellToken): boolean {
+  if (previous.kind === "operator") return getShellRedirectOperator(previous) !== undefined;
+  return (
+    (previous.requiresExpansion && previous.value.endsWith("$")) ||
+    previous.value.endsWith("=")
+  );
 }
 
 /**
- * The targets of a command line whose later commands run where an earlier
- * `cd` or `pushd` moved the shell. A subshell's change ends with the
- * subshell. A change the line does not spell out keeps the last known
- * directory and marks the result indeterminate.
+ * Whether the line is simple commands joined by `&&`, `||`, `;`, `&` and
+ * pipes, with subshells and substitutions that open and close in order,
+ * and nothing that changes how the shell behaves: the line the directory
+ * walk reads exactly.
+ */
+function lineStructureIsFollowed(tokens: readonly ShellToken[]): boolean {
+  const scopes: string[] = [];
+  let segment: ShellToken[] = [];
+  for (const token of tokens) {
+    if (!isShellCommandSeparator(token)) {
+      segment.push(token);
+      continue;
+    }
+    if (!segmentIsFollowed(segment)) return false;
+    const previous = segment[segment.length - 1];
+    if (token.value === "(") {
+      if (previous !== undefined && !opensSubstitution(previous)) return false;
+      scopes.push("(");
+    } else if (token.value === ")") {
+      if (scopes.pop() !== "(") return false;
+    } else if (token.value === "`") {
+      if (scopes[scopes.length - 1] === "`") scopes.pop();
+      else scopes.push("`");
+    }
+    segment = [];
+  }
+  return segmentIsFollowed(segment) && scopes.length === 0;
+}
+
+function directoryOperandChange(
+  command: string,
+  words: readonly ShellToken[],
+  context: DirectoryChangeContext,
+): DirectoryChange {
+  if (command === "popd" || words.some((word) => word.requiresExpansion)) {
+    return UNKNOWN_DIRECTORY;
+  }
+  let operands = words.map((word) => word.value);
+  while (operands.length > 0 && /^-[LPe@]+$/u.test(operands[0]!)) {
+    operands = operands.slice(1);
+  }
+  if (operands[0] === "--") operands = operands.slice(1);
+  if (operands.length === 0) {
+    // `cd` alone goes to $HOME; `pushd` alone swaps the top two directories.
+    return command === "cd" && !context.homeMayChange
+      ? { kind: "to", path: homedir() }
+      : UNKNOWN_DIRECTORY;
+  }
+  const operand = operands[0]!;
+  // `-`, `-N` and `+N` name the directory stack, any other `-x` is an
+  // option, and zsh reads `cd old new` as a substitution in $PWD.
+  if (operands.length > 1 || operand.length === 0 || /^[-+]/u.test(operand)) {
+    return UNKNOWN_DIRECTORY;
+  }
+  // CDPATH is not searched for a name that starts with `/`, `.` or `..`.
+  if (context.cdpathMayBeSet && !isAbsolute(operand) && !/^\.\.?(?:\/|$)/u.test(operand)) {
+    return UNKNOWN_DIRECTORY;
+  }
+  return { kind: "to", path: operand };
+}
+
+/**
+ * Where a simple command's words move the shell: undefined for a command
+ * that does not change the directory.
+ */
+function directoryChangeOf(
+  words: readonly ShellToken[],
+  context: DirectoryChangeContext,
+): DirectoryChange | undefined {
+  const stripped = stripRedirections(words);
+  const index = commandWordIndex(stripped);
+  const command = stripped[index];
+  if (command === undefined) return undefined;
+  // `$CMD` may be `cd`.
+  if (command.requiresExpansion) return UNKNOWN_DIRECTORY;
+  if (SHELL_CODE_COMMANDS.has(command.value)) return { kind: "shell-code" };
+  const rest = stripped.slice(index + 1);
+  if (BUILTIN_PREFIX_COMMANDS.has(command.value)) {
+    const runsChange = rest.some(
+      (word) => DIRECTORY_CHANGE_COMMANDS.has(word.value) || SHELL_CODE_COMMANDS.has(word.value),
+    );
+    return runsChange ? UNKNOWN_DIRECTORY : undefined;
+  }
+  return DIRECTORY_CHANGE_COMMANDS.has(command.value)
+    ? directoryOperandChange(command.value, rest, context)
+    : undefined;
+}
+
+/** The directories a command may run in, as far as the line shows them. */
+interface DirectoryState {
+  readonly known: ReadonlySet<string>;
+  /** A change the line does not spell out may have moved the shell. */
+  readonly unknown: boolean;
+}
+
+/** Where the shell is after a command, by its exit status. */
+interface DirectoryOutcome {
+  readonly succeeded: DirectoryState;
+  readonly failed: DirectoryState;
+}
+
+function unionDirectoryStates(left: DirectoryState, right: DirectoryState): DirectoryState {
+  if (left === right) return left;
+  return {
+    known: new Set([...left.known, ...right.known]),
+    unknown: left.unknown || right.unknown,
+  };
+}
+
+function sameOutcome(state: DirectoryState): DirectoryOutcome {
+  return { succeeded: state, failed: state };
+}
+
+interface DirectoryWalk {
+  readonly tokens: readonly ShellToken[];
+  index: number;
+  /** The tool call's directory, where the line was read before it followed `cd`. */
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+  readonly context: DirectoryChangeContext;
+  /** The line has a compound command or a function, which the walk does not follow. */
+  readonly unfollowed: boolean;
+  readonly collection: ShellWriteTargetCollection;
+}
+
+function separatorAt(walk: DirectoryWalk): string | undefined {
+  const token = walk.tokens[walk.index];
+  return token !== undefined && isShellCommandSeparator(token) ? token.value : undefined;
+}
+
+function writesAnything(collection: ShellWriteTargetCollection): boolean {
+  return (
+    collection.targets.length > 0 ||
+    collection.deletions.length > 0 ||
+    collection.moves.length > 0
+  );
+}
+
+/**
+ * Collects the targets of part of a command in every directory it may run
+ * in. Where the directory is not known, the part is also read in the tool
+ * call's directory, as the line was read before it followed `cd`, and a
+ * write there makes the result indeterminate.
+ */
+function collectPartTargets(
+  walk: DirectoryWalk,
+  part: readonly ShellToken[],
+  state: DirectoryState,
+): void {
+  if (part.length === 0) return;
+  const directoryUnknown = state.unknown || walk.unfollowed;
+  const directories = new Set(state.known);
+  if (directoryUnknown) directories.add(walk.cwd);
+  const environment = { ...walk.environment, directoryUnknown };
+  const collected = emptyTargetCollection();
+  for (const directory of directories) {
+    mergeTargetCollections(collected, collectRedirectionTargets(part, directory));
+    mergeTargetCollections(
+      collected,
+      collectSegmentCommandWriteTargets(part, directory, environment),
+    );
+  }
+  if (directoryUnknown && writesAnything(collected)) collected.indeterminate = true;
+  mergeTargetCollections(walk.collection, collected);
+}
+
+/** A `cd` may fail; then the shell stays where it was. */
+function applyDirectoryChange(
+  walk: DirectoryWalk,
+  state: DirectoryState,
+  change: DirectoryChange | undefined,
+): DirectoryOutcome {
+  if (change === undefined) return sameOutcome(state);
+  if (change.kind === "shell-code") {
+    return sameOutcome({ known: new Set([...state.known, walk.cwd]), unknown: state.unknown });
+  }
+  if (change.kind === "unknown") {
+    return { succeeded: { known: state.known, unknown: true }, failed: state };
+  }
+  const known = new Set(
+    [...state.known].map((directory) => resolvePath(directory, change.path)),
+  );
+  return {
+    succeeded: { known, unknown: state.unknown && !isAbsolute(change.path) },
+    failed: state,
+  };
+}
+
+/**
+ * One command: its words, and the subshells and substitutions inside it,
+ * which run in a subshell whose `cd` ends with it.
+ */
+function walkCommand(
+  walk: DirectoryWalk,
+  state: DirectoryState,
+  closer?: string,
+): DirectoryOutcome {
+  const words: ShellToken[] = [];
+  let part: ShellToken[] = [];
+  let subshell = false;
+  let substitution = false;
+  let substitutedCommand = false;
+  while (walk.index < walk.tokens.length) {
+    const separator = separatorAt(walk);
+    const opensBacktick = separator === "`" && closer !== "`";
+    const opener = separator === "(" ? ")" : opensBacktick ? "`" : undefined;
+    if (separator !== undefined && opener === undefined) break;
+    const token = walk.tokens[walk.index]!;
+    walk.index += 1;
+    if (opener === undefined) {
+      words.push(token);
+      part.push(token);
+      continue;
+    }
+    // The part before the scope is read on its own, as the line reader always split it.
+    collectPartTargets(walk, part, state);
+    part = [];
+    if (opener === ")" && words.length === 0) subshell = true;
+    else substitution = true;
+    // `` `echo cd` .. ``: the substitution's output is the command.
+    const stripped = stripRedirections(words);
+    if (opener === "`" && commandWordIndex(stripped) >= stripped.length) {
+      substitutedCommand = true;
+    }
+    walkList(walk, state, opener);
+    if (separatorAt(walk) === opener) walk.index += 1;
+  }
+  collectPartTargets(walk, part, state);
+  if (subshell) return sameOutcome(state);
+  const change = substitutedCommand ? UNKNOWN_DIRECTORY : directoryChangeOf(words, walk.context);
+  // `cd "$(pwd)/x"`: where a substitution leads is not on the line.
+  const substituted = substitution && change?.kind === "to";
+  return applyDirectoryChange(walk, state, substituted ? UNKNOWN_DIRECTORY : change);
+}
+
+/**
+ * Every command of a pipeline but the last runs in a subshell; the last
+ * runs in this shell under zsh (and bash's lastpipe), so its `cd` may or
+ * may not last.
+ */
+function walkPipeline(
+  walk: DirectoryWalk,
+  state: DirectoryState,
+  closer?: string,
+): DirectoryOutcome {
+  const first = walkCommand(walk, state, closer);
+  if (!PIPE_SEPARATORS.has(separatorAt(walk) ?? "")) return first;
+  let last = first;
+  while (PIPE_SEPARATORS.has(separatorAt(walk) ?? "")) {
+    walk.index += 1;
+    last = walkCommand(walk, state, closer);
+  }
+  const lastRan = unionDirectoryStates(last.succeeded, last.failed);
+  return sameOutcome(unionDirectoryStates(state, lastRan));
+}
+
+/** `a && b` runs b where a succeeded; `a || b` runs b where a failed. */
+function walkAndOr(
+  walk: DirectoryWalk,
+  state: DirectoryState,
+  closer?: string,
+): DirectoryOutcome {
+  let outcome = walkPipeline(walk, state, closer);
+  for (;;) {
+    const operator = separatorAt(walk);
+    if (operator !== "&&" && operator !== "||") return outcome;
+    walk.index += 1;
+    if (operator === "&&") {
+      const next = walkPipeline(walk, outcome.succeeded, closer);
+      outcome = {
+        succeeded: next.succeeded,
+        failed: unionDirectoryStates(outcome.failed, next.failed),
+      };
+    } else {
+      const next = walkPipeline(walk, outcome.failed, closer);
+      outcome = {
+        succeeded: unionDirectoryStates(outcome.succeeded, next.succeeded),
+        failed: next.failed,
+      };
+    }
+  }
+}
+
+/**
+ * Commands up to `closer` (the end of a subshell or substitution) or the
+ * end of the line. After `;` the next command runs whatever the last one
+ * returned; a list sent to the background with `&` runs in a subshell.
+ */
+function walkList(
+  walk: DirectoryWalk,
+  state: DirectoryState,
+  closer?: string,
+): DirectoryState {
+  let current = state;
+  while (walk.index < walk.tokens.length) {
+    const listStart = current;
+    const outcome = walkAndOr(walk, current, closer);
+    current = unionDirectoryStates(outcome.succeeded, outcome.failed);
+    const separator = separatorAt(walk);
+    if (separator === undefined || separator === closer) break;
+    // A `;`, a `&`, or a `)` that closes nothing (a `case` pattern, in a
+    // line the walk does not follow).
+    walk.index += 1;
+    if (separator === "&") current = listStart;
+    else if (!LIST_SEPARATORS.has(separator)) current = unionDirectoryStates(current, listStart);
+  }
+  return current;
+}
+
+/**
+ * The targets of a command line that changes directory, each command read
+ * in every directory it may run in: `cd x && cmd` runs cmd in x, `cd x; cmd`
+ * in x or, when the cd fails, where the line started, and a subshell's or a
+ * background list's change ends with it. Where a change the line does not
+ * spell out (`cd "$DIR"`, `cd -`, `popd`) may have moved the shell, a later
+ * write is indeterminate; so is any write in a line with a compound command
+ * or a function, which the walk does not follow. Those commands are also
+ * read in the tool call's directory, so a target the line reader saw before
+ * it followed `cd` is still judged.
  */
 function collectTargetsFollowingDirectoryChanges(
   parsed: ReturnType<typeof lexShellCommand>,
@@ -1005,30 +1424,16 @@ function collectTargetsFollowingDirectoryChanges(
 ): ShellWriteTargetCollection {
   const collection = emptyTargetCollection();
   collection.indeterminate ||= parsed.malformed || parsed.hasCommandSubstitution;
-  const subshells: string[] = [];
-  let current = cwd;
-  let segment: ShellToken[] = [];
-  const flushSegment = (): void => {
-    mergeTargetCollections(collection, collectRedirectionTargets(segment, current));
-    mergeTargetCollections(
-      collection,
-      collectSegmentCommandWriteTargets(segment, current, environment),
-    );
-    const next = directoryAfterSegment(segment, current);
-    if (next === null) collection.indeterminate = true;
-    else if (next !== undefined) current = next;
-    segment = [];
+  const walk: DirectoryWalk = {
+    tokens: parsed.tokens,
+    index: 0,
+    cwd,
+    environment,
+    context: directoryChangeContext(parsed.tokens),
+    unfollowed: !lineStructureIsFollowed(parsed.tokens),
+    collection,
   };
-  for (const token of parsed.tokens) {
-    if (isShellCommandSeparator(token)) {
-      flushSegment();
-      if (token.value === "(") subshells.push(current);
-      if (token.value === ")") current = subshells.pop() ?? current;
-      continue;
-    }
-    segment.push(token);
-  }
-  flushSegment();
+  walkList(walk, { known: new Set([cwd]), unknown: environment.directoryUnknown === true });
   return collection;
 }
 
@@ -1038,7 +1443,7 @@ function collectShellCommandWriteTargets(
   environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const parsed = lexShellCommand(commandLine);
-  if (environment.followDirectoryChanges === true) {
+  if (lineChangesDirectory(parsed.tokens)) {
     return collectTargetsFollowingDirectoryChanges(parsed, cwd, environment);
   }
   const collection = collectRedirectionTargets(parsed.tokens, cwd);
@@ -1339,15 +1744,16 @@ function collectToolCallWriteTargets(
 export interface ShellMutationTargets {
   /** Every path the command writes, removes, or moves a file from or onto. */
   readonly targets: readonly string[];
-  /** Some target could not be read from the command (`> "$OUT"`, `cd "$DIR"`). */
+  /** Some target could not be read from the command (`> "$OUT"`, a write after `cd "$DIR"`). */
   readonly indeterminate: boolean;
 }
 
 /**
  * Every path a shell tool call changes, as far as the command line shows it,
- * with each command resolved in the directory it runs in: `args.cwd`
- * (relative to `workspaceRoot`) and any `cd` earlier in the line. What a
- * program does on its own (`node -e`, `git -C`) is not visible here.
+ * with each command resolved in the directories it may run in: `args.cwd`
+ * (relative to `workspaceRoot`) and any `cd` earlier in the line, read as
+ * the workspace write policy reads it. What a program does on its own
+ * (`node -e`, `git -C`) is not visible here.
  */
 export function collectShellMutationTargets(params: {
   readonly toolName: string;
@@ -1361,7 +1767,6 @@ export function collectShellMutationTargets(params: {
   const collected = collectToolCallWriteTargets(params.args, {
     bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
     workspaceRoot: params.workspaceRoot,
-    followDirectoryChanges: true,
   });
   const targets = [...collected.targets];
   for (const target of collected.deletions) pushUnique(targets, target);

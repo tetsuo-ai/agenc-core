@@ -18,6 +18,7 @@ vi.mock("../tui/ink.js", () => {
 });
 
 import { createTuiTool, BashOutputView } from "../tui/tool-rendering.js";
+import { ResultLine } from "../tui/components/v2/primitives.js";
 import { selectAgenCTuiGlyphs } from "../tui/glyphs.js";
 
 describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch", () => {
@@ -100,11 +101,11 @@ describe("createTuiTool('Bash').renderToolResultMessage — end-to-end dispatch"
 
 /**
  * Recursively collect every descendant element of a BashOutputView node into a
- * flat array. The capped stdout/stderr lines now sit one level deeper inside the
- * `⎿`-gutter content column (a row layout: gutter column + content column), so
- * this walks the element tree rather than only the immediate children. When the
- * view returns a bare <Text> (the silent / no-output case) the node itself is
- * the only element.
+ * flat array. In the verbose (ctrl+o) view the stdout/stderr lines sit one level
+ * deeper inside the `└`-gutter content column (a row layout: gutter column +
+ * content column), so this walks the element tree rather than only the
+ * immediate children. The transcript form is a single `<ResultLine>`, so the
+ * node itself is the only element.
  */
 function flattenBash(
   node: unknown,
@@ -131,15 +132,36 @@ function flattenBash(
   return out;
 }
 
-describe("BashOutputView — capped preview visual contract", () => {
+/**
+ * The transcript form of a shell result: one `└` ResultLine ("9 lines",
+ * "no output", "exit 1, reason"). Asserts the element is a ResultLine and
+ * returns its text and failed flag.
+ */
+function resultLine(node: unknown): { readonly text: unknown; readonly failed?: boolean } {
+  const element = node as {
+    readonly type: unknown;
+    readonly props: { readonly children?: unknown; readonly failed?: boolean };
+  };
+  expect(element.type).toBe(ResultLine);
+  return { text: element.props.children, failed: element.props.failed };
+}
+
+// The transcript shows one result line per step; the full stdout/stderr body
+// renders in the verbose (ctrl+o) view. Body-shape assertions below pass
+// `verbose: true`; the one-line form is asserted with `resultLine`.
+describe("BashOutputView: result line and verbose body visual contract", () => {
   test("renders no-output indicator when both stdout and stderr are empty (zero exit)", () => {
-    // Capped preview: silent success collapses to a single dim "(No output)".
-    // The line now nests behind the `⎿` continuation gutter (like the non-empty
-    // branch), so the text lives in a child <Text> under the gutter row layout
-    // rather than as the root node's direct child.
-    const node = BashOutputView({
-      content: "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>[exit_code=0]",
-    });
+    const content =
+      "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>[exit_code=0]";
+    // Transcript: silent success is one "└ no output" result line.
+    const line = resultLine(BashOutputView({ content }));
+    expect(line.text).toBe("no output");
+    expect(line.failed).toBeUndefined();
+
+    // Verbose: a single dim "(No output)" that nests behind the `└`
+    // continuation gutter (like the non-empty branch), so the text lives in a
+    // child <Text> under the gutter row layout rather than as the root's child.
+    const node = BashOutputView({ content, verbose: true });
     const flat = flattenBash(node);
     const noOutput = flat.find((child) => child.props?.children === "(No output)");
     expect(noOutput).toBeDefined();
@@ -148,36 +170,55 @@ describe("BashOutputView — capped preview visual contract", () => {
 
   test("silent non-zero exit notes the failed exit instead of a metadata line", () => {
     // The raw [exit_code=...] metadata block is no longer surfaced; a silent
-    // failure is summarized inline instead, nested behind the gutter.
-    const node = BashOutputView({
-      content: "<bash-stdout></bash-stdout>[exit_code=1]",
-    });
+    // failure is summarized inline instead.
+    const content = "<bash-stdout></bash-stdout>[exit_code=1]";
+    const line = resultLine(BashOutputView({ content }));
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 1");
+
+    // Verbose: the same note, nested behind the gutter.
+    const node = BashOutputView({ content, verbose: true });
     const flat = flattenBash(node);
     expect(
       flat.some((child) => child.props?.children === "(no output, non-zero exit)"),
     ).toBe(true);
   });
 
-  test("oversized single stdout line is width-capped with a [N chars truncated] marker", () => {
+  test("oversized single stdout line collapses to a line count instead of being dumped", () => {
+    // The old capped preview printed a width-capped copy of the line with a
+    // "[N chars truncated]" marker. The transcript form never prints output:
+    // a line too wide to show whole is counted, and ctrl+o has the full text.
     const huge = "a".repeat(50_000);
     const node = BashOutputView({
       content: `<bash-stdout>${huge}</bash-stdout>[exit_code=0]`,
     });
-    const flat = flattenBash(node);
-    const stdoutLine = flat.find(
-      (child) =>
-        typeof child.props?.children === "string" &&
-        (child.props.children as string).startsWith("a"),
-    );
-    expect(stdoutLine).toBeDefined();
-    expect((stdoutLine!.props.children as string).length).toBeLessThan(10_000);
-    expect(stdoutLine!.props.children as string).toContain("chars truncated");
+    expect(resultLine(node).text).toBe("1 line");
+    expect(
+      flattenBash(node).some(
+        (child) =>
+          typeof child.props?.children === "string" &&
+          (child.props.children as string).startsWith("aaaa"),
+      ),
+    ).toBe(false);
+  });
+
+  test("a failure's reason comes from stderr even when stdout has later lines", () => {
+    const content =
+      "<bash-stdout>building\nstep 2 of 3</bash-stdout><bash-stderr>syntax error near `&amp;&amp;`</bash-stderr>[exit_code=2]";
+    const line = resultLine(BashOutputView({ content }));
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 2, syntax error near `&&`");
   });
 
   test("non-zero exit surfaces stderr in red even when stdout is empty", () => {
-    const node = BashOutputView({
-      content: "<bash-stdout></bash-stdout><bash-stderr>oops</bash-stderr>[exit_code=1]",
-    });
+    const content =
+      "<bash-stdout></bash-stdout><bash-stderr>oops</bash-stderr>[exit_code=1]";
+    // Transcript: the failed line leads with the exit code, then the reason.
+    const line = resultLine(BashOutputView({ content }));
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 1, oops");
+
+    const node = BashOutputView({ content, verbose: true });
     const flat = flattenBash(node);
     const stderrLine = flat.find(
       (child) => child.props?.color === "red" && child.props.children === "oops",
@@ -191,9 +232,10 @@ describe("BashOutputView — capped preview visual contract", () => {
   });
 
   test("zero exit does NOT surface stderr (only failures append it)", () => {
-    const node = BashOutputView({
-      content: "<bash-stdout>ok</bash-stdout><bash-stderr>warn</bash-stderr>[exit_code=0]",
-    });
+    const content =
+      "<bash-stdout>ok</bash-stdout><bash-stderr>warn</bash-stderr>[exit_code=0]";
+    expect(resultLine(BashOutputView({ content })).text).toBe("ok");
+    const node = BashOutputView({ content, verbose: true });
     const flat = flattenBash(node);
     expect(
       flat.some((child) => child.props?.children === "ok"),
@@ -205,9 +247,11 @@ describe("BashOutputView — capped preview visual contract", () => {
 
   test("ANSI escape sequences inside <bash-stdout> are passed through verbatim", () => {
     const ansi = "\x1b[31mred\x1b[0m text";
-    const node = BashOutputView({
-      content: `<bash-stdout>${ansi}</bash-stdout>[exit_code=0]`,
-    });
+    const content = `<bash-stdout>${ansi}</bash-stdout>[exit_code=0]`;
+    // Transcript: the one-line summary is plain text (escapes stripped).
+    expect(resultLine(BashOutputView({ content })).text).toBe("red text");
+    // Verbose: the program's own escapes reach the renderer untouched.
+    const node = BashOutputView({ content, verbose: true });
     const flat = flattenBash(node);
     const stdoutLine = flat.find((child) => child.props?.children === ansi);
     expect(stdoutLine).toBeDefined();
@@ -229,7 +273,10 @@ describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => 
     expect(joined).toContain("<bash-stderr>err</bash-stderr>");
     expect(joined).toContain("exit_code=1");
 
-    const node = BashOutputView({ content: joined });
+    // Transcript form: one failed result line.
+    expect(resultLine(BashOutputView({ content: joined })).failed).toBe(true);
+    // Verbose form renders both bodies.
+    const node = BashOutputView({ content: joined, verbose: true });
     expect(node).toBeDefined();
     const renderedTexts = flattenBash(node)
       .filter(
@@ -243,27 +290,28 @@ describe("formatStructuredToolResult ⇄ BashOutputView wire-shape lock", () => 
 });
 
 /**
- * The command stdout must nest UNDER its `● Run(...)` call row behind the same
- * `⎿` continuation gutter the file-changed summary and the Read/Search collapsed
+ * The command stdout must nest UNDER its `● Ran …` call row behind the same
+ * `└` continuation gutter the file-changed summary and the Read/Search collapsed
  * body use — instead of breaking out flush at the bullet column — and render in
  * the dim/secondary tone the other tool-result bodies use (so the raw output is
- * not the loudest, full-brightness block in the transcript).
+ * not the loudest, full-brightness block in the transcript). The full body is
+ * the verbose (ctrl+o) view; the transcript shows one `└` result line.
  *
  * REVERT-SENSITIVITY: against the pre-fix renderer the multi-line stdout was a
  * flat list of bare `<Text>{line}</Text>` children — no gutter Text existed
  * anywhere and the stdout lines carried no `dimColor`. Both assertions below go
  * red if the gutter/indent + secondary-tone change is reverted.
  */
-describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary tone", () => {
+describe("BashOutputView: stdout nests behind the └ gutter in the secondary tone", () => {
   const gutter = selectAgenCTuiGlyphs().responseGutter;
 
-  test("multi-line stdout renders behind a single ⎿ continuation gutter, indented into a content column (not flush at the glyph column)", () => {
+  test("multi-line stdout renders behind a single └ continuation gutter, indented into a content column (not flush at the glyph column)", () => {
     const node = BashOutputView({
-      // Exit 1: the failure cap keeps several lines, so this exercises what it
-      // says it does — MULTIPLE lines nested behind ONE gutter. On the success
-      // path the cap is a single line, which would make the nesting vacuous.
+      // Verbose shows every line, so this exercises MULTIPLE lines nested
+      // behind ONE gutter.
       content:
         "<bash-stdout>INFO: 3\nWARN: 2\nERROR: 2</bash-stdout>[exit_code=1]",
+      verbose: true,
     });
     const flat = flattenBash(node);
 
@@ -306,48 +354,41 @@ describe("BashOutputView — stdout nests behind the ⎿ gutter in the secondary
     }
   });
 
-  test("the `… +N lines` truncation summary inherits the gutter/indent and stays dim", () => {
-    // 7 lines with the success path's single-line cap → 6 remaining, surfaced
-    // as "… +6 lines" under the same gutter. (No new interactivity is added
-    // for the truncation.)
+  test("the transcript summary of a multi-line output is one └ result line with the count", () => {
+    // The old success preview showed the first line plus a dim "… +6 lines"
+    // under the gutter. The transcript now shows one quiet `└` result line
+    // that counts the output (ResultLine draws the `└` and the gray tone); no
+    // output line and no "… +N" marker are printed.
     const body = Array.from({ length: 7 }, (_, i) => `row ${i}`).join("\n");
     const node = BashOutputView({
       content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
     });
+    expect(resultLine(node).text).toBe("7 lines");
     const flat = flattenBash(node);
-    const more = flat.find(
-      (child) =>
-        typeof child.props?.children === "string" &&
-        (child.props.children as string).startsWith("… +6"),
-    );
-    expect(more).toBeDefined();
-    expect(more!.props.dimColor).toBe(true);
-    // Still behind the gutter.
+    expect(flat.some((child) => child.props?.children === "row 0")).toBe(false);
     expect(
       flat.some(
         (child) =>
           typeof child.props?.children === "string" &&
-          (child.props.children as string).includes(gutter),
+          (child.props.children as string).startsWith("… +"),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
 /**
- * Failure-aware cap: when a command FAILS, the diagnostic payload (the
- * exception line + the PASS/FAIL verdict) lives at the END of the output. A
- * head-only cap truncates exactly those lines. The cap is split HEAD+TAIL on
- * failure so the trailing verdict/exception survives, while SUCCESS stays
- * head-only and byte-identical.
+ * Failure line keeps the trailing verdict/exception: when a command FAILS, the
+ * diagnostic payload (the exception line + the PASS/FAIL verdict) lives at the
+ * END of the output. The old head-only preview cap truncated exactly those
+ * lines, and a head+tail cap fixed it. The transcript now shows one failed
+ * line, "exit N, <last non-empty output line>", so the verdict/exception is
+ * what the row says; ctrl+o (verbose) shows the full output, middle included.
+ * A SUCCESS shows only a line count, never the trailing lines.
  *
- * REVERT-SENSITIVITY: against the pre-fix head-only renderer the failing-case
- * assertions below go RED — the `AssertionError:` reason and the
- * `FAILED (failures=1)` verdict are sliced off (only the first ~5 lines survive,
- * with `… +K lines` swallowing the tail). The success-case assertion still
- * passes both before and after (head-only is unchanged) and pins that the
- * success path was NOT altered.
+ * REVERT-SENSITIVITY: a summary that kept the head instead of the last line
+ * (the old head-only behavior) fails every failing-case assertion below.
  */
-describe("BashOutputView — failure cap keeps the trailing verdict/exception (head+tail)", () => {
+describe("BashOutputView: failure line keeps the trailing verdict/exception", () => {
   // A realistic failing `python -m unittest` body: progress dots + the FAIL
   // header + traceback at the TOP, then the test count + verdict at the BOTTOM.
   // 11 lines total, far past the 5-line cap. With a 2-head / 3-tail failure
@@ -391,65 +432,47 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
         child.props.children === text,
     );
 
-  const findMore = (
-    flat: { props: { children?: unknown } }[],
-  ): string | undefined => {
-    const more = flat.find(
-      (child) =>
-        typeof child.props?.children === "string" &&
-        (child.props.children as string).startsWith("… +"),
-    );
-    return more ? (more.props.children as string) : undefined;
-  };
-
-  test("STDOUT failure path (live-daemon fold): trailing verdict survives the cap", () => {
+  test("STDOUT failure path (live-daemon fold): the trailing verdict is the failure line", () => {
     // The live daemon folds stdout+stderr into one plain exec stream; a failing
     // run surfaces here as a non-zero plain-exec trailer.
-    const node = BashOutputView({
-      content: `${FAILING_UNITTEST_BODY}\n\n[exec exit_code=1 wall_time=0.01s tokens=20]`,
-    });
-    const flat = flattenBash(node);
+    const content = `${FAILING_UNITTEST_BODY}\n\n[exec exit_code=1 wall_time=0.01s tokens=20]`;
+    const line = resultLine(BashOutputView({ content }));
 
-    // The verdict (LAST line) and the test count must survive — a head-only cap
-    // drops both.
-    expect(findText(flat, "FAILED (failures=1)")).toBe(true);
-    expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(true);
+    // The verdict (LAST line) is the reason the row gives; the head is not.
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 1, FAILED (failures=1)");
 
-    // Early context (the head) is still shown.
+    // Verbose keeps the whole output reachable, the hidden middle included.
+    const flat = flattenBash(BashOutputView({ content, verbose: true }));
     expect(findText(flat, "F....")).toBe(true);
-
-    // The elision reports the HIDDEN MIDDLE count: 11 lines, 2 head + 3 tail
-    // visible → 11 - 5 = 6 hidden. Transcript expansion lives in the
-    // persistent workbench footer, so this inline marker stays compact.
-    expect(findMore(flat)).toBe("… +6 lines");
+    expect(findText(flat, "AssertionError: Fraction(1, 2) != Fraction(3, 4)")).toBe(true);
+    expect(findText(flat, "FAILED (failures=1)")).toBe(true);
   });
 
-  test("STDOUT failure path: the bottom EXCEPTION line survives when it is the last line", () => {
+  test("STDOUT failure path: the bottom EXCEPTION line is the failure line when it is the last line", () => {
     // A crash whose `ZeroDivisionError: ...` (the WHY) is the LAST line — the
-    // case a head-only cap mangles most.
+    // case a head-only summary mangles most.
     const node = BashOutputView({
       content: `${CRASHING_SCRIPT_BODY}\n\n[exec exit_code=1 wall_time=0.01s tokens=20]`,
     });
-    const flat = flattenBash(node);
-
-    expect(findText(flat, "ZeroDivisionError: division by zero")).toBe(true);
-    // Head context preserved too.
-    expect(findText(flat, "starting computation")).toBe(true);
-    // 8 lines, 2 head + 3 tail → 8 - 5 = 3 hidden.
-    expect(findMore(flat)).toBe("… +3 lines");
+    const line = resultLine(node);
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 1, ZeroDivisionError: division by zero");
+    expect(String(line.text)).not.toContain("starting computation");
   });
 
-  test("STDERR envelope path: traceback verdict survives the red cap", () => {
+  test("STDERR envelope path: the traceback verdict is the failure line, and red in verbose", () => {
     // unittest writes its report to STDERR; the envelope path carries it in
-    // <bash-stderr>. The failing cap must keep the tail there too, in red.
-    const node = BashOutputView({
-      content:
-        `<bash-stdout></bash-stdout>` +
-        `<bash-stderr>${FAILING_UNITTEST_BODY}</bash-stderr>[exit_code=1]`,
-    });
-    const flat = flattenBash(node);
+    // <bash-stderr>.
+    const content =
+      `<bash-stdout></bash-stdout>` +
+      `<bash-stderr>${FAILING_UNITTEST_BODY}</bash-stderr>[exit_code=1]`;
+    const line = resultLine(BashOutputView({ content }));
+    expect(line.failed).toBe(true);
+    expect(line.text).toBe("exit 1, FAILED (failures=1)");
 
-    // The verdict survives in the red failure tone.
+    // Verbose: the verdict renders in the red failure tone.
+    const flat = flattenBash(BashOutputView({ content, verbose: true }));
     const verdict = flat.find(
       (child) =>
         child.props?.children === "FAILED (failures=1)" &&
@@ -457,42 +480,32 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
     );
     expect(verdict).toBeDefined();
     expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(true);
-
-    // The stderr elision count is correct (same 11-line body → 6 hidden).
-    expect(findMore(flat)).toBe("… +6 lines");
   });
 
-  test("SUCCESS path is unchanged: head-only cap, trailing lines truncated away", () => {
-    // Same 11-line body but exit 0 → head-only, and the success cap is a
-    // single line. The verdict-shaped LAST line must NOT survive, which is the
-    // whole contrast with the failure path above: a failure keeps its trailing
-    // verdict, a success does not. Elision reports 11 - 1 = 10 remaining.
+  test("SUCCESS path counts the output and never shows the trailing lines", () => {
+    // Same 11-line body but exit 0. The verdict-shaped LAST line must NOT be
+    // shown, which is the whole contrast with the failure path above: a failure
+    // leads with its trailing verdict, a success is just a count.
     const node = BashOutputView({
       content: `<bash-stdout>${FAILING_UNITTEST_BODY}</bash-stdout>[exit_code=0]`,
     });
+    const line = resultLine(node);
+    expect(line.failed).toBeUndefined();
+    expect(line.text).toBe("11 lines");
     const flat = flattenBash(node);
-
-    // The first line survives head-only...
-    expect(findText(flat, "F....")).toBe(true);
-    expect(
-      findText(flat, "FAIL: test_add_fractions (tests.test_fraction.FractionTest)"),
-    ).toBe(false);
-    // ...and the trailing verdict is truncated away (head-only, unchanged).
     expect(findText(flat, "FAILED (failures=1)")).toBe(false);
     expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(false);
-    // Head-only elision: 11 - 1 = 10 remaining.
-    expect(findMore(flat)).toBe("… +10 lines");
   });
 });
 
 /**
- * Capped output remains reachable through the workbench's persistent
- * transcript-expand control. The inline `… +K lines` marker stays concise
- * because repeating the same shortcut on every truncated message adds noise.
- * When the transcript is expanded, the `verbose` prop (already plumbed in from
- * `UserToolSuccessMessage`) lifts the cap so the full output is scrollable.
+ * Summarized output remains reachable through the workbench's persistent
+ * transcript-expand control. The inline result line stays concise because
+ * repeating the same shortcut on every message adds noise. When the transcript
+ * is expanded, the `verbose` prop (already plumbed in from
+ * `UserToolSuccessMessage`) shows the full output, scrollable.
  *
- * The compact-marker assertion guards the workbench polish that moved shortcut
+ * The compact assertion guards the workbench polish that moved shortcut
  * discovery into the footer. The expansion assertions keep the hidden output
  * reachable and catch any regression that ignores `verbose`.
  */
@@ -505,17 +518,16 @@ describe("BashOutputView — compact marker and transcript expansion", () => {
   const findMoreLine = (node: unknown): string | undefined =>
     allTexts(node).find((text) => text.startsWith("… +"));
 
-  test("a truncated success output marker stays compact", () => {
-    // 12 lines, exit 0 → single-line head cap → 11 hidden. The persistent
-    // footer owns the transcript-expand shortcut, so the message does not
-    // repeat it.
+  test("a multi-line success output stays one compact count line", () => {
+    // 12 lines, exit 0 → one "└ 12 lines" result line. The persistent footer
+    // owns the transcript-expand shortcut, so the line does not repeat it.
     const body = Array.from({ length: 12 }, (_, i) => `row-${i + 1}`).join("\n");
     const node = BashOutputView({
       content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
     });
-    const more = findMoreLine(node);
-    expect(more).toBe("… +11 lines");
-    expect(more).not.toContain("for full output");
+    expect(resultLine(node).text).toBe("12 lines");
+    expect(findMoreLine(node)).toBeUndefined();
+    expect(allTexts(node).some((text) => text.includes("for full output"))).toBe(false);
   });
 
   test("the affordance is ABSENT when the output is not truncated (K === 0)", () => {

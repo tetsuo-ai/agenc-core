@@ -112,6 +112,30 @@ export function storeLocalByokCredential(
   );
 }
 
+/** Remove a saved provider key. Returns whether one was stored. */
+export function clearLocalByokCredential(
+  home: HomeContext,
+  provider: string,
+): boolean {
+  let removed = false;
+  updateNativeSecureStorage(
+    home,
+    (current) => {
+      const localAuth = localAuthState(current.localAuth);
+      const byokKeys = localAuth.byokKeys;
+      if (byokKeys === undefined || !(provider in byokKeys)) return current;
+      const { [provider]: _removed, ...remaining } = byokKeys;
+      removed = true;
+      return {
+        ...current,
+        localAuth: { ...localAuth, byokKeys: remaining },
+      };
+    },
+    LOCAL_AUTH_STORAGE_UNAVAILABLE,
+  );
+  return removed;
+}
+
 export function readRemoteBearerCredential(
   home: HomeContext,
 ): RemoteBearerCredential | undefined {

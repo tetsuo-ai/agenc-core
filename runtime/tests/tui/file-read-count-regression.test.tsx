@@ -12,7 +12,8 @@ describe("live FileRead line counts", () => {
       metadata: { numLines, totalLines: 500, startLine: 101 },
     });
     const rendered = await renderToString(<FileReadView content={blocks.map(block => block.text).join("\n")} />);
-    expect(rendered).toContain(numLines === 0 ? "(empty file)" : `Read ${numLines} ${numLines === 1 ? "line" : "lines"}`);
+    // One "└" result line under the Read step: the bare count, or "empty file".
+    expect(rendered).toContain(numLines === 0 ? "└ empty file" : `└ ${numLines} ${numLines === 1 ? "line" : "lines"}`);
     expect(blocks.map(block => block.text).join("\n").length).toBeLessThan(100);
   });
 
@@ -21,6 +22,6 @@ describe("live FileRead line counts", () => {
       result: " 21→first\n 22→second\n 23→third",
     });
     const rendered = await renderToString(<FileReadView content={blocks.map(block => block.text).join("\n")} />);
-    expect(rendered).toContain("Read 3 lines");
+    expect(rendered).toContain("└ 3 lines");
   });
 });

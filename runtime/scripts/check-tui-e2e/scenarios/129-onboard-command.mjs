@@ -3,8 +3,9 @@
  *
  * The explicit onboard subcommand boots the TUI with the first-run wizard
  * forced. Drive the whole wizard with the mock openai-compatible provider
- * (keyless local provider path): theme, provider, model access with its
- * in-place readiness check, and the Ready summary. Finishing setup sends
+ * (keyless local provider path): theme, the provider list narrowed by
+ * typing, the readiness check that runs when a running provider is picked,
+ * the model-access options, and the Ready summary. Finishing setup sends
  * nothing on the user's behalf, so the first model turn is the scenario's
  * own (the Phase 0 acceptance criterion).
  */
@@ -35,14 +36,54 @@ export default async function (session) {
   await session.submit("1");
   await waitForFrameText(
     session,
-    /Which model provider should AgenC use\?/u,
+    /Which provider should AgenC use\?/u,
     "onboarding provider step",
     60_000,
   );
-  await session.submit("openai-compatible");
+  // The mock answers on the configured local endpoint, so the list shows it
+  // as running, with the same wording as /providers.
   await waitForFrameText(
     session,
-    /How should AgenC reach openai-compatible/u,
+    /OpenAI-compatible\s+running/u,
+    "running local provider in the list",
+    30_000,
+  );
+
+  // Typing narrows the list as the user types, before Enter.
+  await session.type("compat");
+  await waitForFrameText(
+    session,
+    /Enter picks the highlighted provider\./u,
+    "provider list narrowed to the typed text",
+    30_000,
+  );
+  assert.match(
+    session.latestFrame,
+    /› OpenAI-compatible\s+running/u,
+    "the matching provider is highlighted",
+  );
+  assert.doesNotMatch(
+    session.latestFrame,
+    /xAI Grok/u,
+    "typing narrows the list to matching providers",
+  );
+
+  // Enter on a running provider checks it in place. The mock lists one
+  // model, so there is nothing to choose and the result shows.
+  await session.submit("");
+  await waitForFrameText(
+    session,
+    /✓ openai-compatible is running and \S+ is available\./u,
+    "readiness result after picking a running provider",
+    60_000,
+  );
+
+  // back opens the model-access options for this provider. The result card
+  // asks the same question, so wait for an option row instead.
+  await session.submit("back");
+  await waitForFrameText(
+    session,
+    /How should AgenC reach openai-compatible[\s\S]*Set up later/u,
     "onboarding model-access step",
     60_000,
   );
@@ -99,13 +140,13 @@ export default async function (session) {
   );
 
   // The first turn is the user's own, against the mock model. Match the
-  // reply row under the AGENC header: the transcript also shows the
-  // submitted prompt, which contains the same word.
+  // agent's reply row (a ● then the text): the transcript also shows the
+  // submitted prompt, which contains the same word after a ❯.
   await session.submit("reply with the single word ONBOARDED");
   await session.waitForAssistantReply({ timeout: 60_000 });
   await waitForFrameText(
     session,
-    /\u2502 AGENC[^\n]*\n\u2502 ONBOARDED\b/u,
+    /^\s*\u25cf ONBOARDED\b/mu,
     "ONBOARDED reply",
     15_000,
   );

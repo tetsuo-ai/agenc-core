@@ -84,6 +84,7 @@ import {
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
 import { isLightPrintRun } from "./light-print.js";
+import { escalationStaysConfined } from "../sandbox/escalation/confinement.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -1270,7 +1271,11 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-            }, { light, lightPrint }),
+            }, {
+              light,
+              lightPrint,
+              escalationConfined: escalationStaysConfined(session),
+            }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(

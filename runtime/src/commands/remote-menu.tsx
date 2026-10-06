@@ -40,7 +40,7 @@ function RemotePairModal(props: {
   if (linked !== null) {
     return (
       <Box paddingX={1} borderStyle="round">
-        <Text>✓ Linked with {linked} — drive this computer from your phone.</Text>
+        <Text>✓ Linked with {linked}. Drive this computer from your phone.</Text>
       </Box>
     );
   }

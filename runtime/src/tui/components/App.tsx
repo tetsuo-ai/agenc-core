@@ -85,6 +85,12 @@ import {
 } from "../state/AppState.js";
 import { useSettings } from "../hooks/useSettings.js";
 import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
+import { StatusEffortContext } from "../context/statusEffortContext.js";
+import { readSessionSelection } from "../../session/provider-model-selection.js";
+import {
+  getSessionEffortLabelForContext,
+  modelSupportsEffortForContext,
+} from "../../utils/effort.js";
 import {
   FullscreenModeProvider,
 } from "../context/fullscreenModeContext.js";
@@ -126,7 +132,10 @@ import type {
   McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
   McpSurfaceTool,
 } from "../../session/session.js";
-import { useSessionTranscript } from "../session-transcript.js";
+import { makeUserMessage, useSessionTranscript } from "../session-transcript.js";
+import { countUserTextRows, lastUserText, type PendingUserEcho, withPendingUserEcho } from "../pending-user-echo.js";
+import { useTerminalSize } from "../hooks/useTerminalSize.js";
+import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
 import { useDaemonWorkerTasks } from "../hooks/useDaemonWorkerTasks.js";
 import type { DaemonSessionSnapshot } from "../state/daemonWorkerTasks.js";
@@ -2179,8 +2188,11 @@ export function getTuiProviderEnvironment(
   return environment;
 }
 
+const TRANSCRIPT_INSET = 2;
+
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
+  const { columns: terminalColumns } = useTerminalSize();
   const settings = useSettings();
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
@@ -2311,6 +2323,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
   const pendingSubmissionIdRef = useRef<string | null>(null);
+  // See pending-user-echo.ts: the sent prompt shows at once, before the
+  // daemon's own user row lands.
+  const [pendingEcho, setPendingEcho] = useState<PendingUserEcho | null>(null);
   const latestSubmissionIdRef = useRef<string | null>(null);
   const activeModelSubmissionTokensRef = useRef(new Set<symbol>());
   // `pendingSubmission` can clear as soon as the daemon acknowledges the
@@ -2611,6 +2626,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // getMessagesAfterCompactBoundary(context.messages); an empty array
   // would crash them mid-flow).
   const transcriptMessagesRef = useRef<readonly unknown[]>(transcript.messages);
+  // The echo leaves with the pending state if the submission fails or is
+  // cancelled, and a newer submission replaces it.
+  const echoSubmitting =
+    pendingEcho !== null &&
+    latestSubmissionIdRef.current === pendingEcho.id &&
+    (pendingSubmission || activeModelSubmissionCount > 0);
+  const displayedMessages = useMemo(
+    () => withPendingUserEcho(transcript.messages, pendingEcho, echoSubmitting),
+    [transcript.messages, pendingEcho, echoSubmitting],
+  );
   useEffect(() => {
     transcriptMessagesRef.current = transcript.messages;
   }, [transcript.messages]);
@@ -2635,6 +2660,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // The status line and /context share the daemon's resident estimate. Custom
   // StatusLine scripts retain their separate provider-reported usage contract.
   const resolvedMainLoopModel = useMainLoopModel();
+  // "high effort" in the status line: the level the session runs at, or the
+  // model's default when none is chosen. Follows /effort and model switches.
+  const statusEffortValue = useAppState((state) => state.effortValue);
+  const statusEffortLabel = useMemo(() => {
+    const selection = readSessionSelection(props.session, { includePending: true });
+    if (selection.provider === "unknown" || selection.model === "unknown") return null;
+    const context = Object.freeze({ ...remoteAuthSessionContext, provider: selection.provider });
+    if (!modelSupportsEffortForContext(selection.model, context)) return null;
+    // The chosen level, else the default the daemon runs ("effort off" for a
+    // native none); nothing when no truthful default is known.
+    return getSessionEffortLabelForContext(
+      selection.model,
+      statusEffortValue as never,
+      context,
+    );
+  }, [props.session, remoteAuthSessionContext, statusEffortValue, resolvedMainLoopModel]);
   const contextPctLabel = useMemo(() => {
     if (props.session.getDaemonSessionSnapshot !== undefined) {
       if (residentContext?.session !== props.session ||
@@ -2716,6 +2757,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     isInteractive: props.isInteractive ?? process.stdin.isTTY === true,
     onComplete: applyOnboardingSelection,
   });
+  // First-run setup narrows its provider and model lists as the user types.
+  const setOnboardingListFilter = onboarding.setListFilter;
+  const changeOnboardingInput = useCallback(
+    (nextInput: string) => {
+      changeComposerInput(nextInput);
+      setOnboardingListFilter(nextInput);
+    },
+    [changeComposerInput, setOnboardingListFilter],
+  );
   const setExpandedView = useCallback(
     (next_1: "none" | "tasks") => {
       setAppState((prev_0) => ({
@@ -2963,7 +3013,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       lastGateNotifiedRef.current = blocking;
       addNotification({
         key: "unknown-outcome-gate",
-        text: `Session blocked by an unknown tool outcome (${blocking}) — side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
+        text: `Session blocked by an unknown tool outcome (${blocking}). Side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
         priority: "immediate",
         timeoutMs: 15000,
       });
@@ -3459,6 +3509,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setSubmitCount((count) => count + 1);
       if (parsedSlashCommand === null && parsedDollarSkill === null) {
         startPendingSubmission();
+        if (!options?.fromQueue && historyDisplay.length > 0) {
+          setPendingEcho({
+            id: clientMessageId,
+            message: makeUserMessage(historyDisplay, `pending-echo:${clientMessageId}`),
+            text: historyDisplay,
+            userRowsBefore: countUserTextRows(transcriptMessagesRef.current),
+            lastUserTextBefore: lastUserText(transcriptMessagesRef.current),
+          });
+        }
         // Snap the transcript to the bottom on every prompt submit. The
         // welcome→transcript layout flip (first message) can leave the
         // ScrollBox parked above the viewport, hiding the just-sent message
@@ -4560,7 +4619,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onAutoUpdaterResult={() => {}}
             autoUpdaterResult={null}
             input={input}
-            onInputChange={changeComposerInput}
+            onInputChange={changeOnboardingInput}
             mode={mode}
             onModeChange={setMode}
             stashedPrompt={stashedPrompt}
@@ -4626,30 +4685,36 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       </FullscreenModeProvider>
     );
   }
+  // The transcript sits two columns in from both edges, the same inset as
+  // the status line; rows measure against that narrower width.
   const messagesElement = isLocalJSXCommandActive ? null : (
-    <Messages
-      messages={transcript.messages as any[]}
-      tools={tools as any}
-      commands={commands as unknown as Command[]}
-      verbose={screen === "transcript"}
-      toolJSX={toolJSX as any}
-      toolUseConfirmQueue={toolUseConfirmQueue as never[]}
-      inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
-      isMessageSelectorVisible={isMessageSelectorVisible}
-      conversationId={props.session.conversationId}
-      screen={screen as any}
-      streamingToolUses={transcript.streamingToolUses}
-      showAllInTranscript={showAllInTranscript}
-      providerAuthContext={remoteAuthSessionContext}
-      stateRepository={stateRepository}
-      settingsAuthority={configStore}
-      isLoading={isLoading}
-      streamingText={transcript.streamingText}
-      streamingThinking={transcript.streamingThinking as never}
-      hidePastThinking={screen === "transcript"}
-      scrollRef={fullscreen ? scrollRef : undefined}
-      trackStickyPrompt={fullscreen ? true : undefined}
-    />
+    <Box paddingX={TRANSCRIPT_INSET} flexDirection="column">
+      <ContentWidthProvider width={Math.max(1, terminalColumns - 2 * TRANSCRIPT_INSET)}>
+        <Messages
+          messages={displayedMessages as any[]}
+          tools={tools as any}
+          commands={commands as unknown as Command[]}
+          verbose={screen === "transcript"}
+          toolJSX={toolJSX as any}
+          toolUseConfirmQueue={toolUseConfirmQueue as never[]}
+          inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
+          isMessageSelectorVisible={isMessageSelectorVisible}
+          conversationId={props.session.conversationId}
+          screen={screen as any}
+          streamingToolUses={transcript.streamingToolUses}
+          showAllInTranscript={showAllInTranscript}
+          providerAuthContext={remoteAuthSessionContext}
+          stateRepository={stateRepository}
+          settingsAuthority={configStore}
+          isLoading={isLoading}
+          streamingText={transcript.streamingText}
+          streamingThinking={transcript.streamingThinking as never}
+          hidePastThinking={screen === "transcript"}
+          scrollRef={fullscreen ? scrollRef : undefined}
+          trackStickyPrompt={fullscreen ? true : undefined}
+        />
+      </ContentWidthProvider>
+    </Box>
   );
   const toolOwnsPrompt =
     toolJSX?.isLocalJSXCommand === true &&
@@ -4851,6 +4916,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const body = (
     <StatusLineExecutionContext value={props.session.executeDaemonStatusLine}>
     <SessionUsageContext value={transcript.sessionUsage ?? null}>
+    <StatusEffortContext value={statusEffortLabel}>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
         screen={screen as any}
@@ -4919,6 +4985,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           onClose={handleCloseMessageSelector}
         />
       ) : null}
+    </StatusEffortContext>
     </SessionUsageContext>
     </StatusLineExecutionContext>
   );

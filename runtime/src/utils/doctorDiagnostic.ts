@@ -794,7 +794,7 @@ export function buildRipgrepWarning(
   }
   return {
     issue:
-      'configured ripgrep (rg) could not be started — interactive search requires this configured search runtime',
+      'configured ripgrep (rg) could not be started; interactive search requires this configured search runtime',
     fix: getRipgrepInstallHint(platform),
   }
 }
@@ -967,7 +967,7 @@ export function buildTransactionGuardWarning(
       ? 'fail mode is "closed", so guarded transaction-like tool calls are blocked until it is reachable'
       : 'fail mode is "open", so guarded transaction-like tool calls currently run WITHOUT the SLM guard'
   return {
-    issue: `transaction guard is enabled but its endpoint ${status.endpoint} is unreachable — ${consequence}`,
+    issue: `transaction guard is enabled but its endpoint ${status.endpoint} is unreachable, so ${consequence}`,
     fix: `Start the Ollama endpoint (e.g. \`ollama serve\` and \`ollama pull ${status.model}\`) or point [transaction_guard].endpoint / AGENC_TRANSACTION_GUARD_OLLAMA_URL at a reachable host`,
   }
 }

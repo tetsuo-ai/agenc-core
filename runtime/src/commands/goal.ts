@@ -78,7 +78,7 @@ export function formatGoalStatus(
       : "Verified by: independent review only (--no-verify)",
   ];
   if (goal.lastVerdict !== undefined) {
-    lines.push(`Last verdict: ${goal.lastVerdict.verdict.replace("_", " ")} — ${goal.lastVerdict.reason}`);
+    lines.push(`Last verdict: ${goal.lastVerdict.verdict.replace("_", " ")} (${goal.lastVerdict.reason})`);
   }
   if (goal.status === "paused" || goal.status === "stalled" || goal.status === "budget_exhausted" || goal.status === "blocked") {
     lines.push("Run /goal resume to continue, or /goal clear to drop it.");
