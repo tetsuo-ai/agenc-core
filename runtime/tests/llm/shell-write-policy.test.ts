@@ -1377,4 +1377,162 @@ describe("classifyShellWorkspaceWritePolicy for sh -c", () => {
       }),
     ).toEqual(["/repo/src/a.ts"]);
   });
+
+  describe("options around -c", () => {
+    /** Expects `command` to get the verdict `reference` gets, in every mode. */
+    function expectVerdictOf(command: string, reference: string) {
+      for (const mode of MODES) {
+        expect(classifyIn(command, mode), JSON.stringify(mode)).toEqual(classifyIn(reference, mode));
+      }
+    }
+
+    it.each([
+      // `c` in a cluster asks for code like `-c` does.
+      "bash -ec 'rm -rf .git'",
+      "bash -xc 'rm -rf .git'",
+      "bash -xec 'rm -rf .git'",
+      "bash +c 'rm -rf .git'",
+      "sh -euc 'rm -rf .git'",
+      "/bin/sh -ec 'rm -rf .git'",
+      "dash -ec 'rm -rf .git'",
+      "ksh -ec 'rm -rf .git'",
+      "zsh -fc 'rm -rf .git'",
+      "env bash -ec 'rm -rf .git'",
+      // The code is the first word after every option, not the word after -c.
+      "bash -c -e 'rm -rf .git'",
+      "bash -c -x -e 'rm -rf .git'",
+      "bash -c -o pipefail 'rm -rf .git'",
+      "bash -c +o errexit 'rm -rf .git'",
+      "bash -c -O extglob 'rm -rf .git'",
+      "bash -c -eo pipefail 'rm -rf .git'",
+      "bash -c -- 'rm -rf .git'",
+      "bash -c - 'rm -rf .git'",
+      "bash -eo pipefail -c 'rm -rf .git'",
+      "bash --norc --noprofile -c 'rm -rf .git'",
+      "bash --rcfile /dev/null -c 'rm -rf .git'",
+      "bash --login -c 'rm -rf .git' name arg",
+    ])("reads the code of %s as the code of bash -c", (command) => {
+      expectVerdictOf(command, "bash -c 'rm -rf .git'");
+      const bypassed = classifyIn(command, BYPASS);
+      expect(bypassed.blocked).toBe(true);
+      expect(bypassed.indeterminate).toBe(false);
+      expect(bypassed.blockedDeletions).toEqual(["/repo/.git"]);
+    });
+
+    it("judges a workspace removal behind options by the session's permissions", () => {
+      expectVerdictOf("bash -c -x 'rm src/a.ts'", "bash -c 'rm src/a.ts'");
+      expect(classify("bash -ec 'rm src/a.ts'").blocked).toBe(true);
+      expect(classify("bash -ec 'rm src/a.ts'", true).blocked).toBe(false);
+      expect(
+        collectShellWorkspaceDeletionTargets({
+          toolName: "exec_command",
+          args: { command: "bash -c -e 'rm src/a.ts'" },
+          workspaceRoot: WORKSPACE_ROOT,
+        }),
+      ).toEqual(["/repo/src/a.ts"]);
+    });
+
+    it("reads an argument vector's options the same way", () => {
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "system.bash",
+        args: { command: "bash", args: ["-c", "-e", "rm -rf .git"] },
+        workspaceRoot: WORKSPACE_ROOT,
+        allowWorkspaceDeletions: true,
+        bypassesApprovalsAndSandbox: true,
+      });
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    });
+
+    it.each([
+      "bash -euo pipefail -c 'npm test'",
+      "bash -O extglob -c 'echo hi'",
+      "bash --noprofile --norc -c 'echo hi'",
+      "bash -c -e 'echo hi' _ \"$X\"",
+      "bash -x script.sh",
+      "bash -o pipefail script.sh arg",
+      "sh -e ./configure --prefix=/usr",
+      "bash -e -- script.sh arg",
+      // A script named -c.
+      "bash -- -c 'rm -rf .git'",
+      // As the last word, an expanding word moves no code.
+      "bash \"$SCRIPT\"",
+      "bash -e ~/bin/build.sh",
+      // bash, dash and zsh report a missing script; they never run it as code.
+      "bash 'rm -rf .git'",
+    ])("allows %s", (command) => {
+      for (const mode of MODES) {
+        const decision = classifyIn(command, mode);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+        expect(decision.observedTargets, JSON.stringify(mode)).toEqual([]);
+      }
+    });
+
+    it.each([
+      // F=-c runs the next word as code; C=-e moves the code onto it.
+      "bash $F 'echo hi'",
+      "bash \"$SCRIPT\" arg",
+      "bash ~/bin/build.sh arg",
+      "bash -c \"$C\" 'echo hi'",
+      "bash -o \"$X\" script.sh",
+      "bash -- $EMPTY 'echo hi'",
+      // The shells read these differently, or this reader does not know them.
+      "bash -opipefail -c 'echo hi'",
+      "zsh -O extglob -c 'echo hi'",
+      "sh -O extglob -c 'echo hi'",
+      "bash -rcfile x -c 'echo hi'",
+      "bash -b -c 'echo hi'",
+      "bash -T -c 'echo hi'",
+      "bash + -c 'echo hi'",
+      "bash --command 'echo hi'",
+      "zsh --emulate sh -c 'echo hi'",
+      // The code comes from stdin.
+      "bash -s -- --yes",
+      "dash -cs 'echo hi'",
+      "bash -c -e",
+    ])("gives %s the verdict of bash -c \"$CMD\"", (command) => {
+      for (const mode of MODES) {
+        expect(classifyIn(command, mode).indeterminate, JSON.stringify(mode)).toBe(true);
+      }
+      expectVerdictOf(command, 'bash -c "$CMD"');
+    });
+
+    it.each([
+      "bash $F 'rm -rf .git'",
+      "bash -e \"$F\" 'rm -rf .git'",
+      "bash -c \"$C\" 'rm -rf .git'",
+      // zsh reads -O as a flag and runs `rm -rf .git`; bash would run `echo hi`.
+      "zsh -c -O 'rm -rf .git' 'echo hi'",
+      // bash reads -rcfile as --rcfile and runs `rm -rf .git`; zsh would run `echo hi`.
+      "bash -rcfile 'echo hi' -c 'rm -rf .git'",
+      "dash -cs 'rm -rf .git'",
+    ])("still refuses a protected removal any word of %s could run", (command) => {
+      for (const mode of MODES) {
+        const decision = classifyIn(command, mode);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+        expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual(["/repo/.git"]);
+      }
+    });
+
+    it.each([
+      "ksh 'rm -rf .git'",
+      "ksh -e 'rm -rf .git'",
+      "ksh -- 'rm -rf .git'",
+    ])("reads the script %s names as ksh93 does when no such file exists", (command) => {
+      expectVerdictOf(command, "bash -c 'rm -rf .git'");
+    });
+
+    it("passes ksh's script words to the code ksh93 runs in its place", () => {
+      // ksh93 runs `rm "$@"` with rm, -rf and .git as the words.
+      expectVerdictOf("ksh 'rm' -rf .git", 'bash -c "$CMD"');
+      expectVerdictOf("ksh 'rm src/a.ts' arg", "bash -c 'rm src/a.ts \"$@\"' _ arg");
+      for (const mode of MODES) {
+        const decision = classifyIn("ksh ./build.sh arg", mode);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      }
+    });
+  });
 });
