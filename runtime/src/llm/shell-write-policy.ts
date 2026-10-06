@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
   basename,
@@ -208,6 +208,14 @@ interface ShellWriteTargetCollection {
   unresolvedProtectedFirst: string[];
   deletions: string[];
   /**
+   * Targets the shell still expands, as written after the directory they are
+   * read in (`/repo/.git/*`). Where they lead is not known, but they stay
+   * refused when every path they can reach is protected.
+   */
+  expandingTargets: string[];
+  /** Removals the shell still expands, kept the way `expandingTargets` are. */
+  expandingDeletions: string[];
+  /**
    * Removals that are a find starting point: find removes what it finds
    * under it, which a narrower starting point reaches as well.
    */
@@ -237,6 +245,8 @@ function emptyTargetCollection(): ShellWriteTargetCollection {
     protectedFirstTargets: [],
     unresolvedProtectedFirst: [],
     deletions: [],
+    expandingTargets: [],
+    expandingDeletions: [],
     findStartingPoints: [],
     moves: [],
     indeterminate: false,
@@ -259,14 +269,31 @@ function mergeTargetCollections(
   for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
   for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
+  for (const target of from.expandingTargets) pushUnique(into.expandingTargets, target);
+  for (const target of from.expandingDeletions) pushUnique(into.expandingDeletions, target);
   for (const target of from.findStartingPoints) pushUnique(into.findStartingPoints, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
 }
 
+/** `~`, `$HOME` or `${HOME}` at the start of a word, before a `/` or its end. */
+const LEADING_HOME_RE = /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/u;
+
+/**
+ * A word with `~`, `$HOME` or `${HOME}` at its start written as the home
+ * directory it expands to (`~/x`, `"$HOME"/x`); any other word as it is.
+ * `~user` and `~+` name other directories and stay as written. The lexer
+ * has removed the quotes, so a quoted `'~'` reads as the home directory too.
+ */
+function expandLeadingHome(word: string): string {
+  const home = LEADING_HOME_RE.exec(word);
+  return home === null ? word : `${homedir()}${word.slice(home[0].length)}`;
+}
+
 /**
  * A target exactly as the command names it: a blank at either end is part
- * of the name, so ` tmp/x` is not under tmp.
+ * of the name, so ` tmp/x` is not under tmp. A target the shell still
+ * expands is indeterminate and kept as written for the protected-path check.
  */
 function normalizeConcreteTargetPath(
   rawPath: string,
@@ -275,10 +302,21 @@ function normalizeConcreteTargetPath(
   if (rawPath.length === 0 || rawPath === "-") {
     return emptyTargetCollection();
   }
-  if (DYNAMIC_SHELL_TARGET_RE.test(rawPath)) {
-    return indeterminateTargetCollection();
+  const path = expandLeadingHome(rawPath);
+  if (DYNAMIC_SHELL_TARGET_RE.test(path)) {
+    return { ...indeterminateTargetCollection(), expandingTargets: [kernelPath(cwd, path)] };
   }
-  return { ...emptyTargetCollection(), targets: [resolvePath(cwd, rawPath)] };
+  return { ...emptyTargetCollection(), targets: [resolvePath(cwd, path)] };
+}
+
+/** A collection's targets read as removals: `rm`'s operands, `mv`'s sources. */
+function asDeletions(collection: ShellWriteTargetCollection): ShellWriteTargetCollection {
+  return {
+    ...emptyTargetCollection(),
+    deletions: collection.targets,
+    expandingDeletions: collection.expandingTargets,
+    indeterminate: collection.indeterminate,
+  };
 }
 
 function collectOperandTargets(
@@ -305,12 +343,7 @@ function collectDeletionTargets(
   args: readonly string[],
   cwd: string,
 ): ShellWriteTargetCollection {
-  const operands = collectOperandTargets(args, cwd);
-  return {
-    ...emptyTargetCollection(),
-    deletions: operands.targets,
-    indeterminate: operands.indeterminate,
-  };
+  return asDeletions(collectOperandTargets(args, cwd));
 }
 
 function isWorkspaceGeneratedOutputPath(
@@ -542,11 +575,17 @@ function collectTouchTargets(
 interface DestinationOperands {
   readonly operands: readonly string[];
   readonly targetDirectory?: string;
+  /** `-T`: the destination is the file written, even when it is a directory. */
+  readonly noTargetDirectory: boolean;
+  /** install's `-d`: every operand is a directory it creates. */
+  readonly createsDirectories: boolean;
 }
 
 function parseDestinationOperands(args: readonly string[]): DestinationOperands {
   const operands: string[] = [];
   let targetDirectory: string | undefined;
+  let noTargetDirectory = false;
+  let createsDirectories = false;
   let treatRemainingAsOperands = false;
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
@@ -569,64 +608,122 @@ function parseDestinationOperands(args: readonly string[]): DestinationOperands 
         continue;
       }
       if (token.startsWith("-")) {
+        noTargetDirectory ||= token === "--no-target-directory" || /^-[^-]*T/u.test(token);
+        createsDirectories ||= token === "--directory" || /^-[^-]*d/u.test(token);
         continue;
       }
     }
     operands.push(token);
   }
-  return targetDirectory === undefined
-    ? { operands }
-    : { operands, targetDirectory };
+  return {
+    operands,
+    ...(targetDirectory === undefined ? {} : { targetDirectory }),
+    noTargetDirectory,
+    createsDirectories,
+  };
 }
 
+/**
+ * Whether the destination of `cp`, `mv`, `install` or `ln` is a directory
+ * the sources go into: one written with a trailing `/`, `.` or `..`, or one
+ * that exists as a directory, through a symlink as cp and mv follow it.
+ */
+function isDirectoryDestination(raw: string, cwd: string): boolean {
+  if (raw.endsWith("/") || /(?:^|\/)\.{1,2}$/u.test(raw)) return true;
+  try {
+    return statSync(kernelPath(cwd, expandLeadingHome(raw))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The name a source takes inside a destination directory. Undefined where
+ * the line does not show it: a source the shell expands, and one whose
+ * contents are copied rather than itself (`src/`, `src/.`).
+ */
+function nameInDestinationDirectory(source: string): string | undefined {
+  if (DYNAMIC_SHELL_TARGET_RE.test(expandLeadingHome(source)) || source.endsWith("/")) return undefined;
+  const name = basename(source);
+  return name === "." || name === ".." ? undefined : name;
+}
+
+/**
+ * Where `cp`, `install` or `ln` writes: the destination, or, when it is a
+ * directory the sources go into, each source's name inside it (`cp
+ * /tmp/x.ts .` writes ./x.ts). A source whose name the line does not show
+ * is judged by the directory. `ln` with a single operand links it into the
+ * working directory.
+ */
 function collectDestinationTarget(
   command: string,
   args: readonly string[],
   cwd: string,
 ): ShellWriteTargetCollection {
-  const { operands, targetDirectory } = parseDestinationOperands(args);
-  const collection = emptyTargetCollection();
+  const parsed = parseDestinationOperands(args);
+  const { operands, targetDirectory } = parsed;
+  let sources: readonly string[] = operands.slice(0, -1);
+  let destinationRaw = operands[operands.length - 1];
+  let intoDirectory = false;
   if (targetDirectory !== undefined) {
-    mergeTargetCollections(
-      collection,
-      normalizeConcreteTargetPath(targetDirectory, cwd),
-    );
-    if (collection.targets.length > 0 || collection.indeterminate) {
-      return collection;
-    }
-  }
-  const destination = operands[operands.length - 1];
-  if (!destination) {
-    return collection;
-  }
-  mergeTargetCollections(collection, normalizeConcreteTargetPath(destination, cwd));
-  if (command === "install" && operands.length <= 1 && targetDirectory === undefined) {
+    sources = operands;
+    destinationRaw = targetDirectory;
+    intoDirectory = true;
+  } else if (command === "ln" && operands.length === 1) {
+    sources = operands;
+    destinationRaw = ".";
+    intoDirectory = true;
+  } else if (command === "install" && operands.length <= 1) {
     return emptyTargetCollection();
+  } else if (command === "install" && parsed.createsDirectories) {
+    // install -d creates its operands; the last one is judged, as it always was.
+    return normalizeConcreteTargetPath(destinationRaw!, cwd);
+  } else if (destinationRaw !== undefined && sources.length > 0) {
+    intoDirectory =
+      !parsed.noTargetDirectory &&
+      (sources.length > 1 || isDirectoryDestination(destinationRaw, cwd));
   }
+  if (destinationRaw === undefined) return emptyTargetCollection();
+  const destination = normalizeConcreteTargetPath(destinationRaw, cwd);
+  const directory = destination.targets[0];
+  if (!intoDirectory || directory === undefined) return destination;
+  const collection = emptyTargetCollection();
+  for (const source of sources) {
+    const name = nameInDestinationDirectory(source);
+    pushUnique(collection.targets, name === undefined ? directory : join(directory, name));
+  }
+  if (sources.length === 0) pushUnique(collection.targets, directory);
   return collection;
 }
 
 /**
- * `mv` removes its sources and puts their content at the destination. The
- * sources are removals; the destination is decided by the classifier, which
- * knows the workspace root: a move within the workspace is a rename (the same
- * mutation class as a removal), a move from elsewhere into the workspace is a
- * content write.
+ * `mv` removes its sources and puts their content at the destination, or,
+ * when the destination is a directory the sources go into, at each source's
+ * name inside it. The sources are removals; the destination is decided by
+ * the classifier, which knows the workspace root: a move within the
+ * workspace is a rename (the same mutation class as a removal), a move from
+ * elsewhere into the workspace is a content write.
  */
 function collectMoveTargets(
   args: readonly string[],
   cwd: string,
 ): ShellWriteTargetCollection {
-  const { operands, targetDirectory } = parseDestinationOperands(args);
+  const parsed = parseDestinationOperands(args);
+  const { operands, targetDirectory } = parsed;
   const collection = emptyTargetCollection();
   let destinationRaw: string | undefined;
   let sourceRaws: readonly string[];
+  let intoDirectory = false;
   if (targetDirectory !== undefined) {
     destinationRaw = targetDirectory;
     sourceRaws = operands;
+    intoDirectory = true;
   } else if (operands.length >= 2) {
     destinationRaw = operands[operands.length - 1];
     sourceRaws = operands.slice(0, -1);
+    intoDirectory =
+      !parsed.noTargetDirectory &&
+      (sourceRaws.length > 1 || isDirectoryDestination(destinationRaw!, cwd));
   } else {
     destinationRaw = operands[0];
     sourceRaws = [];
@@ -634,18 +731,36 @@ function collectMoveTargets(
   if (destinationRaw === undefined) return collection;
   const destination = normalizeConcreteTargetPath(destinationRaw, cwd);
   collection.indeterminate ||= destination.indeterminate;
-  const sources: string[] = [];
+  for (const target of destination.expandingTargets) pushUnique(collection.expandingTargets, target);
+  const sources: { readonly raw: string; readonly path: string }[] = [];
+  // A source the shell expands goes into the directory under a name the line does not show.
+  let unnamedSource = false;
   for (const raw of sourceRaws) {
-    const normalized = normalizeConcreteTargetPath(raw, cwd);
+    const normalized = asDeletions(normalizeConcreteTargetPath(raw, cwd));
     collection.indeterminate ||= normalized.indeterminate;
-    for (const target of normalized.targets) pushUnique(sources, target);
+    unnamedSource ||= normalized.indeterminate;
+    for (const target of normalized.expandingDeletions) pushUnique(collection.expandingDeletions, target);
+    for (const path of normalized.deletions) {
+      if (!sources.some((source) => source.path === path)) sources.push({ raw, path });
+    }
   }
   const destinationPath = destination.targets[0];
   if (destinationPath === undefined) {
-    for (const source of sources) pushUnique(collection.deletions, source);
+    for (const source of sources) pushUnique(collection.deletions, source.path);
     return collection;
   }
-  collection.moves.push({ sources, destination: destinationPath });
+  if (!intoDirectory) {
+    collection.moves.push({ sources: sources.map((source) => source.path), destination: destinationPath });
+    return collection;
+  }
+  for (const source of sources) {
+    const name = nameInDestinationDirectory(source.raw);
+    collection.moves.push({
+      sources: [source.path],
+      destination: name === undefined ? destinationPath : join(destinationPath, name),
+    });
+  }
+  if (unnamedSource) collection.moves.push({ sources: [], destination: destinationPath });
   return collection;
 }
 
@@ -1260,7 +1375,7 @@ const FIND_COMMAND_PRIMARIES = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
  */
 const FIND_OPTION_RE = /^-([EHLPXdsx]*)(?:f(.*))?$/u;
 /**
- * What `{}` stands for where the starting points are not on the line: a
+ * What `{}` stands for where `-files0-from` names the starting points: a
  * word the shell still expands, the way `rm "$@"` is read.
  */
 const FIND_UNSEEN_FILE = "$@";
@@ -1471,7 +1586,7 @@ function substituteFoundFile(
  */
 function collectFindCommandWriteTargets(params: {
   readonly command: FindCommand;
-  /** The starting points as written, and `{}` as an unseen file when some are not on the line. */
+  /** The starting points as written, and `{}` as an unseen file when `-files0-from` names them. */
   readonly found: readonly FindWord[];
   readonly cwd: string;
   readonly environment: ShellWriteEnvironment;
@@ -1546,25 +1661,27 @@ function collectFindReadingWriteTargets(
     if (isSafePseudoDevicePath(file.value)) continue;
     mergeTargetCollections(collection, normalizeConcreteTargetPath(file.value, cwd));
   }
-  const named = reading.startingPoints.filter((point) => !point.expands);
-  const unseen = reading.startingPointsFromFile || named.length < reading.startingPoints.length;
+  // `~` and `"$HOME"` name the home directory; any other word the shell expands stays unread.
+  const points = reading.startingPoints.map((point) => {
+    const path = expandLeadingHome(point.value);
+    return point.expands && !DYNAMIC_SHELL_TARGET_RE.test(path) ? { value: path, expands: false } : point;
+  });
+  const unseen = reading.startingPointsFromFile || points.some((point) => point.expands);
   const startingPoints =
-    reading.startingPoints.length === 0 && !reading.startingPointsFromFile
-      ? [{ value: ".", expands: false }]
-      : named;
+    points.length === 0 && !reading.startingPointsFromFile ? [{ value: ".", expands: false }] : points;
   if (reading.deletes) {
     collection.indeterminate ||= unseen || reading.followsLinks;
     for (const point of startingPoints) {
       // To find, a starting point named `-` is a file, not stdin.
-      const removed = normalizeConcreteTargetPath(point.value === "-" ? "./-" : point.value, cwd);
-      collection.indeterminate ||= removed.indeterminate;
-      for (const target of removed.targets) {
-        pushUnique(collection.deletions, target);
-        pushUnique(collection.findStartingPoints, target);
-      }
+      const removed = asDeletions(
+        normalizeConcreteTargetPath(point.value === "-" ? "./-" : point.value, cwd),
+      );
+      mergeTargetCollections(collection, removed);
+      for (const target of removed.deletions) pushUnique(collection.findStartingPoints, target);
     }
   }
-  const found = unseen
+  // `{}` stands for each starting point, and for files the line does not show when -files0-from names them.
+  const found = reading.startingPointsFromFile
     ? [...startingPoints, { value: FIND_UNSEEN_FILE, expands: true }]
     : startingPoints;
   for (const command of reading.commands) {
@@ -2302,6 +2419,69 @@ function isProtectedWriteTarget(
   );
 }
 
+/** The names of the protected directories and files. */
+const PROTECTED_NAMES: readonly string[] = [...PROTECTED_DELETION_SEGMENTS, ...PROTECTED_DELETION_FILES];
+
+/**
+ * Whether a glob may match a protected name. Every one starts with `.`,
+ * which bash and zsh match only with a `.` written at the start of the
+ * pattern, so `*` never reaches `.git` and `.*` does. A pattern with another
+ * expansion in it (`$X`, `{a,b}`) is not read.
+ */
+function globMayMatchProtectedName(pattern: string): boolean {
+  if (!pattern.startsWith(".") || /[$`{}~]/u.test(pattern)) return false;
+  let source = "";
+  for (let at = 0; at < pattern.length; at += 1) {
+    const character = pattern[at]!;
+    const close = character === "[" ? pattern.indexOf("]", at + 2) : -1;
+    if (character === "*") {
+      source += ".*";
+    } else if (character === "?") {
+      source += ".";
+    } else if (close > 0) {
+      const body = pattern.slice(at + 1, close);
+      const negated = /^[!^]/u.test(body);
+      source += `[${negated ? "^" : ""}${(negated ? body.slice(1) : body).replace(/[\\[\]^]/gu, "\\$&")}]`;
+      at = close;
+    } else {
+      source += character.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
+    }
+  }
+  try {
+    const matcher = new RegExp(`^${source}$`, "u");
+    return PROTECTED_NAMES.some((name) => matcher.test(name));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether a target the shell still expands reaches a protected path
+ * whatever it expands to: the directory its literal start names is
+ * protected (`.git/*`, `.agenc/*.json`), a glob in it may match a protected
+ * name (`.git*`, `.*`), or a literal part after the expansion is one
+ * (`"$DIR"/.git`).
+ */
+function expandingTargetIsProtected(
+  path: string,
+  workspaceRoot: string,
+  protectedRoots: readonly string[],
+): boolean {
+  const first = path.search(DYNAMIC_SHELL_TARGET_RE);
+  const directoryEnd = first < 0 ? -1 : path.lastIndexOf(sep, first);
+  if (directoryEnd < 0) return false;
+  const directory = resolvePath(path.slice(0, directoryEnd + 1));
+  if (isProtectedWriteTarget(directory, workspaceRoot, protectedRoots)) return true;
+  return path
+    .slice(directoryEnd + 1)
+    .split(sep)
+    .some((component) =>
+      DYNAMIC_SHELL_TARGET_RE.test(component)
+        ? globMayMatchProtectedName(component)
+        : PROTECTED_NAMES.includes(component),
+    );
+}
+
 function isProtectedDeletionPath(
   absolutePath: string,
   workspaceRoot: string,
@@ -2654,6 +2834,10 @@ export function classifyShellWorkspaceWritePolicy(
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
   );
+  // Wherever the shell takes these, they land on a protected path.
+  for (const target of collected.expandingTargets) {
+    if (expandingTargetIsProtected(target, workspaceRoot, protectedRoots)) pushUnique(protectedTargets, target);
+  }
   const unresolvedTargets = writes.filter((target) => collected.unresolvedProtectedFirst.includes(target));
   const blockedTargets = [...protectedTargets, ...routedTargets];
   for (const target of unresolvedTargets) pushUnique(blockedTargets, target);
@@ -2685,9 +2869,19 @@ export function classifyShellWorkspaceWritePolicy(
       );
     }
   }
+  const protectedExpandingDeletions = collected.expandingDeletions.filter((target) =>
+    expandingTargetIsProtected(target, workspaceRoot, protectedRoots),
+  );
+  for (const target of protectedExpandingDeletions) {
+    pushUnique(blockedDeletions, target);
+    deletionReasons.add("protected");
+  }
 
   const observedTargets = [...writes];
   for (const target of removals) pushUnique(observedTargets, target);
+  for (const target of [...protectedTargets, ...protectedExpandingDeletions]) {
+    pushUnique(observedTargets, target);
+  }
   const messages: string[] = [];
   if (protectedTargets.length > 0) {
     messages.push(buildProtectedWritePolicyMessage(protectedTargets));
