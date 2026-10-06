@@ -8,7 +8,7 @@ import {
   type AvailableEffortLevel,
   type EffortValue,
   getDisplayedEffortLevelForContext,
-  isEffortOffByDefaultForContext,
+  getModelDefaultReasoningEffortForContext,
   modelSupportsEffortForContext,
 } from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ProviderAuthReadContext } from '../../utils/auth.js'
@@ -23,8 +23,12 @@ export function getEffortNotificationText(
   context: ProviderAuthReadContext,
 ): string | undefined {
   if (!modelSupportsEffortForContext(model, context)) return undefined
-  if (isEffortOffByDefaultForContext(model, effortValue, context)) {
-    return 'effort off · /effort'
+  if (effortValue === undefined) {
+    // At the model default, name it only when it is known: "none" reads
+    // off, and an unknown default is never shown as a guessed tier.
+    const modelDefault = getModelDefaultReasoningEffortForContext(model, context)
+    if (modelDefault === undefined) return 'model default · /effort'
+    if (modelDefault === 'none') return 'effort off · /effort'
   }
   const level = getDisplayedEffortLevelForContext(model, effortValue, context)
   return `${effortLevelToSymbol(level)} ${level} · /effort`

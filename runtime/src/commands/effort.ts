@@ -15,7 +15,7 @@ import {
   getEffortLevelLabel,
   getModelDefaultReasoningEffortForContext,
   isAvailableEffortLevel,
-  isEffortOffByDefaultForContext,
+  getSessionEffortLabelForContext,
   nativeEffortLabel,
   modelSupportsEffortForContext,
   effortValueToReasoningEffort,
@@ -63,6 +63,9 @@ async function applyEffortChoice(
   choice: AvailableEffortLevel | "default",
 ): Promise<{ readonly ok: boolean; readonly message: string }> {
   const available = getAvailableEffortLevelsForContext(model, providerAuthContext);
+  // Saving reloads the config store, and the app-state subscription mirrors
+  // the saved level into app state before the session has answered.
+  const effortBeforeSave = currentEffortValue(ctx);
   const saved = await updateSettingsForSource("userSettings", {
     reasoning_effort:
       choice === "default"
@@ -78,6 +81,13 @@ async function applyEffortChoice(
     ctx.appState?.setAppState?.((prev: unknown) => ({
       ...(prev as Record<string, unknown>),
       effortValue: choice === "default" ? undefined : choice,
+    }));
+  };
+  // The session kept its effort: put back what the save mirrored over it.
+  const keepSessionEffortInAppState = (): void => {
+    ctx.appState?.setAppState?.((prev: unknown) => ({
+      ...(prev as Record<string, unknown>),
+      effortValue: effortBeforeSave,
     }));
   };
   // Apply only the effort to the live session. A full config reload would
@@ -96,6 +106,7 @@ async function applyEffortChoice(
   };
   if (typeof applyDaemonConfig === "function" && liveEffort === undefined) {
     // Nothing to send: do not claim the running session follows a default.
+    keepSessionEffortInAppState();
     return keepsCurrentEffort;
   }
   if (typeof applyDaemonConfig === "function" && liveEffort !== undefined) {
@@ -111,18 +122,23 @@ async function applyEffortChoice(
         result = await apply(liveEffort);
       } catch (error) {
         if (liveEffort !== null || asRecord(error)?.code !== INVALID_PARAMS) throw error;
-        if (defaultEffort === undefined) return keepsCurrentEffort;
+        if (defaultEffort === undefined) {
+          keepSessionEffortInAppState();
+          return keepsCurrentEffort;
+        }
         result = await apply(defaultEffort);
       }
       // Before the first turn there is no live session yet; the saved
       // setting is what the first conversation starts with.
       if (result?.applied === false && result.sessionId !== "pending" && result.summary) {
+        keepSessionEffortInAppState();
         return {
           ok: false,
           message: `Saved for new sessions. This session did not take it: ${result.summary}`,
         };
       }
     } catch (error) {
+      keepSessionEffortInAppState();
       return {
         ok: false,
         message: `Saved for new sessions. This session did not take it: ${error instanceof Error ? error.message : String(error)}`,
@@ -235,7 +251,7 @@ export const effortCommand: SlashCommand = {
         ) {
           return { kind: "skip" };
         }
-        const off = isEffortOffByDefaultForContext(
+        const sessionEffort = getSessionEffortLabelForContext(
           model,
           currentEffortValue(ctx) as never,
           providerAuthContext,
@@ -252,7 +268,12 @@ export const effortCommand: SlashCommand = {
         return {
           kind: "text",
           text: [
-            off ? "effort off" : `${effortLevelToSymbol(displayed)} ${displayed} effort`,
+            // No guessed tier: an unknown default is named as such.
+            sessionEffort === null
+              ? "Effort follows the model default."
+              : sessionEffort === "effort off"
+                ? sessionEffort
+                : `${effortLevelToSymbol(displayed)} ${displayed} effort`,
             `Available for ${model}: ${levels}`,
             `Use /effort <level> to change it, or /effort default to follow the model.`,
           ].join("\n"),
