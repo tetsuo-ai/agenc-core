@@ -24,23 +24,20 @@ import {
   XaiOauthError,
   type XaiBrowserLoginResult,
 } from "../services/xai/oauth.js";
-import {
-  clearOpenAiOauthCredentials,
-  readOpenAiOauthCredentials,
-} from "../utils/openAiOauthCredentials.js";
+import { clearOpenAiOauthCredentials } from "../utils/openAiOauthCredentials.js";
 import {
   clearXaiOauthCredentials,
-  readXaiOauthCredentials,
   saveXaiOauthCredentials,
   xaiOauthTokensToBlob,
 } from "../utils/xaiOauthCredentials.js";
+import {
+  isSignInProvider,
+  signedInAccount,
+  type SignInProvider,
+} from "../auth/provider-sign-in-accounts.js";
 import { openUrlInBrowser } from "./auth.js";
 
-export type SignInProvider = "openai" | "grok";
-
-export function isSignInProvider(provider: string): provider is SignInProvider {
-  return provider === "openai" || provider === "grok";
-}
+export { isSignInProvider, signedInAccount, type SignInProvider };
 
 export type SignInProgress = {
   readonly heading: string;
@@ -69,15 +66,6 @@ export type SignInOptions = {
   readonly canOpenBrowser?: boolean;
   readonly openUrl?: (url: string) => Promise<void>;
 };
-
-/** The signed-in account's label, or null when there is no sign-in. */
-export function signedInAccount(home: HomeContext, provider: SignInProvider): string | null {
-  const credential = provider === "openai"
-    ? readOpenAiOauthCredentials(home)
-    : readXaiOauthCredentials(home);
-  if (credential === undefined) return null;
-  return credential.accountLabel ?? (provider === "openai" ? "ChatGPT account" : "xAI account");
-}
 
 /** Delete the stored sign-in. */
 export function signOutOfProvider(

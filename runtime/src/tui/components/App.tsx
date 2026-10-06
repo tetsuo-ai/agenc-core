@@ -2721,6 +2721,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     isInteractive: props.isInteractive ?? process.stdin.isTTY === true,
     onComplete: applyOnboardingSelection,
   });
+  // First-run setup narrows its provider and model lists as the user types.
+  const setOnboardingListFilter = onboarding.setListFilter;
+  const changeOnboardingInput = useCallback(
+    (nextInput: string) => {
+      changeComposerInput(nextInput);
+      setOnboardingListFilter(nextInput);
+    },
+    [changeComposerInput, setOnboardingListFilter],
+  );
   const setExpandedView = useCallback(
     (next_1: "none" | "tasks") => {
       setAppState((prev_0) => ({
@@ -4565,7 +4574,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             onAutoUpdaterResult={() => {}}
             autoUpdaterResult={null}
             input={input}
-            onInputChange={changeComposerInput}
+            onInputChange={changeOnboardingInput}
             mode={mode}
             onModeChange={setMode}
             stashedPrompt={stashedPrompt}

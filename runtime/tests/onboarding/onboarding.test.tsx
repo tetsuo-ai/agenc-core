@@ -55,6 +55,7 @@ import {
   detectRunningLocalProviders,
   detailLinesForStep,
   firstRunOnboardingInputPresentation,
+  setFirstRunOnboardingListFilter,
   submitFirstRunOnboardingInput,
   wizardThemeToSetting,
   type FirstRunOnboardingState,
@@ -793,11 +794,11 @@ describe("first-run onboarding wizard", () => {
       ...createInitialFirstRunOnboardingState(context),
       currentStepId: "provider",
     };
-    const all = listBuiltInProviderInfo().map((provider) => provider.id);
+    const all = listBuiltInProviderInfo().map((provider) => provider.name);
     const highlighted: string[] = [];
     for (let index = 0; index < all.length; index += 1) {
       const lines = detailLinesForStep(state, context);
-      const rows = lines.filter((line) => /^[› ] [a-z0-9-]+/u.test(line));
+      const rows = lines.filter((line) => /^[› ] \S/u.test(line));
       const more = lines.filter((line) => /^[↑↓] \d+ more$/u.test(line));
       expect(rows.length).toBeLessThanOrEqual(8);
       // Visible rows plus the collapsed counts always add up to every provider.
@@ -807,7 +808,8 @@ describe("first-run onboarding wizard", () => {
       ).toBe(all.length);
       const selected = rows.filter((line) => line.startsWith("› "));
       expect(selected).toHaveLength(1);
-      highlighted.push(selected[0]!.slice(2).split(" ")[0]!);
+      // The name, then two spaces before the status.
+      highlighted.push(selected[0]!.slice(2).split("  ")[0]!);
       state = moveFirstRunOnboardingHighlight(state, 1);
     }
     expect([...highlighted].sort()).toEqual([...all].sort());
@@ -1092,12 +1094,14 @@ describe("first-run onboarding wizard", () => {
 
         expect(state.selectedProvider).toBe("grok");
         expect(state.selectedModel).toBe("grok-4.6");
-        expect(
-          detailLinesForStep(
-            { ...state, currentStepId: "provider" },
-            context,
-          ),
-        ).toContain("› grok");
+        // The configured provider stays highlighted; the paid account's
+        // managed route (OpenRouter) lists as connected, above it.
+        const providerLines = detailLinesForStep(
+          { ...state, currentStepId: "provider" },
+          context,
+        );
+        expect(providerLines).toContain("› xAI Grok  not set");
+        expect(providerLines[1]).toBe("  OpenRouter  AgenC account");
         expect(
           detailLinesForStep(
             { ...state, currentStepId: "model-access" },
@@ -1372,7 +1376,6 @@ describe("first-run onboarding wizard", () => {
     expect(state).toMatchObject({
       currentStepId: "model-access",
       selectedProvider: "amazon-bedrock",
-      pendingApiKeyApproval: null,
     });
     const result = await submitFirstRunOnboardingInput(
       state,
@@ -1383,7 +1386,6 @@ describe("first-run onboarding wizard", () => {
     expect(result.state).toMatchObject({
       currentStepId: "model-access",
       selectedProvider: "amazon-bedrock",
-      pendingApiKeyApproval: null,
     });
     expect(result.state.error).toContain(
       "pasted one-field API keys cannot configure it",
@@ -1415,7 +1417,6 @@ describe("first-run onboarding wizard", () => {
       selectedProvider: "amazon-bedrock",
       modelAccessInput: "result",
       canPasteKey: false,
-      pendingApiKeyApproval: null,
       error: null,
     });
     expect(result.state.connection).toMatchObject({
@@ -1428,7 +1429,7 @@ describe("first-run onboarding wizard", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  test("verifies and saves approved BYOK API keys through local auth", async () => {
+  test("verifies a pasted BYOK key, saves it through local auth, and lists the models", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), {
@@ -1455,12 +1456,6 @@ describe("first-run onboarding wizard", () => {
         )
       ).state;
 
-      expect(state.currentStepId).toBe("model-access");
-      expect(state.pendingApiKeyApproval).toMatchObject({
-        provider: "grok",
-        maskedTail: "...-key",
-        verificationStatus: "valid",
-      });
       expect(fetchImpl).toHaveBeenCalledWith(
         "https://api.x.ai/v1/models",
         expect.objectContaining({
@@ -1469,13 +1464,14 @@ describe("first-run onboarding wizard", () => {
           }),
         }),
       );
-
-      state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
+      // A key the provider accepts is saved right away; the card moves on to
+      // the provider's models with no separate yes or no.
       expect(state.currentStepId).toBe("model-access");
-      expect(state.modelAccessInput).toBe("result");
-      expect(detailLinesForStep(state, context)).toContain(
-        "✓ grok accepted the key, and it is saved.",
-      );
+      expect(state.modelAccessInput).toBe("models");
+      const card = detailLinesForStep(state, context);
+      expect(card[0]).toBe("Which xAI Grok model should AgenC use?");
+      expect(card).toContain("✓ grok accepted the key, and it is saved.");
+      expect(card).toContain("› grok-4.6  default");
       expect(state.connection).toMatchObject({
         provider: "grok",
         status: "ready",
@@ -1488,6 +1484,7 @@ describe("first-run onboarding wizard", () => {
       ).resolves.toBe("xai-approved-key");
       state = (await submitFirstRunOnboardingInput(state, "", context)).state;
       expect(state.currentStepId).toBe("ready");
+      expect(state.selectedModel).toBe("grok-4.6");
       expect(detailLinesForStep(state, context)).toContain(
         "Access: pasted key, saved",
       );
@@ -1505,7 +1502,7 @@ describe("first-run onboarding wizard", () => {
     "deepseek",
     "meta",
     "gemini",
-  ] as const)("verifies and saves approved BYOK keys for %s", async (provider) => {
+  ] as const)("verifies and saves BYOK keys for %s once the provider accepts them", async (provider) => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), {
@@ -1537,13 +1534,7 @@ describe("first-run onboarding wizard", () => {
           context,
         )
       ).state;
-      expect(state.pendingApiKeyApproval).toMatchObject({
-        provider,
-        verificationStatus: "valid",
-      });
-
-      state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
-      expect(state.modelAccessInput).toBe("result");
+      expect(["models", "result"]).toContain(state.modelAccessInput);
       expect(state.connection?.ok).toBe(true);
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey(provider),
@@ -1575,7 +1566,7 @@ describe("first-run onboarding wizard", () => {
       );
 
       expect(result.state.currentStepId).toBe("model-access");
-      expect(result.state.pendingApiKeyApproval).toBeNull();
+      expect(result.state.modelAccessInput).toBe("menu");
       expect(result.state.error).toContain("Provider rejected");
       expect(result.state.error).toContain("Paste another key");
       await expect(
@@ -1598,14 +1589,14 @@ describe("first-run onboarding wizard", () => {
       ),
       checkLocalProviders: false,
     };
-    const state = await advanceToModelAccess(context);
-
-    expect(detailLinesForStep(state, context).join("\n")).toContain(
-      "XAI_API_KEY  set in your environment, check it now",
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    expect(detailLinesForStep(state, context)).toContain(
+      "› xAI Grok  env XAI_API_KEY",
     );
 
-    // Enter checks the key that is already set; the provider rejects it and
-    // the card says so, with ways forward.
+    // Picking a provider whose key is already set checks it right away; the
+    // provider rejects it and the card says so, with ways forward.
     let result = await submitFirstRunOnboardingInput(state, "", context);
     expect(result.state).toMatchObject({
       currentStepId: "model-access",
@@ -1688,64 +1679,6 @@ describe("first-run onboarding wizard", () => {
     expect(done.completed).toBe(true);
   });
 
-  test("does not persist verified BYOK keys declined at approval", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ data: [] }), { status: 200 }),
-    );
-    try {
-      const config = defaultConfig();
-      const context = {
-        agencHome,
-        config,
-        env: {},
-        checkLocalProviders: false,
-        fetchImpl,
-      };
-      let state = await advanceToModelAccess(context);
-
-      state = (
-        await submitFirstRunOnboardingInput(
-          state,
-          "xai-declined-key",
-          context,
-        )
-      ).state;
-      expect(state.pendingApiKeyApproval).toMatchObject({
-        provider: "grok",
-        maskedTail: "...-key",
-      });
-      expect(firstRunOnboardingInputPresentation(state)).toMatchObject({
-        placeholder: "Type yes to save this key, or no",
-        allowEmptySubmit: false,
-      });
-      expect(detailLinesForStep(state, context)).toEqual([
-        "Save this key?",
-        "Provider: grok",
-        "Key: ...-key",
-        "Check: accepted by grok",
-        "Type yes to save it, or no to continue without saving it.",
-      ]);
-
-      state = (await submitFirstRunOnboardingInput(state, "", context)).state;
-      expect(state.currentStepId).toBe("model-access");
-      expect(state.error).toContain("yes");
-
-      state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
-      expect(state).toMatchObject({
-        currentStepId: "model-access",
-        modelAccessInput: "menu",
-        pendingApiKeyApproval: null,
-      });
-      expect(state.error).toContain("The key was not saved");
-      await expect(
-        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
-      ).resolves.toBeUndefined();
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
-  });
-
   test("captures long pasted API-key input through the onboarding path", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -1769,25 +1702,15 @@ describe("first-run onboarding wizard", () => {
         )
       ).state;
 
-      expect(state.pendingApiKeyApproval?.pasteHash).toMatch(/^[a-f0-9]{16}$/);
-      expect(state.pendingApiKeyApproval?.pastePreview).toContain(
-        "Pasted content #1",
-      );
+      // The provider accepted it, so the key and its paste are saved at once.
+      expect(state.error).toBeNull();
+      expect(["models", "result"]).toContain(state.modelAccessInput);
       expect(state.pastedContents).toHaveLength(1);
       expect(state.pastedContents[0]?.content.length).toBe(longKey.length - 2_000);
       await expect(
         retrievePastedText({
           agencHome,
-          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
-        }),
-      ).resolves.toBeNull();
-
-      const approved = await submitFirstRunOnboardingInput(state, "yes", context);
-      expect(approved.state.modelAccessInput).toBe("result");
-      await expect(
-        retrievePastedText({
-          agencHome,
-          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
+          hash: hashPastedText(state.pastedContents[0]?.content ?? ""),
         }),
       ).resolves.toBe(state.pastedContents[0]?.content);
     } finally {
@@ -1795,40 +1718,17 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
-  test("does not persist declined or invalid long pasted API-key input", async () => {
+  test("does not persist an invalid long pasted API-key input", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     try {
       const config = defaultConfig();
       const longKey = "y".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
       const omittedHash = hashPastedText(longKey.slice(1_000, -1_000));
-      const validContext = {
+      const invalidContext = {
         agencHome,
         config,
         env: {},
         checkLocalProviders: false,
-        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response(JSON.stringify({ data: [] }), { status: 200 }),
-        ),
-      };
-      const pendingState = (
-        await submitFirstRunOnboardingInput(
-          await advanceToModelAccess(validContext),
-          longKey,
-          validContext,
-        )
-      ).state;
-      const declined = await submitFirstRunOnboardingInput(
-        pendingState,
-        "no",
-        validContext,
-      );
-      expect(declined.state.modelAccessInput).toBe("menu");
-      await expect(
-        retrievePastedText({ agencHome, hash: omittedHash }),
-      ).resolves.toBeNull();
-
-      const invalidContext = {
-        ...validContext,
         fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
           new Response("unauthorized", { status: 401 }),
         ),
@@ -1838,7 +1738,7 @@ describe("first-run onboarding wizard", () => {
         longKey,
         invalidContext,
       );
-      expect(invalid.state.pendingApiKeyApproval).toBeNull();
+      expect(invalid.state.error).toContain("Paste another key");
       await expect(
         retrievePastedText({ agencHome, hash: omittedHash }),
       ).resolves.toBeNull();
@@ -1847,7 +1747,7 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
-  test("removes approved paste cache if BYOK key persistence fails", async () => {
+  test("removes the saved paste if BYOK key persistence fails", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
     try {
       const config = defaultConfig();
@@ -1866,25 +1766,19 @@ describe("first-run onboarding wizard", () => {
         },
       };
       const longKey = "z".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
-      const pendingState = (
-        await submitFirstRunOnboardingInput(
-          await advanceToModelAccess(context),
-          longKey,
-          context,
-        )
-      ).state;
       const failed = await submitFirstRunOnboardingInput(
-        pendingState,
-        "yes",
+        await advanceToModelAccess(context),
+        longKey,
         context,
       );
 
       expect(failed.state.currentStepId).toBe("model-access");
+      expect(failed.state.modelAccessInput).toBe("menu");
       expect(failed.state.error).toContain("disk unavailable");
       await expect(
         retrievePastedText({
           agencHome,
-          hash: pendingState.pendingApiKeyApproval?.pasteHash ?? "",
+          hash: hashPastedText(longKey.slice(1_000, -1_000)),
         }),
       ).resolves.toBeNull();
     } finally {
@@ -2073,10 +1967,11 @@ describe("local runtime detection (O-1)", () => {
       currentStepId: "provider" as const,
       detectedLocalProviders: ["ollama" as const],
     };
-    const lines = detailLinesForStep(state, context as never).join("\n");
-    expect(lines).toContain("ollama  running on this machine, no key needed");
+    const lines = detailLinesForStep(state, context as never);
+    // A running runtime counts as connected, so it moves to the top.
+    expect(lines[1]).toMatch(/^[› ] Ollama  running$/u);
     expect(lines).toContain(
-      "ollama is running on this machine. Pick it to start without a key.",
+      "Ollama is running on this machine. Pick it to start without a key.",
     );
   });
 });
@@ -2211,23 +2106,23 @@ describe("account sign-in from the model-access step", () => {
     );
   });
 
-  test("choice 2 runs X / xAI OAuth, selects Grok, and needs no follow-up command", async () => {
+  test("choice 3 runs X / xAI sign-in, then lists Grok's models", async () => {
     const config = defaultConfig();
-    const runGrokOauthLogin = vi
-      .fn<() => Promise<{ ok: true; accountLabel: string }>>()
+    const runProviderSignIn = vi
+      .fn<(provider: "openai" | "grok") => Promise<{ ok: true; accountLabel: string }>>()
       .mockResolvedValue({ ok: true, accountLabel: "tetsuo" });
     const context = {
       config,
       env: {},
       checkLocalProviders: false,
-      runGrokOauthLogin,
+      runProviderSignIn,
     };
     const state = await advanceToGrokModelAccess(context);
 
     const result = await submitFirstRunOnboardingInput(state, "3", context);
-    expect(runGrokOauthLogin).toHaveBeenCalledTimes(1);
+    expect(runProviderSignIn).toHaveBeenCalledExactlyOnceWith("grok");
     expect(result.state.currentStepId).toBe("model-access");
-    expect(result.state.modelAccessInput).toBe("result");
+    expect(result.state.modelAccessInput).toBe("models");
     expect(result.state.selectedProvider).toBe("grok");
     expect(result.state.connection).toMatchObject({
       ok: true,
@@ -2237,6 +2132,69 @@ describe("account sign-in from the model-access step", () => {
       "Grok subscription access is ready.",
     );
     expect(result.state.error).toBeNull();
+    expect(detailLinesForStep(result.state, context)).toContain(
+      "✓ Signed in to X / xAI as tetsuo.",
+    );
+
+    const done = await submitFirstRunOnboardingInput(result.state, "", context);
+    expect(done.state.currentStepId).toBe("ready");
+    expect(detailLinesForStep(done.state, context)).toContain(
+      "Access: X / xAI sign-in",
+    );
+  });
+
+  test("OpenAI offers ChatGPT sign-in, and picking a model finishes the step", async () => {
+    const runProviderSignIn = vi
+      .fn<(provider: "openai" | "grok") => Promise<{ ok: true; accountLabel: string }>>()
+      .mockResolvedValue({ ok: true, accountLabel: "paul@example.com" });
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+      runProviderSignIn,
+    };
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "openai", context)).state;
+    expect(detailLinesForStep(state, context)).toEqual([
+      "How should AgenC reach openai / gpt-5?",
+      "› OPENAI_API_KEY  paste a key next",
+      "  AgenC account  sign in for hosted models, free plan",
+      "  ChatGPT account  sign in to use OpenAI with your plan",
+      "  Set up later  AgenC can't answer until you do",
+      "You can also paste a key here.",
+    ]);
+
+    state = (await submitFirstRunOnboardingInput(state, "chatgpt", context)).state;
+    expect(runProviderSignIn).toHaveBeenCalledExactlyOnceWith("openai");
+    expect(state.modelAccessInput).toBe("models");
+    const card = detailLinesForStep(state, context);
+    expect(card[0]).toBe("Which OpenAI model should AgenC use?");
+    expect(card).toContain("✓ Signed in to ChatGPT as paul@example.com.");
+    expect(card).toContain("› gpt-5  default");
+
+    // Typing narrows the list; Enter picks the highlighted match.
+    const narrowed = setFirstRunOnboardingListFilter(state, "luna");
+    expect(detailLinesForStep(narrowed, context).filter((line) => /^[› ] gpt/u.test(line)))
+      .toEqual(["› gpt-5.6-luna", "  gpt-6-luna"]);
+    const picked = await submitFirstRunOnboardingInput(narrowed, "luna", context);
+    expect(picked.state).toMatchObject({
+      currentStepId: "ready",
+      selectedProvider: "openai",
+      selectedModel: "gpt-5.6-luna",
+    });
+    expect(detailLinesForStep(picked.state, context)).toContain(
+      "Access: ChatGPT sign-in",
+    );
+  });
+
+  test("ChatGPT sign-in is refused for other providers", async () => {
+    const context = { config: defaultConfig(), env: {}, checkLocalProviders: false };
+    const state = await advanceToGrokModelAccess(context);
+    const result = await submitFirstRunOnboardingInput(state, "chatgpt", context);
+    expect(result.state.error).toBe(
+      "ChatGPT sign-in is for OpenAI. Pick OpenAI in the provider step to use it.",
+    );
   });
 
   test("a failed X / xAI sign-in surfaces the message and stays on model access", async () => {
@@ -2245,7 +2203,7 @@ describe("account sign-in from the model-access step", () => {
       config,
       env: {},
       checkLocalProviders: false,
-      runGrokOauthLogin: async () => ({
+      runProviderSignIn: async () => ({
         ok: false as const,
         message: "Browser sign-in did not complete (timeout).",
       }),
@@ -2275,7 +2233,7 @@ describe("account sign-in from the model-access step", () => {
     expect(detailLinesForStep(keyEntry.state, context)).toEqual([
       "Paste your XAI_API_KEY.",
       "No XAI_API_KEY is set yet.",
-      "AgenC checks a key before you choose to save it.",
+      "AgenC checks the key with the provider, then saves it on this computer.",
     ]);
 
     const menu = await submitFirstRunOnboardingInput(
@@ -2321,7 +2279,7 @@ describe("model access checks in place", () => {
       }),
     );
 
-  test("the key option checks a key that is already set and shows the result on the card", async () => {
+  test("a provider whose key is already set is checked when picked, then lists its models", async () => {
     const fetchImpl = okFetch();
     const context = {
       config: defaultConfig(),
@@ -2331,26 +2289,30 @@ describe("model access checks in place", () => {
     };
     let state = createInitialFirstRunOnboardingState(context);
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
-    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
-    expect(state.currentStepId).toBe("model-access");
+    expect(detailLinesForStep(state, context)[1]).toBe("› xAI Grok  env XAI_API_KEY");
 
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(state).toMatchObject({
       currentStepId: "model-access",
-      modelAccessInput: "result",
+      modelAccessInput: "models",
     });
-    expect(detailLinesForStep(state, context)).toEqual([
-      "How should AgenC reach grok / grok-4.6?",
+    const card = detailLinesForStep(state, context);
+    expect(card.slice(0, 2)).toEqual([
+      "Which xAI Grok model should AgenC use?",
       "✓ grok answered. XAI_API_KEY works.",
     ]);
-    expect(firstRunOnboardingChoiceCount(state)).toBe(0);
+    expect(card).toContain("› grok-4.6  default");
+    expect(firstRunOnboardingChoiceCount(state)).toBe(state.modelChoices.length);
     expect(firstRunOnboardingInputPresentation(state).placeholder).toBe(
-      "Enter continues",
+      "Enter picks grok-4.6, or type to filter",
     );
 
+    // Down then Enter picks the next model.
+    state = moveFirstRunOnboardingHighlight(state, 1);
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(state.currentStepId).toBe("ready");
+    expect(state.selectedModel).toBe(state.modelChoices[1]);
     expect(detailLinesForStep(state, context)).toContain(
       "Access: XAI_API_KEY, checked",
     );
@@ -2396,6 +2358,60 @@ describe("model access checks in place", () => {
     expect(detailLinesForStep(onward, context)).toContain(
       "Access: not working yet",
     );
+  });
+
+  test("a running local server without the default model lists the models it has", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ models: [{ name: "qwen3:8b" }, { name: "gemma3:4b" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const context = { config: defaultConfig(), env: {}, fetchImpl };
+    const state: FirstRunOnboardingState = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "provider",
+      detectedLocalProviders: ["ollama"],
+    };
+    const result = await submitFirstRunOnboardingInput(state, "ollama", context);
+    expect(result.state).toMatchObject({
+      currentStepId: "model-access",
+      selectedProvider: "ollama",
+      modelAccessInput: "models",
+      modelChoices: ["qwen3:8b", "gemma3:4b"],
+    });
+    const picked = await submitFirstRunOnboardingInput(result.state, "2", context);
+    expect(picked.state).toMatchObject({
+      currentStepId: "ready",
+      selectedModel: "gemma3:4b",
+    });
+  });
+
+  test("typing narrows the provider list without echoing the text", async () => {
+    const context = { config: defaultConfig(), env: {}, checkLocalProviders: false };
+    let state: FirstRunOnboardingState = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "provider",
+    };
+    state = setFirstRunOnboardingListFilter(state, "deep");
+    expect(detailLinesForStep(state, context)).toEqual([
+      "Which provider should AgenC use?",
+      "› DeepSeek  not set",
+      "Enter picks the highlighted provider.",
+    ]);
+    expect(firstRunOnboardingChoiceCount(state)).toBe(1);
+
+    const missing = setFirstRunOnboardingListFilter(state, "sk-not-a-provider");
+    expect(detailLinesForStep(missing, context).join("\n")).not.toContain("sk-not");
+    const refused = await submitFirstRunOnboardingInput(missing, "sk-not-a-provider", context);
+    expect(refused.state.currentStepId).toBe("provider");
+    expect(refused.state.error).not.toContain("sk-not");
+
+    const picked = await submitFirstRunOnboardingInput(state, "deep", context);
+    expect(picked.state).toMatchObject({
+      currentStepId: "model-access",
+      selectedProvider: "deepseek",
+    });
   });
 
   test("back on the model-access menu returns to the provider list", async () => {
@@ -2525,9 +2541,11 @@ describe("first-run onboarding arrow-key selection", () => {
     state = moveFirstRunOnboardingHighlight(state, -1);
     const count = firstRunOnboardingChoiceCount(state);
     expect(state.highlightedChoice).toBe(count);
-    const lastProvider = detailLinesForStep(state, context)
+    // Rows show the display name, then two spaces before the status.
+    const lastName = detailLinesForStep(state, context)
       .find((line) => line.startsWith("› "))!
-      .slice(2).split(" ")[0];
+      .slice(2).split("  ")[0];
+    const lastProvider = listBuiltInProviderInfo().find((info) => info.name === lastName)?.id;
     const next = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(next.selectedProvider).toBe(lastProvider);
     expect(next.currentStepId).toBe("model-access");
