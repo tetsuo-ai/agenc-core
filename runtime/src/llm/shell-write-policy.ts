@@ -779,6 +779,33 @@ function collectSedWriteTargets(params: {
   return collection;
 }
 
+/** A command's words after its name, and where it runs. */
+interface CommandArguments {
+  readonly args: readonly string[];
+  /** Which of `args` the shell still expands; absent for an argument vector. */
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}
+
+/** What the command named by word `index` of a wrapper's words writes; nothing without one. */
+function collectCommandWordWriteTargets(
+  params: CommandArguments,
+  index: number,
+): ShellWriteTargetCollection {
+  if (index >= params.args.length) return emptyTargetCollection();
+  if (params.argsRequiringExpansion?.[index] === true) return indeterminateTargetCollection();
+  return collectDirectCommandWriteTargets({
+    command: params.args[index]!,
+    args: params.args.slice(index + 1),
+    ...(params.argsRequiringExpansion === undefined
+      ? {}
+      : { argsRequiringExpansion: params.argsRequiringExpansion.slice(index + 1) }),
+    cwd: params.cwd,
+    environment: params.environment,
+  });
+}
+
 /** env's long options that take no argument, or only an attached one. */
 const ENV_LONG_FLAGS = new Set([
   "block-signal",
@@ -797,12 +824,7 @@ const ENV_LONG_FLAGS = new Set([
  * not document, and a command or option the shell still expands leave the
  * command unknown.
  */
-function collectEnvCommandWriteTargets(params: {
-  readonly args: readonly string[];
-  readonly argsRequiringExpansion?: readonly boolean[];
-  readonly cwd: string;
-  readonly environment: ShellWriteEnvironment;
-}): ShellWriteTargetCollection {
+function collectEnvCommandWriteTargets(params: CommandArguments): ShellWriteTargetCollection {
   const { args } = params;
   const expands = (index: number): boolean => params.argsRequiringExpansion?.[index] === true;
   let index = 0;
@@ -843,30 +865,357 @@ function collectEnvCommandWriteTargets(params: {
     }
   }
   // Without a command, env only prints the environment.
-  if (index >= args.length) return emptyTargetCollection();
-  if (expands(index)) return indeterminateTargetCollection();
-  return collectDirectCommandWriteTargets({
-    command: args[index]!,
-    args: args.slice(index + 1),
-    ...(params.argsRequiringExpansion === undefined
-      ? {}
-      : { argsRequiringExpansion: params.argsRequiringExpansion.slice(index + 1) }),
-    cwd: params.cwd,
-    environment: params.environment,
-  });
+  return collectCommandWordWriteTargets(params, index);
 }
 
-function collectDirectCommandWriteTargets(params: {
-  readonly command: string;
-  readonly args: readonly string[];
-  /** Which of `args` the shell still expands; absent for an argument vector. */
-  readonly argsRequiringExpansion?: readonly boolean[];
-  readonly cwd: string;
-  readonly environment: ShellWriteEnvironment;
-}): ShellWriteTargetCollection {
+/** One option a wrapper's words set. */
+interface WrapperOption {
+  /** Its letter, or its long name when it has none. */
+  readonly name: string;
+  readonly value?: string;
+}
+
+/** A wrapper's options, and the index of the first word after them. */
+interface WrapperOptions {
+  readonly options: readonly WrapperOption[];
+  readonly end: number;
+}
+
+/**
+ * The options of a program or builtin that runs the command written after
+ * them, read the way getopt reads them. Each letter of `short` is an option:
+ * one followed by `:` takes an argument, attached or in the next word, and
+ * one followed by `::` an optional argument that only comes attached. Each
+ * long option gives, the same way, the letter it stands for (if any) and its
+ * arity: `"kill-after": "k:"`, `help: ""`. A long option may be shortened to
+ * any prefix that names only it.
+ */
+interface CommandWrapper {
+  readonly short: string;
+  readonly long?: Readonly<Record<string, string>>;
+  /** Letters of options after which the wrapper prints and runs nothing (`command -v`). */
+  readonly inspects?: string;
+  /** nice's `-N`, `--N` and `-+N`: an adjustment written as an option. */
+  readonly numericAdjustment?: boolean;
+  /** sudo's `NAME=value` words, which may come among the options. */
+  readonly assignments?: boolean;
+  /** What runs after the options; the next word as a command when absent. */
+  readonly collect?: (params: CommandArguments, read: WrapperOptions) => ShellWriteTargetCollection;
+}
+
+/** GNU's `--help` and `--version`, which print and run nothing. */
+const GNU_STANDARD_OPTIONS: Readonly<Record<string, string>> = { help: "", version: "" };
+
+/** The arity a short option letter has in a getopt string; undefined when it is not an option. */
+function shortOptionArity(short: string, letter: string): string | undefined {
+  const at = short.indexOf(letter);
+  if (letter === ":" || at < 0) return undefined;
+  if (short.startsWith("::", at + 1)) return "::";
+  return short[at + 1] === ":" ? ":" : "";
+}
+
+/**
+ * The long option a `--name` word names, exactly or by a prefix only it
+ * has: the letter it stands for, or its own name, and its arity.
+ */
+function longOption(
+  long: Readonly<Record<string, string>>,
+  written: string,
+): { readonly name: string; readonly arity: string } | undefined {
+  const candidates = Object.hasOwn(long, written)
+    ? [written]
+    : Object.keys(long).filter((option) => option.startsWith(written));
+  if (written.length === 0 || candidates.length !== 1) return undefined;
+  const name = candidates[0]!;
+  const spec = long[name]!;
+  return /^[^:]/u.test(spec)
+    ? { name: spec[0]!, arity: spec.slice(1) }
+    : { name, arity: spec };
+}
+
+function wrapperOption(name: string, value?: string): WrapperOption {
+  return value === undefined ? { name } : { name, value };
+}
+
+/**
+ * The options one word sets (`-vk5`, `--signal=KILL`) and how many words
+ * they take: two when the last one's argument is the next word. Undefined
+ * when the word is an option the wrapper does not take, which includes one
+ * the shell still expands (`-$FLAGS`).
+ */
+function readOptionWord(
+  wrapper: CommandWrapper,
+  word: string,
+  next: string | undefined,
+): { readonly options: readonly WrapperOption[]; readonly words: number } | undefined {
+  if (wrapper.numericAdjustment === true && /^-[-+]?\d/u.test(word)) {
+    return { options: [wrapperOption("n", word.slice(1))], words: 1 };
+  }
+  if (word.startsWith("--")) {
+    const equals = word.indexOf("=");
+    const named = longOption(wrapper.long ?? {}, word.slice(2, equals < 0 ? undefined : equals));
+    if (named === undefined) return undefined;
+    if (equals >= 0) {
+      return named.arity === ""
+        ? undefined
+        : { options: [wrapperOption(named.name, word.slice(equals + 1))], words: 1 };
+    }
+    return named.arity === ":"
+      ? { options: [wrapperOption(named.name, next)], words: 2 }
+      : { options: [wrapperOption(named.name)], words: 1 };
+  }
+  const options: WrapperOption[] = [];
+  for (let at = 1; at < word.length; at += 1) {
+    const letter = word[at]!;
+    const arity = shortOptionArity(wrapper.short, letter);
+    if (arity === undefined) return undefined;
+    if (arity === "") {
+      options.push(wrapperOption(letter));
+      continue;
+    }
+    const attached = word.slice(at + 1);
+    if (attached.length > 0 || arity === "::") {
+      options.push(wrapperOption(letter, attached.length > 0 ? attached : undefined));
+      return { options, words: 1 };
+    }
+    options.push(wrapperOption(letter, next));
+    return { options, words: 2 };
+  }
+  return { options, words: 1 };
+}
+
+/**
+ * The options at the start of a wrapper's words, up to `--` or the first
+ * word that is not an option: the command, or an operand before it.
+ * Undefined when one is an option the wrapper does not take. A missing
+ * argument makes the wrapper fail before it runs anything, which reads as
+ * no command.
+ */
+function readWrapperOptions(
+  wrapper: CommandWrapper,
+  args: readonly string[],
+): WrapperOptions | undefined {
+  const options: WrapperOption[] = [];
+  let index = 0;
+  while (index < args.length) {
+    const word = args[index]!;
+    if (word === "--") return { options, end: index + 1 };
+    if (word.length > 1 && word.startsWith("-")) {
+      const read = readOptionWord(wrapper, word, args[index + 1]);
+      if (read === undefined) return undefined;
+      options.push(...read.options);
+      index += read.words;
+    } else if (wrapper.assignments === true && isSudoAssignment(word)) {
+      index += 1;
+    } else {
+      break;
+    }
+  }
+  return { options, end: Math.min(index, args.length) };
+}
+
+/** A word sudo reads as `NAME=value`: one with `=` that starts with neither `/` nor `=`. */
+function isSudoAssignment(word: string): boolean {
+  return word.includes("=") && !word.startsWith("/") && !word.startsWith("=");
+}
+
+/** timeout's duration comes before its command. */
+function collectTimeoutWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  return collectCommandWordWriteTargets(params, read.end + 1);
+}
+
+/** The time program writes its report to the file `-o` names, then runs the command. */
+function collectTimeWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  const collection = emptyTargetCollection();
+  for (const option of read.options) {
+    if (option.name !== "o" || option.value === undefined) continue;
+    if (isSafePseudoDevicePath(option.value)) continue;
+    mergeTargetCollections(collection, normalizeConcreteTargetPath(option.value, params.cwd));
+  }
+  mergeTargetCollections(collection, collectCommandWordWriteTargets(params, read.end));
+  return collection;
+}
+
+/**
+ * The words xargs adds to its command from its input. The line does not
+ * show them, so they read as a word the shell still expands, the way
+ * `rm "$@"` is read.
+ */
+const XARGS_INPUT = "$@";
+
+/**
+ * xargs runs its command with words from its input after the command's
+ * own words, or, with `-I`, `-i` or `-J`, in place of the replace string in
+ * them. Without a command it runs echo.
+ */
+function collectXargsWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  if (read.end >= params.args.length) return emptyTargetCollection();
+  let replace: string | undefined;
+  for (const option of read.options) {
+    if (option.name === "I" || option.name === "i") replace = option.value ?? "{}";
+    else if (option.name === "J" && option.value !== undefined) replace = option.value;
+  }
+  const words = params.args.slice(read.end);
+  const expands = words.map((_, at) => params.argsRequiringExpansion?.[read.end + at] === true);
+  // The lexer marks `{}` for brace expansion, but the shell leaves it as written.
+  const replaceUnknown = replace !== undefined && replace !== "{}" && DYNAMIC_SHELL_TARGET_RE.test(replace);
+  if (replace === undefined) {
+    words.push(XARGS_INPUT);
+    expands.push(true);
+  } else if (!replaceUnknown && replace.length > 0) {
+    for (let at = 0; at < words.length; at += 1) {
+      if (!words[at]!.includes(replace)) continue;
+      words[at] = words[at]!.split(replace).join(XARGS_INPUT);
+      expands[at] = true;
+    }
+  }
+  const collection = collectCommandWordWriteTargets(
+    { ...params, args: words, argsRequiringExpansion: expands },
+    0,
+  );
+  // Where the input goes is not known; what the words name is still judged.
+  collection.indeterminate ||= replaceUnknown;
+  return collection;
+}
+
+/**
+ * sudo runs its command after its options and `NAME=value` words. With
+ * `-e` it edits the files named instead. `-D` and `-R` move the command to
+ * another directory or root and `-i` to the target user's home, so where
+ * its targets land is not read; `-s` without a command starts a shell that
+ * reads its commands from its input.
+ */
+function collectSudoWriteTargets(
+  params: CommandArguments,
+  read: WrapperOptions,
+): ShellWriteTargetCollection {
+  const names = new Set(read.options.map((option) => option.name));
+  if (names.has("D") || names.has("R") || names.has("i")) return indeterminateTargetCollection();
+  const rest = params.args.slice(read.end);
+  if (names.has("e")) return collectOperandTargets(rest, params.cwd);
+  if (rest.length === 0 && names.has("s")) return indeterminateTargetCollection();
+  return collectCommandWordWriteTargets(params, read.end);
+}
+
+/**
+ * Programs that run the command written after their own options, with the
+ * GNU and the BSD options of each together.
+ */
+const WRAPPER_PROGRAMS: readonly (readonly [string, CommandWrapper])[] = [
+  ["nice", {
+    short: "n:",
+    long: { adjustment: "n:", ...GNU_STANDARD_OPTIONS },
+    numericAdjustment: true,
+  }],
+  ["nohup", { short: "", long: GNU_STANDARD_OPTIONS }],
+  ["stdbuf", {
+    short: "e:i:o:",
+    long: { error: "e:", input: "i:", output: "o:", ...GNU_STANDARD_OPTIONS },
+  }],
+  ["time", {
+    short: "af:hlo:pqvV",
+    long: {
+      append: "a", format: "f:", help: "", "output-file": "o:",
+      portability: "p", quiet: "q", verbose: "v", version: "V",
+    },
+    inspects: "V",
+    collect: collectTimeWriteTargets,
+  }],
+  ["timeout", {
+    short: "fk:ps:v",
+    long: {
+      foreground: "f", "kill-after": "k:", "preserve-status": "p",
+      signal: "s:", verbose: "v", ...GNU_STANDARD_OPTIONS,
+    },
+    collect: collectTimeoutWriteTargets,
+  }],
+  ["xargs", {
+    short: "0a:d:E:e::I:i::J:L:l::n:oP:pR:rS:s:tx",
+    long: {
+      "arg-file": "a:", delimiter: "d:", eof: "e::", exit: "x",
+      interactive: "p", "max-args": "n:", "max-chars": "s:",
+      "max-lines": "l::", "max-procs": "P:", "no-run-if-empty": "r",
+      null: "0", "open-tty": "o", "process-slot-var": ":", replace: "I::",
+      "show-limits": "", verbose: "t", ...GNU_STANDARD_OPTIONS,
+    },
+    collect: collectXargsWriteTargets,
+  }],
+];
+
+/**
+ * Builtins and programs that run the command written after their own
+ * options, so they write what it writes. A `g`-prefixed program is GNU's,
+ * installed next to a BSD one.
+ */
+const COMMAND_WRAPPERS: ReadonlyMap<string, CommandWrapper> = new Map([
+  // Shell builtins and zsh's precommand modifiers.
+  ["-", { short: "" }],
+  ["builtin", { short: "" }],
+  ["command", { short: "pvV", inspects: "vV" }],
+  ["exec", { short: "a:cl" }],
+  ["nocorrect", { short: "" }],
+  ["noglob", { short: "" }],
+  ...WRAPPER_PROGRAMS,
+  ...WRAPPER_PROGRAMS.map(([name, wrapper]) => [`g${name}`, wrapper] as const),
+  // sudo's `-h` is a host or, alone, help; reading it as a host never misses a command.
+  ["sudo", {
+    short: "Aa:BbC:c:D:Eeg:Hh:iKklNnPp:R:r:SsT:t:U:u:Vv",
+    long: {
+      askpass: "A", "auth-type": "a:", background: "b", bell: "B",
+      chdir: "D:", chroot: "R:", "close-from": "C:", "command-timeout": "T:",
+      edit: "e", group: "g:", help: "", host: ":", list: "l", login: "i",
+      "login-class": "c:", "no-update": "N", "non-interactive": "n",
+      "other-user": "U:", "preserve-env": "::", "preserve-groups": "P",
+      prompt: "p:", "remove-timestamp": "K", "reset-timestamp": "k",
+      role: "r:", "set-home": "H", shell: "s", stdin: "S", type: "t:",
+      user: "u:", validate: "v", version: "V",
+    },
+    inspects: "KlVv",
+    assignments: true,
+    collect: collectSudoWriteTargets,
+  }],
+]);
+
+/**
+ * What a wrapper's command writes: `nohup rm x`, `sudo -u root rm x`,
+ * `command rm x`. An option the wrapper does not take leaves the command
+ * unknown rather than guessed.
+ */
+function collectWrappedCommandWriteTargets(
+  wrapper: CommandWrapper,
+  params: CommandArguments,
+): ShellWriteTargetCollection {
+  const read = readWrapperOptions(wrapper, params.args);
+  if (read === undefined) return indeterminateTargetCollection();
+  const prints = read.options.some(
+    (option) =>
+      option.name === "help" ||
+      option.name === "version" ||
+      (option.name.length === 1 && (wrapper.inspects ?? "").includes(option.name)),
+  );
+  if (prints) return emptyTargetCollection();
+  return wrapper.collect?.(params, read) ?? collectCommandWordWriteTargets(params, read.end);
+}
+
+function collectDirectCommandWriteTargets(
+  params: CommandArguments & { readonly command: string },
+): ShellWriteTargetCollection {
   const command = basename(params.command);
   if (command === "env") {
     return collectEnvCommandWriteTargets(params);
+  }
+  const wrapper = COMMAND_WRAPPERS.get(command);
+  if (wrapper !== undefined) {
+    return collectWrappedCommandWriteTargets(wrapper, params);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     return collectWrappedShellWriteTargets({ ...params, shell: command });
@@ -996,6 +1345,12 @@ function collectSegmentCommandWriteTargets(
   if (stripped.length === 0) {
     return emptyTargetCollection();
   }
+  // `function f { rm x; }`: the body is the brace group that starts at the
+  // `{` in this segment, read as any brace group is.
+  const body = stripped[0]!.value === "function" && !stripped[0]!.requiresExpansion
+    ? stripped.findIndex((word) => word.value === "{")
+    : -1;
+  if (body > 0) return collectSegmentCommandWriteTargets(stripped.slice(body), cwd, environment);
   const commandIndex = writeCommandWordIndex(stripped);
   const prefix = stripped.slice(0, commandIndex);
   // The lexer reads a lone `{` as a brace expansion, so a brace group stays

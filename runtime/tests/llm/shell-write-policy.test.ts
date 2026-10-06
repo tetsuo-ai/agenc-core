@@ -538,6 +538,185 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
   });
 });
 
+describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a wrapper", () => {
+  function classifyBypassed(command: string) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      bypassesApprovalsAndSandbox: true,
+      platform: "linux",
+    });
+  }
+
+  it.each([
+    "rm -rf .git",
+    // Shell builtins and zsh's precommand modifiers.
+    "exec rm -rf .git",
+    "exec -a name -cl rm -rf .git",
+    "command rm -rf .git",
+    "command -p rm -rf .git",
+    "builtin rm -rf .git",
+    "noglob rm -rf .git",
+    "nocorrect rm -rf .git",
+    "- rm -rf .git",
+    // Programs.
+    "nohup rm -rf .git",
+    "nohup -- rm -rf .git",
+    "nice rm -rf .git",
+    "nice -n 5 rm -rf .git",
+    "nice -n5 rm -rf .git",
+    "nice -5 rm -rf .git",
+    "nice --adjustment=5 rm -rf .git",
+    "timeout 5 rm -rf .git",
+    "timeout -k 5 -s KILL 10 rm -rf .git",
+    "timeout -vk5 10 rm -rf .git",
+    "timeout --signal KILL --preserve-status 10 rm -rf .git",
+    "timeout --sig=KILL 10 rm -rf .git",
+    "stdbuf -o0 rm -rf .git",
+    "stdbuf -o L --error=0 rm -rf .git",
+    "sudo rm -rf .git",
+    "sudo -u root rm -rf .git",
+    "sudo -nu root FOO=1 -H rm -rf .git",
+    "sudo --user=root -- rm -rf .git",
+    "sudo -s rm -rf .git",
+    "env time rm -rf .git",
+    "time -p rm -rf .git",
+    "/usr/bin/time rm -rf .git",
+    "/usr/bin/time -f %e -a -o tmp/t.txt rm -rf .git",
+    "gtimeout 5 rm -rf .git",
+    "xargs rm -rf .git",
+    "xargs -0 -n 1 -P 4 rm -rf .git",
+    // Nested and stacked.
+    "exec nohup sudo -u root nice -n 5 rm -rf .git",
+    "env nohup timeout 5 rm -rf .git",
+    "echo x | xargs -I{} sh -c 'rm -rf .git {}'",
+    // A function body's first command follows `{` in the segment that defines it.
+    "function f { rm -rf .git; }; f",
+    "function { rm -rf .git; }",
+  ])("refuses the protected .git removal under the full bypass: %s", (command) => {
+    const decision = classifyBypassed(command);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    expect(decision.message).toContain("may not delete or move protected paths");
+  });
+
+  it("reads the command of a wrapper's argument vector", () => {
+    const decision = classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command: "/usr/bin/nohup", args: ["rm", "-rf", ".git"] },
+      workspaceRoot: WORKSPACE_ROOT,
+      allowWorkspaceDeletions: true,
+      bypassesApprovalsAndSandbox: true,
+    });
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+  });
+
+  it.each([
+    ["nohup touch src/a.ts", ["/repo/src/a.ts"]],
+    ["sudo -u www tee src/a.ts", ["/repo/src/a.ts"]],
+    ["command cp /tmp/a.ts src/a.ts", ["/repo/src/a.ts"]],
+    // GNU time writes its report to the -o file.
+    ["/usr/bin/time -o src/timing.txt make", ["/repo/src/timing.txt"]],
+    ["/usr/bin/time --output-file=src/timing.txt make", ["/repo/src/timing.txt"]],
+    ["gtime --output src/timing.txt make", ["/repo/src/timing.txt"]],
+    // sudo -e edits the files it names.
+    ["sudo -e src/a.ts", ["/repo/src/a.ts"]],
+  ])("routes a workspace write behind a wrapper to the file tools: %s", (command, targets) => {
+    const decision = classify(command, true);
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedTargets).toEqual(targets);
+    expect(decision.message).toContain("use Edit or Write instead");
+  });
+
+  it.each([
+    ["/usr/bin/time -o tmp/timing.txt make", ["/repo/tmp/timing.txt"]],
+    ["/usr/bin/time -o /dev/null make", []],
+    ["nohup node server.js > tmp/server.log 2>&1 &", ["/repo/tmp/server.log"]],
+    ["ls | xargs -I{} cp {} tmp/", ["/repo/tmp"]],
+    ["timeout 30 npm test", []],
+    ['timeout "$LIMIT" npm test', []],
+    ["nice -n 10 make", []],
+    ["stdbuf -oL tail -n 5 tmp/log", []],
+    ["exec node server.js", []],
+    ["sudo apt-get install -y jq", []],
+    ["sudo FOO=1 make", []],
+    ["find . -name '*.ts' | xargs grep -l TODO", []],
+    ["xargs -I{} grep TODO {}", []],
+    ["xargs", []],
+    // These run nothing: they print.
+    ["command -v bash", []],
+    ["command -V sh", []],
+    ["sudo -l rm", []],
+    ["nohup --help", []],
+    ["timeout --version", []],
+    ["/usr/bin/time -V", []],
+  ])("lets a wrapper run a command that writes nothing it refuses: %s", (command, targets) => {
+    const decision = classify(command);
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual(targets);
+  });
+
+  it.each([
+    "nohup -x rm -rf .git",
+    "nice --frobnicate rm -rf .git",
+    "timeout -Z 5 rm -rf .git",
+    "stdbuf -$MODE rm -rf .git",
+    "exec -x rm -rf .git",
+    "noglob -x rm -rf .git",
+    // `--pre` could be --preserve-env or --preserve-groups.
+    "sudo --pre rm -rf .git",
+    "xargs -h rm -rf .git",
+    "nohup $TOOL -rf .git",
+  ])("leaves the command unknown behind an option the wrapper does not take: %s", (command) => {
+    const prompting = classify(command, true);
+    expect(prompting.indeterminate).toBe(true);
+    expect(prompting.blocked).toBe(true);
+    expect(prompting.observedTargets).toEqual([]);
+    expect(prompting.message).toContain("Unable to confirm workspace write targets");
+
+    // Not guessed: as any indeterminate command, it runs under the full bypass.
+    expect(classifyBypassed(command).blocked).toBe(false);
+  });
+
+  it.each([
+    "sudo -D /repo rm -rf .git",
+    "sudo -R /srv/root rm -rf .git",
+    "sudo -i rm -rf .git",
+    "sudo -s",
+  ])("leaves the targets unknown where sudo moves the command: %s", (command) => {
+    const decision = classify(command, true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.observedTargets).toEqual([]);
+  });
+
+  it.each([
+    ["echo .git | xargs rm -rf", []],
+    ["xargs -a tmp/list rm -f", []],
+    ["xargs rm -f src/a.ts", ["/repo/src/a.ts"]],
+    ["xargs -I % mv % tmp/", ["/repo/tmp"]],
+    ["xargs -i cp {} {}.bak", []],
+    ["xargs sed -i 's/a/b/'", []],
+    ['xargs -I "$R" rm -f src/a.ts', ["/repo/src/a.ts"]],
+  ])("reads the words xargs adds from its input as unknown: %s", (command, targets) => {
+    const decision = classify(command, true);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+    expect(decision.observedTargets).toEqual(targets);
+  });
+});
+
 describe("classifyShellWorkspaceWritePolicy names only the session's file tools", () => {
   /** Every name a refusal could send the model to. */
   const FILE_TOOL_NAME_RE = /\b(?:Edit|Write|MultiEdit|apply_patch)\b/u;
