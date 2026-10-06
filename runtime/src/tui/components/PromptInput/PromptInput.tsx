@@ -427,6 +427,12 @@ type Props = {
     readonly input: string;
     readonly pastedContents?: Record<number, PastedContent>;
   }) => void;
+  /**
+   * Bumped by the owner each time it restores a draft. Each new value moves
+   * the cursor to the end of `input`, which also covers a submit clear and
+   * restore that commit in one render and so never change the input prop.
+   */
+  draftRestoreRevision?: number;
   onSubmit: (
     input: string,
     helpers: PromptInputHelpers,
@@ -611,6 +617,7 @@ function PromptInput({
   queueOwner,
   queueExecutionCwd,
   restoreComposerDraft,
+  draftRestoreRevision = 0,
   onSubmit: onSubmitProp,
   onAgentSubmit,
   isSearchingHistory,
@@ -693,6 +700,21 @@ function PromptInput({
       setCurrentCursorOffset(input.length);
     }
   }, [input, setCurrentCursorOffset]);
+  // A failed submit resets the cursor to 0, clears the input, then restores
+  // the draft. When the clear and the restore commit together the effect
+  // above sees no input change, so the restore revision moves the cursor.
+  const lastDraftRestoreRevisionRef = useRef(draftRestoreRevision);
+  React.useLayoutEffect(() => {
+    if (draftRestoreRevision === lastDraftRestoreRevisionRef.current) {
+      return;
+    }
+    lastDraftRestoreRevisionRef.current = draftRestoreRevision;
+    lastPropInputRef.current = input;
+    lastInternalInputRef.current = input;
+    if (cursorOffsetRef.current !== input.length) {
+      setCurrentCursorOffset(input.length);
+    }
+  }, [draftRestoreRevision, input, setCurrentCursorOffset]);
   React.useLayoutEffect(() => {
     if (pastedContents === lastPastedContentsPropRef.current) {
       return;

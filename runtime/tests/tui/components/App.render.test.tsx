@@ -655,6 +655,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onOpenModelMenu,
       onboardingInput,
       onBashSubmit,
+      draftRestoreRevision,
     }: {
       input: string;
       onSubmit: (
@@ -684,6 +685,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onSubmissionBlocked?: (reason: string) => void;
       onOpenModelMenu?: () => Promise<void> | void;
       onboardingInput?: unknown;
+      draftRestoreRevision?: number;
       onBashSubmit?: (
         command: string,
         admittedCwd?: string,
@@ -724,6 +726,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onOpenModelMenu,
         onboardingInput,
         onBashSubmit,
+        draftRestoreRevision,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -2173,6 +2176,24 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
+  test("bumps the draft restore revision when a rejected submission restores its draft", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async () => {
+        throw new Error("re-attach is required");
+      }),
+    } satisfies AgenCBridgeSession;
+    const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
+    await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      expect(providerProbe.promptProps.at(-1)?.draftRestoreRevision).toBe(0);
+      await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, submitHelpers: typeof helpers) => Promise<void>)("and again", helpers);
+      expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "and again", draftRestoreRevision: 1 }));
+    });
+  });
+
   test.each(["second prompt", "/reviewer audit this", "$reviewer audit this"])("keeps the newer %s submission and its retry identity when an old response fails late", async secondInput => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();
@@ -2210,7 +2231,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       first.reject(new Error("old response dropped"));
       await firstAttempt;
       await new Promise(resolve => setTimeout(resolve, 25));
-      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true });
+      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "", isLoading: true, draftRestoreRevision: 0 });
       loaded.resolve([{ type: "text", text: "expanded delayed skill" }]);
       await vi.waitFor(() => expect(session.submit).toHaveBeenCalledTimes(2));
       second.reject(new Error("new response dropped"));
