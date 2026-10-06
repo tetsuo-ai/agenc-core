@@ -1320,20 +1320,33 @@ const TIME_OPTIONS = new Set(["-p", "--"]);
 const TEST_COMMAND_WORDS = new Set(["[", "[["]);
 
 /**
- * Index of the command word whose writes a segment makes: after assignments
- * and the reserved words a command follows. The directory walk reads its
- * command word with `commandWordIndex`.
+ * Index of a simple command's command word: after assignments, `time` and
+ * the options it reads before its pipeline, and the words in `reserved`.
+ * Both the write reading and the directory walk find the command here.
+ * After an assignment `time` is the program, not the reserved word; with
+ * `assignedTimeIsCommand` it is then the command word.
  */
-function writeCommandWordIndex(words: readonly ShellToken[]): number {
+function commandWordIndexAfter(
+  words: readonly ShellToken[],
+  reserved: ReadonlySet<string>,
+  assignedTimeIsCommand = false,
+): number {
   let index = 0;
   let timed = false;
+  let assigned = false;
   for (; index < words.length; index += 1) {
     const value = words[index]!.value;
     if (timed && TIME_OPTIONS.has(value)) continue;
-    if (!ENV_ASSIGNMENT_RE.test(value) && !COMMAND_PREFIX_RESERVED_WORDS.has(value)) break;
-    timed = value === "time";
+    timed = value === "time" && !(assignedTimeIsCommand && assigned);
+    if (!timed && !ENV_ASSIGNMENT_RE.test(value) && !reserved.has(value)) break;
+    assigned ||= ENV_ASSIGNMENT_RE.test(value);
   }
   return index;
+}
+
+/** Index of the command word whose writes a segment makes. */
+function writeCommandWordIndex(words: readonly ShellToken[]): number {
+  return commandWordIndexAfter(words, COMMAND_PREFIX_RESERVED_WORDS);
 }
 
 function collectSegmentCommandWriteTargets(
@@ -1431,17 +1444,21 @@ function directoryChangeContext(tokens: readonly ShellToken[]): DirectoryChangeC
   };
 }
 
-/** Index of a simple command's command word: after assignments, `time` and reserved words. */
+/**
+ * Index of the command word the directory walk reads. `X=1 time cd /` runs
+ * the time program, whose `cd` does not move this shell.
+ */
 function commandWordIndex(words: readonly ShellToken[]): number {
-  let index = 0;
-  while (index < words.length) {
-    const value = words[index]!.value;
-    const skipped =
-      ENV_ASSIGNMENT_RE.test(value) || value === "time" || COMPOUND_RESERVED_WORDS.has(value);
-    if (!skipped) break;
-    index += 1;
-  }
-  return index;
+  return commandWordIndexAfter(words, COMPOUND_RESERVED_WORDS, true);
+}
+
+/**
+ * A word that runs the builtin named after it, the time program, or an
+ * option word where a command belongs (`time -x cd`): what the command
+ * after it does to this shell's directory differs between shells.
+ */
+function isBuiltinPrefix(command: string): boolean {
+  return BUILTIN_PREFIX_COMMANDS.has(command) || command === "time" || command.startsWith("-");
 }
 
 /** Whether these words run `cd`, `pushd` or `popd` in this shell. */
@@ -1451,7 +1468,7 @@ function namesDirectoryChange(words: readonly ShellToken[]): boolean {
   const command = stripped[index]?.value;
   if (command === undefined) return false;
   if (DIRECTORY_CHANGE_COMMANDS.has(command)) return true;
-  return BUILTIN_PREFIX_COMMANDS.has(command) &&
+  return isBuiltinPrefix(command) &&
     stripped.slice(index + 1).some((word) => DIRECTORY_CHANGE_COMMANDS.has(word.value));
 }
 
@@ -1563,7 +1580,7 @@ function directoryChangeOf(
   if (command.requiresExpansion) return UNKNOWN_DIRECTORY;
   if (SHELL_CODE_COMMANDS.has(command.value)) return { kind: "shell-code" };
   const rest = stripped.slice(index + 1);
-  if (BUILTIN_PREFIX_COMMANDS.has(command.value)) {
+  if (isBuiltinPrefix(command.value)) {
     const runsChange = rest.some(
       (word) => DIRECTORY_CHANGE_COMMANDS.has(word.value) || SHELL_CODE_COMMANDS.has(word.value),
     );

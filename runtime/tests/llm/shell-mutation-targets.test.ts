@@ -46,6 +46,7 @@ describe("collectShellMutationTargets", () => {
     expect(targets("pushd sub && rm a").targets).toEqual([join(ROOT, "sub/a")]);
     expect(targets("cd && rm x").targets).toEqual([join(homedir(), "x")]);
     expect(targets("bash -c 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
+    expect(targets(`cd /tmp && time -p cd ${ROOT}/sub && rm a`).targets).toEqual([join(ROOT, "sub/a")]);
   });
 
   it("reports the writes of commands after reserved words", () => {

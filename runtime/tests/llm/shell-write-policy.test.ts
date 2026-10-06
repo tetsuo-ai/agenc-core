@@ -1777,6 +1777,53 @@ describe("classifyShellWorkspaceWritePolicy after a directory change", () => {
     expect(classify("cd tmp && echo `cd ../src` > a.js").blocked).toBe(true);
   });
 
+  it("follows a cd that time runs, after the options time reads", () => {
+    // bash and sh run `time -p cd /repo` in this shell and change directory.
+    expect(classify("cd /tmp && time -p cd /repo && rm -rf src", true).observedTargets).toEqual([
+      "/repo/src",
+    ]);
+    expect(classify("cd /tmp && time cd /repo && rm -rf src", true).observedTargets).toEqual([
+      "/repo/src",
+    ]);
+    expect(classify("cd /tmp && time -p cd /repo && rm -rf .git", true).blockedDeletions).toEqual([
+      "/repo/.git",
+    ]);
+    for (const command of [
+      "cd /tmp && time -p cd /repo && touch src/a.js",
+      "cd /tmp && time -p pushd /repo && touch src/a.js",
+      "cd /tmp && time -p -- cd /repo && touch src/a.js",
+      "cd /tmp && ! time -p cd /repo && touch src/a.js",
+    ]) {
+      const decision = classify(command);
+      expect(decision.blocked, command).toBe(true);
+      expect(decision.blockedTargets, command).toContain("/repo/src/a.js");
+    }
+  });
+
+  it("reads a cd behind the time program, after an assignment, as an unknown change", () => {
+    // bash and sh on macOS run /usr/bin/time and /usr/bin/cd, which exit 0
+    // and leave the shell where it was; zsh and Linux fail the command.
+    for (const command of [
+      "X=1 time cd /tmp && touch src/a.js",
+      "X=1 time -p cd /tmp && touch src/a.js",
+      "cd /tmp && X=1 time -p cd /repo && touch src/a.js",
+    ]) {
+      const decision = classify(command);
+      expect(decision.indeterminate, command).toBe(true);
+      expect(decision.blocked, command).toBe(true);
+      expect(decision.blockedTargets, command).toContain("/repo/src/a.js");
+    }
+    const removal = classify("X=1 time cd /tmp && rm -rf src", true);
+    expect(removal.blocked).toBe(true);
+    expect(removal.observedTargets).toContain("/repo/src");
+  });
+
+  it("reads an option word where a command belongs as an unknown change", () => {
+    const decision = classify("cd /tmp && time -x cd /repo && touch src/a.js");
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/a.js"]);
+  });
+
   it("follows cd inside a wrapped shell command", () => {
     expect(classify("bash -c 'cd tmp && echo x > a.txt'").blocked).toBe(false);
     expect(classify("bash -c 'cd tmp && echo x > ../a.txt'").blockedTargets).toEqual(["/repo/a.txt"]);
