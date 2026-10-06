@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -37,14 +38,12 @@ static bool read_at(int fd, void *data, size_t length, off_t offset) {
 
 static bool static_executable(void) {
   Elf64_Ehdr header;
-  struct stat executable, self;
+  struct stat executable;
   int seals = fcntl(EXECUTABLE_FD, F_GET_SEALS);
   const int required = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
   if (seals < 0 || (seals & required) != required ||
       (fcntl(EXECUTABLE_FD, F_GETFL) & O_ACCMODE) != O_RDONLY ||
       fstat(EXECUTABLE_FD, &executable) != 0 || !S_ISREG(executable.st_mode) ||
-      stat("/proc/self/exe", &self) != 0 ||
-      executable.st_dev != self.st_dev || executable.st_ino != self.st_ino ||
       !read_at(EXECUTABLE_FD, &header, sizeof(header), 0) ||
       memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 ||
       header.e_ident[EI_CLASS] != ELFCLASS64 ||
@@ -59,7 +58,28 @@ static bool static_executable(void) {
                  (off_t)(header.e_phoff + i * sizeof(program))) ||
         program.p_type == PT_INTERP) return false;
   }
-  return true;
+  /* bwrap --ro-bind-data copies the sealed image to a private, unlinked,
+   * read-only bind. Some host LSM profiles reject direct memfd execution.
+   * Compare that copy against the sealed source, never a task pathname. */
+  int self_fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+  if (self_fd < 0) return false;
+  struct stat self;
+  struct statvfs mount;
+  bool valid = fstat(self_fd, &self) == 0 && S_ISREG(self.st_mode) &&
+      self.st_size == executable.st_size &&
+      fstatvfs(self_fd, &mount) == 0 && (mount.f_flag & ST_RDONLY) != 0;
+  unsigned char original[4096], copy[4096];
+  for (off_t offset = 0; valid && offset < executable.st_size;) {
+    off_t remaining = executable.st_size - offset;
+    size_t length = remaining > (off_t)sizeof(original) ? sizeof(original)
+                                                       : (size_t)remaining;
+    valid = read_at(EXECUTABLE_FD, original, length, offset) &&
+            read_at(self_fd, copy, length, offset) &&
+            memcmp(original, copy, length) == 0;
+    offset += (off_t)length;
+  }
+  if (close(self_fd) != 0) valid = false;
+  return valid;
 }
 
 static bool private_descriptors(void) {

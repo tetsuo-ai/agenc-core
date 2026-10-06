@@ -45,7 +45,8 @@ def invoke(args, *, unsealed=False, leaked=False, report_file=False,
     null = os.open("/dev/null", os.O_RDONLY)
     alternate = os.open(str(DIRECTORY / "bad-report"), os.O_CREAT | os.O_WRONLY, 0o600) if report_file else None
     mapping = {0: null, 1: output_write, 2: output_write,
-               4: alternate if alternate is not None else report_write, 5: executable}
+               4: alternate if alternate is not None else report_write,
+               5: executable, 6: executable}
     high = {fd: fcntl.fcntl(source, fcntl.F_DUPFD_CLOEXEC, 40)
             for fd, source in mapping.items()}
     pid = os.fork()
@@ -55,12 +56,16 @@ def invoke(args, *, unsealed=False, leaked=False, report_file=False,
                 os.dup2(source, target)
             os.close(3)
             if leaked:
-                os.dup2(0, 6)
-            os.closerange(7 if leaked else 6, 4096)
+                os.dup2(0, 7)
+            os.closerange(8 if leaked else 7, 4096)
+            # Diagnostic target is an existing file in the read-only fixture
+            # mount, overridden only inside this private mount namespace.
+            entry = str(ROOT / "native/agenc-namespace-init.c")
             os.execve("/usr/bin/bwrap", ["bwrap", "--new-session", "--unshare-user",
                 "--unshare-pid", "--unshare-net", "--die-with-parent", "--as-pid-1",
                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-                "--", "/proc/self/fd/5", "--namespace-init-v1", *args],
+                "--perms", "0500", "--ro-bind-data", "6", entry,
+                "--", entry, "--namespace-init-v1", *args],
                 {"PATH": "/usr/bin:/bin", "LANG": "C"})
         finally:
             os._exit(126)
