@@ -1,3 +1,4 @@
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
@@ -109,6 +110,50 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("keeps the reservation unknown after interim Responses usage and a disconnect", async () => {
+    const state = harness({});
+    const frame = `event: response.in_progress\ndata: ${JSON.stringify({ type: "response.in_progress", response: {
+      status: "in_progress", usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+    } })}\n\n`;
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-4.1", useResponsesApi: true,
+      fetchImpl: async () => new Response(frame, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await expect(runAdmittedModelCall({ session: state.session, provider,
+      providerName: "openai", model: "gpt-4.1", messages, options: { maxOutputTokens: 200 }, stepId: "interim",
+      invoke: options => provider.chatStream(messages, () => {}, options),
+    })).rejects.toMatchObject({ name: "LLMStreamTruncatedError" });
+    expect(state.holdUnknown).toHaveBeenCalledOnce();
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each([false, true])("accounts for usage on a failed Responses stream without loosening retry guards (output=%s)", async hasOutput => {
+    const state = harness({});
+    const frame = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+    const frames = (hasOutput ? frame("response.output_text.delta", { delta: "partial" }) : "") +
+      frame("response.failed", { response: {
+        status: "failed", model: "gpt-4.1", output: [],
+        usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120,
+          output_tokens_details: { reasoning_tokens: 10 } },
+        error: { code: "server_is_overloaded", message: "overloaded", headers: { "X-Retry-Metadata": "NO_MORE_RETRY" } },
+      } });
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-4.1", useResponsesApi: true,
+      fetchImpl: async () => new Response(frames, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    const result = await runAdmittedModelCall({ session: state.session, provider,
+      providerName: "openai", model: "gpt-4.1", messages, options: { maxOutputTokens: 200 }, stepId: "response-failure",
+      invoke: options => provider.chatStream(messages, () => {}, options),
+    });
+    expect(result).toMatchObject({ partial: true, finishReason: "error", usage: { promptTokens: 100, completionTokens: 20, reasoningOutputTokens: 10 } });
+    expect(result.error).toMatchObject({ name: "LLMStreamRetryDeniedError" });
+    expect(state.reconcile).toHaveBeenCalledOnce();
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({ inputTokens: 100, outputTokens: 20 }));
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
   test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
     const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
     let chunks = 0;

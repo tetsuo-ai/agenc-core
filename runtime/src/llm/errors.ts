@@ -31,6 +31,20 @@ export function isLLMPreGenerationRejection(
   return error instanceof Error && preGenerationRejections.get(error) === provider;
 }
 
+/** Mark an initial, single-wire HTTP refusal; never use for accepted-body errors. */
+export function markLLMInitialHttpRejection<T extends Error>(
+  error: T,
+  provider: string,
+  status: unknown,
+  singleWireAttempt: boolean | undefined,
+): T {
+  if (singleWireAttempt === true && typeof status === "number" &&
+      [400, 401, 402, 403, 429].includes(status)) {
+    markLLMPreGenerationRejection(error, provider);
+  }
+  return error;
+}
+
 export interface TlsValidationDetails {
   readonly code: string;
   readonly message: string;

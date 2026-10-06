@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
+  isInitialProviderHttpRejection,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
@@ -17,7 +18,7 @@ import {
   LLMProviderError,
   LLMStreamTruncatedError,
   mapLLMError,
-  markLLMPreGenerationRejection,
+  markLLMInitialHttpRejection,
 } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
@@ -3010,12 +3011,11 @@ function mapProviderError(error: unknown, singleAttemptPending = false): never {
   }
   if (error instanceof ProviderHttpError) {
     const mapped = mapLLMError("gemini", error, 0);
-    // Only an initial quota/payment rejection proves no generation occurred.
+    // Only an initial HTTP refusal proves no generation occurred.
     // A network/5xx failure or a status raised after accepting a response can
     // hide billed work. Without singleWireAttempt an earlier retry can too.
-    if (singleAttemptPending && (error.status === 402 || error.status === 429)) {
-      markLLMPreGenerationRejection(mapped, "gemini");
-    }
+    markLLMInitialHttpRejection(mapped, "gemini", error.status,
+      singleAttemptPending && isInitialProviderHttpRejection(error));
     throw mapped;
   }
   if (error instanceof LLMProviderError) {

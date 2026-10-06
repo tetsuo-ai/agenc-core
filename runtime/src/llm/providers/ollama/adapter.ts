@@ -7,6 +7,7 @@
  * @module
  */
 
+import { observeInitialHttpResponse, withInitialHttpRejection } from "../../initial-http-rejection.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
@@ -40,7 +41,13 @@ import {
   type OllamaToolChoiceResolution,
 } from "./tool-choice.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
-import { LLMInvalidResponseError, LLMProviderError, mapLLMError } from "../../errors.js";
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  mapLLMError,
+  isLLMPreGenerationRejection,
+  markLLMPreGenerationRejection,
+} from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 import {
@@ -642,7 +649,8 @@ export class OllamaProvider implements LLMProvider {
         ),
       });
       const response = await withTimeout(
-        async (timeoutSignal) => invokeOllamaChat(client, params, timeoutSignal),
+        async (timeoutSignal) => withInitialHttpRejection(this.name, options?.singleWireAttempt,
+          () => invokeOllamaChat(client, params, timeoutSignal)),
         requestTimeoutMs,
         this.name,
         signal,
@@ -734,7 +742,8 @@ export class OllamaProvider implements LLMProvider {
           const cleanupClientAbort = onAbort(signal, () =>
             abortOllamaClient(client));
           const stream = await withTimeout(
-            async () => (client as any).chat(params),
+            async () => withInitialHttpRejection(this.name, options?.singleWireAttempt,
+              async () => (client as any).chat(params)),
             requestTimeoutMs,
             this.name,
             signal,
@@ -1123,7 +1132,7 @@ export class OllamaProvider implements LLMProvider {
             input,
             signal ? { ...init, signal } : (init ?? {}),
             fetchImpl,
-          );
+          ).then(observeInitialHttpResponse);
         }) as typeof fetch,
       });
     });
@@ -1427,6 +1436,8 @@ export class OllamaProvider implements LLMProvider {
       return mapped;
     }
 
-    return mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0);
+    const mapped = mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0);
+    return isLLMPreGenerationRejection(err, this.name)
+      ? markLLMPreGenerationRejection(mapped, this.name) : mapped;
   }
 }
