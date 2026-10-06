@@ -12,11 +12,20 @@ import {
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
+  chooseProviderAuth,
   chooseProviderModel,
   connectProviderWithKey,
   forgetProviderKey,
+  signInWithAccount,
+  signOutOfAccount,
   type ProvidersHubActionResult,
 } from "./providers-hub-actions.js";
+import {
+  isSignInProvider,
+  type SignInProgress,
+  type SignInProvider,
+  type SignInResult,
+} from "./provider-sign-in.js";
 import {
   filterProvidersHubRows,
   readProvidersHubModels,
@@ -35,16 +44,31 @@ export type ProvidersHubServices = {
   readonly connect: (provider: ProviderSlug, apiKey: string) => Promise<ProvidersHubActionResult>;
   readonly choose: (provider: ProviderSlug, model: string) => Promise<ProvidersHubActionResult>;
   readonly forget: (provider: ProviderSlug) => ProvidersHubActionResult;
+  readonly signIn: (
+    provider: SignInProvider,
+    onProgress: (progress: SignInProgress) => void,
+    signal: AbortSignal,
+  ) => Promise<SignInResult>;
+  readonly signOut: (provider: SignInProvider) => ProvidersHubActionResult;
+  readonly setAuth: (provider: SignInProvider, auth: "oauth" | "api-key") => Promise<ProvidersHubActionResult>;
 };
 
 type ModelEntry =
   | { readonly kind: "model"; readonly row: ProvidersHubModelRow }
+  | { readonly kind: "sign-in" }
+  | { readonly kind: "sign-out"; readonly account: string }
+  | { readonly kind: "use-account" }
+  | { readonly kind: "use-key" }
   | { readonly kind: "replace-key" }
   | { readonly kind: "remove-key" };
 
+type ConnectChoice = "sign-in" | "paste-key";
+
 type View =
   | { readonly kind: "list" }
+  | { readonly kind: "connect"; readonly row: ProvidersHubRow }
   | { readonly kind: "key"; readonly row: ProvidersHubRow }
+  | { readonly kind: "signin"; readonly row: ProvidersHubRow; readonly progress: SignInProgress | null }
   | { readonly kind: "models"; readonly row: ProvidersHubRow; readonly entries: readonly ModelEntry[] }
   | { readonly kind: "info"; readonly row: ProvidersHubRow };
 
@@ -56,15 +80,52 @@ function dotColor(row: ProvidersHubRow): "success" | "error" | "inactive" {
   return "inactive";
 }
 
+/** "ChatGPT" or "X": the account a sign-in provider signs in with. */
+function accountName(provider: ProviderSlug): string {
+  return provider === "openai" ? "ChatGPT" : "X";
+}
+
 function modelEntries(
   row: ProvidersHubRow,
   models: readonly ProvidersHubModelRow[],
 ): readonly ModelEntry[] {
+  const signIn = row.signIn;
+  const accountEntries: ModelEntry[] = [];
+  if (signIn !== undefined) {
+    accountEntries.push(
+      signIn.account === null
+        ? { kind: "sign-in" }
+        : { kind: "sign-out", account: signIn.account },
+    );
+    // Switching needs both credentials, and an exported variable fixes it.
+    if (signIn.account !== null && signIn.keyAvailable && signIn.lockedBy === undefined) {
+      if (signIn.using === "account") accountEntries.push({ kind: "use-key" });
+      if (signIn.using === "key") accountEntries.push({ kind: "use-account" });
+    }
+  }
   return [
     ...models.map((model): ModelEntry => ({ kind: "model", row: model })),
+    ...accountEntries,
     ...(row.access === "api-key" ? [{ kind: "replace-key" } as const] : []),
     ...(row.keySaved ? [{ kind: "remove-key" } as const] : []),
   ];
+}
+
+function entryLabel(entry: Exclude<ModelEntry, { kind: "model" }>, row: ProvidersHubRow): string {
+  switch (entry.kind) {
+    case "sign-in":
+      return `Sign in with your ${accountName(row.provider)} account`;
+    case "sign-out":
+      return `Sign out (${entry.account})`;
+    case "use-account":
+      return "Use your account instead of the key";
+    case "use-key":
+      return "Use the API key instead of your account";
+    case "replace-key":
+      return "Replace API key";
+    case "remove-key":
+      return "Remove saved key";
+  }
 }
 
 /** What to tell a person about a provider they cannot connect from here. */
@@ -118,7 +179,7 @@ function ModelsView({
           return [
             <ThemedText key="mark" color="subtle"> </ThemedText>,
             <ThemedText key="label" color={active ? "text" : "subtle"} bold={active}>
-              {entry.kind === "replace-key" ? "Replace API key" : "Remove saved key"}
+              {entryLabel(entry, row)}
             </ThemedText>,
             <ThemedText key="note" color="inactive"> </ThemedText>,
           ];
@@ -200,6 +261,77 @@ function KeyView({
   );
 }
 
+const CONNECT_CHOICES: readonly ConnectChoice[] = ["sign-in", "paste-key"];
+
+function ConnectView({
+  row,
+  activeIndex,
+  notice,
+}: {
+  readonly row: ProvidersHubRow;
+  readonly activeIndex: number;
+  readonly notice: Notice;
+}): React.ReactNode {
+  return (
+    <MenuModal
+      title={row.name}
+      summary="not set"
+      closeHint="esc to go back"
+      {...(notice === null ? {} : { hint: notice.text })}
+      columns={[3, 50]}
+      headers={["", "connect with"]}
+      items={CONNECT_CHOICES}
+      activeIndex={activeIndex}
+      renderRow={(choice, _index, active) => [
+        <ThemedText key="mark" color="subtle"> </ThemedText>,
+        <ThemedText key="label" color={active ? "text" : "text2"} bold={active}>
+          {choice === "sign-in"
+            ? `Sign in with your ${accountName(row.provider)} account`
+            : "Paste an API key"}
+        </ThemedText>,
+      ]}
+      footer={[
+        { keyName: "enter", label: "choose" },
+        { keyName: "esc", label: "back" },
+      ]}
+    />
+  );
+}
+
+function SignInView({
+  row,
+  progress,
+}: {
+  readonly row: ProvidersHubRow;
+  readonly progress: SignInProgress | null;
+}): React.ReactNode {
+  return (
+    <Popup
+      title={`${row.name} sign-in`}
+      headerRight="esc to cancel"
+      status="waiting for the browser"
+      footer={[{ keyName: "esc", label: "cancel" }]}
+      minHeight={9}
+    >
+      <Box flexDirection="column" gap={1}>
+        <ThemedText color="text" wrap="wrap">
+          {progress?.heading ?? "Starting the sign-in…"}
+        </ThemedText>
+        {progress?.url ? (
+          <ThemedText color="agenc" wrap="wrap">
+            {progress.url}
+          </ThemedText>
+        ) : null}
+        {progress?.userCode ? (
+          <ThemedText color="text">
+            Code: <ThemedText color="text" bold>{progress.userCode}</ThemedText>
+          </ThemedText>
+        ) : null}
+      </Box>
+    </Popup>
+  );
+}
+
 function InfoView({ row, busy }: { readonly row: ProvidersHubRow; readonly busy: boolean }): React.ReactNode {
   return (
     <Popup
@@ -243,6 +375,8 @@ export function ProvidersHubView({
   const [keyValue, setKeyValue] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState<Notice>(null);
+  const [connectIndex, setConnectIndex] = React.useState(0);
+  const signInAbort = React.useRef<AbortController | null>(null);
   const [view, setView] = React.useState<View>(() => {
     const row = initial.rows.find((candidate) => candidate.provider === initialProvider);
     return row === undefined
@@ -281,10 +415,59 @@ export function ProvidersHubView({
     [services],
   );
 
+  /** Re-read the snapshot and return this provider's fresh row. */
+  const refreshed = (row: ProvidersHubRow): ProvidersHubRow => {
+    const next = services.reload();
+    setSnapshot(next);
+    return next.rows.find((candidate) => candidate.provider === row.provider) ?? row;
+  };
+
+  const startSignIn = (row: ProvidersHubRow): void => {
+    if (!isSignInProvider(row.provider)) return;
+    const provider = row.provider;
+    const controller = new AbortController();
+    signInAbort.current = controller;
+    setNotice(null);
+    setView({ kind: "signin", row, progress: null });
+    void services
+      .signIn(
+        provider,
+        (progress) => {
+          setView((current) => (current.kind === "signin" ? { ...current, progress } : current));
+        },
+        controller.signal,
+      )
+      .then(
+        (result) => result,
+        (error: unknown): SignInResult => ({
+          ok: false,
+          cancelled: false,
+          message: `Sign-in failed: ${error instanceof Error ? error.message : String(error)}.`,
+        }),
+      )
+      .then((result) => {
+        signInAbort.current = null;
+        const updated = refreshed(row);
+        if (result.ok) {
+          openModels(updated);
+          return;
+        }
+        const back = updated.connection === "current" || updated.connection === "connected";
+        if (back) openModels(updated);
+        else setView({ kind: "connect", row: updated });
+        setNotice(result.cancelled ? null : { text: result.message, failed: true });
+      });
+  };
+
   const openRow = (row: ProvidersHubRow): void => {
     setNotice(null);
     if (row.connection === "current" || row.connection === "connected") {
       openModels(row);
+      return;
+    }
+    if (row.connection === "not-set" && isSignInProvider(row.provider)) {
+      setConnectIndex(0);
+      setView({ kind: "connect", row });
       return;
     }
     if (row.access === "api-key" && row.connection === "not-set") {
@@ -316,7 +499,36 @@ export function ProvidersHubView({
   };
 
   useInput((input, key) => {
+    if (view.kind === "signin") {
+      if (key.escape) signInAbort.current?.abort();
+      return;
+    }
     if (busy) return;
+    if (view.kind === "connect") {
+      if (key.escape || input === "q") {
+        setNotice(null);
+        setView({ kind: "list" });
+        return;
+      }
+      if (key.upArrow) {
+        setConnectIndex((index) => previousMenuIndex(index, CONNECT_CHOICES.length));
+        return;
+      }
+      if (key.downArrow) {
+        setConnectIndex((index) => nextMenuIndex(index, CONNECT_CHOICES.length));
+        return;
+      }
+      if (key.return) {
+        if (CONNECT_CHOICES[connectIndex] === "sign-in") {
+          startSignIn(view.row);
+        } else {
+          setKeyValue("");
+          setNotice(null);
+          setView({ kind: "key", row: view.row });
+        }
+      }
+      return;
+    }
     if (view.kind === "key") {
       if (key.escape) {
         setNotice(null);
@@ -363,6 +575,33 @@ export function ProvidersHubView({
         setView({ kind: "key", row: view.row });
         return;
       }
+      if (entry.kind === "sign-in") {
+        startSignIn(view.row);
+        return;
+      }
+      if (entry.kind === "sign-out" && isSignInProvider(view.row.provider)) {
+        const result = services.signOut(view.row.provider);
+        const updated = refreshed(view.row);
+        setNotice({ text: result.message, failed: !result.ok });
+        if (updated.connection === "current" || updated.connection === "connected") {
+          setView({ kind: "models", row: updated, entries: modelEntries(updated, services.modelsFor(updated.provider)) });
+          setModelIndex(0);
+        } else {
+          setView({ kind: "list" });
+        }
+        return;
+      }
+      if ((entry.kind === "use-account" || entry.kind === "use-key") && isSignInProvider(view.row.provider)) {
+        const provider = view.row.provider;
+        run(async () => {
+          const result = await services.setAuth(provider, entry.kind === "use-account" ? "oauth" : "api-key");
+          const updated = refreshed(view.row);
+          setView({ kind: "models", row: updated, entries: modelEntries(updated, services.modelsFor(updated.provider)) });
+          setModelIndex(0);
+          setNotice({ text: result.message, failed: !result.ok });
+        });
+        return;
+      }
       if (entry.kind === "remove-key") {
         const result = services.forget(view.row.provider);
         const next = services.reload();
@@ -375,6 +614,7 @@ export function ProvidersHubView({
         }
         return;
       }
+      if (entry.kind !== "model") return;
       run(async () => {
         const result = await services.choose(view.row.provider, entry.row.model);
         if (result.ok) {
@@ -432,6 +672,10 @@ export function ProvidersHubView({
     );
   }
   if (view.kind === "info") return <InfoView row={view.row} busy={busy} />;
+  if (view.kind === "connect") {
+    return <ConnectView row={view.row} activeIndex={connectIndex} notice={notice} />;
+  }
+  if (view.kind === "signin") return <SignInView row={view.row} progress={view.progress} />;
   if (view.kind === "models") {
     return (
       <ModelsView
@@ -497,6 +741,9 @@ function servicesFor(ctx: SlashCommandContext): ProvidersHubServices {
     connect: (provider, apiKey) => connectProviderWithKey(ctx, provider, apiKey),
     choose: (provider, model) => chooseProviderModel(ctx, provider, model),
     forget: (provider) => forgetProviderKey(ctx, provider),
+    signIn: (provider, onProgress, signal) => signInWithAccount(ctx, provider, onProgress, signal),
+    signOut: (provider) => signOutOfAccount(ctx, provider),
+    setAuth: (provider, auth) => chooseProviderAuth(ctx, provider, auth),
   };
 }
 

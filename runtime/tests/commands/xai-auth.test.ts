@@ -322,6 +322,20 @@ describe("xAI auth command authority", () => {
     expect(mocks.clearXaiOauthCredentials).not.toHaveBeenCalled();
   });
 
+  test("signs in without switching the session's provider", async () => {
+    const result = await grokLoginCommand.execute(
+      commandContext(Object.freeze({})),
+    );
+
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("Signed in to xAI as");
+      expect(result.text).toContain("Open /providers to use Grok with this account.");
+    }
+    expect(mocks.saveXaiOauthCredentials).toHaveBeenCalledOnce();
+    expect(mocks.applyProviderSwitch).not.toHaveBeenCalled();
+  });
+
   test("does not report an ambient API key absent from the captured environment", async () => {
     vi.stubEnv("XAI_API_KEY", "ambient-key");
 

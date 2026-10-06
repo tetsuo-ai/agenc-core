@@ -1,4 +1,5 @@
 import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
+import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { readStartupCronTasks } from "../utils/cron-startup.js";
@@ -887,7 +888,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
-  const providerEnvironment = options.providerEnvironment;
   const mcpRequestEnvironment = options.mcpRequestEnvironment;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
@@ -917,6 +917,12 @@ async function bootstrapLocalRuntimeSessionScoped(
     }),
   });
   await configStore.reload();
+  // `[providers.<openai|grok>] auth` fills OPENAI_AUTH_MODE / GROK_AUTH_MODE
+  // where the environment leaves them unset; an exported variable wins.
+  const providerEnvironment = withConfiguredProviderAuth(
+    options.providerEnvironment,
+    configStore.current(),
+  );
   const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
     ...(profileName !== undefined ? { profileName } : {}),

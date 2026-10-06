@@ -15,10 +15,13 @@ import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Session } from "../session/session.js";
 import {
+  chooseProviderAuth,
   chooseProviderModel,
   connectProviderWithKey,
   forgetProviderKey,
 } from "./providers-hub-actions.js";
+import { providerEnvironmentFromCommandContext } from "./config-context.js";
+import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import {
   filterProvidersHubRows,
   readProvidersHubSnapshot,
@@ -47,10 +50,11 @@ function ctxFor(params: {
   readonly provider?: string;
   readonly model?: string;
   readonly reload?: () => Promise<unknown>;
+  readonly config?: unknown;
 }): SlashCommandContext & { readonly session: Session & { pendingProviderSwitch: unknown } } {
   const configStore = {
     homeContext: params.home,
-    current: () => ({}) as ReturnType<ConfigStore["current"]>,
+    current: () => (params.config ?? {}) as ReturnType<ConfigStore["current"]>,
     reload: params.reload ?? (async () => ({})),
   };
   const session = {
@@ -224,5 +228,76 @@ describe("providers screen actions", () => {
       ok: false,
       message: "No saved key for this provider.",
     });
+  });
+});
+
+describe("account sign-in and the account-or-key choice", () => {
+  function signInToXai(home: HomeContext): void {
+    expect(
+      saveXaiOauthCredentials(home, {
+        accessToken: "oauth-token",
+        expiresAt: Date.now() + 60_000,
+        accountLabel: "ana@example.com",
+      }).success,
+    ).toBe(true);
+  }
+
+  it("shows the signed-in account and uses it before a saved key by default", () => {
+    const { home, environment } = tempHome();
+    signInToXai(home);
+    saveProviderKey(home, "grok", "xai-key");
+    const grok = readProvidersHubSnapshot(ctxFor({ home, environment, provider: "openai", model: "gpt-5" }))
+      .rows.find((entry) => entry.provider === "grok");
+
+    expect(grok).toMatchObject({
+      connection: "connected",
+      status: "signed in as ana@example.com",
+      signIn: { account: "ana@example.com", keyAvailable: true, using: "account", setting: "auto" },
+    });
+    expect(grok?.signIn?.lockedBy).toBeUndefined();
+  });
+
+  it("follows the config choice, and an exported variable overrides it", () => {
+    const { home, environment } = tempHome();
+    signInToXai(home);
+    saveProviderKey(home, "grok", "xai-key");
+    const config = { providers: { grok: { auth: "api-key" } } };
+    const byConfig = readProvidersHubSnapshot(
+      ctxFor({ home, environment, provider: "openai", model: "gpt-5", config }),
+    ).rows.find((entry) => entry.provider === "grok");
+    expect(byConfig).toMatchObject({ status: "key saved", signIn: { using: "key", setting: "api-key" } });
+
+    const locked = readProvidersHubSnapshot(
+      ctxFor({
+        home,
+        environment: Object.freeze({ ...environment, GROK_AUTH_MODE: "oauth" }),
+        provider: "openai",
+        model: "gpt-5",
+        config,
+      }),
+    ).rows.find((entry) => entry.provider === "grok");
+    expect(locked).toMatchObject({ signIn: { using: "account", lockedBy: "GROK_AUTH_MODE" } });
+  });
+
+  it("fills the config choice into the command environment", () => {
+    const { home, environment } = tempHome();
+    const env = providerEnvironmentFromCommandContext(
+      ctxFor({ home, environment, config: { providers: { openai: { auth: "oauth" } } } }),
+    );
+    expect(env.OPENAI_AUTH_MODE).toBe("oauth");
+    expect(env.AGENC_HOME).toBe(environment.AGENC_HOME);
+  });
+
+  it("saves the choice in the config store's home and reloads it", async () => {
+    const { home, environment } = tempHome();
+    const reload = vi.fn(async () => ({}));
+    const ctx = ctxFor({ home, environment, reload });
+
+    await expect(chooseProviderAuth(ctx, "grok", "api-key")).resolves.toEqual({
+      ok: true,
+      message: "Saved. New sessions use the API key.",
+    });
+    expect(readFileSync(home.configTomlPath, "utf8")).toMatch(/^"?auth"? = "api-key"$/mu);
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

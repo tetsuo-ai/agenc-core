@@ -114,4 +114,18 @@ describe('OpenAI browser OAuth authority', () => {
       },
     })
   })
+
+  test('a cancelled sign-in closes the callback listener at once', async () => {
+    const controller = new AbortController()
+    const login = runOpenAiBrowserLogin({
+      environment: Object.freeze({}),
+      signal: controller.signal,
+      onAuthorizeUrl: () => {
+        controller.abort()
+      },
+    })
+
+    await expect(login).rejects.toMatchObject({ name: 'OpenAiOauthError', code: 'cancelled' })
+    expect(mocks.close).toHaveBeenCalledTimes(1)
+  })
 })

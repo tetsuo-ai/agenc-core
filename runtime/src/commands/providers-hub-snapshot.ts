@@ -9,13 +9,19 @@
  */
 
 import { hasSavedProviderKey } from "../auth/provider-keys.js";
+import { PROVIDER_AUTH_ENV } from "../llm/provider-auth-selection.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
 import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderInfo,
   type BuiltInProviderOnboardingAccess,
 } from "../llm/registry/provider-info.js";
-import { requireCommandConfigStore } from "./config-context.js";
+import {
+  capturedProviderEnvironment,
+  readCommandConfig,
+  requireCommandConfigStore,
+} from "./config-context.js";
+import { isSignInProvider, signedInAccount } from "./provider-sign-in.js";
 import { readModelMenuSnapshot } from "./model-menu-snapshot.js";
 import {
   readProviderMenuSnapshot,
@@ -40,6 +46,21 @@ export type ProvidersHubRow = {
   readonly keySaved: boolean;
   /** Environment variables that would connect it, for the help text. */
   readonly envLabel?: string;
+  /** OpenAI and Grok: the account sign-in and the account-or-key choice. */
+  readonly signIn?: ProvidersHubSignIn;
+};
+
+export type ProvidersHubSignIn = {
+  /** The signed-in account, or null. */
+  readonly account: string | null;
+  /** A key is available: saved here or in the environment. */
+  readonly keyAvailable: boolean;
+  /** What requests use now. */
+  readonly using: "account" | "key" | null;
+  /** The configured choice (`auth` in config), auto when unset. */
+  readonly setting: "auto" | "oauth" | "api-key";
+  /** The environment variable that fixes the choice, when it is set. */
+  readonly lockedBy?: string;
 };
 
 export type ProvidersHubSnapshot = {
@@ -113,12 +134,23 @@ function rank(connection: ProvidersHubConnection): number {
 export function readProvidersHubSnapshot(ctx: SlashCommandContext): ProvidersHubSnapshot {
   const menu = readProviderMenuSnapshot(ctx);
   const home = requireCommandConfigStore(ctx).homeContext;
+  const captured = capturedProviderEnvironment(ctx);
+  const config = readCommandConfig(ctx);
   const rows = menu.rows.map((row): ProvidersHubRow => {
     const info = resolveBuiltInProviderInfo(row.provider);
     const access = info?.onboarding.access ?? "api-key";
     const keySaved = access === "api-key" && hasSavedProviderKey(home, row.provider);
     const connection = connectionFor(row);
     const envLabel = providerCredentialEnvironmentLabel(row.provider);
+    const signIn = isSignInProvider(row.provider)
+      ? signInState(row, {
+          account: signedInAccount(home, row.provider),
+          keySaved,
+          envKeys: info?.credentials.kind === "api-key" ? info.credentials.apiKey.envVars : [],
+          captured,
+          setting: config?.providers?.[row.provider]?.auth ?? "auto",
+        })
+      : undefined;
     return {
       provider: row.provider,
       name: row.name,
@@ -129,10 +161,13 @@ export function readProvidersHubSnapshot(ctx: SlashCommandContext): ProvidersHub
           ? row.detail
           : connection === "not-set"
             ? notSetStatus(access)
-            : plainStatus(row, keySaved),
+            : signIn?.using === "account" && signIn.account !== null
+              ? `signed in as ${signIn.account}`
+              : plainStatus(row, keySaved),
       model: row.model,
       keySaved,
       ...(envLabel === undefined ? {} : { envLabel }),
+      ...(signIn === undefined ? {} : { signIn }),
     };
   });
   const order = (provider: ProviderSlug): number =>
@@ -182,6 +217,37 @@ export function withLocalProbe(
         rank(left.connection) - rank(right.connection) ||
         (position.get(left.provider) ?? 0) - (position.get(right.provider) ?? 0),
     ),
+  };
+}
+
+function signInState(
+  row: ProviderMenuRow,
+  facts: {
+    readonly account: string | null;
+    readonly keySaved: boolean;
+    readonly envKeys: readonly string[];
+    readonly captured: Readonly<Record<string, string | undefined>>;
+    readonly setting: "auto" | "oauth" | "api-key";
+  },
+): ProvidersHubSignIn {
+  const provider = row.provider as keyof typeof PROVIDER_AUTH_ENV;
+  const lockName = PROVIDER_AUTH_ENV[provider];
+  const locked = (facts.captured[lockName]?.trim() ?? "") !== "";
+  const keyAvailable =
+    facts.keySaved || facts.envKeys.some((name) => (facts.captured[name]?.trim() ?? "") !== "");
+  const source = row.credentialSource;
+  const using =
+    source === "native sign-in"
+      ? "account"
+      : source === "native secure storage" || source.startsWith("env ")
+        ? "key"
+        : null;
+  return {
+    account: facts.account,
+    keyAvailable,
+    using,
+    setting: facts.setting,
+    ...(locked ? { lockedBy: lockName } : {}),
   };
 }
 
