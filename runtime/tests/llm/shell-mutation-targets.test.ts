@@ -48,6 +48,14 @@ describe("collectShellMutationTargets", () => {
     expect(targets("bash -c 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
   });
 
+  it("reports the writes of commands after reserved words", () => {
+    expect(targets("if true; then touch a.js; fi").targets).toEqual([join(ROOT, "a.js")]);
+    expect(targets("! rm old.txt && time -p rm b").targets).toEqual([
+      join(ROOT, "old.txt"),
+      join(ROOT, "b"),
+    ]);
+  });
+
   it("ends a subshell's cd with the subshell", () => {
     expect(targets("(cd sub && rm a) && rm b").targets).toEqual([join(ROOT, "sub/a"), join(ROOT, "b")]);
   });

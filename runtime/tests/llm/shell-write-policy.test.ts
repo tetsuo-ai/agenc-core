@@ -335,6 +335,65 @@ describe("classifyShellWorkspaceWritePolicy", () => {
       ).toEqual([]);
     });
   });
+
+  describe("commands after reserved words", () => {
+    it("refuses a protected removal under then as it does after &&", () => {
+      const chained = classify("true && rm -rf .git", true);
+      const compound = classify("if true; then rm -rf .git; fi", true);
+
+      expect(compound.blocked).toBe(true);
+      expect(compound.observedTargets).toEqual(["/repo/.git"]);
+      expect(compound.blockedDeletions).toEqual(chained.blockedDeletions);
+      expect(compound.message).toBe(chained.message);
+    });
+
+    it.each([
+      "! touch src/a.js",
+      "time touch src/a.js",
+      "time -p touch src/a.js",
+      "time -p -- touch src/a.js",
+      "X=1 time touch src/a.js",
+      "for i in 1; do touch src/a.js; done",
+      "while ! touch src/a.js; do :; done",
+      "until touch src/a.js; do :; done",
+      "if false; then :; else touch src/a.js; fi",
+      "if false; then :; elif touch src/a.js; then :; fi",
+      "if ! time -p touch src/a.js; then :; fi",
+      "coproc touch src/a.js",
+    ])("reads the write of the command after them: %s", (command) => {
+      const decision = classify(command, true);
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedTargets).toEqual(["/repo/src/a.js"]);
+    });
+
+    it("still reads a redirection inside a loop body", () => {
+      expect(classify("for i in 1; do echo x > src/a.js; done", true).blockedTargets).toEqual([
+        "/repo/src/a.js",
+      ]);
+    });
+
+    it.each([
+      "if true; then echo ok; fi",
+      "time ls",
+      "! grep -q x src/a.js",
+      "for f in a b; do echo $f; done",
+      "while false; do :; done",
+    ])("allows a command after them that writes nothing: %s", (command) => {
+      const decision = classify(command, true);
+      expect(decision.blocked).toBe(false);
+      expect(decision.observedTargets).toEqual([]);
+    });
+
+    it("keeps a brace group indeterminate and reads the command inside it", () => {
+      const harmless = classify("{ echo hi; }", true);
+      expect(harmless.indeterminate).toBe(true);
+      expect(harmless.blocked).toBe(true);
+
+      const removal = classify("{ rm -rf .git; }", true);
+      expect(removal.indeterminate).toBe(true);
+      expect(removal.blockedDeletions).toEqual(["/repo/.git"]);
+    });
+  });
 });
 
 describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
@@ -377,10 +436,37 @@ describe("classifyShellWorkspaceWritePolicy under the full bypass", () => {
     },
   );
 
+  it.each([
+    "if true; then rm -rf .git; fi",
+    "while rm -rf .git; do :; done",
+    "! rm -rf .git",
+    "time -p rm -rf .git",
+    "{ rm -rf .git; }",
+  ])("keeps refusing a protected removal after a reserved word: %s", (command) => {
+    const decision = classifyBypassed(command);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/repo/.git"]);
+    expect(decision.message).toContain("protected paths");
+  });
+
   it("still routes workspace content writes to Edit and Write", () => {
     const decision = classifyBypassed("cat > src/output.txt");
     expect(decision.blocked).toBe(true);
     expect(decision.blockedTargets).toContain("/repo/src/output.txt");
+  });
+
+  it("routes a content write after a reserved word to Edit and Write", () => {
+    for (const command of ["! touch src/a.js", "time touch src/a.js"]) {
+      const decision = classifyBypassed(command);
+      expect(decision.blocked, command).toBe(true);
+      expect(decision.blockedTargets, command).toEqual(["/repo/src/a.js"]);
+    }
+  });
+
+  it("still lets a brace group that writes nothing run", () => {
+    const decision = classifyBypassed("{ echo hi; }");
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(false);
   });
 
   it("keeps refusing a sed write into a protected path under tmp", () => {

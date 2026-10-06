@@ -838,6 +838,29 @@ function collectRedirectionTargets(
   return collection;
 }
 
+/**
+ * Reserved words a simple command can follow in its segment: `then rm`,
+ * `! touch`, `do echo`, `coproc rm`, `{ rm`. The command is the next word.
+ */
+const COMMAND_PREFIX_RESERVED_WORDS = new Set([
+  "!", "{", "coproc", "do", "elif", "else", "if", "then", "time", "until", "while",
+]);
+/** What `time` reads before its pipeline. */
+const TIME_OPTIONS = new Set(["-p", "--"]);
+
+/** Index of a simple command's command word: after assignments and reserved words. */
+function commandWordIndex(words: readonly ShellToken[]): number {
+  let index = 0;
+  let timed = false;
+  for (; index < words.length; index += 1) {
+    const value = words[index]!.value;
+    if (timed && TIME_OPTIONS.has(value)) continue;
+    if (!ENV_ASSIGNMENT_RE.test(value) && !COMMAND_PREFIX_RESERVED_WORDS.has(value)) break;
+    timed = value === "time";
+  }
+  return index;
+}
+
 function collectSegmentCommandWriteTargets(
   segment: readonly ShellToken[],
   cwd: string,
@@ -847,26 +870,25 @@ function collectSegmentCommandWriteTargets(
   if (stripped.length === 0) {
     return emptyTargetCollection();
   }
-  let commandIndex = 0;
-  while (
-    commandIndex < stripped.length &&
-    ENV_ASSIGNMENT_RE.test(stripped[commandIndex]?.value ?? "")
-  ) {
-    commandIndex += 1;
-  }
+  const commandIndex = commandWordIndex(stripped);
+  // The lexer reads a lone `{` as a brace expansion, so a brace group stays
+  // indeterminate; the command inside it is read as well.
+  const opensBraceGroup = stripped.slice(0, commandIndex).some((word) => word.value === "{");
   const command = stripped[commandIndex];
   if (command === undefined || command.value.length === 0) {
-    return emptyTargetCollection();
+    return opensBraceGroup ? indeterminateTargetCollection() : emptyTargetCollection();
   }
   if (command.requiresExpansion) return indeterminateTargetCollection();
   const args = stripped.slice(commandIndex + 1);
-  return collectDirectCommandWriteTargets({
+  const collection = collectDirectCommandWriteTargets({
     command: command.value,
     args: args.map((token) => token.value),
     argsRequiringExpansion: args.map((token) => token.requiresExpansion),
     cwd,
     environment,
   });
+  collection.indeterminate ||= opensBraceGroup;
+  return collection;
 }
 
 /** The shell builtins that change the directory the rest of a line runs in. */
