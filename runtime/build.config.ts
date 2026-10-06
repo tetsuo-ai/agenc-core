@@ -4,8 +4,11 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
@@ -175,39 +178,78 @@ function copyYoloClassifierPrompts(): void {
 function compileLinuxProcessBroker(): void {
   if (process.platform !== 'linux') return;
   const compiler = process.env.CC?.trim() || 'cc';
-  const result = spawnSync(
-    compiler,
-    [
-      '-O2',
-      '-std=c11',
-      '-Wall',
-      '-Wextra',
-      '-Werror',
-      '-D_FORTIFY_SOURCE=2',
-      '-fstack-protector-strong',
-      '-Wl,-z,relro,-z,now',
-      '-o',
-      processBrokerDist,
-      processBrokerSource,
-    ],
-    {
-      cwd: runtimeRoot,
-      env: {
-        ...process.env,
-        LANG: 'C',
-        LC_ALL: 'C',
+  const temporary = mkdtempSync(resolve(runtimeRoot, 'dist/.namespace-init-build-'));
+  try {
+    const helper = resolve(temporary, 'namespace-init');
+    const staticBuild = spawnSync(compiler, [
+      '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',
+      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
+      '-o', helper, resolve(runtimeRoot, 'native/agenc-namespace-init.c'),
+    ], { cwd: runtimeRoot, env: { ...process.env, LANG: 'C', LC_ALL: 'C' }, encoding: 'utf8' });
+    if (staticBuild.error !== undefined || staticBuild.status !== 0) {
+      throw new Error('Static Linux namespace-init build failed' +
+        (staticBuild.error === undefined ? '' : `: ${staticBuild.error.message}`) +
+        (staticBuild.stderr ? `\n${staticBuild.stderr.trim()}` : ''));
+    }
+    const image = readFileSync(helper);
+    if (image.length < 64 || image.length > 2 * 1024 * 1024 ||
+        image.subarray(0, 6).toString('hex') !== '7f454c460201' ||
+        image.readUInt16LE(54) !== 56) {
+      throw new Error('Namespace init must be a bounded, static little-endian ELF64 image');
+    }
+    const programOffset = image.readBigUInt64LE(32);
+    const programCount = image.readUInt16LE(56);
+    if (programCount < 1 || programCount > 128 ||
+        programOffset + BigInt(programCount * 56) > BigInt(image.length)) {
+      throw new Error('Invalid namespace-init ELF program table');
+    }
+    for (let i = 0; i < programCount; ++i) {
+      if (image.readUInt32LE(Number(programOffset) + i * 56) === 3) {
+        throw new Error('Namespace init must not contain a dynamic interpreter');
+      }
+    }
+    const header = resolve(temporary, 'namespace-init-image.h');
+    writeFileSync(header, 'static const unsigned char agenc_namespace_init_image[] = {\n' +
+      Array.from(image, byte => String(byte)).join(',') + '\n};\n');
+    const result = spawnSync(
+      compiler,
+      [
+        '-O2',
+        '-std=c11',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-D_FORTIFY_SOURCE=2',
+        '-fstack-protector-strong',
+        '-Wl,-z,relro,-z,now',
+        `-DAGENC_NAMESPACE_INIT_IMAGE_HEADER=${JSON.stringify(header)}`,
+        '-o',
+        processBrokerDist,
+        processBrokerSource,
+      ],
+      {
+        cwd: runtimeRoot,
+        env: {
+          ...process.env,
+          LANG: 'C',
+          LC_ALL: 'C',
+        },
+        encoding: 'utf8',
       },
-      encoding: 'utf8',
-    },
-  );
-  if (result.error !== undefined || result.status !== 0) {
-    throw new Error(
-      'Linux process-broker build failed' +
-        (result.error === undefined ? '' : `: ${result.error.message}`) +
-        (result.stderr ? `\n${result.stderr.trim()}` : ''),
     );
+    if (result.error !== undefined || result.status !== 0) {
+      throw new Error(
+        'Linux process-broker build failed' +
+          (result.error === undefined ? '' : `: ${result.error.message}`) +
+          (result.stderr ? `\n${result.stderr.trim()}` : ''),
+      );
+    }
+    chmodSync(processBrokerDist, 0o755);
+    writeFileSync(resolve(runtimeRoot, 'dist/agenc-namespace-init-entry'),
+      'AGENC_NAMESPACE_INIT_ENTRY_V1\n', { mode: 0o644 });
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
-  chmodSync(processBrokerDist, 0o755);
 }
 
 function compileLinuxLandlockRun(): void {
