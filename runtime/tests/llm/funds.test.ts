@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { LLMFundsError, LLMManagedAdmissionError } from "../../src/llm/errors.js";
 import { isProviderFundsFailure, providerFundsMessage } from "../../src/llm/funds.js";
+// The provider registry registers the display names when it loads.
+import "../../src/llm/registry/provider-info.js";
 
 describe("providerFundsMessage", () => {
   it.each([

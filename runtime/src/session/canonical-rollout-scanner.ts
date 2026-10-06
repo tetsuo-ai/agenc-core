@@ -60,7 +60,6 @@ import {
   reconstructCompactionPayloadV1,
 } from "../services/compact/payload-manifest.js";
 import {
-  isCompactionRolloutType,
   readCompactionPersistedCommittedV1,
   readCompactionPersistedIntentV1,
   readCompactionPersistedRollbackCommittedV1,
@@ -280,7 +279,7 @@ interface MutableAttemptScan {
 }
 
 export interface CanonicalCompactionAttemptScan {
-  readonly intent?: CompactionIntentV1;
+  readonly intent: CompactionIntentV1;
   readonly records: readonly StrictCanonicalJournalRecord[];
   readonly admissionValid: boolean;
   readonly hasLaterCanonicalWork: boolean;
@@ -611,9 +610,7 @@ function scanCanonicalRolloutUntimed(
           [...state.attempts].map(([attemptId, attempt]) => [
             attemptId,
             {
-              ...(attempt.intent !== undefined
-                ? { intent: attempt.intent }
-                : {}),
+              intent: attempt.intent!,
               records: Object.freeze(attempt.records.slice()),
               admissionValid: validAdmission(attempt),
               hasLaterCanonicalWork:
@@ -955,26 +952,6 @@ function observeCanonicalRecord(
     return;
   }
 
-  const incompleteAttempt = [...state.attempts.values()].find(
-    (attempt) =>
-      attempt.persistedIntent !== undefined &&
-      attempt.intent === undefined &&
-      !attempt.terminal,
-  );
-  if (incompleteAttempt?.persistedIntent !== undefined) {
-    const incompleteAttemptId = incompleteAttempt.persistedIntent.attempt_id;
-    const sameAttemptLifecycle =
-      isCompactionRolloutType(item.type) && attemptId === incompleteAttemptId;
-    const sealedWithoutPayloads =
-      item.type === "compaction_committed" ||
-      item.type === "compaction_rollback_committed";
-    if (!sameAttemptLifecycle || sealedWithoutPayloads) {
-      throw new Error(
-        "canonical compaction intent is missing its required source payload bundle",
-      );
-    }
-  }
-
   if (persistedIntent !== undefined) {
     state.attempts.set(persistedIntent.attempt_id, {
       persistedIntent,
@@ -998,6 +975,18 @@ function observeCanonicalRecord(
       );
     }
     return;
+  }
+
+  const incompleteAttempt = [...state.attempts.values()].find(
+    (attempt) =>
+      attempt.persistedIntent !== undefined &&
+      attempt.intent === undefined &&
+      !attempt.terminal,
+  );
+  if (incompleteAttempt !== undefined) {
+    throw new Error(
+      "canonical compaction intent is missing its required source payload bundle",
+    );
   }
 
   const persistedCommit = persistedCommitPayload(item);
@@ -1392,7 +1381,6 @@ function assertAttemptsReconstructed(
   attempts: ReadonlyMap<string, MutableAttemptScan>,
 ): void {
   for (const attempt of attempts.values()) {
-    if (failedAttemptDroppedPayloads(attempt)) continue;
     if (attempt.intent === undefined) {
       throw new Error(
         "canonical compaction intent did not reconstruct its source manifests",
@@ -1412,13 +1400,6 @@ function assertAttemptsReconstructed(
   }
 }
 
-function failedAttemptDroppedPayloads(attempt: MutableAttemptScan): boolean {
-  return (
-    attempt.intent === undefined &&
-    attempt.records.some((record) => record.item.type === "compaction_failed")
-  );
-}
-
 /**
  * Line numbers the digest-anchored second pass must re-read: the caller's
  * additional lines, every attempt's active-history refs, and the live active
@@ -1431,8 +1412,7 @@ function collectSourceLines(
 ): Set<number> {
   const sourceLines = new Set(options.additionalSourceLines ?? []);
   for (const attempt of attempts.values()) {
-    if (attempt.intent === undefined) continue;
-    for (const ref of attempt.intent.source.active_history_refs) {
+    for (const ref of attempt.intent!.source.active_history_refs) {
       sourceLines.add(ref.first_sequence);
     }
   }
