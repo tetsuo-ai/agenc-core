@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
+import { eventStreamResponse } from "../shared/stream-terminal.js";
 import { BedrockHttpError, BedrockProvider } from "./index.js";
 import { childDispatchCertainty, classifyChildFailure } from "../../../../src/agents/child-terminal.js";
 import {
@@ -31,40 +32,6 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
-  });
-}
-
-function concatBytes(...chunks: readonly Uint8Array[]): Uint8Array {
-  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-function eventStreamFrame(payload: Record<string, unknown>): Uint8Array {
-  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
-  const totalLength = 16 + payloadBytes.length;
-  const frame = new Uint8Array(totalLength);
-  const view = new DataView(frame.buffer);
-  view.setUint32(0, totalLength, false);
-  view.setUint32(4, 0, false);
-  view.setUint32(8, 0, false);
-  frame.set(payloadBytes, 12);
-  view.setUint32(totalLength - 4, 0, false);
-  return frame;
-}
-
-function eventStreamResponse(
-  events: readonly Record<string, unknown>[],
-  status = 200,
-): Response {
-  return new Response(concatBytes(...events.map(eventStreamFrame)), {
-    status,
-    headers: { "content-type": "application/vnd.amazon.eventstream" },
   });
 }
 
@@ -1211,6 +1178,36 @@ describe("providers/bedrock", () => {
     expect(chunks).toContainEqual({ content: "", done: false, thinkingBlockStop: { index: 0 } });
     expect(JSON.stringify(chunks)).not.toContain("opaque");
     expect(response.content).toBe("Done.");
+  });
+
+  it("closes a started reasoning block on contentBlockStop before messageStop", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockStart: { contentBlockIndex: 0, start: {} } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { contentBlockStop: { contentBlockIndex: 0 } },
+      { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "Done." } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    const chunks: unknown[] = [];
+    const response = await provider.chatStream([{ role: "user", content: "hello" }], chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingBlockStop: { index: 0 } });
+    expect(response.content).toBe("Done.");
+    expect(response.finishReason).toBe("stop");
+  });
+
+  it("rejects messageStop while a started reasoning block is still open", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockStart: { contentBlockIndex: 0, start: {} } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    await expect(provider.chatStream([{ role: "user", content: "hello" }], () => {})).rejects.toThrow(
+      /open content or tool block/i,
+    );
   });
 
   it("streams ConverseStream text, tool input, final tool calls, and usage", async () => {
