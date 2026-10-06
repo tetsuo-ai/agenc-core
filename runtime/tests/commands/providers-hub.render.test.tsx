@@ -53,6 +53,9 @@ function fakeServices(overrides: Partial<ProvidersHubServices> = {}): ProvidersH
     connect: vi.fn(async () => ({ ok: true as const, message: "Key checked and saved." })),
     choose: vi.fn(async () => ({ ok: true as const, message: "saved" })),
     forget: vi.fn(() => ({ ok: true as const, message: "Saved key removed." })),
+    signIn: vi.fn(async () => ({ ok: true as const, account: "ana@example.com" })),
+    signOut: vi.fn(() => ({ ok: true as const, message: "Signed out of xAI (ana@example.com)." })),
+    setAuth: vi.fn(async () => ({ ok: true as const, message: "Saved. New sessions use the API key." })),
     ...overrides,
   };
 }
@@ -202,6 +205,120 @@ describe("providers screen", () => {
       const info = screen.screen();
       expect(info).toContain("ollama runs on this computer and is not answering.");
       expect(info).toContain("check again");
+    } finally {
+      screen.unmount();
+    }
+  });
+});
+
+describe("account sign-in on the providers screen", () => {
+  const grokNotSet = row({ provider: "grok", name: "xAI Grok", model: "grok-4.6" });
+  const grokSignedIn: ProvidersHubRow = {
+    ...grokNotSet,
+    connection: "connected",
+    status: "signed in as ana@example.com",
+    keySaved: true,
+    signIn: { account: "ana@example.com", keyAvailable: true, using: "account", setting: "auto" },
+  };
+  const withGrok = (grok: ProvidersHubRow): ProvidersHubSnapshot => ({
+    ...snapshot,
+    rows: [deepseek, grok, groq, ollama],
+  });
+  const grokModels = () => [
+    { model: "grok-4.6", displayModel: "grok-4.6", current: false, isDefault: true },
+  ];
+
+  it("offers sign-in or a key, shows the browser step, then the models", async () => {
+    let finish: (value: { ok: true; account: string }) => void = () => {};
+    const signIn = vi.fn(
+      (_provider: string, onProgress: (progress: { heading: string; url?: string; userCode?: string }) => void) => {
+        onProgress({
+          heading: "Sign in with your X / xAI account to continue.",
+          url: "https://auth.x.ai/activate",
+          userCode: "WXYZ-1234",
+        });
+        return new Promise<{ ok: true; account: string }>((resolve) => {
+          finish = resolve;
+        });
+      },
+    );
+    const services = fakeServices({
+      reload: () => withGrok(grokSignedIn),
+      modelsFor: grokModels,
+      signIn: signIn as ProvidersHubServices["signIn"],
+    });
+    const screen = await mount(
+      <ProvidersHubView initial={withGrok(grokNotSet)} services={services} onDone={() => {}} />,
+    );
+    try {
+      await screen.press("x", "a", "i", "\r");
+      const choices = screen.screen();
+      expect(choices).toContain("sign in with your x account");
+      expect(choices).toContain("paste an api key");
+
+      await screen.press("\r");
+      const waiting = screen.screen();
+      expect(signIn).toHaveBeenCalledWith("grok", expect.any(Function), expect.any(AbortSignal));
+      expect(waiting).toContain("xai grok sign-in");
+      expect(waiting).toContain("https://auth.x.ai/activate");
+      expect(waiting).toContain("wxyz-1234");
+
+      finish({ ok: true, account: "ana@example.com" });
+      await sleep(60);
+      const models = screen.screen();
+      expect(models).toContain("signed in as ana@example.com");
+      expect(models).toContain("grok-4.6");
+      expect(models).toContain("sign out (ana@example.com)");
+      expect(models).toContain("use the api key instead of your account");
+    } finally {
+      screen.unmount();
+    }
+  });
+
+  it("cancels a pending sign-in with esc", async () => {
+    const signIn = vi.fn(
+      (_provider: string, _onProgress: unknown, signal: AbortSignal) =>
+        new Promise<{ ok: false; cancelled: true; message: string }>((resolve) => {
+          signal.addEventListener("abort", () =>
+            resolve({ ok: false, cancelled: true, message: "Sign-in cancelled." }),
+          );
+        }),
+    );
+    const services = fakeServices({
+      reload: () => withGrok(grokNotSet),
+      signIn: signIn as unknown as ProvidersHubServices["signIn"],
+    });
+    const screen = await mount(
+      <ProvidersHubView initial={withGrok(grokNotSet)} services={services} onDone={() => {}} />,
+    );
+    try {
+      await screen.press("x", "a", "i", "\r", "\r");
+      expect(screen.screen()).toContain("esc to cancel");
+      await screen.press("\u001b");
+      await sleep(60);
+      expect((signIn.mock.calls[0]?.[2] as AbortSignal).aborted).toBe(true);
+      expect(screen.screen()).toContain("connect with");
+    } finally {
+      screen.unmount();
+    }
+  });
+
+  it("switches the saved choice to the API key", async () => {
+    const services = fakeServices({ reload: () => withGrok(grokSignedIn), modelsFor: grokModels });
+    const screen = await mount(
+      <ProvidersHubView
+        initial={withGrok(grokSignedIn)}
+        initialProvider="grok"
+        services={services}
+        onDone={() => {}}
+      />,
+    );
+    try {
+      // grok-4.6, Sign out, Use the API key instead
+      await screen.press("\u001b[B", "\u001b[B", "\r");
+      await sleep(60);
+      expect(services.setAuth).toHaveBeenCalledWith("grok", "api-key");
+      expect(screen.screen()).toContain("saved. new sessions use the api key.");
     } finally {
       screen.unmount();
     }

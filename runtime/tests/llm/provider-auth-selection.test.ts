@@ -4,6 +4,7 @@ import {
   PROVIDER_AUTH_ENV,
   providerAuthPreference,
   providerAuthSelection,
+  withConfiguredProviderAuth,
 } from "../../src/llm/provider-auth-selection.js";
 
 describe("providerAuthPreference", () => {
@@ -104,5 +105,36 @@ describe("providerAuthSelection", () => {
     expect(Object.isFrozen(selection.available)).toBe(true);
     available.oauth = false;
     expect(selection.available.oauth).toBe(true);
+  });
+});
+
+describe("withConfiguredProviderAuth", () => {
+  it("fills the configured choice where the environment leaves it unset", () => {
+    const filled = withConfiguredProviderAuth(
+      { XAI_API_KEY: "key", OPENAI_AUTH_MODE: "  " },
+      { providers: { grok: { auth: "api-key" }, openai: { auth: "oauth" } } },
+    );
+    expect(filled).toEqual({
+      XAI_API_KEY: "key",
+      OPENAI_AUTH_MODE: "oauth",
+      GROK_AUTH_MODE: "api-key",
+    });
+    expect(Object.isFrozen(filled)).toBe(true);
+    expect(providerAuthPreference("grok", filled)).toBe("api-key");
+  });
+
+  it("lets an exported variable win over the config", () => {
+    const environment = Object.freeze({ GROK_AUTH_MODE: "oauth" });
+    expect(
+      withConfiguredProviderAuth(environment, { providers: { grok: { auth: "api-key" } } }),
+    ).toBe(environment);
+  });
+
+  it("returns the same environment when there is nothing to fill", () => {
+    const environment = Object.freeze({ PATH: "/bin" });
+    expect(withConfiguredProviderAuth(environment, undefined)).toBe(environment);
+    expect(
+      withConfiguredProviderAuth(environment, { providers: { openai: { auth: "auto" } } }),
+    ).toBe(environment);
   });
 });
