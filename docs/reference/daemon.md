@@ -1071,6 +1071,18 @@ restoring. When they are all settled the daemon logs
 back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the startup phase
 `startup session restore complete`.
 
+A restored session gets the session environment its client supplied at
+creation (`envOverrides`), not the daemon's values. The daemon records the non-secret
+values with the run: provider endpoints, model and tool settings, proxies,
+and `PATH`. It never writes a credential value to disk, only the credential's
+name. When the client supplied a credential the session's model provider
+needs (its API key, a custom auth header or token, the mTLS key, or an
+endpoint or proxy URL that embeds a credential), the daemon cannot rebuild
+the same runtime. It publishes the session without one, and the next client
+resume supplies the credential again. A credential the provider does not read,
+such as a web search key, is left out of the rebuilt runtime. A run recorded
+before the daemon kept this record is published without a runtime once.
+
 A session whose runtime cannot be rebuilt is still published without one, as
 before. A session whose publication fails is rolled back and stays
 unpublished, and a client can resume it; the other sessions are not affected.

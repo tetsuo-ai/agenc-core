@@ -42,7 +42,10 @@ import {
 } from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
-import { captureRecoverableCommandEnvironment } from "./client-env-snapshot.js";
+import {
+  captureRecoverableCommandEnvironment,
+  captureRecoverableSessionEnvironment,
+} from "./client-env-snapshot.js";
 import { withTimeout } from "../utils/sleep.js";
 import {
   DaemonOperationScope,
@@ -1078,6 +1081,10 @@ export class AgenCDaemonAgentManager {
         unattendedAllow,
         unattendedDeny,
         commandEnvironment: captureRecoverableCommandEnvironment(params.envOverrides),
+        // The rest of the client snapshot a restart must reproduce: endpoint
+        // and setting values, plus only the names of credentials, which are
+        // never written to disk.
+        sessionEnvironment: recordedSessionEnvironment(params.envOverrides),
         // Session operator inputs are part of the durable run identity. A
         // daemon restart must restore the exact values captured at create
         // time, never reinterpret the daemon's current process environment.
@@ -5870,6 +5877,13 @@ export function inactiveAgentMessageForTest(
   agent: { readonly status: string } | undefined,
 ): string {
   return inactiveAgentMessage(agentId, agent as MutableAgent | undefined);
+}
+
+function recordedSessionEnvironment(
+  overrides: Readonly<Record<string, string>> | undefined,
+): JsonObject {
+  const { values, withheldKeys } = captureRecoverableSessionEnvironment(overrides);
+  return { values: { ...values }, withheldKeys: [...withheldKeys] };
 }
 
 function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {

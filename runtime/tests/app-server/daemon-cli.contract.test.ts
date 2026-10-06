@@ -8450,6 +8450,7 @@ function seedRecoverableDaemonState(
           ...(params.includeCommandEnvironment === false
             ? {}
             : { commandEnvironment: { PATH: "/usr/bin:/bin" } }),
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver
@@ -8669,6 +8670,7 @@ function seedRecoverableCompletedToolState(
           agentPath: `/root/${params.runId}`,
           runtimeOptions: TEST_RUNTIME_OPTIONS,
           commandEnvironment: { PATH: "/usr/bin:/bin" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver
