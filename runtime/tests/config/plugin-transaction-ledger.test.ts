@@ -28,10 +28,10 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 function attach(state: "published" | "rolling-back" = "published"): void {
   mutateCanonicalPluginTransactionSync(path, draft => {
     draft.ledger = {
-      version: 1, target: pluginConfigTargetDigest(draft.targetPath), epoch: randomUUID(),
+      version: 2, target: pluginConfigTargetDigest(draft.targetPath), epoch: randomUUID(),
       base: { present: true, value: false }, expected: { present: true, value: true },
       globalFenced: false,
-      operations: { [token]: { pluginId: "alpha", state, entryDigest: pluginEntryDigest(draft.raw, "alpha"), entryFenced: false, globalActive: true } },
+      operations: { [token]: { pluginId: "alpha", state, entryDigest: pluginEntryDigest(draft.raw, "alpha"), entryFenced: false, globalActive: true, published: true } },
     };
   });
 }
@@ -138,14 +138,14 @@ describe("atomic plugin ownership metadata", () => {
     expect(() => mutateCanonicalUserConfigSync(other, () => {})).toThrow(/different config target/u);
   });
 
-  it.each(["malformed", "duplicate", "unsupported", "oversized"])("rejects %s headers without modifying the file", kind => {
+  it.each(["malformed", "duplicate", "unsupported", "legacy", "oversized"])("rejects %s headers without modifying the file", kind => {
     attach();
     const text = readFileSync(path, "utf8");
     let changed: string;
     if (kind === "duplicate") changed = `${text.split("\n")[0]}\n${text}`;
     else if (kind === "malformed") changed = "# agenc-plugin-transactions: invalid!\n" + readPluginTransactionHeader(text).body;
     else if (kind === "oversized") changed = "# agenc-plugin-transactions: " + "A".repeat(65536) + "\n" + readPluginTransactionHeader(text).body;
-    else changed = "# agenc-plugin-transactions: " + Buffer.from(JSON.stringify({ ...readLedger(), version: 2 })).toString("base64") + "\n" + readPluginTransactionHeader(text).body;
+    else changed = "# agenc-plugin-transactions: " + Buffer.from(JSON.stringify({ ...readLedger(), version: kind === "legacy" ? 1 : 3 })).toString("base64") + "\n" + readPluginTransactionHeader(text).body;
     writeFileSync(path, changed);
     expect(() => mutateCanonicalUserConfigSync(path, raw => { raw.model = "no"; })).toThrow(/ownership metadata is invalid/u);
     expect(readFileSync(path, "utf8")).toBe(changed);
@@ -160,7 +160,7 @@ describe("atomic plugin ownership metadata", () => {
     attach();
     const ledger = readLedger();
     for (let n = 0; n < 64; n += 1) ledger.operations[randomUUID()] = {
-      pluginId: `plugin-${n}`, state: "published", entryDigest: "a".repeat(64), entryFenced: false, globalActive: true,
+      pluginId: `plugin-${n}`, state: "published", entryDigest: "a".repeat(64), entryFenced: false, globalActive: true, published: true,
     };
     expect(() => withPluginTransactionHeader("config_version = 2\n", ledger)).toThrow(/invalid/u);
   });

@@ -78,7 +78,7 @@ export function preparePluginConfigTransaction(configPath: string, pluginId: str
     const raw = state.raw;
     const initial = pluginEnabledProjection(raw);
     state.ledger ??= {
-      version: 1, target: pluginConfigTargetDigest(state.targetPath), epoch: randomUUID(),
+      version: 2, target: pluginConfigTargetDigest(state.targetPath), epoch: randomUUID(),
       base: initial, expected: initial, globalFenced: false, operations: {},
     };
     const ledger = state.ledger;
@@ -99,7 +99,7 @@ export function preparePluginConfigTransaction(configPath: string, pluginId: str
     };
     ledger.operations[token] = {
       pluginId, state: "prepared", entryDigest: pluginEntryDigest(raw, pluginId),
-      entryFenced: false, globalActive: false,
+      entryFenced: false, globalActive: false, published: false,
     };
     return { snapshot, configTargetPath: state.targetPath };
   });
@@ -120,6 +120,7 @@ export function publishPluginConfigTransaction(configPath: string, pluginId: str
     const previous = isPlainRecord(entries[pluginId]) ? entries[pluginId] : {};
     Object.defineProperty(entries, pluginId, { value: { ...previous, enabled: true }, enumerable: true, writable: true, configurable: true });
     op.state = "published";
+    op.published = true;
     op.entryDigest = pluginEntryDigest(state.raw, pluginId);
     op.globalActive = true;
     writeGlobal(state.raw, ledger);
@@ -129,32 +130,34 @@ export function publishPluginConfigTransaction(configPath: string, pluginId: str
 /** Durable reservation precedes every destructive payload rollback operation. */
 export function reservePluginConfigRollback(
   configPath: string, pluginId: string, token: string, previous: unknown,
+  allowUnpreparedStageCleanup = false,
 ): void {
   const snapshot = previous === undefined ? undefined : parseOwnedPluginConfigSnapshot(previous);
   if (previous !== undefined && snapshot === undefined) throw ambiguity();
   mutateCanonicalPluginTransactionSync(configPath, state => {
-    // An initial record may predate preparation. No contribution was made.
-    if (snapshot === undefined && state.ledger?.operations[token] === undefined) return;
+    // Only an intact, pre-rename staging phase can lack preparation evidence.
+    if (allowUnpreparedStageCleanup && snapshot === undefined && state.ledger?.operations[token] === undefined) return;
     const { ledger, op } = requireOperation(state, pluginId, token, snapshot);
     if (op.state === "rolled-back") return;
     if (op.state === "committed") throw ambiguity();
     fencePluginTransactionEdits(ledger, state.raw, state.raw);
     if (op.entryFenced || pluginEntryDigest(state.raw, pluginId) !== op.entryDigest) throw ambiguity();
-    if (snapshot === undefined && op.state !== "prepared") throw ambiguity();
+    if (snapshot === undefined && op.published) throw ambiguity();
     op.state = "rolling-back";
   });
 }
 
 export function finishPluginConfigRollback(
   configPath: string, pluginId: string, token: string, previous: unknown,
+  allowUnpreparedStageCleanup = false,
 ): void {
   const snapshot = previous === undefined ? undefined : parseOwnedPluginConfigSnapshot(previous);
   if (previous !== undefined && snapshot === undefined) throw ambiguity();
   mutateCanonicalPluginTransactionSync(configPath, state => {
-    if (snapshot === undefined && state.ledger?.operations[token] === undefined) return;
+    if (allowUnpreparedStageCleanup && snapshot === undefined && state.ledger?.operations[token] === undefined) return;
     const { ledger, op } = requireOperation(state, pluginId, token, snapshot);
     if (op.state === "rolled-back") return;
-    if (op.state !== "rolling-back") throw ambiguity();
+    if (op.state !== "rolling-back" || (snapshot === undefined && op.published)) throw ambiguity();
     fencePluginTransactionEdits(ledger, state.raw, state.raw);
     if (op.entryFenced || pluginEntryDigest(state.raw, pluginId) !== op.entryDigest) throw ambiguity();
     if (snapshot !== undefined) {

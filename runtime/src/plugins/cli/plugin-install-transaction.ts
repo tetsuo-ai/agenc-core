@@ -108,6 +108,8 @@ export interface PluginInstallTransactionHooks {
   ) => Promise<void>;
   /** Runs after publishConfig and before the config-published record is written. */
   readonly afterPublishConfig?: () => Promise<void>;
+  /** Test seam: prepared header written, snapshot not yet recorded. */
+  readonly afterPrepareConfig?: () => Promise<void>;
   /** Test seam: committed config finalized, operation record still retained. */
   readonly afterFinalizeConfig?: () => Promise<void>;
   /** Runs at the start of in-process rollback, while the lease is still held. */
@@ -115,6 +117,10 @@ export interface PluginInstallTransactionHooks {
 }
 
 export interface PluginInstallRecoveryHooks {
+  /** Test seam: durable config reservation obtained, payload not yet touched. */
+  readonly afterConfigRollbackReserved?: () => Promise<void>;
+  /** Test seam: reserved recovery is about to restore a matched backup. */
+  readonly beforeRestoreMatchedDirectory?: () => Promise<void>;
   /** Test seam: crash after the new destination is removed and before the backup is renamed back. */
   readonly afterRollbackDestinationRemoved?: () => Promise<void>;
   /** Test seam: runs after the dead-lease read and before the claim. */
@@ -296,6 +302,7 @@ async function runLockedPluginInstallTransaction(
   try {
     await writeOperationRecord(recordPath, state.record);
     await activateStagedPlugin(input, state, recordPath, stagePath);
+    await prepareTransactionConfig(input, state, recordPath);
     await moveUpdateBackup(input, state, recordPath, destination, backupPath, parent);
     await replaceDestinationWithStage(input, state, recordPath, stagePath, destination, parent);
     await publishTransactionConfig(input, state, recordPath);
@@ -385,14 +392,15 @@ async function replaceDestinationWithStage(
   await invokeAfterPhase(input.hooks, state.record, recordPath);
 }
 
-async function publishTransactionConfig(
+async function prepareTransactionConfig(
   input: Parameters<typeof runPluginInstallTransaction>[0],
   state: TransactionState,
   recordPath: string,
 ): Promise<void> {
   const captured = splitPluginConfigSnapshot(await input.readPluginConfig?.(transactionContext(state.record, recordPath)));
+  await input.hooks?.afterPrepareConfig?.();
   state.record = await persistPhase(recordPath, state.record, {
-    phase: "destination-replaced",
+    phase: "stage-ready",
     ...(captured.previousPluginConfig === undefined
       ? {}
       : { previousPluginConfig: captured.previousPluginConfig }),
@@ -400,6 +408,13 @@ async function publishTransactionConfig(
       ? {}
       : { configTargetPath: captured.configTargetPath }),
   });
+}
+
+async function publishTransactionConfig(
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+  state: TransactionState,
+  recordPath: string,
+): Promise<void> {
   await input.hooks?.beforePublishConfig?.(transactionContext(state.record, recordPath));
   await input.publishConfig(transactionContext(state.record, recordPath));
   await input.hooks?.afterPublishConfig?.();
@@ -666,7 +681,9 @@ async function recoverRecord(
     if (record.phase === "committed") {
       finalizePluginConfigTransaction(target, record.pluginId, record.operationId, record.previousPluginConfig);
     } else {
-      reservePluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig);
+      reservePluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig,
+        record.phase === "record-created" || record.phase === "stage-ready");
+      await hooks?.afterConfigRollbackReserved?.();
     }
   } else if (record.previousPluginConfig !== undefined
     && record.phase !== "record-created" && record.phase !== "stage-ready") {
@@ -917,6 +934,7 @@ async function finishBackupRestore(
   if (!(await pathExists(record.destination)) && await pathExists(record.backupPath)) {
     const backupMatches = await directoryMatchesIdentity(record.backupPath, record.backupIdentity);
     if (!backupMatches.ok) return identityIssue(record, recordPath, backupMatches);
+    await hooks?.beforeRestoreMatchedDirectory?.();
     const restored = await restoreMatchingDirectory(
       record.backupPath,
       record.destination,
@@ -1359,7 +1377,8 @@ async function removeOperationRecord(recordPath: string, record: PluginInstallOp
   if (record.configOwnershipVersion === 1) {
     const target = ownedConfigTarget(record);
     if (record.phase === "committed") finalizePluginConfigTransaction(target, record.pluginId, record.operationId, record.previousPluginConfig);
-    else finishPluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig);
+    else finishPluginConfigRollback(target, record.pluginId, record.operationId, record.previousPluginConfig,
+      record.phase === "record-created" || record.phase === "stage-ready");
   }
   await rm(recordPath, { force: true });
   await syncDirectory(dirname(recordPath));

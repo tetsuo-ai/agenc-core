@@ -2190,3 +2190,112 @@ it.each(["alpha-first", "beta-first"] as const)("rolls back two failed publicati
   expect(config.plugins?.plugins?.beta).toBeUndefined();
   expect((await listInstalledPlugins(world.authority)).plugins).toEqual([]);
 });
+
+
+it.each(["install", "update"] as const)(
+  "resumes prepared-only %s recovery after a second crash immediately after reservation",
+  async kind => {
+    const world = kind === "update" ? await installDemoV1() : await createWorld();
+    const configPath = join(world.agencHome, "config.toml");
+    applyCanonicalConfigPatchSync(configPath, { plugins: { enabled: false } }, "user");
+    const initialConfig = parseToml(await readFile(configPath, "utf8"));
+    const hooks: PluginInstallTransactionHooks = {
+      afterPrepareConfig: async () => { throw new PluginInstallTransactionSimulatedCrash("stage-ready"); },
+    };
+    await expect(kind === "update" ? updateDemo(world, hooks) : installFresh(world, "fresh", hooks))
+      .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    const name = (await readdir(ops)).find(name => name.endsWith(".json"))!;
+    const record = JSON.parse(await readFile(join(ops, name), "utf8"));
+    expect(record.phase).toBe("stage-ready");
+    expect(record.previousPluginConfig).toBeUndefined();
+    let reserved = false;
+    await expect(recoverLikeDaemon(world, {
+      afterConfigRollbackReserved: async () => {
+        reserved = true;
+        throw new PluginInstallTransactionSimulatedCrash("stage-ready");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    expect(reserved).toBe(true);
+    expect(await pathExists(record.stagePath)).toBe(true);
+    const result = await recoverLikeDaemon(world);
+    expect(result.issues).toEqual([]);
+    expect(result.recovered).toBe(1);
+    expect(parseToml(await readFile(configPath, "utf8"))).toEqual(initialConfig);
+    expect(await pathExists(record.stagePath)).toBe(false);
+    expect(await pathExists(join(ops, name))).toBe(false);
+    if (kind === "update") expect(await readPluginVersion((world as InstalledDemo).destination)).toBe("1.0.0");
+    else expect(await pathExists(record.destination)).toBe(false);
+    applyCanonicalConfigPatchSync(configPath, { plugins: { enabled: true } }, "user");
+    expect((await recoverLikeDaemon(world)).recovered).toBe(0);
+  },
+);
+
+it.each([
+  ["install", "destination-replace-intended", "rename"],
+  ["install", "destination-replaced", "phase"],
+  ["update", "destination-backup-intended", "rename"],
+  ["update", "destination-backed-up", "phase"],
+  ["update", "destination-replace-intended", "rename"],
+  ["update", "destination-replaced", "phase"],
+] as const)("reserves %s recovery after %s (%s) before payload changes", async (kind, crashPhase, seam) => {
+  const world = kind === "update" ? await installDemoV1() : await createWorld();
+  const configPath = join(world.agencHome, "config.toml");
+  const crash = async (phase: PluginInstallTransactionPhase) => {
+    if (phase === crashPhase) throw new PluginInstallTransactionSimulatedCrash(phase);
+  };
+  const hooks = seam === "rename" ? { afterDirectoryRename: crash } : { afterPhase: crash };
+  await expect(kind === "update" ? updateDemo(world, hooks) : installFresh(world, "fresh", hooks))
+    .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+  const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+  const name = (await readdir(ops)).find(name => name.endsWith(".json"))!;
+  const record = JSON.parse(await readFile(join(ops, name), "utf8"));
+  expect(record.previousPluginConfig.ownershipVersion).toBe(1);
+  expect(record.phase).toBe(crashPhase);
+  let attempted = false;
+  const storageBefore = await storageNames(world);
+  const result = await recoverLikeDaemon(world, {
+    beforeRemoveMatchedDirectory: async path => {
+      if (path !== record.destination) return;
+      attempted = true;
+      applyCanonicalConfigPatchSync(configPath, { plugins: { enabled: false } }, "user");
+    },
+    beforeRestoreMatchedDirectory: async () => {
+      attempted = true;
+      applyCanonicalConfigPatchSync(configPath, { plugins: { enabled: false } }, "user");
+    },
+  });
+  expect(attempted).toBe(true);
+  expect(result.recovered).toBe(0);
+  expect(result.issues.some(issue => /reserved for install recovery/u.test(issue.message))).toBe(true);
+  expect(await storageNames(world)).toEqual(storageBefore);
+  expect(await pathExists(join(ops, name))).toBe(true);
+  const completed = await recoverLikeDaemon(world);
+  expect(completed.issues).toEqual([]);
+  expect(completed.recovered).toBe(1);
+  if (kind === "update") expect(await readPluginVersion((world as InstalledDemo).destination)).toBe("1.0.0");
+  else expect(await pathExists(record.destination)).toBe(false);
+});
+
+it("preserves a replaced destination when the record and config lack preparation evidence", async () => {
+  const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
+  const configPath = join(installed.agencHome, "config.toml");
+  const ops = join(installed.pluginStorageRoot, ".plugin-install-ops");
+  const name = (await readdir(ops)).find(name => name.endsWith(".json"))!;
+  const recordPath = join(ops, name);
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  delete record.previousPluginConfig;
+  await writeFile(recordPath, `${JSON.stringify(record)}\n`);
+  // Models the older pre-preparation crash window. Equal config values alone
+  // do not grant permission to revert a destination that has already changed.
+  const text = await readFile(configPath, "utf8");
+  await writeFile(configPath, text.split("\n").filter(line => !line.startsWith("# agenc-plugin-transactions:")).join("\n"));
+  const configBefore = await readFile(configPath, "utf8");
+  const result = await recoverLikeDaemon(installed);
+  expect(result.recovered).toBe(0);
+  expect(result.issues.some(issue => /ownership is ambiguous/u.test(issue.message))).toBe(true);
+  expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+  expect(await readPluginVersion(await requireStorageChild(installed, ".bak-"))).toBe("1.0.0");
+  expect(await pathExists(recordPath)).toBe(true);
+  expect(await readFile(configPath, "utf8")).toBe(configBefore);
+});

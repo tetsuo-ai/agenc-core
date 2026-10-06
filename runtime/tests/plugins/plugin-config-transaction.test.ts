@@ -144,3 +144,18 @@ it("rejects a snapshot from another epoch before restoring an entry", () => {
   expect(() => reserve(path, "alpha", a.token, { ...a.snapshot, epoch: randomUUID() })).toThrow(/ambiguous/u);
   expect(enabled()).toBe(true);
 });
+
+
+it("does not infer unpublished origin from a missing snapshot on a published reservation", () => {
+  const a = start("alpha");
+  reserve(path, "alpha", a.token, a.snapshot);
+  expect(() => reserve(path, "alpha", a.token, undefined)).toThrow(/ambiguous/u);
+  expect(() => rollback(path, "alpha", a.token, undefined)).toThrow(/ambiguous/u);
+  undo("alpha", a);
+  expect(enabled()).toBe(false);
+});
+
+it("requires ownership before destination rollback even if both token and snapshot are missing", () => {
+  expect(() => reserve(path, "alpha", randomUUID(), undefined)).toThrow(/ambiguous/u);
+  expect(() => rollback(path, "alpha", randomUUID(), undefined)).toThrow(/ambiguous/u);
+});

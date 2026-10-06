@@ -20,10 +20,12 @@ export interface PluginTransactionContribution {
   entryDigest: string;
   entryFenced: boolean;
   globalActive: boolean;
+  /** Durable origin retained while rollback changes state. */
+  published: boolean;
 }
 
 export interface PluginTransactionLedger {
-  version: 1;
+  version: 2;
   target: string;
   epoch: string;
   base: PluginEnabledProjection;
@@ -69,7 +71,7 @@ function ledgerError(): Error {
 }
 
 export function validatePluginTransactionLedger(value: unknown): asserts value is PluginTransactionLedger {
-  if (!isPlainRecord(value) || value.version !== 1
+  if (!isPlainRecord(value) || value.version !== 2
     || typeof value.target !== "string" || !DIGEST.test(value.target)
     || typeof value.epoch !== "string" || !UUID.test(value.epoch)
     || !validProjection(value.base) || !validProjection(value.expected)
@@ -86,8 +88,12 @@ export function validatePluginTransactionLedger(value: unknown): asserts value i
       || typeof operation.entryDigest !== "string" || !DIGEST.test(operation.entryDigest)
       || typeof operation.entryFenced !== "boolean"
       || typeof operation.globalActive !== "boolean"
+      || typeof operation.published !== "boolean"
+      || (operation.state === "prepared" && operation.published)
+      || ((operation.state === "published" || operation.state === "committed") && !operation.published)
+      || (operation.globalActive && !operation.published)
       || !["prepared", "published", "rolling-back", "rolled-back", "committed"].includes(String(operation.state))
-      || Object.keys(operation).some(key => !["pluginId", "state", "entryDigest", "entryFenced", "globalActive"].includes(key))) {
+      || Object.keys(operation).some(key => !["pluginId", "state", "entryDigest", "entryFenced", "globalActive", "published"].includes(key))) {
       throw ledgerError();
     }
     if (operation.state !== "rolled-back" && operation.state !== "committed") {

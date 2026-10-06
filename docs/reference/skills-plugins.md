@@ -370,7 +370,10 @@ process-crash recovery. Config publication also keeps a bounded, versioned
 ownership ledger are written in the same atomic replacement. The comment is
 internal recovery metadata, not a configuration setting.
 
-Each pending install contributes global enablement. A committed install makes
+Ownership preparation and its durable operation-record binding precede destination
+backup or replacement. Preparation alone does not enable plugins; its unpublished
+origin remains recorded if recovery itself restarts after taking a reservation.
+Each published pending install contributes global enablement. A committed install makes
 that enablement part of the shared baseline. Rolling back another plugin cannot
 undo it. If every pending install fails, recovery restores the original global
 flag, including its absence. Explicit newer enable/disable/remove edits carry
