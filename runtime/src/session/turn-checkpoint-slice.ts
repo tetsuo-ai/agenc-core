@@ -34,6 +34,7 @@ export const TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
   "textToolCallCorrectionCount",
   "textToolCallCorrection",
   "reasoningOnlyRecoveryPending",
+  "reasoningOnlyRecoveryCount",
 ] as const);
 
 export const PENDING_ADMISSION_FALLBACK_KEYS = Object.freeze([
@@ -57,6 +58,7 @@ export interface TurnCheckpointSliceLine {
   readonly recoveryReentryCount: number;
   readonly maxOutputTokensRecoveryCount: number;
   readonly reasoningOnlyRecoveryPending?: true;
+  readonly reasoningOnlyRecoveryCount?: number;
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
   readonly planToolRequiredRetryCount?: number;
@@ -81,7 +83,7 @@ export interface TurnCheckpointSliceLine {
 
 export type LegacyTurnCheckpointSliceLine = Omit<
   TurnCheckpointSliceLine,
-  "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending"
+  "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending" | "reasoningOnlyRecoveryCount"
 > & {
   readonly pendingAdmissionFallback?: never;
 };

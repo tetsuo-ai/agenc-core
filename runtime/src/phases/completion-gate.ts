@@ -934,6 +934,7 @@ export async function completionGate(
   // Same recovery-shared resets as the continuation nudge: the re-entry is
   // a fresh sample, not a continuation of a recovery ladder.
   state.maxOutputTokensRecoveryCount = 0;
+  state.reasoningOnlyRecoveryCount = undefined;
   state.hasAttemptedReactiveCompact = false;
   state.maxOutputTokensOverride = undefined;
   state.pendingToolUseSummary = undefined;

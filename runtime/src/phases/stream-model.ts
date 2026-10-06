@@ -1728,5 +1728,16 @@ export async function streamModel(
     }
     state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };
   }
+  // A completed thinking-off recovery that yields a validated tool call or
+  // final answer is productive. Do not forgive visible/truncated retries,
+  // empty replies, rejected calls, caps, or transport failures.
+  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      providerName, session.config?.model ?? ctx.modelInfo.slug,
+    ) && state.pendingTextToolCallCorrection === undefined &&
+    (response.finishReason === "stop" || response.finishReason === "tool_calls") &&
+    (assistant.toolCalls.length > 0 ||
+      (response.finishReason === "stop" && Boolean(assistant.text?.trim())))) {
+    state.reasoningOnlyRecoveryCount = 0;
+  }
   return state;
 }

@@ -1066,6 +1066,7 @@ function parseCheckpointAdmissionState(
 
 interface ParsedCheckpointModelSampleState {
   reasoningOnlyRecoveryPending?: true;
+  reasoningOnlyRecoveryCount?: number;
   modelSampleOrdinal?: number;
   modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
   textToolCallCorrectionCount?: number;
@@ -1076,6 +1077,11 @@ function parseCheckpointModelSampleState(
   value: Record<string, unknown>,
 ): ParsedCheckpointModelSampleState {
   const result: ParsedCheckpointModelSampleState = {};
+  if (value.reasoningOnlyRecoveryCount !== undefined) {
+    result.reasoningOnlyRecoveryCount = nonNegativeInteger(
+      value.reasoningOnlyRecoveryCount, "resumableState.reasoningOnlyRecoveryCount",
+    );
+  }
   if (value.reasoningOnlyRecoveryPending !== undefined) {
     if (value.reasoningOnlyRecoveryPending !== true) {
       throw malformed("resumableState.reasoningOnlyRecoveryPending is invalid");
