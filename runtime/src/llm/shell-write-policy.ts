@@ -334,33 +334,158 @@ function stripRedirections(tokens: readonly ShellToken[]): ShellToken[] {
   return output;
 }
 
-function extractWrappedShellCommand(args: readonly string[]): string | undefined {
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-    if (token === "-c" || token === "-lc" || token === "-ic" || token === "--command") {
-      const command = args[i + 1];
-      return typeof command === "string" && command.trim().length > 0
-        ? command
-        : undefined;
+/**
+ * Option letters that bash, dash, zsh and ksh93 each read as a flag taking no
+ * argument, or refuse and exit without running anything. Left out: `b` (zsh
+ * ends its options after it), `s` (the code comes from stdin), and `R` and
+ * `T` (ksh93 takes the next word after them).
+ */
+const SHELL_WRAPPER_FLAG_LETTERS = new Set("aefhiklmnprtuvxBCEHP");
+/** bash's long options that take no argument. zsh and ksh93 read the ones they know the same way. */
+const BASH_LONG_FLAGS = new Set([
+  "debugger",
+  "dump-po-strings",
+  "dump-strings",
+  "help",
+  "login",
+  "noediting",
+  "noprofile",
+  "norc",
+  "posix",
+  "restricted",
+  "verbose",
+  "version",
+]);
+/** bash's long options that take the next word. The other shells refuse them and run nothing. */
+const BASH_LONG_OPTIONS_WITH_ARGUMENT = new Set(["init-file", "rcfile"]);
+
+/**
+ * Where a shell wrapper takes the code it runs: the word it runs as code
+ * (`-c`), the word naming the script it runs, or, when the command line does
+ * not show that, the first word that could be the code. With no such word
+ * (`bash`, `bash -i`), the code comes from stdin.
+ */
+type ShellWrapperOperand =
+  | { readonly kind: "code" | "script"; readonly index: number }
+  | { readonly kind: "unknown"; readonly from: number };
+
+/**
+ * Reads a wrapper's options the way bash, dash, zsh and ksh do: `c` anywhere
+ * in a short option cluster (`-ec`, `+c`) asks for code; `o`, and for bash
+ * `O`, at the end of a cluster takes the next word (`-eo pipefail`); bash's
+ * `--rcfile` and `--init-file` take the next word; `--` or `-` ends the
+ * options. The first word after the options is the code when `c` was given,
+ * else the script, so `bash -c -e CODE` runs CODE. Anything the shells read
+ * differently or this reader does not know leaves the code unknown from that
+ * word on: an `o` inside a cluster (`-opipefail` is one option to zsh and
+ * ksh93, two to bash), `-O` outside bash (a flag to zsh), a lone `+`, or
+ * bash's single-dash spelling of a long option (`-rcfile FILE` before the
+ * short options, letters to the other shells).
+ */
+function parseShellWrapperOptions(
+  shell: string,
+  args: readonly string[],
+): ShellWrapperOperand {
+  let runsCode = false;
+  let index = 0;
+  while (index < args.length) {
+    const word = args[index]!;
+    if (word === "--" || word === "-") {
+      index += 1;
+      break;
     }
+    if (!word.startsWith("-") && !word.startsWith("+")) break;
+    let next = index + 1;
+    if (word.startsWith("--")) {
+      const name = word.slice(2);
+      if (BASH_LONG_OPTIONS_WITH_ARGUMENT.has(name)) next += 1;
+      else if (!BASH_LONG_FLAGS.has(name)) return { kind: "unknown", from: index };
+    } else {
+      const name = word.slice(1);
+      if (name.length === 0 || BASH_LONG_FLAGS.has(name) || BASH_LONG_OPTIONS_WITH_ARGUMENT.has(name)) {
+        return { kind: "unknown", from: index };
+      }
+      for (let at = 1; at < word.length; at += 1) {
+        const letter = word[at]!;
+        if (letter === "c") {
+          runsCode = true;
+        } else if (
+          (letter === "o" || (letter === "O" && shell === "bash")) &&
+          at === word.length - 1
+        ) {
+          next += 1;
+        } else if (!SHELL_WRAPPER_FLAG_LETTERS.has(letter)) {
+          return { kind: "unknown", from: index };
+        }
+      }
+    }
+    if (next > args.length) return { kind: "unknown", from: index };
+    index = next;
   }
-  return undefined;
+  if (index >= args.length) return { kind: "unknown", from: args.length };
+  return { kind: runsCode ? "code" : "script", index };
 }
 
-function hasWrapperScriptOperand(args: readonly string[]): boolean {
-  let treatRemainingAsOperands = false;
-  for (const token of args) {
-    if (!token) continue;
-    if (!treatRemainingAsOperands && token === "--") {
-      treatRemainingAsOperands = true;
-      continue;
-    }
-    if (!treatRemainingAsOperands && token.startsWith("-")) {
-      continue;
-    }
-    return true;
+/**
+ * The wrapper's operand, with the words the outer shell still expands taken
+ * into account. Such a word up to the operand could expand into options or
+ * into nothing, which moves the code onto any later word (`bash $F CODE`
+ * with `F=-c`, `bash -c "$C" CODE` with `C=-e`), so when a word follows it,
+ * the code is unknown from it on. As the last word it moves nothing, so
+ * `bash "$SCRIPT"` still runs a script.
+ */
+function readShellWrapperOperand(
+  shell: string,
+  args: readonly string[],
+  argsRequiringExpansion: readonly boolean[] | undefined,
+): ShellWrapperOperand {
+  const operand = parseShellWrapperOptions(shell, args);
+  const last = operand.kind === "unknown" ? operand.from - 1 : operand.index;
+  for (let index = 0; index <= last && index < args.length - 1; index += 1) {
+    if (argsRequiringExpansion?.[index] === true) return { kind: "unknown", from: index };
   }
-  return false;
+  return operand;
+}
+
+/**
+ * `sh -c CODE [name [arg]...]` runs CODE, so it writes what CODE writes. The
+ * outer shell expands CODE before sh reads it, so the quotes CODE shows are
+ * not the ones sh sees (`sh -c "echo '$X'"`): a code word the shell still
+ * expands leaves the code unknown, and the targets its literal text names are
+ * still judged. When the options do not show which word is the code, every
+ * word that could be is judged that way, so a protected path one of them
+ * names stays refused.
+ *
+ * `sh FILE [arg]...` runs FILE, which the command line does not show. ksh93
+ * runs a FILE it cannot find as the code `FILE "$@"` instead, so for ksh a
+ * literal FILE is judged as that code too (`ksh 'rm -rf .git'` removes .git).
+ */
+function collectWrappedShellWriteTargets(params: {
+  readonly shell: string;
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const { args, cwd, environment } = params;
+  const operand = readShellWrapperOperand(params.shell, args, params.argsRequiringExpansion);
+  if (operand.kind === "unknown") {
+    const collection = indeterminateTargetCollection();
+    for (const word of args.slice(operand.from)) {
+      mergeTargetCollections(collection, collectShellCommandWriteTargets(word, cwd, environment));
+    }
+    return collection;
+  }
+  const word = args[operand.index]!;
+  const expands = params.argsRequiringExpansion?.[operand.index] === true;
+  if (operand.kind === "code") {
+    const collection = collectShellCommandWriteTargets(word, cwd, environment);
+    collection.indeterminate ||= expands;
+    return collection;
+  }
+  if (params.shell !== "ksh" || expands) return emptyTargetCollection();
+  const code = operand.index + 1 < args.length ? `${word} "$@"` : word;
+  return collectShellCommandWriteTargets(code, cwd, environment);
 }
 
 /**
@@ -744,12 +869,7 @@ function collectDirectCommandWriteTargets(params: {
     return collectEnvCommandWriteTargets(params);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
-    const nestedCommand = extractWrappedShellCommand(params.args);
-    return nestedCommand
-      ? collectShellCommandWriteTargets(nestedCommand, params.cwd, params.environment)
-      : hasWrapperScriptOperand(params.args)
-        ? emptyTargetCollection()
-        : indeterminateTargetCollection();
+    return collectWrappedShellWriteTargets({ ...params, shell: command });
   }
   if (command === "eval") {
     return collectEvalWriteTargets(params);

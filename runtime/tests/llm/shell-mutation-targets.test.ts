@@ -59,6 +59,21 @@ describe("collectShellMutationTargets", () => {
     expect(targets("cd sub && rm a").indeterminate).toBe(false);
   });
 
+  it("marks sh -c code the shell still expands as indeterminate", () => {
+    expect(targets("bash -c \"rm a; echo '$X'\"")).toEqual({
+      targets: [join(ROOT, "a")],
+      indeterminate: true,
+    });
+    expect(targets("bash -c 'rm a; echo \"$X\"'").indeterminate).toBe(false);
+  });
+
+  it("reads the code behind a shell wrapper's options", () => {
+    for (const command of ["bash -ec 'rm a'", "bash -c -e 'rm a'", "sh -c -o errexit 'rm a'", "ksh 'rm a'"]) {
+      expect(targets(command), command).toEqual({ targets: [join(ROOT, "a")], indeterminate: false });
+    }
+    expect(targets("bash $F 'rm a'")).toEqual({ targets: [join(ROOT, "a")], indeterminate: true });
+  });
+
   it("reads an argument vector in its working directory", () => {
     expect(collectShellMutationTargets({
       toolName: "system.bash",
