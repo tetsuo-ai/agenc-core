@@ -1,4 +1,4 @@
-import { prepareDirectBwrapPlan } from "../sandbox/linux-launcher/direct-bwrap.js";
+import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
   spawn,
@@ -333,6 +333,8 @@ interface ProcessEntry {
    * server &` that vanished is explained and pointed at `detach: true`.
    */
   residualProcessesTerminated?: boolean;
+  residualProcessesObserved?: boolean;
+  commandOutcome?: "aborted" | "unavailable";
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
@@ -442,6 +444,8 @@ function createResult(params: {
   readonly timedOut: boolean;
   readonly maxOutputTokens?: number;
   readonly residualProcessesTerminated?: boolean;
+  readonly residualProcessesObserved?: boolean;
+  readonly commandOutcome?: "aborted" | "unavailable";
   readonly detached?: {
     readonly pid?: number;
     readonly logPath: string;
@@ -473,6 +477,8 @@ function createResult(params: {
     ...(params.residualProcessesTerminated === true
       ? { residual_processes_terminated: true }
       : {}),
+    ...(params.residualProcessesObserved === true ? { residual_processes_observed: true } : {}),
+    ...(params.commandOutcome === undefined ? {} : { command_outcome: params.commandOutcome }),
     ...(params.detached !== undefined
       ? {
           detached: true,
@@ -1420,7 +1426,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         argv0: params.argv0 ?? basename(params.program),
         ...(params.allowDirectBwrap && params.runtimeSandbox !== undefined ? {
           directBwrap: {
-            prepare: () => prepareDirectBwrapPlan({ program: params.program,
+            protocol: "v3",
+            prepare: () => prepareDirectBwrapV3Plan({ program: params.program,
               args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
             validateAdmission: () => this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration),
             signal: abortController.signal,
@@ -1478,6 +1485,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             // Optional chaining: test doubles of the supervisor resolve void.
             if (outcome?.residualProcessesTerminated === true) {
               entry.residualProcessesTerminated = true;
+            }
+            if (outcome?.residualProcessesObserved === true) entry.residualProcessesObserved = true;
+            const command = outcome?.commandOutcome;
+            if (command?.kind === "reported") {
+              state = { exitCode: command.result.kind === "exit" ? command.result.code : 128 + command.result.signal };
+            } else if (command !== undefined) {
+              entry.commandOutcome = command.kind;
+              probeHint?.invalidate();
+              state = { exitCode: null };
+              if (command.kind === "unavailable") notifyData("stderr",
+                "Command outcome unavailable after dispatch; cleanup is complete. Do not replay automatically.");
             }
             if (spawnError !== undefined) {
               notifyData("stderr", spawnError.message);
@@ -1708,6 +1726,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       durationMs: (entry.endedAt ?? Date.now()) - entry.startedAt,
       timedOut: entry.hardTimeoutExpired === true || timedOut,
       maxOutputTokens: options.maxOutputTokens,
+      ...(entry.residualProcessesObserved === true ? { residualProcessesObserved: true } : {}),
+      ...(entry.commandOutcome === undefined ? {} : { commandOutcome: entry.commandOutcome }),
       ...(entry.residualProcessesTerminated === true
         ? { residualProcessesTerminated: true }
         : {}),

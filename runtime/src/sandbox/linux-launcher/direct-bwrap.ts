@@ -94,7 +94,7 @@ export function prepareDirectBwrapPlan(input: DirectBwrapInput): PreparedDirectB
   return preparePlan(input, false);
 }
 
-/** Connected to production only together with the V3 outcome consumers. */
+/** Authenticated namespace-init route with the fixed installed artifact. */
 export function prepareDirectBwrapV3Plan(input: DirectBwrapInput): PreparedDirectBwrap | undefined {
   return preparePlan(input, true);
 }

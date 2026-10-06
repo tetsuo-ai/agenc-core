@@ -28,6 +28,7 @@ import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
+import { ProcessBrokerV3StatusDecoder, PROCESS_BROKER_V3_CAPABILITY, type ProcessBrokerV3Outcome } from "./process-broker-protocol-v3.js";
 import { PROCESS_BROKER_V2_CAPABILITY } from "./process-broker-protocol-v2.js";
 import { consumeDirectBwrapPlan, type PreparedDirectBwrap, type DirectBwrapHandoff } from "./direct-bwrap-handoff.js";
 import { isSignalablePid } from "./child-signal.js";
@@ -99,6 +100,7 @@ export interface SupervisedProcessOptions {
   readonly linuxContainment?: "auto" | "subreaper";
   /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
   readonly directBwrap?: {
+    readonly protocol?: "v3";
     readonly prepare: () => PreparedDirectBwrap | undefined;
     readonly validateAdmission: () => void;
     readonly signal: AbortSignal;
@@ -120,6 +122,7 @@ export interface SupervisedProcessOptions {
 }
 
 export interface SupervisedProcessResult {
+  readonly commandOutcome?: ProcessBrokerV3Outcome;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stdout: Buffer;
@@ -568,9 +571,18 @@ type LinuxSubreaperBoundary = {
   verified: boolean;
   pendingSignal?: LinuxSubreaperControlSignal;
   protocolError?: Error;
+  readonly outcomeDecoder?: ProcessBrokerV3StatusDecoder;
+  commandOutcome?: ProcessBrokerV3Outcome;
 };
 
 const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
+
+/** Available only after transport EOF AND independently proven tree cleanup. */
+export function containedProcessCommandOutcome(child: ChildProcessWithoutNullStreams): ProcessBrokerV3Outcome | undefined {
+  const boundary = linuxSubreaperBoundaries.get(child);
+  return boundary?.closed && boundary.verified && boundary.protocolError === undefined
+    ? boundary.commandOutcome : undefined;
+}
 
 /**
  * Allow an exited child's native cleanup proof to drain before verification.
@@ -650,6 +662,7 @@ export interface ContainedProcessSpawnOptions {
   readonly linuxContainment?: "auto" | "subreaper";
   /** Trusted pipe-shell optimization. Evaluated only AFTER backend selection. */
   readonly directBwrap?: {
+    readonly protocol?: "v3";
     readonly prepare: () => PreparedDirectBwrap | undefined;
     readonly validateAdmission: () => void;
     readonly signal: AbortSignal;
@@ -658,6 +671,8 @@ export interface ContainedProcessSpawnOptions {
 
 /** What `terminateProcessTreeAndWait` found when it went to stop a tree. */
 export interface TerminateProcessTreeOutcome {
+  readonly commandOutcome?: ProcessBrokerV3Outcome;
+  readonly residualProcessesObserved?: boolean;
   /**
    * True when processes the command had left behind (a shell `&` job, nohup,
    * setsid, or a daemon that forked away from its leader) were stopped:
@@ -747,14 +762,14 @@ export function spawnContainedProcess(
   if (process.platform === "linux" && cgroupPath === null) {
     if (options.directBwrap !== undefined) {
       const brokerPath = resolveLinuxSubreaperBroker();
-      const brokerContext = describeDirectBroker(brokerPath, options.cwd);
+      const brokerContext = describeDirectBroker(brokerPath, options.cwd, options.directBwrap.protocol);
       if (brokerContext !== undefined) {
         const plan = options.directBwrap.prepare();
         if (plan !== undefined) {
           const handoff = consumeDirectBwrapPlan(plan);
           let dispatched = false;
           try {
-            if (handoff.isCurrent() && directBrokerContext(brokerPath, options.cwd) === brokerContext) {
+            if (directArtifactMatchesBroker(handoff, brokerPath, options.directBwrap.protocol) && handoff.isCurrent() && directBrokerContext(brokerPath, options.cwd) === brokerContext) {
               options.directBwrap.validateAdmission();
               options.directBwrap.signal.throwIfAborted();
               dispatched = true;
@@ -848,19 +863,28 @@ function directBrokerContext(broker: string, cwd: string): string | undefined {
     return createHash("sha256").update(JSON.stringify(context)).digest("hex");
   } catch { return undefined; }
 }
-function describeDirectBroker(broker: string, cwd: string): string | undefined {
+function directArtifactMatchesBroker(handoff: DirectBwrapHandoff, broker: string, protocol?: "v3"): boolean {
+  if (protocol !== "v3") return handoff.namespaceInitArtifact === undefined;
+  try {
+    return handoff.namespaceInitArtifact === join(dirname(realpathSync(broker)), "agenc-namespace-init-entry") &&
+      handoff.payload.subarray(0, 4).equals(Buffer.from("AGB3"));
+  } catch { return false; }
+}
+
+function describeDirectBroker(broker: string, cwd: string, protocol?: "v3"): string | undefined {
   const context = directBrokerContext(broker, cwd);
   if (context === undefined) return undefined;
-  if (directBrokerCapabilities.has(context)) return context;
+  const cacheKey = `${protocol ?? "v2"}:${context}`;
+  if (directBrokerCapabilities.has(cacheKey)) return context;
   try {
-    const description = execFileSync(broker, ["--describe-protocol"], {
+    const description = execFileSync(broker, [protocol === "v3" ? "--describe-protocol-v3" : "--describe-protocol"], {
       cwd, env: trustedPosixBootstrapEnvironment(), encoding: "utf8",
       timeout: 3_000, maxBuffer: 256, killSignal: "SIGKILL",
     });
-    if (description !== PROCESS_BROKER_V2_CAPABILITY + "\n" ||
+    if (description !== (protocol === "v3" ? PROCESS_BROKER_V3_CAPABILITY : PROCESS_BROKER_V2_CAPABILITY) + "\n" ||
         directBrokerContext(broker, cwd) !== context) return undefined;
     if (directBrokerCapabilities.size >= 64) directBrokerCapabilities.clear();
-    directBrokerCapabilities.add(context);
+    directBrokerCapabilities.add(cacheKey);
     return context;
   } catch { return undefined; }
 }
@@ -877,7 +901,7 @@ function spawnLinuxSubreaperContainedProcess(
   try {
     child = spawn(
     brokerPath,
-    direct === undefined ? [] : ["--bootstrap-v2"],
+    direct === undefined ? [] : [direct.namespaceInitArtifact === undefined ? "--bootstrap-v2" : "--bootstrap-v3"],
     {
       cwd: options.cwd,
       env: trustedPosixBootstrapEnvironment(),
@@ -932,6 +956,7 @@ function spawnLinuxSubreaperContainedProcess(
     ready: false,
     residual: false,
     verified: false,
+    ...(direct?.namespaceInitArtifact === undefined ? {} : { outcomeDecoder: new ProcessBrokerV3StatusDecoder() }),
   };
   linuxSubreaperBoundaries.set(child, boundary);
   child.kill = ((signal?: NodeJS.Signals | number): boolean => {
@@ -971,7 +996,7 @@ function spawnLinuxSubreaperContainedProcess(
   });
   readableStatus.once("end", () => {
     consumeBufferedLinuxSubreaperStatus(boundary);
-    settleLinuxSubreaperStatus(boundary);
+    settleLinuxSubreaperStatus(boundary, true);
   });
   readableStatus.once("close", () => {
     consumeBufferedLinuxSubreaperStatus(boundary);
@@ -1005,7 +1030,7 @@ function spawnLinuxSubreaperContainedProcess(
     if (disposalError !== undefined) throw disposalError;
     admission.validateAdmission();
     admission.signal.throwIfAborted();
-    if (!direct.isCurrent() || directBrokerContext(brokerPath, options.cwd) !== direct.brokerContext) {
+    if (!directArtifactMatchesBroker(direct, brokerPath, options.directBwrap?.protocol) || !direct.isCurrent() || directBrokerContext(brokerPath, options.cwd) !== direct.brokerContext) {
       throw new Error("direct sandbox identity changed before handoff");
     }
     if (frameWithheld) throw new Error("direct sandbox handoff was cancelled");
@@ -1025,6 +1050,18 @@ function consumeLinuxSubreaperStatus(
   boundary: LinuxSubreaperBoundary,
   chunk: Buffer,
 ): void {
+  if (boundary.outcomeDecoder !== undefined) {
+    if (boundary.protocolError !== undefined) return;
+    try {
+      if (boundary.outcomeDecoder.push(chunk)) {
+        boundary.ready = true;
+        const pendingSignal = boundary.pendingSignal;
+        boundary.pendingSignal = undefined;
+        if (pendingSignal !== undefined) boundary.nativeKill(pendingSignal);
+      }
+    } catch (error) { boundary.protocolError = toError(error); }
+    return;
+  }
   for (const byte of chunk) {
     if (byte === 0x53) {
       if (boundary.ready || boundary.residual || boundary.verified) {
@@ -1118,9 +1155,17 @@ function normalizeLinuxSubreaperControlSignal(
   );
 }
 
-function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary): void {
+function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary, eof = false): void {
   if (boundary.statusClosed) return;
   boundary.statusClosed = true;
+  if (boundary.outcomeDecoder !== undefined && boundary.protocolError === undefined) {
+    try {
+      if (!eof) throw new Error("AGB3 status closed without EOF");
+      const completion = boundary.outcomeDecoder.finish();
+      boundary.verified = completion.cleanupProven;
+      boundary.commandOutcome = completion.outcome;
+    } catch (error) { boundary.protocolError = toError(error); }
+  }
   if (!boundary.ready) {
     boundary.protocolError ??= new Error(
       "Linux process containment broker exited before readiness",
@@ -1931,6 +1976,7 @@ function runSupervisedProcessCommand(
         cwd: command.cwd,
         env: command.env,
         ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+        ...(options.directBwrap === undefined ? {} : { directBwrap: options.directBwrap }),
         ...(options.linuxContainment !== undefined
           ? { linuxContainment: options.linuxContainment }
           : {}),
@@ -2027,6 +2073,16 @@ function runSupervisedProcessCommand(
         processError ??= brokerBoundary.protocolError;
         processTreeCleanupProven = false;
       }
+      const commandOutcome = containedProcessCommandOutcome(child);
+      if (commandOutcome?.kind === "reported") {
+        exitCode = commandOutcome.result.kind === "exit" ? commandOutcome.result.code : 128 + commandOutcome.result.signal;
+        exitSignal = null;
+      } else if (commandOutcome !== undefined) {
+        exitCode = null;
+        exitSignal = null;
+        if (commandOutcome.kind === "aborted") stopReason ??= "aborted";
+        else processError ??= new Error("Command outcome unavailable after dispatch; cleanup is complete. Do not replay automatically.");
+      }
       const resolveResult = (): void => {
         resolve({
           exitCode,
@@ -2037,6 +2093,7 @@ function runSupervisedProcessCommand(
           forced,
           backstopExpired,
           processTreeCleanupProven,
+          ...(commandOutcome === undefined ? {} : { commandOutcome }),
           ...(processError !== undefined ? { error: processError } : {}),
           ...(processStarted !== undefined ? { processStarted } : {}),
         });
@@ -2152,7 +2209,8 @@ function runSupervisedProcessCommand(
         return;
       }
       // An authoritative boundary already decided; no need to observe again.
-      if (linuxSubreaperBoundaries.get(child)?.residual === true) {
+      if (linuxSubreaperBoundaries.get(child)?.residual === true ||
+          containedProcessCommandOutcome(child)?.residual === "observed") {
         stopReason = "residual_process";
         maybeFinish();
         return;
@@ -2439,9 +2497,7 @@ export async function terminateProcessTreeAndReport(
     // The subreaper broker stops orphaned descendants on its own when the
     // leader exits and has closed by the time settlement looks, so the tree
     // reads as gone here; its residual flag is the record that it did.
-    return linuxSubreaperBoundaries.get(child)?.residual === true
-      ? RESIDUE_TERMINATED
-      : TREE_ALREADY_GONE;
+    return completedTreeOutcome(child, linuxSubreaperBoundaries.get(child)?.residual === true);
   }
   signalProcessTree(child, "SIGTERM");
   if (
@@ -2452,7 +2508,7 @@ export async function terminateProcessTreeAndReport(
   ) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return RESIDUE_TERMINATED;
+    return completedTreeOutcome(child, true);
   }
   signalProcessTree(child, "SIGKILL");
   if (
@@ -2463,7 +2519,7 @@ export async function terminateProcessTreeAndReport(
   ) {
     assertObservedBoundarySnapshotUsable(child, options.label ?? "process");
     await releaseLinuxCgroupBoundary(child);
-    return RESIDUE_TERMINATED;
+    return completedTreeOutcome(child, true);
   }
   const survivors = liveOwnedBoundaryPids(child)
     .filter((pid) => pid !== child.pid)
@@ -2475,6 +2531,13 @@ export async function terminateProcessTreeAndReport(
         ? ""
         : `; live descendants: ${survivors.join(", ")}`),
   );
+}
+
+function completedTreeOutcome(child: ChildProcessWithoutNullStreams, legacyTerminated: boolean): TerminateProcessTreeOutcome {
+  const commandOutcome = containedProcessCommandOutcome(child);
+  if (commandOutcome === undefined) return legacyTerminated ? RESIDUE_TERMINATED : TREE_ALREADY_GONE;
+  return { residualProcessesTerminated: false, commandOutcome,
+    ...(commandOutcome.residual === "observed" ? { residualProcessesObserved: true } : {}) };
 }
 
 async function terminateWindowsProcessTree(

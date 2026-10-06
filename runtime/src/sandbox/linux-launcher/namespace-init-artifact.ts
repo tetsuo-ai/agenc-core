@@ -23,7 +23,7 @@ function identity(stat: fs.BigIntStats): string {
  * mount. Neither the task nor this planner can supply that descriptor. */
 export function admitsNamespaceInitMount(args: readonly string[], target: string): boolean {
   const parent = path.dirname(target);
-  let pid = false, user = false, death = false, proc = false, readonly = false;
+  let pid = false, user = false, death = false, proc = false, readonly = false, readonlyRoot = false;
   let delimiter = -1;
   for (let i = 0; i < args.length;) {
     const arg = args[i++]!;
@@ -52,7 +52,15 @@ export function admitsNamespaceInitMount(args: readonly string[], target: string
       readonly = true;
       continue;
     }
-    if (overlaps(dest, target) && (readonly || arg !== "--ro-bind" || source !== "/" || dest !== "/")) return false;
+    // The unchanged launcher emits mkdir scaffolding even for directories
+    // already exposed by the read-only root. It creates no mount or alias.
+    if (arg === "--dir" && readonlyRoot && !readonly && dest !== target && contains(dest, target) && resolved === dest) {
+      try { if (fs.statSync(dest).isDirectory()) continue; } catch { return false; }
+    }
+    if (overlaps(dest, target)) {
+      if (readonly || arg !== "--ro-bind" || source !== "/" || dest !== "/") return false;
+      readonlyRoot = true;
+    }
     if (bind && arg !== "--ro-bind") {
       const resolvedSource = canonical(source);
       if (resolvedSource !== undefined && overlaps(resolvedSource, target)) return false;

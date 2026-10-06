@@ -216,6 +216,12 @@ export interface ExecCommandToolOutput {
    * and the supervisor stopped them.
    */
   readonly residual_processes_terminated?: boolean;
+  /** The authenticated init observed live descendants after task exit, then
+   * completed cleanup. Does not claim which actor terminated them. */
+  readonly residual_processes_observed?: boolean;
+  /** Cleanup is proven, but the dispatched command has no terminal report.
+   * Neither state authorizes an automatic retry or a no-effect claim. */
+  readonly command_outcome?: "aborted" | "unavailable";
 }
 
 export interface UnifiedExecProcessManagerLike {

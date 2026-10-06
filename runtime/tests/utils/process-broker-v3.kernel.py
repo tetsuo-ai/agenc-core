@@ -34,7 +34,7 @@ RECORDS = []
 
 def frame(command, *, bpf=None, mutations=None, env=None):
     args = ["/usr/bin/bwrap", "--new-session", "--die-with-parent",
-            "--ro-bind", "/", "/", "--ro-bind", str(DIST), str(DIST),
+            "--ro-bind", "/", "/", "--dir", str(D), "--ro-bind", str(DIST), str(DIST),
             "--dev", "/dev", "--unshare-user", "--unshare-pid", "--unshare-net",
             "--proc", "/proc"]
     if bpf is not None:

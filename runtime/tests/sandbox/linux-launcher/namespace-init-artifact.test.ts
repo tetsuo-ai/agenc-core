@@ -30,6 +30,15 @@ describe.runIf(process.platform === "linux")("reserved installed namespace init 
     expect(prepareNamespaceInitArtifact(root, noDist)).toBeUndefined();
   });
 
+  it("accepts only existing canonical directory scaffolding after the read-only root and before the trusted bind", () => {
+    const scaffold = ["--dir", path.dirname(root), "--dir", root];
+    const layout = [...args.slice(0, 7), ...scaffold, ...args.slice(7)];
+    expect(prepareNamespaceInitArtifact(root, layout)?.isCurrent()).toBe(true);
+    expect(prepareNamespaceInitArtifact(root, [...scaffold, ...args])).toBeUndefined();
+    expect(prepareNamespaceInitArtifact(root, beforeCommand(scaffold))).toBeUndefined();
+    expect(prepareNamespaceInitArtifact(root, [...args.slice(0, 7), "--dir", target, ...args.slice(7)])).toBeUndefined();
+  });
+
   it("rejects missing, forged, writable, aliased and multiply linked placeholders", () => {
     fs.unlinkSync(target);
     expect(prepareNamespaceInitArtifact(root, args)).toBeUndefined();

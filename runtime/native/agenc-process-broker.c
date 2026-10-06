@@ -1142,7 +1142,7 @@ static int v3_artifact_path(char *target, char *parent) {
 /* Strict grammar for this one generated route, not a generic bwrap API. */
 static char **v3_init_argv(const struct launch_payload *payload, char *target,
                             const char *parent) {
-  bool pid = false, user = false, death = false, proc = false, readonly = false;
+  bool pid = false, user = false, death = false, proc = false, readonly = false, readonly_root = false;
   size_t delimiter = 0, argc = 0;
   for (; payload->argv[argc] != NULL; ++argc) {}
   for (size_t i = 1; i < argc;) {
@@ -1175,11 +1175,22 @@ static char **v3_init_argv(const struct launch_payload *payload, char *target,
       readonly = true;
       continue;
     }
+    /* The generated launcher repeats mkdir scaffolding for existing
+     * canonical ancestors already exposed by the initial read-only root.
+     * Before the trusted bind these operations create no new mount/alias. */
+    if (strcmp(arg, "--dir") == 0 && readonly_root && !readonly &&
+        strcmp(dest, target) != 0 && v3_path_contains(dest, target)) {
+      struct stat directory;
+      if (realpath(dest, canonical) != NULL && strcmp(canonical, dest) == 0 &&
+          stat(dest, &directory) == 0 && S_ISDIR(directory.st_mode)) continue;
+      return NULL;
+    }
     if (v3_paths_overlap(dest, target)) {
       /* Only the initial read-only root may precede the narrower trusted
        * runtime bind. No writable root, mask, alias or later overlay. */
       if (readonly || strcmp(arg, "--ro-bind") != 0 ||
           strcmp(source, "/") != 0 || strcmp(dest, "/") != 0) return NULL;
+      readonly_root = true;
     }
     if (bind && strcmp(arg, "--ro-bind") != 0 &&
         realpath(source, canonical) != NULL && v3_paths_overlap(canonical, target)) return NULL;
