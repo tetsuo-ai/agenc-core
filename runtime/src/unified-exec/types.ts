@@ -261,6 +261,8 @@ export interface UnifiedExecProcessManagerLike {
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
+  /** Concrete managers freeze admission and verify cleanup before sealing. */
+  prepareForDurableClose?(): Promise<void>;
 }
 
 export class UnifiedExecError extends Error {

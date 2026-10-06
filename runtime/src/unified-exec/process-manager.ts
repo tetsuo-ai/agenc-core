@@ -537,6 +537,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private sandboxAuthorityGeneration = 0;
   private sandboxAuthorityQuiesced = false;
   private sandboxAuthorityCleanupFailure: Error | undefined;
+  private durableCloseTask: Promise<void> | undefined;
+  private durableCloseStarted = false;
   private activeSandboxAuthorityQuiesce:
     | UnifiedExecSandboxAuthorityQuiesceToken
     | undefined;
@@ -1154,11 +1156,45 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     await Promise.allSettled(
       entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
     );
-    this.processes.clear();
+    // A best-effort timeout is not cleanup proof. Retain unsettled owners so
+    // strict disposal and the durable-close boundary can still drain them.
+    for (const entry of entries) {
+      if (entry.exitState !== null) this.releaseProcessId(entry.processId);
+    }
+  }
+
+  /** Freeze admission and prove containment before a durable terminal tail. */
+  prepareForDurableClose(): Promise<void> {
+    if (this.durableCloseTask !== undefined) return this.durableCloseTask;
+    this.durableCloseStarted = true;
+    const task = Promise.resolve().then(async () => {
+      if (this.sandboxAuthorityCleanupFailure !== undefined) {
+        throw this.sandboxAuthorityCleanupFailure;
+      }
+      const entries = [...this.processes.values()];
+      const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
+      const failures: unknown[] = [];
+      for (const [index, outcome] of outcomes.entries()) {
+        if (outcome.status === "rejected") failures.push(outcome.reason);
+        else this.releaseProcessId(entries[index]!.processId);
+      }
+      if (this.sandboxAuthorityCleanupFailure !== undefined) {
+        failures.push(this.sandboxAuthorityCleanupFailure);
+      }
+      if (failures.length > 0) {
+        const error = new AggregateError(failures,
+          "unified exec cleanup is unproven at durable close");
+        this.poisonSandboxAuthority(error);
+        throw error;
+      }
+    });
+    this.durableCloseTask = task;
+    return task;
   }
 
   private assertSandboxAuthorityAdmission(expectedGeneration?: number): number {
     if (
+      this.durableCloseStarted ||
       this.sandboxAuthorityCleanupFailure !== undefined ||
       this.sandboxAuthorityQuiesced ||
       (expectedGeneration !== undefined &&
@@ -1166,7 +1202,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     ) {
       throw new UnifiedExecError(
         "create_process",
-        this.sandboxAuthorityCleanupFailure === undefined
+        this.durableCloseStarted
+          ? "unified exec is closed for durable session finalization"
+          : this.sandboxAuthorityCleanupFailure === undefined
           ? "unified exec is quiesced while sandbox runtime authority changes"
           : "unified exec is permanently closed because process-tree cleanup could not be proven",
       );

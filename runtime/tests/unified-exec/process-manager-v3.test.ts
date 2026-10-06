@@ -14,15 +14,16 @@ const { UnifiedExecProcessManager } = await import("../../src/unified-exec/proce
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "manager-v3-")); });
 afterEach(() => { vi.clearAllMocks(); rmSync(root, { recursive: true, force: true }); });
-function managerFixture() {
+function managerFixture(autoExit = true) {
   vi.mocked(spawnContainedProcess).mockImplementation(() => {
     const child = Object.assign(new EventEmitter(), { pid: 2147483647, exitCode: 125, signalCode: null,
       stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       kill: vi.fn(), unref() {} });
-    setImmediate(() => { child.stdout.emit("data", Buffer.from("partial")); child.emit("exit", 125, null); });
+    if (autoExit) setImmediate(() => { child.stdout.emit("data", Buffer.from("partial")); child.emit("exit", 125, null); });
     return child as never;
   });
-  return new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root });
+  return new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: root,
+    sandboxAuthorityQuiesceTimeoutMs: 25 });
 }
 
 describe("unified exec authenticated command outcome", () => {
@@ -38,6 +39,7 @@ describe("unified exec authenticated command outcome", () => {
       const token = manager.beginSandboxAuthorityQuiesce();
       await manager.finishSandboxAuthorityQuiesce(token);
       expect(() => manager.resumeSandboxAuthorityAfterQuiesce(token)).not.toThrow();
+      await expect(manager.prepareForDurableClose()).resolves.toBeUndefined();
       expect(spawnContainedProcess).toHaveBeenCalledTimes(1);
     } finally { await manager.closeAll("test cleanup"); }
   });
@@ -65,5 +67,30 @@ describe("unified exec authenticated command outcome", () => {
     await expect(manager.execCommand({ cmd: "true" })).rejects.toThrow();
     expect(spawnContainedProcess).toHaveBeenCalledTimes(1);
     await manager.closeAll("test cleanup").catch(() => {});
+    await expect(manager.prepareForDurableClose()).rejects.toThrow(/cleanup/);
+  });
+
+  it("freezes admission synchronously and keeps ordinary lifecycle disposal possible", async () => {
+    const manager = managerFixture();
+    const close = manager.prepareForDurableClose();
+    expect(manager.prepareForDurableClose()).toBe(close);
+    await expect(manager.execCommand({ cmd: "true" })).rejects.toThrow(/durable session finalization/);
+    await expect(close).resolves.toBeUndefined();
+    const token = manager.beginSandboxAuthorityQuiesce();
+    await manager.finishSandboxAuthorityQuiesce(token);
+    manager.resumeSandboxAuthorityAfterQuiesce(token);
+    await expect(manager.execCommand({ cmd: "true" })).rejects.toThrow(/durable session finalization/);
+    expect(spawnContainedProcess).not.toHaveBeenCalled();
+  });
+
+  it("retains an unsettled process across best-effort closeAll and refuses to seal", async () => {
+    const manager = managerFixture(false);
+    const result = await manager.execCommand({ cmd: "sleep 60", yield_time_ms: 1 });
+    expect(result.process_id).toBeDefined();
+    await manager.closeAll("best effort timeout");
+    const close = manager.prepareForDurableClose();
+    await expect(close).rejects.toThrow(/cleanup is unproven at durable close/);
+    expect(manager.prepareForDurableClose()).toBe(close);
+    await expect(manager.execCommand({ cmd: "true" })).rejects.toThrow(/durable session finalization/);
   });
 });
