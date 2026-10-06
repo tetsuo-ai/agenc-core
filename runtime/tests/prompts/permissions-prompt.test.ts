@@ -13,6 +13,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  APPROVAL_POLICY_BYPASS_ESCALATION,
   APPROVAL_POLICY_NEVER,
   APPROVAL_POLICY_ON_FAILURE,
   APPROVAL_POLICY_ON_REQUEST,
@@ -176,6 +177,26 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("Approval policy is currently never");
   });
 
+  // The orchestrator grants a bypass session's require_escalated request
+  // without asking. Saying it is rejected made a model give up on opening a
+  // page in the browser and start the browser's binary inside the sandbox.
+  test.each(["workspace_write", "read_only"] as const)(
+    "bypass inside a %s sandbox says leaving it is pre-approved and how",
+    (sandboxPolicy) => {
+      const out = getPermissionsSection(ctxForMode("bypassPermissions"), {
+        sandboxPolicy,
+        networkSandboxPolicy: { enabled: false },
+      })!;
+      expect(out).toContain(APPROVAL_POLICY_BYPASS_ESCALATION.replace(/\n+$/, ""));
+      expect(out).not.toContain(APPROVAL_POLICY_NEVER.replace(/\n+$/, ""));
+      expect(out).toContain("GUI app (open, xdg-open, osascript)");
+      expect(out).toContain("`sandbox_permissions` with the value `\"require_escalated\"`");
+      expect(out).toContain("runs outside the sandbox without asking");
+      expect(out).toContain("such as starting an app's binary directly");
+      expect(out).toContain("tool calls are pre-approved");
+    },
+  );
+
   test("combined dangerous authority reports the effective unrestricted sandbox", () => {
     const out = getPermissionsSection(ctxForMode("bypassPermissions"), {
       sandboxPolicy: "danger_full_access",
@@ -183,6 +204,18 @@ describe("getPermissionsSection", () => {
     });
     expect(out).toContain("`sandbox_mode` is `danger-full-access`");
     expect(out).toContain("Network access is enabled.");
+    // No sandbox to leave: the never text stays as it was.
+    expect(out).toContain(APPROVAL_POLICY_NEVER.replace(/\n+$/, ""));
+    expect(out).not.toContain("pre-approved. Commands run in the sandbox");
+  });
+
+  test("bypass under an external sandbox keeps the never text", () => {
+    const out = getPermissionsSection(ctxForMode("bypassPermissions"), {
+      sandboxPolicy: "external_sandbox",
+      networkSandboxPolicy: { enabled: false },
+    })!;
+    expect(out).toContain(APPROVAL_POLICY_NEVER.replace(/\n+$/, ""));
+    expect(out).not.toContain(APPROVAL_POLICY_BYPASS_ESCALATION.replace(/\n+$/, ""));
   });
 
   test("bypassPermissions mode → appends the autonomy note that waives tool prompts but not care", () => {
@@ -255,6 +288,8 @@ describe("getPermissionsSection", () => {
       expect(out).toContain("only inside the routine's workspace");
       expect(out).not.toContain("ask one question with AskUserQuestion");
       expect(permissionsSection(mode)).not.toContain("nobody attached");
+      // A routine never leaves its sandbox, whatever its mode.
+      expect(out).not.toContain(APPROVAL_POLICY_BYPASS_ESCALATION.replace(/\n+$/, ""));
     },
   );
 

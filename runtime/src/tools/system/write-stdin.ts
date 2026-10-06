@@ -241,7 +241,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           exitCode: output.exitCode,
           runtimeSandbox,
           escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, runtimeContext.invocation.session),
         });
         return {
           content: notice === null ? execContent : `${execContent}\n\n${notice}`,

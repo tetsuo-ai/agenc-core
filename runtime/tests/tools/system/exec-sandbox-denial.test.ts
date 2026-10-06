@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  bypassGrantsSandboxEscalation,
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
   SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE,
@@ -84,6 +85,30 @@ describe("sandboxEscalationAvailable", () => {
     for (const policy of ["on_request", "on_failure", "untrusted", "granular"]) {
       expect(sandboxEscalationAvailable(policy)).toBe(true);
     }
+  });
+
+  const sessionIn = (mode: string, routineRun = false) => ({
+    permissionModeRegistry: { current: () => ({ mode }) },
+    services: { runtimeOptions: { routineRun } },
+  });
+
+  // Bypass runs under the never policy, but the orchestrator grants its
+  // escalation request without asking, so a denial is not a dead end there.
+  test("a bypass session can still leave the sandbox under the never policy", () => {
+    expect(sandboxEscalationAvailable("never", sessionIn("bypassPermissions"))).toBe(true);
+    expect(bypassGrantsSandboxEscalation(sessionIn("bypassPermissions"))).toBe(true);
+    expect(denial({
+      escalationAvailable: sandboxEscalationAvailable("never", sessionIn("bypassPermissions")),
+    })?.notice).toBe(SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE);
+  });
+
+  test("a routine run, another mode or no session keeps the never verdict", () => {
+    expect(sandboxEscalationAvailable("never", sessionIn("bypassPermissions", true))).toBe(false);
+    expect(sandboxEscalationAvailable("never", sessionIn("default"))).toBe(false);
+    expect(sandboxEscalationAvailable("never", sessionIn("acceptEdits"))).toBe(false);
+    expect(sandboxEscalationAvailable("never", undefined)).toBe(false);
+    expect(sandboxEscalationAvailable("never", {})).toBe(false);
+    expect(bypassGrantsSandboxEscalation(null)).toBe(false);
   });
 });
 

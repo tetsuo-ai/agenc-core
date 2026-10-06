@@ -20,6 +20,9 @@
  * @module
  */
 
+import { routineRunOptions } from "../../session/runtime-options.js";
+import { asRecord } from "../../utils/record.js";
+
 /** The denial classes this module recognizes. */
 export type ExecSandboxDenialKind = "network_bind";
 
@@ -131,9 +134,28 @@ export function worktreeWriteDenialNotice(params: {
 }
 
 /**
- * Approval policies under which asking a human to lift the sandbox can still
- * produce an answer. `never` cannot: the policy states that nobody is there.
+ * Whether asking to lift the sandbox can still produce an answer. Under the
+ * `never` policy nobody is there to answer, except in a session that runs in
+ * bypassPermissions: the orchestrator grants its escalation request without
+ * asking. Pass the call's session so that case is not reported as a dead end.
  */
-export function sandboxEscalationAvailable(approvalPolicy: string): boolean {
-  return approvalPolicy !== "never";
+export function sandboxEscalationAvailable(
+  approvalPolicy: string,
+  session?: unknown,
+): boolean {
+  return approvalPolicy !== "never" || bypassGrantsSandboxEscalation(session);
+}
+
+/**
+ * The orchestrator's own reading (tools/orchestrator.ts): a session whose
+ * current permission mode is bypassPermissions has a `require_escalated`
+ * request granted without asking, except a scheduled routine run, whose
+ * commands never leave the OS sandbox.
+ */
+export function bypassGrantsSandboxEscalation(session: unknown): boolean {
+  if (routineRunOptions(session) !== undefined) return false;
+  const mode = (session as {
+    readonly permissionModeRegistry?: { readonly current?: () => unknown };
+  } | null | undefined)?.permissionModeRegistry?.current?.();
+  return asRecord(mode)?.mode === "bypassPermissions";
 }
