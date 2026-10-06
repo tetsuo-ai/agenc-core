@@ -15,6 +15,14 @@ import {
   TUI_THEME_SETTINGS,
   type AgenCConfig,
 } from "../config/schema.js";
+import type { HomeContext } from "../config/home.js";
+import { buildProviderModelCatalog } from "../config/provider-model-authority.js";
+import { hasSavedProviderKey } from "../auth/provider-keys.js";
+import {
+  isSignInProvider,
+  signedInAccount,
+  type SignInProvider,
+} from "../auth/provider-sign-in-accounts.js";
 import {
   createAuthBackend,
   resolveAuthManagedKeysEnabled,
@@ -37,6 +45,7 @@ import {
   listBuiltInProviderInfo,
   providerApiKeyEnvironmentLabel,
   providerCredentialEnvironmentLabel,
+  providerLocalModelIdFromCatalog,
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
   type BuiltInProviderOnboardingInfo,
@@ -53,6 +62,8 @@ import { LocalAuthBackend } from "../auth/backends/local.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import {
   geminiEndpointFor,
 } from "../llm/providers/gemini/endpoint-plan.js";
@@ -64,7 +75,6 @@ import {
   resolveGeminiCredentialPlan,
   type GeminiCredentialPlan,
 } from "../utils/geminiAuth.js";
-import { maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
   maybeTruncateInput,
   type PastedContent,
@@ -96,7 +106,6 @@ import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.j
 import {
   verifyApiKey,
   verifyPreparedProviderConnection,
-  type VerificationStatus,
 } from "./useApiKeyVerification.js";
 import {
   isFreeSubscriptionManagedModel,
@@ -139,21 +148,30 @@ export interface ProviderConnectionCheck {
   readonly credentialProvenance?: ProviderConnectionCredentialProvenance;
   readonly baseURL?: string;
   readonly canSkip?: boolean;
+  /** Local providers: the models the running server lists. */
+  readonly localModels?: readonly string[];
 }
 
 export type ProviderConnectionCredentialProvenance =
   | ProviderCredentialProvenance
-  | { readonly kind: "verified-input" };
+  | { readonly kind: "verified-input" }
+  | {
+      readonly kind: "account";
+      readonly provider: SignInProvider;
+      readonly account: string;
+    };
 
-export interface PendingApiKeyApproval {
+/**
+ * One row of the provider list, worded like the `/providers` screen: the
+ * provider's display name and one plain status ("key saved", "env
+ * DEEPSEEK_API_KEY", "signed in as …", "not set").
+ */
+export interface OnboardingProviderRow {
   readonly provider: BuiltInProviderSlug;
-  readonly apiKey: string;
-  readonly maskedTail: string;
-  readonly pasteHash?: string;
-  readonly pasteContent?: string;
-  readonly pastePreview?: string;
-  readonly verificationStatus: VerificationStatus;
-  readonly verificationError?: string;
+  readonly name: string;
+  readonly status: string;
+  /** Ready to use without another step; Enter checks it and lists its models. */
+  readonly connected: boolean;
 }
 
 export interface FirstRunOnboardingState {
@@ -164,12 +182,18 @@ export interface FirstRunOnboardingState {
   readonly selectedModel: string;
   readonly connection: ProviderConnectionCheck | null;
   readonly pastedContents: readonly PastedContent[];
-  readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
   /**
-   * What the model-access card shows: the option menu, the paste field, or
-   * the result of the readiness check (`connection`) with its follow-ups.
+   * What the model-access card shows: the option menu, the paste field, the
+   * result of the readiness check (`connection`) with its follow-ups, or the
+   * provider's models once it is connected.
    */
-  readonly modelAccessInput: "menu" | "api-key" | "result";
+  readonly modelAccessInput: "menu" | "api-key" | "result" | "models";
+  /** The models offered once the provider is connected. */
+  readonly modelChoices: readonly string[];
+  /** The provider list, statuses read when the provider step opens. */
+  readonly providerRows: readonly OnboardingProviderRow[];
+  /** What the user typed to narrow the provider or model list. */
+  readonly listFilter: string;
   /** Whether a failed result may offer "Paste a key" (set with the result). */
   readonly canPasteKey: boolean;
   readonly authPrompt: OnboardingAuthPrompt | null;
@@ -192,7 +216,7 @@ export interface FirstRunByokAuthBackend {
   }): unknown | Promise<unknown>;
 }
 
-export type GrokOauthLoginResult =
+export type ProviderSignInResult =
   | { readonly ok: true; readonly accountLabel: string }
   | { readonly ok: false; readonly message: string };
 
@@ -226,11 +250,11 @@ export interface FirstRunOnboardingContext {
   readonly fetchImpl?: typeof fetch;
   readonly checkLocalProviders?: boolean;
   /**
-   * Runs the X / xAI OAuth sign-in for the grok provider (browser PKCE flow —
-   * the same one behind /grok-login). Injectable so wizard tests never open a
-   * browser; the default lazily imports the real flow.
+   * Runs the account sign-in for OpenAI (ChatGPT) or Grok (X / xAI), the
+   * same flow as `/providers`, `/openai-login` and `/grok-login`. Injectable
+   * so wizard tests never open a browser; the default lazily imports it.
    */
-  readonly runGrokOauthLogin?: () => Promise<GrokOauthLoginResult>;
+  readonly runProviderSignIn?: (provider: SignInProvider) => Promise<ProviderSignInResult>;
   /**
    * Runs AgenC account sign-in (the same remote auth backend as /login).
    * Injectable so wizard tests never open a browser.
@@ -240,87 +264,59 @@ export interface FirstRunOnboardingContext {
   readonly onAuthPrompt?: (prompt: OnboardingAuthPrompt) => void;
 }
 
+const SIGN_IN_NAMES: Readonly<Record<SignInProvider, string>> = {
+  openai: "ChatGPT",
+  grok: "X / xAI",
+};
+
 /**
- * Default Grok OAuth sign-in used by the model-access step. Browser PKCE is
- * primary and device code is the headless fallback, matching /grok-login.
- * Lazy imports keep the wizard module light for the non-Grok path.
+ * Default account sign-in for the model-access step: the shared flow behind
+ * `/providers`. Lazy imports keep the wizard module light for the other
+ * providers.
  */
-async function defaultRunGrokOauthLogin(
+async function defaultRunProviderSignIn(
   context: FirstRunOnboardingContext,
-): Promise<GrokOauthLoginResult> {
+  provider: SignInProvider,
+): Promise<ProviderSignInResult> {
+  const name = SIGN_IN_NAMES[provider];
   try {
     const ingress = captureSecureStorageIngress(
       context.env ?? process.env,
       context.agencHome,
     );
-    const [oauth, { openUrlInBrowser }, creds] =
-      await Promise.all([
-        import("../services/xai/oauth.js"),
-        import("../commands/auth.js"),
-        import("../utils/xaiOauthCredentials.js"),
-      ]);
-    let login;
-    try {
-      login = await oauth.runXaiBrowserLogin({
-        onAuthorizeUrl: async (url) => {
-          context.onAuthPrompt?.({
-            heading: "Sign in with X / xAI",
-            detail:
-              "Finish the xAI consent flow in your browser. The page may say Grok Build.",
-            url,
-          });
-          await openUrlInBrowser(url).catch(() => {
-            // The URL remains visible in the onboarding card.
-          });
-        },
-      });
-    } catch (error) {
-      if (
-        !(error instanceof oauth.XaiOauthError) ||
-        error.code !== "callback_failed"
-      ) {
-        throw error;
-      }
-      login = await oauth.runXaiDeviceLogin({
-        onUserCode: async ({
-          userCode,
-          verificationUri,
-          verificationUriComplete,
-        }) => {
-          const url = verificationUriComplete ?? verificationUri;
-          context.onAuthPrompt?.({
-            heading: "Sign in with X / xAI",
-            detail:
-              "Finish the xAI device sign-in in your browser. The page may say Grok Build.",
-            url,
-            userCode,
-          });
-          await openUrlInBrowser(url).catch(() => {
-            // The URL and code remain visible in the onboarding card.
-          });
-        },
-      });
-    }
-    const blob = creds.xaiOauthTokensToBlob(login.tokens, {
-      tokenEndpoint: login.tokenEndpoint,
+    const [{ signInToProvider }, { env: hostEnv }] = await Promise.all([
+      import("../commands/provider-sign-in.js"),
+      import("../utils/env.js"),
+    ]);
+    let url: string | undefined;
+    let userCode: string | undefined;
+    const result = await signInToProvider({
+      provider,
+      home: ingress.home,
+      environment: ingress.environment,
+      canOpenBrowser: !hostEnv.isSSH(),
+      onProgress: (progress) => {
+        url = progress.url ?? url;
+        userCode = progress.userCode ?? userCode;
+        // Steps without a link (saving, exchanging the code) keep the last
+        // link and code on the card.
+        if (url === undefined) return;
+        context.onAuthPrompt?.({
+          heading: `Sign in with ${name}`,
+          detail: progress.heading,
+          url,
+          ...(userCode === undefined ? {} : { userCode }),
+        });
+      },
     });
-    const saved = creds.saveXaiOauthCredentials(ingress.home, blob);
-    if (!saved.success) {
-      return {
-        ok: false,
-        message: `Signed in, but storing tokens failed: ${saved.warning ?? "unknown error"}`,
-      };
-    }
-    return {
-      ok: true,
-      accountLabel: blob.accountLabel ?? login.identity.sub ?? "xAI account",
-    };
+    if (result.ok) return { ok: true, accountLabel: result.account };
+    return { ok: false, message: result.message };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
       message:
-        `X / xAI sign-in did not complete (${detail}). ` +
+        `${name} sign-in did not complete (${detail}). ` +
         "Try again, use an API key, or configure model access later.",
     };
   }
@@ -417,6 +413,8 @@ export interface UseFirstRunOnboardingResult {
   submit(input: string): Promise<boolean>;
   /** Move the highlighted choice with the arrow keys; no-op on steps without a list. */
   moveSelection(delta: -1 | 1): void;
+  /** What the user is typing, which narrows the provider and model lists. */
+  setListFilter(text: string): void;
 }
 
 const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze([
@@ -508,7 +506,7 @@ function initialProvider(
 export function createInitialFirstRunOnboardingState(
   context: Pick<
     FirstRunOnboardingContext,
-    "config" | "env" | "remoteAuthSessionContext"
+    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
   >,
 ): FirstRunOnboardingState {
   const provider = initialProvider(context);
@@ -528,8 +526,10 @@ export function createInitialFirstRunOnboardingState(
     selectedModel: model,
     connection: null,
     pastedContents: [],
-    pendingApiKeyApproval: null,
     modelAccessInput: "menu",
+    modelChoices: [],
+    providerRows: readOnboardingProviderRows(context),
+    listFilter: "",
     canPasteKey: false,
     authPrompt: null,
     error: null,
@@ -577,6 +577,140 @@ function providerChoices(): readonly BuiltInProviderSlug[] {
   );
 }
 
+/** Read a credential store without letting a broken one block setup. */
+function readOrDefault<T>(read: () => T, fallback: T): T {
+  try {
+    return read();
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Where a provider stands, in the words `/providers` uses. Local runtimes
+ * start as not running; the probe result is applied when it arrives.
+ */
+function providerSetupStatus(
+  provider: BuiltInProviderSlug,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
+  >,
+  home: HomeContext | undefined,
+): { readonly status: string; readonly connected: boolean } {
+  const env = context.env ?? process.env;
+  switch (providerOnboardingInfo(provider).access) {
+    case "local":
+      return { status: "not running", connected: false };
+    case "environment":
+      return missingProviderCredentialEnvironmentLabel(provider, env) === undefined
+        ? { status: "AWS credentials set", connected: true }
+        : { status: "needs AWS credentials", connected: false };
+    case "managed":
+      return context.remoteAuthSessionContext !== undefined &&
+          hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
+        ? { status: "AgenC account", connected: true }
+        : { status: "needs an AgenC account", connected: false };
+    default:
+      break;
+  }
+  if (home !== undefined && isSignInProvider(provider)) {
+    const account = readOrDefault(() => signedInAccount(home, provider), null);
+    if (account !== null) return { status: `signed in as ${account}`, connected: true };
+  }
+  const match = resolveProviderApiKeyEnvironment(provider, env);
+  if (match !== undefined) return { status: `env ${match.envVar}`, connected: true };
+  if (home !== undefined && readOrDefault(() => hasSavedProviderKey(home, provider), false)) {
+    return { status: "key saved", connected: true };
+  }
+  // A paid AgenC account reaches this provider with managed keys.
+  if (
+    providerOnboardingInfo(provider).supportsManagedKeyAccess &&
+    resolveAuthManagedKeysEnabled(context.config) &&
+    context.remoteAuthSessionContext !== undefined &&
+    hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)
+  ) {
+    return { status: "AgenC account", connected: true };
+  }
+  return { status: "not set", connected: false };
+}
+
+/** Every provider with its status, in the built-in order. */
+function readOnboardingProviderRows(
+  context: Pick<
+    FirstRunOnboardingContext,
+    "agencHome" | "config" | "env" | "remoteAuthSessionContext"
+  >,
+): readonly OnboardingProviderRow[] {
+  // Without a home there is no credential store to read: statuses then come
+  // from the environment only.
+  const home = context.agencHome === undefined
+    ? undefined
+    : captureSecureStorageIngress(context.env ?? process.env, context.agencHome).home;
+  return providerChoices().map((provider) => ({
+    provider,
+    name: resolveBuiltInProviderInfo(provider)?.name ?? provider,
+    ...providerSetupStatus(provider, context, home),
+  }));
+}
+
+/** Text that narrows a list: anything but a bare number, which picks by position. */
+function activeListFilter(state: FirstRunOnboardingState): string {
+  const needle = state.listFilter.trim().toLowerCase();
+  return /^\d*$/u.test(needle) ? "" : needle;
+}
+
+/**
+ * The provider list as the card shows it: local runtimes marked running when
+ * the probe found them, connected providers first, then the rest in the
+ * built-in order, narrowed by what the user typed.
+ */
+function providerListRows(
+  state: FirstRunOnboardingState,
+  filter = activeListFilter(state),
+): readonly OnboardingProviderRow[] {
+  const detected = new Set(state.detectedLocalProviders);
+  const rows = state.providerRows.map((row) =>
+    detected.has(row.provider)
+      ? { ...row, status: "running", connected: true }
+      : row
+  );
+  const ordered = [
+    ...rows.filter((row) => row.connected),
+    ...rows.filter((row) => !row.connected),
+  ];
+  if (filter === "") return ordered;
+  return ordered.filter(
+    (row) =>
+      row.name.toLowerCase().includes(filter) ||
+      row.provider.includes(filter),
+  );
+}
+
+/** The models the model list narrows to. */
+function modelListChoices(state: FirstRunOnboardingState): readonly string[] {
+  const filter = activeListFilter(state);
+  if (filter === "") return state.modelChoices;
+  return state.modelChoices.filter((model) => model.toLowerCase().includes(filter));
+}
+
+/**
+ * Keep what the user is typing on a step with a list, so the card narrows
+ * the list as they type. Other steps ignore it: a key pasted on the
+ * model-access menu must never land in the card.
+ */
+export function setFirstRunOnboardingListFilter(
+  state: FirstRunOnboardingState,
+  text: string,
+): FirstRunOnboardingState {
+  const listStep =
+    state.currentStepId === "provider" ||
+    (state.currentStepId === "model-access" && state.modelAccessInput === "models");
+  const next = listStep ? text : "";
+  if (next === state.listFilter) return state;
+  return { ...state, listFilter: next, highlightedChoice: null, error: null };
+}
+
 function withCompletedStep(
   state: FirstRunOnboardingState,
   id: FirstRunOnboardingStepId,
@@ -594,12 +728,13 @@ function withCompletedStep(
 }
 
 /** The model-access options, in the order the menu numbers them. */
-type ModelAccessOptionId = "key" | "account" | "xai" | "later";
+type ModelAccessOptionId = "key" | "account" | "sign-in" | "later";
 
 /**
  * What the model-access menu lists for a provider. The key option is the
  * provider's own credential (an API key, a local runtime, AWS credentials);
- * a hosted-only provider has none. X / xAI sign-in only applies to Grok.
+ * a hosted-only provider has none. The account sign-in (ChatGPT, X / xAI)
+ * only applies to OpenAI and Grok.
  */
 function modelAccessOptionIds(
   provider: BuiltInProviderSlug,
@@ -608,7 +743,7 @@ function modelAccessOptionIds(
   return [
     ...(access === "managed" ? [] : ["key" as const]),
     "account",
-    ...(provider === "grok" ? ["xai" as const] : []),
+    ...(isSignInProvider(provider) ? ["sign-in" as const] : []),
     "later",
   ];
 }
@@ -616,7 +751,7 @@ function modelAccessOptionIds(
 const MODEL_ACCESS_OPTION_COMMANDS: Readonly<Record<ModelAccessOptionId, string>> = {
   key: "key",
   account: "account",
-  xai: "xai",
+  "sign-in": "sign-in",
   later: "later",
 };
 
@@ -639,13 +774,14 @@ export function firstRunOnboardingChoiceCount(
     case "theme":
       return THEME_CHOICES.length;
     case "provider":
-      return providerChoices().length;
+      return providerListRows(state).length;
     case "model-access":
-      if (state.pendingApiKeyApproval !== null || state.authPrompt !== null) {
-        return 0;
-      }
+      if (state.authPrompt !== null) return 0;
       if (state.modelAccessInput === "menu") {
         return modelAccessOptionIds(state.selectedProvider).length;
+      }
+      if (state.modelAccessInput === "models") {
+        return modelListChoices(state).length;
       }
       if (state.modelAccessInput === "result" && state.connection?.ok !== true) {
         return modelAccessFollowUpIds(state).length;
@@ -672,7 +808,14 @@ export function firstRunOnboardingHighlightedChoice(
     case "theme":
       return Math.max(1, THEME_CHOICES.indexOf(state.selectedTheme) + 1);
     case "provider":
-      return Math.max(1, providerChoices().indexOf(state.selectedProvider) + 1);
+      return Math.max(
+        1,
+        providerListRows(state).findIndex((row) => row.provider === state.selectedProvider) + 1,
+      );
+    case "model-access":
+      return state.modelAccessInput === "models"
+        ? Math.max(1, modelListChoices(state).indexOf(state.selectedModel) + 1)
+        : 1;
     default:
       return 1;
   }
@@ -704,23 +847,32 @@ function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
   return THEME_CHOICES.find((theme) => theme === input) ?? null;
 }
 
+/**
+ * The provider Enter picks: a position in the list, an exact slug or name,
+ * or else the highlighted row of the list narrowed by the typed text.
+ */
 function parseProvider(
+  state: FirstRunOnboardingState,
   raw: string,
-  current: BuiltInProviderSlug,
 ): BuiltInProviderSlug | null {
   const input = raw.trim().toLowerCase();
-  if (input === "" || input === "next") return current;
-  const choices = providerChoices();
+  if (input === "" || input === "next") return state.selectedProvider;
+  const rows = providerListRows(state, "");
   const index = Number(input);
-  if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
-    return choices[index - 1] ?? current;
+  if (Number.isInteger(index) && index >= 1 && index <= rows.length) {
+    return rows[index - 1]?.provider ?? state.selectedProvider;
   }
   const bySlug = resolveBuiltInProviderSlug(input);
   if (bySlug !== undefined) return bySlug;
-  const byName = listBuiltInProviderInfo().find(
-    (info) => info.name.toLowerCase() === input,
-  );
-  return byName?.id ?? null;
+  const byName = rows.find((row) => row.name.toLowerCase() === input);
+  if (byName !== undefined) return byName.provider;
+  const narrowed = providerListRows(state, input);
+  if (narrowed.length === 0) return null;
+  // The highlight only counts when it was moved within this same narrowing.
+  const highlighted = activeListFilter(state) === input
+    ? state.highlightedChoice
+    : null;
+  return narrowed[(highlighted ?? 1) - 1]?.provider ?? narrowed[0]!.provider;
 }
 
 function normalizeApiKeyEntry(raw: string): string {
@@ -762,13 +914,38 @@ function isAgenCAccountLoginCommand(command: string): boolean {
   );
 }
 
-function isGrokOauthLoginCommand(command: string): boolean {
-  return (
-    command === "grok-login" ||
-    command === "x" ||
-    command === "xai" ||
-    command === "xai-login"
-  );
+/**
+ * The account sign-in a typed command asks for: one provider's by name, or
+ * "any" for the selected provider's own.
+ */
+function signInCommandTarget(command: string): SignInProvider | "any" | null {
+  switch (command) {
+    case "grok-login":
+    case "x":
+    case "xai":
+    case "xai-login":
+      return "grok";
+    case "chatgpt":
+    case "chatgpt-login":
+    case "openai-login":
+      return "openai";
+    case "sign-in":
+    case "signin":
+      return "any";
+    default:
+      return null;
+  }
+}
+
+function signInMismatchError(target: SignInProvider | "any"): string {
+  switch (target) {
+    case "grok":
+      return "X / xAI sign-in is for Grok. Pick grok in the provider step to use it.";
+    case "openai":
+      return "ChatGPT sign-in is for OpenAI. Pick OpenAI in the provider step to use it.";
+    case "any":
+      return "This provider has no account sign-in. Paste a key instead.";
+  }
 }
 
 function isApiKeyEntryCommand(command: string): boolean {
@@ -941,16 +1118,55 @@ function defaultOnboardingCommand(
       return raw;
     case "model-access":
       // Empty input picks the highlighted option, or continues from a shown
-      // result. Never choose for the user once a verified key is awaiting the
-      // explicit yes/no persistence decision.
-      return state.pendingApiKeyApproval === null ? raw : "";
+      // result.
+      return raw;
   }
 }
 
-function approvalAnswer(command: string): "yes" | "no" | null {
-  if (command === "y" || command === "yes") return "yes";
-  if (command === "n" || command === "no" || command === "skip") return "no";
-  return null;
+/** Input on the model list: a position, an exact model, or the highlight. */
+function submitModelChoice(
+  state: FirstRunOnboardingState,
+  raw: string,
+): FirstRunOnboardingSubmitResult {
+  const input = raw.trim();
+  if (input.toLowerCase() === "back") {
+    return {
+      state: {
+        ...state,
+        connection: null,
+        modelAccessInput: "menu",
+        modelChoices: [],
+        listFilter: "",
+        highlightedChoice: null,
+        error: null,
+      },
+      completed: false,
+    };
+  }
+  const index = Number(input);
+  const narrowed = modelListChoices(state);
+  const model = input === ""
+    ? narrowed[(firstRunOnboardingHighlightedChoice(state) ?? 1) - 1]
+    : Number.isInteger(index) && index >= 1 && index <= state.modelChoices.length
+      ? state.modelChoices[index - 1]
+      : state.modelChoices.find((choice) => choice === input) ??
+        (activeListFilter(state) === input.toLowerCase()
+          ? narrowed[(firstRunOnboardingHighlightedChoice(state) ?? 1) - 1]
+          : modelListChoices({ ...state, listFilter: input })[0]);
+  if (model === undefined) {
+    return {
+      state: { ...state, error: "No model matches that. Delete some letters to see more." },
+      completed: false,
+    };
+  }
+  return {
+    state: withCompletedStep(
+      { ...state, selectedModel: model, listFilter: "" },
+      "model-access",
+      "ready",
+    ),
+    completed: false,
+  };
 }
 
 function onboardingSlashCommandError(raw: string): string | null {
@@ -988,7 +1204,133 @@ function providerConnectionCredentialProvenanceLabel(
   if (provenance === undefined) return undefined;
   if (provenance.kind === "oauth") return "xAI OAuth";
   if (provenance.kind === "verified-input") return "pasted API key";
+  if (provenance.kind === "account") return `${SIGN_IN_NAMES[provenance.provider]} sign-in`;
   return provenance.fields.map((field) => field.envVar).join(" + ");
+}
+
+/** A provider account sign-in that just finished. */
+function signedInConnection(
+  provider: SignInProvider,
+  model: string,
+  account: string,
+): ProviderConnectionCheck {
+  return {
+    provider,
+    model,
+    status: "ready",
+    ok: true,
+    detail: provider === "grok"
+      ? `Signed in to X / xAI as ${account}. Grok subscription access is ready.`
+      : `Signed in to ChatGPT as ${account}. OpenAI access is ready.`,
+    credentialProvenance: { kind: "account", provider, account },
+  };
+}
+
+/** Whether a model is offered for new selections (hidden ones stay resolvable). */
+function isOfferedModel(
+  provider: BuiltInProviderSlug,
+  model: string,
+  config: AgenCConfig,
+): boolean {
+  if (resolveRegisteredModelCatalogEntry({ provider, model })?.visibility === "hide") {
+    return false;
+  }
+  return isModelAllowed(provider, model, config);
+}
+
+/**
+ * The models to offer once a provider is connected: what a running local
+ * server lists, or else the provider's catalog, as `/providers` offers it.
+ * The selected and default models come first so Enter keeps them.
+ */
+function onboardingModelChoices(
+  provider: BuiltInProviderSlug,
+  selectedModel: string,
+  context: Pick<FirstRunOnboardingContext, "config">,
+  localModels: readonly string[] | undefined,
+): readonly string[] {
+  if (localModels !== undefined && localModels.length > 0) {
+    return [...new Set(localModels.map((model) => model.trim()).filter((model) => model !== ""))];
+  }
+  const catalog = buildProviderModelCatalog(context.config)[provider] ?? [];
+  const candidates = [
+    selectedModel,
+    BUILT_IN_PROVIDER_DEFAULT_MODELS[provider],
+    ...catalog,
+  ].map((model) => providerLocalModelIdFromCatalog(provider, model.trim()));
+  return [...new Set(candidates)].filter(
+    (model, index) =>
+      model !== "" &&
+      // The current choice is always offered, even when the catalog hides it.
+      (index === 0 || isOfferedModel(provider, model, context.config)),
+  );
+}
+
+/**
+ * After a passed check: list the provider's models so the user picks one.
+ * With nothing to choose between, show the result and let Enter continue.
+ */
+function withModelChoices(
+  state: FirstRunOnboardingState,
+  connection: ProviderConnectionCheck,
+  context: Pick<FirstRunOnboardingContext, "config">,
+): FirstRunOnboardingState {
+  const models = onboardingModelChoices(
+    state.selectedProvider,
+    state.selectedModel,
+    context,
+    connection.localModels,
+  );
+  if (models.length <= 1) {
+    return withModelAccessResult(
+      { ...state, selectedModel: models[0] ?? state.selectedModel },
+      connection,
+    );
+  }
+  return {
+    ...state,
+    connection,
+    canPasteKey: false,
+    modelAccessInput: "models",
+    modelChoices: models,
+    listFilter: "",
+    authPrompt: null,
+    highlightedChoice: null,
+    error: null,
+  };
+}
+
+/**
+ * Show a finished readiness check: the models when it passed, the result
+ * with its follow-ups when it did not. A running local server that lacks the
+ * default model still lists what it has, so the user picks one of those.
+ */
+function withConnectionCheck(
+  state: FirstRunOnboardingState,
+  connection: ProviderConnectionCheck,
+  context: FirstRunOnboardingContext,
+): FirstRunOnboardingState {
+  if (connection.ok) return withModelChoices(state, connection, context);
+  if (
+    connection.status === "local-model-missing" &&
+    (connection.localModels?.length ?? 0) > 0
+  ) {
+    return withModelChoices(
+      state,
+      {
+        ...connection,
+        status: "ready",
+        ok: true,
+        detail: "Local provider endpoint is reachable.",
+      },
+      context,
+    );
+  }
+  return withModelAccessResult(
+    state,
+    connection,
+    acceptsPastedKey(state.selectedProvider, context),
+  );
 }
 
 function authenticatedConnection(
@@ -1056,21 +1398,21 @@ async function saveOnboardingByokKey(
   }).saveByokKey({ provider, apiKey });
 }
 
-async function saveApprovedApiKeyPaste(
+async function savePastedApiKey(
   context: FirstRunOnboardingContext,
-  approval: PendingApiKeyApproval,
+  paste: { readonly pasteHash?: string; readonly pasteContent?: string },
 ): Promise<void> {
   if (
     context.agencHome === undefined ||
-    approval.pasteHash === undefined ||
-    approval.pasteContent === undefined
+    paste.pasteHash === undefined ||
+    paste.pasteContent === undefined
   ) {
     return;
   }
   await storePastedText({
     agencHome: context.agencHome,
-    hash: approval.pasteHash,
-    content: approval.pasteContent,
+    hash: paste.pasteHash,
+    content: paste.pasteContent,
   });
 }
 
@@ -1375,6 +1717,7 @@ export async function checkOnboardingProviderConnection(
         model,
         status: "local-model-missing",
         ok: false,
+        localModels: probe.modelIds,
         detail:
           provider === "ollama"
             ? `Selected model ${model} is not installed in Ollama; run \`ollama pull ${model}\` before the first model turn.`
@@ -1389,6 +1732,7 @@ export async function checkOnboardingProviderConnection(
       ok: true,
       detail: `Local provider endpoint is reachable and model ${model} is available.`,
       baseURL,
+      localModels: probe.modelIds,
     };
   }
 
@@ -1672,7 +2016,11 @@ export async function submitFirstRunOnboardingInput(
       }
       return {
         state: withCompletedStep(
-          { ...state, selectedTheme: theme },
+          {
+            ...state,
+            selectedTheme: theme,
+            providerRows: readOnboardingProviderRows(context),
+          },
           "theme",
           "provider",
         ),
@@ -1680,101 +2028,49 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "provider": {
-      const provider = parseProvider(raw, state.selectedProvider);
+      const provider = parseProvider(state, raw);
       if (provider === null) {
         return {
-          state: { ...state, error: "Choose a provider number or slug." },
+          // Never echo the input: it could be a key pasted in the wrong place.
+          state: { ...state, error: "No provider matches that. Delete some letters to see more." },
           completed: false,
         };
       }
       const selectedModel = provider === state.selectedProvider
         ? state.selectedModel
         : providerDefaultModel(provider, context);
+      const next = withCompletedStep(
+        {
+          ...state,
+          selectedProvider: provider,
+          selectedModel,
+          connection: null,
+          pastedContents: [],
+          modelAccessInput: "menu",
+          modelChoices: [],
+          listFilter: "",
+          authPrompt: null,
+        },
+        "provider",
+        "model-access",
+      );
+      const row = providerListRows(state, "").find((entry) => entry.provider === provider);
+      if (row?.connected !== true) return { state: next, completed: false };
+      // Already connected: check it now and go straight to its models, as
+      // /providers does.
+      const connection = await checkOnboardingProviderConnection(
+        context,
+        provider,
+        selectedModel,
+      );
       return {
-        state: withCompletedStep(
-          {
-            ...state,
-            selectedProvider: provider,
-            selectedModel,
-            connection: null,
-            pastedContents: [],
-            pendingApiKeyApproval: null,
-            modelAccessInput: "menu",
-            authPrompt: null,
-          },
-          "provider",
-          "model-access",
-        ),
+        state: withConnectionCheck(next, connection, context),
         completed: false,
       };
     }
     case "model-access":
-      if (state.pendingApiKeyApproval !== null) {
-        const answer = approvalAnswer(lowerCommand(raw));
-        if (answer === null) {
-          return {
-            state: {
-              ...state,
-              error: "Type yes to save this key or no to continue without saving.",
-            },
-            completed: false,
-          };
-        }
-        if (answer === "no") {
-          return {
-            state: {
-              ...state,
-              pendingApiKeyApproval: null,
-              modelAccessInput: "menu",
-              highlightedChoice: null,
-              error: "The key was not saved. Choose an option, or paste a different key.",
-            },
-            completed: false,
-          };
-        }
-        try {
-          await saveApprovedApiKeyPaste(
-            context,
-            state.pendingApiKeyApproval,
-          );
-          await saveOnboardingByokKey(
-            context,
-            state.pendingApiKeyApproval.provider,
-            state.pendingApiKeyApproval.apiKey,
-          );
-        } catch (error) {
-          if (
-            context.agencHome !== undefined &&
-            state.pendingApiKeyApproval.pasteHash !== undefined
-          ) {
-            await deletePastedText({
-              agencHome: context.agencHome,
-              hash: state.pendingApiKeyApproval.pasteHash,
-            }).catch(() => {
-              /* best effort */
-            });
-          }
-          return {
-            state: {
-              ...state,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Could not save the BYOK API key.",
-            },
-            completed: false,
-          };
-        }
-        return {
-          state: withModelAccessResult(
-            { ...state, pendingApiKeyApproval: null },
-            verifiedApiKeyConnection(
-              state.selectedProvider,
-              state.selectedModel,
-            ),
-          ),
-          completed: false,
-        };
+      if (state.modelAccessInput === "models") {
+        return submitModelChoice(state, raw);
       }
       if (state.modelAccessInput === "result") {
         const followUp = submitModelAccessResult(state, raw);
@@ -1790,16 +2086,14 @@ export async function submitFirstRunOnboardingInput(
           : state.modelAccessInput === "api-key" && lowerCommand(raw) === ""
             ? "later"
             : lowerCommand(raw);
+        const signInTarget = signInCommandTarget(command);
         if (
-          isGrokOauthLoginCommand(command) &&
-          state.selectedProvider !== "grok"
+          signInTarget !== null &&
+          (!isSignInProvider(state.selectedProvider) ||
+            (signInTarget !== "any" && signInTarget !== state.selectedProvider))
         ) {
           return {
-            state: {
-              ...state,
-              error:
-                "X / xAI sign-in is for Grok. Pick grok in the provider step to use it.",
-            },
+            state: { ...state, error: signInMismatchError(signInTarget) },
             completed: false,
           };
         }
@@ -1874,11 +2168,12 @@ export async function submitFirstRunOnboardingInput(
             completed: false,
           };
         }
-        if (isGrokOauthLoginCommand(command)) {
-          const runLogin =
-            context.runGrokOauthLogin ??
-            (() => defaultRunGrokOauthLogin(context));
-          const result = await runLogin();
+        if (signInTarget !== null && isSignInProvider(state.selectedProvider)) {
+          const provider = state.selectedProvider;
+          const runSignIn =
+            context.runProviderSignIn ??
+            ((target: SignInProvider) => defaultRunProviderSignIn(context, target));
+          const result = await runSignIn(provider);
           if (!result.ok) {
             return {
               state: {
@@ -1889,16 +2184,11 @@ export async function submitFirstRunOnboardingInput(
               completed: false,
             };
           }
-          const provider: BuiltInProviderSlug = "grok";
-          const model = providerDefaultModel(provider, context);
           return {
-            state: withModelAccessResult(
-              { ...state, selectedProvider: provider, selectedModel: model },
-              authenticatedConnection(
-                provider,
-                model,
-                `Signed in to X / xAI as ${result.accountLabel}. Grok subscription access is ready.`,
-              ),
+            state: withModelChoices(
+              state,
+              signedInConnection(provider, state.selectedModel, result.accountLabel),
+              context,
             ),
             completed: false,
           };
@@ -1929,11 +2219,7 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           return {
-            state: withModelAccessResult(
-              state,
-              connection,
-              acceptsPastedKey(state.selectedProvider, context),
-            ),
+            state: withConnectionCheck(state, connection, context),
             completed: false,
           };
         }
@@ -1942,6 +2228,8 @@ export async function submitFirstRunOnboardingInput(
             state: {
               ...state,
               currentStepId: "provider",
+              providerRows: readOnboardingProviderRows(context),
+              listFilter: "",
               highlightedChoice: null,
               authPrompt: null,
               error: null,
@@ -2060,30 +2348,37 @@ export async function submitFirstRunOnboardingInput(
             completed: false,
           };
         }
-        return {
-          state: {
-            ...state,
-            pastedContents: pasteCapture.pastedContents,
-            pendingApiKeyApproval: {
-              provider: state.selectedProvider,
-              apiKey,
-              maskedTail: maskedApiKeyTail(apiKey),
-              ...(pasteCapture.pasteHash !== undefined
-                ? { pasteHash: pasteCapture.pasteHash }
-                : {}),
-              ...(pasteCapture.pasteContent !== undefined
-                ? { pasteContent: pasteCapture.pasteContent }
-                : {}),
-              ...(pasteCapture.pastePreview !== undefined
-                ? { pastePreview: pasteCapture.pastePreview }
-                : {}),
-              verificationStatus: verification.status,
-              ...(verification.error !== undefined
-                ? { verificationError: verification.error }
-                : {}),
+        // The provider accepted the key: save it now, the way /providers
+        // does. Typing or pasting a key here is the request to use it.
+        try {
+          await savePastedApiKey(context, pasteCapture);
+          await saveOnboardingByokKey(context, state.selectedProvider, apiKey);
+        } catch (error) {
+          if (context.agencHome !== undefined && pasteCapture.pasteHash !== undefined) {
+            await deletePastedText({
+              agencHome: context.agencHome,
+              hash: pasteCapture.pasteHash,
+            }).catch(() => {
+              /* best effort */
+            });
+          }
+          return {
+            state: {
+              ...state,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Could not save the BYOK API key.",
             },
-            error: null,
-          },
+            completed: false,
+          };
+        }
+        return {
+          state: withModelChoices(
+            { ...state, pastedContents: pasteCapture.pastedContents },
+            verifiedApiKeyConnection(state.selectedProvider, state.selectedModel),
+            context,
+          ),
           completed: false,
         };
       }
@@ -2140,9 +2435,24 @@ export function useFirstRunOnboardingController(
     let cancelled = false;
     void detectRunningLocalProviders(options).then((detected) => {
       if (cancelled || detected.length === 0) return;
-      const next = { ...stateRef.current, detectedLocalProviders: detected };
-      stateRef.current = next;
-      setState(next);
+      const current = stateRef.current;
+      const next = { ...current, detectedLocalProviders: detected };
+      // A running runtime moves up the list; keep a moved highlight on the
+      // same provider rather than on whatever now sits at its position.
+      const highlighted = current.currentStepId === "provider" &&
+          current.highlightedChoice !== null
+        ? providerListRows(current)[current.highlightedChoice - 1]?.provider
+        : undefined;
+      const moved = highlighted === undefined
+        ? next
+        : {
+            ...next,
+            highlightedChoice:
+              providerListRows(next).findIndex((row) => row.provider === highlighted) + 1 ||
+              null,
+          };
+      stateRef.current = moved;
+      setState(moved);
     });
     return () => {
       cancelled = true;
@@ -2164,6 +2474,16 @@ export function useFirstRunOnboardingController(
     (delta: -1 | 1): void => {
       if (!active || submitInFlight.current) return;
       const next = moveFirstRunOnboardingHighlight(stateRef.current, delta);
+      if (next === stateRef.current) return;
+      stateRef.current = next;
+      setState(next);
+    },
+    [active],
+  );
+  const setListFilter = useCallback(
+    (text: string): void => {
+      if (!active || submitInFlight.current) return;
+      const next = setFirstRunOnboardingListFilter(stateRef.current, text);
       if (next === stateRef.current) return;
       stateRef.current = next;
       setState(next);
@@ -2213,15 +2533,19 @@ export function useFirstRunOnboardingController(
             authPrompt: null,
             error: error instanceof Error ? error.message : String(error),
             isCheckingConnection: false,
+            listFilter: "",
           };
           stateRef.current = failedState;
           setState(failedState);
           return true;
         }
+        // The composer is cleared after every submit, so the list it was
+        // narrowing opens in full again.
         const nextState = {
           ...result.state,
           detectedLocalProviders: stateRef.current.detectedLocalProviders,
           isCheckingConnection: false,
+          listFilter: "",
         };
         stateRef.current = nextState;
         setState(nextState);
@@ -2254,6 +2578,7 @@ export function useFirstRunOnboardingController(
     currentStep: currentStepFor(state, steps),
     submit,
     moveSelection,
+    setListFilter,
   };
 }
 
@@ -2336,53 +2661,85 @@ function choiceRows(
   }));
 }
 
-function providerNote(
-  provider: BuiltInProviderSlug,
-  detected: ReadonlySet<BuiltInProviderSlug>,
-  env: NodeJS.ProcessEnv,
-): string {
-  if (detected.has(provider)) return "running on this machine, no key needed";
-  const match = resolveProviderApiKeyEnvironment(provider, env);
-  return match !== undefined ? `${match.envVar} is set` : "";
-}
-
-function providerCardView(
+/**
+ * Choice rows for a long list, kept inside a fixed window around the
+ * highlight so the card never scrolls off a short terminal or hides the row
+ * Enter would pick.
+ */
+function windowedChoiceRows(
   state: FirstRunOnboardingState,
-  context: FirstRunOnboardingContext,
-): OnboardingCardView {
-  const choices = providerChoices();
-  const detected = new Set(state.detectedLocalProviders);
-  const env = onboardingEnvironment(context);
+  entries: ReadonlyArray<{ readonly label: string; readonly note: string }>,
+): OnboardingCardRow[] {
   const highlighted = (firstRunOnboardingHighlightedChoice(state) ?? 1) - 1;
-  // Keep the highlight inside a fixed window so a long list never scrolls the
-  // card off a short terminal or hides the row Enter would pick.
   const start = Math.min(
     Math.max(0, highlighted - Math.floor(PROVIDER_WINDOW / 2)),
-    Math.max(0, choices.length - PROVIDER_WINDOW),
+    Math.max(0, entries.length - PROVIDER_WINDOW),
   );
-  const end = Math.min(choices.length, start + PROVIDER_WINDOW);
+  const end = Math.min(entries.length, start + PROVIDER_WINDOW);
   const rows: OnboardingCardRow[] = [];
   if (start > 0) rows.push({ kind: "more", text: `↑ ${start} more` });
-  rows.push(
-    ...choiceRows(
-      state,
-      choices.slice(start, end).map((provider) => ({
-        label: provider,
-        note: providerNote(provider, detected, env),
-      })),
-      start,
-    ),
-  );
-  if (end < choices.length) {
-    rows.push({ kind: "more", text: `↓ ${choices.length - end} more` });
+  rows.push(...choiceRows(state, entries.slice(start, end), start));
+  if (end < entries.length) {
+    rows.push({ kind: "more", text: `↓ ${entries.length - end} more` });
   }
-  const firstDetected = [...detected][0];
+  return rows;
+}
+
+function providerCardView(state: FirstRunOnboardingState): OnboardingCardView {
+  const lead = "Which provider should AgenC use?";
+  const rows = providerListRows(state);
+  if (rows.length === 0) {
+    return {
+      lead,
+      rows: [{ kind: "text", text: "No provider matches that." }],
+      hint: "Delete some letters to see more.",
+    };
+  }
+  const running = rows.find(
+    (row) => row.status === "running" && state.detectedLocalProviders.includes(row.provider),
+  );
   return {
-    lead: "Which model provider should AgenC use?",
-    rows,
-    hint: firstDetected !== undefined
-      ? `${firstDetected} is running on this machine. Pick it to start without a key.`
-      : "Or type a provider name and press Enter.",
+    lead,
+    rows: windowedChoiceRows(
+      state,
+      rows.map((row) => ({ label: row.name, note: row.status })),
+    ),
+    hint: activeListFilter(state) !== ""
+      ? "Enter picks the highlighted provider."
+      : running !== undefined
+        ? `${running.name} is running on this machine. Pick it to start without a key.`
+        : "Type to filter. Enter connects.",
+  };
+}
+
+function modelsCardView(state: FirstRunOnboardingState): OnboardingCardView {
+  const name = resolveBuiltInProviderInfo(state.selectedProvider)?.name ?? state.selectedProvider;
+  const lead = `Which ${name} model should AgenC use?`;
+  const status: OnboardingCardRow[] = state.connection === null
+    ? []
+    : [
+        { kind: "status", ok: true, text: modelAccessSuccessText(state.connection) },
+        { kind: "gap" },
+      ];
+  const models = modelListChoices(state);
+  if (models.length === 0) {
+    return {
+      lead,
+      rows: [...status, { kind: "text", text: "No model matches that." }],
+      hint: "Delete some letters to see more.",
+    };
+  }
+  const defaultModel = BUILT_IN_PROVIDER_DEFAULT_MODELS[state.selectedProvider];
+  return {
+    lead,
+    rows: [
+      ...status,
+      ...windowedChoiceRows(
+        state,
+        models.map((model) => ({ label: model, note: model === defaultModel ? "default" : "" })),
+      ),
+    ],
+    ...(models.length > PROVIDER_WINDOW ? { hint: "Type to filter." } : {}),
   };
 }
 
@@ -2446,11 +2803,10 @@ function modelAccessMenuEntries(
           label: "AgenC account",
           note: "sign in for hosted models, free plan",
         };
-      case "xai":
-        return {
-          label: "X / xAI account",
-          note: "sign in to use Grok with your subscription",
-        };
+      case "sign-in":
+        return state.selectedProvider === "openai"
+          ? { label: "ChatGPT account", note: "sign in to use OpenAI with your plan" }
+          : { label: "X / xAI account", note: "sign in to use Grok with your subscription" };
       case "later":
         return { label: "Set up later", note: "AgenC can't answer until you do" };
     }
@@ -2478,6 +2834,9 @@ function modelAccessSuccessText(connection: ProviderConnectionCheck): string {
   }
   if (provenance?.kind === "oauth") {
     return `${connection.provider} answered. Your xAI sign-in works.`;
+  }
+  if (provenance?.kind === "account") {
+    return `Signed in to ${SIGN_IN_NAMES[provenance.provider]} as ${provenance.account}.`;
   }
   if (provenance?.kind === "environment") {
     if (provenance.fields.some((field) => field.role === "accessKeyId")) {
@@ -2513,30 +2872,6 @@ function modelAccessCardView(
   context: FirstRunOnboardingContext,
 ): OnboardingCardView {
   const lead = `How should AgenC reach ${state.selectedProvider} / ${state.selectedModel}?`;
-  const approval = state.pendingApiKeyApproval;
-  if (approval !== null) {
-    return {
-      lead: "Save this key?",
-      rows: [
-        { kind: "kv", label: "Provider", value: approval.provider },
-        { kind: "kv", label: "Key", value: approval.maskedTail },
-        {
-          kind: "kv",
-          label: "Check",
-          value: approval.verificationStatus === "valid"
-            ? `accepted by ${approval.provider}`
-            : approval.verificationStatus,
-        },
-        ...(approval.pastePreview !== undefined
-          ? [{ kind: "text", text: approval.pastePreview } as const]
-          : []),
-        ...(approval.verificationError !== undefined
-          ? [{ kind: "text", text: approval.verificationError } as const]
-          : []),
-      ],
-      hint: "Type yes to save it, or no to continue without saving it.",
-    };
-  }
   if (state.authPrompt !== null) {
     return {
       lead: state.authPrompt.heading,
@@ -2557,6 +2892,7 @@ function modelAccessCardView(
       rows: [{ kind: "text", text: `Checking ${state.selectedProvider}...` }],
     };
   }
+  if (state.modelAccessInput === "models") return modelsCardView(state);
   if (state.modelAccessInput === "api-key") {
     const label = keyOptionEntry(state, context).label;
     return {
@@ -2564,7 +2900,7 @@ function modelAccessCardView(
       rows: state.connection?.status === "credentials-required"
         ? [{ kind: "text", text: `No ${label} is set yet.` }]
         : [],
-      hint: "AgenC checks a key before you choose to save it.",
+      hint: "AgenC checks the key with the provider, then saves it on this computer.",
     };
   }
   const connection = state.connection;
@@ -2607,6 +2943,9 @@ function accessSummary(state: FirstRunOnboardingState): string {
   const provenance = connection.credentialProvenance;
   if (provenance?.kind === "verified-input") return "pasted key, saved";
   if (provenance?.kind === "oauth") return "xAI sign-in";
+  if (provenance?.kind === "account") {
+    return `${SIGN_IN_NAMES[provenance.provider]} sign-in`;
+  }
   if (provenance?.kind === "environment") return `${credentialName(connection)}, checked`;
   if (providerAccessKind(connection.provider) === "local") return "local, no key needed";
   if (connection.detail.startsWith("Signed in to AgenC")) return "AgenC account";
@@ -2675,7 +3014,7 @@ function onboardingCardView(
         hint: themeTip(),
       };
     case "provider":
-      return providerCardView(state, context);
+      return providerCardView(state);
     case "model-access":
       return modelAccessCardView(state, context);
     case "ready":
@@ -2725,18 +3064,27 @@ export function firstRunOnboardingInputPresentation(
         footerHint: CHOOSE_FOOTER,
         allowEmptySubmit: true,
       };
-    case "provider":
+    case "provider": {
+      const rows = providerListRows(state);
+      const highlighted = rows[(firstRunOnboardingHighlightedChoice(state) ?? 1) - 1];
       return {
-        placeholder: `Enter keeps ${state.selectedProvider}, or type a provider name`,
+        placeholder: highlighted === undefined
+          ? "Type to filter providers"
+          : `Enter picks ${highlighted.name}, or type to filter`,
         footerHint: CHOOSE_FOOTER,
         allowEmptySubmit: true,
       };
+    }
     case "model-access":
-      if (state.pendingApiKeyApproval !== null) {
+      if (state.modelAccessInput === "models") {
+        const highlighted =
+          modelListChoices(state)[(firstRunOnboardingHighlightedChoice(state) ?? 1) - 1];
         return {
-          placeholder: "Type yes to save this key, or no",
-          footerHint: "Saving a key always needs an explicit yes · /exit leave setup",
-          allowEmptySubmit: false,
+          placeholder: highlighted === undefined
+            ? "Type to filter models"
+            : `Enter picks ${highlighted}, or type to filter`,
+          footerHint: "↑↓ choose · Enter confirm · back choose again · /exit leave setup",
+          allowEmptySubmit: true,
         };
       }
       if (state.modelAccessInput === "api-key") {
