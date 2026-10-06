@@ -15,7 +15,8 @@
 
 import { createHash } from "node:crypto";
 import { parse as parseShellWords } from "shell-quote";
-import { extractBashCommand, splitCommand } from "../shell-command/parser.js";
+import { splitCommand } from "../shell-command/parser.js";
+import { readShellWrapperCode } from "../utils/shell/wrapper-options.js";
 
 import type { RunStepIdentity } from "../contracts/run-contracts.js";
 import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
@@ -66,8 +67,13 @@ export function isTrivialVerificationCommand(script: string, depth = 0): boolean
     const words = [...tokens];
     while (/^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();
     if (words[0] === "command" || words[0] === "builtin") words.shift();
-    const wrapper = extractBashCommand(words);
-    if (wrapper !== null) return isTrivialVerificationCommand(wrapper.script, depth + 1);
+    // A shell wrapper proves nothing when all the code it may run proves
+    // nothing, whatever its options (`bash -ec true`, `sh -c -- true`).
+    const shell = (words[0] ?? "").split(/[\\/]/u).at(-1)!.toLowerCase().replace(/\.exe$/u, "");
+    const wrapped = readShellWrapperCode(shell, words.slice(1));
+    if (wrapped !== undefined && wrapped.length > 0) {
+      return wrapped.every((code) => isTrivialVerificationCommand(code, depth + 1));
+    }
     const command = (words[0] ?? "").split("/").at(-1);
     return command === "true" || command === ":" || command === "echo" || command === "printf" ||
       (command === "exit" && (words.length === 1 || (words.length === 2 && /^0+$/.test(words[1]!))));
