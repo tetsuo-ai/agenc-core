@@ -4277,19 +4277,30 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : normalizeRuntimeSetting(params.modelVerbosity, RUN_RUNTIME_MODEL_VERBOSITIES, "model verbosity");
         const identity = { provider: previousSettings.provider, model: previousSettings.model };
         const acceptedVerbosity = params.modelVerbosity === undefined ? {} : { modelVerbosity };
-        if (previousSettings.reasoningEffort === level && previousSettings.modelVerbosity === modelVerbosity) {
+        const previousConfiguration = session.sessionConfiguration;
+        const settingsChanged =
+          previousSettings.reasoningEffort !== level || previousSettings.modelVerbosity !== modelVerbosity;
+        // The journal can name a level the live session does not run yet: a
+        // staged switch that drops the level journals none while the old model
+        // keeps it, and a session that never set a level journals none while
+        // the configured one still applies.
+        const liveEffortChanged = params.reasoningEffort !== undefined &&
+          (previousConfiguration.collaborationMode.reasoningEffort !== (level ?? undefined) ||
+            (level === null && previousConfiguration.reasoningEffortCleared !== true));
+        if (!settingsChanged && !liveEffortChanged) {
           return { applied: true, ...identity, ...acceptedVerbosity,
             ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
             summary: params.modelVerbosity === undefined
               ? (level === null ? effortSummary : `Reasoning effort is ${level}`)
               : `Response detail is ${modelVerbosity ?? "inherited"}` };
         }
-        const previousConfiguration = session.sessionConfiguration;
         const inheritedModelVerbosity = previousConfiguration.modelVerbosityOverride === undefined
           ? previousConfiguration.modelVerbosity
           : previousConfiguration.inheritedModelVerbosity;
-        const prepared = prepareDurableRuntimeSettingsChange(active, agentId,
-          { ...previousSettings, reasoningEffort: level, modelVerbosity }, "config_applied");
+        const prepared = settingsChanged
+          ? prepareDurableRuntimeSettingsChange(active, agentId,
+            { ...previousSettings, reasoningEffort: level, modelVerbosity }, "config_applied")
+          : undefined;
         try {
           await session.state.with(state => {
             state.sessionConfiguration = {
@@ -4307,10 +4318,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           });
         } catch (error) {
           await session.state.with(state => { state.sessionConfiguration = previousConfiguration; });
-          compensatePreparedRuntimeSettingsChange(active, agentId, previousSettings, prepared);
+          if (prepared !== undefined) {
+            compensatePreparedRuntimeSettingsChange(active, agentId, previousSettings, prepared);
+          }
           throw error;
         }
-        prepared.finalize();
+        prepared?.finalize();
         return { applied: true, ...identity, ...acceptedVerbosity,
           ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
           summary: [
