@@ -178,6 +178,7 @@ interface AncestorInspectionRow {
   readonly run_id: string;
   readonly status: string | null;
   readonly cancelled: number;
+  readonly cancellation_reason: string | null;
   readonly durable_identity: number;
   readonly parents_json: string;
 }
@@ -186,6 +187,7 @@ export interface CancellationAncestorDenial {
   readonly reason: CancellationAncestorDenialReason;
   readonly parentRunId: string;
   readonly parentStatus: string;
+  readonly lockReason?: string;
 }
 
 /**
@@ -279,6 +281,10 @@ export function inspectCancellationAncestors(
                 WHERE locked.run_id = ancestor.run_id
               ) AS cancelled,
               (
+                SELECT locked.reason FROM execution_admission_cancellations AS locked
+                WHERE locked.run_id = ancestor.run_id
+              ) AS cancellation_reason,
+              (
                 run.id IS NOT NULL OR EXISTS (
                   SELECT 1 FROM agent_jobs AS identity_job
                   WHERE identity_job.admission_run_id = ancestor.run_id
@@ -316,6 +322,9 @@ export function inspectCancellationAncestors(
         reason: "parent_cancel_locked",
         parentRunId: row.run_id,
         parentStatus: row.status ?? "cancelled",
+        ...(row.cancellation_reason !== null
+          ? { lockReason: row.cancellation_reason }
+          : {}),
       };
     }
   }
