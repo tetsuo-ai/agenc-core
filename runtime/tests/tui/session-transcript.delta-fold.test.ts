@@ -133,7 +133,47 @@ describe("transcript store folds stream deltas", () => {
     expect(adaptTranscriptEvents(state.events as never).streamingText).toBe("Hello");
   });
 
-  test("evicting a folded event drops every key it stood for", () => {
+  test("a late delta lands between its neighbours on the append path and the batch path", () => {
+    const delta = (seq: number, text: string) => at(seq, "agent_message_delta", { delta: text });
+    const raw = projection([delta(1, "A"), delta(2, "B"), delta(3, "C")]);
+
+    // Sequence 1 and 3 must not fold across the gap that 2 fills later.
+    let appended = createSessionTranscriptStateForTesting([]);
+    appended = appendSessionTranscriptEventForTesting(appended, delta(1, "A") as never);
+    appended = appendSessionTranscriptEventForTesting(appended, delta(3, "C") as never);
+    expect(appended.events.length).toBe(2);
+    appended = appendSessionTranscriptEventForTesting(appended, delta(2, "B") as never);
+    expect(adaptTranscriptEvents(appended.events as never).streamingText).toBe("ABC");
+    expect(projection(appended.events)).toBe(raw);
+
+    let batched = createSessionTranscriptStateForTesting([]);
+    batched = appendSessionTranscriptBatchForTesting(batched, [delta(1, "A"), delta(3, "C")] as never);
+    batched = appendSessionTranscriptBatchForTesting(batched, [delta(2, "B")] as never);
+    expect(adaptTranscriptEvents(batched.events as never).streamingText).toBe("ABC");
+    expect(projection(batched.events)).toBe(raw);
+
+    // Once the gap is filled the run folds into one event.
+    expect(batched.events.length).toBe(1);
+  });
+
+  test("the key set stays bounded during a long stream", () => {
+    const events = conversationThenLongThink(20_000);
+    let state = createSessionTranscriptStateForTesting([]);
+    let largest = 0;
+    for (let i = 0; i < events.length; i += 50) {
+      state = appendSessionTranscriptBatchForTesting(state, events.slice(i, i + 50) as never);
+      largest = Math.max(largest, state.keys.size);
+    }
+    // One key per stored event plus the window of folded delta keys.
+    expect(largest).toBeLessThanOrEqual(4000 + 4000 + 256);
+    expect(state.foldedKeys.length).toBeLessThanOrEqual(4000 + 256);
+
+    // A recent delta replayed after the run is still recognized.
+    const replay = events.at(-10)!;
+    expect(appendSessionTranscriptEventForTesting(state, replay as never)).toBe(state);
+  });
+
+  test("folded delta keys outlive eviction of their event, then age out of the window", () => {
     const events: Event[] = [
       at(1, "agent_message_delta", { delta: "a" }),
       at(2, "agent_message_delta", { delta: "b" }),
@@ -143,8 +183,18 @@ describe("transcript store folds stream deltas", () => {
     }
     const state = createSessionTranscriptStateForTesting(events as never);
     expect(state.events.length).toBe(4000);
-    expect(state.keys.has("seq:1")).toBe(false);
+    // The stored event (key seq:2) was evicted; the folded seq:1 stays known
+    // until newer folds push it out of the window.
     expect(state.keys.has("seq:2")).toBe(false);
-    expect(state.keys.size).toBe(4000);
+    expect(state.keys.has("seq:1")).toBe(true);
+    expect(state.keys.size).toBe(4001);
+
+    let streamed = state;
+    const more: Event[] = [];
+    for (let i = 0; i < 4300; i += 1) {
+      more.push(at(5000 + i, "agent_message_delta", { delta: "x" }));
+    }
+    streamed = appendSessionTranscriptBatchForTesting(streamed, more as never);
+    expect(streamed.keys.has("seq:1")).toBe(false);
   });
 });

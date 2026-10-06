@@ -2940,6 +2940,12 @@ export function adaptTranscriptEvents(
 interface TranscriptState {
   readonly events: readonly SessionTranscriptEvent[];
   readonly keys: ReadonlySet<string>;
+  /**
+   * Dedup keys of stream deltas folded into the delta after them, oldest
+   * first. They stay in `keys` while listed here, so a replayed delta is
+   * recognized; the list keeps the newest `MAX_FOLDED_DELTA_KEYS`.
+   */
+  readonly foldedKeys: readonly string[];
   readonly maxSeq: number | null;
   readonly sessionCostUsd: number;
   readonly sessionUsage: AdmissionUsageSummary | null;
@@ -3044,14 +3050,16 @@ const FOLDABLE_DELTA_TYPES: ReadonlySet<string> = new Set([
   "assistant_thinking_delta",
 ]);
 
-/** Dedup keys of the deltas folded into a stored event, oldest first. */
-const foldedDeltaKeys = new WeakMap<object, readonly string[]>();
-
-/** Every dedup key a stored event stands for: its own and any folded ones. */
-function storedEventKeys(event: SessionTranscriptEvent): readonly string[] {
-  const folded = foldedDeltaKeys.get(event);
-  return folded === undefined ? [eventKey(event)] : [...folded, eventKey(event)];
-}
+/**
+ * How many folded delta keys stay recognizable. Replays come from the
+ * daemon's recent-event buffer (1000 events), well inside this window, so a
+ * replayed delta is still seen as known. Together with one key per stored
+ * event this bounds `keys` at twice `MAX_TRANSCRIPT_EVENTS`, however long a
+ * stream runs: the set is cloned on every append, so it must stay small.
+ */
+const MAX_FOLDED_DELTA_KEYS = MAX_TRANSCRIPT_EVENTS;
+/** Trim in steps, not on every fold. */
+const FOLDED_DELTA_KEYS_SLACK = 256;
 
 function hasStableEventKey(event: SessionTranscriptEvent): boolean {
   return (
@@ -3100,7 +3108,9 @@ function sameDeltaStream(
  * Fold `next` into `previous` when both are deltas of the same stream: the
  * result is `next` (keeping its `seq`/`id`, so ordering and dedup hold) with
  * the two texts joined. Returns null when they do not fold. Keyless events
- * never fold, because their dedup key is their content.
+ * never fold, because their dedup key is their content. Sequenced deltas fold
+ * only across consecutive sequence numbers: a late event that sorts into a
+ * gap must land between its neighbours, and nothing can sort inside a fold.
  */
 function foldStreamDelta(
   previous: SessionTranscriptEvent | undefined,
@@ -3113,6 +3123,10 @@ function foldStreamDelta(
   }
   if (!hasStableEventKey(previous) || !hasStableEventKey(next)) return null;
   if (("msg" in previous) !== ("msg" in next)) return null;
+  const previousSeq = eventSeq(previous);
+  const nextSeq = eventSeq(next);
+  if ((previousSeq === null) !== (nextSeq === null)) return null;
+  if (previousSeq !== null && nextSeq !== previousSeq + 1) return null;
   const before = deltaPayload(previous);
   const after = deltaPayload(next);
   if (before === null || after === null || !sameDeltaStream(before, after)) {
@@ -3128,29 +3142,41 @@ function foldStreamDelta(
       ? { ...record, msg: { ...(record.msg as Record<string, unknown>), payload } }
       : { ...record, payload }
   ) as SessionTranscriptEvent;
-  foldedDeltaKeys.set(folded, [
-    ...storedEventKeys(previous),
-    ...(foldedDeltaKeys.get(next) ?? []),
-  ]);
   return folded;
 }
 
-/** Append one event to the store, folding a stream delta into the one before it. */
+/**
+ * Append one event to the store, folding a stream delta into the one before
+ * it. The folded-away delta's key moves to `foldedKeys`; keys that age out of
+ * that window leave `keys` too.
+ */
 function pushStoredEvent(
   events: SessionTranscriptEvent[],
   event: SessionTranscriptEvent,
+  keys: Set<string>,
+  foldedKeys: string[],
 ): void {
-  const folded = foldStreamDelta(events.at(-1), event);
-  if (folded === null) events.push(event);
-  else events[events.length - 1] = folded;
+  const previous = events.at(-1);
+  const folded = foldStreamDelta(previous, event);
+  if (folded === null || previous === undefined) {
+    events.push(event);
+    return;
+  }
+  events[events.length - 1] = folded;
+  foldedKeys.push(eventKey(previous));
+  if (foldedKeys.length > MAX_FOLDED_DELTA_KEYS + FOLDED_DELTA_KEYS_SLACK) {
+    const aged = foldedKeys.splice(0, foldedKeys.length - MAX_FOLDED_DELTA_KEYS);
+    for (const key of aged) keys.delete(key);
+  }
 }
 
 /**
  * Ring-buffer the events array in place: if it grew past
  * `MAX_TRANSCRIPT_EVENTS`, drop the oldest events and remove their dedup keys
- * (folded ones included) from `keys`. Stream deltas fold into one event per
- * run, so the window holds structural events: tool calls, results and turn
- * boundaries. Bounds both event count and total retained bytes.
+ * from `keys`. Stream deltas fold into one event per run, so the window holds
+ * structural events: tool calls, results and turn boundaries. Bounds both
+ * event count and total retained bytes. Keys of deltas folded into a dropped
+ * event age out of `foldedKeys` on their own.
  */
 function evictOldestEvents(
   events: SessionTranscriptEvent[],
@@ -3160,14 +3186,17 @@ function evictOldestEvents(
   const dropCount = events.length - MAX_TRANSCRIPT_EVENTS;
   const dropped = events.splice(0, dropCount);
   for (const event of dropped) {
-    for (const key of storedEventKeys(event)) keys.delete(key);
+    keys.delete(eventKey(event));
   }
 }
 
 function buildTranscriptState(
   unorderedEvents: readonly SessionTranscriptEvent[],
+  /** Folded delta keys to keep recognizing when rebuilding a live store. */
+  carriedFoldedKeys: readonly string[] = [],
 ): TranscriptState {
-  const keys = new Set<string>();
+  const keys = new Set<string>(carriedFoldedKeys);
+  const foldedKeys = [...carriedFoldedKeys];
   const events: SessionTranscriptEvent[] = [];
   let maxSeq: number | null = null;
   let sessionCostUsd = 0;
@@ -3177,6 +3206,7 @@ function buildTranscriptState(
     const key = eventKey(event);
     if (isTranscriptResetEvent(event)) {
       keys.clear();
+      foldedKeys.length = 0;
       events.length = 0;
       maxSeq = null;
       keys.add(key);
@@ -3185,16 +3215,16 @@ function buildTranscriptState(
       continue;
     }
     if (keys.has(key)) continue;
-    for (const storedKey of storedEventKeys(event)) keys.add(storedKey);
+    keys.add(key);
     sessionCostUsd += tokenCountCostUsd(event);
     sessionUsage = latestSessionUsage(sessionUsage, event);
-    pushStoredEvent(events, clampEventForStorage(event));
+    pushStoredEvent(events, clampEventForStorage(event), keys, foldedKeys);
     maxSeq = maxEventSeq(maxSeq, event);
   }
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
+  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3210,7 +3240,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         isTranscriptResetEvent(action.event) ||
         (seq !== null && state.maxSeq !== null && seq < state.maxSeq)
       ) {
-        const rebuilt = buildTranscriptState([...state.events, action.event]);
+        const rebuilt = buildTranscriptState(
+          [...state.events, action.event],
+          isTranscriptResetEvent(action.event) ? [] : state.foldedKeys,
+        );
         return {
           ...rebuilt,
           sessionCostUsd:
@@ -3226,14 +3259,16 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       // drop the event from the committed render. The clone is O(n) in the Set
       // size, but ring-buffer eviction bounds that Set alongside the events array.
       const events = [...state.events];
-      pushStoredEvent(events, clampEventForStorage(action.event));
       const keys = new Set(state.keys);
+      const foldedKeys = [...state.foldedKeys];
       keys.add(key);
+      pushStoredEvent(events, clampEventForStorage(action.event), keys, foldedKeys);
       evictOldestEvents(events, keys);
 
       return {
         events,
         keys,
+        foldedKeys,
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
         sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
         sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
@@ -3271,7 +3306,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         }
         // Known events stay out of the rebuild: a replayed delta sorts ahead
         // of the stored event it was folded into, and would be added twice.
-        const rebuilt = buildTranscriptState([...state.events, ...fresh]);
+        const rebuilt = buildTranscriptState(
+          [...state.events, ...fresh],
+          fresh.some(isTranscriptResetEvent) ? [] : state.foldedKeys,
+        );
         return {
           ...rebuilt,
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
@@ -3295,9 +3333,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       }
       if (pending.length === 0) return state;
       const events = [...state.events];
-      for (const event of pending) pushStoredEvent(events, event);
+      const foldedKeys = [...state.foldedKeys];
+      for (const event of pending) pushStoredEvent(events, event, keys, foldedKeys);
       evictOldestEvents(events, keys);
-      return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
+      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
     }
   }
 }
@@ -3306,7 +3345,14 @@ export function createSessionTranscriptStateForTesting(
   events: readonly SessionTranscriptEvent[],
 ): TranscriptState {
   return reducer(
-    { events: [], keys: new Set(), maxSeq: null, sessionCostUsd: 0, sessionUsage: null },
+    {
+      events: [],
+      keys: new Set(),
+      foldedKeys: [],
+      maxSeq: null,
+      sessionCostUsd: 0,
+      sessionUsage: null,
+    },
     { kind: "reset", events },
   );
 }
@@ -3370,6 +3416,7 @@ export function useSessionTranscript(
   const [state, dispatch] = useReducer(reducer, {
     events: [],
     keys: new Set<string>(),
+    foldedKeys: [],
     maxSeq: null,
     sessionCostUsd: 0,
     sessionUsage: null,
