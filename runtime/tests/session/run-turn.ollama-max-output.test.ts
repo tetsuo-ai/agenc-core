@@ -1,11 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { routeSwarmTask } from "../../src/agents/swarm-routing.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import type { LLMProviderTraceEvent } from "../../src/llm/types.js";
 import type { PhaseEvent } from "../../src/phases/events.js";
 import { MAX_OUTPUT_TOKENS_ESCALATED } from "../../src/recovery/max-output-tokens.js";
-import { getAttachmentTrackingState } from "../../src/session/attachment-state.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type { Terminal } from "../../src/session/turn-state.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
@@ -67,6 +65,8 @@ describe("Ollama max-output recovery", () => {
     const chatStream = provider.chatStream.bind(provider);
     provider.chatStream = (messages, onChunk, options) => chatStream(messages, onChunk, {
       ...options,
+      // The first request names spawn_agent; the retry keeps the turn's own options.
+      toolChoice: requests.length === 0 ? { type: "function", name: "spawn_agent" } : options?.toolChoice,
       trace: {
         onProviderTraceEvent: (event) => {
           traces.push(event);
@@ -84,12 +84,6 @@ describe("Ollama max-output recovery", () => {
       },
     });
     const { session } = mkSession({ provider, registry });
-    const tracking = getAttachmentTrackingState(session);
-    tracking.lastSwarmRoutingTurnId = ctx.subId;
-    tracking.lastSwarmRoutingDecision = {
-      ...routeSwarmTask("Implement independent features in parallel"),
-      delegationEnforcement: "require_initial_spawn",
-    };
 
     const yielded: PhaseEvent[] = [];
     const turn = runTurn(session, ctx, "do the parallel work");
