@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  bypassGrantsSandboxEscalation,
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
   SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE,
@@ -84,6 +85,57 @@ describe("sandboxEscalationAvailable", () => {
     for (const policy of ["on_request", "on_failure", "untrusted", "granular"]) {
       expect(sandboxEscalationAvailable(policy)).toBe(true);
     }
+  });
+
+  const sessionIn = (
+    mode: string,
+    services: Record<string, unknown> = {},
+  ) => ({
+    permissionModeRegistry: { current: () => ({ mode }) },
+    services: { runtimeOptions: { routineRun: false }, ...services },
+  });
+  const workspaceWrite = (session: unknown) => ({ sandboxMode: "workspace_write", session });
+
+  // Bypass runs under the never policy, but the orchestrator grants its
+  // escalation request without asking, and the prompt says so for a
+  // workspace-write sandbox, so a denial there is not a dead end.
+  test("a bypass session in a workspace-write sandbox can still leave it", () => {
+    expect(sandboxEscalationAvailable("never", workspaceWrite(sessionIn("bypassPermissions")))).toBe(true);
+    expect(bypassGrantsSandboxEscalation(sessionIn("bypassPermissions"))).toBe(true);
+    expect(denial({
+      escalationAvailable: sandboxEscalationAvailable("never", workspaceWrite(sessionIn("bypassPermissions"))),
+    })?.notice).toBe(SANDBOX_BIND_DENIED_ESCALATION_AVAILABLE);
+  });
+
+  test("the never verdict stays wherever the prompt does not offer escalation", () => {
+    const bypass = sessionIn("bypassPermissions");
+    // Other sandboxes: the prompt keeps the never text there.
+    for (const sandboxMode of ["read_only", "danger_full_access", undefined]) {
+      expect(sandboxEscalationAvailable("never", { sandboxMode, session: bypass })).toBe(false);
+    }
+    // A routine never leaves its sandbox.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { runtimeOptions: { routineRun: true } }),
+    ))).toBe(false);
+    // A worktree child's escalated command stays in its worktree.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { sandboxExecutionBroker: { worktreeConfinement: { worktree: "/w", checkout: "/c" } } }),
+    ))).toBe(false);
+    // A read-only delegation child refuses require_escalated outright.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { readOnlyDelegation: { deniedRules: [] } }),
+    ))).toBe(false);
+    // A Light print run's prompt tells the model not to escalate.
+    expect(sandboxEscalationAvailable("never", workspaceWrite(
+      sessionIn("bypassPermissions", { runtimeOptions: { lightMode: true, nonInteractive: true } }),
+    ))).toBe(false);
+    // Other modes, and no session at all.
+    for (const mode of ["default", "acceptEdits", "plan"]) {
+      expect(sandboxEscalationAvailable("never", workspaceWrite(sessionIn(mode)))).toBe(false);
+    }
+    expect(sandboxEscalationAvailable("never", workspaceWrite(undefined))).toBe(false);
+    expect(sandboxEscalationAvailable("never")).toBe(false);
+    expect(bypassGrantsSandboxEscalation(null)).toBe(false);
   });
 });
 

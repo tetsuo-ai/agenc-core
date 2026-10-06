@@ -1333,7 +1333,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           sandboxApplied: runtimeSandbox !== undefined,
           escalationAvailable:
             runtimeContext === undefined ||
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
         });
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
@@ -1343,7 +1346,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           exitCode: output.exitCode,
           runtimeSandbox,
           escalationAvailable: runtimeContext !== undefined &&
-            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy, {
+              sandboxMode: runtimeContext.requestedSandboxMode,
+              session: runtimeContext.invocation.session,
+            }),
         }) ?? (confinedWorktree === undefined
           ? null
           : worktreeWriteDenialNotice({
