@@ -256,18 +256,48 @@ describe("/effort picker and live session", () => {
 describe("/effort default with a native none default", () => {
   beforeEach(() => settings.update.mockClear());
 
-  test("sends the native none to the running session and says effort is off", async () => {
+  test("clears the running session's effort, so it follows the native none default", async () => {
     const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
       provider: "mistral",
+      effortValue: "high",
     });
     const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
     (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
 
     const result = await effortCommand.execute(context);
 
-    // Never a guessed tier: the daemon only accepts none or high here.
-    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: "none" });
+    // No level is pinned: a later model switch must not carry "none" over.
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: null });
     expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: undefined });
+    expect(getAppState().effortValue).toBeUndefined();
+    expect(result).toEqual({
+      kind: "text",
+      text: "Effort follows the mistral-medium-latest default (off).",
+    });
+  });
+
+  test("sends the native default to a daemon that cannot clear an effort", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
+      provider: "mistral",
+      effortValue: "high",
+    });
+    const applyDaemonConfig = vi.fn(async (params: { reasoningEffort: string | null }) => {
+      if (params.reasoningEffort === null) {
+        throw Object.assign(
+          new Error("session.applyConfig param 'reasoningEffort' must be a string"),
+          { code: -32602 },
+        );
+      }
+      return { sessionId: "s1", applied: true, summary: "ok" };
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    expect(applyDaemonConfig.mock.calls).toEqual([
+      [{ reasoningEffort: null }],
+      [{ reasoningEffort: "none" }],
+    ]);
     expect(getAppState().effortValue).toBeUndefined();
     expect(result).toEqual({
       kind: "text",
@@ -312,7 +342,7 @@ describe("/effort default sends only a truthful default", () => {
 
   const authContext = (provider: string) => ({ ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider });
 
-  test("a registered model without a native default gets nothing and keeps its effort", async () => {
+  test("a registered model without a native default is cleared too", async () => {
     const { context, getAppState } = commandContext("moonshotai/kimi-k3", "default", {
       provider: "nvidia-nim",
       effortValue: "low",
@@ -322,8 +352,29 @@ describe("/effort default sends only a truthful default", () => {
 
     const result = await effortCommand.execute(context);
 
-    // A guessed medium is not one of this model's levels; the daemon refused it.
-    expect(applyDaemonConfig).not.toHaveBeenCalled();
+    // Clearing needs no guessed tier, so this model can follow its default too.
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: null });
+    expect(result).toEqual({
+      kind: "text",
+      text: "Effort follows the moonshotai/kimi-k3 default.",
+    });
+    expect(getAppState().effortValue).toBeUndefined();
+  });
+
+  test("a daemon that cannot clear keeps the effort when no native default is known", async () => {
+    const { context, getAppState } = commandContext("moonshotai/kimi-k3", "default", {
+      provider: "nvidia-nim",
+      effortValue: "low",
+    });
+    const applyDaemonConfig = vi.fn(async () => {
+      throw Object.assign(new Error("invalid params"), { code: -32602 });
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    // A guessed medium is not one of this model's levels, so nothing else is sent.
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: null });
     expect(result).toEqual({
       kind: "text",
       text: "Saved: new sessions use the moonshotai/kimi-k3 default. This session keeps its current effort.",
@@ -365,7 +416,7 @@ describe("/effort default sends only a truthful default", () => {
       .toBe("medium effort");
   });
 
-  test("across the catalog, every value /effort sends is the native default or a level the daemon accepts", async () => {
+  test("across the catalog, /effort default clears and every level it sends is one the daemon accepts", async () => {
     const accepts = (provider: string, model: string, value: string) =>
       (RUN_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value) &&
       resolveReasoningEffort({ provider, model }).levels.includes(value);
@@ -375,22 +426,35 @@ describe("/effort default sends only a truthful default", () => {
       const auth = authContext(provider);
       if (!modelSupportsEffortForContext(model, auth)) continue;
       checked += 1;
-      const send = async (argsRaw: string) => {
+      // A daemon from before clearing refuses null; /effort then retries
+      // with the native default, the last value it sent.
+      const send = async (argsRaw: string, canClear = true) => {
         const { context } = commandContext(model, argsRaw, { provider, effortValue: "high" });
-        const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+        const applyDaemonConfig = vi.fn(async (params: { reasoningEffort: string | null }) => {
+          if (params.reasoningEffort === null && !canClear) {
+            throw Object.assign(new Error("invalid params"), { code: -32602 });
+          }
+          return { sessionId: "s1", applied: true, summary: "ok" };
+        });
         (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
         await effortCommand.execute(context);
-        return (applyDaemonConfig.mock.calls[0]?.[0] as { reasoningEffort?: string } | undefined)
-          ?.reasoningEffort;
+        return (applyDaemonConfig.mock.calls.at(-1)?.[0] as
+          | { reasoningEffort?: string | null }
+          | undefined)?.reasoningEffort;
       };
       const reset = await send("default");
+      if (reset !== null) problems.push(`${provider}/${model} default sent ${reset}`);
+      const legacyReset = await send("default", false);
       const native = getNativeDefaultReasoningEffortForContext(model, auth);
-      if (reset !== undefined && (reset !== native || !accepts(provider, model, reset))) {
-        problems.push(`${provider}/${model} default sent ${reset}`);
+      if (
+        legacyReset !== null &&
+        (legacyReset !== native || legacyReset === undefined || !accepts(provider, model, legacyReset))
+      ) {
+        problems.push(`${provider}/${model} default sent ${legacyReset} to a daemon that cannot clear`);
       }
       for (const level of getAvailableEffortLevelsForContext(model, auth)) {
         const sent = await send(level);
-        if (sent !== undefined && !accepts(provider, model, sent)) {
+        if (typeof sent === "string" && !accepts(provider, model, sent)) {
           problems.push(`${provider}/${model} ${level} sent ${sent}`);
         }
       }

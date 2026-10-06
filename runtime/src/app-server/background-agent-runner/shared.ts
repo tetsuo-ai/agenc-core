@@ -447,7 +447,8 @@ export interface AgenCBackgroundAgentSetHooksDisabledResult {
 
 export interface AgenCBackgroundAgentApplyConfigParams {
   readonly sessionId: string;
-  readonly reasoningEffort?: string;
+  /** Null clears the session's effort so it follows the model default. */
+  readonly reasoningEffort?: string | null;
   readonly modelVerbosity?: "low" | "medium" | "high" | null;
   readonly profile?: string;
   readonly reload?: boolean;

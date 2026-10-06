@@ -43,6 +43,10 @@ import {
 } from "../../permissions/unattended-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
+import {
+  reasoningEffortForModel,
+  withSessionReasoningEffort,
+} from "../../session/reasoning-effort-for-model.js";
 import { isRecord } from "../../utils/record.js";
 import {
   RUN_RUNTIME_MODEL_VERBOSITIES,
@@ -576,11 +580,19 @@ function captureRuntimeSettings(
       readonly sessionConfiguration?: Session["sessionConfiguration"];
     }
   ).sessionConfiguration;
-  const reasoningEffort = normalizeRuntimeSetting(
-    configuration?.collaborationMode.reasoningEffort,
-    RUN_RUNTIME_REASONING_EFFORTS,
-    "reasoning effort",
-  );
+  // While a switch is staged, the run carries what its next turn runs: the
+  // live level judged against the staged model.
+  const liveSelection = readSessionSelection(session);
+  const liveEffort = liveRuntimeReasoningEffort(session);
+  const reasoningEffort =
+    liveSelection.provider !== selection.provider ||
+    liveSelection.model !== selection.model
+      ? reasoningEffortForStagedModel(
+          bootstrap.configStore.current(),
+          selection,
+          liveEffort,
+        ).reasoningEffort
+      : liveEffort;
   const modelVerbosity = normalizeRuntimeSetting(
     configuration?.modelVerbosityOverride,
     RUN_RUNTIME_MODEL_VERBOSITIES,
@@ -613,6 +625,46 @@ function captureRuntimeSettings(
     serviceTier,
     hooksDisabled: session.services?.hooksRuntime?.isDisabled() === true,
   });
+}
+
+/** The session's live reasoning effort, in journal vocabulary. */
+function liveRuntimeReasoningEffort(
+  session: LocalRuntimeBootstrap["session"],
+): RunRuntimeSettingsSnapshot["reasoningEffort"] {
+  const configuration = (
+    session as Session & {
+      readonly sessionConfiguration?: Session["sessionConfiguration"];
+    }
+  ).sessionConfiguration;
+  return normalizeRuntimeSetting(
+    configuration?.collaborationMode.reasoningEffort,
+    RUN_RUNTIME_REASONING_EFFORTS,
+    "reasoning effort",
+  );
+}
+
+/**
+ * The effort a run carries once a staged model switch applies: the same level
+ * when the new model accepts it, otherwise none, so the new model runs at its
+ * own default. Session.publishPreparedProviderSwitch applies the same rule.
+ */
+function reasoningEffortForStagedModel(
+  config: AgenCConfig,
+  selection: { readonly provider: string; readonly model: string },
+  reasoningEffort: RunRuntimeSettingsSnapshot["reasoningEffort"],
+): {
+  readonly reasoningEffort: RunRuntimeSettingsSnapshot["reasoningEffort"];
+  readonly dropped?: string;
+} {
+  const effort = reasoningEffortForModel({
+    provider: selection.provider,
+    model: selection.model,
+    reasoningEffort: reasoningEffort ?? undefined,
+    config,
+  });
+  return effort.dropped === undefined
+    ? { reasoningEffort }
+    : { reasoningEffort: null, dropped: effort.dropped };
 }
 
 function normalizeRuntimeSetting<const T extends readonly string[]>(
@@ -960,14 +1012,10 @@ async function applyRestoredRuntimeSettings(
     const inheritedModelVerbosity = configuration.modelVerbosityOverride === undefined
       ? configuration.modelVerbosity
       : configuration.inheritedModelVerbosity;
+    // A journaled null is a session without a level (seeding gives every
+    // other session one), so it keeps following the model default.
     state.sessionConfiguration = {
-      ...configuration,
-      collaborationMode: {
-        ...configuration.collaborationMode,
-        ...(settings.reasoningEffort !== null
-          ? { reasoningEffort: settings.reasoningEffort }
-          : { reasoningEffort: undefined }),
-      } as typeof configuration.collaborationMode,
+      ...withSessionReasoningEffort(configuration, settings.reasoningEffort),
       modelVerbosityOverride: settings.modelVerbosity,
       inheritedModelVerbosity,
       modelVerbosity: settings.modelVerbosity ?? inheritedModelVerbosity,
@@ -1375,6 +1423,17 @@ function runtimeSettingsWithRestoreOverrides(
       ...(params.model !== undefined ? { model: params.model } : {}),
     },
   );
+  // Resuming on another model is a model switch: the effort stays only when
+  // that model accepts it.
+  const reasoningEffort =
+    resolvedSelection.provider !== canonical.provider ||
+    resolvedSelection.model !== canonical.model
+      ? reasoningEffortForStagedModel(
+          config,
+          resolvedSelection,
+          canonical.reasoningEffort,
+        ).reasoningEffort
+      : canonical.reasoningEffort;
   return {
     ...canonical,
     permissionMode,
@@ -1389,6 +1448,7 @@ function runtimeSettingsWithRestoreOverrides(
     model: resolvedSelection.model,
     provider: resolvedSelection.provider,
     profile: params.profile ?? canonical.profile,
+    reasoningEffort,
   };
 }
 
@@ -1505,6 +1565,8 @@ export {
   prepareMcpAuthorityRefresh,
   captureRuntimeSettings,
   normalizeRuntimeSetting,
+  reasoningEffortForStagedModel,
+  liveRuntimeReasoningEffort,
   installRuntimeSettingsPreCommit,
   withRuntimeSettingsMutation,
   ensureInitialRuntimeSettings,

@@ -14,7 +14,11 @@
 
 import type { Session } from "../session/session.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
-import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
+import {
+  checkModelHistoryCompat,
+  effortStateAfterModelSwitch,
+  type HistoryCompatResult,
+} from "./model.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { readCommandConfig } from "./config-context.js";
 import { providerMenuFallback, readProviderMenuSnapshot } from "./provider-menu-snapshot.js";
@@ -238,6 +242,7 @@ function updateProviderChrome(ctx: SlashCommandContext, model: string): void {
         ...prev,
         mainLoopModel: model,
         mainLoopModelForSession: model,
+        ...effortStateAfterModelSwitch(ctx.session),
       };
     });
     return;

@@ -82,6 +82,9 @@ export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as co
 /** Optional per-session response-detail mutation on session.applyConfig. */
 export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY =
   "session.applyConfig.modelVerbosity" as const;
+/** session.applyConfig accepts reasoningEffort null: the session follows its model's default. */
+export const AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY =
+  "session.applyConfig.reasoningEffortClear" as const;
 /** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
   "routine.sessionAuthority.v1" as const;
@@ -265,6 +268,7 @@ export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
   readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
   readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
+  readonly [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]?: true;
 };
 
 /**
@@ -1222,7 +1226,7 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Re-apply config or atomically update an idle session's reasoning effort and response detail. The latter is advertised by session.applyConfig.modelVerbosity.",
+      "Re-apply config or atomically update an idle session's reasoning effort and response detail. The latter is advertised by session.applyConfig.modelVerbosity; clearing the effort with null by session.applyConfig.reasoningEffortClear.",
   },
   "session.mcp.reconnectServer": {
     method: "session.mcp.reconnectServer",
@@ -2161,8 +2165,11 @@ export interface SessionHookRunDiagnosticShape extends JsonObject {
 
 export interface SessionApplyConfigParams extends JsonObject {
   readonly sessionId: string;
-  /** Apply only this effort to the idle session, without reloading other settings. */
-  readonly reasoningEffort?: string;
+  /**
+   * Apply only this effort to the idle session, without reloading other
+   * settings. Null clears it, so the session follows its model's default.
+   */
+  readonly reasoningEffort?: string | null;
   /** Per-session response detail; null clears the override. */
   readonly modelVerbosity?: "low" | "medium" | "high" | null;
   /** Profile to overlay onto the live session; omit for a plain reload. */

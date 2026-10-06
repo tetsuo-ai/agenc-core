@@ -358,6 +358,14 @@ export interface SessionConfiguration {
    */
   readonly sandboxAllowGpu?: boolean;
   readonly collaborationMode: CollaborationMode;
+  /**
+   * True once the session's reasoning effort was cleared on purpose
+   * (`/effort default`, or a model switch that dropped a level the new model
+   * does not accept). Requests then carry no level, so each model runs at its
+   * own default, and the configured `reasoning_effort` does not refill it.
+   * Setting a level clears this.
+   */
+  readonly reasoningEffortCleared?: boolean;
   readonly personality?: Personality;
   readonly modelVerbosity?: "low" | "medium" | "high";
   /** Session-only override; null means use inheritedModelVerbosity. */

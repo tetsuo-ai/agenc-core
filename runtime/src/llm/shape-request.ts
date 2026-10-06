@@ -1,14 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizePromptCacheKey } from "./prompt-cache-key.js";
 import type { ProviderModelCapabilities } from "./capabilities.js";
-import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
 
+/**
+ * What a session's history needs from a model it switches to. Reasoning effort
+ * is not here: a switch keeps a level the new model accepts and drops any
+ * other one (session/reasoning-effort-for-model.ts) instead of refusing.
+ */
 export interface SessionHistoryRequirements {
   readonly hasImageHistory: boolean;
   readonly hasAudioHistory: boolean;
   readonly hasThinkingHistory: boolean;
-  readonly reasoningEffortRequested: boolean;
-  readonly reasoningEffort?: string;
 }
 
 export interface HistoryCompatibilityCheck {
@@ -96,12 +98,7 @@ function scanValue(
 export function analyzeSessionHistoryRequirements(
   snapshot: unknown,
 ): SessionHistoryRequirements {
-  const state = (snapshot ?? {}) as {
-    history?: unknown[];
-    sessionConfiguration?: {
-      collaborationMode?: { reasoningEffort?: string };
-    };
-  };
+  const state = (snapshot ?? {}) as { history?: unknown[] };
   const requirements = {
     hasImageHistory: false,
     hasAudioHistory: false,
@@ -112,15 +109,7 @@ export function analyzeSessionHistoryRequirements(
     scanValue(state.history, new WeakSet<object>(), requirements);
   }
 
-  const reasoningEffort = state.sessionConfiguration?.collaborationMode?.reasoningEffort;
-  return {
-    ...requirements,
-    ...(typeof reasoningEffort === "string" ? { reasoningEffort } : {}),
-    reasoningEffortRequested:
-      typeof reasoningEffort === "string" &&
-      reasoningEffort.length > 0 &&
-      reasoningEffort !== "none",
-  };
+  return requirements;
 }
 
 export function validateHistoryCompatibility(
@@ -137,17 +126,6 @@ export function validateHistoryCompatibility(
   }
   if (requirements.hasThinkingHistory && !caps.acceptsThinkingHistory) {
     missing.push("thinking history");
-  }
-  const levels: readonly string[] | undefined = resolveRegisteredModelCatalogEntry(caps)
-    ?.supportedReasoningLevels;
-  const unsupportedEffort = requirements.reasoningEffort !== undefined &&
-    levels !== undefined &&
-    !levels.includes(requirements.reasoningEffort);
-  if (
-    requirements.reasoningEffortRequested &&
-    (!caps.acceptsReasoningEffort || unsupportedEffort)
-  ) {
-    missing.push("reasoning effort");
   }
 
   if (missing.length === 0) {

@@ -59,8 +59,13 @@ export function resolveSessionReasoningEffort(
     readonly provider: string;
     readonly model: string;
     readonly effortSource?: string;
+    /** The session cleared its level on purpose: no configured fallback. */
+    readonly followsModelDefault?: boolean;
   },
 ): WireReasoningEffort | undefined {
+  if (turnEffort === undefined && selection?.followsModelDefault === true) {
+    return undefined;
+  }
   if (selection?.provider === "gemini") {
     return resolveGeminiSessionReasoningEffort(
       turnEffort,
@@ -113,20 +118,39 @@ export function resolveSessionReasoningEffort(
 /**
  * The effort the main loop sends on a turn of `session`: the turn's effort,
  * or the configured one when it has none, resolved for the session's
- * provider and model.
+ * provider and model. A session that cleared its level on purpose sends none.
+ * When a model fallback switched the model inside the running turn, the turn's
+ * effort was frozen for the old model; the session's own effort, which the
+ * switch judged against the new model, applies instead.
  */
 export function resolveMainLoopReasoningEffort(
   session: Session,
-  turn: Pick<TurnContext, "reasoningEffort" | "modelInfo">,
+  turn: Pick<TurnContext, "reasoningEffort" | "modelInfo" | "providerBinding">,
 ): WireReasoningEffort | undefined {
+  const configuration = (
+    session as Session & {
+      readonly sessionConfiguration?: Session["sessionConfiguration"];
+    }
+  ).sessionConfiguration;
+  const liveRevision = (
+    session as Session & { readonly providerBinding?: { readonly revision: number } }
+  ).providerBinding?.revision;
+  const switchedInTurn =
+    configuration !== undefined &&
+    turn.providerBinding !== undefined &&
+    liveRevision !== undefined &&
+    turn.providerBinding.revision !== liveRevision;
   return resolveSessionReasoningEffort(
-    turn.reasoningEffort,
+    switchedInTurn
+      ? configuration.collaborationMode.reasoningEffort
+      : turn.reasoningEffort,
     turn.modelInfo.supportedReasoningLevels,
     {
       provider: session.services.provider.name,
       model: session.config?.model ?? turn.modelInfo.slug,
       effortSource: session.services.configStore
         ?.provenance?.("reasoning_effort")?.scope,
+      followsModelDefault: configuration?.reasoningEffortCleared === true,
     },
   );
 }
