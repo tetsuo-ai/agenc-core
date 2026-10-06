@@ -27,6 +27,7 @@ export function getSessionPermissionInstructions(
     }, {
       light: session.services.runtimeOptions?.lightMode === true,
       lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
+      worktreeConfined: session.services.sandboxExecutionBroker?.worktreeConfinement !== undefined,
     }),
     getAutonomousWorkSection(ctx.config.autonomousMode === true, currentPermissions),
   ]

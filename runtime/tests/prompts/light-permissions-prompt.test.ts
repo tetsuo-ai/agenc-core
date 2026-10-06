@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  LIGHT_APPROVAL_BYPASS_ESCALATION,
   LIGHT_APPROVAL_ON_REQUEST,
   ROUTINE_NO_APPROVER_NOTE,
   getPermissionsSection,
@@ -97,21 +98,31 @@ describe("Light permission section", () => {
   // The orchestrator grants a bypass session's require_escalated request
   // without asking. Saying it is rejected made a model give up on opening a
   // page in the browser and start the browser's binary inside the sandbox.
-  test.each(["workspace_write", "read_only"] as const)("bypass inside a %s sandbox says leaving it is pre-approved and how", (sandboxPolicy) => {
-    const light = section("bypassPermissions", sandboxPolicy, false, true)!;
-    expect(light).toContain("Approval policy never: bypass mode pre-approves leaving the sandbox.");
-    expect(light).toContain("open or xdg-open");
+  test("bypass in a workspace-write sandbox says a request to leave it is granted, and for what", () => {
+    const light = section("bypassPermissions", "workspace_write", false, true)!;
+    expect(light).toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
+    expect(light).toContain("Approval policy never: bypass mode grants a request to leave the sandbox without asking.");
+    expect(light).toContain("only for GUI apps (open, xdg-open, osascript) or blocked network");
     expect(light).toContain("sandbox_permissions \"require_escalated\" and a one-line justification");
-    expect(light).toContain("it runs outside the sandbox without asking");
-    expect(light).toContain("Do not work around the sandbox another way.");
+    expect(light).toContain("Keep file changes inside the workspace");
     expect(light).not.toContain("such commands are rejected");
     expect(light).toContain("Tool calls are pre-approved");
   });
 
-  test.each(["danger_full_access", "external_sandbox"] as const)("bypass with no sandbox AgenC can lift (%s) keeps the never text", (sandboxPolicy) => {
+  test.each(["read_only", "danger_full_access", "external_sandbox"] as const)("bypass in a %s sandbox keeps the never text", (sandboxPolicy) => {
     const light = section("bypassPermissions", sandboxPolicy, true, true)!;
     expect(light).toContain("do not provide sandbox_permissions; such commands are rejected");
-    expect(light).not.toContain("pre-approves leaving the sandbox");
+    expect(light).not.toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
+  });
+
+  test("a bypass worktree child keeps the never text", () => {
+    const light = getPermissionsSection(
+      createEmptyToolPermissionContext({ mode: "bypassPermissions" }),
+      { sandboxPolicy: "workspace_write", networkSandboxPolicy: { enabled: false } },
+      { light: true, worktreeConfined: true },
+    )!;
+    expect(light).toContain("do not provide sandbox_permissions; such commands are rejected");
+    expect(light).not.toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
   });
 
   test.each(["acceptEdits", "bypassPermissions"] as const)("a %s routine with nobody attached keeps the canonical routine note", (mode) => {
@@ -123,7 +134,7 @@ describe("Light permission section", () => {
     expect(light.endsWith(`\n${ROUTINE_NO_APPROVER_NOTE}`)).toBe(true);
     expect(light).not.toContain("Tool calls are pre-approved");
     // A routine never leaves its sandbox, whatever its mode.
-    expect(light).not.toContain("pre-approves leaving the sandbox");
+    expect(light).not.toContain(LIGHT_APPROVAL_BYPASS_ESCALATION);
   });
 
   test("unattended and unsupported modes are unchanged", () => {

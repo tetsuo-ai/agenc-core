@@ -16,8 +16,8 @@
  *   AgenC `"plan"`              → approval `unless_trusted`
  *   AgenC `"default"`           → approval `on_request`
  *   AgenC `"acceptEdits"`       → approval `on_failure`
- *   AgenC `"bypassPermissions"` → approval `never`, or, inside a sandbox AgenC
- *                                 can lift, the pre-approved escalation text
+ *   AgenC `"bypassPermissions"` → approval `never`, or in a workspace-write
+ *                                 sandbox the granted-escalation text
  *   AgenC `"unattended"`        → background-agent allow/deny/pause policy
  *
  * Sandbox-mode text includes a `{{network_access}}` template placeholder that
@@ -70,15 +70,18 @@ export const BYPASS_AUTONOMY_NOTE =
   "Approval policy never means tool calls are pre-approved: do not ask for tool permission or plan approval, and do not pause for confirmation of local, reversible work. The rules in 'Executing actions with care' still apply: destructive, irreversible, shared-system or externally visible actions still need the user's explicit request. If the task is genuinely ambiguous, ask one question with AskUserQuestion; when the requested work is done and verified, stop and report.";
 
 /**
- * Approval text for bypassPermissions inside a sandbox AgenC can lift. The
+ * Approval text for bypassPermissions in a workspace-write sandbox. The
  * orchestrator grants a `require_escalated` request in that mode without
  * asking (tools/orchestrator.ts), so APPROVAL_POLICY_NEVER, which says such
- * requests are rejected, is false there. A model told it gave up on work that
- * has to leave the sandbox, such as opening a page in the user's browser, and
- * instead started the browser's binary inside the sandbox, which crashed it.
+ * requests are rejected, is false there. A model told it gave up on opening a
+ * page in the user's browser and started the browser's binary inside the
+ * sandbox, which crashed it. The text names only the cases bypass users
+ * expect to leave the sandbox, GUI apps and blocked network: an escalated
+ * command also skips the shell write guards, and `--bypass-approvals` keeps
+ * file changes inside the workspace.
  */
 export const APPROVAL_POLICY_BYPASS_ESCALATION =
-  "Approval policy is currently never, and this session runs in bypass mode, so leaving the sandbox is pre-approved. Commands run in the sandbox. When one must run outside it, such as a GUI app (open, xdg-open, osascript) that opens a browser or a file, a write the sandbox forbids, or network access it blocks, provide `sandbox_permissions` with the value `\"require_escalated\"` and a one-line `justification`; the command then runs outside the sandbox without asking. Escalate instead of working around the sandbox another way, such as starting an app's binary directly.\n";
+  "Approval policy is currently never, and this session runs in bypass mode, so a request to leave the sandbox is granted without asking. Use it only for a GUI app (open, xdg-open, osascript) that opens a browser or a file, or for network access the sandbox blocks: provide `sandbox_permissions` with the value `\"require_escalated\"` and a one-line `justification`. Keep file changes inside the workspace, and do not work around the sandbox another way, such as starting an app's binary directly.\n";
 
 /**
  * Approval policy: unless trusted. Begins with one literal space character.
@@ -303,7 +306,12 @@ function renderSandbox(
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,
   authority: PermissionPromptExecutionAuthority,
-  options: { readonly light?: boolean; readonly lightPrint?: boolean } = {},
+  options: {
+    readonly light?: boolean;
+    readonly lightPrint?: boolean;
+    /** A worktree child: an escalated command stays inside its worktree. */
+    readonly worktreeConfined?: boolean;
+  } = {},
 ): string | null {
   if (ctx === null) return null;
   if (ctx.mode === "unattended") {
@@ -329,7 +337,7 @@ export function getPermissionsSection(
   if (options.light === true) {
     return options.lightPrint === true && unattendedPolicyForContext(ctx).noApprover !== true
       ? lightPrintPermissionsSection(ctx, authority)
-      : lightPermissionsSection(ctx, authority);
+      : lightPermissionsSection(ctx, authority, options.worktreeConfined === true);
   }
 
   const sandboxText = renderSandbox(
@@ -338,7 +346,7 @@ export function getPermissionsSection(
   );
   // Approval text constants keep their trailing `\n` from the upstream
   // file. Strip it so the outer joiner controls spacing.
-  const approvalText = (bypassGrantsEscalation(ctx, authority)
+  const approvalText = (bypassGrantsEscalation(ctx, authority, options.worktreeConfined === true)
     ? APPROVAL_POLICY_BYPASS_ESCALATION
     : binding.approvalText).replace(/\n+$/, "");
 
@@ -403,20 +411,25 @@ export const LIGHT_APPROVAL_NEVER =
 
 /** Light rendering of APPROVAL_POLICY_BYPASS_ESCALATION. */
 export const LIGHT_APPROVAL_BYPASS_ESCALATION =
-  "Approval policy never: bypass mode pre-approves leaving the sandbox. For a command the sandbox blocks (GUI apps such as open or xdg-open, writes it forbids, blocked network), call exec_command with sandbox_permissions \"require_escalated\" and a one-line justification; it runs outside the sandbox without asking. Do not work around the sandbox another way.";
+  "Approval policy never: bypass mode grants a request to leave the sandbox without asking. Use it only for GUI apps (open, xdg-open, osascript) or blocked network: call exec_command with sandbox_permissions \"require_escalated\" and a one-line justification. Keep file changes inside the workspace; do not work around the sandbox another way.";
 
 /**
- * Bypass grants an escalation only where there is a sandbox AgenC can lift
- * and somebody chose the mode: a scheduled routine never leaves its sandbox,
- * and danger-full-access or an external sandbox leaves nothing to lift.
+ * Where the bypass escalation text applies. The same sessions get escalation
+ * advice from exec_command's sandbox notices (tools/system/exec-sandbox-denial.ts).
+ * A scheduled routine never leaves its sandbox; a worktree child's escalated
+ * command stays confined to its worktree; danger-full-access and an external
+ * sandbox leave nothing to lift; and a read-only sandbox is a choice to change
+ * nothing, which this text would undercut.
  */
 function bypassGrantsEscalation(
   ctx: ToolPermissionContext,
   authority: PermissionPromptExecutionAuthority,
+  worktreeConfined: boolean,
 ): boolean {
   return ctx.mode === "bypassPermissions" &&
     unattendedPolicyForContext(ctx).noApprover !== true &&
-    (authority.sandboxPolicy === "workspace_write" || authority.sandboxPolicy === "read_only");
+    !worktreeConfined &&
+    authority.sandboxPolicy === "workspace_write";
 }
 
 /**
@@ -459,9 +472,10 @@ function lightPrintPermissionsSection(
 function lightPermissionsSection(
   ctx: ToolPermissionContext,
   authority: PermissionPromptExecutionAuthority,
+  worktreeConfined: boolean,
 ): string | null {
   const binding = MODE_BINDINGS[ctx.mode];
-  const approvalText = bypassGrantsEscalation(ctx, authority)
+  const approvalText = bypassGrantsEscalation(ctx, authority, worktreeConfined)
     ? LIGHT_APPROVAL_BYPASS_ESCALATION
     : LIGHT_APPROVAL_TEXT[ctx.mode];
   if (binding === undefined || approvalText === undefined) return null;
