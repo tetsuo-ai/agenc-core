@@ -19,6 +19,9 @@ import {
 } from "./exec-command.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { readToolRuntimeContext } from "../runtimes/context.js";
+import { sandboxEscalationAvailable } from "./exec-sandbox-denial.js";
+import { execNetworkFailureNotice } from "./exec-network-failure.js";
 
 export interface WriteStdinToolConfig {
   readonly lightMode?: boolean;
@@ -230,8 +233,17 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         const isError =
           (output.exitCode !== null && output.exitCode !== 0) ||
           (output.exitCode === null && !stillAlive);
+        const execContent = formatUnifiedExecToolContent(output, config?.lightMode === true);
+        const runtimeContext = readToolRuntimeContext(args);
+        const notice = execNetworkFailureNotice({
+          output: execContent,
+          exitCode: output.exitCode,
+          runtimeSandbox,
+          escalationAvailable: runtimeContext !== undefined &&
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+        });
         return {
-          content: formatUnifiedExecToolContent(output, config?.lightMode === true),
+          content: notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
           // The manager returned an authoritative process observation. A

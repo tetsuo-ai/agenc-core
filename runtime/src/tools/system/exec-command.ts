@@ -46,6 +46,7 @@ import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import { nonEmptyString as asString } from "../../utils/stringUtils.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { readToolRuntimeContext } from "../runtimes/context.js";
+import { execNetworkFailureNotice } from "./exec-network-failure.js";
 import {
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
@@ -1335,7 +1336,13 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const confinedWorktree = runtimeSandbox === undefined
           ? undefined
           : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
-        const notice = denial?.notice ?? (confinedWorktree === undefined
+        const notice = denial?.notice ?? execNetworkFailureNotice({
+          output: execContent,
+          exitCode: output.exitCode,
+          runtimeSandbox,
+          escalationAvailable: runtimeContext !== undefined &&
+            sandboxEscalationAvailable(runtimeContext.approvalPolicy),
+        }) ?? (confinedWorktree === undefined
           ? null
           : worktreeWriteDenialNotice({
               output: execContent,
