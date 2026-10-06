@@ -16,13 +16,12 @@ vi.mock('../../../src/utils/log.js', () => ({
   logError: browser.logError,
 }))
 
-import { createRoot, Text } from '../../../src/tui/ink.js'
+import { Box, createRoot, Text } from '../../../src/tui/ink.js'
 import {
   AppStateProvider,
   getDefaultAppState,
 } from '../../../src/tui/state/AppState.js'
 import {
-  DesignTopChrome,
   FullscreenLayout,
   useUnseenDivider,
 } from '../../../src/tui/components/FullscreenLayout.js'
@@ -245,29 +244,7 @@ describe('FullscreenLayout coverage swarm 019', () => {
     }
   })
 
-  test('selects active tasks for top chrome and truncates long task ids', async () => {
-    const state = getDefaultAppState()
-    const output = await renderToString(
-      <AppStateProvider
-        initialState={{
-          ...state,
-          tasks: {
-            done: task('done-task', 'completed'),
-            active: task('run-task-1234567890abcdefghij', 'running'),
-          },
-        }}
-      >
-        <DesignTopChrome columns={120} noColor={true} />
-      </AppStateProvider>,
-      120,
-    )
-
-    expect(output).toContain('run-task')
-    expect(output).not.toContain('run-task-1234567890abcdefghij')
-    expect(output).not.toContain('done-task')
-  })
-
-  test('renders the active task in the top chrome and honest bottom labels', async () => {
+  test('keeps the status line to real labels and no task chrome', async () => {
     const state = getDefaultAppState()
     const output = await renderToString(
       <FullscreenModeProvider enabled={true}>
@@ -294,23 +271,27 @@ describe('FullscreenLayout coverage swarm 019', () => {
       { columns: 100, rows: 12 },
     )
 
-    // Top chrome surfaces the first running/queued task by id; the other
-    // tasks stay out of the chrome (no aggregate count anywhere).
-    expect(output).toContain('running-task')
+    // There is no top bar, so task ids stay out of the chrome; the one
+    // status line carries the real mode and spend, and no fabricated
+    // ctx/stake segments.
+    expect(output).not.toContain('running-task')
     expect(output).not.toContain('queued-task')
     expect(output).not.toContain('completed-task')
-    // Bottom chrome keeps the real labels (mode, spend) and drops the
-    // fabricated ctx/stake segments the pre-redesign chrome hardcoded —
-    // the old '2' assertion only ever matched the fake `12.4K` stake.
-    expect(output).toContain('mode')
-    expect(output).toContain('spend')
+    expect(output).toContain('auto mode')
+    expect(output).toContain('$0.00')
     expect(output).not.toContain('12.4K')
   })
 
   test('portals prompt suggestions above the clipped bottom slot', async () => {
+    // The scroll region gets real height so the popup has rows to rise into;
+    // this harness does not stretch the layout to the terminal height.
     const output = await renderLatestFrame(
       <FullscreenLayout
-        scrollable={<Text>scroll body</Text>}
+        scrollable={
+          <Box flexDirection="column" height={8}>
+            <Text>scroll body</Text>
+          </Box>
+        }
         bottom={<SuggestionsWriter />}
       />,
     )

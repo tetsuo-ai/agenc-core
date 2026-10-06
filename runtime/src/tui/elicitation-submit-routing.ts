@@ -12,10 +12,12 @@ export interface ComposerSubmitOptions {
   readonly pastedContentsOverride?: Record<number, unknown>;
 }
 
+// The cursor is left alone: `submit` may keep the text (busy retry, an
+// elicitation answer) or restore it after a rejection. When the owner does
+// clear the text, PromptInput's input effect moves the cursor to 0.
 function clearComposer(helpers: ComposerSubmitHelpers): void {
   helpers.clearBuffer();
   helpers.resetHistory();
-  helpers.setCursorOffset(0);
 }
 
 export async function submitViaElicitationPrompt(

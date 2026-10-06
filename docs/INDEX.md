@@ -46,6 +46,7 @@ history; the linked pages below are current product truth.
 | [provider-tool-compat.md](provider-tool-compat.md) | Provider-independent tool backends plus wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Provider-independent image/video tools backed by Meta Muse Image or direct xAI Imagine |
+| [whisper-local.md](whisper-local.md) | Local whisper.cpp dictation, verified model install, and the [60 s download idle clock](whisper-local.md#download-idle-clock) |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
 | [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
@@ -57,7 +58,7 @@ history; the linked pages below are current product truth.
 | [reference/cli.md](reference/cli.md) | Full CLI, including M5 `run start`, Grok auth, OpenAI model discovery, `agenc skills list`, and `/compact` operator commands |
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config`, and `agent.retention.rollout_days` |
 | [reference/env.md](reference/env.md) | Operator `AGENC_*` / provider key environment variables, and provider credential isolation |
-| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, the 900 s compaction wall budget, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v4 / schema 5 pairing, additive journal vs fail-closed reader, compaction recovery fields, rebuilt transcript `turnResults`, and session rollout retention (30-day default, pending-review keep, startup quarantine) |
+| [reference/daemon.md](reference/daemon.md) | Daemon lifecycle, socket auth, deferred first messages, bypass consent, bounded-stop, compact-skip, and prompt-hook-block survival, the 900 s compaction wall budget, telemetry `error` events that do not latch run status, admission step identity, in-turn checkpoint resume gates, checkpoint v4 / schema 5 pairing, additive journal vs fail-closed reader, compaction recovery fields, rebuilt transcript `turnResults`, session rollout retention (30-day default, pending-review keep, startup quarantine), [recovery after a disappeared daemon](reference/daemon.md#recovery-after-a-disappeared-daemon) (connectability readiness, hydrating `daemon start`, TUI 10 s lost-turn), and [max-output-tokens recovery](reference/daemon.md#max-output-tokens-recovery) (capped-default escalate, `messagesAtSampleStart` truncate, reasoning-only next step, 3-retry exhaust) |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs, local context-window probes, Responses continuation, and overflow diagnostics |
 | [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics, `/compact`, and `/resolve` vs attested agent-validation refusals |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery (pinned webhook destinations) + hooks HTTP; autonomous keepalive stops after `compact_failed` |
@@ -74,7 +75,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder including [max-output-tokens recovery](ARCHITECTURE.md#max-output-tokens-recovery), on-disk state |
 | [design/critical-path/README.md](design/critical-path/README.md) | Critical-path ADRs. Several are shipped (see that README's per-ID status). Remaining target: CP-0008 flattening cutover. The [CP-0006 operator contract](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) describes the shipped compaction path, including [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival) and the [900 s transaction wall budget](design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget). |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |

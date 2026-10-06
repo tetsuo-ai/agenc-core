@@ -1,10 +1,7 @@
 import { getRegisteredHooks } from '../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'
-import {
-  executeCwdChangedHooks,
-  type HookOutsideReplResult,
-} from '../hooks.js'
+import type { HookOutsideReplResult } from '../hooks.js'
 import { clearCwdEnvFiles } from '../sessionEnvironment.js'
 import { isHookExecutionSuppressed } from '../../hooks/runtime-policy.js'
 
@@ -26,7 +23,9 @@ export async function onCwdChangedForHooks(
   if ((getRegisteredHooks()?.CwdChanged?.length ?? 0) === 0) return
 
   await clearCwdEnvFiles()
-  const hookResult = await executeCwdChangedHooks(oldCwd, newCwd).catch(e => {
+  const hookResult = await import('../hooks.js').then(({ executeCwdChangedHooks }) =>
+    executeCwdChangedHooks(oldCwd, newCwd),
+  ).catch(e => {
     const msg = errorMessage(e)
     logForDebugging(`CwdChanged hook failed: ${msg}`, {
       level: 'error',

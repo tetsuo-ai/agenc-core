@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
+import { LiveApprovalBroker } from "../../src/app-server/live-approval-broker.js";
+import { registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { requestApproval } from "../../src/permissions/guardian/arbiter.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { EventLog } from "../../src/session/event-log.js";
+import type { Session } from "../../src/session/session.js";
+import type { ApprovalCtx } from "../../src/tools/orchestrator.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AgenCInProcessDaemonTransport } from "../../src/app-server/transport/in-process.js";
 import {
@@ -17,6 +24,7 @@ import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import {
   openStateDatabases,
   type StateDatabasePaths,
@@ -26,6 +34,7 @@ import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
   type JsonObject,
+  type RunWorkflowRuntimeFailure,
 } from "../../src/app-server/protocol/index.js";
 import {
   createAgencClient,
@@ -162,7 +171,7 @@ function seedDurableRuns(): readonly number[] {
     });
     admissions.reconcile(claimed.lease.reservation.reservationId, {
       kind: "reported",
-      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002 },
+      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002, costEstimated: true },
     });
   }
   admissions.recordFallback(
@@ -228,6 +237,7 @@ describe("durable run inspection", () => {
         reservedCostUsd: 0.02,
         actualTokens: 40,
         actualCostUsd: 0.004,
+        costEstimated: true,
         allocationCount: 1,
         usedTokens: 40,
         heldTokens: 0,
@@ -518,7 +528,11 @@ describe("durable run inspection", () => {
     );
   });
 
-  it("returns the committed M4 terminal result after the original connection is gone", () => {
+  it.each([
+    {},
+    { costKnown: true, costEstimated: true },
+    { costKnown: false, costEstimated: false },
+  ])("returns the committed M4 terminal result with accounting flags %j after disconnect", (flags) => {
     seedDurableRuns();
     const durability = new StateRunDurabilityRepository(driver);
     durability.ensureInitialEpoch({ runId: "run-complete", openedAt: NOW });
@@ -536,6 +550,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
         finishedAt: "2026-07-18T12:05:00.000Z",
@@ -563,6 +578,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
       },
@@ -945,6 +961,47 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(service.status({ runId: "run-complete" }).workflow).toBeUndefined();
   });
 
+  it.each(["workflow_user_pause", "daemon_shutdown_idle"] as const)("projects the canonical resume after %s over a stale suspended rail row", reason => {
+    seedWorkflowEffects();
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.completeEffect({ runId: WORKFLOW_RUN_ID, stepId: "workflow.plan", outcome: "committed",
+      effectBoundary: "crossed", eventId: "plan-finished", eventSequence: ++sequence,
+      evidence: { stage: "workflow.plan", attempt: 1 }, completedAt: NOW });
+    upsertAgentRun(driver, { id: WORKFLOW_RUN_ID, objective: "Goal: fix it", status: "suspended",
+      startedAt: NOW, lastActiveAt: NOW, currentSessionId: WORKFLOW_RUN_ID });
+    durability.recordRunSuspended({ runId: WORKFLOW_RUN_ID, epoch: 1, eventId: "pause-first",
+      eventSequence: ++sequence, reason, suspendedAt: NOW });
+    expect(service.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: reason === "workflow_user_pause" ? "paused" : "suspended", terminal: false,
+      durableRun: { status: "suspended" }, statusSource: "run_lifecycle_epoch",
+    });
+
+    durability.recordRunResumed({ runId: WORKFLOW_RUN_ID, epoch: 1, suspensionEventId: "pause-first",
+      eventId: "resume-first", eventSequence: ++sequence,
+      reason: reason === "workflow_user_pause" ? "workflow_user_resume" : "explicit_continue", resumedAt: NOW });
+    // A fresh service has no live controller state. The persisted resume alone
+    // must correct the rail snapshot after a daemon restart.
+    const restarted = new AgenCDaemonRunInspectionService({ stateDatabasePaths: () => [paths], agencHome: home });
+    expect(restarted.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: "running", terminal: false, durableRun: { status: "suspended" },
+      statusSource: "run_lifecycle_epoch", workflow: { control: { state: "running" } },
+    });
+
+    // An older resume cannot hide a new suspension.
+    durability.recordRunSuspended({ runId: WORKFLOW_RUN_ID, epoch: 1, eventId: "pause-again",
+      eventSequence: ++sequence, reason, suspendedAt: NOW });
+    expect(restarted.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: reason === "workflow_user_pause" ? "paused" : "suspended", terminal: false,
+    });
+  });
+
+  it("does not infer a resume from a stale suspended rail without a canonical resume", () => {
+    seedWorkflowEffects();
+    upsertAgentRun(driver, { id: WORKFLOW_RUN_ID, objective: "Goal: fix it", status: "suspended",
+      startedAt: NOW, lastActiveAt: NOW, currentSessionId: WORKFLOW_RUN_ID });
+    expect(service.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({ status: "suspended", terminal: false });
+  });
+
   it("keeps frozen requested bypass separate from the current live mode and omits unavailable authority", () => {
     seedDurableRuns();
     seedWorkflowEffects("bypassPermissions");
@@ -982,6 +1039,240 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(terminal.workflow).toMatchObject({ requestedPermissionMode: "bypassPermissions" });
     expect(terminal.workflow).not.toHaveProperty("effectivePermissionMode");
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("shows a live stopped observation without fabricating a durable result or consulting closed session state", () => {
+    seedDurableRuns();
+    seedWorkflowEffects("bypassPermissions");
+    const observation: RunWorkflowRuntimeFailure = {
+      state: "stopped", reason: "terminal_persistence_failed", observedAt: NOW,
+      message: "Goal stopped, but its final status could not be saved.",
+      worktree: { path: "/worktrees/retained-goal", branch: "agenc/retained-goal" },
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUsd: 0.01 },
+    };
+    const unavailableSession = vi.fn(() => { throw new Error("session is closed"); });
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], agencHome: home,
+      runtimeFailure: () => observation,
+      effectivePermissionMode: unavailableSession,
+      providerWait: unavailableSession,
+      pendingApprovals: unavailableSession,
+    });
+    const status = live.status({ runId: WORKFLOW_RUN_ID });
+    expect(status).toMatchObject({ status: "stopped", terminal: false, statusSource: "runtime_observation",
+      workflow: { runtimeFailure: observation }, pendingRequests: [] });
+    expect(status.workflow).not.toHaveProperty("effectivePermissionMode");
+    expect(status.workflow?.steps.every(step => step.providerWait === undefined)).toBe(true);
+    expect(unavailableSession).not.toHaveBeenCalled();
+    expect(() => live.result({ runId: WORKFLOW_RUN_ID })).toThrowError(
+      expect.objectContaining({ code: "RUN_NOT_TERMINAL" }),
+    );
+    expect(live.evidence({ runId: WORKFLOW_RUN_ID }).runId).toBe(WORKFLOW_RUN_ID);
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow).not.toHaveProperty("runtimeFailure");
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.recordTerminalResult({ epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      eventId: `evt-${++sequence}`, result: { runId: WORKFLOW_RUN_ID, status: "failed", exitCode: 1,
+        stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
+        lastSequence: sequence, finishedAt: NOW } });
+    const recovered = live.status({ runId: WORKFLOW_RUN_ID });
+    expect(recovered).toMatchObject({ status: "failed", terminal: true, statusSource: "run_terminal_result" });
+    expect(recovered.workflow).not.toHaveProperty("runtimeFailure");
+    expect(live.result({ runId: WORKFLOW_RUN_ID })).toMatchObject({ terminal: true, output: { finalMessage: "Storage recovered" } });
+  });
+
+  it("keeps the stopped observation visible when a projection repair cannot write", () => {
+    seedWorkflowEffects();
+    const observation: RunWorkflowRuntimeFailure = { state: "stopped", reason: "terminal_persistence_failed",
+      observedAt: NOW, message: "Goal stopped, but its final status could not be saved." };
+    const recovery = vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun")
+      .mockImplementation(() => { throw new Error("SQLITE_FULL"); });
+    try {
+      const live = new AgenCDaemonRunInspectionService({ stateDatabasePaths: () => [paths], runtimeFailure: () => observation });
+      expect(live.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({ status: "stopped", terminal: false,
+        statusSource: "runtime_observation", workflow: { runtimeFailure: observation } });
+      // Ordinary inspection still reports the repair error instead of hiding it.
+      expect(() => service.status({ runId: WORKFLOW_RUN_ID })).toThrow("SQLITE_FULL");
+    } finally { recovery.mockRestore(); }
+  });
+
+  it("omits stale provider waits on ended steps, terminal runs, and offline inspection", () => {
+    seedWorkflowEffects();
+    const lookup = vi.fn(() => ({
+      cause: "provider_outage_wait" as const,
+      message: "The provider is unavailable. Retrying soon.",
+    }));
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], providerWait: lookup,
+    });
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.filter((step) => step.providerWait !== undefined))
+      .toHaveLength(1);
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(WORKFLOW_RUN_ID, "workflow.plan");
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.completeEffect({
+      runId: WORKFLOW_RUN_ID, stepId: "workflow.plan", outcome: "committed",
+      effectBoundary: "crossed", eventId: `evt-${++sequence}`, eventSequence: sequence,
+      evidence: { stage: "workflow.plan", attempt: 1 }, completedAt: NOW,
+    });
+    lookup.mockClear();
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+    // A terminal can precede cleanup of an in-flight child and its effect.
+    durability.beginEffect({
+      runId: WORKFLOW_RUN_ID, epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      stepId: "workflow.implement", sessionId: `${WORKFLOW_RUN_ID}-session`,
+      toolName: "workflow.implement", recoveryCategory: "side-effecting",
+      intentDigest: `sha256:${"1".repeat(64)}`, eventId: `evt-${++sequence}`,
+      eventSequence: sequence, intentAt: NOW,
+    });
+    durability.recordTerminalResult({
+      epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      eventId: `evt-${++sequence}`,
+      result: {
+        runId: WORKFLOW_RUN_ID, status: "cancelled", exitCode: 1,
+        stopReason: "user_cancelled", finalMessage: "cancelled", usage: null,
+        lastSequence: sequence, finishedAt: NOW,
+      },
+    });
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  /** A session that can own or raise a live approval, as a workflow's do. */
+  function approvalSession(
+    conversationId: string,
+    spawnedAs?: { readonly agentNickname: string; readonly agentPath: string },
+  ): Session {
+    const eventLog = new EventLog();
+    let seq = 0;
+    const session = {
+      conversationId,
+      eventLog,
+      abortController: new AbortController(),
+      permissionModeRegistry: new PermissionModeRegistry({
+        mode: "default", additionalWorkingDirectories: new Map(),
+        alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {},
+        isBypassPermissionsModeAvailable: true,
+      }),
+      services: { admissionRequired: false },
+      rolloutStore: {},
+      ...(spawnedAs !== undefined
+        ? {
+          sessionConfiguration: {
+            sessionSource: {
+              kind: "subagent",
+              source: { kind: "thread_spawn", parentThreadId: WORKFLOW_RUN_ID, depth: 1, ...spawnedAs },
+            },
+          },
+        }
+        : {}),
+      emit: (event: Parameters<EventLog["emit"]>[0]) => {
+        const canonical = { ...event, eventId: `${conversationId}:${++seq}`, seq };
+        eventLog.emit(canonical);
+        return canonical;
+      },
+      onBeforeDurableClose: () => () => true,
+    } as unknown as Session;
+    return session;
+  }
+
+  it("lists a live run's child approvals on run.status as the app reads them and takes the answer under the run id", async () => {
+    // A Goal run's children ask through the run: Core holds each request on
+    // the workflow's own session, and AgenC Desktop learns of it only from
+    // run.status.pendingRequests, then answers with tool.approve or tool.deny
+    // under the run id. Nothing else reaches the app, so a Goal in "Ask for
+    // every tool" stalled until its deadline while nothing read this listing
+    // (agenc-desktop #415, src/main/goalApprovals.ts).
+    seedDurableRuns();
+    seedWorkflowEffects();
+    const broker = new LiveApprovalBroker();
+    const owner = approvalSession(WORKFLOW_RUN_ID);
+    const unregister = broker.register(owner, { workflow: true, isActive: () => true });
+    const child = approvalSession("wf-run-inspection-implement-child", {
+      agentNickname: "Implementer",
+      agentPath: "/root/wf_run_inspection_implement_1",
+    });
+    registerChildApprovalSession(child, owner);
+    const ctx: ApprovalCtx = {
+      callId: "call_npm_test", toolName: "exec_command", turnId: "turn_child_1",
+      invocation: {
+        callId: "call_npm_test", session: child,
+        payload: { kind: "function", name: "exec_command", arguments: '{"cmd":"npm test"}' },
+        turn: { subId: "turn_child_1" },
+      } as unknown as ApprovalCtx["invocation"],
+    };
+    let ran = 0;
+    const action = requestApproval({
+      ctx, resolver: owner.services.approvalResolver, args: { command: "npm test" },
+    }).then((result) => {
+      if (result.decision.kind === "approved") ran += 1;
+      return result;
+    });
+    await Promise.resolve();
+
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], agencHome: home,
+      pendingApprovals: (runId) => broker.list(runId),
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ approvalBroker: broker }),
+      runInspection: live,
+    });
+    const transport = new AgenCInProcessDaemonTransport({ dispatcher });
+    const client = createAgencClient({ transport: transport as unknown as AgencTransport });
+    try {
+      await client.initialize();
+
+      const waiting = await client.runStatus(WORKFLOW_RUN_ID);
+      expect(waiting.terminal).toBe(false);
+      expect(waiting.pendingRequests).toHaveLength(1);
+      const pending = waiting.pendingRequests![0]!;
+      // Every field the app's card is built from.
+      expect(pending).toMatchObject({
+        ownerRunId: WORKFLOW_RUN_ID,
+        sessionId: child.conversationId,
+        toolName: "exec_command",
+        turnId: "turn_child_1",
+        input: { cmd: "npm test" },
+        sourceAgentNickname: "Implementer",
+        sourceAgentPath: "/root/wf_run_inspection_implement_1",
+      });
+      expect(pending.requestId).toEqual(expect.any(String));
+      expect(ran).toBe(0);
+
+      await client.request("tool.approve", { sessionId: WORKFLOW_RUN_ID, requestId: pending.requestId });
+      expect((await action).decision.kind).toBe("approved");
+      expect(ran).toBe(1);
+      expect((await client.runStatus(WORKFLOW_RUN_ID)).pendingRequests).toEqual([]);
+
+      // A request raised as the run ends is not offered once it is terminal.
+      const late = requestApproval({
+        ctx: { ...ctx, callId: "call_late" }, resolver: owner.services.approvalResolver,
+        args: { command: "npm test" },
+      });
+      await Promise.resolve();
+      expect(broker.list(WORKFLOW_RUN_ID)).toHaveLength(1);
+      const durability = new StateRunDurabilityRepository(driver);
+      durability.recordTerminalResult({
+        epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+        eventId: `evt-${++sequence}`,
+        result: {
+          runId: WORKFLOW_RUN_ID, status: "completed", exitCode: 0,
+          stopReason: null, finalMessage: "done", usage: null,
+          lastSequence: sequence, finishedAt: NOW,
+        },
+      });
+      const terminal = await client.runStatus(WORKFLOW_RUN_ID);
+      expect(terminal.terminal).toBe(true);
+      expect(terminal.pendingRequests).toEqual([]);
+
+      unregister();
+      expect((await late).decision.kind).toBe("abort");
+    } finally {
+      unregister();
+      await client.close();
+      await transport.close();
+    }
   });
 
   it("carries the frozen workflow stop reason through the projection", () => {

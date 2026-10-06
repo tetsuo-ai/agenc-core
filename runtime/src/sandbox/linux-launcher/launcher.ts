@@ -1,3 +1,4 @@
+import { bubblewrapCapabilityContext, type BubblewrapCapabilityHint } from "./capability-hint.js";
 import {
   spawn,
   spawnSync,
@@ -30,6 +31,7 @@ export interface BubblewrapLauncher {
   readonly program: string;
   readonly supportsArgv0: boolean;
   readonly supportsBindFd?: boolean;
+  readonly capabilityHint?: BubblewrapCapabilityHint;
 }
 
 export interface BubblewrapNamespaceProbeResult {
@@ -38,6 +40,7 @@ export interface BubblewrapNamespaceProbeResult {
 }
 
 export interface PreferredBubblewrapLauncherOptions {
+  readonly capabilityHint?: BubblewrapCapabilityHint;
   readonly searchPath?: string;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -64,6 +67,12 @@ export function preferredBubblewrapLauncher(
     options.trustedDirectories,
   );
   if (program === null) return null;
+  const hint = options.capabilityHint;
+  if (hint !== undefined && options.probeArgv0 === undefined &&
+      hint.context === bubblewrapCapabilityContext(program, cwd, env)) {
+    return { program, supportsArgv0: hint.supportsArgv0,
+      supportsBindFd: hint.supportsBindFd, capabilityHint: hint };
+  }
   if (
     options.requireNamespaces === true &&
     !probeSystemBubblewrapNamespaces(program, env, cwd).ok
@@ -121,6 +130,15 @@ export function probeSystemBubblewrapNamespaces(
       result.stderr ??
       `exit status ${String(result.status)}`,
   };
+}
+
+/** Only successful namespace and help execution can seed the daemon cache. */
+export function probeBubblewrapCapabilities(program: string, env: NodeJS.ProcessEnv, cwd: string):
+  { readonly supportsArgv0: boolean; readonly supportsBindFd: boolean } | undefined {
+  if (!probeSystemBubblewrapNamespaces(program, env, cwd).ok) return undefined;
+  const help = systemBubblewrapHelp(program, env);
+  if (help === null) return undefined;
+  return { supportsArgv0: help.includes("--argv0"), supportsBindFd: help.includes("--ro-bind-fd") };
 }
 
 function systemBubblewrapSupportsArgv0(program: string): boolean {

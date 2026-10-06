@@ -2,6 +2,7 @@
  * Registered models retain their catalog levels and defaults. Hosted NIM
  * models have separate contracts, even when the model id names another vendor.
  */
+import { resolveNvidiaCurrentModel } from "./registry/nvidia-current-models.js";
 import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
@@ -133,6 +134,17 @@ export function resolveReasoningEffort(input: {
   } else if (isNativeDeepSeek) {
     acceptsReasoningEffort = true;
     reasoningEffortAllowedValues = new Set(DEEPSEEK_REASONING_LEVELS);
+  } else if (slug === "openrouter" && input.managedGateway !== true) {
+    const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
+    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
+  } else if (slug === "mistral") {
+    const entry = resolveRegisteredModelCatalogEntry(input);
+    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
+  } else if (slug === "qwen") {
+    reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
@@ -158,10 +170,13 @@ export function resolveReasoningEffort(input: {
     acceptsReasoningEffort = true;
   } else if (
     isZai &&
-    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
+    /(?:^|[/:])glm-5\.3(?:-flashx?)?$/i.test(model ?? "")
   ) {
     reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
+  } else if (isZai && model?.trim().toLowerCase() === "glm-5.2") {
+    reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (isKimiK3) {
     reasoningEffortAllowedValues = KIMI_K3_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
@@ -172,12 +187,13 @@ export function resolveReasoningEffort(input: {
     reasoningEffortAllowedValues =
       CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
-  } else if (slug === "ollama-cloud") {
+  } else if (slug === "ollama-cloud" || slug === "groq") {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "nvidia-nim") {
-    reasoningEffortAllowedValues = nimReasoningEffortValues(model);
+    const current = resolveNvidiaCurrentModel(model);
+    reasoningEffortAllowedValues = current ? (current.efforts.length ? new Set(current.efforts) : undefined) : nimReasoningEffortValues(model);
     acceptsReasoningEffort = (reasoningEffortAllowedValues?.size ?? 0) > 0;
   } else if (
     slug === "amazon-bedrock" &&

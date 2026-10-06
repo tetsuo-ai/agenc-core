@@ -259,21 +259,23 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(formatRate(2.4)).toBe("~2.4 tok/s");
   });
 
-  // The verb (e.g. "Working…") and the status group's opening "(" must be
-  // separated by exactly one space; without it they run together as
-  // "Working…(7m 57s …)". This guards the spacing the liveness-heartbeat
-  // change introduced.
-  test("separates the verb from the status group with a single space", async () => {
+  // The verb (e.g. "Working") and the byline must be separated by exactly two
+  // spaces, with no parentheses around the byline; without the gap they run
+  // together as "Working7m 57s …". This guards the spacing the liveness
+  // heartbeat change introduced.
+  test("separates the verb from the status group with two spaces and no parentheses", async () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      message: "Working…",
+      message: "Working",
       verbose: true,
     });
 
-    // One space, exactly: not zero ("Working…("), not two ("Working…  (").
-    expect(output).toContain("Working… (");
-    expect(output).not.toContain("Working…(");
-    expect(output).not.toContain("Working…  (");
+    // Two spaces, exactly: not one ("Working 31s"), not three.
+    expect(output).toContain("Working  31s");
+    expect(output).not.toContain("Working 31s");
+    expect(output).not.toContain("Working   31s");
+    expect(output).not.toContain("(");
+    expect(output).not.toContain(")");
   });
 });

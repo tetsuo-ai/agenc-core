@@ -311,6 +311,97 @@ describe("intercepted exec escalation", () => {
   });
 });
 
+describe("intercepted exec shell wrapper options", () => {
+  function actionFor(policy: Policy, argv: readonly string[]) {
+    const evaluated = evaluateInterceptedExecPolicy({
+      policy,
+      program: `/bin/${argv[0]}`,
+      argv,
+      unmatchedCommandContext: {
+        approvalPolicy: "on_request",
+        fileSystemSandboxKind: "restricted",
+        sandboxPermissions: "default",
+      },
+      parseShellWrapper: true,
+    });
+    return determineInterceptedExecAction({
+      evaluation: evaluated.evaluation,
+      approvalPolicy: "on_request",
+    });
+  }
+
+  function policyWith(prefix: string[], decision: "allow" | "prompt" | "forbidden"): Policy {
+    const policy = Policy.empty();
+    policy.addPrefixRule(prefix, decision);
+    return policy;
+  }
+
+  const behindOptions = [
+    ["bash", "-c", "-e", "CODE"],
+    ["bash", "-c", "-o", "pipefail", "CODE"],
+    ["bash", "-c", "--", "CODE"],
+    ["bash", "-lc", "-x", "CODE"],
+    ["bash", "-ec", "CODE"],
+    ["bash", "+c", "CODE"],
+    ["dash", "-c", "CODE"],
+    ["ksh", "CODE"],
+    ["tcsh", "-c", "echo ok", "-c", "CODE"],
+    ["fish", "-C", "CODE"],
+  ];
+  const withCode = (code: string) =>
+    behindOptions.map((argv) => [argv.map((word) => (word === "CODE" ? code : word))]);
+
+  test.each(withCode("rm -rf build"))(
+    "a forbidden rule sees the code a shell wrapper runs behind its options: %j",
+    (argv) => {
+      expect(actionFor(policyWith(["rm"], "forbidden"), argv).kind).toBe("deny");
+      expect(actionFor(policyWith(["rm"], "prompt"), argv).kind).toBe("prompt");
+    },
+  );
+
+  test.each(withCode("rm -rf ~/"))(
+    "the dangerous-command fallback sees the code behind a wrapper's options: %j",
+    (argv) => {
+      expect(actionFor(Policy.empty(), argv).kind).toBe("prompt");
+    },
+  );
+
+  test("a rule allowing wrapped code neither allows nor unsandboxes a wrapper read another way", () => {
+    const policy = policyWith(["git", "status"], "allow");
+    expect(actionFor(policy, ["bash", "-c", "git status"])).toMatchObject({
+      kind: "run",
+      execution: { kind: "unsandboxed" },
+    });
+    expect(actionFor(policy, ["bash", "-ec", "git status"])).toMatchObject({
+      kind: "run",
+      execution: { kind: "turn_default" },
+    });
+    expect(actionFor(policy, ["bash", "--rcfile", "x.sh", "-ic", "git status"])).toMatchObject({
+      kind: "run",
+      execution: { kind: "turn_default" },
+    });
+  });
+
+  test("words a wrapper does not run as code are not judged as its code", () => {
+    const policy = policyWith(["git", "push"], "forbidden");
+    expect(actionFor(policy, ["bash", "-c", "git push"]).kind).toBe("deny");
+    expect(actionFor(policy, ["bash", "script.sh", "-c", "git push"]).kind).toBe("run");
+    expect(actionFor(policy, ["bash", "--", "-c", "git push"]).kind).toBe("run");
+    expect(
+      commandsForInterceptedExecPolicy({
+        program: "/bin/bash",
+        argv: ["bash", "script.sh", "-c", "git push"],
+        parseShellWrapper: true,
+      }),
+    ).toEqual([["/bin/bash", "script.sh", "-c", "git push"]]);
+  });
+
+  test("the fallback reads a wrapped script with its quoting", () => {
+    expect(actionFor(Policy.empty(), ["find", ".", "-exec", "sh", "-c", "rm -rf ~/", ";"]).kind)
+      .toBe("prompt");
+  });
+});
+
 describe("network approval escalation", () => {
   test("sandbox gate denies unmanaged modes before invoking resolver", async () => {
     const gate = networkApprovalSandboxGate(

@@ -16,6 +16,7 @@ type StartRecording = (
 
 const voice = vi.hoisted(() => ({
   checkRecordingAvailability: vi.fn<() => Promise<RecordingAvailability>>(),
+  checkPlaybackAvailability: vi.fn<() => Promise<RecordingAvailability>>(),
   startRecording: vi.fn<StartRecording>(),
   stopRecording: vi.fn<() => void>(),
 }));
@@ -64,8 +65,10 @@ function createChild(
 describe("AgenC realtime audio coverage", () => {
   beforeEach(() => {
     voice.checkRecordingAvailability.mockReset();
+    voice.checkPlaybackAvailability.mockReset();
     voice.startRecording.mockReset();
     voice.stopRecording.mockReset();
+    voice.checkPlaybackAvailability.mockResolvedValue({ available: true });
   });
 
   test("starts default capture, maps PCM frames, stops recording, and reports startup failures", async () => {

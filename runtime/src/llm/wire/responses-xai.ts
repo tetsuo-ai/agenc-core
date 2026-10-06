@@ -9,6 +9,7 @@
  * @module
  */
 
+import { normalizePromptCacheKey } from "../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -29,7 +30,6 @@ export const XAI_ENCRYPTED_REASONING_INCLUDE =
 
 export interface XaiResponsesInputBuildResult {
   readonly input: Record<string, unknown>[];
-  readonly hasImages: boolean;
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -166,9 +166,6 @@ export function buildXaiResponsesInputItems(
 
   return {
     input: mapped.flatMap((message) => toXaiResponseInputItems(message)),
-    hasImages: mapped.some((message) =>
-      hasXaiImageContent(message.content)
-    ),
   };
 }
 
@@ -199,7 +196,7 @@ export function buildXaiResponsesRequest(input: {
     store: input.store ?? false,
   };
   if (input.options?.promptCacheKey) {
-    params.prompt_cache_key = input.options.promptCacheKey;
+    params.prompt_cache_key = normalizePromptCacheKey(input.options.promptCacheKey);
   }
   if (input.options?.temperature !== undefined) {
     params.temperature = input.options.temperature;
@@ -249,15 +246,6 @@ export function buildXaiResponsesRequest(input: {
     };
   }
   return params;
-}
-
-function hasXaiImageContent(content: unknown): boolean {
-  if (!Array.isArray(content)) return false;
-  return content.some((part) => {
-    if (!part || typeof part !== "object") return false;
-    const record = part as Record<string, unknown>;
-    return record.type === "image_url";
-  });
 }
 
 function toXaiOpenAIMessage(message: LLMMessage): Record<string, unknown> {

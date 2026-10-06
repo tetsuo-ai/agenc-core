@@ -5,6 +5,7 @@ import {
   canonicalizeCommandForApproval,
   extractBashCommand,
   extractPowerShellCommand,
+  extractShellWrapperScripts,
   getFirstWordPrefix,
   getSimpleCommandPrefix,
   parseCommand,
@@ -13,6 +14,7 @@ import {
   parseShellCommand,
   parseShellWrapperSubcommandsForPermission,
   parseWordOnlyShellSequence,
+  shellWrapperCodeSubcommandsForPermission,
   splitCommand,
 } from "./parser.js";
 
@@ -95,6 +97,26 @@ describe("shell string parsing", () => {
     expect(parseShellWrapperSubcommandsForPermission("bash -lc 'echo $HOME'"))
       .toBeNull();
     expect(parseShellWrapperSubcommandsForPermission("rg TODO src")).toBeNull();
+  });
+
+  test("reads every text a shell wrapper may run as code, whatever its options", () => {
+    expect(extractShellWrapperScripts(["bash", "-c", "-e", "rm foo"])).toEqual(["rm foo"]);
+    expect(extractShellWrapperScripts(["/bin/BASH", "-ec", "rm foo"])).toEqual(["rm foo"]);
+    expect(extractShellWrapperScripts(["bash.exe", "-c", "--", "rm foo"])).toEqual(["rm foo"]);
+    expect(extractShellWrapperScripts(["ksh", "rm -rf", "x"])).toEqual(["rm -rf", "rm -rf x"]);
+    expect(extractShellWrapperScripts(["bash", "-opipefail", "-c", "rm foo"]))
+      .toEqual(["-opipefail", "-c", "rm foo"]);
+    expect(extractShellWrapperScripts(["bash", "script.sh", "-c", "rm foo"])).toEqual([]);
+    expect(extractShellWrapperScripts(["git", "status"])).toBeNull();
+  });
+
+  test("gives deny and ask rules the commands of any wrapper spelling", () => {
+    expect(shellWrapperCodeSubcommandsForPermission("bash -ec 'rm foo && rg TODO'"))
+      .toEqual(["rm foo", "rg TODO"]);
+    expect(shellWrapperCodeSubcommandsForPermission("sh -c -- 'rm foo'")).toEqual(["rm foo"]);
+    expect(shellWrapperCodeSubcommandsForPermission("bash -c 'echo $HOME'")).toEqual([]);
+    expect(shellWrapperCodeSubcommandsForPermission("bash script.sh -c 'rm foo'")).toEqual([]);
+    expect(shellWrapperCodeSubcommandsForPermission("rg TODO src")).toEqual([]);
   });
 
   test("recovers a single Bash command prefix before here-doc data", () => {

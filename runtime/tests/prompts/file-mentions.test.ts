@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
+import { roughTokenCountEstimationForFileType } from "../llm/token-estimation.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "../tools/system/file-read.js";
 import {
   expandFileMentions,
   extractMentionAllowedRoots,
@@ -19,6 +21,17 @@ import {
 
 function makeWorkspace(): string {
   return mkdtempSync(join(tmpdir(), "agenc-file-mentions-"));
+}
+
+/** `count` distinct lines, each `width` characters long. */
+function numberedLines(count: number, width: number): string[] {
+  return Array.from({ length: count }, (_, index) =>
+    `line ${index + 1} `.padEnd(width, "x"),
+  );
+}
+
+function fileReadTokens(lines: readonly string[], fileExtension: string): number {
+  return roughTokenCountEstimationForFileType(lines.join("\n"), fileExtension);
 }
 
 describe("file @mentions", () => {
@@ -81,8 +94,9 @@ describe("file @mentions", () => {
       statSync(join(cwd, "src", "app.ts")).mtimeMs,
     );
     expect(expanded.prompt).toContain("<attached_files>");
-    expect(expanded.prompt).toContain('path="src/app.ts"');
-    expect(expanded.prompt).toContain("export const answer = 42;");
+    expect(expanded.prompt).toContain(
+      '<file path="src/app.ts" bytes="26" lines="2" truncated="false">\nexport const answer = 42;\n\n</file>\n</attached_files>',
+    );
     expect(expanded.prompt).toContain("<user_message>\nexplain @src/app.ts");
   });
 
@@ -180,5 +194,107 @@ describe("file @mentions", () => {
     expect(expanded.attachments[0]?.content).toBe("one\ntwo");
     expect(expanded.attachments[0]?.truncated).toBe(true);
     expect(expanded.rejected[0]?.reason).toBe("too_many_files");
+  });
+
+  test("expandFileMentions truncates a mention to FileRead's caps and points at the rest", async () => {
+    const cwd = makeWorkspace();
+    // 3,000 lines, about 40k tokens: over both FileRead caps.
+    const lines = numberedLines(3_000, 52);
+    writeFileSync(join(cwd, "big.txt"), lines.join("\n"));
+    expect(fileReadTokens(lines, ".txt")).toBeGreaterThan(39_000);
+
+    const expanded = await expandFileMentions("explain @big.txt", { cwd });
+
+    expect(expanded.rejected).toEqual([]);
+    expect(expanded.attachments).toHaveLength(1);
+    const attachment = expanded.attachments[0]!;
+    const shown = lines.slice(0, attachment.lineCount);
+    expect(attachment).toMatchObject({
+      truncated: true,
+      totalLines: 3_000,
+      content: shown.join("\n"),
+    });
+    expect(attachment.lineCount).toBeLessThan(2_000);
+    expect(fileReadTokens(shown, ".txt")).toBeLessThanOrEqual(
+      DEFAULT_MAX_OUTPUT_TOKENS,
+    );
+    expect(
+      fileReadTokens(lines.slice(0, attachment.lineCount + 1), ".txt"),
+    ).toBeGreaterThan(DEFAULT_MAX_OUTPUT_TOKENS);
+    expect(expanded.prompt).toContain(
+      `lines="${attachment.lineCount}" truncated="true">`,
+    );
+    expect(expanded.prompt).toContain(
+      `${shown.at(-1)}\n</file>\nThe file above is truncated after line ${attachment.lineCount} of 3000; read further with FileRead offset and limit, starting at offset ${attachment.lineCount + 1}.\n</attached_files>`,
+    );
+    expect(expanded.prompt).not.toContain(lines[attachment.lineCount]);
+  });
+
+  test("expandFileMentions attaches a file at FileRead's line cap whole and truncates one line longer", async () => {
+    const cwd = makeWorkspace();
+    const lines = numberedLines(2_001, 20);
+    writeFileSync(join(cwd, "at-cap.txt"), lines.slice(0, 2_000).join("\n"));
+    writeFileSync(join(cwd, "past-cap.txt"), lines.join("\n"));
+
+    const expanded = await expandFileMentions(
+      "compare @at-cap.txt with @past-cap.txt",
+      { cwd },
+    );
+
+    expect(expanded.rejected).toEqual([]);
+    const [atCap, pastCap] = expanded.attachments;
+    expect(atCap).toMatchObject({
+      lineCount: 2_000,
+      totalLines: 2_000,
+      truncated: false,
+    });
+    expect(pastCap).toMatchObject({
+      lineCount: 2_000,
+      totalLines: 2_001,
+      truncated: true,
+      content: atCap?.content,
+    });
+    expect(expanded.prompt.match(/The file above is truncated/gu)).toEqual([
+      "The file above is truncated",
+    ]);
+    expect(expanded.prompt).toContain(
+      "The file above is truncated after line 2000 of 2001; read further with FileRead offset and limit, starting at offset 2001.",
+    );
+  });
+
+  test("expandFileMentions applies FileRead's token estimate for the file type", async () => {
+    const cwd = makeWorkspace();
+    // About 15k tokens as text and 30k as JSON, which FileRead counts at two bytes per token.
+    const lines = numberedLines(1_500, 40);
+    writeFileSync(join(cwd, "data.txt"), lines.join("\n"));
+    writeFileSync(join(cwd, "data.json"), lines.join("\n"));
+
+    const expanded = await expandFileMentions("compare @data.txt @data.json", {
+      cwd,
+    });
+
+    expect(expanded.rejected).toEqual([]);
+    const [text, json] = expanded.attachments;
+    expect(text).toMatchObject({ lineCount: 1_500, truncated: false });
+    expect(json?.truncated).toBe(true);
+    expect(
+      fileReadTokens(lines.slice(0, json?.lineCount), ".json"),
+    ).toBeLessThanOrEqual(DEFAULT_MAX_OUTPUT_TOKENS);
+  });
+
+  test("expandFileMentions rejects a file whose first line alone exceeds FileRead's token cap", async () => {
+    const cwd = makeWorkspace();
+    const firstLine = "x".repeat(4 * DEFAULT_MAX_OUTPUT_TOKENS + 4);
+    writeFileSync(join(cwd, "bundle.min.js"), `${firstLine}\nsecond line\n`);
+
+    const expanded = await expandFileMentions("explain @bundle.min.js", {
+      cwd,
+    });
+
+    expect(expanded.attachments).toEqual([]);
+    expect(expanded.rejected).toMatchObject([
+      { raw: "bundle.min.js", reason: "too_large" },
+    ]);
+    expect(expanded.prompt).toBe("explain @bundle.min.js");
   });
 });

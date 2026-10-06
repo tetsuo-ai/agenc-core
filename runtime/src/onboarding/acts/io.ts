@@ -105,7 +105,7 @@ export function createTerminalActIO(
       write(`${q}\n`);
       choices.forEach((choice, index) => {
         write(
-          `  ${index + 1}) ${choice.label}${choice.hint !== undefined ? `  — ${choice.hint}` : ""}\n`,
+          `  ${index + 1}) ${choice.label}${choice.hint !== undefined ? `  ${choice.hint}` : ""}\n`,
         );
       });
       for (;;) {

@@ -2,14 +2,37 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureRecoverableCommandEnvironment,
+  captureRecoverableSessionEnvironment,
   collectDaemonClientEnvOverrides,
   DAEMON_CLIENT_ENV_SNAPSHOT_KEYS,
   mergeDaemonClientEnvironment,
   normalizeDaemonClientEnvOverrides,
   readRecoverableCommandEnvironment,
+  readRecoverableSessionEnvironment,
+  withheldModelProviderCredentials,
 } from "../../src/app-server/client-env-snapshot.js";
+import { isSecretEnvKey } from "../../src/utils/secretEnv.js";
 
 describe("daemon client environment snapshots", () => {
+  it("keeps the local micro receipt path outside the session snapshot", () => {
+    const snapshot = collectDaemonClientEnvOverrides({
+      AGENC_MICRO_PRINT_RECEIPT: "/tmp/caller-owned-receipt.jsonl",
+    });
+    expect(snapshot).not.toHaveProperty("AGENC_MICRO_PRINT_RECEIPT");
+    expect(() => normalizeDaemonClientEnvOverrides({
+      AGENC_MICRO_PRINT_RECEIPT: "/tmp/remote-receipt.jsonl",
+    })).toThrow(/unsupported key/);
+  });
+
+  it.each([{}, { PATH: "" }])("retains expanded daemon PATH while clearing credentials: %j", overrides => {
+    const daemon = { PATH: "/bundled/bin:/home/user/.local/bin:/usr/bin:/bin", DEEPSEEK_API_KEY: "old-key", OPENAI_API_KEY: "old-other" };
+    const normalized = normalizeDaemonClientEnvOverrides({ ...overrides, DEEPSEEK_API_KEY: "fresh-key", OPENAI_API_KEY: "" });
+    const merged = mergeDaemonClientEnvironment(daemon, normalized);
+    expect(merged?.PATH).toBe(daemon.PATH);
+    expect(merged?.DEEPSEEK_API_KEY).toBe("fresh-key");
+    expect(merged).not.toHaveProperty("OPENAI_API_KEY");
+  });
+
   it("captures every allowlisted key and uses empty strings as clear markers", () => {
     const snapshot = collectDaemonClientEnvOverrides({
       AGENC_PROVIDER: "gemini",
@@ -261,5 +284,140 @@ describe("daemon client environment snapshots", () => {
     expect(readRecoverableCommandEnvironment(["PATH"])).toBeUndefined();
     expect(readRecoverableCommandEnvironment(null)).toBeUndefined();
     expect(readRecoverableCommandEnvironment({ path: "/bin" })).toBeUndefined();
+  });
+
+  it("records non-secret session values and only the names of credentials", () => {
+    const recorded = captureRecoverableSessionEnvironment({
+      PATH: "/client/bin",
+      AGENC_PROVIDER: "openai-compatible",
+      AGENC_MODEL: "local-model",
+      OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:4010/v1",
+      GROK_AUTH_MODE: "api-key",
+      QWEN_TOKEN_PLAN_BASE_URL: "https://plan.example/v1",
+      AGENC_EFFORT_LEVEL: "   ",
+      OPENAI_COMPATIBLE_API_KEY: "local-key-secret",
+      AGENC_PROFILE: "local-key-secret",
+      GITHUB_TOKEN: "gh-secret",
+      AGENC_CREDENTIAL_DOCS_MCP: "Bearer mcp-secret",
+      WEB_HEADERS: "Authorization: Bearer web-secret",
+      HTTPS_PROXY: "http://user:proxy-secret@proxy.example:8080",
+      SESSION_INGRESS_URL: "https://ingress.example/?token=ingress-secret",
+      OPENAI_BASE_URL: "sk-pasted-secret",
+      RANDOM_SECRET: "not-forwarded-secret",
+    });
+
+    expect(recorded).toEqual({
+      values: {
+        AGENC_MODEL: "local-model",
+        AGENC_PROVIDER: "openai-compatible",
+        GROK_AUTH_MODE: "api-key",
+        OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:4010/v1",
+        QWEN_TOKEN_PLAN_BASE_URL: "https://plan.example/v1",
+      },
+      withheldKeys: [
+        "AGENC_CREDENTIAL_DOCS_MCP",
+        "AGENC_PROFILE",
+        "GITHUB_TOKEN",
+        "HTTPS_PROXY",
+        "OPENAI_BASE_URL",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "SESSION_INGRESS_URL",
+        "WEB_HEADERS",
+      ],
+    });
+    expect(JSON.stringify(recorded)).not.toMatch(/secret/u);
+    expect(
+      readRecoverableSessionEnvironment(JSON.parse(JSON.stringify(recorded))),
+    ).toEqual(recorded);
+    expect(captureRecoverableSessionEnvironment(undefined)).toEqual({
+      values: {},
+      withheldKeys: [],
+    });
+  });
+
+  it("withholds every value the shared secret inventory flags, except reviewed configuration keys", () => {
+    const recorded = captureRecoverableSessionEnvironment(
+      Object.fromEntries(
+        DAEMON_CLIENT_ENV_SNAPSHOT_KEYS.map((key) => [key, `${key.toLowerCase()}-value`]),
+      ),
+    );
+
+    expect(Object.keys(recorded.values).filter((key) => isSecretEnvKey(key)).sort()).toEqual([
+      "AGENC_AUTH_BACKEND",
+      "AGENC_AUTH_MANAGED_KEYS_ENABLED",
+      "AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT",
+      "AGENC_TOKEN_BUDGET_CHECK_INTERVAL",
+      "DASHSCOPE_TOKEN_PLAN_BASE_URL",
+      "GEMINI_AUTH_MODE",
+      "GROK_AUTH_MODE",
+      "OPENAI_AUTH_HEADER",
+      "OPENAI_AUTH_MODE",
+      "OPENAI_AUTH_SCHEME",
+      "QWEN_TOKEN_PLAN_BASE_URL",
+      "WEB_AUTH_HEADER",
+      "WEB_AUTH_SCHEME",
+    ]);
+    for (const key of ["WEB_BODY_TEMPLATE", "WEB_HEADERS", "WEB_PARAMS", "WEB_URL_TEMPLATE"]) {
+      expect(recorded.withheldKeys).toContain(key);
+    }
+    expect(Object.keys(recorded.values).length + recorded.withheldKeys.length).toBe(
+      DAEMON_CLIENT_ENV_SNAPSHOT_KEYS.length - 1,
+    );
+  });
+
+  it.each([
+    ["a missing field", { values: {} }],
+    ["an extra field", { values: {}, withheldKeys: [], PATH: "/bin" }],
+    ["PATH", { values: { PATH: "/bin" }, withheldKeys: [] }],
+    ["an unknown key", { values: { RANDOM_SETTING: "x" }, withheldKeys: [] }],
+    ["a credential value", { values: { XAI_API_KEY: "secret" }, withheldKeys: [] }],
+    ["a dynamic credential value", { values: { AGENC_CREDENTIAL_DOCS_MCP: "Bearer x" }, withheldKeys: [] }],
+    ["a URL with user info", { values: { HTTPS_PROXY: "http://u:p@proxy:8080" }, withheldKeys: [] }],
+    ["a key-like value", { values: { AGENC_MODEL: "sk-live" }, withheldKeys: [] }],
+    ["a NUL byte", { values: { AGENC_MODEL: "model\0" }, withheldKeys: [] }],
+    ["an empty value", { values: { AGENC_MODEL: " " }, withheldKeys: [] }],
+    ["an unknown withheld name", { values: {}, withheldKeys: ["RANDOM_SECRET"] }],
+    ["a duplicate withheld name", { values: {}, withheldKeys: ["XAI_API_KEY", "XAI_API_KEY"] }],
+    ["a name both recorded and withheld", { values: { AGENC_MODEL: "m" }, withheldKeys: ["AGENC_MODEL"] }],
+    ["a non-object", ["values", "withheldKeys"]],
+  ])("rejects a recorded session environment with %s", (_label, value) => {
+    expect(readRecoverableSessionEnvironment(value)).toBeUndefined();
+  });
+
+  it("counts only the withheld credentials a restored model provider needs", () => {
+    const environment = {
+      values: {},
+      withheldKeys: [
+        "AGENC_CREDENTIAL_DOCS_MCP",
+        "GITHUB_TOKEN",
+        "HTTPS_PROXY",
+        "OPENAI_API_KEY",
+        "TAVILY_API_KEY",
+        "XAI_API_KEY",
+      ],
+    };
+
+    expect(withheldModelProviderCredentials(environment, "grok")).toEqual([
+      "HTTPS_PROXY",
+      "XAI_API_KEY",
+    ]);
+    expect(withheldModelProviderCredentials(environment, "openai-compatible")).toEqual([
+      "HTTPS_PROXY",
+      "OPENAI_API_KEY",
+    ]);
+    expect(withheldModelProviderCredentials(environment, "github")).toEqual([
+      "GITHUB_TOKEN",
+      "HTTPS_PROXY",
+    ]);
+    expect(withheldModelProviderCredentials(environment, "ollama")).toEqual(["HTTPS_PROXY"]);
+    expect(
+      withheldModelProviderCredentials({ values: {}, withheldKeys: ["GITHUB_TOKEN"] }, "ollama"),
+    ).toEqual([]);
+    expect(withheldModelProviderCredentials(environment, "custom-gateway")).toEqual(
+      environment.withheldKeys,
+    );
+    expect(withheldModelProviderCredentials(environment, undefined)).toEqual(
+      environment.withheldKeys,
+    );
   });
 });

@@ -11,10 +11,10 @@
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog) — installStreamWatchdog wraps the stream;
- *        `kick()` fires on every chunk. The canonical config carries a
+ *        `kick()` fires only on meaningful progress. The canonical config carries a
  *        ten-minute default idle expiry (`stream_watchdog_timeout_ms`,
  *        `0` disables) that aborts the underlying fetch via the scoped
- *        AbortController; sessions without a config store stay unbounded.
+ *        AbortController. Reasoning progress is guarded even without a config store.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -31,7 +31,6 @@
  * @module
  */
 
-import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -49,6 +48,11 @@ import {
   STREAM_IDLE_ABORT_REASON,
 } from "../llm/stream-watchdog.js";
 import { DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS } from "../config/schema.js";
+import {
+  REASONING_NO_PROGRESS_MS,
+  StreamProgressError,
+  StreamProgressTracker,
+} from "../llm/stream-progress.js";
 import {
   CitationStreamParser,
   ProposedPlanStreamParser,
@@ -70,98 +74,7 @@ import {
   type ProviderTraceSink,
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
-import {
-  getInitialEffortSetting,
-} from "../utils/effort.js";
-import type { ReasoningEffort } from "../session/turn-context.js";
-import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-models.js";
-
-type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
-
-function resolveGeminiSessionReasoningEffort(
-  turnEffort: ReasoningEffort | undefined,
-  model: string,
-  effortSource: string | undefined,
-): WireReasoningEffort | undefined {
-  if (turnEffort !== undefined) return resolveGeminiReasoningEffort(model, turnEffort);
-  const configuredEffort = effortSource === "default"
-    ? undefined
-    : getInitialEffortSetting();
-  return resolveGeminiReasoningEffort(model, configuredEffort);
-}
-
-/**
- * Sessions created without an explicit reasoning effort — every
- * daemon-spawned interactive session today — must still honor the
- * persisted `reasoning_effort` from canonical config. Without this fallback the
- * provider default applies and grok-4.5 burns ~16k hidden reasoning
- * tokens per trivial reply at xAI's HIGH default (measured: ~2m30s for
- * a 150-word answer, matching the user's "grok is fucking slow").
- * An explicit per-session "none" stays respected as an opt-out.
- *
- * Persistence historically spells Grok's deepest `xhigh` tier as `max`, while
- * providers such as Z.AI use `max` as the literal wire value and do not accept
- * `xhigh`. Resolve that alias against the selected model's catalog: prefer the
- * requested top-tier spelling when supported, translate to the other top-tier
- * spelling when that is the model's only form, and otherwise clamp to `high`.
- */
-function resolveSessionReasoningEffort(
-  turnEffort: ReasoningEffort | undefined,
-  supportedReasoningLevels?: ReadonlyArray<ReasoningEffort>,
-  selection?: {
-    readonly provider: string;
-    readonly model: string;
-    readonly effortSource?: string;
-  },
-): WireReasoningEffort | undefined {
-  if (selection?.provider === "gemini") {
-    return resolveGeminiSessionReasoningEffort(
-      turnEffort,
-      selection.model,
-      selection.effortSource,
-    );
-  }
-  const requested = turnEffort ?? getInitialEffortSetting();
-  if (requested === undefined) return undefined;
-  // Hosted providers can expose an effort contract absent from ModelInfo.
-  // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
-  const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
-  if (requested === "none") {
-    // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
-    // reasoning default when the field is omitted, so the opt-out has to be
-    // sent literally. Elsewhere `none` still means "send no effort".
-    return selection?.provider === "openai" &&
-      (supportedReasoningLevels?.includes("none") === true ||
-        contract?.levels.includes("none") === true)
-      ? "none"
-      : undefined;
-  }
-  if (selection?.provider === "anthropic" && contract?.registered === false) {
-    // Settings fallback is legacy configuration, not a literal session choice.
-    // Configured max is seeded as xhigh for these older models; an explicit
-    // applyConfig max remains max and must be forwarded exactly as accepted.
-    if (turnEffort === undefined && !contract.levels.includes("xhigh") &&
-        (requested === "max" || requested === "xhigh")) return "high";
-    if (contract.levels.includes(requested)) return requested;
-    if (requested === "max" || requested === "xhigh") return "high";
-  }
-  if (contract?.registered === false && contract.levels.includes(requested)) {
-    return requested;
-  }
-  if (requested === "max" || requested === "xhigh") {
-    if (supportedReasoningLevels === undefined) {
-      return requested === "max" ? "xhigh" : requested;
-    }
-    if (supportedReasoningLevels.includes(requested)) return requested;
-    const topTierAlias = requested === "max" ? "xhigh" : "max";
-    if (supportedReasoningLevels.includes(topTierAlias)) return topTierAlias;
-    return "high";
-  }
-  return requested;
-}
-
-// Exported for unit tests; the wiring above is the single call site.
-export { resolveSessionReasoningEffort };
+import { resolveMainLoopReasoningEffort, supportsThinkingOffRecovery } from "../session/session-reasoning-effort.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -174,6 +87,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  /** Snapshot of durable output-recovery intent, not a session config change. */
+  readonly reasoningOnlyRecovery?: true;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
@@ -234,6 +149,7 @@ interface ThinkingDisplayState {
 class AssistantVisibleTextStreamParser {
   private readonly citations = new CitationStreamParser();
   private readonly plan?: ProposedPlanStreamParser;
+  planText = "";
 
   constructor(planMode: boolean) {
     this.plan = planMode ? new ProposedPlanStreamParser() : undefined;
@@ -255,7 +171,11 @@ class AssistantVisibleTextStreamParser {
 
   private pushVisibleText(text: string): string {
     if (!this.plan || text.length === 0) return text;
-    return this.plan.pushStr(text).visibleText;
+    const parsed = this.plan.pushStr(text);
+    for (const segment of parsed.extracted) {
+      if (segment.kind === "proposed_plan_delta") this.planText += segment.text;
+    }
+    return parsed.visibleText;
   }
 }
 
@@ -373,18 +293,14 @@ export function buildProviderOptions(
         ? { toolChoice: "required" as const }
         : {}),
     toolRouting: { allowedToolNames },
-    reasoningEffort: resolveSessionReasoningEffort(
-      ctx.reasoningEffort,
-      ctx.modelInfo.supportedReasoningLevels,
-      {
-        provider: session.services.provider.name,
-        model: session.config?.model ?? ctx.modelInfo.slug,
-        effortSource: session.services.configStore
-          ?.provenance?.("reasoning_effort")?.scope,
-      },
-    ),
+    reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
+    ...(request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      session.services.provider.name,
+      session.config?.model ?? ctx.modelInfo.slug,
+    ) ? { disableThinkingForRecovery: true as const } : {}),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
+    responseDetailOverride: ctx.responseDetailOverride ?? undefined,
     serviceTier:
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"
@@ -744,7 +660,7 @@ function assistantMessageFromResponse(
   // clear user-visible body so the renderer doesn't show a blank turn.
   const text =
     apiError === "refusal" && visible.text.length === 0
-      ? "The model declined to answer this request (stop reason: refusal). No content was returned — rephrase the request or try a different model."
+      ? "The model declined to answer this request (stop reason: refusal). No content was returned. Rephrase the request or try a different model."
       : visible.text;
   return {
     uuid: crypto.randomUUID(),
@@ -994,7 +910,9 @@ function emitMalformedToolCallSyntheticResults(
         type: "tool_call_completed",
         payload: {
           callId: id,
-          result: `<tool_use_error>malformed tool_use dropped (${failure.cause})</tool_use_error>`,
+          result: JSON.stringify({ code: "malformed_tool_call", cause: failure.cause,
+            retryable: true, executed: false,
+            error: "Invalid or incomplete tool arguments. Retry a complete JSON call using the advertised schema; use spawn_agent.message_ref for large context." }),
           isError: true,
         },
       },
@@ -1157,10 +1075,34 @@ export async function streamModel(
   };
   const thinkingDisplays = new Map<string, ThinkingDisplayState>();
   const providerName = session.services.provider.name;
+  const progressTracker = new StreamProgressTracker();
+  let progressError: StreamProgressError | undefined;
+  let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopForProgress = (reason: "stream_loop" | "stream_no_progress"): void => {
+    if (scoped.signal.aborted) return;
+    progressError = new StreamProgressError(providerName, reason);
+    try {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "stream_error", payload: { cause: reason, message: progressError.message } },
+      });
+    } finally {
+      scoped.abort(progressError);
+    }
+  };
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
   const malformedToolCompletionIds = new Set<string>();
+  const toolInputsStarted = new Map<string, string>();
+  const malformedToolNames = new Set<string>();
+  state.truncatedToolCallNames = undefined;
   let receivedProviderChunk = false;
+  let startupLogIndexFlushed = false;
+  const flushStartupLogIndex = (): void => {
+    if (startupLogIndexFlushed) return;
+    startupLogIndexFlushed = true;
+    session.services.flushStartupLogIndex?.();
+  };
   let streamedCanonicalAssistantText = "";
 
   const resetCanonicalAssistantOutput = (): void => {
@@ -1186,9 +1128,13 @@ export async function streamModel(
   };
 
   const onChunk = (chunk: LLMStreamChunk): void => {
+    if (scoped.signal.aborted) return;
+    // Includes tool-only chunks, before the early streaming executor can run.
+    flushStartupLogIndex();
     receivedProviderChunk = true;
-    // I-11: any chunk resets the idle timer.
-    watchdog.kick();
+    const previousVisibleText = display.visibleText;
+    const previousPlanText = display.parser.planText;
+    let newVisibleText = false;
 
     // I-22: per-chunk token accounting + sampling gate. The sampling
     // result is estimation-only; the continuation decision stays on
@@ -1229,6 +1175,28 @@ export async function streamModel(
         session,
       );
       writeCanonicalAssistantDelta(canonicalDelta);
+      newVisibleText = canonicalDelta.trim().length > 0 &&
+        (!chunk.resetBuffer || display.visibleText !== previousVisibleText);
+      const planDelta = display.parser.planText.slice(chunk.resetBuffer ? 0 : previousPlanText.length);
+      newVisibleText ||= planDelta.trim().length > 0 && display.parser.planText !== previousPlanText;
+    }
+
+    const progress = progressTracker.observe(chunk, newVisibleText);
+    if (progress.loop) {
+      stopForProgress("stream_loop");
+      return;
+    }
+    if (progress.progress) {
+      watchdog.kick();
+      clearTimeout(reasoningTimer);
+      reasoningTimer = undefined;
+    }
+    // Unlike the optional socket-idle timer, observed reasoning must make
+    // progress even when the operator permits long silent model requests.
+    // Novel reasoning re-arms this timer indefinitely; bytes alone cannot.
+    if (progress.reasoning && reasoningTimer === undefined) {
+      reasoningTimer = setTimeout(() => stopForProgress("stream_no_progress"), REASONING_NO_PROGRESS_MS);
+      reasoningTimer.unref?.();
     }
 
     // Incremental thinking emission. Messages-API providers emit
@@ -1238,6 +1206,9 @@ export async function streamModel(
     // synthesises start/stop for the latter on first/last sight per index.
     emitThinkingChunkEvents(chunk, session, thinkingDisplays);
 
+    if (chunk.toolInputBlockStart !== undefined) {
+      toolInputsStarted.set(chunk.toolInputBlockStart.callId, chunk.toolInputBlockStart.contentBlock.name);
+    }
     emitToolInputChunkEvents(chunk, session);
 
     if (chunk.toolCalls && chunk.toolCalls.length > 0) {
@@ -1256,6 +1227,10 @@ export async function streamModel(
       // id so the history has a matching entry — otherwise the next
       // iteration stalls on mismatched tool_use/tool_result pairing.
       if (validatedToolCalls.failures.length > 0) {
+        for (const failure of validatedToolCalls.failures) {
+          const name = (failure.raw as { name?: unknown } | null)?.name;
+          if (failure.cause === "invalid_json" && typeof name === "string") malformedToolNames.add(name);
+        }
         emitMalformedToolCallSyntheticResults(
           session,
           validatedToolCalls.failures,
@@ -1299,6 +1274,20 @@ export async function streamModel(
     resetCanonicalAssistantOutput();
     const messages = buildProviderMessages(request);
     const options = buildProviderOptions(request, ctx, scoped.signal, session);
+    if (options.disableThinkingForRecovery === true) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "warning", payload: {
+          cause: "thinking_disabled_recovery",
+          message: JSON.stringify({
+            configuredEffort: resolveMainLoopReasoningEffort(session, ctx),
+            effectiveThinking: "disabled",
+            maxOutputTokens: options.maxOutputTokens,
+            scope: "reasoning_only_output_recovery_sample",
+          }),
+        } },
+      });
+    }
     const recoveryFallback = state.pendingAdmissionFallback;
     const clearRecoveryFallback = (): void => {
       // Do not clear a newer recovery decision installed while this attempt
@@ -1343,6 +1332,11 @@ export async function streamModel(
       invoke: (admittedOptions) =>
         provider.chatStream(messages, onChunk, admittedOptions),
     });
+    // Some providers return an empty/nonstreamed result without any chunks.
+    flushStartupLogIndex();
+    // Legacy admission-disabled providers can resolve after an abort. Never
+    // accept that response as success. Admitted calls settle usage first.
+    if (scoped.signal.aborted) throw scoped.signal.reason;
     // Admission can be explicitly disabled for legacy callers. In that case
     // there is no durable evidence callback, but a completed wire call still
     // consumes the one-shot recovery decision.
@@ -1356,6 +1350,16 @@ export async function streamModel(
       signal: scoped.signal,
     });
   let shouldDisposeStartupPrewarmHandle = startupPrewarmHandle !== undefined;
+  const streamFailure = (error: unknown): StreamModelError => {
+    if (progressError !== undefined) return new StreamModelError(progressError);
+    if (scoped.signal.reason instanceof StreamProgressError) {
+      return new StreamModelError(scoped.signal.reason);
+    }
+    if (scoped.signal.aborted && watchdog.firedAt !== null) {
+      return new StreamModelError(new Error(`stream_idle: no progress for ${watchdog.timeoutMs}ms`));
+    }
+    return new StreamModelError(error);
+  };
   try {
     response =
       startupPrewarmHandle !== undefined
@@ -1366,6 +1370,7 @@ export async function streamModel(
     // error propagates so a retried attempt (reconnect ladder or the prewarm
     // fallback below) streams into fresh blocks instead of appending to, or
     // duplicating, reasoning the UI already rendered.
+    flushStartupLogIndex();
     closeOpenThinkingDisplays(thinkingDisplays, session);
     thinkingDisplays.clear();
     if (
@@ -1385,17 +1390,14 @@ export async function streamModel(
           "prewarm_fallback",
         );
       } catch (fallbackError) {
-        throw new StreamModelError(fallbackError);
+        closeOpenThinkingDisplays(thinkingDisplays, session);
+        throw streamFailure(fallbackError);
       }
     } else {
-      if (scoped.signal.aborted && watchdog.firedAt !== null) {
-        throw new StreamModelError(
-          new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
-        );
-      }
-      throw new StreamModelError(error);
+      throw streamFailure(error);
     }
   } finally {
+    clearTimeout(reasoningTimer);
     if (
       startupPrewarmHandle !== undefined &&
       shouldDisposeStartupPrewarmHandle
@@ -1461,6 +1463,10 @@ export async function streamModel(
     // pass (covers providers that only surface tool_use blocks in the
     // final response envelope rather than per-chunk).
     if (validatedMergedToolCalls.failures.length > 0) {
+      for (const failure of validatedMergedToolCalls.failures) {
+        const name = (failure.raw as { name?: unknown } | null)?.name;
+        if (failure.cause === "invalid_json" && typeof name === "string") malformedToolNames.add(name);
+      }
       emitMalformedToolCallSyntheticResults(
         session,
         validatedMergedToolCalls.failures,
@@ -1474,6 +1480,20 @@ export async function streamModel(
   }
   state.assistantMessages = [assistant];
   if (maxOutputTruncated) {
+    // A provider can terminate inside a JSON string. Close the visible call
+    // with a retryable error; never execute or silently forget that handoff.
+    for (const call of [...(response.incompleteToolCalls ?? []), ...(response.toolCalls ?? [])]) {
+      if (call.id && call.name) toolInputsStarted.set(call.id, call.name);
+    }
+    const unfinished = [...toolInputsStarted].filter(([id]) => !streamedToolCalls.has(id));
+    state.truncatedToolCallNames = unfinished.map(([, name]) => name);
+    for (const [id, name] of unfinished) {
+      session.emit({ id: session.nextInternalSubId(), msg: {
+        type: "tool_call_completed", payload: { callId: id, toolName: name,
+          isError: true, result: JSON.stringify({ code: "tool_arguments_truncated", retryable: true,
+            executed: false, error: "Output limit interrupted tool arguments. Retry a complete tool call; for spawn_agent use message_ref instead of copying context." }) },
+      } });
+    }
     state.toolUseBlocks = [];
     state.needsFollowUp = false;
   } else {
@@ -1536,6 +1556,9 @@ export async function streamModel(
   // `tryRunSamplingRequest` can thread it through SamplingRequestResult
   // instead of returning a hardcoded {0,0,0}. Downstream auto-compact
   // and the outer runTurn usage accumulator depend on real numbers.
+  // This sample completed. A new cap can re-arm recovery in Phase 3;
+  // ordinary tool/final continuations return to normal thinking.
+  state.reasoningOnlyRecoveryPending = undefined;
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
@@ -1658,6 +1681,9 @@ export async function streamModel(
           ...(reasoning !== undefined
             ? { reasoningOutputTokens: reasoning }
             : {}),
+          ...(response.usage.reasoningIncludedInCompletion === true
+            ? { reasoningIncludedInCompletion: true as const }
+            : {}),
           ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
           // Served speed, not requested speed: fast mode bills at its own
           // rates only when the provider says the turn ran fast.
@@ -1669,6 +1695,11 @@ export async function streamModel(
 
   if (response.error) {
     throw new StreamModelError(response.error, response);
+  }
+  if (!maxOutputTruncated && assistant.toolCalls.length === 0 && streamedToolCalls.size === 0) {
+    const name = [...malformedToolNames].find(name => name.length <= 256 &&
+      /^[A-Za-z0-9_.:-]+$/.test(name) && request.tools.some(tool => tool.function.name === name));
+    if (name !== undefined) state.pendingTextToolCallCorrection = { toolName: name, reason: "invalid_arguments" };
   }
   if (response.toolCallRecovery !== undefined) {
     const marker = response.toolCallRecovery;
@@ -1684,13 +1715,29 @@ export async function streamModel(
         advertised.includes("system.searchTools") &&
         !advertised.includes(marker.toolName) &&
         /^mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/.test(marker.toolName);
-    if (providerName !== "ollama" || !safeName || !safeMessage || !validTarget ||
-        response.content !== "" || response.toolCalls.length !== 0 ||
-        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0 ||
-        response.finishReason !== "stop") {
+    const nativeCorrection = marker.source === "native" && marker.reason === "invalid_arguments" &&
+      response.finishReason === "tool_calls";
+    const textCorrection = marker.source === undefined && providerName === "ollama" &&
+      response.finishReason === "stop";
+    // Native calls have a separate argument channel and may include prose.
+    // Text-parsed corrections still require the whole response to be rejected.
+    if ((!nativeCorrection && !textCorrection) || !safeName || !safeMessage || !validTarget ||
+        (textCorrection && response.content !== "") || response.toolCalls.length !== 0 ||
+        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0) {
       throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
     }
     state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };
+  }
+  // A completed thinking-off recovery that yields a validated tool call or
+  // final answer is productive. Do not forgive visible/truncated retries,
+  // empty replies, rejected calls, caps, or transport failures.
+  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      providerName, session.config?.model ?? ctx.modelInfo.slug,
+    ) && state.pendingTextToolCallCorrection === undefined &&
+    (response.finishReason === "stop" || response.finishReason === "tool_calls") &&
+    (assistant.toolCalls.length > 0 ||
+      (response.finishReason === "stop" && Boolean(assistant.text?.trim())))) {
+    state.reasoningOnlyRecoveryCount = 0;
   }
   return state;
 }

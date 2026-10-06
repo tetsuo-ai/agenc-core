@@ -4,8 +4,11 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
@@ -19,6 +22,7 @@ const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
   'src/bin/agenc-main.ts',
+  'src/bin/prepare-peer-credentials.ts',
   'src/bin/tui-trust-prompt.tsx',
   'src/memory/memory-query-helper.mjs',
   'src/sandbox/linux-launcher/main.ts',
@@ -143,6 +147,26 @@ const runtimePackage = JSON.parse(
 const displayVersion = runtimePackage.version ?? '0.0.0';
 const publicPackageName = '@tetsuo-ai/agenc';
 
+function copyModelCatalogData(): void {
+  const registry = resolve(runtimeSourceRoot, 'llm/registry');
+  const rows = JSON.parse(readFileSync(resolve(registry, 'openrouter-models.data.json'), 'utf8')) as {
+    model: string; pricing: unknown; priceOverrides?: unknown;
+  }[];
+  const prices = JSON.parse(readFileSync(resolve(registry, 'openrouter-pricing.data.json'), 'utf8'));
+  const indexSource = readFileSync(resolve(registry, 'openrouter-model-ids.ts'), 'utf8');
+  const index = JSON.parse(indexSource.slice(indexSource.indexOf('Object.freeze(') + 14, indexSource.lastIndexOf(');')));
+  const expectedPrices = rows.map(({ model, pricing, priceOverrides }) => ({
+    model, pricing, ...(priceOverrides === undefined ? {} : { priceOverrides }),
+  }));
+  if (JSON.stringify(index) !== JSON.stringify(rows.map(row => row.model)) ||
+      JSON.stringify(prices) !== JSON.stringify(expectedPrices)) {
+    throw new Error('OpenRouter catalog projections are stale; regenerate the catalog');
+  }
+  for (const name of ['openrouter-models.data.json', 'openrouter-pricing.data.json']) {
+    cpSync(resolve(registry, name), resolve(runtimeRoot, 'dist', name));
+  }
+}
+
 function copyYoloClassifierPrompts(): void {
   if (!existsSync(yoloClassifierPromptSourceDir)) return;
   mkdirSync(yoloClassifierPromptDistDir, { recursive: true });
@@ -154,39 +178,78 @@ function copyYoloClassifierPrompts(): void {
 function compileLinuxProcessBroker(): void {
   if (process.platform !== 'linux') return;
   const compiler = process.env.CC?.trim() || 'cc';
-  const result = spawnSync(
-    compiler,
-    [
-      '-O2',
-      '-std=c11',
-      '-Wall',
-      '-Wextra',
-      '-Werror',
-      '-D_FORTIFY_SOURCE=2',
-      '-fstack-protector-strong',
-      '-Wl,-z,relro,-z,now',
-      '-o',
-      processBrokerDist,
-      processBrokerSource,
-    ],
-    {
-      cwd: runtimeRoot,
-      env: {
-        ...process.env,
-        LANG: 'C',
-        LC_ALL: 'C',
+  const temporary = mkdtempSync(resolve(runtimeRoot, 'dist/.namespace-init-build-'));
+  try {
+    const helper = resolve(temporary, 'namespace-init');
+    const staticBuild = spawnSync(compiler, [
+      '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',
+      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
+      '-o', helper, resolve(runtimeRoot, 'native/agenc-namespace-init.c'),
+    ], { cwd: runtimeRoot, env: { ...process.env, LANG: 'C', LC_ALL: 'C' }, encoding: 'utf8' });
+    if (staticBuild.error !== undefined || staticBuild.status !== 0) {
+      throw new Error('Static Linux namespace-init build failed' +
+        (staticBuild.error === undefined ? '' : `: ${staticBuild.error.message}`) +
+        (staticBuild.stderr ? `\n${staticBuild.stderr.trim()}` : ''));
+    }
+    const image = readFileSync(helper);
+    if (image.length < 64 || image.length > 2 * 1024 * 1024 ||
+        image.subarray(0, 6).toString('hex') !== '7f454c460201' ||
+        image.readUInt16LE(54) !== 56) {
+      throw new Error('Namespace init must be a bounded, static little-endian ELF64 image');
+    }
+    const programOffset = image.readBigUInt64LE(32);
+    const programCount = image.readUInt16LE(56);
+    if (programCount < 1 || programCount > 128 ||
+        programOffset + BigInt(programCount * 56) > BigInt(image.length)) {
+      throw new Error('Invalid namespace-init ELF program table');
+    }
+    for (let i = 0; i < programCount; ++i) {
+      if (image.readUInt32LE(Number(programOffset) + i * 56) === 3) {
+        throw new Error('Namespace init must not contain a dynamic interpreter');
+      }
+    }
+    const header = resolve(temporary, 'namespace-init-image.h');
+    writeFileSync(header, 'static const unsigned char agenc_namespace_init_image[] = {\n' +
+      Array.from(image, byte => String(byte)).join(',') + '\n};\n');
+    const result = spawnSync(
+      compiler,
+      [
+        '-O2',
+        '-std=c11',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-D_FORTIFY_SOURCE=2',
+        '-fstack-protector-strong',
+        '-Wl,-z,relro,-z,now',
+        `-DAGENC_NAMESPACE_INIT_IMAGE_HEADER=${JSON.stringify(header)}`,
+        '-o',
+        processBrokerDist,
+        processBrokerSource,
+      ],
+      {
+        cwd: runtimeRoot,
+        env: {
+          ...process.env,
+          LANG: 'C',
+          LC_ALL: 'C',
+        },
+        encoding: 'utf8',
       },
-      encoding: 'utf8',
-    },
-  );
-  if (result.error !== undefined || result.status !== 0) {
-    throw new Error(
-      'Linux process-broker build failed' +
-        (result.error === undefined ? '' : `: ${result.error.message}`) +
-        (result.stderr ? `\n${result.stderr.trim()}` : ''),
     );
+    if (result.error !== undefined || result.status !== 0) {
+      throw new Error(
+        'Linux process-broker build failed' +
+          (result.error === undefined ? '' : `: ${result.error.message}`) +
+          (result.stderr ? `\n${result.stderr.trim()}` : ''),
+      );
+    }
+    chmodSync(processBrokerDist, 0o755);
+    writeFileSync(resolve(runtimeRoot, 'dist/agenc-namespace-init-entry'),
+      'AGENC_NAMESPACE_INIT_ENTRY_V1\n', { mode: 0o644 });
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
-  chmodSync(processBrokerDist, 0o755);
 }
 
 function compileLinuxLandlockRun(): void {
@@ -602,6 +665,7 @@ const agencRuntimeAssets = {
     onEnd: (callback: () => void) => void;
   }) {
     build.onEnd(() => {
+      copyModelCatalogData();
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
       compileLinuxLandlockRun();
@@ -681,7 +745,10 @@ const agencBareSrcAlias = {
   },
 };
 
-const noExternal = ['jsonc-parser', 'semver', 'supports-hyperlinks'];
+// Bundled instead of loaded from node_modules at run time. lodash-es is one
+// module per function (275 files on a cold one-shot across the CLI and the
+// daemon), and Node pays a fixed cost for every module file it loads.
+const noExternal = ['jsonc-parser', 'lodash-es', 'semver', 'supports-hyperlinks'];
 
 function isBundledBareImport(source: string): boolean {
   return noExternal.some(
@@ -793,6 +860,9 @@ const external = [
   'audio-capture-napi',
   'cross-spawn',
   'execa',
+  // Relocated sources and external consumers already use this package. Keep
+  // schemas, error constructors and metadata registries on the same instance.
+  'zod',
   'openai',
   'ollama',
   'better-sqlite3',

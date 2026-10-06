@@ -19,14 +19,16 @@
  * launcher's in-process autostart path.
  */
 
-import { createHash } from "node:crypto";
+import { agenCDaemonLocalEndpoint } from "../lib/local-endpoint.mjs";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
+import { SdkNewlineFrameDecoder } from "./newline-frame.js";
 import { StartupDeadline } from "./startup-deadline.js";
 import { waitForStartupChild, type StartupChild } from "./startup-child.js";
 import {
@@ -49,8 +51,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const READY_POLL_MS = 50;
-/** Mirrors the daemon transports' 16 MiB max-line bound. */
-const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // These RPCs respond only after the full model/tool turn. They must not inherit
 // the short control-RPC timeout: SDK-backed agents may legitimately run for
 // hours. Explicit cancellation, socket closure, and daemon shutdown still
@@ -123,17 +123,6 @@ export function resolveAgencHome(
   return canonicalizeAgencHomePath(configured ?? join(userHome, ".agenc"));
 }
 
-function daemonSocketPathFromHome(
-  daemonHome: string,
-  platform: NodeJS.Platform,
-): string {
-  if (platform !== "win32") return join(daemonHome, "daemon.sock");
-  const identity = createHash("sha256")
-    .update(win32.resolve(daemonHome).toLowerCase())
-    .digest("hex");
-  return `\\\\.\\pipe\\agenc-daemon-${identity}`;
-}
-
 /** Unix socket under the home, or a stable per-home named pipe on Windows. */
 export function resolveDaemonSocketPath(
   env: NodeJS.ProcessEnv = process.env,
@@ -141,7 +130,7 @@ export function resolveDaemonSocketPath(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const daemonHome = resolveAgencHome(env, userHome);
-  return daemonSocketPathFromHome(daemonHome, platform);
+  return agenCDaemonLocalEndpoint(daemonHome, platform);
 }
 
 /** Path of `daemon.cookie` under the AgenC home. */
@@ -206,7 +195,7 @@ export class AgencSocketTransport implements AgencTransport {
   readonly #requestTimeoutMs: number;
   readonly #onNotification: ((message: JsonObject) => void) | undefined;
   readonly #onClose: ((error: Error | null) => void) | undefined;
-  #buffer = "";
+  readonly #decoder = new SdkNewlineFrameDecoder();
   #closed = false;
 
   private constructor(socket: Socket, options: AgencSocketTransportOptions) {
@@ -216,8 +205,7 @@ export class AgencSocketTransport implements AgencTransport {
     this.#onNotification = options.onNotification;
     this.#onClose = options.onClose;
 
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => {
+    socket.on("data", (chunk: Buffer | string) => {
       this.#handleData(chunk);
     });
     socket.once("error", (error) => {
@@ -311,28 +299,27 @@ export class AgencSocketTransport implements AgencTransport {
   #terminate(error: Error | null, notifyClose = true): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#buffer = "";
+    this.#decoder.reset();
     this.#failAll(error ?? new Error("AgenC daemon connection closed"));
     this.#socket.destroy();
     if (notifyClose) this.#onClose?.(error);
   }
 
-  #handleData(chunk: string): void {
+  #handleData(chunk: Buffer | string): void {
     if (this.#closed) return;
-    this.#buffer += chunk;
-    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_CLIENT_BUFFER_BYTES) {
-      const overflow = new Error(
-        `AgenC daemon connection exceeded ${MAX_CLIENT_BUFFER_BYTES} bytes without a complete message`,
+    const frames = this.#decoder.push(chunk);
+    if (this.#decoder.overflowed) {
+      this.#terminate(
+        new Error(
+          `AgenC daemon connection exceeded ${AGENC_SDK_MAX_FRAME_BYTES} bytes without a complete message`,
+        ),
       );
-      this.#terminate(overflow);
       return;
     }
-    let newlineIndex = this.#buffer.indexOf("\n");
-    while (newlineIndex >= 0 && !this.#closed) {
-      const line = this.#buffer.slice(0, newlineIndex).trim();
-      this.#buffer = this.#buffer.slice(newlineIndex + 1);
+    for (const frame of frames) {
+      if (this.#closed) return;
+      const line = frame.trim();
       if (line.length > 0) this.#handleLine(line);
-      newlineIndex = this.#buffer.indexOf("\n");
     }
   }
 
@@ -436,7 +423,7 @@ export async function connect(
   const env = options.env ?? process.env;
   const daemonHome = resolveAgencHome(env, options.userHome);
   const socketPath =
-    options.socketPath ?? daemonSocketPathFromHome(daemonHome, process.platform);
+    options.socketPath ?? agenCDaemonLocalEndpoint(daemonHome, process.platform);
   const cookiePath =
     options.cookiePath ?? join(daemonHome, "daemon.cookie");
   const readyTimeoutMs =

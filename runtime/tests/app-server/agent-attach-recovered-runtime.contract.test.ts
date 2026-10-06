@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
+import { AgenCDaemonAgentManager, type AgenCDaemonAgentStatusSnapshot } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "../../src/app-server/client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
@@ -42,14 +42,20 @@ async function restartedDaemon() {
   });
   const getAgentSnapshot = vi.fn<(id: string) => Promise<AgenCBackgroundAgentSnapshot | null>>(async () => null);
   const listPermissions = vi.fn(async () => ({ permissions: [] }));
+  // The runner holds no generation for this agent: shutdown finds nothing to suspend.
+  const suspendIdleAgentForDaemonShutdown = vi.fn(async () => ({ disposition: "cancelled" as const }));
+  const stopAgent = vi.fn(async () => undefined);
+  const transitions: AgenCDaemonAgentStatusSnapshot[] = [];
   const agents = new AgenCDaemonAgentManager({
     sessionManager: sessions,
-    runner: { startAgent: vi.fn(), getAgentSnapshot, listPermissions },
+    runner: { startAgent: vi.fn(), getAgentSnapshot, listPermissions, suspendIdleAgentForDaemonShutdown, stopAgent },
+    recordAgentStatusTransition: (transition) => { transitions.push(transition); },
   });
   await agents.restoreAgent({
     agentId, objective: "Interactive session", status: "idle", cwd: process.cwd(),
     startedAt: "2026-09-22T16:03:07.166Z", lastActiveAt: "2026-09-22T16:04:44.000Z",
     sessionIds: [sessionId], runtimeAvailable: false,
+    metadata: { runtimeOptions, recovery: { runStatus: "suspended", runtimeRestore: "unavailable" } },
   });
   const multiplexer = new AgenCDaemonClientMultiplexer({ sessionManager: sessions });
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -60,7 +66,7 @@ async function restartedDaemon() {
   const call = (method: string, params: JsonObject) =>
     connection.dispatch({ jsonrpc: "2.0", id: `request-${++id}`, method, params });
   await call("initialize", { protocol: { version: "1.9.0" } });
-  return { sessions, agents, dispatcher, call, getAgentSnapshot };
+  return { sessions, agents, dispatcher, call, getAgentSnapshot, suspendIdleAgentForDaemonShutdown, stopAgent, transitions };
 }
 
 describe("agent.attach after a daemon restart", () => {
@@ -103,14 +109,41 @@ describe("agent.attach after a daemon restart", () => {
         .resolves.toMatchObject({ error: { data: { code: "BACKGROUND_RUNNER_UNAVAILABLE" } } });
       // An explicit resume (agent.create with resumeSessionId) puts a live
       // generation in the runner; the lifecycle adopts it on the next read.
-      daemon.getAgentSnapshot.mockResolvedValue(liveSnapshot);
+      daemon.getAgentSnapshot.mockResolvedValue({
+        ...liveSnapshot,
+        runtimeSettings: { ...liveSnapshot.runtimeSettings, modelVerbosity: "low" },
+      });
       await expect(daemon.call("agent.attach", { agentId, clientId: "desktop-turn" })).resolves.toMatchObject({
         result: {
           agentId,
           sessionIds: [sessionId],
           runtimeSettingsEventId: liveSnapshot.runtimeSettingsEventId,
-          runtimeSettings: { provider: "deepseek", reasoningEffort: "high" },
+          runtimeSettings: { provider: "deepseek", reasoningEffort: "high", modelVerbosity: "low" },
         },
+      });
+      daemon.getAgentSnapshot.mockResolvedValue(liveSnapshot);
+      await expect(daemon.call("agent.attach", { agentId, clientId: "desktop-turn" })).resolves.toMatchObject({
+        result: { runtimeSettings: { modelVerbosity: null } },
+      });
+    } finally {
+      await daemon.dispatcher.close();
+    }
+  });
+});
+
+describe("daemon shutdown with a chat nobody reopened", () => {
+  it("keeps the run suspended, so the next start restores it with its runtime options", async () => {
+    const daemon = await restartedDaemon();
+    try {
+      await daemon.agents.stopAll("daemon_shutdown", { disposition: "suspend_idle" });
+      // Nothing ran in this daemon: no runtime to suspend or stop.
+      expect(daemon.suspendIdleAgentForDaemonShutdown).not.toHaveBeenCalled();
+      expect(daemon.stopAgent).not.toHaveBeenCalled();
+      // Recorded as stopped, the run fell out of the next start's restore, and
+      // an explicit resume no longer knew the chat's own sandbox choice
+      // (Windows: "required sandbox blocked startup").
+      expect(daemon.transitions.at(-1)).toMatchObject({
+        agentId, sessionId, status: "stopped", runStatus: "suspended", reason: "daemon_shutdown",
       });
     } finally {
       await daemon.dispatcher.close();

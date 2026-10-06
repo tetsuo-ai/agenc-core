@@ -23,6 +23,11 @@ beforeAll(async () => {
     join(fixtureRoot, "yolo-classifier-prompts"),
     { recursive: true },
   );
+  // This fixture excludes the asset plugin, so stage its runtime data alongside
+  // the emitted chunks just as the packaged build does.
+  for (const name of ["openrouter-models.data.json", "openrouter-pricing.data.json"]) {
+    await cp(join(runtimeRoot, "src/llm/registry", name), join(fixtureRoot, name));
+  }
   const options: BuildOptions = {};
   runtimeBuildConfig.esbuildOptions(options);
   await build({

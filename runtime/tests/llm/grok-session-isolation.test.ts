@@ -65,10 +65,13 @@ describe("Grok child session isolation", () => {
 
     const alphaMessages: LLMMessage[] = [{ role: "user", content: "alpha private context" }];
     const betaMessages: LLMMessage[] = [{ role: "user", content: "beta private context" }];
+    // Each child's main loop sends its own conversation id as prompt_cache_key.
+    const alphaOptions = { promptCacheKey: "conv-alpha" };
+    const betaOptions = { promptCacheKey: "conv-beta" };
     try {
-      const alphaTurn = alpha.chatStream(alphaMessages, () => {});
+      const alphaTurn = alpha.chatStream(alphaMessages, () => {}, alphaOptions);
       await firstStarted.promise;
-      const betaTurn = beta.chatStream(betaMessages, () => {});
+      const betaTurn = beta.chatStream(betaMessages, () => {}, betaOptions);
       await secondStarted.promise;
       secondReply.resolve();
       await betaTurn;
@@ -79,7 +82,7 @@ describe("Grok child session isolation", () => {
         ...betaMessages,
         { role: "assistant", content: "done" },
         { role: "user", content: "continue beta" },
-      ], () => {});
+      ], () => {}, betaOptions);
 
       expect(bodies[2]?.previous_response_id).toBe("resp_beta");
       expect(JSON.stringify(bodies[2]?.input)).toContain("continue beta");

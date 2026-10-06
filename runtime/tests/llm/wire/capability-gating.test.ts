@@ -206,7 +206,7 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider(
           "openrouter",
-          "moonshotai/kimi-k3",
+          "unreviewed/kimi-k3",
         ).acceptsReasoningEffort,
       ).toBe(false);
       expect(
@@ -469,6 +469,40 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"),
       ).not.toMatchObject(FINALIZATION);
+    });
+  });
+
+  describe("allowsRecoveryDisable", () => {
+    test("only the native DeepSeek thinking switch may turn off for one recovery sample", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-flash")
+          .thinkingConfig,
+      ).toEqual({ type: "enabled", allowsRecoveryDisable: true });
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "deepseek-v4-pro")
+          .thinkingConfig,
+      ).toEqual({ type: "enabled", allowsRecoveryDisable: true });
+    });
+
+    test("hosted, third-party and unknown DeepSeek routes keep thinking on", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider("deepseek", "any-model")
+          .thinkingConfig?.allowsRecoveryDisable,
+      ).toBeUndefined();
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "deepseek/deepseek-v4-flash-0731",
+        ).thinkingConfig?.allowsRecoveryDisable,
+      ).toBeUndefined();
+      expect(
+        chatCompletionsCapabilityHintsForProvider("openai", "deepseek-flash")
+          .thinkingConfig?.allowsRecoveryDisable,
+      ).toBeUndefined();
+      expect(
+        chatCompletionsCapabilityHintsForProvider("minimax", "minimax-m3")
+          .thinkingConfig,
+      ).toEqual({ type: "adaptive" });
     });
   });
 

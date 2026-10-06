@@ -1247,6 +1247,39 @@ describe("Session.consumePendingProviderSwitch", () => {
     expect(bindSpy).toHaveBeenCalledWith("conv-test");
   });
 
+  it("plans a switched session with its bound provider's model info, not a slug-only lookup", async () => {
+    // The managed AgenC route and public OpenRouter list the same DeepSeek
+    // id. A slug-only lookup took OpenRouter's 943,718-token output limit, so
+    // the managed gateway refused every request above its reviewed 384,000.
+    const slugOnly: string[] = [];
+    const byProvider: Array<readonly [string, string]> = [];
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+        modelsManager: {
+          getModelInfo: async (model: string) => {
+            slugOnly.push(model);
+            return { ...mkModelInfo(), slug: model, maxOutputTokens: 524_288 };
+          },
+          getModelInfoForProvider: async (provider: string, model: string) => {
+            byProvider.push([provider, model]);
+            return { ...mkModelInfo(), slug: model, maxOutputTokens: 64_000 };
+          },
+        },
+      },
+    });
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.3" });
+
+    await consumePendingProviderSwitch(session);
+
+    expect(byProvider).toEqual([["grok", "grok-4.3"]]);
+    expect(slugOnly).toEqual([]);
+    expect(session.modelInfo.maxOutputTokens).toBe(64_000);
+  });
+
   it("applies provider slug, live provider, config model, and modelInfo together", async () => {
     const session = buildSession({
       services: {
@@ -2185,6 +2218,32 @@ describe("Session turn-driver hooks", () => {
 
     expect(closeCount).toBe(1);
     await expect(session.conversation.runningState()).resolves.toBeUndefined();
+  });
+
+  it.each([false, true])("requires concrete exec cleanup proof before durable finalization (failure=%s)", async failure => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const manager = {
+      prepareForDurableClose: async () => {
+        order.push("cleanup");
+        await gate;
+        if (failure) throw new Error("unproven process cleanup");
+      },
+    } as unknown as SessionServices["unifiedExecManager"];
+    const session = buildSession({ services: { unifiedExecManager: manager } });
+    session.onBeforeDurableClose(() => { order.push("terminal"); });
+    const stopping = session.shutdown();
+    void stopping.catch(() => {});
+    await vi.waitFor(() => expect(order).toEqual(["cleanup"]));
+    release();
+    if (failure) {
+      await expect(stopping).rejects.toThrow("unproven process cleanup");
+      expect(order).toEqual(["cleanup"]);
+    } else {
+      await stopping;
+      expect(order).toEqual(["cleanup", "terminal"]);
+    }
   });
 
   it("drains durable continuations before finalizing and sealing the journal", async () => {

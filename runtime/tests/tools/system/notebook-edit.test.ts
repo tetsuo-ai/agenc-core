@@ -30,6 +30,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import { createNotebookEditTool } from "./notebook-edit.js";
 
 function notebook(cells: unknown[], minor = 5): Record<string, unknown> {
@@ -230,6 +231,26 @@ describe("createNotebookEditTool", () => {
       expect(updated.cells[0].source).toBe("new");
       expect(updated.cells[0].execution_count).toBeNull();
       expect(updated.cells[0].outputs).toEqual([]);
+    });
+
+    it("records the edit as a workspace file mutation", async () => {
+      const path = await writeNotebook("n.ipynb", notebook([{ id: "c1", cell_type: "markdown", source: "old" }]));
+      const original = await readFile(path, "utf8");
+      const tool = createNotebookEditTool({ workspaceRoot: workspace });
+      const result = await tool.execute({
+        notebook_path: path,
+        edit_mode: "replace",
+        cell_id: "c1",
+        new_source: "new",
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.metadata).toEqual(buildFileMutationMetadata({
+        filePath: path,
+        operation: "edit",
+        beforeText: original,
+        afterText: JSON.parse(result.content).updated_file,
+      }));
+      expect(result.metadata).toMatchObject({ ui: { kind: "file_mutation" } });
     });
 
     it("settles a verified rollback after a post-write fault as no-effect (#2500)", async () => {

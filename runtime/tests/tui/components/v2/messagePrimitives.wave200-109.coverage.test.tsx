@@ -33,7 +33,7 @@ describe('messagePrimitives wave200-109 coverage', () => {
       100,
     )
 
-    expect(linkedImageOutput).toContain('IMAGE')
+    expect(linkedImageOutput).toContain('❯ image')
     expect(linkedImageOutput).toContain('[ image')
     expect(linkedImageOutput).toContain('#42')
 
@@ -42,7 +42,7 @@ describe('messagePrimitives wave200-109 coverage', () => {
 
     const plainImageOutput = await renderToString(<UserImageMessage />, 100)
 
-    expect(plainImageOutput).toContain('IMAGE')
+    expect(plainImageOutput).toContain('❯ image')
     expect(plainImageOutput).toContain('[ image ]')
 
     const rejectedToolOutput = await renderToString(
@@ -60,11 +60,12 @@ describe('messagePrimitives wave200-109 coverage', () => {
       100,
     )
 
-    expect(rejectedToolOutput).toContain('PERMISSION')
+    // Control rows use the system ● glyph with lowercase labels.
+    expect(rejectedToolOutput).toContain('● permission')
     expect(rejectedToolOutput).toContain('Tool use rejected')
-    expect(canceledToolOutput).toContain('INTERRUPT')
+    expect(canceledToolOutput).toContain('● interrupt')
     expect(canceledToolOutput).toContain('Interrupted by user')
-    expect(rejectedPlanOutput).toContain('PLAN REJECTED')
+    expect(rejectedPlanOutput).toContain('● plan rejected')
     expect(rejectedPlanOutput).toContain("User rejected AgenC's plan:")
     expect(rejectedPlanOutput).toContain('PLAN TO IMPLEMENT')
     expect(rejectedPlanOutput).toContain('Inspect the proposed edit')

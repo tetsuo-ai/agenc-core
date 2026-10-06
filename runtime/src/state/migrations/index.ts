@@ -34,6 +34,8 @@ import { dropThreadsLastItemIndexMigration } from "./032_drop_threads_last_item_
 import { runtimeSettingsMaxEffortMigration } from "./033_runtime_settings_max_effort.js";
 import { threadArchiveCleanupGenerationMigration } from "./034_thread_archive_cleanup_generation.js";
 import { idempotentUnknownEffectOutcomeMigration } from "./035_idempotent_unknown_effect_outcome.js";
+import { canonicalProjectionMarkerMigration } from "./036_canonical_projection_marker.js";
+import { workflowPauseMigration } from "./037_workflow_pause.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -75,6 +77,8 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   runtimeSettingsMaxEffortMigration,
   threadArchiveCleanupGenerationMigration,
   idempotentUnknownEffectOutcomeMigration,
+  canonicalProjectionMarkerMigration,
+  workflowPauseMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

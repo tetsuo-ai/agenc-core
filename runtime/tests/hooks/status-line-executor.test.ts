@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
@@ -139,7 +139,9 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
       mode: "workspace_write",
       cwd: owner.cwd,
       env: { HOME: owner.home, AGENC_HOME: owner.home, PATH: "" },
-      sessionTempRoot: owner.home,
+      // A writable ancestor outside protected home still needs a read-only
+      // carve-out, which Landlock cannot express.
+      sessionTempRoot: dirname(owner.home),
       probe: () => ({
         kind: "ready",
         mode: "workspace_write",
@@ -240,6 +242,14 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
   test("rejects oversized output without exposing a partial status", async () => {
     const owner = await fixture({ command: nodeCommand('process.stdout.write("x".repeat(17000))') });
     expect(await executeSessionStatusLine(owner.session)).toEqual({ status: "error", reason: "output_too_large" });
+  });
+
+  test("forwards estimated provenance alongside complete accounting", async () => {
+    const owner = await fixture({ command: "cat" });
+    const usage = owner.admission.getUsageSummary();
+    vi.spyOn(owner.admission, "getUsageSummary").mockReturnValue({ ...usage, costUsd: 2.5, hasUnknownCost: false, costEstimated: true });
+    expect(JSON.parse((await executeSessionStatusLine(owner.session)).text!).cost)
+      .toMatchObject({ total_cost_usd: 2.5, has_unknown_cost: false, cost_estimated: true });
   });
 
   test("restores available context, follows live usage, and preserves approved additional directories", async () => {

@@ -6,11 +6,24 @@ import {
   anthropicEffort,
   anthropicEffortLevels,
   anthropicManualBudgetTokens,
+  anthropicSupportsBetweenToolsThinking,
   anthropicThinkingControl,
 } from "../../../src/utils/model/anthropicThinkingControl.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../../src/utils/model/alwaysOnThinking.js";
 
 describe("anthropicThinkingControl", () => {
+  test("Sonnet 5.5 alone accepts between-tools thinking and all five effort levels", () => {
+    for (const model of ["claude-sonnet-5-5", "claude-sonnet-5.5", "anthropic.claude-sonnet-5-5"]) {
+      expect(anthropicSupportsBetweenToolsThinking(model)).toBe(true);
+      expect(anthropicThinkingControl(model)).toBe("adaptive");
+      expect(anthropicAcceptsSamplingParameters(model)).toBe(false);
+      expect(anthropicEffortLevels(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(isAlwaysOnThinkingAnthropicModel(model)).toBe(false);
+    }
+    for (const model of ["claude-sonnet-5", "claude-sonnet-5-50", "claude-sonnet-5-5-preview", "claude-opus-5-5"]) {
+      expect(anthropicSupportsBetweenToolsThinking(model)).toBe(false);
+    }
+  });
   test("classifies every generation the way the Messages API answered on 2026-09-11", () => {
     expect(anthropicThinkingControl("claude-fable-5-1")).toBe("always_on");
     expect(anthropicThinkingControl("claude-fable-5")).toBe("always_on");
@@ -75,6 +88,45 @@ describe("anthropicThinkingControl", () => {
     // The neighbours keep their own rows.
     expect(anthropicEffortLevels("claude-opus-5")).toEqual(all);
     expect(anthropicEffortLevels("claude-opus-4-6")).toEqual(["low", "medium", "high", "max"]);
+  });
+
+  test("sampling parameters are gone from always-on, Opus/Sonnet 5, and Opus 4.8/4.7", () => {
+    for (const model of [
+      "claude-fable-5-1",
+      "claude-mythos-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4.8",
+      "us.anthropic.agenc-opus-4-8-v1",
+    ]) {
+      expect(anthropicAcceptsSamplingParameters(model), model).toBe(false);
+    }
+    for (const model of [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5-20251101",
+      "claude-sonnet-4-5-20250929",
+      "claude-haiku-4-5",
+      "claude-3-7-sonnet-20250219",
+    ]) {
+      expect(anthropicAcceptsSamplingParameters(model), model).toBe(true);
+    }
+  });
+
+  test("lists the verified per-generation effort contract, including Bedrock and dated names", () => {
+    const five = ["low", "medium", "high", "xhigh", "max"];
+    const four = ["low", "medium", "high", "max"];
+    const three = ["low", "medium", "high"];
+    expect(anthropicEffortLevels("claude-fable-5-1")).toEqual(five);
+    expect(anthropicEffortLevels("us.anthropic.agenc-mythos-5-v1")).toEqual(five);
+    expect(anthropicEffortLevels("claude-opus-5-20260901")).toEqual(five);
+    expect(anthropicEffortLevels("claude-sonnet-4-6")).toEqual(four);
+    expect(anthropicEffortLevels("us.anthropic.agenc-opus-4.6-v1")).toEqual(four);
+    expect(anthropicEffortLevels("claude-opus-4-5-20251101")).toEqual(three);
+    expect(anthropicEffortLevels("claude-sonnet-4-5-20250929")).toEqual([]);
+    expect(anthropicEffortLevels("claude-haiku-4-5")).toEqual([]);
   });
 
   test("effort is accepted on the always-on and adaptive families and on Opus 4.5 only", () => {

@@ -16,7 +16,8 @@ describe("submitViaElicitationPrompt", () => {
     const submit = vi.fn(async () => {
       expect(clear.clearBuffer).toHaveBeenCalledTimes(1);
       expect(clear.resetHistory).toHaveBeenCalledTimes(1);
-      expect(clear.setCursorOffset).toHaveBeenCalledWith(0);
+      // submit may keep or restore the text, so the cursor is not reset here.
+      expect(clear.setCursorOffset).not.toHaveBeenCalled();
     });
 
     await submitViaElicitationPrompt(
@@ -44,6 +45,6 @@ describe("submitViaElicitationPrompt", () => {
     expect(submit).not.toHaveBeenCalled();
     expect(clear.clearBuffer).toHaveBeenCalledTimes(1);
     expect(clear.resetHistory).toHaveBeenCalledTimes(1);
-    expect(clear.setCursorOffset).toHaveBeenCalledWith(0);
+    expect(clear.setCursorOffset).not.toHaveBeenCalled();
   });
 });

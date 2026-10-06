@@ -24,6 +24,16 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
 
+Both transports share `AGENC_SDK_MAX_FRAME_BYTES` (16 MiB), the same numeric
+ceiling as the daemon socket and MCP stdio servers, and the same delimiter
+rule: LF, CRLF, and a lone CR end a frame and do not count toward the limit.
+An exact-limit payload is accepted, including when it arrives across chunks.
+One extra payload byte fails whether or not a delimiter has arrived. The
+socket applies that limit to the frame, not to the unread chunk. Subprocess
+overflow stops further reads, sends SIGTERM, and SIGKILLs after a short grace
+through the same guarded process-group path as a drain timeout (a custom
+`spawn` is never group-signalled). Only the existing 8 KiB stderr tail is kept.
+
 Both transports also share one bounded event buffer. A run keeps at most
 `MAX_BUFFERED_PROMPT_EVENTS` (1,000) events that the consumer has not iterated
 yet; past that the oldest buffered event is discarded. Loss is never silent:
@@ -135,6 +145,11 @@ not inherit the daemon's `PATH`. For a command-capable local session, pass the
 embedding application's intended path explicitly, for example
 `envOverrides: { PATH: process.env.PATH ?? "" }`. Do not forward the entire
 environment just to populate `PATH`.
+
+After a daemon restart, a session whose `envOverrides` carried a credential
+for its model provider comes back without a live runtime, because the daemon
+never stores credential values. Resume it with `envOverrides` again. Other
+values, such as a base URL, are restored from the run's record.
 
 The public CLI supplies its captured command environment automatically. On
 Linux, a restrictive sandbox may need a trusted system directory containing
@@ -258,7 +273,10 @@ Deviation from the launcher: the runtime's internal autostart also handles
 build-skew respawn and orphan-daemon adoption. Those need runtime-internal
 state, so the SDK implements only attach-to-running + spawn-via-CLI. For full
 recovery behavior, start the daemon with the CLI first and call
-`connect({ autostart: false })`.
+`connect({ autostart: false })`. Hard-kill leftovers and a hydrating
+`daemon start` are documented on
+[daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
+The TUI's 10 s lost-turn probe is TUI-only.
 
 The transport is a single persistent connection with no reconnect layer;
 call `connect()` again (or use `onDisconnect`) if the daemon restarts.
@@ -321,6 +339,22 @@ environment when `options.env` is omitted, is captured as automation startup
 authority. The child sends the captured typed value to the daemon; it does not
 install the variable as mutable daemon environment state.
 
+Node can emit child `exit` before stdout closes. The transport records the
+exit status, keeps parsing until stdout `end` and child `close`, and only then
+decides whether a stream-json result arrived. The final unterminated line is
+parsed once after stdout ends. If stdio stays open after `exit` longer than
+`postExitDrainTimeoutMs` (default 5s), the run fails with a distinct drain
+error and the SDK SIGKILLs the direct child.
+
+The default spawner leaves the child in the embedder's process group, so a
+terminal SIGINT or SIGHUP still reaches it. `detachProcessGroup: true` (Unix
+only) opts into `detached: true` and a new process group. That group is the
+only one a drain timeout will SIGKILL, and only when its pid is a safe integer
+greater than 1 and not this process. `cancel()` and an aborted `signal`
+forward SIGTERM to that same group. A custom `spawn` is never group-signalled:
+terminal signals are the spawner's responsibility, and pid 1 cannot become
+`kill(-1)`.
+
 ## Runnable example
 
 `packages/agenc-sdk/examples/one-shot.mjs` exercises both transports:
@@ -341,6 +375,7 @@ const started = await client.startRun({
   model: "grok-4.6",
   reviewerModel: "grok-4.5",
   permissionMode: "acceptEdits",
+  lightMode: true,
   requiredVerification: [{ label: "unit", script: "npm test" }],
 });
 // started: { runId, specDigest, baseCommit, baseDirty }
@@ -350,6 +385,12 @@ const started = await client.startRun({
 continues in the daemon. `model` and `provider` ride on the run session
 bootstrap the same way `agenc run start --model` does. Omitting them uses
 the daemon default, including for children that inherit the run's provider.
+`lightMode: true` runs the Goal session, implementer, reviewer, repair children,
+and their sub-agents in Light mode. Omit it for standard mode. The setting is
+frozen with the run and reported as `runStatus(id).workflow.lightMode` after
+restart. A continuation inherits its source Goal's mode unless it explicitly
+sets `lightMode` to `true` or `false`. Clients can check the
+`run.start.lightMode` initialize capability before sending it.
 Follow the run by id with the existing cursor contract: `runStatus` adds a
 `workflow` step projection (stage statuses, attempts, verdicts, artifact
 pointers, stop reason), `runResult` returns the durable terminal, and
@@ -739,7 +780,13 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
   process (argv contract, event mapping, exit-code-2 mapping, error paths,
-  bounded buffer with a visible `local_overflow` gap).
+  post-exit stdout drain, a real inherited-stdout descendant, and a bounded
+  buffer with a visible `local_overflow` gap).
+- `newline-frame.test.ts` — subprocess payload ceiling rules (exact limit,
+  overflow, CRLF, split UTF-8, multi-frame chunks).
+- `subprocess-stdout-framing.test.ts` — overflow settlement, listener cleanup,
+  and child reaping at the production 16 MiB bound.
+- `frame-limits.contract.test.ts` — SDK / daemon / MCP 16 MiB ceiling pin.
 - `prompt-event-queue.test.ts` and `prompt-event-overflow.contract.test.ts` —
   the shared bounded event buffer and its socket-transport contract:
   result-first, slow, and never-draining consumers see exact loss counts and

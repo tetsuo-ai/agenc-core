@@ -22,7 +22,7 @@ function fixture() {
   return { root, store: createOwnerTelegramStorage(home), path: join(root, "gateway", "telegram-agents.json") };
 }
 const fingerprint = (token: string) => createHash("sha256").update(token).digest("hex");
-const record = (id: string, token: string): TelegramAgentRecord => ({ agentId: id, name: "My agent", instructions: "Work carefully", workspacePath: "/fixture/workspace", telegramIdentityId: "101", username: "fixture_agent", ownerUserId: "123", ownerUsername: "fixture_owner", lastUpdateId: 4, tokenFingerprint: fingerprint(token) });
+const record = (id: string, token: string): TelegramAgentRecord => ({ agentId: id, name: "My agent", instructions: "Work carefully", provider: "deepseek", model: "deepseek-flash", workspacePath: "/fixture/workspace", telegramIdentityId: "101", username: "fixture_agent", ownerUserId: "123", ownerUsername: "fixture_owner", lastUpdateId: 4, tokenFingerprint: fingerprint(token) });
 
 describe("Telegram agent durable storage", () => {
   it("keys each secret independently and removes only the selected identity", () => {
@@ -31,6 +31,7 @@ describe("Telegram agent durable storage", () => {
     f.store.agents!.setToken("agent-b", "secret-b"); f.store.agents!.save(record("agent-b", "secret-b"));
     expect(f.store.agents!.token("agent-a")).toBe("secret-a"); expect(f.store.agents!.token("agent-b")).toBe("secret-b");
     expect(readFileSync(f.path, "utf8")).not.toMatch(/secret-a|secret-b/u);
+    expect(f.store.agents!.load()[0]).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
     if (process.platform !== "win32") expect(statSync(f.path).mode & 0o777).toBe(0o600);
     f.store.agents!.remove("agent-a");
     expect(f.store.agents!.load().map((entry) => entry.agentId)).toEqual(["agent-b"]);

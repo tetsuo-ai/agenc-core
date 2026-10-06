@@ -185,7 +185,7 @@ function taskProgressLabel(task: TaskState): string {
 }
 
 function taskElapsedLabel(task: TaskState): string {
-  if (typeof task.startTime !== "number" || task.startTime <= 0) return "—";
+  if (typeof task.startTime !== "number" || task.startTime <= 0) return "";
   const elapsedSeconds = Math.max(0, Math.floor(((task.endTime ?? Date.now()) - task.startTime) / 1000));
   if (elapsedSeconds >= 3600) return `${Math.floor(elapsedSeconds / 3600)}h`;
   if (elapsedSeconds >= 60) return `${Math.floor(elapsedSeconds / 60)}m`;
@@ -697,8 +697,8 @@ export function BackgroundTasksPanel({
       count={summary}
       summary="unified background panel"
       headerRight={listSelectedTaskCanStop ? "↑↓ select · ⏎ open · x stop" : "↑↓ select · ⏎ open"}
-      columns={[2, 8, 18, 26, 18, 14, 8, 8]}
-      headers={["", "kind", "id · status", "label", "target", "progress", "elapsed", "cost"]}
+      columns={[2, 8, 18, 34, 18, 14, 8]}
+      headers={["", "kind", "id · status", "label", "target", "progress", "elapsed"]}
       items={sorted}
       activeIndex={selectedIndex}
       footer={[
@@ -728,7 +728,6 @@ export function BackgroundTasksPanel({
           {taskProgressLabel(task)}
         </ThemedText>,
         <ThemedText key="elapsed" color="inactive" wrap="truncate-end">{taskElapsedLabel(task)}</ThemedText>,
-        <ThemedText key="cost" color="text2">—</ThemedText>,
       ]}
     />
   );

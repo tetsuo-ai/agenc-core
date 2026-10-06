@@ -74,19 +74,13 @@ function response(content: string, tool = false, promptTokens = 3_100,
 }
 
 interface StructuredCompactionPayload {
-  units?: Array<{ messages: Array<{ tool_call_id?: string; tool_result_sha256?: string }> }>;
-  summaries?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
-  children?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
+  units?: unknown[];
+  summaries?: unknown[];
+  children?: unknown[];
 }
 
-function compactionToolPairs(payload: StructuredCompactionPayload) {
-  return payload.units?.flatMap((unit) => unit.messages
-    .filter((message) => message.tool_call_id && message.tool_result_sha256)
-    .map((message) => ({ tool_call_id: message.tool_call_id!,
-      result_sha256: message.tool_result_sha256! }))) ??
-    payload.summaries?.flatMap((summary) => summary.body.tool_pairs) ??
-    payload.children?.flatMap((summary) => summary.body.tool_pairs) ?? [];
-}
+/** A summary without tool pairs: the runtime pins them itself. */
+const COMPACTION_SUMMARY = JSON.stringify({ narrative: "Bounded summary.", facts: [], open_actions: [] });
 
 function firstCompactionSession(harness: CompactionTransactionHarness, source: LLMMessage[],
   modelInfo: ReturnType<typeof compactionScenario>["modelInfo"], registry: ToolRegistry) {
@@ -157,9 +151,7 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
                   { once: true });
                 });
               }
-              const toolPairs = compactionToolPairs(payload);
-              return response(JSON.stringify({ narrative: "Bounded summary.", facts: [],
-                open_actions: [], tool_pairs: toolPairs }), false, 128, 128);
+              return response(COMPACTION_SUMMARY, false, 128, 128);
             }
           } catch (error) {
             if (error instanceof DOMException) throw error;
@@ -258,10 +250,8 @@ test("a later ordinary turn resumes after a completed compacting turn and daemon
           try {
             const payload = JSON.parse(content) as StructuredCompactionPayload;
             if (payload.units || payload.summaries || payload.children) {
-              const toolPairs = compactionToolPairs(payload);
               modelInfo.autoCompactTokenLimit = 100_000;
-              return response(JSON.stringify({ narrative: "Bounded summary.", facts: [],
-                open_actions: [], tool_pairs: toolPairs }), false, 128, 128);
+              return response(COMPACTION_SUMMARY, false, 128, 128);
             }
           } catch (error) {
             if (error instanceof DOMException) throw error;

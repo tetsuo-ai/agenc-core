@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { basename } from "node:path";
+import { statSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 
 export type SupportedPosixShell = "bash" | "zsh";
 
@@ -68,6 +69,19 @@ export function probePosixShellPath(
   shellPath: string,
   childEnvironment: Readonly<NodeJS.ProcessEnv>,
 ): PosixShellProbe {
+  // A missing fixed candidate cannot identify itself. Do not start a child
+  // just to discover ENOENT. Every viable candidate still runs the probe,
+  // and relative names retain execFileSync's existing lookup semantics.
+  if (isAbsolute(shellPath)) {
+    try {
+      statSync(shellPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        return { ok: false, reason: "not found" };
+      }
+    }
+  }
   try {
     const marker = "__agenc_supported_posix_shell__";
     const output = execFileSync(

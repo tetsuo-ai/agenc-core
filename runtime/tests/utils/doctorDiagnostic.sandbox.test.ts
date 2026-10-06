@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 
 import {
   buildLandlockFallbackWarning,
@@ -7,6 +12,33 @@ import {
 } from "../../src/utils/doctorDiagnostic.js";
 
 describe("sandbox doctor diagnostic", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("names the protected git path and bubblewrap remedy once", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-doctor-landlock-git-"));
+    roots.push(root);
+    mkdirSync(join(root, ".git"));
+    const status = new SandboxExecutionBroker({
+      mode: "workspace_write", cwd: root, platform: "linux",
+      probe: () => ({
+        kind: "ready", mode: "workspace_write", platform: "linux",
+        landlockFallback: {
+          reason: "bubblewrap namespaces unavailable",
+          remediation: "Enable unprivileged user namespaces.",
+        },
+      }),
+    }).status();
+
+    expect(buildSandboxWarning(status)).toBeNull();
+    expect(buildLandlockFallbackWarning(status)).toEqual({
+      issue: expect.stringContaining(join(root, ".git")),
+      fix: expect.stringMatching(/Install bubblewrap.*unprivileged user namespaces.*Docker.*seccomp\/AppArmor/s),
+    });
+  });
+
   it("reports an unhealthy required sandbox with actionable stable output", async () => {
     const status = await getSandboxDoctorStatus({
       config: { sandbox_mode: "workspace-write" },
@@ -33,9 +65,11 @@ describe("sandbox doctor diagnostic", () => {
   });
 
   it("warns loudly when readiness came through the Landlock fallback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-doctor-landlock-ready-"));
+    roots.push(root);
     const status = await getSandboxDoctorStatus({
       config: { sandbox_mode: "workspace-write" },
-      cwd: process.cwd(),
+      cwd: root,
       probe: ({ mode, platform }) => ({
         kind: "ready",
         mode,
@@ -74,6 +108,16 @@ describe("sandbox doctor diagnostic", () => {
     });
 
     expect(buildLandlockFallbackWarning(status)).toBeNull();
+  });
+
+  it("does not warn for a read-only Landlock policy", () => {
+    expect(buildLandlockFallbackWarning({
+      kind: "ready", mode: "read_only", platform: "linux",
+      landlockFallback: {
+        reason: "bubblewrap unavailable",
+        remediation: "Install bubblewrap",
+      },
+    })).toBeNull();
   });
 
   it("does not warn for an explicit danger-full-access selection", async () => {

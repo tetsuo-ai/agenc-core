@@ -86,7 +86,7 @@ import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
 import { logForDebugging } from "../utils/debug.js";
 import { redactSecrets } from "../secrets/index.js";
-import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
+import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { sessionMcpAttachmentIssue, redactMcpAttachmentText } from "../mcp-client/local-control.js";
 import { isDesktopAuthorityGrant, verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
 
@@ -624,6 +624,9 @@ function tokenCountEventForSampling(
     ...(usage.reasoningOutputTokens !== undefined
       ? { reasoningOutputTokens: usage.reasoningOutputTokens }
       : {}),
+    ...(usage.reasoningIncludedInCompletion === true
+      ? { reasoningIncludedInCompletion: true as const }
+      : {}),
     ...(usage.webSearchRequests !== undefined
       ? { webSearchRequests: usage.webSearchRequests }
       : {}),
@@ -991,7 +994,7 @@ export function createSessionMcpService(
 ): SessionServices["mcpManager"] {
   const runtimeManager = manager as RuntimeMcpManagerWithMetadata;
   const redactProjection = () => {
-    const redactSaved = createSavedPluginSecretRedactor(options.authority.homeContext);
+    const redactSaved = createLazySavedPluginSecretRedactor(options.authority.homeContext);
     return (value: string) => {
       const saved = redactSaved(value);
       return runtimeManager.redactPluginSecrets?.(saved) ?? saved;

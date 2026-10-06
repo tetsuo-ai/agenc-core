@@ -28,6 +28,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import { coerceUsage } from "../../wire/shared.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -35,6 +36,11 @@ import {
   type ProviderTokenCountCapability,
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+  LLMStreamTruncatedError,
+} from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 import {
   isOpaqueBedrockModelArn,
@@ -45,6 +51,7 @@ import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnT
 import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
+  anthropicSupportsBetweenToolsThinking,
 } from "../../../utils/model/anthropicThinkingControl.js";
 import { bedrockConverseEffortLevels } from "../../registry/model-catalog.js";
 import {
@@ -52,7 +59,6 @@ import {
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
-import { LLMProviderError } from "../../errors.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
@@ -502,11 +508,15 @@ function claudeConverseContract(
   const effort = anthropicEffort(options?.reasoningEffort);
   const sendEffort =
     effort !== undefined && bedrockConverseEffortLevels(identity).includes(effort);
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(identity);
+  const thinking = betweenToolsThinking && options?.reasoningEffort === "none"
+    ? { thinking: { type: "between_tools" } }
+    : {};
   return {
     dropSampling: !anthropicAcceptsSamplingParameters(identity),
-    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity),
-    ...(sendEffort
-      ? { additionalModelRequestFields: { output_config: { effort } } }
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity) || betweenToolsThinking,
+    ...(sendEffort || Object.keys(thinking).length > 0
+      ? { additionalModelRequestFields: { ...thinking, ...(sendEffort ? { output_config: { effort } } : {}) } }
       : {}),
   };
 }
@@ -794,11 +804,22 @@ async function* bedrockEventStreamPayloads(
         continue;
       }
       const text = decoder.decode(payload).trim();
-      yield text.length === 0 ? {} : JSON.parse(text);
+      if (text.length === 0) {
+        yield {};
+        continue;
+      }
+      yield parseProviderJson(
+        BEDROCK_PROVIDER_ID,
+        text,
+        "Amazon Bedrock stream event",
+      );
     }
   }
   if (pending.length > 0) {
-    throw new Error("Amazon Bedrock stream ended with a partial event frame");
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with a partial event frame",
+    );
   }
 }
 
@@ -839,7 +860,10 @@ async function parseStreamResponse(params: {
   let content = "";
   let stopReason: string | undefined;
   let usage: BedrockResponse["usage"] | undefined;
+  let sawMessageStop = false;
+  const openStartedBlocks = new Set<number>();
   const toolBlocks = new Map<number, BedrockStreamToolBlock>();
+  const reasoningBlocks = new Set<number>();
   const toolCalls: LLMToolCall[] = [];
 
   for await (const rawEvent of bedrockEventStreamPayloads(params.body)) {
@@ -856,6 +880,9 @@ async function parseStreamResponse(params: {
       const index = numericField(startEvent, "contentBlockIndex") ?? -1;
       const start = isRecord(startEvent.start) ? startEvent.start : {};
       const toolUse = isRecord(start.toolUse) ? start.toolUse : null;
+      if (index >= 0) {
+        openStartedBlocks.add(index);
+      }
       if (index >= 0 && toolUse !== null) {
         const id = String(toolUse.toolUseId ?? "");
         // Decode the encoded wire name back to the internal-registry
@@ -890,6 +917,11 @@ async function parseStreamResponse(params: {
     if (deltaEvent !== null) {
       const index = numericField(deltaEvent, "contentBlockIndex") ?? -1;
       const delta = isRecord(deltaEvent.delta) ? deltaEvent.delta : {};
+      const reasoning = isRecord(delta.reasoningContent) ? delta.reasoningContent : null;
+      if (index >= 0 && typeof reasoning?.text === "string" && reasoning.text.length > 0) {
+        reasoningBlocks.add(index);
+        params.onChunk({ content: "", done: false, thinkingDelta: { delta: reasoning.text, index } });
+      }
       if (typeof delta.text === "string" && delta.text.length > 0) {
         content += delta.text;
         params.onChunk({ content: delta.text, done: false });
@@ -919,6 +951,12 @@ async function parseStreamResponse(params: {
       : null;
     if (stopEvent !== null) {
       const index = numericField(stopEvent, "contentBlockIndex") ?? -1;
+      if (index >= 0) {
+        openStartedBlocks.delete(index);
+      }
+      if (reasoningBlocks.delete(index)) {
+        params.onChunk({ content: "", done: false, thinkingBlockStop: { index } });
+      }
       const block = toolBlocks.get(index);
       if (block !== undefined) {
         const toolCall = parseCompletedToolCall(block);
@@ -933,6 +971,7 @@ async function parseStreamResponse(params: {
       ? rawEvent.messageStop
       : null;
     if (messageStop !== null) {
+      sawMessageStop = true;
       stopReason =
         typeof messageStop.stopReason === "string"
           ? messageStop.stopReason
@@ -946,6 +985,18 @@ async function parseStreamResponse(params: {
     }
   }
 
+  if (!sawMessageStop) {
+    throw new LLMStreamTruncatedError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream closed before a messageStop event",
+    );
+  }
+  if (openStartedBlocks.size > 0 || toolBlocks.size > 0) {
+    throw new LLMInvalidResponseError(
+      BEDROCK_PROVIDER_ID,
+      "Amazon Bedrock stream ended with an open content or tool block",
+    );
+  }
   const response: LLMResponse = {
     content,
     toolCalls,
@@ -1009,7 +1060,7 @@ function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
       providerCredentialEnvironmentLabel("amazon-bedrock") ??
       "the required AWS SigV4 credential fields";
     throw new Error(
-      `amazon-bedrock provider requires AWS credentials — set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
+      `amazon-bedrock provider requires AWS credentials: set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
     );
   }
   return {

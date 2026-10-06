@@ -1,16 +1,25 @@
 import {
-  REGISTERED_MODEL_CATALOG,
+  getSelectedProviderName,
+  getSelectedProviderEnvironment,
+  selectedProviderIdentity,
+  type ProviderRuntimeSelection,
+} from './provider-selection.js'
+export {
+  getSelectedProviderName,
+  getSelectedProviderSelection,
+  getSelectedProviderModel,
+  getSelectedProviderEnvironment,
+  type ProviderRuntimeSelection,
+} from './provider-selection.js'
+import {
+  registeredModelCatalogProviderIds,
   resolveRegisteredModelCatalogEntry,
 } from '../../llm/registry/model-catalog.js'
-import { getCurrentRuntimeSession } from '../../session/current-session.js'
-import { normalizeProviderIdentity } from '../../provider-identity.js'
 import {
   snapshotProviderEnvironment,
-  type ProviderEnvironment,
-} from '../../llm/provider-options.js'
+} from '../../llm/provider-environment.js'
 import {
   enterStartupProviderSelectionSnapshotForTests,
-  readStartupProviderSelectionSnapshot,
   runWithStartupProviderSelectionSnapshot,
 } from './provider-selection-context.js'
 
@@ -24,20 +33,6 @@ export type APIProvider =
   | 'minimax'
   | 'mistral'
   | 'xai'
-
-export interface ProviderRuntimeSelection {
-  readonly provider: string
-  readonly model: string
-  readonly environment: ProviderEnvironment
-}
-
-function selectedProviderIdentity(provider: string): string {
-  const selected = normalizeProviderIdentity(provider, 'provider API projection')
-  if (selected === undefined) {
-    throw new Error('provider authority requires a non-empty provider name')
-  }
-  return selected
-}
 
 /**
  * Bind pre-session startup work to the provider already resolved by canonical
@@ -78,53 +73,6 @@ function freezeSelection(
     model,
     environment: snapshotProviderEnvironment(selection.environment),
   })
-}
-
-function sessionSelection(): ProviderRuntimeSelection | undefined {
-  const session = getCurrentRuntimeSession()
-  if (session === null) return undefined
-  const providerService = session.services.providerService
-  const binding = providerService?.current()
-  if (binding === undefined || providerService === undefined) {
-    throw new Error(
-      'Ambient runtime session has no session-owned provider binding',
-    )
-  }
-  return Object.freeze({
-    provider: binding.provider,
-    model: binding.model,
-    environment: providerService.environment(),
-  })
-}
-
-export function getSelectedProviderSelection(): ProviderRuntimeSelection {
-  const session = sessionSelection()
-  if (session !== undefined) return session
-  const startupSelection = readStartupProviderSelectionSnapshot()
-  if (startupSelection !== undefined) return startupSelection
-  throw new Error(
-    'No provider authority is bound; run inside canonical startup/session scope',
-  )
-}
-
-/**
- * Project the provider selected by an explicit argument, the current session,
- * or the canonical startup scope. Provider environment is captured at ingress;
- * this compatibility projection must never read mutable process-global state.
- */
-export function getSelectedProviderName(explicitProvider?: string): string {
-  if (explicitProvider !== undefined) {
-    return selectedProviderIdentity(explicitProvider)
-  }
-  return getSelectedProviderSelection().provider
-}
-
-export function getSelectedProviderModel(): string {
-  return getSelectedProviderSelection().model
-}
-
-export function getSelectedProviderEnvironment(): ProviderEnvironment {
-  return getSelectedProviderSelection().environment
 }
 
 export function getAPIProvider(explicitProvider?: string): APIProvider {
@@ -171,15 +119,18 @@ export function usesAnthropicAccountFlow(provider?: string): boolean {
 
 /**
  * True when `model` is registry-owned by a built-in non-Anthropic provider
- * (grok, openai, ...; the registered catalog carries no Anthropic entries).
+ * (grok, openai, ...). Native Anthropic identities retain their account flow.
  * This remains useful outside a bound runtime session because registry
  * ownership is determined directly from the model catalog.
  */
 export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
   const trimmed = model.trim()
   if (trimmed.length === 0) return false
+  if (resolveRegisteredModelCatalogEntry({ provider: 'anthropic', model: trimmed }) !== undefined) {
+    return false
+  }
   const providers = new Set(
-    REGISTERED_MODEL_CATALOG.map(entry => entry.provider),
+    registeredModelCatalogProviderIds(),
   )
   for (const provider of providers) {
     if (

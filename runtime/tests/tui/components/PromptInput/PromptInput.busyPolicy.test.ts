@@ -39,7 +39,7 @@ describe("PromptInput fullscreen layout budget", () => {
     [1, 1],
     [3, 2],
     [5, 2],
-    [8, 2],
+    [8, 3],
     [24, 7],
   ])(
     "caps prompt input viewport to the bottom slot at terminal height %i",

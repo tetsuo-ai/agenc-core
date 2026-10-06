@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createStartupSandboxBypassNoticeWriter,
   resetStartupSandboxBypassNoticeForTests,
   resolveStartupSandboxBypass,
   sandboxUnavailableNotice,
@@ -10,6 +11,19 @@ import { classifyCLI, stripRoutingFlags } from "../../src/bin/route.js";
 import type { SandboxExecutionStatus } from "../../src/sandbox/execution-broker.js";
 
 const executable = ["/usr/bin/node", "/opt/agenc/agenc.js"];
+
+it("owns the bypass notice latch per invocation without consuming the process latch", () => {
+  resetStartupSandboxBypassNoticeForTests();
+  const a = createStartupSandboxBypassNoticeWriter(), b = createStartupSandboxBypassNoticeWriter();
+  const first = { write: vi.fn() }, second = { write: vi.fn() }, processOutput = { write: vi.fn() };
+  const resolution = { dangerouslyBypassApprovalsAndSandbox: true, notice: "sandbox unavailable" };
+  a(resolution, first); a(resolution, first); b(resolution, second);
+  writeStartupSandboxBypassNotice(resolution, processOutput);
+  expect(first.write).toHaveBeenCalledExactlyOnceWith("sandbox unavailable\n");
+  expect(second.write).toHaveBeenCalledExactlyOnceWith("sandbox unavailable\n");
+  expect(processOutput.write).toHaveBeenCalledExactlyOnceWith("sandbox unavailable\n");
+  resetStartupSandboxBypassNoticeForTests();
+});
 
 function status(
   kind: SandboxExecutionStatus["kind"],

@@ -1,33 +1,55 @@
 /**
- * `agenc --resume <unknown-id>` scenario.
+ * Headless `agenc --resume <unknown-id>` scenario.
  *
- * Catches: resume path in a non-TTY context exits cleanly instead of
- * hanging on Ink waiting for stdin input that will never arrive.
+ * Catches: a resume without a TTY hanging on Ink while it waits for stdin
+ * input that will never arrive, and a headless resume of an unknown session
+ * failing without saying which session was missing.
  *
- * In a TTY the resume path mounts the Ink TUI and surfaces "session not
- * found" through the resumeTUI return code. In a piped/non-TTY context
- * (the only context this E2E harness exercises), classifyCLI now refuses
- * the resume path with a clear error and exits non-zero. The TTY path is
- * not exercised here because spawning a real PTY just to verify that
- * exact error message would re-do work the resumeTUI unit tests already
- * cover; this scenario gates the non-TTY hang regression.
+ * Without a TTY, `--resume <id>` runs the prompt as one more turn of that
+ * session through the daemon-backed one-shot path (docs/reference/cli.md,
+ * todo-122). The one-shot path resolves the session before any daemon work,
+ * so an unknown id exits 1 with a not-found message that names it. With no
+ * prompt at all (stdin closed, nothing in argv) it exits 1 at prompt
+ * resolution instead of waiting. The interactive TTY resume path is covered
+ * by the resumeTUI unit tests.
  */
 export const meta = {
-  description: "agenc --resume <bogus> exits cleanly with not-found message.",
-  timeoutMs: 20_000,
+  description:
+    "agenc --resume <bogus> without a TTY exits 1: not-found with a prompt, no-prompt without one.",
+  timeoutMs: 40_000,
 };
 
+const SESSION_ID = "session-that-does-not-exist-7c3f";
+
+function describe(result) {
+  return `code=${result.code} signal=${result.signal} stderr=${JSON.stringify(
+    result.stderr.slice(0, 300),
+  )} stdout=${JSON.stringify(result.stdout.slice(0, 300))}`;
+}
+
 export default async function (session) {
-  const result = await session.runAgenc(
-    ["--resume", "session-that-does-not-exist-7c3f"],
-    { timeoutMs: 18_000 },
-  );
-  if (result.code === 0) {
-    throw new Error(`expected non-zero exit for bogus --resume, got 0`);
+  // Piped stdin is the non-TTY route: the prompt arrives on stdin and the
+  // session lookup has to fail before a turn starts.
+  const piped = await session.runAgenc(["--resume", SESSION_ID], {
+    input: "continue the task\n",
+    timeoutMs: 18_000,
+  });
+  if (piped.code !== 1) {
+    throw new Error(`expected exit 1 for an unknown headless --resume, got ${describe(piped)}`);
   }
-  if (!/requires an interactive terminal|not found/i.test(result.stderr + result.stdout)) {
-    throw new Error(
-      `expected resume-non-tty error in output; got stderr=${result.stderr.slice(0, 200)} stdout=${result.stdout.slice(0, 200)}`,
-    );
+  if (!piped.stderr.includes(`session not found`) || !piped.stderr.includes(SESSION_ID)) {
+    throw new Error(`expected a not-found message naming the session, got ${describe(piped)}`);
+  }
+
+  // No prompt anywhere: stdin is closed, so the run must stop at prompt
+  // resolution instead of hanging.
+  const noPrompt = await session.runAgenc(["--resume", SESSION_ID], {
+    timeoutMs: 18_000,
+  });
+  if (noPrompt.code !== 1) {
+    throw new Error(`expected exit 1 for --resume without a prompt, got ${describe(noPrompt)}`);
+  }
+  if (!/no prompt provided/u.test(noPrompt.stderr)) {
+    throw new Error(`expected the missing-prompt message, got ${describe(noPrompt)}`);
   }
 }

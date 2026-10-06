@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
-import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, buildCrossProviderDisclosure, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -26,7 +26,104 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
   } as unknown as Session;
 }
 
+function installOnceConsent(session: Session, ownerSessionId: string, endpoint: string): void {
+  const selection = session.providerService.current();
+  Object.assign(session, { conversationId: ownerSessionId,
+    sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace" },
+    providerService: { current: () => selection,
+      previewChildDestination: async () => ({ endpoint, authProfile: "api_key", billingSource: "byok" }) },
+  });
+  Object.assign(session.services, { crossProviderConsent: { ownerSessionId, sessionEpoch: "epoch",
+    request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+      kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId,
+        sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+        payloadKey: disclosure.payloadKey },
+    }),
+  } });
+}
+
 describe("child provider selection", () => {
+  it("discloses priority and long-context prices instead of the cheaper standard rate", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+    });
+    Object.assign(session, { conversationId: "parent", sessionConfiguration: { cwd: "/workspace" } });
+    const plan = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-sol" },
+      modelInfo: { slug: "gpt-6-sol", provider: "openai", supportsToolUse: true, contextWindow: 1_000_000 } as Session["modelInfo"],
+      parentPath: "/root", taskId: "pricing", taskName: "review", taskText: "review",
+      toolFree: false, forkedHistory: false, serviceTier: "priority" });
+    expect(buildCrossProviderDisclosure(plan).price).toEqual({ inputUsdPer1K: 0.008, outputUsdPer1K: 0.030 });
+    const standard = buildCrossProviderDisclosure({ ...plan, serviceTier: undefined });
+    expect(buildCrossProviderDisclosure(plan).scopeKey).not.toBe(standard.scopeKey);
+    expect(buildCrossProviderDisclosure({ ...plan, reasoningEffort: "high" }).scopeKey)
+      .not.toBe(buildCrossProviderDisclosure({ ...plan, reasoningEffort: "low" }).scopeKey);
+  });
+
+  it.each([
+    { name: "automatic selection", change: { cross_provider_auto: false } },
+    { name: "reasoning effort", change: { subagent_limits: { openai: { effort: "low", speed: "fast" } } } },
+    { name: "service tier", change: { subagent_limits: { openai: { effort: "high", speed: "standard" } } } },
+  ])("rejects a granted plan after $name authority is lowered", async ({ change }) => {
+    const originalConfig = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true,
+        subagent_limits: { openai: { effort: "high", speed: "fast" } } } };
+    let config = originalConfig;
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    // The live store, not this captured config, is the policy authority.
+    Object.assign(session, { config });
+    Object.assign(session.services, { configStore: { current: () => config } });
+    installOnceConsent(session, "policy-parent", "https://api.openai.com/v1");
+    const makePlan = () => createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-sol" },
+      modelInfo: { slug: "gpt-6-sol", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "policy-child", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false, reasoningEffort: "high", serviceTier: "priority" });
+    const proposed = await makePlan();
+    const approved = await authorizeChildExecutionPlan(session, proposed);
+    if (approved.kind !== "granted") throw new Error("fixture consent was not granted");
+    await assertChildExecutionPlan(session, approved.plan);
+    config = { ...config, agents: { ...config.agents, ...change } };
+    await expect(assertChildExecutionPlan(session, approved.plan)).rejects.toThrow(/policy changed/u);
+    const changedConfig = config;
+    config = originalConfig;
+    const consentService = session.services.crossProviderConsent!;
+    const request = consentService.request.bind(consentService);
+    Object.assign(consentService, { request: async (...args: Parameters<typeof request>) => {
+      const outcome = await request(...args);
+      config = changedConfig;
+      return outcome;
+    } });
+    await expect(authorizeChildExecutionPlan(session, proposed)).resolves.toMatchObject({
+      kind: "consent_unavailable", reason: expect.stringContaining("policy changed"),
+    });
+    config = originalConfig;
+    Object.assign(session.providerService, { previewChildDestination: async () => {
+      config = changedConfig;
+      return { endpoint: "https://api.openai.com/v1", authProfile: "api_key", billingSource: "byok" };
+    } });
+    await expect(makePlan()).rejects.toThrow(/policy changed/u);
+  });
+
+  it("treats explicit default limits as the same policy as unset limits", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    const original = session.services.configStore.current();
+    let config = original;
+    Object.assign(session, { conversationId: "defaults-parent",
+      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } } });
+    Object.assign(session.services, { configStore: { current: () => config } });
+    const makePlan = () => createChildExecutionPlan({ session,
+      selection: { provider: "grok", model: "grok-4.6" },
+      modelInfo: { slug: "grok-4.6", provider: "grok", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "defaults-child", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    const plan = await makePlan();
+    config = { ...original, agents: { ...original.agents, cross_provider_auto: false,
+      subagent_limits: { grok: { effort: "minimal", speed: "standard" }, openai: {} } } };
+    await expect(assertChildExecutionPlan(session, plan)).resolves.toBeUndefined();
+    expect((await makePlan()).policyRevision).toBe(plan.policyRevision);
+  });
+
   it("does not reuse a different same-provider model's instructions without a model catalog", async () => {
     const session = sessionWithModels("grok", "grok-4.7", ["grok-4.7", "grok-4.6"]);
     Object.assign(session.services, { modelsManager: undefined });
@@ -44,18 +141,8 @@ describe("child provider selection", () => {
     let config: ReturnType<typeof defaultConfig> = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
       agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } };
     const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
-    Object.assign(session, { conversationId: "catalog-parent",
-      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } },
-      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
-        previewChildDestination: async () => ({ endpoint: "https://api.deepseek.com/v1",
-          authProfile: "api_key", billingSource: "byok" }) } });
-    Object.assign(session.services, { configStore: { current: () => config },
-      crossProviderConsent: { ownerSessionId: "catalog-parent", sessionEpoch: "epoch",
-        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
-          kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "catalog-parent",
-            sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
-            payloadKey: disclosure.payloadKey },
-        }) } });
+    Object.assign(session.services, { configStore: { current: () => config } });
+    installOnceConsent(session, "catalog-parent", "https://api.deepseek.com/v1");
     const proposed = await createChildExecutionPlan({ session,
       selection: { provider: "deepseek", model: "deepseek-v4-pro" },
       modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],

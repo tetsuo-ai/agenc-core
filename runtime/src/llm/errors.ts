@@ -6,7 +6,30 @@
 
 import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
-import { isProviderFundsFailure } from "./funds.js";
+import { isProviderFundsFailure, providerFundsMessage } from "./funds.js";
+
+const preGenerationRejections = new WeakMap<Error, string>();
+
+/**
+ * Adapter evidence that this single wire attempt was rejected before generation.
+ * Mark only at the initial HTTP rejection boundary, never from an error's name,
+ * message, missing usage, or an in-stream status. Preserve the mapped error's
+ * identity so recovery still sees its rate-limit/auth/etc. classification.
+ */
+export function markLLMPreGenerationRejection<T extends Error>(
+  error: T,
+  provider: string,
+): T {
+  preGenerationRejections.set(error, provider);
+  return error;
+}
+
+export function isLLMPreGenerationRejection(
+  error: unknown,
+  provider: string,
+): boolean {
+  return error instanceof Error && preGenerationRejections.get(error) === provider;
+}
 
 export interface TlsValidationDetails {
   readonly code: string;
@@ -134,6 +157,19 @@ export class LLMProviderError extends RuntimeError {
     this.name = "LLMProviderError";
     this.providerName = providerName;
     this.statusCode = statusCode;
+  }
+}
+
+/** An in-stream failure explicitly forbids resampling this attempt. */
+export class LLMStreamRetryDeniedError extends LLMProviderError {
+  constructor(
+    providerName: string,
+    message: string,
+    public readonly reason: "provider_directive" | "partial_output" | "provider_status",
+    statusCode?: number,
+  ) {
+    super(providerName, message, statusCode);
+    this.name = "LLMStreamRetryDeniedError";
   }
 }
 
@@ -499,7 +535,8 @@ export function mapLLMError(
   if (isProviderFundsFailure(providerName, err)) {
     const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
       (err as { statusCode?: unknown } | null)?.statusCode;
-    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined);
+    return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined,
+      providerFundsMessage(providerName, err));
   }
   if (
     err instanceof LLMMessageValidationError ||

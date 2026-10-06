@@ -579,7 +579,12 @@ async function resolveRemoteAuthToken(
 ): Promise<string | undefined> {
   const explicit = explicitRemoteAuthToken(options);
   if (explicit !== undefined) return explicit;
-  return readRemoteBearerCredential(home)?.bearerToken;
+  // A signed-out home has no grant to use. Match the persisted generation
+  // before using native credentials, as the account snapshot path does.
+  return (await readPersistedRemoteAuthSession(
+    remoteAuthFilePath(options, home),
+    home,
+  ))?.credential.bearerToken;
 }
 
 function explicitRemoteAuthToken(
@@ -1523,12 +1528,11 @@ async function readPersistedRemoteAuthSession(
   home: HomeContext,
 ): Promise<RemotePersistedAuthSession | null> {
   const state = await readRemoteAuthState(path);
+  // Without a signed-in state file there is nothing to match, so skip the
+  // secure-storage read: on Linux and macOS it starts a helper process.
+  if (state === null) return null;
   const credential = readRemoteBearerCredential(home);
-  if (
-    state === null ||
-    credential === undefined ||
-    credential.createdAt !== state.createdAt
-  ) {
+  if (credential === undefined || credential.createdAt !== state.createdAt) {
     return null;
   }
   return { state, credential };

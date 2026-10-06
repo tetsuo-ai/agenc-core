@@ -38,6 +38,7 @@ import {
   withAtomicArtifactObservationSync,
 } from "../durability/atomic-artifact.js";
 import { withPinnedOfflineRolloutLease } from "../durability/offline-rollout.js";
+import { readSubagentTaskReceipts, type RecoveredChildTaskReceipt } from "./subagent-receipt-recovery.js";
 import {
   AgentIdExistsError,
   InvalidAgentMetadataError,
@@ -173,6 +174,8 @@ import {
 import { redactDurableSecrets } from "./provider-replay-redaction.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
+  /** Drain auxiliary startup diagnostics before the existing one-shot seal. */
+  readonly beforeOneShotCheckpoint?: () => void;
   /** Session-owned temporary root captured at request ingress. */
   readonly sessionTempRoot: string;
   /** Flush interval in ms. Default 100. */
@@ -794,7 +797,10 @@ export class RolloutStore {
       throw new TypeError("RolloutStore sessionTempRoot must be absolute");
     }
     this.sessionTempRoot = normalize(opts.sessionTempRoot);
-    this.store = new SessionStore(opts);
+    this.store = new SessionStore({ ...opts, checkpointOneShot: () => {
+      opts.beforeOneShotCheckpoint?.();
+      this.stateDriver.checkpointDurability();
+    } });
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
       this.store,
@@ -819,7 +825,10 @@ export class RolloutStore {
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
       agencHome: this.store.agencHome,
+      durabilityRunId: opts.sessionId,
       projectRootMarkers: opts.projectRootMarkers,
+      // Rollout authority uses state; open logs only if a caller needs them.
+      deferLogs: true,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
     this.runDurabilityRepo = new StateRunDurabilityRepository(this.stateDriver);
@@ -868,6 +877,17 @@ export class RolloutStore {
       }
 
       this.store.open(meta);
+      if (existingEpoch !== undefined) {
+        const liveHistoryRefs = this.compactionRetentionRepo
+          .listActiveForSourceBinding(
+            `rollout:${this.rolloutPath}#epoch:${existingEpoch.epoch}`,
+          )
+          .flatMap((pin) => pin.activeHistoryRefs);
+        this.store.rewriteFailedCompactionPayloadChunksAtomically(
+          COMPACTION_SOURCE_DIGEST_DOMAIN,
+          liveHistoryRefs,
+        );
+      }
       this.promoteDurableCheckpointSchema(meta);
       this.rebuildLiveToolPairProjection();
       // Re-check under the canonical rollout lease. Retention can retire the
@@ -2567,6 +2587,7 @@ export class RolloutStore {
     );
     for (const attempt of orderedAttempts) {
       const intent = attempt.intent;
+      if (intent === undefined) continue;
       if (this.compactionRetentionRepo.get(intent.attempt_id) !== undefined) {
         continue;
       }
@@ -3659,6 +3680,24 @@ export class RolloutStore {
     return this.listThreadSpawnChildrenMatching(parentThreadId);
   }
 
+  /** Recover committed task results without reopening the worker's execution epoch. */
+  readThreadSpawnTaskReceipts(childThreadId: ThreadId, deadline?: number, turnId?: string, liveSource?: RolloutStore): readonly RecoveredChildTaskReceipt[] {
+    const edge = this.getThreadSpawnEdge(childThreadId);
+    if (edge === undefined) throw new Error("Child receipt recovery requires a durable spawn edge.");
+    return readSubagentTaskReceipts({ edge,
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(liveSource === undefined ? {} : { scanLiveSource: (sourcePath: string, consume: (chunk: Uint8Array) => void) => {
+        if (liveSource.sessionId !== childThreadId || liveSource.rolloutPath !== sourcePath) return false;
+        liveSource.store.scanCanonicalChunks(64 * 1_024 * 1_024, consume);
+        return true;
+      } }),
+      projectDir: getProjectDir(this.store.cwd, this.projectRootMarkers, this.store.agencHome),
+      projectsDir: join(this.store.agencHome, "projects"),
+      bindings: this.runDurabilityRepo.listJournalBindings(childThreadId),
+      ...(deadline === undefined ? {} : { deadline }),
+      resolveSourcePath: resolveCurrentBoundRolloutPath });
+  }
+
   listThreadSpawnDescendants(
     rootThreadId: ThreadId,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
@@ -3710,8 +3749,9 @@ export class RolloutStore {
         if (projectDir === rootProjectDir || !lstatSync(projectDir).isDirectory()) continue;
         const stateDbPath = join(projectDir, STATE_DATABASE_FILENAME);
         const logsDbPath = join(projectDir, LOGS_DATABASE_FILENAME);
-        if (!existsSync(stateDbPath) || !existsSync(logsDbPath)) continue;
-        const reader = new StateSqliteReader({ projectDir, stateDbPath, logsDbPath });
+        if (!existsSync(stateDbPath)) continue;
+        const reader = new StateSqliteReader(
+          { projectDir, stateDbPath, logsDbPath }, { deferLogs: true });
         try {
           const epoch = reader.prepareState<[string], { epoch: number }>(
             `SELECT epoch FROM run_lifecycle_epochs WHERE run_id = ? ORDER BY epoch DESC LIMIT 1`,
@@ -3839,8 +3879,7 @@ export class RolloutStore {
   close(): void {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    this.stateDriver.close();
-    this.store.close();
+    try { this.store.close(); } finally { this.stateDriver.close(); }
   }
 
   private requireRunEpoch(runId: string) {

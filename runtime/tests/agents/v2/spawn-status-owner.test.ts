@@ -68,6 +68,7 @@ describe("spawn task status ownership", () => {
     try {
       const result = await f.invoke();
       expect(result.isError, result.content).not.toBe(true);
+      expect(mockDelegate).toHaveBeenLastCalledWith(expect.objectContaining({ keepAlive: true, summarizeAtStepLimit: true }));
       f.progress(1);
       expect(f.statuses().at(-1)?.msg).toMatchObject({ type: "collab_agent_status", payload: { threadId: f.id, status: "running" } });
       if (failedFinalizer) await expect(f.session.shutdown()).rejects.toBe(failure);

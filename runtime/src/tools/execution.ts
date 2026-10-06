@@ -255,7 +255,7 @@ const OFFLOAD_REFERENCE_MAX_BYTES = 4_000;
  * effect is how much of the context window one tool result may occupy.
  * Unset or invalid keeps today's behavior (offload only above the cap).
  */
-function resolveOffloadThresholdBytes(): number | undefined {
+export function resolveOffloadThresholdBytes(): number | undefined {
   const raw = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
   if (raw === undefined || raw.trim() === "") return undefined;
   const parsed = Number(raw);

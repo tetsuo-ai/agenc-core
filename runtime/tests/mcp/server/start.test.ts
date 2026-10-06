@@ -125,6 +125,14 @@ async function postMcpJson(
 }
 
 describe("mcp server start config", () => {
+  test("retains configured entry function identity through the public facade", async () => {
+    const configured = await import("../../../src/mcp/server/configured-start.js");
+    expect(startMcpServerFromConfig).toBe(configured.startMcpServerFromConfig);
+    expect(prepareMcpSseServerReconfigurationFromConfig).toBe(
+      configured.prepareMcpSseServerReconfigurationFromConfig,
+    );
+  });
+
   test("resolves disabled stdio defaults and safe malformed fallbacks", () => {
     expect(resolveMcpServeDefaults(undefined)).toEqual({
       enabled: false,

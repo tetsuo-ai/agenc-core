@@ -111,7 +111,7 @@ export function recentOomSnapshotNotice(
   if (newest === null) return null;
   if (nowMs - newest.mtimeMs > RECENT_SNAPSHOT_NOTICE_MS) return null;
   return (
-    `agenc: a previous session ran out of memory — heap snapshot saved at ` +
+    `agenc: a previous session ran out of memory. Heap snapshot saved at ` +
     `${newest.path} (attach it to a bug report, then delete it)`
   );
 }
@@ -176,8 +176,8 @@ export function startHeapWatchdog(
         const usedMb = Math.round(usedBytes / 1048576);
         const limitMb = Math.round(limitBytes / 1048576);
         warn(
-          `agenc: heap usage high (${usedMb}MB of ${limitMb}MB limit) — ` +
-            `if this keeps climbing the process will run out of memory`,
+          `agenc: heap usage high (${usedMb}MB of ${limitMb}MB limit). ` +
+            `If this keeps climbing the process will run out of memory`,
         );
       }
     } catch {

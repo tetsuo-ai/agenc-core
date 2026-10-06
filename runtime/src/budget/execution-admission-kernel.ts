@@ -1,3 +1,4 @@
+import { promoteOneShotRun, withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -123,6 +124,13 @@ export interface ExecutionAdmissionKernelOptions {
   readonly ownerPid?: number;
   readonly now?: () => Date;
   readonly id?: () => string;
+  /**
+   * Identity of the running build. Lets canonical journal recovery keep the
+   * projection of a source it already validated, projected and fsynced under
+   * this same build when the source bytes have not changed. Omitted, every
+   * recovery validates and projects every bound source.
+   */
+  readonly canonicalProjectionEpoch?: string;
 }
 
 export interface BindExecutionAdmissionClientOptions {
@@ -180,6 +188,7 @@ export class ExecutionAdmissionKernel {
   readonly #now: () => Date;
   readonly #id: () => string;
   readonly #queueAgingMs: number;
+  readonly #canonicalProjectionEpoch: string | undefined;
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
   readonly #knownPaths = new Map<string, StateDatabasePaths>();
@@ -222,6 +231,7 @@ export class ExecutionAdmissionKernel {
       options.queueAgingMs,
       DEFAULT_QUEUE_AGING_MS,
     );
+    this.#canonicalProjectionEpoch = options.canonicalProjectionEpoch;
     this.#limits = normalizeLimits(
       options.limits ?? DEFAULT_ADMISSION_CONCURRENCY_LIMITS,
     );
@@ -266,10 +276,7 @@ export class ExecutionAdmissionKernel {
           now: this.#timestamp(),
           activeOwnerIds: new Set(),
         });
-        recoverExecutionAdmissionCanonicalJournals(
-          binding.driver,
-          binding.repository,
-        );
+        this.#recoverCanonicalJournals(binding);
         this.#hydrateQueued(binding);
         this.#publishNewJournal(binding);
         totals.databases += 1;
@@ -403,11 +410,11 @@ export class ExecutionAdmissionKernel {
   ): AdmissionAttempt {
     this.#assertOpen();
     const request = requestFor(binding, input, this.#now());
-    const attempt = binding.workspace.repository.enqueue(request, {
-      ownerId: this.#ownerId,
-      ownerPid: this.#ownerPid,
-      attached: true,
-    });
+    if (request.kind === "spawn") promoteOneShotRun(request.step.runId);
+    const attempt = withOneShotWriteScope(binding.workspace.paths.projectDir, request.step.runId,
+      () => binding.workspace.repository.enqueue(request, {
+        ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true,
+      }));
     this.#publishNewJournal(binding.workspace);
     return attempt;
   }
@@ -494,7 +501,8 @@ export class ExecutionAdmissionKernel {
     if (found === undefined) {
       throw new AdmissionDeniedError("reservation_not_found");
     }
-    const record = found.binding.repository.markDispatched(reservationId, {
+    const record = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => found.binding.repository.markDispatched(reservationId, {
       ...(evidence.timestamp !== undefined
         ? { dispatchedAt: evidence.timestamp }
         : {}),
@@ -505,7 +513,7 @@ export class ExecutionAdmissionKernel {
         ...(evidence.details ?? {}),
         boundary: evidence.boundary,
       },
-    });
+    }));
     this.#publishNewJournal(found.binding);
     if (record.status !== "running") {
       const error = new AdmissionDeniedError(
@@ -526,7 +534,8 @@ export class ExecutionAdmissionKernel {
     usage: AdmissionUsage,
   ): AdmissionReconcileResult {
     const found = this.#requireReservation(reservationId);
-    const reconciled = reconcileAdmissionAndRunTree(
+    const reconciled = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => reconcileAdmissionAndRunTree(
       found.binding.driver,
       found.binding.repository,
       {
@@ -534,7 +543,7 @@ export class ExecutionAdmissionKernel {
         input: { kind: "reported", usage },
         reconciledAt: this.#timestamp(),
       },
-    );
+    ));
     const result = reconciled.admission;
     this.#finishCapacity(reservationId);
     this.#publishNewJournal(found.binding);
@@ -789,6 +798,21 @@ export class ExecutionAdmissionKernel {
     });
   }
 
+  /** Read the final admission evidence without reclassifying legacy stop codes. */
+  getLatestJournalEventByRunId(runId: string): AdmissionJournalEvent | undefined {
+    this.#assertOpen();
+    return this.#withBindingsForRun(runId, (bindings) => {
+      let latest: AdmissionJournalEvent | undefined;
+      for (const binding of bindings) {
+        const event = binding.repository.getLatestJournalEvent(runId);
+        if (event !== undefined && (latest === undefined || event.timestamp > latest.timestamp)) {
+          latest = event;
+        }
+      }
+      return latest;
+    });
+  }
+
   cancelRun(
     runId: string,
     reason: string,
@@ -967,7 +991,8 @@ export class ExecutionAdmissionKernel {
       this.#byWorkspace.set(workspaceAlias, existing);
       return existing;
     }
-    const driver = openStateDatabasePaths(paths);
+    // Admission and recovery use state only; retain its eager FULL connection.
+    const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true });
     const binding: WorkspaceBinding = {
       workspaceId: paths.projectDir,
       paths,
@@ -1004,10 +1029,7 @@ export class ExecutionAdmissionKernel {
           now: this.#timestamp(),
           activeOwnerIds: new Set([this.#ownerId]),
         });
-        recoverExecutionAdmissionCanonicalJournals(
-          binding.driver,
-          binding.repository,
-        );
+        this.#recoverCanonicalJournals(binding);
         this.#hydrateQueued(binding);
         this.#publishNewJournal(binding);
       }
@@ -1017,6 +1039,16 @@ export class ExecutionAdmissionKernel {
       this.#unregisterBinding(binding);
       throw error;
     }
+  }
+
+  #recoverCanonicalJournals(binding: WorkspaceBinding): void {
+    recoverExecutionAdmissionCanonicalJournals(
+      binding.driver,
+      binding.repository,
+      this.#canonicalProjectionEpoch === undefined
+        ? {}
+        : { canonicalProjectionEpoch: this.#canonicalProjectionEpoch },
+    );
   }
 
   /** Reopen idle project databases only for a process-wide query or cancel. */
@@ -1178,13 +1210,11 @@ export class ExecutionAdmissionKernel {
       // but it is not a reservation commit and must not be labelled as one in
       // crash-injection evidence.
       hitM4DurabilityFailpoint("before_reservation_commit");
-      const result = entry.binding.repository.claim({
-        key: entry.key,
-        ownerId: this.#ownerId,
-        ownerPid: this.#ownerPid,
-        attached: true,
-        now: this.#timestamp(),
-      });
+      const result = withOneShotWriteScope(entry.binding.paths.projectDir, entry.record.request.step.runId,
+        () => entry.binding.repository.claim({
+          key: entry.key, ownerId: this.#ownerId, ownerPid: this.#ownerPid,
+          attached: true, now: this.#timestamp(),
+        }));
       if (result.kind === "claimed") {
         // The reservation is committed while no live lease or journal
         // subscriber has been notified yet. Restart must recover solely from
@@ -1686,6 +1716,7 @@ function requestFor(
     ...(input.approvalRequired !== undefined
       ? { approvalRequired: input.approvalRequired }
       : {}),
+    ...(input.costEstimated === true ? { costEstimated: true } : {}),
     ...(input.denialReason !== undefined
       ? { denialReason: input.denialReason }
       : {}),

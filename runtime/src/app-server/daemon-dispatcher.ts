@@ -1,3 +1,5 @@
+import { PrintInvocation, validatePrintInvokeParams } from "./print-invocation.js";
+import { promoteOneShotRun } from "../durability/one-shot-durability.js";
 import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } from "../routines/session-preparation.js";
 /**
  * JSON-RPC request dispatcher for the local AgenC daemon.
@@ -13,7 +15,8 @@ import type { PluginSettingsService } from "../plugins/settings-service.js";
 import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
-import { WhisperError, type WhisperService } from "../audio/whisper.js";
+import type { WhisperService } from "../audio/whisper.js";
+import { WhisperError } from "../audio/whisper-error.js";
 import { RemoteError, REMOTE_METHODS, type RemoteMethod } from "../remote/types.js";
 import type { RemoteAccessBoundary } from "../remote/access.js";
 import type { RemoteService } from "../remote/service.js";
@@ -34,6 +37,10 @@ import type { RoutinePermissionAuthority } from "../routines/types.js";
 import type { RoutineUpdatedEvent } from "../routines/types.js";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
 import { DaemonOperationTimeoutError } from "./operation-deadline.js";
+import {
+  StartupSessionRestoreAbandonedError,
+  type AgenCDaemonStartupRestoreGate,
+} from "./startup-session-restores.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -45,45 +52,39 @@ import {
   type AgenCDaemonSessionManager,
 } from "./session-lifecycle.js";
 import {
-  AgenCFuzzyFileSearchService,
   FuzzyFileSearchBoundaryError,
   MAX_FUZZY_QUERY_CODEPOINTS,
   MAX_FUZZY_RAW_ROOTS,
   MAX_FUZZY_RESULTS,
   MAX_FUZZY_FILE_ROOTS_UTF8_BYTES,
   MAX_FUZZY_FILE_ROOT_UTF8_BYTES,
-  type AgenCFuzzyFileSearch,
-} from "./fuzzy-file-search.js";
+} from "./fuzzy-file-search-boundary.js";
+import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
+import { createLazyFuzzyFileSearch } from "./lazy-fuzzy-file-search.js";
 import {
   FuzzyBoundaryError,
   validateFuzzyCandidate,
   validateFuzzyQuery,
-} from "../search/fuzzy-match.js";
+} from "../search/fuzzy-boundary.js";
 import {
   AgenCCommandExecService,
   type AgenCCommandExec,
 } from "./command-exec.js";
-import {
-  AgenCDaemonHealthService,
-  type AgenCHealthStateCounter,
-} from "./health.js";
+import type { AgenCHealthStateCounter } from "./health.js";
+import { createLazyDaemonHealth, type AgenCDaemonHealthHandlers } from "./lazy-health.js";
 import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
-import {
-  AgenCRealtimeRpcService,
-  type AgenCRealtimeRpcHandlers,
-} from "./realtime.js";
+import type { AgenCRealtimeRpcHandlers } from "./realtime.js";
+import { createLazyRealtimeRpcService } from "./lazy-realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
   daemonCausalRoutineHead,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
-import {
-  AgenCDaemonRunInspectionError,
-  type AgenCDaemonRunInspectionService,
-} from "./run-inspection.js";
+import { AgenCDaemonRunInspectionError } from "./run-inspection-error.js";
+import type { AgenCDaemonRunInspectionHandlers } from "./lazy-run-inspection.js";
 import {
   AgenCCsvJobReviewError,
   type AgenCCsvJobReviewService,
@@ -105,8 +106,12 @@ import {
 } from "./workspace-cwd.js";
 import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
+  AGENC_PRINT_INVOKE_CAPABILITY,
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
+  AGENC_RUN_START_LIGHT_MODE_CAPABILITY,
+  AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY,
   AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -128,6 +133,10 @@ import {
   type RunResultParams,
   type RunStatusParams,
   type RunCancelParams,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunStartParams,
   type RunStartResult,
   type CsvJobReviewListParams,
@@ -209,6 +218,7 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
+import { AgenCDaemonWorkflowControlError } from "./workflow/run-control-service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -217,7 +227,11 @@ import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
  * implementations.
  */
 export interface AgenCDaemonWorkflowStartService {
+  readonly supportsContinuation?: true;
   startRun(params: RunStartParams): Promise<RunStartResult>;
+  /** Advertised only when a durable control implementation is wired. */
+  pauseRun?(params: RunPauseParams): Promise<RunPauseResult>;
+  resumeRun?(params: RunResumeParams): Promise<RunResumeResult>;
   /**
    * Closes a workflow run's projection when run.cancel finds no live
    * pipeline for it. Optional: older wirings without it keep the previous
@@ -273,6 +287,7 @@ const THREAD_REALTIME_VOICES = [
 const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
+  "print.invoke": 30, "print.admit": 30, "print.ack": 30, "print.cancel": 30,
   "session.transcript.v2": 2,
   "session.artifact.read": 18,
   "session.mcp.status": 3,
@@ -306,6 +321,7 @@ export const COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC =
   "commandExec.start is disabled: daemon command execution has no session-bound run/step admission identity; use an ordinary admitted session tool until command execution admission is implemented";
 
 interface AgenCDaemonServerCapabilityInputs {
+  readonly printHome: string | undefined;
   readonly whisper: WhisperService | undefined;
   readonly agentManager: AgenCDaemonDispatcherOptions["agentManager"];
   readonly initializeAuthenticator: AgenCDaemonDispatcherOptions["initializeAuthenticator"];
@@ -316,14 +332,14 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
   readonly daemonIdentity: AgenCDaemonDispatcherOptions["daemonIdentity"];
-  readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health: AgenCDaemonHealthHandlers;
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly routines: RoutineService | undefined;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote: RemoteService | undefined;
-  readonly ownerTelegram: OwnerTelegramService | undefined;
+  readonly remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
   readonly pluginSettings: PluginSettingsService | undefined;
@@ -339,6 +355,10 @@ function buildServerCapabilities(
     ...Object.fromEntries(OWNER_TELEGRAM_METHODS.map((method) => [method, inputs.ownerTelegram !== undefined && inputs.initializeAuthenticator !== undefined])) as Record<OwnerTelegramMethod, boolean>,
     initialize: true,
     "request.cancel": true,
+    "print.invoke": inputs.printHome !== undefined,
+    "print.admit": inputs.printHome !== undefined,
+    "print.ack": inputs.printHome !== undefined,
+    "print.cancel": inputs.printHome !== undefined,
     "audio.whisper.status": inputs.whisper !== undefined,
     "audio.whisper.install": inputs.whisper !== undefined,
     "audio.whisper.transcribe": inputs.whisper !== undefined,
@@ -352,6 +372,8 @@ function buildServerCapabilities(
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
+    "run.pause": hasMethod(inputs.workflow, "pauseRun"),
+    "run.resume": hasMethod(inputs.workflow, "resumeRun"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
     "routine.capabilities": inputs.routines !== undefined,
     "routine.list": inputs.routines !== undefined,
@@ -493,10 +515,14 @@ function buildServerCapabilities(
   }
 
   return Object.freeze({
+    ...(inputs.printHome !== undefined ? { [AGENC_PRINT_INVOKE_CAPABILITY]: true } : {}),
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
     ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
+    ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
+    ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
+    ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -508,6 +534,8 @@ function hasMethod(target: object | undefined, key: PropertyKey): boolean {
 }
 
 export interface AgenCDaemonDispatcherOptions {
+  /** Canonical daemon home enabling resident print on authenticated Unix connections. */
+  readonly printHome?: string;
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
     | "approveTool"
@@ -580,6 +608,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "createSession"
     | "detachSession"
     | "listSessions"
+    | "getSession"
     | "terminateSession"
   >;
   readonly createMessageId?: () => string;
@@ -598,19 +627,16 @@ export interface AgenCDaemonDispatcherOptions {
       | { readonly shuttingDown: true; readonly instanceId: string }
       | Promise<{ readonly shuttingDown: true; readonly instanceId: string }>;
   };
-  readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly health?: AgenCDaemonHealthHandlers;
   readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly whisper?: WhisperService;
-  readonly runInspection?: Pick<
-    AgenCDaemonRunInspectionService,
-    "status" | "result" | "replay" | "evidence"
-  >;
+  readonly runInspection?: AgenCDaemonRunInspectionHandlers;
   /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
   readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly routines?: RoutineService;
   readonly routinePreparation?: RoutineSessionPreparation;
-  readonly remote?: RemoteService;
-  readonly ownerTelegram?: OwnerTelegramService;
+  readonly remote?: Pick<RemoteService, "handle" | "stop">;
+  readonly ownerTelegram?: Pick<OwnerTelegramService, "handle">;
   /** Workspace-scoped CSV unknown-outcome review service. */
   readonly csvJobReview?: AgenCCsvJobReviewService;
   /**
@@ -620,6 +646,11 @@ export interface AgenCDaemonDispatcherOptions {
   readonly projectTrust?: AgenCDaemonProjectTrustService;
   readonly pluginSettings?: PluginSettingsService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
+  /**
+   * Sessions open at the daemon's last shutdown that it still restores in
+   * the background. A request naming one waits for its restore to settle.
+   */
+  readonly startupRestores?: AgenCDaemonStartupRestoreGate;
   readonly now?: () => string;
 }
 
@@ -714,6 +745,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "createSession"
         | "detachSession"
         | "listSessions"
+        | "getSession"
         | "terminateSession"
       >
     | undefined;
@@ -735,25 +767,30 @@ export class AgenCDaemonJsonRpcDispatcher {
             }>;
       }
     | undefined;
-  readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly #health: AgenCDaemonHealthHandlers;
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #whisper: WhisperService | undefined;
   readonly #runInspection:
-    | Pick<
-        AgenCDaemonRunInspectionService,
-        "status" | "result" | "replay" | "evidence"
-      >
+    | AgenCDaemonRunInspectionHandlers
     | undefined;
   readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #routines: RoutineService | undefined;
   readonly #routinePreparation: RoutineSessionPreparation | undefined;
-  readonly #remote: RemoteService | undefined;
-  readonly #ownerTelegram: OwnerTelegramService | undefined;
+  readonly #remote: Pick<RemoteService, "handle" | "stop"> | undefined;
+  readonly #ownerTelegram: Pick<OwnerTelegramService, "handle"> | undefined;
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
   readonly #pluginSettings: PluginSettingsService | undefined;
+  readonly #startupRestores: AgenCDaemonStartupRestoreGate | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
+  readonly #printHome: string | undefined;
+  readonly #prints = new Map<AgenCDaemonJsonRpcConnection, PrintInvocation>();
+  #printsClosed = false;
+  readonly #printAgents = new Map<AgenCDaemonJsonRpcConnection, Set<{
+    agentId?: string;
+    stop(): Promise<void>;
+  }>>();
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -765,7 +802,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${randomUUID()}`);
     this.#fuzzyFileSearch =
-      options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+      options.fuzzyFileSearch ?? createLazyFuzzyFileSearch();
     this.#ownsFuzzyFileSearch = options.fuzzyFileSearch === undefined;
     this.#fuzzyAllowedRoots = Object.freeze([
       ...(options.fuzzyAllowedRoots ?? []),
@@ -776,10 +813,10 @@ export class AgenCDaemonJsonRpcDispatcher {
       TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
     this.#health =
       options.health ??
-      new AgenCDaemonHealthService({
+      createLazyDaemonHealth({
         stateCounter: options.healthStateCounter,
       });
-    this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
+    this.#realtime = options.realtime ?? createLazyRealtimeRpcService();
     this.#whisper = options.whisper;
     this.#runInspection = options.runInspection;
     this.#workflow = options.workflow;
@@ -790,12 +827,15 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
     this.#pluginSettings = options.pluginSettings;
+    this.#startupRestores = options.startupRestores;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
         : undefined;
     this.#daemonControl = options.daemonControl;
+    this.#printHome = options.printHome;
     this.#serverCapabilities = buildServerCapabilities({
+      printHome: options.printHome,
       agentManager: this.#agentManager,
       authHandlers: this.#authHandlers,
       allowUnadmittedCommandExecStart: this.#allowUnadmittedCommandExecStart,
@@ -828,6 +868,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   }
 
   async close(): Promise<void> {
+    this.#printsClosed = true;
+    await Promise.all([
+      ...[...this.#prints.values()].map(invocation => invocation.close()),
+      ...[...this.#printAgents.keys()].map(connection => connection.close()),
+    ]);
+    this.#prints.clear();
     for (const unsubscribe of this.#routineSubscriptions.values()) unsubscribe();
     this.#routineSubscriptions.clear();
     if (this.#ownsFuzzyFileSearch) await this.#fuzzyFileSearch.close?.();
@@ -847,6 +893,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       connection.cancelAllInFlightRequests("connection closed");
       // One failed detach must not strand the other clients or command jobs.
       const cleanup = await Promise.allSettled([
+        this.#prints.get(connection)?.close(),
+        ...[...(this.#printAgents.get(connection) ?? [])].map(owner => owner.stop()),
         ...connection.trackedClientIds.map(async (clientId) => {
           try {
             await this.#clientMultiplexer?.removeClient(clientId, connection.cancellationScope);
@@ -858,6 +906,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         }),
         this.#commandExec.closeConnection(connection.cancellationScope),
       ]);
+      this.#prints.delete(connection);
+      this.#printAgents.delete(connection);
       const failures = cleanup.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason), "daemon connection cleanup failed");
@@ -883,6 +933,9 @@ export class AgenCDaemonJsonRpcDispatcher {
     if (connection.remoteAccess) {
       try {
         const params = objectParams(message.params);
+        // The boundary reads the sessions a request names before any handler
+        // runs, so a session still restoring must be restored first.
+        await this.#waitForStartupRestores(message.method, params, INERT_ABORT_SIGNAL);
         await connection.remoteAccess.authorize(message.method, params);
         connection.assertOpen();
         if (message.method !== "initialize" && !connection.initialized) throw new RemoteError("CONNECTION_NOT_INITIALIZED");
@@ -909,16 +962,28 @@ export class AgenCDaemonJsonRpcDispatcher {
           });
         }
         try {
+          const availableCapabilities = connection.localUnix ? this.#serverCapabilities : {
+            ...this.#serverCapabilities,
+            [AGENC_PRINT_INVOKE_CAPABILITY]: false,
+            [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: {
+              ...this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
+              "print.invoke": false, "print.admit": false, "print.ack": false, "print.cancel": false,
+            },
+          };
           const initializeParams = validateInitializeParams(connection.remoteAccess ? { protocol: params.protocol, capabilities: {} } : params);
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY)),
-              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
+              ...Object.fromEntries(Object.entries(availableCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
+              [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(availableCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
-              ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
+              ...(availableCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
                 ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
-            } : this.#serverCapabilities,
+              ...(availableCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
+              ...(availableCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
+            } : availableCapabilities,
           );
           if (!negotiated.supported) {
             return errorResponse(id, -32000, "Unsupported protocol version", {
@@ -975,10 +1040,12 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if ((REMOTE_METHODS as readonly string[]).includes(method)) {
         if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
       }
       if ((OWNER_TELEGRAM_METHODS as readonly string[]).includes(method)) {
         if (!this.#ownerTelegram || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#ownerTelegram.handle(method as OwnerTelegramMethod, params));
       }
 
@@ -989,6 +1056,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         ][method] !== true
       ) {
         return methodNotImplementedResponse(id, method);
+      }
+
+      if (method.startsWith("print.")) {
+        if (this.#printHome === undefined || !connection.localUnix || connection.remoteAccess !== undefined ||
+            connection.initializeState?.clientCapabilities[AGENC_PRINT_INVOKE_CAPABILITY] !== true ||
+            connection.rawSendNotification === undefined) return methodNotImplementedResponse(id, method);
+        return await this.#dispatchPrint(connection, id, method, params);
       }
 
       if (method === "request.cancel") {
@@ -1065,6 +1139,106 @@ export class AgenCDaemonJsonRpcDispatcher {
     });
   }
 
+  #forgetPrintAgent(agentId: string): void {
+    for (const [connection, owners] of this.#printAgents) {
+      for (const owner of owners) if (owner.agentId === agentId) owners.delete(owner);
+      if (owners.size === 0) this.#printAgents.delete(connection);
+    }
+  }
+
+  async #createConnectionAgent(
+    connection: AgenCDaemonJsonRpcConnection,
+    params: AgentCreateParams,
+    signal: AbortSignal,
+  ) {
+    // Resident print already owns its invocation. Ordinary fresh print must
+    // also remain owned after agent.create's request waiter has completed.
+    // Interactive, resumed and detached agent APIs keep their existing lifetime.
+    const owned = !connection.printUsed && params.resumeSessionId === undefined &&
+      params.resumeRolloutPath === undefined && params.runtimeOptions?.nonInteractive === true &&
+      params.metadata?.source === "agenc.prompt" && params.metadata?.mode === "one-shot";
+    if (!owned) return this.#agentManager.createAgent(params, { signal });
+    connection.assertOpen();
+    const created = this.#agentManager.createAgent(params, { signal });
+    let stopping: Promise<void> | undefined;
+    const owners = this.#printAgents.get(connection) ?? new Set();
+    const owner: { agentId?: string; stop(): Promise<void> } = {
+      stop: () => stopping ??= created.then(async result => {
+        await this.#agentManager.stopAgent({ agentId: result.agentId, reason: "one_shot_cancelled" });
+      }, () => {}).finally(() => {
+        owners.delete(owner);
+        if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      }),
+    };
+    owners.add(owner);
+    this.#printAgents.set(connection, owners);
+    try {
+      const result = await created;
+      owner.agentId = result.agentId;
+      // A non-cooperative or already-finishing create can resolve after close.
+      // Join its normal stop, never discard a late-created agent.
+      if (connection.closed || signal.aborted) {
+        await owner.stop();
+        throw new AgenCDaemonConnectionClosedError();
+      }
+      return result;
+    } catch (error) {
+      owners.delete(owner);
+      if (owners.size === 0 && this.#printAgents.get(connection) === owners) {
+          this.#printAgents.delete(connection);
+        }
+      throw error;
+    }
+  }
+
+  async #dispatchPrint(connection: AgenCDaemonJsonRpcConnection, id: RequestId, method: AgenCDaemonKnownMethod, params: JsonObject): Promise<AgenCDaemonResponse> {
+    if (method === "print.invoke") {
+      if (this.#printsClosed) throw invalidParams("daemon print service is closed");
+      if (connection.printUsed || connection.trackedClientIds.length > 0) throw invalidParams("print invocation requires a fresh connection");
+      const request = validatePrintInvokeParams(params);
+      connection.printUsed = true;
+      const invocation = new PrintInvocation({
+        home: this.#printHome!,
+        send: message => connection.rawSendNotification!(message),
+        request: async (nestedMethod, nestedParams, signal = INERT_ABORT_SIGNAL) => {
+          // Calls are local but keep canonical validators, restore gates,
+          // attachment ownership and this exact authenticated connection.
+          const allowed = ["agent.create", "agent.attach", "agent.stop", "session.snapshot", "session.goal", "session.cancelTurn", "tool.deny", "message.stream"];
+          if (!allowed.includes(nestedMethod)) throw invalidParams("unsupported resident print operation");
+          if (nestedMethod !== "agent.stop") { connection.assertOpen(); signal.throwIfAborted(); }
+          if (connection.initializeState?.serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY][nestedMethod] !== true) return methodNotImplementedResponse(id, nestedMethod);
+          try {
+            // Await the actual operation, including cancelled create cleanup;
+            // do not race and discard a late-created owned agent.
+            return await this.#dispatchKnownMethod(connection, `print-${request.invocationId}-${randomUUID()}`, nestedMethod, nestedParams, signal, { jsonrpc: "2.0", method: nestedMethod, params: nestedParams });
+          } catch (error) { return mapDispatchError(id, error); }
+        },
+      }, request);
+      this.#prints.set(connection, invocation);
+      connection.printEventSink = event => invocation.event(event);
+      try { return successResponse(id, await invocation.run()); }
+      finally { connection.printEventSink = undefined; this.#prints.delete(connection); }
+    }
+    const invocation = this.#prints.get(connection);
+    if (invocation === undefined || params.invocationId !== invocation.invocationId) throw invalidParams("unknown print invocation");
+    if (method === "print.admit") {
+      if (Object.keys(params).some(key => !["invocationId", "challenge"].includes(key)) || typeof params.challenge !== "string") throw invalidParams("invalid print admission");
+      invocation.admit(params.challenge);
+    } else if (method === "print.ack") {
+      if (Object.keys(params).some(key => !["invocationId", "sequence"].includes(key)) || !Number.isSafeInteger(params.sequence)) throw invalidParams("invalid print acknowledgment");
+      invocation.acknowledge(params.sequence as number);
+    } else if (method === "print.cancel") {
+      if (Object.keys(params).some(key => !["invocationId", "reason", "signal", "stream"].includes(key)) ||
+          !["signal", "broken_pipe"].includes(params.reason as string) ||
+          (params.reason === "signal" && !["SIGINT", "SIGTERM", "SIGHUP"].includes(params.signal as string)) ||
+          (params.stream !== undefined && params.stream !== "stdout" && params.stream !== "stderr")) throw invalidParams("invalid print cancellation");
+      invocation.cancel({ ...params, exitCode: params.reason === "broken_pipe" || params.signal === "SIGTERM" ? 0 : 130 });
+    } else return methodNotImplementedResponse(id, method);
+    return successResponse(id, { ok: true });
+  }
+
   /**
    * Whether this connection negotiated the wider routine contract. Without it
    * a connection keeps the original one exactly: two modes, no authority, and
@@ -1096,6 +1270,23 @@ export class AgenCDaemonJsonRpcDispatcher {
     return takeRoutinePermissionAuthority(params);
   }
 
+  /**
+   * Wait until every session this request names that the daemon is still
+   * restoring from its last shutdown has settled. The request then runs as it
+   * would have once startup finished. Most requests name none and do not
+   * wait at all.
+   */
+  async #waitForStartupRestores(
+    method: string,
+    params: JsonObject,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring === undefined) return;
+    await restoring;
+    signal.throwIfAborted();
+  }
+
   async #dispatchKnownMethod(
     connection: AgenCDaemonJsonRpcConnection,
     id: RequestId,
@@ -1104,6 +1295,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
+    // Every method that takes a session, agent, run or thread id reaches its
+    // handler through here. Waiting before the switch covers all of them,
+    // including ones added later, and the handler then runs unchanged.
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring !== undefined) {
+      await restoring;
+      signal.throwIfAborted();
+    }
     switch (method) {
       case "audio.whisper.status":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
@@ -1168,10 +1367,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "agent.create":
         return successResponse(
           id,
-          await this.#agentManager.createAgent(
-            validateAgentCreateParams(params),
-            { signal },
-          ),
+          await this.#createConnectionAgent(connection, validateAgentCreateParams(params), signal),
         );
       case "agent.list":
         return successResponse(
@@ -1180,11 +1376,12 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "agent.attach":
         return this.#attachAgent(id, connection, params);
-      case "agent.stop":
-        return successResponse(
-          id,
-          await this.#agentManager.stopAgent(validateAgentStopParams(params)),
-        );
+      case "agent.stop": {
+        const request = validateAgentStopParams(params);
+        const result = await this.#agentManager.stopAgent(request);
+        this.#forgetPrintAgent(request.agentId);
+        return successResponse(id, result);
+      }
       case "agent.logs":
         return successResponse(
           id,
@@ -1198,7 +1395,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.status(validateRunStatusParams(params)),
+          await this.#runInspection.status(validateRunStatusParams(params), signal),
         );
       case "run.result":
         if (this.#runInspection === undefined) {
@@ -1206,7 +1403,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.result(validateRunResultParams(params)),
+          await this.#runInspection.result(validateRunResultParams(params), signal),
         );
       case "run.replay":
         if (this.#runInspection === undefined) {
@@ -1214,7 +1411,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.replay(validateRunReplayParams(params)),
+          await this.#runInspection.replay(validateRunReplayParams(params), signal),
         );
       case "run.evidence":
         if (this.#runInspection === undefined) {
@@ -1222,7 +1419,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         }
         return successResponse(
           id,
-          await this.#runInspection.evidence(validateRunEvidenceParams(params)),
+          await this.#runInspection.evidence(validateRunEvidenceParams(params), signal),
         );
       case "run.cancel": {
         const cancelParams = validateRunCancelParams(params);
@@ -1236,14 +1433,29 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
         return successResponse(id, result);
       }
-      case "run.start":
+      case "run.pause":
+        if (this.#workflow?.pauseRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.pauseRun(validateRunPauseParams(params)));
+      case "run.resume":
+        if (this.#workflow?.resumeRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.resumeRun(validateRunResumeParams(params)));
+      case "run.start": {
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);
         }
+        const startParams = validateRunStartParams(params);
+        if (startParams.continuation !== undefined && this.#workflow.supportsContinuation !== true) {
+          throw invalidParams("This daemon does not support completed Goal continuation.");
+        }
         return successResponse(
           id,
-          await this.#workflow.startRun(validateRunStartParams(params)),
+          await this.#workflow.startRun(startParams),
         );
+      }
       case "csvJob.review.list":
         if (this.#csvJobReview === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -1746,9 +1958,9 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "health.ping":
-        return successResponse(id, this.#health.ping());
+        return successResponse(id, await this.#health.ping());
       case "health.ready":
-        return successResponse(id, this.#health.ready());
+        return successResponse(id, await this.#health.ready());
       case "health.stats":
         return successResponse(id, await this.#health.stats());
       case "daemon.reload":
@@ -1934,6 +2146,8 @@ export class AgenCDaemonJsonRpcDispatcher {
       return methodNotImplementedResponse(id, "session.attach");
     }
     const attachParams = validateSessionAttachParams(params);
+    const attachedSession = await this.#sessionManager.getSession(attachParams.sessionId);
+    if (attachedSession !== null) promoteOneShotRun(attachedSession.agentId);
     const multiplexedResult = await this.#attachTrackedClientToSession(
       connection,
       attachParams.clientId,
@@ -2237,6 +2451,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...displayUserMessageFromMetadata(
             "message.stream",
             streamParams.metadata,
@@ -2335,6 +2550,8 @@ export class AgenCDaemonJsonRpcDispatcher {
 }
 
 export interface AgenCDaemonJsonRpcConnectionOptions {
+  /** Set only by the authenticated Unix server; never read from wire params. */
+  readonly localUnix?: boolean;
   /** In-process browser authority. No JSON-RPC field can populate this. */
   readonly remoteAccess?: RemoteAccessBoundary;
   /** Remote peer identity used in the relay's outbound JSON envelope. */
@@ -2346,6 +2563,9 @@ export interface AgenCDaemonJsonRpcConnectionOptions {
 let nextConnectionId = 0;
 
 export class AgenCDaemonJsonRpcConnection {
+  readonly localUnix: boolean;
+  printUsed = false;
+  printEventSink: ((event: JsonObject) => Promise<void>) | undefined;
   readonly remoteAccess: RemoteAccessBoundary | undefined;
   readonly remoteCid: string | undefined;
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
@@ -2366,6 +2586,7 @@ export class AgenCDaemonJsonRpcConnection {
     options: AgenCDaemonJsonRpcConnectionOptions = {},
   ) {
     this.#dispatcher = dispatcher;
+    this.localUnix = options.localUnix === true;
     this.remoteAccess = options.remoteAccess;
     this.remoteCid = options.remoteCid;
     this.#sendNotification = options.sendNotification;
@@ -2431,6 +2652,10 @@ export class AgenCDaemonJsonRpcConnection {
 
   get sendNotification():
     ((message: JsonObject) => void | Promise<void>) | undefined {
+    return this.printEventSink ?? this.#sendNotification;
+  }
+
+  get rawSendNotification(): ((message: JsonObject) => void | Promise<void>) | undefined {
     return this.#sendNotification;
   }
 
@@ -2538,6 +2763,9 @@ export class AgenCDaemonJsonRpcConnection {
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     if (this.#closed) return mapDispatchError(requestIdFromMessage(message), new AgenCDaemonConnectionClosedError());
+    if (this.printUsed && !["print.invoke", "print.admit", "print.ack", "print.cancel", "health.ping"].includes(String(message.method))) {
+      return errorResponse(requestIdFromMessage(message), -32600, "print connection is reserved for its invocation");
+    }
     const admission = this.#limiter.tryStart(message);
     if (!admission.admitted) {
       return admission.response!;
@@ -2709,6 +2937,7 @@ function negotiateInitializeProtocol(
   const negotiatedCapabilities = capabilitiesChanged
     ? ({
         ...serverCapabilities,
+        ...(clientProtocol.minor < 30 ? { [AGENC_PRINT_INVOKE_CAPABILITY]: false } : {}),
         [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
       } satisfies AgenCDaemonServerCapabilities)
     : serverCapabilities;
@@ -2960,23 +3189,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       );
     }
   }
-  let envOverrides: Record<string, string>;
-  if (validated.envOverrides !== undefined) {
-    validateStringRecord(
-      validated.envOverrides as JsonObject,
-      "agent.create",
-      "envOverrides",
-    );
-  }
-  try {
-    envOverrides = normalizeDaemonClientEnvOverrides(
-      validated.envOverrides as Record<string, string> | undefined,
-    );
-  } catch (error) {
-    throw invalidParams(
-      `agent.create param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  const envOverrides = validateClientEnvOverrides(validated.envOverrides, "agent.create");
   if (validated.runtimeOptions === undefined) {
     throw invalidParams("agent.create requires runtimeOptions");
   }
@@ -3018,6 +3231,7 @@ function validateAgentAttachParams(params: JsonObject): AgentAttachParams {
   const validated = validateObjectShape(params, {
     methodName: "agent.attach",
     stringFields: ["agentId", "clientId"],
+    booleanFields: ["oneShotOutput"],
   });
   if (
     typeof validated.agentId !== "string" ||
@@ -3046,6 +3260,64 @@ function validateRunCancelParams(params: JsonObject): RunCancelParams {
   return validated as RunCancelParams;
 }
 
+function validateClientEnvOverrides(value: unknown, methodName: string): Record<string, string> {
+  if (value !== undefined) {
+    validateStringRecord(
+      value as JsonObject,
+      methodName,
+      "envOverrides",
+    );
+  }
+  try {
+    return normalizeDaemonClientEnvOverrides(
+      value as Record<string, string> | undefined,
+    );
+  } catch (error) {
+    throw invalidParams(
+      `${methodName} param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function validateWorkflowControlId(
+  params: JsonObject,
+  methodName: "run.pause" | "run.resume",
+  field: "runId" | "requestId" | "suspensionId",
+  maxLength: number,
+): void {
+  const value = params[field];
+  if (typeof value !== "string" || value.length > maxLength ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:#-]*$/.test(value)) {
+    throw invalidParams(`${methodName} param '${field}' must be a 1..${maxLength} character identifier`);
+  }
+}
+
+function validateRunPauseParams(params: JsonObject): RunPauseParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.pause",
+    stringFields: ["runId", "requestId"],
+  });
+  validateWorkflowControlId(validated, "run.pause", "runId", 256);
+  validateWorkflowControlId(validated, "run.pause", "requestId", 128);
+  return validated as RunPauseParams;
+}
+
+function validateRunResumeParams(params: JsonObject): RunResumeParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.resume",
+    stringFields: ["runId", "suspensionId"],
+    objectFields: ["envOverrides"],
+  });
+  validateWorkflowControlId(validated, "run.resume", "runId", 256);
+  validateWorkflowControlId(validated, "run.resume", "suspensionId", 512);
+  return {
+    ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.resume") }
+      : {}),
+  } as RunResumeParams;
+}
+
 function validateRunStartParams(params: JsonObject): RunStartParams {
   const validated = validateObjectShape(params, {
     methodName: "run.start",
@@ -3059,10 +3331,24 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
       "permissionMode",
     ],
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
+    booleanFields: ["lightMode"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
+    objectFields: ["envOverrides", "continuation"],
   });
   validateRequiredString(validated, "run.start", "goal");
+  if (validated.continuation !== undefined) {
+    const continuation = validated.continuation as JsonObject;
+    validateObjectShape(continuation, { methodName: "run.start.continuation", stringFields: ["sourceRunId", "requestId"] });
+    validateRequiredString(continuation, "run.start.continuation", "sourceRunId");
+    if (typeof continuation.sourceRunId !== "string" || continuation.sourceRunId.length > 256
+      || typeof continuation.requestId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(continuation.requestId)) {
+      throw invalidParams("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (validated.maxCostUsd === undefined || typeof validated.deadlineAt !== "string" || !Number.isFinite(Date.parse(validated.deadlineAt))) {
+      throw invalidParams("Continue requires an explicit additional cost limit and deadline.");
+    }
+  }
   let cwd: string | undefined;
   if (validated.cwd !== undefined) {
     // Same DAE-02 discipline as agent.create/session.create: an absolute,
@@ -3139,6 +3425,9 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
   }
   return {
     ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.start") }
+      : {}),
     ...(cwd !== undefined ? { cwd } : {}),
   } as RunStartParams;
 }
@@ -3536,6 +3825,7 @@ function validateSessionResolveToolCallParams(
       "attestation",
       "reviewer",
     ],
+    objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
   const hasEvidenceFields = [
@@ -3545,6 +3835,11 @@ function validateSessionResolveToolCallParams(
     "attestation",
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
+    if (Object.prototype.hasOwnProperty.call(validated, "attempt")) {
+      throw invalidParams(
+        "session.resolveToolCall attempt requires a disposition with evidence or an operator attestation",
+      );
+    }
     if (validated.toolCallId !== undefined) {
       validateRequiredString(
         validated,
@@ -3558,6 +3853,7 @@ function validateSessionResolveToolCallParams(
     return validated as SessionResolveToolCallLegacyParams;
   }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+  validateSessionResolveToolCallAttempt(validated);
   const attesting = Object.prototype.hasOwnProperty.call(
     validated,
     "attestation",
@@ -3605,6 +3901,32 @@ function validateSessionResolveToolCallParams(
     );
   }
   return validated as SessionResolveToolCallEvidenceParams;
+}
+
+function validateSessionResolveToolCallAttempt(validated: JsonObject): void {
+  if (!Object.prototype.hasOwnProperty.call(validated, "attempt")) return;
+  const attempt = validated.attempt;
+  if (!isPlainJsonObject(attempt)) {
+    throw invalidParams("session.resolveToolCall attempt must be an object");
+  }
+  validateObjectShape(attempt, {
+    methodName: "session.resolveToolCall.attempt",
+    stringFields: ["runId", "stepId", "unknownEventId"],
+    numberFields: ["unknownSequence"],
+  });
+  for (const field of ["runId", "stepId", "unknownEventId"] as const) {
+    validateRequiredString(attempt, "session.resolveToolCall.attempt", field);
+  }
+  const sequence = attempt.unknownSequence;
+  if (
+    typeof sequence !== "number" ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0
+  ) {
+    throw invalidParams(
+      "session.resolveToolCall attempt.unknownSequence must be a positive integer",
+    );
+  }
 }
 
 function validateSessionMcpAddServerParams(
@@ -4144,13 +4466,23 @@ function validateSessionApplyConfigParams(
   const validated = validateObjectShape(params, {
     methodName: "session.applyConfig",
     stringFields: ["sessionId", "profile", "reasoningEffort"],
-    valueFields: ["reload"],
+    valueFields: ["reload", "modelVerbosity"],
   });
   validateRequiredString(validated, "session.applyConfig", "sessionId");
   if (validated.reasoningEffort !== undefined &&
     (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'none'].includes(String(validated.reasoningEffort)) ||
       validated.profile !== undefined || validated.reload !== undefined)) {
     throw invalidParams("session.applyConfig reasoningEffort must be a native effort and cannot be combined with reload or profile");
+  }
+  if (validated.modelVerbosity !== undefined &&
+    (validated.modelVerbosity !== null &&
+      (typeof validated.modelVerbosity !== "string" ||
+        !["low", "medium", "high"].includes(validated.modelVerbosity)))) {
+    throw invalidParams("session.applyConfig modelVerbosity must be low, medium, high, or null");
+  }
+  if (validated.modelVerbosity !== undefined &&
+    (validated.profile !== undefined || validated.reload !== undefined)) {
+    throw invalidParams("session.applyConfig modelVerbosity cannot be combined with reload or profile");
   }
   if (validated.reload !== undefined && typeof validated.reload !== "boolean") {
     throw invalidParams("session.applyConfig param 'reload' must be a boolean");
@@ -4178,7 +4510,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
     objectFields: ["metadata"],
-    valueFields: ["content"],
+    valueFields: ["content", "exactOutput"],
   });
   if (
     typeof validated.sessionId !== "string" ||
@@ -4189,6 +4521,9 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   validateMessageContent("message.stream", "content", validated.content);
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
+  }
+  if (validated.exactOutput !== undefined && typeof validated.exactOutput !== "boolean") {
+    throw invalidParams("message.stream param exactOutput must be a boolean");
   }
   return validated as MessageStreamParams;
 }
@@ -4917,6 +5252,10 @@ function mapDispatchError(
   if (error instanceof AgenCDaemonConnectionClosedError) {
     return errorResponse(id, -32000, error.message, { code: "CONNECTION_CLOSED" });
   }
+  // The answer a request gets when it arrives during shutdown.
+  if (error instanceof StartupSessionRestoreAbandonedError) {
+    return errorResponse(id, -32000, error.message);
+  }
   if (error instanceof WhisperError) return errorResponse(id, error.code === "WHISPER_INVALID_ARGUMENT" ? -32602 : -32000, error.message, { code: error.code });
   if (error instanceof RemoteError) return errorResponse(id, -32000, error.code, { code: error.code });
   if (error instanceof RoutineError) return errorResponse(id, -32602, error.message, { code: error.code });
@@ -4948,6 +5287,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonWorkflowControlError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCCsvJobReviewError) {

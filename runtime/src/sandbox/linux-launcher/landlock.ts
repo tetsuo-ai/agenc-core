@@ -5,7 +5,7 @@ import { SECCOMP_STDIN_FD } from "./config.js";
 import {
   networkPolicyEnabled,
   type NetworkSandboxPolicy,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 
 const BPF_LD = 0x00;
 const BPF_W = 0x00;

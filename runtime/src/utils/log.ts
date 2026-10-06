@@ -16,7 +16,7 @@ import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './displayTags.js'
 import { toError } from './errors.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import { jsonParse } from './slowOperations.js'
-import { getSelectedProviderName } from './model/providers.js'
+import { getSelectedProviderName } from './model/provider-selection.js'
 
 /**
  * Gets the display title for a log/session with fallback logic.

@@ -41,7 +41,7 @@ async function loadStyleFile(
 ): Promise<PluginOutputStyle | null> {
   if (loadedPaths.has(filePath)) return null;
   loadedPaths.add(filePath);
-  const file = await readMarkdownFile(filePath, baseDir);
+  const file = await readMarkdownFile(filePath, baseDir, plugin.root);
   if (!file) return null;
   const baseName = coerceString(file.frontmatter.name) ?? markdownStem(filePath);
   const name = pluginScopedIdentifier(

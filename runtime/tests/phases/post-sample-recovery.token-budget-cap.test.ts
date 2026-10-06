@@ -68,6 +68,26 @@ describe("token-budget continuation re-entry cap", () => {
     expect(state.transition).toEqual({ reason: "token_budget_continuation" });
   });
 
+  // Both output-cap retry counters share one limit (max-output-tokens.ts);
+  // the other continuation gates reset both, and so must this one.
+  test("resets both output-cap retry counters", async () => {
+    const ctx = mkCtx();
+    const { session } = mkSession();
+    const state = buildInitialTurnState(ctx, {
+      role: "user",
+      content: "spend 500k tokens",
+    });
+    state.maxOutputTokensRecoveryCount = 1;
+    state.reasoningOnlyRecoveryCount = 2;
+
+    pendBudgetStop(state, "keep working");
+    await applyPendingBudgetContinuation(state, ctx, session);
+
+    expect(state.transition).toEqual({ reason: "token_budget_continuation" });
+    expect(state.maxOutputTokensRecoveryCount).toBe(0);
+    expect(state.reasoningOnlyRecoveryCount).toBeUndefined();
+  });
+
   test("no-op when there is no pending budget stop decision", async () => {
     const ctx = mkCtx();
     const { session } = mkSession();

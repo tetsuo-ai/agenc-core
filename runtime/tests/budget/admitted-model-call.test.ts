@@ -1,16 +1,15 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
-import type {
-  AdmissionAcquireInput,
-  ExecutionAdmissionClient,
-} from "../../src/budget/admission-client.js";
+import type { AdmissionAcquireInput } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { createAllowAdmissionHarness } from "./admission-test-harness.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, markLLMPreGenerationRejection } from "../../src/llm/errors.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
+import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type {
@@ -48,73 +47,17 @@ function harness(options: {
   readonly authoritative?: boolean;
   readonly supportsMaxOutputTokens?: boolean;
 }) {
-  const leaseController = new AbortController();
-  const reconcile = vi.fn(() => ({
-    applied: true as const,
-    outcome: "reconciled" as const,
-  }));
-  const holdUnknown = vi.fn();
-  const cancelRun = vi.fn();
-  const acknowledgeCompletion = vi.fn();
-  const voidReservation = vi.fn();
-  const recordFallback = vi.fn();
-  const acquire = vi.fn(
-    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => {
-      if (input.denialReason !== undefined) {
-        throw new AdmissionDeniedError(input.denialReason);
-      }
-      return {
-        decision: "allow",
-        reservation: {
-          reservationId: "reservation-1",
-          step: { runId: "run-1", stepId: input.stepId },
-          reservedCostUsd: input.maxCostUsd ?? 0,
-          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-          reservedAt: "2026-07-18T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-1", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-1",
-          parentScopeId: "session-1",
-          autonomous: false,
-        },
-        signal: leaseController.signal,
-      };
-    },
-  );
-  const admission = {
-    scope: {
-      runId: "run-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-1",
-      autonomous: false,
-      ...(options.maxCostUsd !== undefined
-        ? { maxCostUsd: options.maxCostUsd }
-        : {}),
-      ...(options.maxTokens !== undefined
-        ? { maxTokens: options.maxTokens }
-        : {}),
-      ...(options.hasHardCostCap === true ? { hasHardCostCap: true } : {}),
-      ...(options.hasHardTokenCap === true ? { hasHardTokenCap: true } : {}),
-    },
-    acquire,
-    markDispatched: vi.fn(),
-    reconcile,
-    holdUnknown,
-    cancelRun,
-    void: voidReservation,
+  const {
     acknowledgeCompletion,
+    acquire,
+    admission,
+    cancelRun,
+    holdUnknown,
+    leaseController,
     recordFallback,
-    forSession: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  } as unknown as ExecutionAdmissionClient;
+    reconcile,
+    voidReservation,
+  } = createAllowAdmissionHarness({ scope: options });
   const abortTerminal = vi.fn();
   const session = {
     conversationId: "session-1",
@@ -166,6 +109,56 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
+    const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
+    let chunks = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).includes(":countTokens")) return Response.json({ totalTokens: 100 });
+      if (failure === "before-headers") throw new TypeError("fetch failed");
+      if (failure === "http-503") return new Response("unavailable", { status: 503 });
+      let sent = false;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (failure === "after-interim-usage" && !sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":1}}\n\n',
+            ));
+          } else {
+            controller.error(new Error("connection lost"));
+          }
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = new GeminiProvider({ model: "gemini-3.8-flash", fetchImpl,
+      endpointPlan: createGeminiEndpointPlan(),
+      credentialPlan: { kind: "api-key", credential: "test-only", source: "factory" },
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await expect(runAdmittedModelCall({ session: state.session, provider, messages,
+      options: { maxOutputTokens: 200 }, stepId: `ambiguous:${failure}`, model: "gemini-3.8-flash", providerName: "gemini",
+      invoke: options => provider.chatStream(messages, () => { chunks++; }, options),
+    })).rejects.toBeInstanceOf(Error);
+    if (failure === "after-interim-usage") expect(chunks).toBeGreaterThan(0);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls.filter(([url]) => !String(url).includes(":countTokens"))).toHaveLength(1);
+  });
+  test.each(["matched", "unmarked", "other-provider"] as const)("refunds only adapter-certified rejection for this provider: %s", async (proof) => {
+    const state = harness({});
+    const error = new LLMRateLimitError("grok");
+    if (proof !== "unmarked") markLLMPreGenerationRejection(error, proof === "matched" ? "grok" : "gemini");
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => { throw error; })).rejects.toBe(error);
+    if (proof === "matched") {
+      expect(state.reconcile).toHaveBeenCalledWith("reservation-1", { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+    } else {
+      expect(state.reconcile).not.toHaveBeenCalled();
+      expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    }
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
   test("counts Ollama's pinned text protocol before acquiring the actual wire lease", async () => {
     const state = harness({ maxTokens: 4_096, hasHardTokenCap: true });
     const tools = [{ type: "function" as const, function: { name: "FileRead", description: "read", parameters: { type: "object" } } }];
@@ -636,8 +629,9 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      // Grok 4.5: input + cached input + output.
-      costUsd: 0.00051,
+      // Grok 4.5: the 80 uncached and 20 cached prompt tokens at their own
+      // rates (xAI counts cached tokens inside the prompt tokens), plus output.
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
     expect(state.acknowledgeCompletion).toHaveBeenCalledWith("reservation-1");
@@ -670,7 +664,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
@@ -694,7 +688,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.02051,
+      costUsd: expect.closeTo(0.02047, 12),
     });
   });
 
@@ -890,41 +884,15 @@ describe("runAdmittedModelCall", () => {
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
-  test("keeps the full reservation held when provider pricing is unknown", async () => {
-    const state = harness({});
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).resolves.toMatchObject({ model: "unknown-model" });
-    expect(state.holdUnknown).toHaveBeenCalledWith(
-      "reservation-1",
-      "unpriced_provider_response",
-    );
-    expect(state.reconcile).not.toHaveBeenCalled();
-  });
-
-  test("durably cancel-locks an unpriced provider response under a hard USD cap", async () => {
-    const state = harness({ maxCostUsd: 1 });
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).rejects.toMatchObject({
-      code: "ADMISSION_DENIED",
-      reason: "unpriced_provider_response",
+  test.each([{}, { maxCostUsd: 1 }])("estimates a successful unpriced response: %j", async (limits) => {
+    const state = harness(limits);
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () =>
+      response({ model: "unknown-model" }))).resolves.toMatchObject({ model: "unknown-model" });
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 100, outputTokens: 50, costUsd: 0.045, costEstimated: true,
     });
-    expect(state.cancelRun).toHaveBeenCalledOnce();
-    expect(state.cancelRun).toHaveBeenCalledWith("unpriced_provider_response");
-    // cancelRun owns both the full unknown hold and run-tree cascade in one
-    // transaction; a separate hold would reintroduce a crash gap.
     expect(state.holdUnknown).not.toHaveBeenCalled();
-    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-    expect(state.session.abortTerminal).toHaveBeenCalledWith(
-      "provider_overrun",
-    );
+    expect(state.cancelRun).not.toHaveBeenCalled();
   });
 
   test("accounts managed routing with the concrete provider and model", async () => {
@@ -969,8 +937,98 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
+  });
+
+  const managedDeepSeekUsage = {
+    promptTokens: 22_116,
+    completionTokens: 5,
+    totalTokens: 22_121,
+    availability: "reported",
+    provenance: "provider",
+  } as const;
+
+  function routedProvider(model: string): LLMProvider {
+    return {
+      name: "agenc",
+      getExecutionProfile: async () => ({
+        provider: "openrouter",
+        model,
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+  }
+
+  test("prices the managed AgenC DeepSeek route at its own rates, not the public OpenRouter row", async () => {
+    // Live run on 2026-10-01: this call settled at $3.3204, the registry
+    // ceiling, instead of the route's $0.30/M input and $1.20/M output.
+    const state = harness({ maxCostUsd: 1 });
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: routedProvider("deepseek/deepseek-v4.1-flash"),
+      messages: [{ role: "user", content: "hello" }],
+      options: { model: "deepseek/deepseek-v4.1-flash", maxOutputTokens: 64_000 },
+      stepId: "model:managed-deepseek",
+      model: "deepseek/deepseek-v4.1-flash",
+      providerName: "agenc",
+      // The gateway passes through OpenRouter's dated generation id.
+      invoke: async () => response({
+        model: "deepseek/deepseek-v4.1-flash-20260910",
+        usage: managedDeepSeekUsage,
+      }),
+    });
+
+    const request = state.acquire.mock.calls[0]?.[0] as AdmissionAcquireInput;
+    // Routing attribution is unchanged; only the price follows the route.
+    expect(request).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+    expect(request.costEstimated).toBeUndefined();
+    expect(request.maxCostUsd).toBeCloseTo(
+      (request.maxInputTokens * 0.3 + request.maxOutputTokens * 1.2) / 1_000_000,
+      12,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 22_116,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.0066408, 12),
+    });
+  });
+
+  test.each([
+    { name: "a user's own OpenRouter key", providerName: "openrouter", model: "deepseek/deepseek-v4.1-flash" },
+    { name: "a managed route without its own price", providerName: "agenc", model: "deepseek/deepseek-v4-flash-0731" },
+  ])("keeps $name on the conservative price", async ({ providerName, model }) => {
+    const state = harness({ maxCostUsd: 1 });
+    const provider = providerName === "agenc"
+      ? routedProvider(model)
+      : {
+          name: "openrouter",
+          getExecutionProfile: async () => ({
+            usageReporting: "authoritative" as const,
+            supportsMaxOutputTokens: true,
+          }),
+        } as unknown as LLMProvider;
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { model, maxOutputTokens: 200 },
+      stepId: "model:conservative",
+      model,
+      providerName,
+      invoke: async () => response({ model, usage: managedDeepSeekUsage }),
+    });
+
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openrouter", model, costEstimated: true }),
+      undefined,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      costEstimated: true,
+    }));
   });
 
   test("voids and releases an acquired lease when routing evidence cannot be journaled", async () => {

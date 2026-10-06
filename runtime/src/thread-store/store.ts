@@ -168,6 +168,8 @@ export interface ListThreadsParams {
  *  policy, git info, full preview, and cli version are not populated. */
 export interface StoredThread {
   readonly threadId: ThreadId;
+  /** Presentation profile from the matching durable agent run, when recorded. */
+  readonly lightMode?: boolean;
   readonly parentThreadId?: ThreadId;
   readonly rolloutPath?: string;
   readonly forkedFromId?: ThreadId;
@@ -276,6 +278,16 @@ export interface ThreadStore {
   readThread(params: ReadThreadParams): StoredThread;
   /** Publish snapshot text against the thread's current canonical rollout. */
   publishTranscriptArtifact?(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string;
+  /** Read only the authoritative profile; caller-supplied metadata is ignored. */
+  readThreadLightMode?(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined;
+  /**
+   * The runtime options the thread's run recorded when it was created
+   * (`agent_runs.metadata_json.runtimeOptions`), not yet validated.
+   */
+  readThreadRuntimeOptions?(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
   /** Indexed count for latency-sensitive health probes. */
@@ -318,6 +330,8 @@ interface RegistrySnapshot {
 const REGISTRY_VERSION = 1;
 
 export interface FileThreadStoreOpts {
+  /** Defer the unused logs connection for a session-owned metadata store. */
+  readonly deferLogs?: boolean;
   /**
    * The cwd used to resolve the per-project state path
    * (`getProjectDir(cwd, projectRootMarkers)`). Defaults
@@ -381,12 +395,13 @@ export class FileThreadStore implements ThreadStore {
               ? { agencHome: opts.agencHome }
               : {}),
             projectRootMarkers: markers,
+            deferLogs: opts.deferLogs,
           })
         : openStateDatabasePaths({
             projectDir,
             stateDbPath: join(projectDir, STATE_DATABASE_FILENAME),
             logsDbPath: join(projectDir, LOGS_DATABASE_FILENAME),
-          });
+          }, undefined, { deferLogs: opts.deferLogs });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
     this.finishPendingUnarchiveCleanup();
@@ -413,7 +428,7 @@ export class FileThreadStore implements ThreadStore {
         : canonicalizeThreadSource(params.source);
     this.prepareLiveRecorder(params.rolloutStore);
 
-    this.updateRegistry((registry) => {
+    this.updateRegistry(threadId, (registry) => {
       const now = new Date().toISOString();
       const existing = registry.get(threadId);
       const entry: RegistryEntry = {
@@ -470,7 +485,7 @@ export class FileThreadStore implements ThreadStore {
         `thread ${threadId} already has a live local writer`,
       );
     }
-    this.updateRegistry((registry) => {
+    this.updateRegistry(threadId, (registry) => {
       const existing = registry.get(threadId);
       if (
         existing?.archivedAt !== undefined &&
@@ -639,7 +654,50 @@ export class FileThreadStore implements ThreadStore {
           includeArchived: params.includeArchived,
         })
       : undefined;
-    return toStoredThread(entry, this.defaultModelProviderId, history);
+    return this.toStoredThread(entry, history);
+  }
+
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
+    this.assertOpen();
+    if (verifiedProjectDir !== undefined && resolve(verifiedProjectDir) !== resolve(this.projectDir)) {
+      throw new ThreadStoreInvalidRequestError("runtime profile project does not match the verified resume source");
+    }
+    const row = this.stateDriver.prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    ).get(threadId);
+    if (row?.metadata_json == null) return undefined;
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.metadata_json);
+    } catch {
+      throw new ThreadStoreInvalidRequestError("invalid persisted run metadata");
+    }
+    if (!isRecord(metadata) || metadata.runtimeOptions === undefined) return undefined;
+    const options = metadata.runtimeOptions;
+    if (!isRecord(options)) {
+      throw new ThreadStoreInvalidRequestError("invalid persisted runtime options");
+    }
+    return options;
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    const options = this.readThreadRuntimeOptions(threadId, verifiedProjectDir);
+    if (options?.lightMode === undefined) return undefined;
+    if (typeof options.lightMode !== "boolean") {
+      throw new ThreadStoreInvalidRequestError("invalid persisted Light mode");
+    }
+    return options.lightMode;
+  }
+
+  private toStoredThread(entry: RegistryEntry, history?: StoredThreadHistory): StoredThread {
+    const lightMode = this.readThreadLightMode(entry.threadId);
+    return {
+      ...toStoredThread(entry, this.defaultModelProviderId, history),
+      ...(lightMode !== undefined ? { lightMode } : {}),
+    };
   }
 
   publishTranscriptArtifact(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string {
@@ -785,7 +843,7 @@ export class FileThreadStore implements ThreadStore {
       const last = page.items.at(-1);
       return {
         items: page.items.map((entry) =>
-          toStoredThread(entry, this.defaultModelProviderId),
+          this.toStoredThread(entry),
         ),
         ...(page.hasMore && last !== undefined
           ? {
@@ -831,7 +889,7 @@ export class FileThreadStore implements ThreadStore {
           })
         : undefined;
     return {
-      items: sliced.map((e) => toStoredThread(e, this.defaultModelProviderId)),
+      items: sliced.map((e) => this.toStoredThread(e)),
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     };
   }
@@ -872,7 +930,7 @@ export class FileThreadStore implements ThreadStore {
       );
     }
     let result: StoredThread | undefined;
-    this.updateRegistry((registry) => {
+    this.updateRegistry(params.threadId, (registry) => {
       const existing = registry.get(params.threadId);
       if (existing === undefined) {
         throw new ThreadNotFoundError(params.threadId);
@@ -894,7 +952,7 @@ export class FileThreadStore implements ThreadStore {
         this.indexReadableRollout(updated);
       }
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
     return result!;
   }
@@ -956,14 +1014,14 @@ export class FileThreadStore implements ThreadStore {
     this.assertOpen();
     let result: StoredThread | undefined;
     let archiveArtifactDir: string | undefined;
-    this.updateRegistry((registry) => {
+    this.updateRegistry(params.threadId, (registry) => {
       const existing = registry.get(params.threadId);
       if (existing === undefined) {
         throw new ThreadNotFoundError(params.threadId);
       }
       if (existing.archivedAt === undefined) {
         if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
-        result = toStoredThread(existing, this.defaultModelProviderId);
+        result = this.toStoredThread(existing);
         return;
       }
       const now = new Date().toISOString();
@@ -992,7 +1050,7 @@ export class FileThreadStore implements ThreadStore {
           : {}),
       };
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
     if (archiveArtifactDir !== undefined) this.finishPendingUnarchiveCleanup(params.threadId);
     return result!;
@@ -1000,7 +1058,7 @@ export class FileThreadStore implements ThreadStore {
 
   private finishPendingUnarchiveCleanup(threadId?: ThreadId): void {
     const entries = threadId === undefined
-      ? this.threadIndex.listThreads()
+      ? this.threadIndex.listPendingUnarchiveCleanup()
       : [this.threadIndex.getThread(threadId)];
     for (const entry of entries) {
       if (entry === undefined || entry.archivedAt !== undefined || entry.archivedRolloutPath === undefined) continue;
@@ -1390,10 +1448,13 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private updateRegistry(
+    threadId: ThreadId,
     mutator: (registry: Map<ThreadId, RegistryEntry>) => void,
   ): void {
     this.withRegistryLock(() => {
-      const registry = this.readRegistryUnlocked(true);
+      const entry = this.readRegistryEntryUnlocked(threadId);
+      const registry = new Map<ThreadId, RegistryEntry>();
+      if (entry !== undefined) registry.set(threadId, entry);
       mutator(registry);
       this.writeRegistryUnlocked(registry);
     });
@@ -1402,31 +1463,29 @@ export class FileThreadStore implements ThreadStore {
   private readRegistryUnlocked(
     includeLegacy: boolean,
   ): Map<ThreadId, RegistryEntry> {
+    if (includeLegacy) this.importLegacyRegistryOnce();
     const result = new Map<ThreadId, RegistryEntry>();
     for (const entry of this.threadIndex.listThreads()) {
       const normalized = normalizeRegistryEntry(entry);
       if (normalized !== undefined) result.set(normalized.threadId, normalized);
     }
-    if (!includeLegacy) {
-      return result;
-    }
+    return result;
+  }
 
-    // The legacy import walks sessions/ + archived_sessions/ and stats every
-    // rollout — and every imported entry is upserted into the SQLite index,
-    // so later reads see it from `threadIndex.listThreads()` above. Running
-    // it once per store instance is therefore sufficient; before this guard
-    // it re-ran per readRegistry call (O(N²) directory walks when listing N
-    // threads — audit finding #1).
-    if (this.legacyImportDone) {
-      return result;
-    }
+  private readRegistryEntryUnlocked(threadId: ThreadId): RegistryEntry | undefined {
+    this.importLegacyRegistryOnce();
+    // Always read SQLite under the caller's registry lock. The legacy-import
+    // guard is not a cache of thread metadata or archive/permission state.
+    return normalizeRegistryEntry(this.threadIndex.getThread(threadId));
+  }
+
+  private importLegacyRegistryOnce(): void {
+    if (this.legacyImportDone) return;
     for (const [threadId, entry] of this.importLegacyRegistry()) {
-      const merged = mergeLegacyEntry(result.get(threadId), entry);
-      result.set(threadId, merged);
-      this.threadIndex.upsertThread(merged);
+      const existing = normalizeRegistryEntry(this.threadIndex.getThread(threadId));
+      this.threadIndex.upsertThread(mergeLegacyEntry(existing, entry));
     }
     this.legacyImportDone = true;
-    return result;
   }
 
   private writeRegistryUnlocked(registry: Map<ThreadId, RegistryEntry>): void {

@@ -27,8 +27,12 @@ export interface AgenCDaemonLimiterAdmission {
 }
 
 const DAEMON_CONTROL_METHODS = new Set<string>([
+  "print.admit",
+  "print.ack",
+  "print.cancel",
   "request.cancel",
   "run.cancel",
+  "run.pause",
   "session.cancelTurn",
   "session.processes.stop",
   "tool.cancel",

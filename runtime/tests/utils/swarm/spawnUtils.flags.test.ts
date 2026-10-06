@@ -6,6 +6,7 @@ type SpawnFlagState = {
   readonly settingsPath?: string
   readonly teammateMode?: string
   readonly simpleMode?: boolean
+  readonly lightMode?: boolean
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean
   readonly selectedModel?: string
 }
@@ -43,6 +44,7 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
   )
   const runtimeOptions = Object.freeze({
     simpleMode: state.simpleMode ?? false,
+    lightMode: state.lightMode ?? false,
     dangerouslyBypassApprovalsAndSandbox:
       state.dangerouslyBypassApprovalsAndSandbox ?? false,
     stdinDataMode: false,
@@ -130,4 +132,10 @@ describe('buildInheritedCliFlags', () => {
 
     expect(flags).toBe('--model leader-model --bare --teammate-mode default')
   })
+})
+
+
+test('propagates Light without enabling bare mode or permission bypass', async () => {
+  const { buildInheritedCliFlags } = await loadSpawnUtils({ lightMode: true })
+  expect(buildInheritedCliFlags()).toBe('--model leader-model --light --teammate-mode default')
 })

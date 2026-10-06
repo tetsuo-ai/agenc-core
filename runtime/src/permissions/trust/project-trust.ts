@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -24,6 +24,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 
 import { resolveAgencHome } from "../../config/env.js";
+import { REPOSITORY_CONFIG_RELATIVE_PATHS } from "../../config/project-config-paths.js";
 import { findProjectRootSync } from "../../session/session-store.js";
 import { getCurrentRuntimeSession } from "../../session/current-session.js";
 import { getCwd } from "../../utils/cwd.js";
@@ -41,9 +42,29 @@ export interface ProjectMcpServerChoices {
   readonly rejectedServers?: readonly string[];
 }
 
+/**
+ * A project root trusted without a prompt because, when it was checked, trust
+ * had nothing to turn on: the repository shipped no AgenC settings that need
+ * trust and the user had no hooks of their own. The grant holds only while
+ * the repository config files still match `configDigest`; any change to them
+ * makes the root untrusted until the user reviews it again.
+ *
+ * Kept in its own list so a binary that predates automatic trust ignores
+ * these entries and treats the root as untrusted, which fails closed.
+ */
+export interface AutoTrustedProjectEntry {
+  readonly path: string;
+  readonly trustedAt: string;
+  readonly configDigest: string;
+}
+
+/** How a project root is trusted, if at all. */
+export type ProjectTrustKind = "explicit" | "automatic" | "none";
+
 export interface TrustedProjectsFile {
   readonly version: 1;
   readonly trustedProjects: readonly TrustedProjectEntry[];
+  readonly autoTrustedProjects?: readonly AutoTrustedProjectEntry[];
   readonly projectMcpServerChoices?: readonly ProjectMcpServerChoices[];
   readonly securityAcknowledgements?: Readonly<Record<SecurityAcknowledgement, string>>;
 }
@@ -72,9 +93,15 @@ export interface TrustProjectOptions extends ProjectTrustLookupOptions {
   readonly now?: () => Date;
 }
 
+export interface TrustProjectAutomaticallyOptions extends TrustProjectOptions {
+  /** `projectConfigDigestSync` of the root, taken when trust was evaluated. */
+  readonly configDigest: string;
+}
+
 const TRUSTED_PROJECTS_FILENAME = "trusted-projects.json";
 const TRUSTED_PROJECTS_LOCK_TIMEOUT_MS = 5_000;
 const TRUSTED_PROJECTS_LOCK_POLL_MS = 25;
+const CONFIG_DIGEST_PATTERN = /^[0-9a-f]{64}$/iu;
 
 function envWithProcessFallback(
   env: NodeJS.ProcessEnv | undefined,
@@ -106,6 +133,11 @@ function canonicalizePathSync(path: string): string {
   } catch {
     return absolute;
   }
+}
+
+/** The on-disk spelling trust compares, for callers outside this ledger. */
+export function canonicalizeProjectTrustPathSync(path: string): string {
+  return canonicalizePathSync(path);
 }
 
 async function canonicalizePath(path: string): Promise<string> {
@@ -152,6 +184,28 @@ function parseTrustedProjects(raw: string): TrustedProjectsFile {
       trustedProjects.push({
         path: canonicalizePathSync(entry.path),
         trustedAt: entry.trustedAt,
+      });
+    }
+    const rawAutoEntries = Array.isArray(parsed.autoTrustedProjects)
+      ? parsed.autoTrustedProjects
+      : [];
+    const autoTrustedProjects: AutoTrustedProjectEntry[] = [];
+    for (const entry of rawAutoEntries) {
+      if (!isTrustRecord(entry)) continue;
+      if (typeof entry.path !== "string" || entry.path.length === 0) continue;
+      if (typeof entry.trustedAt !== "string" || entry.trustedAt.length === 0) {
+        continue;
+      }
+      if (
+        typeof entry.configDigest !== "string" ||
+        !CONFIG_DIGEST_PATTERN.test(entry.configDigest)
+      ) {
+        continue;
+      }
+      autoTrustedProjects.push({
+        path: canonicalizePathSync(entry.path),
+        trustedAt: entry.trustedAt,
+        configDigest: entry.configDigest.toLowerCase(),
       });
     }
     const rawAcknowledgements = isTrustRecord(parsed.securityAcknowledgements)
@@ -201,6 +255,7 @@ function parseTrustedProjects(raw: string): TrustedProjectsFile {
     return {
       version: 1,
       trustedProjects,
+      ...(autoTrustedProjects.length > 0 ? { autoTrustedProjects } : {}),
       ...(projectMcpServerChoices.length > 0
         ? { projectMcpServerChoices }
         : {}),
@@ -272,11 +327,52 @@ async function resolveLookupRoot(
   });
 }
 
+/**
+ * Fingerprint the repository config files of a project root: each file's
+ * bytes, or the fact that it is absent. Returns null when a file exists but
+ * cannot be read, so an automatic grant can never be confirmed against an
+ * input that was not actually seen.
+ */
+export function projectConfigDigestSync(projectRoot: string): string | null {
+  const hash = createHash("sha256");
+  for (const segments of REPOSITORY_CONFIG_RELATIVE_PATHS) {
+    hash.update(`${segments.join("/")}\0`);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(join(projectRoot, ...segments));
+    } catch (error) {
+      if (isFileNotFoundError(error) || isNotDirectoryError(error)) {
+        hash.update("absent\0");
+        continue;
+      }
+      return null;
+    }
+    hash.update(`present\0${bytes.length}\0`);
+    hash.update(bytes);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+export function resolveProjectTrustKindSync(
+  options: ProjectTrustLookupOptions = {},
+): ProjectTrustKind {
+  const projectRoot = resolveLookupRootSync(options);
+  const file = readTrustedProjectsSync(options);
+  if (containsTrustedPath(file.trustedProjects, projectRoot)) return "explicit";
+  const automatic = file.autoTrustedProjects?.find(
+    (entry) => canonicalizePathSync(entry.path) === projectRoot,
+  );
+  if (automatic === undefined) return "none";
+  return projectConfigDigestSync(projectRoot) === automatic.configDigest
+    ? "automatic"
+    : "none";
+}
+
 export function isProjectTrustedSync(
   options: ProjectTrustLookupOptions = {},
 ): boolean {
-  const projectRoot = resolveLookupRootSync(options);
-  return containsTrustedPath(readTrustedProjectsSync(options).trustedProjects, projectRoot);
+  return resolveProjectTrustKindSync(options) !== "none";
 }
 
 export function resolveProjectTrustStateSync(
@@ -454,11 +550,34 @@ function mergeTrustedProject(
     });
   }
   next.set(projectRoot, { path: projectRoot, trustedAt });
+  // An explicit grant replaces any automatic one for the same root.
+  const autoTrustedProjects = withoutAutoTrustedProject(file, projectRoot);
   return {
     ...file,
     version: 1,
     trustedProjects: [...next.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    autoTrustedProjects: autoTrustedProjects.length > 0 ? autoTrustedProjects : undefined,
   };
+}
+
+function withoutAutoTrustedProject(
+  file: TrustedProjectsFile,
+  projectRoot: string,
+): AutoTrustedProjectEntry[] {
+  return (file.autoTrustedProjects ?? []).filter(
+    (entry) => canonicalizePathSync(entry.path) !== projectRoot,
+  );
+}
+
+function mergeAutoTrustedProject(
+  file: TrustedProjectsFile,
+  entry: AutoTrustedProjectEntry,
+): TrustedProjectsFile {
+  const autoTrustedProjects = [
+    ...withoutAutoTrustedProject(file, entry.path),
+    entry,
+  ].sort((a, b) => a.path.localeCompare(b.path));
+  return { ...file, version: 1, autoTrustedProjects };
 }
 
 async function writeTrustedProjectsFile(
@@ -623,6 +742,14 @@ function isFileNotFoundError(error: unknown): boolean {
   );
 }
 
+function isNotDirectoryError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly code?: unknown }).code === "ENOTDIR"
+  );
+}
+
 function parseLockPid(raw: string): number | null {
   try {
     const parsed = JSON.parse(raw);
@@ -742,6 +869,35 @@ export function trustProjectSync(
     );
   });
   return { projectRoot, persisted: true };
+}
+
+/**
+ * Record an automatic grant for a root whose review found nothing to turn on.
+ * An explicit grant for the same root wins and is left untouched.
+ */
+export async function trustProjectAutomatically(
+  options: TrustProjectAutomaticallyOptions,
+): Promise<{ readonly projectRoot: string; readonly persisted: boolean }> {
+  if (!CONFIG_DIGEST_PATTERN.test(options.configDigest)) {
+    throw new Error("automatic project trust needs a sha256 config digest");
+  }
+  const projectRoot = await resolveLookupRoot(options);
+  const path = trustedProjectsPath(options);
+  let persisted = false;
+  await withTrustedProjectsLock(path, async () => {
+    const current = await readTrustedProjects(options);
+    if (containsTrustedPath(current.trustedProjects, projectRoot)) return;
+    await writeTrustedProjectsFile(
+      path,
+      mergeAutoTrustedProject(current, {
+        path: projectRoot,
+        trustedAt: (options.now ?? (() => new Date()))().toISOString(),
+        configDigest: options.configDigest.toLowerCase(),
+      }),
+    );
+    persisted = true;
+  });
+  return { projectRoot, persisted };
 }
 
 export function hasSecurityAcknowledgementSync(

@@ -76,6 +76,26 @@ describe("commandMightBeDangerous", () => {
       .toBe(true);
     expect(commandMightBeDangerous(["git", "status"])).toBe(false);
   });
+
+  test.each([
+    [["bash", "-ec", "rm -rf /"]],
+    [["bash", "-c", "-e", "rm -rf /"]],
+    [["bash", "-c", "-o", "pipefail", "rm -rf /"]],
+    [["/bin/sh", "-c", "--", "rm -rf /"]],
+    [["dash", "-c", "rm -rf /"]],
+    [["ksh", "rm -rf /"]],
+    [["tcsh", "-c", "echo ok", "-c", "rm -rf /"]],
+    [["fish", "--command=rm -rf /"]],
+  ])("flags removal in the code a wrapper runs behind its options: %j", (command) => {
+    expect(commandMightBeDangerous(command)).toBe(true);
+  });
+
+  test.each([
+    [["bash", "script.sh", "-c", "rm -rf /"]],
+    [["bash", "-c", "echo ok", "rm -rf /"]],
+  ])("does not flag words a wrapper does not run as code: %j", (command) => {
+    expect(commandMightBeDangerous(command)).toBe(false);
+  });
 });
 
 describe("Windows and PowerShell safety lists", () => {

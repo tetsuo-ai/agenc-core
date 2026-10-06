@@ -35,7 +35,7 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-const { spawnContainedProcess } = await import(
+const { runSupervisedProcess, setContainedWatchdogReadyTimeoutForTesting, spawnContainedProcess } = await import(
   "../../src/utils/supervisedProcess.js"
 );
 const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -70,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   Object.defineProperty(process, "platform", platform);
   for (const mock of [
     fs.existsSync,
@@ -107,6 +108,57 @@ function startedGate() {
 }
 
 describe("Linux cgroup owner watchdog", () => {
+  it("settles an abandoned launch without a caller timeout when cgroup liveness is unknown", async () => {
+    vi.useFakeTimers();
+    const restoreDeadline = setContainedWatchdogReadyTimeoutForTesting(200);
+    const gate = startedGate();
+    const watchdog = startedGate();
+    spawnMock
+      .mockImplementationOnce(() => gate as never)
+      .mockImplementationOnce(() => watchdog as never);
+    const readFile = vi.mocked(fs.readFileSync).getMockImplementation()!;
+    vi.mocked(fs.readFileSync).mockImplementation(((path: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (inCgroupTree(path)) {
+        if (String(path).endsWith("/cgroup.events")) {
+          throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        }
+        return "";
+      }
+      return (readFile as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof fs.readFileSync);
+
+    try {
+      const settled = vi.fn();
+      const pending = runSupervisedProcess(
+        { program: process.execPath, args: ["-e", "0"], cwd: tmpdir(), env: {} },
+        { maxOutputBytes: 1024, terminateGraceMs: 40, settleBackstopMs: 60 },
+      ).then((result) => {
+        settled(result);
+        return result;
+      });
+
+      // The controlled watchdog never acknowledges registration. Advance
+      // through the deadline and its deferred abandonment callback.
+      await vi.advanceTimersByTimeAsync(201);
+      expect(gate.kill).toHaveBeenCalledWith("SIGKILL");
+      gate.emit("close", null, "SIGKILL");
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toHaveBeenCalledOnce();
+
+      const result = await pending;
+      expect(result.stopReason).toBe("spawn_error");
+      expect(result.error?.message).toMatch(/^the command did not start: .*timed out after 200 ms/);
+      expect(result.forced).toBe(true);
+      expect(result.backstopExpired).toBe(true);
+      expect(result.processTreeCleanupProven).toBe(false);
+    } finally {
+      restoreDeadline();
+      watchdog.emit("exit", 0, null);
+    }
+  });
+
   it("a watchdog spawn that left no stdio is not reused and raises no uncaught error", async () => {
     const gates = [startedGate(), startedGate()];
     const watchdogs: FailedSpawnChild[] = [];
@@ -120,10 +172,12 @@ describe("Linux cgroup owner watchdog", () => {
       if (gate === undefined) throw new Error("unexpected spawn");
       return gate;
     }) as never);
+    const directPrepare = vi.fn(() => { throw new Error("must not replace a selected cgroup"); });
     const launch = () =>
       spawnContainedProcess(process.execPath, ["-e", "0"], {
         cwd: tmpdir(),
         env: {},
+        directBwrap: { prepare: directPrepare, validateAdmission() {}, signal: new AbortController().signal },
       });
 
     // Two contained commands in the same tick, before Node reports the
@@ -135,5 +189,6 @@ describe("Linux cgroup owner watchdog", () => {
     expect(watchdogs).toHaveLength(2);
     expect(watchdogs.flatMap((watchdog) => watchdog.uncaught)).toEqual([]);
     expect(watchdogs.flatMap((watchdog) => watchdog.groupSignals)).toEqual([]);
+    expect(directPrepare).not.toHaveBeenCalled();
   });
 });

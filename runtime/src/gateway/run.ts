@@ -258,7 +258,7 @@ export async function startGateway(
   ] as const) {
     if (requested) {
       log(
-        `gateway: ${feature} direct route fail-closed — ${GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC}`,
+        `gateway: ${feature} direct route fail-closed: ${GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC}`,
       );
     }
   }
@@ -352,7 +352,7 @@ export async function startGateway(
     (slackAppToken !== undefined && slackAppToken.length > 0)
   ) {
     log(
-      "gateway: slack needs BOTH AGENC_SLACK_BOT_TOKEN (xoxb-) and AGENC_SLACK_APP_TOKEN (xapp-, Socket Mode) — channel not started",
+      "gateway: slack needs BOTH AGENC_SLACK_BOT_TOKEN (xoxb-) and AGENC_SLACK_APP_TOKEN (xapp-, Socket Mode); channel not started",
     );
   }
 
@@ -440,7 +440,7 @@ export async function startGateway(
     options.hooks === true || loaded.hooks?.enabled === true;
   if (adapters.length === 0 && !heartbeatRequested && !hooksRequested) {
     throw new Error(
-      "gateway run: no channels enabled — pass --stdio, --webchat, --heartbeat, --hooks, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
+      "gateway run: no channels enabled. Pass --stdio, --webchat, --heartbeat, --hooks, set AGENC_TELEGRAM_BOT_TOKEN, or configure a channel",
     );
   }
 
@@ -510,7 +510,7 @@ export async function startGateway(
   ]) {
     if (started.includes(channelId) && config.channels[channelId] === undefined) {
       log(
-        `gateway: ${channelId} channel has no policy in config.toml [gateway.channels] — using the pairing default (unknown senders must pair)`,
+        `gateway: ${channelId} channel has no policy in config.toml [gateway.channels]; using the pairing default (unknown senders must pair)`,
       );
     }
   }

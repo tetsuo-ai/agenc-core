@@ -201,7 +201,7 @@ export type AgenCUpdateCliCommand =
 
 export function formatAgenCUpdateCliHelpText(): string {
   return [
-    "agenc update — update the AgenC runtime to the latest public release",
+    "agenc update: update the AgenC runtime to the latest public release",
     "",
     "Usage:",
     "  agenc update                    Download, verify, and install the latest runtime",

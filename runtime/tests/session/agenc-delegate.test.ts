@@ -603,6 +603,7 @@ describe("review delegate spawn admission", () => {
       {
         executionAdmission: admission.client,
         admissionRequired: true,
+        runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true }),
       },
       { cwd },
     );
@@ -655,6 +656,7 @@ describe("review delegate spawn admission", () => {
     expect(thread.childSession.services.executionAdmission).toBe(
       admission.child,
     );
+    expect(thread.childSession.services.runtimeOptions.lightMode).toBe(true);
     expect(thread.childSession.fileReadScope).toBe(session.fileReadScope);
     expect(admission.child.scope.runId).toBe(TEST_REVIEW_CHILD_SESSION_ID);
     expect(thread.childSession.rolloutStore).not.toBeNull();

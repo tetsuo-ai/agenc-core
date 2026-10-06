@@ -18,7 +18,7 @@ import {
   sep,
 } from "node:path";
 
-import { load as loadYaml } from "js-yaml";
+import { loadYaml } from "../utils/lazy-runtime-packages.js";
 
 import type { AgenCConfig } from "../config/schema.js";
 import { FileWatcher } from "../file-watcher/index.js";
@@ -912,8 +912,9 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
   // turn `true # reason` into a string or drop every field.
   let modelProof = false;
   let parsed: unknown;
+  const { load: parseYaml } = loadYaml();
   try {
-    parsed = loadYaml(yamlText);
+    parsed = parseYaml(yamlText);
   } catch (error) {
     modelProof = rawFlag;
     // The canonical parser (utils/frontmatterParser.ts), which commands and
@@ -923,7 +924,7 @@ function splitFrontmatter(raw: string): SplitFrontmatter {
     // second chance here every field of such a file was dropped, including
     // disable-model-invocation.
     try {
-      parsed = loadYaml(quoteProblematicValues(yamlText));
+      parsed = parseYaml(quoteProblematicValues(yamlText));
     } catch {
       const detail =
         (error instanceof Error ? error.message : String(error)).split("\n")[0] ??

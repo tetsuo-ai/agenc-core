@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import type { HealthStateStats } from "../app-server/protocol/index.js";
 import {
   openStateDatabasePathReader,
@@ -36,10 +36,10 @@ export class StateSqliteHealthStatsReader {
 }
 
 function readStateStatsForPath(paths: StateDatabasePaths): HealthStateStats {
-  if (!existsSync(paths.stateDbPath) || !existsSync(paths.logsDbPath)) {
+  if (!existsSync(paths.stateDbPath)) {
     return emptyStats(paths.projectDir);
   }
-  const reader = openStateDatabasePathReader(paths);
+  const reader = openStateDatabasePathReader(paths, { deferLogs: true });
   try {
     return {
       available: true,
@@ -89,6 +89,14 @@ function countRunningToolCalls(reader: StateSqliteReader): number {
 }
 
 function countLogs(reader: StateSqliteReader): number {
+  // State-only writers may never create logs. Other I/O failures and corrupt
+  // existing logs remain errors, rather than being reported as empty state.
+  try {
+    statSync(reader.logsDbPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
   return (
     reader
       .prepareLogs<[], { count: number }>("SELECT COUNT(*) AS count FROM logs")

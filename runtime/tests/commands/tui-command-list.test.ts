@@ -188,7 +188,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
   it("preserves aliases on retained commands", () => {
     const projected = new Map(listTuiCommandList().map((cmd) => [cmd.name, cmd]));
 
-    expect(projected.get("provider")?.aliases).toBeUndefined();
+    expect(projected.get("provider")?.aliases).toEqual(["providers"]);
     expect(projected.get("whoami")?.aliases).toEqual(["account"]);
     expect(projected.get("permissions")?.aliases).toEqual([
       "approvals",

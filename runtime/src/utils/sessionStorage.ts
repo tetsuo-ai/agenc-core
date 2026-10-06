@@ -28,7 +28,7 @@ import {
   isSessionPersistenceDisabled,
   switchSession,
 } from '../bootstrap/state.js'
-import { builtInCommandNames } from '../commands.js'
+import { isBuiltInCommandName } from '../commands/builtin-command-names.js'
 import { COMMAND_NAME_TAG, TICK_TAG } from '../constants/xml.js'
 import * as sessionIngress from '../services/api/sessionIngress.js'
 import { REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
@@ -1949,7 +1949,7 @@ export function getFirstMeaningfulUserMessageTextContent(
 
         // If it's a built-in command, then it's unlikely to provide
         // meaningful context (e.g. `/model sonnet`)
-        if (builtInCommandNames().has(commandName)) {
+        if (isBuiltInCommandName(commandName)) {
           continue
         } else {
           // Otherwise, for custom commands, then keep it only if it has
@@ -5192,7 +5192,7 @@ function extractFirstPromptFromChunk(chunk: string): string {
         if (commandNameTag) {
           const name = commandNameTag.replace(/^\//, '')
           const commandArgs = extractTag(result, 'command-args')?.trim() || ''
-          if (builtInCommandNames().has(name) || !commandArgs) {
+          if (isBuiltInCommandName(name) || !commandArgs) {
             if (!firstCommandFallback) {
               firstCommandFallback = commandNameTag
             }

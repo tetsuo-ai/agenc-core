@@ -12,6 +12,7 @@ export {
   type AgencLocalOverflowGapEvent,
 } from "./prompt-event-queue.js";
 export * from "./client.js";
+export { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
 export * from "./csv-jobs.js";
 export * from "./workflow-handoff.generated.js";
 export * from "./workflow-result.generated.js";
@@ -29,6 +30,8 @@ export {
 } from "./socket.js";
 export {
   promptViaSubprocess,
+  DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS,
+  signalOwnedDetachedProcessGroup,
   type AgencSubprocessOptions,
   type AgencSubprocessRun,
   type AgencSubprocessChild,

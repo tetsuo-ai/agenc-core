@@ -721,17 +721,41 @@ describe("AgenC daemon fuzzy file search", () => {
     const closeOwnedService = vi
       .spyOn(AgenCFuzzyFileSearchService.prototype, "close")
       .mockResolvedValue(undefined);
+    const searchOwnedService = vi
+      .spyOn(AgenCFuzzyFileSearchService.prototype, "search")
+      .mockResolvedValue({ files: [] });
 
     try {
-      const ownedDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      const unusedDispatcher = new AgenCDaemonJsonRpcDispatcher({
         agentManager: new AgenCDaemonAgentManager(),
       });
+      await unusedDispatcher.close();
+      expect(closeOwnedService).not.toHaveBeenCalled();
 
+      const ownedDispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: new AgenCDaemonAgentManager(),
+        fuzzyAllowedRoots: ["/workspace"],
+      });
+      const connection = ownedDispatcher.createConnection();
+      await connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+      });
+      await expect(connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "search-owned",
+        method: "fs.fuzzy_search",
+        params: { query: "src", roots: ["/workspace"] },
+      })).resolves.toMatchObject({ result: { files: [] } });
+      expect(searchOwnedService).toHaveBeenCalledOnce();
       await ownedDispatcher.close();
 
       expect(closeOwnedService).toHaveBeenCalledOnce();
     } finally {
       closeOwnedService.mockRestore();
+      searchOwnedService.mockRestore();
     }
 
     const injectedService = {

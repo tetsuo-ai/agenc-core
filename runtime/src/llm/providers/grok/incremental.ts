@@ -6,22 +6,24 @@
  * the previous request. We only reuse an incremental input delta when
  * non-input request fields are unchanged and `input` is a strict
  * extension of the previous known input. Server-returned output items
- * are treated as part of the baseline so we do not resend them.
+ * are treated as part of the baseline so we do not resend them, and the
+ * trailing instructions the stored chain already holds are sent again
+ * only when they change.
  *
  * Invariants covered here:
- *   I-2  (clear `previous_response_id` on compaction): `clearResponseId()`
- *        is the runtime entrypoint — AgenC post-compact cleanup calls
- *        this (via the provider abstraction) as the first cleanup step so the
- *        next request can't reference a server-side state that covered
- *        compacted-away turns. Synchronous + idempotent.
+ *   I-2  (no `previous_response_id` across compaction): compaction replaces
+ *        the history, so the next request no longer extends the recorded
+ *        baseline and `decide()` returns a full request, which can't
+ *        reference a server-side state that covered compacted-away turns.
  *   I-14 (`previous_response_id` server-side expiration retry):
  *        the Grok adapter transport catches the "previous_response_id expired"
  *        server error; recovery reads/writes this tracker to fall back
  *        to a full-history request without the `previous_response_id`
  *        hint.
  *
- * The Grok adapter consults this tracker before request construction and
- * records completed response IDs after successful responses.
+ * The Grok adapter consults this tracker before building a request of the
+ * conversation and records its completed response IDs after successful
+ * responses. Side calls on the same provider never touch it.
  *
  * @module
  */
@@ -51,6 +53,13 @@ export interface IncrementalRequestShape {
 export interface LastResponseSnapshot {
   readonly previousResponseId: string;
   readonly itemsAdded: ReadonlyArray<LLMMessage>;
+  /**
+   * Trailing instructions (the system message a request ends with) in
+   * effect for the request that produced this response, whether that
+   * request sent them or an earlier request of its chain did. The stored
+   * chain holds them from there on.
+   */
+  readonly trailingInstructions?: string;
   /** Monotonic clock (ms) when this snapshot was recorded — used for
    *  opportunistic TTL enforcement against provider-side expiration. */
   readonly recordedAtMs: number;
@@ -114,10 +123,10 @@ function baselineIsPrefix(
 
 /**
  * IncrementalTracker — owns the `LastResponse` slot and computes the
- * per-request delta decision. A Grok adapter instance can hold one of
- * these per logical session. The adapter must call `recordRequest()`
- * on every outbound request and `recordResponse()` on every completed
- * response for the tracker to stay in sync.
+ * per-request delta decision. A Grok adapter instance holds one of
+ * these for its conversation. The adapter must call `recordRequest()`
+ * on every outbound request of the conversation and `recordResponse()`
+ * on every completed response for the tracker to stay in sync.
  *
  * The adapter consults `decide()` before constructing the HTTP body.
  */
@@ -131,14 +140,22 @@ export class IncrementalTracker {
    *
    * Control flow:
    *   1. Compare non-input request shape → full on mismatch
-   *   2. Build baseline = previous input + last-response items
-   *   3. Current input must start with baseline
-   *   4. If `allowEmptyDelta=false`, require baseline.len < current.len
-   *   5. Return current[baseline_len..] on success
+   *   2. Full when the stored chain holds trailing instructions and the
+   *      current request has none: a stored item cannot be taken back
+   *   3. Build baseline = previous input + last-response items
+   *   4. Current input must start with baseline
+   *   5. If `allowEmptyDelta=false`, require baseline.len < current.len
+   *   6. Return current[baseline_len..] on success, without the trailing
+   *      instructions when the chain holds them unchanged
    */
   decide(opts: {
     readonly currentShape: IncrementalRequestShape;
     readonly currentInput: ReadonlyArray<LLMMessage>;
+    /**
+     * Content of the system message `currentInput` ends with, when the
+     * request ends with trailing instructions.
+     */
+    readonly trailingInstructions?: string;
     readonly allowEmptyDelta?: boolean;
   }): IncrementalDecision {
     if (!this.lastRequestShape) {
@@ -146,6 +163,10 @@ export class IncrementalTracker {
     }
     if (!shapesEqual(this.lastRequestShape, opts.currentShape)) {
       return { kind: "full", reason: "request_shape_mismatch" };
+    }
+    const heldInstructions = this.lastResponse?.trailingInstructions;
+    if (heldInstructions !== undefined && opts.trailingInstructions === undefined) {
+      return { kind: "full", reason: "trailing_instructions_removed" };
     }
     const baseline: LLMMessage[] = [...this.lastRequestInput];
     if (this.lastResponse) {
@@ -159,6 +180,17 @@ export class IncrementalTracker {
       return { kind: "full", reason: "empty_delta_not_allowed" };
     }
     const delta = opts.currentInput.slice(baseline.length);
+    // Unchanged instructions are already stored with the chain; another copy
+    // would stay in every later request's context. Changed ones are sent and
+    // become the chain's newest system item. A delta of the instructions
+    // alone keeps them, so the input is never empty.
+    if (
+      heldInstructions !== undefined &&
+      heldInstructions === opts.trailingInstructions &&
+      delta.length > 1
+    ) {
+      return { kind: "reuse", delta: delta.slice(0, -1) };
+    }
     return { kind: "reuse", delta };
   }
 
@@ -189,11 +221,9 @@ export class IncrementalTracker {
   }
 
   /**
-   * I-2 enforcement entry point. Called by AgenC post-compact cleanup on
-   * every compaction event (auto, reactive, manual /compact,
-   * session-memory). Wipes `lastResponse` so the next request omits
-   * `previous_response_id` and the server can't carry pre-compact
-   * state forward into a post-compact turn.
+   * Drops the stored response once it can no longer be continued (xAI
+   * refused to store it, or rejected its id as expired). Wipes
+   * `lastResponse` so the next request omits `previous_response_id`.
    *
    * Does NOT touch `lastRequestShape` / `lastRequestInput` — the
    * request-shape baseline is independent of the server-side state
@@ -214,47 +244,4 @@ export class IncrementalTracker {
     this.lastRequestInput = [];
     this.lastResponse = null;
   }
-}
-
-/**
- * Process-level singleton set keyed by provider-instance identity.
- * `runPostCompactCleanup()` (I-2) calls `clearAllResponseIds()` to
- * invalidate every tracker without knowing which one the current provider
- * owns. Shared ProviderHttpClient-based Responses adapters also clear their
- * per-turn continuation state through the compact runtime context.
- */
-// WeakRef-backed so a tracker whose owning provider is dropped (e.g. the fresh
-// grok provider the auto-mode classifier / delegate builds per call, which never
-// calls dispose()) becomes GC-eligible instead of being pinned forever. The Set
-// only holds tiny WeakRefs; collected entries are pruned on the next sweep.
-const registered = new Set<WeakRef<IncrementalTracker>>();
-
-export function registerIncrementalTracker(t: IncrementalTracker): () => void {
-  const ref = new WeakRef(t);
-  registered.add(ref);
-  return () => registered.delete(ref);
-}
-
-export function clearAllResponseIds(): void {
-  for (const ref of registered) {
-    const t = ref.deref();
-    if (t) {
-      t.clearResponseId();
-    } else {
-      registered.delete(ref);
-    }
-  }
-}
-
-/** Live (non-collected) tracker count. Test-only introspection. */
-export function registeredIncrementalTrackerCountForTest(): number {
-  let live = 0;
-  for (const ref of registered) {
-    if (ref.deref()) {
-      live += 1;
-    } else {
-      registered.delete(ref);
-    }
-  }
-  return live;
 }

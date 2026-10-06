@@ -164,6 +164,18 @@ export interface TurnCompleteEvent {
  * The child journal fsyncs this record before the parent mailbox receives the
  * corresponding receipt, so projection never outruns its durable source.
  */
+export interface SubagentTaskAdmissionEvent {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly turnId: string;
+  readonly taskId: string;
+  readonly author: string;
+  readonly taskText: string;
+  readonly acceptedAt: number;
+  readonly provider: string;
+  readonly model: string;
+}
+
 export interface SubagentTurnOutcomeEvent {
   readonly agentId: string;
   readonly agentPath: string;
@@ -385,6 +397,12 @@ export interface TokenCountEvent {
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
   readonly reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * The session budget then adds completion once. Absent for providers whose
+   * reasoning is still added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   readonly webSearchRequests?: number;
   /** Optional model override for this usage payload. */
   readonly model?: string;
@@ -1253,6 +1271,10 @@ export type EventMsg =
       readonly payload: ContextCompactedEvent;
     }
   | {
+      readonly type: "subagent_task_admitted";
+      readonly payload: SubagentTaskAdmissionEvent;
+    }
+  | {
       readonly type: "subagent_turn_outcome";
       readonly payload: SubagentTurnOutcomeEvent;
     }
@@ -1521,6 +1543,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "mcp_elicitation_request",
     "mcp_elicitation_complete",
     "context_compacted",
+    "subagent_task_admitted",
     "subagent_turn_outcome",
     "subagent_funds_notice",
     "turn_complete",
@@ -1600,6 +1623,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "turn_failed",
     "error",
     "context_compacted",
+    "subagent_task_admitted",
     "subagent_turn_outcome",
     "subagent_funds_notice",
     "protocol_claim",
@@ -1978,6 +2002,9 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
         : {}),
       ...(usage.reasoningOutputTokens !== undefined
         ? { reasoningOutputTokens: usage.reasoningOutputTokens }
+        : {}),
+      ...(usage.reasoningIncludedInCompletion === true
+        ? { reasoningIncludedInCompletion: true as const }
         : {}),
       ...(usage.webSearchRequests !== undefined
         ? { webSearchRequests: usage.webSearchRequests }

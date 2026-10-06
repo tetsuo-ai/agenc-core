@@ -1,5 +1,4 @@
 import { execFile } from 'child_process'
-import { execa } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import * as os from 'os'
 import { join } from 'path'
@@ -272,6 +271,7 @@ async function getAgenCCodeSnapshotContent(
   let pathValue = childEnvironment.PATH
   if (getPlatform() === 'windows') {
     // On Windows with git-bash, read the Cygwin PATH
+    const { execa } = await import('execa')
     const cygwinResult = await execa(binShell, ['-c', 'printf %s "$PATH"'], {
       env: { ...childEnvironment, SHELL: binShell },
       reject: false,

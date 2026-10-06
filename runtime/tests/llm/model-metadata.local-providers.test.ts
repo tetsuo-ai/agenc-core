@@ -1,12 +1,13 @@
 import { describe, expect, test } from "vitest";
 
-import { defaultConfig } from "../../src/config/schema.js";
+import { defaultConfig, mergeConfigs } from "../../src/config/schema.js";
 import {
   CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
   ModelMetadataResolver,
   ollamaShowUrlFromBaseUrl,
 } from "../../src/llm/model-metadata.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
+import { modelContextWindow } from "../../src/session/turn-context.js";
 import type { AgenCConfig } from "../../src/utils/config.js";
 
 const EMPTY_CONFIG = {} as unknown as AgenCConfig;
@@ -179,6 +180,103 @@ describe("provider metadata identity", () => {
   });
 });
 
+describe("official provider base URLs", () => {
+  const liveOpenAiListing = {
+    "https://api.openai.com/v1/models": {
+      json: { data: [{ id: "gpt-5", context_window: 8_192 }] },
+    },
+  };
+
+  test.each([
+    "https://api.openai.com/v1",
+    "https://api.openai.com/v1/",
+    "https://API.OPENAI.COM:443/v1/",
+  ])("OPENAI_BASE_URL=%s uses the curated catalog without a live request", async (baseUrl) => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a configured official OpenAI base URL uses the curated catalog", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://api.openai.com/v1/" } },
+    });
+    const resolved = await new ModelMetadataResolver({ fetchImpl: impl, env: {} })
+      .resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("an official environment URL takes precedence over a configured proxy", async () => {
+    const { impl, calls } = recordingFetch(liveOpenAiListing);
+    const config = mergeConfigs(defaultConfig(), {
+      providers: { openai: { base_url: "https://proxy.example/v1" } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: "https://api.openai.com/v1" },
+    }).resolve({ provider: "openai", model: "gpt-5", config });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 272_000,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    ["https://proxy.example/v1", "https://proxy.example/v1/models"],
+    ["https://api.openai.com/other", "https://api.openai.com/other/v1/models"],
+    ["http://api.openai.com/v1", "http://api.openai.com/v1/models"],
+    ["https://api.openai.com:444/v1", "https://api.openai.com:444/v1/models"],
+  ])("a different OpenAI base URL %s still uses live metadata", async (baseUrl, modelsUrl) => {
+    const { impl, calls } = recordingFetch({
+      [modelsUrl]: { json: { data: [{ id: "gpt-5", context_window: 8_192 }] } },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_BASE_URL: baseUrl },
+    }).resolve({ provider: "openai", model: "gpt-5", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 8_192,
+      source: "live_endpoint",
+    });
+    expect(calls.map((call) => call.url)).toEqual([modelsUrl]);
+  });
+
+  test("another hosted provider also skips only its official default", async () => {
+    const { impl, calls } = recordingFetch({
+      "https://api.deepseek.com/v1/models": {
+        json: { data: [{ id: "deepseek-flash", context_window: 8_192 }] },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1/" },
+    }).resolve({ provider: "deepseek", model: "deepseek-flash", config: EMPTY_CONFIG });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 1_048_576,
+      source: "built_in_heuristic",
+    });
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("local providers resolve the real context window", () => {
   test("ollama reads the architecture-prefixed context length", async () => {
     const { impl, calls } = recordingFetch({
@@ -303,7 +401,7 @@ describe("local providers resolve the real context window", () => {
 
     const info = await manager.getModelInfo("unlisted-model");
     expect(info.contextWindow).toBeGreaterThan(0);
-    if (baseUrl) {
+    if (baseUrl && baseUrl !== "https://api.openai.com/v1") {
       expect(calls[0]).toMatchObject({
         url: modelsUrl,
         authorization: "Bearer hosted-openai-key",
@@ -549,5 +647,129 @@ describe("transient metadata failures do not stick", () => {
     expect(left.contextWindow).toBe(32768);
     expect(right.contextWindow).toBe(32768);
     expect(showCalls()).toBe(1);
+  });
+});
+
+/**
+ * DeepSeek's GET /v1/models, recorded 2026-09-25 and trimmed to the fields
+ * the resolver reads. The window is spelled `context_window`.
+ */
+const DEEPSEEK_FLASH_LISTING = {
+  id: "deepseek-flash",
+  object: "model",
+  owned_by: "deepseek",
+  context_window: 1_048_576,
+  max_output_tokens: 393_216,
+} as const;
+
+const DEEPSEEK_LISTING_ENV = {
+  DEEPSEEK_API_KEY: "deepseek-key",
+  DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+} as const;
+
+function deepSeekListing(
+  entry: Readonly<Record<string, unknown>>,
+): ReturnType<typeof recordingFetch> {
+  return recordingFetch({
+    "https://api.deepseek.com/v1/models": {
+      json: { object: "list", data: [entry] },
+    },
+  });
+}
+
+async function resolveFromDeepSeekListing(
+  entry: Readonly<Record<string, unknown>>,
+) {
+  return await new ModelMetadataResolver({
+    fetchImpl: deepSeekListing(entry).impl,
+    env: DEEPSEEK_LISTING_ENV,
+  }).resolve({
+    provider: "deepseek",
+    model: String(entry.id),
+    config: EMPTY_CONFIG,
+  });
+}
+
+describe("a source that knows a model's limits but not its window", () => {
+  test("a DeepSeek base URL keeps deepseek-flash's window for the session", async () => {
+    // With DEEPSEEK_BASE_URL set, the models list is read before the catalog.
+    // Only its output limit was read, so every turn of the session failed in
+    // milliseconds with "Missing context window for model deepseek-flash".
+    const { impl, calls } = deepSeekListing(DEEPSEEK_FLASH_LISTING);
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "deepseek",
+        model: "deepseek-flash",
+      }),
+      fallbackProvider: "deepseek",
+      metadata: { fetchImpl: impl, env: DEEPSEEK_LISTING_ENV },
+    });
+
+    const info = await manager.getModelInfo("deepseek-flash");
+
+    expect(info.contextWindow).toBe(1_048_576);
+    expect(modelContextWindow({ modelInfo: info })).toBe(996_147);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.deepseek.com/v1/models",
+    ]);
+  });
+
+  test("a models list's context_window is the window its endpoint serves", async () => {
+    // An endpoint that serves the model with a smaller window than the
+    // catalog's: its listing wins, as it does when the field is named
+    // context_length.
+    const resolved = await resolveFromDeepSeekListing({
+      ...DEEPSEEK_FLASH_LISTING,
+      context_window: 262_144,
+    });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 262_144,
+      source: "live_endpoint",
+    });
+  });
+
+  test("a models list with only an output limit keeps the catalog window", async () => {
+    const resolved = await resolveFromDeepSeekListing({
+      id: "deepseek-flash",
+      max_output_tokens: 32_768,
+    });
+
+    expect(resolved).toMatchObject({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 32_768,
+      source: "live_endpoint",
+      usedFallbackModelMetadata: false,
+    });
+  });
+
+  test("an output limit alone does not leave an unknown model without a window", async () => {
+    // Nothing here knows these models, so they plan against the conservative
+    // window, the same one they get when no source answers at all.
+    const capped = new ModelMetadataResolver({ env: {} });
+    const cappedLookup = {
+      provider: "openai",
+      model: "unlisted-model",
+      config: mergeConfigs(defaultConfig(), {
+        providers: { openai: { max_output_tokens: 8_192 } },
+      }),
+    };
+
+    for (
+      const resolved of [
+        await resolveFromDeepSeekListing({
+          id: "proxy-model",
+          max_output_tokens: 8_192,
+        }),
+        capped.resolveSync(cappedLookup),
+        await capped.resolve(cappedLookup),
+      ]
+    ) {
+      expect(resolved).toMatchObject({
+        contextWindow: CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+        maxOutputTokens: 8_192,
+        usedFallbackModelMetadata: true,
+      });
+    }
   });
 });

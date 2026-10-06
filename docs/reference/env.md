@@ -22,13 +22,15 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | Var | Effect |
 | --- | --- |
 | `AGENC_HOME` | Config and daemon home. Must be an absolute path; relative input is rejected. Default `$HOME/.agenc` |
+| `AGENC_INSTALL_PREFIX` | Absolute directory that contains `bin/agenc.cmd`. The Windows shim sets it from its own location when it is unset. `agenc daemon install-service` resolves the launcher only from this prefix |
+| `AGENC_WINSW_XML` | Absolute path for the generated WinSW 2.12.0 service definition. When unset, the definition is `<AGENC_INSTALL_PREFIX>\agenc-daemon.xml` |
 | `AGENC_WORKSPACE` | Workspace root override |
 | `AGENC_MODEL` | Session model (`grok-4.6` when unset and config is fresh) |
 | `AGENC_PROVIDER` | Canonical provider slug. Retired selector spellings are rejected; use `grok` and `openai-compatible` directly |
 | `AGENC_EFFORT_LEVEL` | Reasoning effort captured into canonical session config: `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected |
 | `AGENC_PROFILE` | Named config profile (`--profile`) |
 | `AGENC_AUTONOMOUS` | Truthy enables autonomous tick mode |
-| `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget |
+| `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). It does not change the 3-retry continuation limit or the 64_000 escalate target. See [daemon.md](daemon.md#max-output-tokens-recovery) |
 | `AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS` | Boolean-like; 8k default plus retry mode |
 | `AGENC_MAX_BUDGET_USD` | Positive number session cost budget |
 | `AGENC_MAX_TURNS` | Positive integer turn-loop cap when `max_turns` is not in TOML |
@@ -48,13 +50,13 @@ Credential values are not written into the canonical config snapshot.
 | Provider | Vars |
 | --- | --- |
 | grok | `XAI_API_KEY`, `GROK_API_KEY` (key order); `XAI_BASE_URL`, `GROK_BASE_URL` (endpoint aliases); `AGENC_XAI_STORE` and the `AGENC_XAI_*` capability switches below; `AGENC_GROK_CLI` and `AGENC_GROK_ACP_PERMISSIONS` for composer sessions |
-| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT` |
+| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT`; `AGENC_OPENAI_REASONING_REPLAY` (encrypted reasoning replay, below) |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_API_KEY`, then `OPENAI_API_KEY`; `OPENAI_COMPATIBLE_BASE_URL`, then `OPENAI_BASE_URL`, then `OPENAI_API_BASE` |
 | Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` |
 | LM Studio | `LMSTUDIO_API_KEY`, `LMSTUDIO_BASE_URL` |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
-| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` |
+| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`; `AGENC_SHARED_PREFIX_TAIL` (shared cached prefix, below) |
 | Meta | `MODEL_API_KEY`, `META_BASE_URL` |
 | QwenCloud Pay-As-You-Go | `DASHSCOPE_API_KEY`, then `QWEN_API_KEY`; `DASHSCOPE_BASE_URL`, then `QWEN_BASE_URL` |
 | QwenCloud Token Plan | `QWEN_TOKEN_PLAN_API_KEY`, then `DASHSCOPE_TOKEN_PLAN_API_KEY`; `QWEN_TOKEN_PLAN_BASE_URL`, then `DASHSCOPE_TOKEN_PLAN_BASE_URL` |
@@ -113,6 +115,16 @@ OAuth sign-in. Neither explicit selection silently obtains managed credentials.
 These values are captured with the session environment and do not delete saved
 credentials or change another session's selection.
 
+`AGENC_OPENAI_REASONING_REPLAY` (boolean-like, off by default) makes the
+`openai` provider keep the encrypted reasoning of its Responses calls and send
+it back. A stateless request (`store: false`, which is always the case on a
+ChatGPT subscription) then asks for `reasoning.encrypted_content`. Each
+reasoning item a response returns stays with the assistant message it
+preceded. Later requests to the same provider and model replay it right before
+that message's function calls, or before its text when it called none. A model
+or provider switch drops it. Requests with `store: true` and other providers
+on the Responses wire are unchanged.
+
 Gemini project identity has one ordered surface: `GEMINI_PROJECT_ID` wins over
 `GOOGLE_CLOUD_PROJECT`. Other Google project-name aliases are not consumed.
 `GEMINI_AUTH_MODE` restricts resolution to exactly the named method and rejects
@@ -149,6 +161,16 @@ must use `/v1beta`; Vertex roots must identify the matching
 root must directly accept native `models/*:generateContent` requests. Without
 an explicit base URL, access-token and ADC modes require both the resource
 project and Vertex location so AgenC can derive one unambiguous native root.
+
+`AGENC_SHARED_PREFIX_TAIL` (boolean-like, on by default) sets the request
+layout for native DeepSeek, whose prompt cache is shared by the sessions of an
+account. With it on, the static head of the system prompt is the leading system
+message and the per-session tail (memory directories, environment) follows the
+setup reminders as a `<system-reminder>` message, so every session sends the
+same head, tool definitions and setup reminders before anything that differs
+and reads them from the shared cache. `0` sends the whole system prompt as the
+leading system message again. It is captured with the session environment, so
+a client sets it per session. Other providers are unchanged.
 
 Proxy routing uses `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
 forms `http_proxy`, `https_proxy`, `no_proxy`. `PATH` is captured so provider
@@ -230,6 +252,7 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_START_MAX_WAIT_MS` | Total ceiling for an extended daemon start while its startup log keeps advancing, in readiness-budget steps (default 600000 ms). A home with hundreds of sessions can exceed the readiness budget while recovering runs |
 | `AGENC_DAEMON_REQUEST_TIMEOUT_MS` | Per-request RPC timeout (SDK default 30000 ms) |
 | `AGENC_DAEMON_MAX_OLD_SPACE_MB` | Detached daemon V8 heap cap (default 4096) |
+| `AGENC_COMPILE_CACHE` | `0` turns off the on-disk V8 compile cache that the CLI and the daemon share. It lives in a private per-user temp directory; an explicit `NODE_COMPILE_CACHE` is left alone |
 | `AGENC_DAEMON_MAX_QUEUED_REQUESTS`, `AGENC_DAEMON_MAX_IN_FLIGHT_REQUESTS` | RPC overload bounds |
 | `AGENC_DAEMON_REQUEST_RATE_PER_SECOND`, `AGENC_DAEMON_REQUEST_BURST` | Per-client rate limiter |
 | `AGENC_DAEMON_WEBSOCKET_HOST` | Optional WebSocket bind host (default `127.0.0.1`) |
@@ -238,7 +261,9 @@ still works. `amazon-bedrock` uses AWS SigV4 aliases and does not read
 | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | `1` allows a non-loopback bind |
 | `AGENC_DAEMON_URL` | Explicit remote daemon endpoint |
 
-Autostart retry cap and TUI fallback: [daemon.md](daemon.md).
+Autostart retry cap, hard-kill connectability readiness, hydrating
+`daemon start`, and the TUI 10 s lost-turn probe:
+[daemon.md](daemon.md#recovery-after-a-disappeared-daemon).
 
 ## Browser, budget, heartbeat, sandbox, xAI tools
 
@@ -247,14 +272,16 @@ These have their own pages. Short map:
 | Family | Vars | Doc |
 | --- | --- | --- |
 | Browser | `AGENC_BROWSER_EXECUTABLE`, `AGENC_BROWSER_HEADLESS`, `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK`, `AGENC_BROWSER_PROFILE_DIR`, `AGENC_BROWSER_NO_SANDBOX`, `AGENC_BROWSER_NAV_TIMEOUT_MS` | [browser.md](../browser.md) |
+| Whisper | `AGENC_WHISPER_CLI` (host daemon startup only; not a client snapshot). Absolute `whisper-cli` path. Download idle clock is 60 s of silence | [whisper-local.md](../whisper-local.md#download-idle-clock) |
 | Budget | `AGENC_BUDGET`, `AGENC_BUDGET_DAILY_USD`, `AGENC_BUDGET_MONTHLY_USD`, `AGENC_BUDGET_DAILY_TOKENS`, `AGENC_BUDGET_MONTHLY_TOKENS`, `AGENC_BUDGET_SOFT_THRESHOLD`, `AGENC_BUDGET_ENFORCE_INTERACTIVE` | [autonomy.md](autonomy.md) |
 | Admission concurrency | `AGENC_ADMISSION_GLOBAL_CONCURRENCY` (64), `AGENC_ADMISSION_WORKSPACE_CONCURRENCY` (32), `AGENC_ADMISSION_SESSION_CONCURRENCY` (8), `AGENC_ADMISSION_PARENT_CONCURRENCY` (4), `AGENC_ADMISSION_PROVIDER_CONCURRENCY` (16) | [autonomy.md](autonomy.md) |
 | Heartbeat | `AGENC_HEARTBEAT`, `AGENC_HEARTBEAT_INTERVAL`, `AGENC_HEARTBEAT_ACTIVE_HOURS`, `AGENC_HEARTBEAT_TARGET`. `skip_when_busy` has no env (TOML only, default true) | [autonomy.md](autonomy.md) |
 | Transaction guard | `AGENC_TRANSACTION_GUARD`, `AGENC_TRANSACTION_GUARD_MODEL`, `AGENC_TRANSACTION_GUARD_OLLAMA_URL`, `AGENC_TRANSACTION_GUARD_FAIL_MODE`, `AGENC_TRANSACTION_GUARD_TIMEOUT_MS`, `AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES` | [slm-transaction-guard.md](../security/slm-transaction-guard.md) |
 | Web search | `AGENC_WEB_SEARCH_ENDPOINT`, `AGENC_WEB_SEARCH_KIND`, `AGENC_WEB_SEARCH_API_KEY` | [config.md](config.md) |
-| xAI incremental continuation | `AGENC_XAI_INCREMENTAL` (boolean-like; projects to `providers.grok.incremental_continuation`, off by default). Streaming Grok turns then send `previous_response_id` plus the items added since the last completed response instead of the full history | [providers.md](providers.md) |
-| Provider trace | `AGENC_PROVIDER_TRACE` (truthy). Writes one JSON line per model request and per response or error, without message bodies (model, `prompt_cache_key`, `previous_response_id`, `reasoning`, `parallel_tool_calls`, `max_output_tokens`, usage, stream event count, elapsed ms), to `<AGENC_HOME>/agent-logs/<conversation>/llm-<seq>.jsonl` | [providers.md](providers.md) |
-| Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive requests first diverge. |
+| xAI incremental continuation | `AGENC_XAI_INCREMENTAL` (boolean-like; projects to `providers.grok.incremental_continuation`, on by default). Streaming Grok turns send `previous_response_id` plus the items added since the last completed response instead of the full history, and resend the trailing permission section only when it changes. Side calls on the session provider (memory selection, compaction, MCP sampling, summaries) are sent in full and leave that chain intact; `0` sends the full history every turn | [providers.md](providers.md) |
+| Provider trace | `AGENC_PROVIDER_TRACE` (truthy). Writes one JSON line per model request and per response or error, without message bodies (model, `prompt_cache_key`, `previous_response_id`, `reasoning`, `parallel_tool_calls`, `max_output_tokens`, response id, usage, stream event count, elapsed ms), to `<AGENC_HOME>/agent-logs/<conversation>/llm-<seq>.jsonl` | [providers.md](providers.md) |
+| Provider trace bodies | `AGENC_PROVIDER_TRACE_BODIES` (truthy, only with `AGENC_PROVIDER_TRACE`). Also writes each full request as `agent-logs/<conversationId>/llm-<seq>.request.json` (secrets redacted, mode 0600). The whole prompt lands on disk, so use it in an isolated home for cache-prefix diagnosis and delete the files afterwards. `node scripts/eval/prefix-diff.mjs <that directory>` reports where consecutive full requests first diverge and, following `previous_response_id` to the response ids in the `.jsonl` lines, which system and user items a continuation chain holds more than once. |
+| Micro print receipt | `AGENC_MICRO_PRINT_RECEIPT` (internal diagnostic; unset by default). The local CLI appends a JSON line after a micro-client attempt completes, containing only version, PID, selected route (`micro` or `fallback`) and exit code. Set it to a caller-owned file path; a newly created file uses mode 0600, and write failures are ignored. It does not enable the micro route, grant filesystem permissions, or change model-request ordering. This client-process diagnostic is excluded from the daemon session environment allowlist and SDK session snapshot; it is not a session setting. | |
 | Trajectories | `AGENC_TRAJECTORY_EXPORT_DIR`, `AGENC_TRAJECTORY_EXPORT_PATH` | [trajectory-training-data.md](../trajectory-training-data.md) |
 
 ## TUI
@@ -282,6 +309,7 @@ Channel tokens live in env, not in TOML:
 | `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native secure storage |
 | `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native secure storage |
 | `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native secure storage. |
+| `AGENC_REMOTE_FULL_CONTROL` | Boolean-like. Keeps phone remote control (`agenc remote on`, `/remote on`) turned on without passing `--full-control` on every start. A paired phone gets full control of this computer's AgenC, so it is off unless this is set or the flag is given. Read by the CLI process that starts the bridge; daemon sessions do not consume it |
 
 [gateway.md](../gateway.md), [remote-control.md](../remote-control.md).
 
@@ -293,9 +321,12 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | Var | Typical use |
 | --- | --- |
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
+| `AGENC_CACHE_SESSION_TAIL` | Moves the part of the system prompt that stays fixed for the whole session (client rendering, memory directories, environment) from after the conversation to right after the static head, inside the provider's cached prefix, and leaves the permission section and per-turn guidance after it. Grok sessions get it by default; `1` also turns it on for OpenAI and Anthropic and `0` turns it off everywhere. Other providers send the prompt as one block and are not affected. Captured with the session environment, so a client sets it per session |
 | `AGENC_COMPLETION_CONTRACT` | Set to `0` to leave the completion contract (`# Completing work without a human`) out of non-interactive sessions such as `agenc -p`. Interactive sessions never receive it |
 | `AGENC_COMPLETION_CONTRACT_COHERENT` | Set to `1` so a session that receives the completion contract leaves out three default lines that contradict it: "Try the simplest approach first without going in circles. Do not overdo it.", "or re-verify things you already checked", and the advice to escalate with the ask-user-question tool. A measurement switch; sessions without the contract are unchanged |
-| `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` | Bytes of inline images (base64 data URLs from screenshots, image reads, pasted images) kept in the request. Default 6 MiB. Keeps a contiguous suffix of the newest inline images up to the full budget. Once an image does not fit, it and every older inline image are replaced on the wire by placeholders (warning `context_images_omitted`). An image that exceeds the limit by itself requests resizing or a smaller capture. At capacity, each new image may change the retained prefix; there is no cache hysteresis. The durable history keeps every image. `0` disables the bound. The compaction shrink measurement applies the same budget to the before and after histories it compares, so a screenshot-heavy history can still compact; a disabled or cap-sized value measures with the 6 MiB default |
+| `AGENC_LEAN_SYSTEM_PROMPT` | Selects the lean static head of the system prompt: the same product knowledge and safety rules as plain descriptions, about half as long. OpenAI and Grok sessions get it by default; `1` selects it for every provider and `0` keeps the standard head everywhere. The headless completion contract and the auto memory section are the same in both heads |
+| `AGENC_CONTEXT_IMAGE_BUDGET_BYTES` | Bytes of inline images (base64 data URLs from screenshots, image reads, pasted images) kept in the request. Default 6 MiB. Keeps a contiguous suffix of the newest inline images. When the images exceed the budget, the oldest are replaced on the wire by placeholders in one batch, down to half the budget (warning `context_images_omitted`); the newest image stays when it fits the budget by itself. Later images fill the budget again before the next batch, so the images kept, and the provider's cached prefix, change once per batch instead of with every new image. An image that exceeds the limit by itself is replaced together with every older image, and its placeholder requests resizing or a smaller capture. The durable history keeps every image. `0` disables the bound. The compaction shrink measurement applies the same budget to the before and after histories it compares, so a screenshot-heavy history can still compact; a disabled or cap-sized value measures with the 6 MiB default |
+| `AGENC_SPARSE_LINE_NUMBERS` | Set to `1` so FileRead numbers only the first line of a read, every tenth line and the last line instead of every line (about 15% fewer FileRead tokens). The FileRead and Edit descriptions say which lines carry a number. Off by default; captured with the session environment when the session's tools are built |
 | `AGENC_DISABLE_COMPACT` | Make `autoCompactIfNeeded` return without compacting. This does not disable `/compact` or the mid-turn outer gate. A resulting `compact_failed` stop emits canonical `turn_failed` and makes daemon-backed `--print` / `--no-tui` exit 1 once the print-mode continuation retry (`AGENC_ONE_SHOT_COMPACT_RETRIES`) is exhausted. Keep-alive sessions stay promptable, but the compatibility `runAgent` path with `keepAlive: false` fails. See [daemon.md](daemon.md#compact-skip-stays-per-turn) |
 | `AGENC_ONE_SHOT_COMPACT_RETRIES` | How many times `agenc -p` (and headless `-c` / `--resume`) re-enters the session with a runtime-authored continuation turn after a `compact_failed` stop. Default `1`; `0` disables; values above `3` are clamped. The continuation turn's pre-sampling compaction runs the degraded ladder (`compaction.emergency_mode` in [config.md](config.md)). The exit code is the last turn's outcome: a run that still ends in `compact_failed` exits 1, and text mode prints an `agenc: compaction failed mid-turn … (retry N/M)` notice to stderr. Structured output carries `compactFailedRetries` on the result record |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
@@ -313,6 +344,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SKIP_OFFICIAL_MARKETPLACE` | `1` stops the first marketplace catalog on a profile with none configured from auto-registering the official `agenc-plugins` marketplace |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
+| `AGENC_DEFER_RARE_TOOLS` | Set to `1` so ten rarely used built-in tools (ImagineImage, ImagineVideo, XSearch, LSP, NotebookRead, the three Ledger tools, VerifyPlanExecution and SendUserMessage) load through tool search instead of being sent with every request, about 1.4k fewer tokens per request. The tool search description names them so the model knows they exist. Off by default; captured with the session environment, so a client sets it per session |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
 | `AGENC_LINUX_SANDBOX_EXE` | Override the Linux sandbox helper path |
@@ -348,11 +380,20 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_C*
 
-`AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
+`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPILE_CACHE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
 
 ### AGENC_D*
 
-`AGENC_DAEMON_AUTOSTART_FAILURE`, `AGENC_DAEMON_COOKIE`, `AGENC_DAEMON_RUN`, `AGENC_DAEMON_STARTUP_GUARD_TOKEN`, `AGENC_DEBUG_LOGS_DIR`, `AGENC_DEBUG_LOG_LEVEL`, `AGENC_DEBUG_PROMPT_SUGGESTION`, `AGENC_DEBUG_REPAINTS`, `AGENC_DEBUG_SESSION_MEMORY`, `AGENC_DIAGNOSTICS_FILE`, `AGENC_DISABLE_1M_CONTEXT`, `AGENC_DISABLE_AGENC_MDS`, `AGENC_DISABLE_ATTACHMENTS`, `AGENC_DISABLE_COMMAND_INJECTION_CHECK`, `AGENC_DISABLE_COST_SUMMARY`, `AGENC_DISABLE_FAST_MODE`, `AGENC_DISABLE_NONESSENTIAL_TRAFFIC`, `AGENC_DISABLE_PRECOMPACT_SKIP`, `AGENC_DISABLE_SESSION_MEMORY_COMPACT`, `AGENC_DISABLE_TOOL_REMINDERS`, `AGENC_DISABLE_VIRTUAL_SCROLL`, `AGENC_DISCORD_GROUP_ADDRESSING`, `AGENC_DONT_INHERIT_ENV`, `AGENC_DRAIN_K_SIGMA`, `AGENC_DRAIN_MARGIN_MULT`, `AGENC_DRAIN_MIN_SAMPLES`, `AGENC_DRAIN_PERCENTILE`, `AGENC_DRAIN_RAISE_CAP`, `AGENC_DRAIN_RING_CAP`, `AGENC_DRAIN_SAFE_MIN_MS`, `AGENC_DUMP_AUTO_MODE`.
+`AGENC_DAEMON_AUTOSTART_FAILURE`, `AGENC_DAEMON_COOKIE`, `AGENC_DAEMON_RUN`, `AGENC_DAEMON_STARTUP_GUARD_TOKEN`, `AGENC_DEBUG_LOGS_DIR`, `AGENC_DEBUG_LOG_LEVEL`, `AGENC_DEBUG_PROMPT_SUGGESTION`, `AGENC_DEBUG_REPAINTS`, `AGENC_DEBUG_SESSION_MEMORY`, `AGENC_DEFER_RARE_TOOLS`, `AGENC_DIAGNOSTICS_FILE`, `AGENC_DISABLE_1M_CONTEXT`, `AGENC_DISABLE_AGENC_MDS`, `AGENC_DISABLE_ATTACHMENTS`, `AGENC_DISABLE_COMMAND_INJECTION_CHECK`, `AGENC_DISABLE_COST_SUMMARY`, `AGENC_DISABLE_FAST_MODE`, `AGENC_DISABLE_NONESSENTIAL_TRAFFIC`, `AGENC_DISABLE_PRECOMPACT_SKIP`, `AGENC_DISABLE_SESSION_MEMORY_COMPACT`, `AGENC_DISABLE_TOOL_REMINDERS`, `AGENC_DISABLE_VIRTUAL_SCROLL`, `AGENC_DISCORD_GROUP_ADDRESSING`, `AGENC_DONT_INHERIT_ENV`, `AGENC_DRAIN_K_SIGMA`, `AGENC_DRAIN_MARGIN_MULT`, `AGENC_DRAIN_MIN_SAMPLES`, `AGENC_DRAIN_PERCENTILE`, `AGENC_DRAIN_RAISE_CAP`, `AGENC_DRAIN_RING_CAP`, `AGENC_DRAIN_SAFE_MIN_MS`, `AGENC_DUMP_AUTO_MODE`.
+
+`AGENC_DAEMON_PROVISIONAL_START` is a launcher-owned marker for a guarded
+provisional daemon child. The marker alone never authorizes admission: the
+child requires the private startup IPC capability and an authenticated ADMIT
+message. It is removed before foreground startup and is not an operator control.
+
+`TUI_E2E_DEBUG` is a test-harness input. When set to `1`, the default CLI route
+skips the provisional early-start attempt and retains ordinary trust-first
+autostart. Ordinary startup leaves it unset.
 
 ### AGENC_E*
 
@@ -372,7 +413,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_I*
 
-`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_REPO`.
+`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_PREFIX`, `AGENC_INSTALL_REPO`.
 
 ### AGENC_J*
 
@@ -380,7 +421,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_L*
 
-`AGENC_LINUX_SANDBOX_ACTIVE`, `AGENC_LOCAL_OAUTH_API_BASE`, `AGENC_LOCAL_OAUTH_APPS_BASE`, `AGENC_LOCAL_OAUTH_CONSOLE_BASE`, `AGENC_LOGIN_NO_TUI`.
+`AGENC_LEAN_SYSTEM_PROMPT`, `AGENC_LINUX_SANDBOX_ACTIVE`, `AGENC_LOCAL_OAUTH_API_BASE`, `AGENC_LOCAL_OAUTH_APPS_BASE`, `AGENC_LOCAL_OAUTH_CONSOLE_BASE`, `AGENC_LOGIN_NO_TUI`.
 
 ### AGENC_M*
 
@@ -388,7 +429,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_O*
 
-`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
+`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
 
 ### AGENC_P*
 
@@ -396,11 +437,11 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_R*
 
-`AGENC_REMOTE`, `AGENC_REMOTE_AUTH_LOGIN_POLL_URL`, `AGENC_REMOTE_AUTH_LOGIN_START_URL`, `AGENC_REMOTE_AUTH_ME_URL`, `AGENC_REMOTE_AUTH_MODEL_URL`, `AGENC_REMOTE_AUTH_TIER_URL`, `AGENC_REMOTE_AUTH_TOKEN`, `AGENC_REMOTE_AUTH_URL`, `AGENC_REMOTE_AUTH_USAGE_URL`, `AGENC_REMOTE_DEBUG`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
+`AGENC_REMOTE`, `AGENC_REMOTE_AUTH_LOGIN_POLL_URL`, `AGENC_REMOTE_AUTH_LOGIN_START_URL`, `AGENC_REMOTE_AUTH_ME_URL`, `AGENC_REMOTE_AUTH_MODEL_URL`, `AGENC_REMOTE_AUTH_TIER_URL`, `AGENC_REMOTE_AUTH_TOKEN`, `AGENC_REMOTE_AUTH_URL`, `AGENC_REMOTE_AUTH_USAGE_URL`, `AGENC_REMOTE_DEBUG`, `AGENC_REMOTE_FULL_CONTROL`, `AGENC_REMOTE_MEMORY_DIR`, `AGENC_REMOTE_SESSION_ID`, `AGENC_ROLLOUT_TRACE_ROOT`.
 
 ### AGENC_S*
 
-`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.
+`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SHARED_PREFIX_TAIL`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SPARSE_LINE_NUMBERS`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.
 
 ### AGENC_T*
 
@@ -416,7 +457,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_W*
 
-`AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR`, `AGENC_WORKER_EPOCH`.
+`AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR`, `AGENC_WINSW_XML`, `AGENC_WORKER_EPOCH`.
 
 ## External, platform, and runtime-managed inputs
 
@@ -429,11 +470,20 @@ launcher, child process, integration, or test runner.
 | Family | Direct inputs |
 | --- | --- |
 | Supervised child-process controls | `AGENC_BOUND_READ_USE_NOFOLLOW`, `AGENC_PROCESS_WATCHDOG_CONFIG` |
+| Native package build inputs | `CC`, `npm_config_nodedir` |
 | Anthropic-compatible client controls | `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_UNIX_SOCKET`, `API_TIMEOUT_MS`, `AZURE_OPENAI_API_VERSION`, `MAX_THINKING_TOKENS` |
 | Search and custom HTTP connectors | `APP_URL`, `BING_API_KEY`, `EMBEDDED_SEARCH_TOOLS`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `LINKUP_API_KEY`, `MOJEEK_API_KEY`, `PROJECT_DOMAIN`, `TAVILY_API_KEY`, `WEB_AUTH_HEADER`, `WEB_AUTH_SCHEME`, `WEB_BODY_TEMPLATE`, `WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS`, `WEB_CUSTOM_ALLOW_HTTP`, `WEB_CUSTOM_ALLOW_PRIVATE`, `WEB_CUSTOM_MAX_BODY_KB`, `WEB_CUSTOM_TIMEOUT_SEC`, `WEB_HEADERS`, `WEB_JSON_PATH`, `WEB_KEY`, `WEB_METHOD`, `WEB_PARAMS`, `WEB_PROVIDER`, `WEB_QUERY_PARAM`, `WEB_SEARCH_API`, `WEB_SEARCH_PROVIDER`, `WEB_URL_TEMPLATE`, `YOU_API_KEY` |
 | MCP transport and OAuth tuning | `ENABLE_MCP_LARGE_OUTPUT_FILES`, `MAX_MCP_OUTPUT_TOKENS`, `MCP_CLIENT_SECRET`, `MCP_OAUTH_CLIENT_METADATA_URL`, `MCP_SERVER_CONNECTION_BATCH_SIZE`, `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT`, `MCP_XAA_IDP_CLIENT_SECRET` |
 | Runtime, update, and test controls | `ATOMIC_CHAT_BASE_URL`, `BASH_MAX_OUTPUT_LENGTH`, `DEBUG`, `DEBUG_SDK`, `DISABLE_AUTOUPDATER`, `DISABLE_COST_WARNINGS`, `DISABLE_ERROR_REPORTING`, `DISABLE_EXTRA_USAGE_COMMAND`, `DISABLE_INSTALLATION_CHECKS`, `DISABLE_INTERLEAVED_THINKING`, `ENABLE_LOCKLESS_UPDATES`, `ENABLE_PID_BASED_VERSION_LOCKING`, `ENABLE_SESSION_PERSISTENCE`, `FORCE_AUTOUPDATE_PLUGINS`, `FORCE_CODE_TERMINAL`, `IS_DEMO`, `LOCAL_BRIDGE`, `SESSION_INGRESS_URL`, `SLASH_COMMAND_TOOL_CHAR_BUDGET`, `TASK_MAX_OUTPUT_LENGTH`, `TEST_ENABLE_SESSION_PERSISTENCE`, `USE_BUILTIN_RIPGREP`, `USE_LOCAL_OAUTH`, `USE_STAGING_OAUTH`, `UV_THREADPOOL_SIZE`, `WALLET_PASS` |
 | Auth and hosted integration metadata | `CURSOR_TRACE_ID`, `GITHUB_DEVICE_FLOW_CLIENT_ID`, `SESSIONNAME`, `SPACE_CREATOR_USER_ID` |
+
+`CC` selects the C compiler executable for native helper builds, including
+the Linux peer-credential binding prepared with `--build`; it defaults to `cc`.
+`npm_config_nodedir` supplies the Node headers root, with headers under
+`include/node`. Peer-credential package preparation uses this root when set;
+native runtime tarball builds require an absolute root with verified headers.
+These are build-process inputs. Install-time cache preparation and the daemon's
+runtime compile fallback keep their existing compiler and header discovery.
 
 `API_TIMEOUT_MS` is captured in the provider binding used by each request.
 Timeout messages do not display the daemon process's current value because it
@@ -447,9 +497,13 @@ Standard process and desktop discovery inputs:
 | Family | Direct inputs |
 | --- | --- |
 | Home, user, temp, and application data | `APPDATA`, `FULLNAME`, `HOME`, `LOCALAPPDATA`, `LOGNAME`, `NAME`, `ProgramData`, `REALNAME`, `TEMP`, `TMPDIR`, `USER`, `USERNAME`, `USERPROFILE` |
-| Shell, editor, locale, and process execution | `BROWSER`, `ComSpec`, `EDITOR`, `LANG`, `LC_ALL`, `LC_TERMINAL`, `LC_TIME`, `MSYSTEM`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `P4PORT`, `PATH`, `PATHEXT`, `SHELL`, `SystemRoot`, `VISUAL`, `VSCODE_GIT_ASKPASS_MAIN`, `VisualStudioVersion`, `WINDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` |
+| Shell, editor, locale, and process execution | `BROWSER`, `CDPATH`, `ComSpec`, `EDITOR`, `LANG`, `LC_ALL`, `LC_TERMINAL`, `LC_TIME`, `MSYSTEM`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `P4PORT`, `PATH`, `PATHEXT`, `SHELL`, `SystemRoot`, `VISUAL`, `VSCODE_GIT_ASKPASS_MAIN`, `VisualStudioVersion`, `WINDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` |
 | Local graphical desktop | `DISPLAY`, `WAYLAND_DISPLAY` |
 | Terminal detection and styling | `ALACRITTY_LOG`, `BAT_THEME`, `COLORTERM`, `ConEmuANSI`, `ConEmuPID`, `ConEmuTask`, `GNOME_TERMINAL_SERVICE`, `ITERM_SESSION_ID`, `KITTY_WINDOW_ID`, `KONSOLE_VERSION`, `PTYXIS_VERSION`, `SSH_CLIENT`, `SSH_CONNECTION`, `SSH_TTY`, `STY`, `TERMINAL_EMULATOR`, `TERMINATOR_UUID`, `TERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TILIX_ID`, `TMUX`, `TMUX_PANE`, `VTE_VERSION`, `WSL_DISTRO_NAME`, `WT_SESSION`, `XTERM_VERSION`, `ZED_TERM`, `__CFBundleIdentifier` |
+
+The shell write fence reads `CDPATH`. When it is set, `cd name` can land in a
+folder the command line does not spell out, so the fence treats that `cd` as
+an unknown directory change.
 
 OAuth browser opening uses a snapshot of the local TUI process environment,
 not a remote session's provider or home settings. On Linux, `DISPLAY` or

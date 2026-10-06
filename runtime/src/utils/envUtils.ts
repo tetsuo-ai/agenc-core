@@ -9,7 +9,7 @@ import {
   getCurrentRuntimeSession,
   peekAmbientRuntimeSession,
 } from '../session/current-session.js'
-import { peekAgentRuntimeOptions } from '../session/runtime-options.js'
+import { peekAgentRuntimeOptions } from '../session/runtime-options-context.js'
 import { getCanonicalSettingsAuthority } from './settings/canonicalAuthority.js'
 
 /**

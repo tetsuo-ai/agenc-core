@@ -3,8 +3,10 @@ import type {
   LLMMessage,
   ProviderReasoningReplay,
 } from "../llm/types.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import { redactSecretsInValue } from "../secrets/index.js";
+import { createMemoizedSecretRedactor } from "../secrets/sanitizer.js";
 import {
   OMITTED_BINARY_CARRIER_TEXT,
   omitAlteredBinaryCarriers,
@@ -110,7 +112,11 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
       : {}),
     ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
     ...(message.providerReasoningContent !== undefined &&
-    message.providerReasoningContent.length > 0
+    (message.providerReasoningContent.length > 0 ||
+      (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0 &&
+        isKnownEmptyProviderReasoning(
+          message.providerReasoningContent, message.providerReasoningProvenance,
+        )))
       ? {
           providerReasoning: {
             ...(message.providerReasoningProvenance !== undefined &&
@@ -167,9 +173,23 @@ export function llmMessageToDurableResponseItem(
 export function llmMessageToCheckpointResponseItem(
   message: LLMMessage,
 ): ResponseItem {
+  return projectCheckpointMessage(message, redactSecretsInValue);
+}
+
+/** A bounded pure-string redaction cache owned by one turn, not its messages. */
+export function createCheckpointResponseItemProjector(): typeof llmMessageToCheckpointResponseItem {
+  const redact = createMemoizedSecretRedactor();
+  return (message) => projectCheckpointMessage(message, redact);
+}
+
+function projectCheckpointMessage(
+  message: LLMMessage,
+  redact: typeof redactSecretsInValue,
+): ResponseItem {
   const item = llmMessageToResponseItem(message);
+  // Always validate the current seal and current fields, including cache hits.
   const integrity = currentIntegrity(message, true);
-  return redactResponseItemForPersistence(item, integrity, "preserve");
+  return redactResponseItemForPersistence(item, integrity, "preserve", redact);
 }
 
 /**
@@ -219,7 +239,11 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
     ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
     ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
     ...(item.providerReasoning !== undefined &&
-    item.providerReasoning.content.length > 0
+    (item.providerReasoning.content.length > 0 ||
+      (item.role === "assistant" && (item.toolCalls?.length ?? 0) > 0 &&
+        item.providerReasoning.version === 2 && isKnownEmptyProviderReasoning(
+          item.providerReasoning.content, item.providerReasoning,
+        )))
       ? {
           providerReasoningContent: item.providerReasoning.content,
           ...(item.providerReasoning.version === 2 &&
@@ -354,7 +378,7 @@ function currentIntegrity(
 }
 
 /**
- * Only canonical Grok ciphertext is exempt from text redaction.
+ * Only canonical provider ciphertext is exempt from text redaction.
  * True when durable persistence drops invalid Grok replay or other replay because secret
  * redaction would alter it.
  *
@@ -373,14 +397,18 @@ function currentIntegrity(
  */
 export function durableRedactionDropsProviderReplay(
   providerReasoning: ProviderReasoningReplay | undefined,
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
 ): boolean {
   if (providerReasoning === undefined) return false;
   if (providerReasoning.version === 2 && providerReasoning.provider === "grok") {
     if (!isGrokEncryptedReplay(providerReasoning)) return true;
-    const metadata = redactSecretsInValue({ provider: providerReasoning.provider, model: providerReasoning.model });
+    const metadata = redact({ provider: providerReasoning.provider, model: providerReasoning.model });
     return metadata.provider !== providerReasoning.provider || metadata.model !== providerReasoning.model;
   }
-  const redacted = redactSecretsInValue(providerReasoning);
+  const redacted = redactDurableSecrets({
+    role: "assistant",
+    providerReasoning,
+  }, "response", redact).providerReasoning;
   return (
     redacted?.content !== providerReasoning.content ||
     redacted.version !== providerReasoning.version ||
@@ -395,11 +423,12 @@ function redactResponseItemForPersistence(
   item: ResponseItem,
   integrity: ToolResultIntegrity | undefined,
   bodyMode: "authenticate" | "preserve",
+  redact: typeof redactSecretsInValue = redactSecretsInValue,
 ): ResponseItem {
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
   let redacted =
     unsealedItem.agentInvocation === undefined
-      ? (redactDurableSecrets(unsealedItem, "response") as ResponseItem)
+      ? (redactDurableSecrets(unsealedItem, "response", redact) as ResponseItem)
       : (() => {
           const {
             content,
@@ -407,7 +436,7 @@ function redactResponseItemForPersistence(
             ...untrustedUnauthenticatedFields
           } = unsealedItem;
           return {
-            ...(redactDurableSecrets(untrustedUnauthenticatedFields, "response") as Omit<
+            ...(redactDurableSecrets(untrustedUnauthenticatedFields, "response", redact) as Omit<
               ResponseItem,
               "content" | "agentInvocation"
             >),
@@ -415,7 +444,7 @@ function redactResponseItemForPersistence(
             agentInvocation,
           } as ResponseItem;
         })();
-  if (durableRedactionDropsProviderReplay(item.providerReasoning)) {
+  if (durableRedactionDropsProviderReplay(item.providerReasoning, redact)) {
     // The replay is opaque provider state: redacting it would corrupt what
     // the provider gets back, and persisting it unredacted would write the
     // matched secret into the rollout. Neither is acceptable, so the replay
@@ -427,7 +456,7 @@ function redactResponseItemForPersistence(
     const { providerReasoning: _droppedReplay, ...withoutReplay } = redacted;
     redacted = withoutReplay as ResponseItem;
   }
-  redacted = withoutAlteredBinaryCarriers(item, redacted);
+  redacted = withoutAlteredBinaryCarriers(item, redacted, redact);
   assertResponseAgentInvocationItem(redacted);
   return boundDurableToolRecord(redacted, (body) => {
     if (integrity === undefined) return body;
@@ -435,7 +464,7 @@ function redactResponseItemForPersistence(
       throw new Error("redaction removed a durable tool-result identity");
     }
 
-    let durableIntegrity = rebindRedactedIdentity(integrity, body.toolCallId);
+    let durableIntegrity = rebindRedactedIdentity(integrity, body.toolCallId, redact);
     if (bodyMode === "authenticate") {
       const redactedBody = verifyToolResultIntegrity({
         integrity: durableIntegrity,
@@ -511,11 +540,12 @@ function withoutBrokenBinaryCarriers(
 function withoutAlteredBinaryCarriers(
   original: ResponseItem,
   redacted: ResponseItem,
+  redact: typeof redactSecretsInValue,
 ): ResponseItem {
   const { content, omitted } = omitAlteredBinaryCarriers(
     original.content,
     redacted.content,
-    (body) => redactSecretsInValue(body) !== body,
+    (body) => redact(body) !== body,
   );
   return omitted ? ({ ...redacted, content } as ResponseItem) : redacted;
 }
@@ -532,8 +562,9 @@ function assertResponseAgentInvocationItem(item: ResponseItem): void {
 function rebindRedactedIdentity(
   integrity: ToolResultIntegrity,
   toolCallId: string,
+  redact: typeof redactSecretsInValue,
 ): ToolResultIntegrity {
-  const runId = redactSecretsInValue(integrity.runId);
+  const runId = redact(integrity.runId);
   return {
     ...integrity,
     runId,

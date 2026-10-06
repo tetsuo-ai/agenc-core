@@ -25,11 +25,19 @@
  * layer can import it.
  */
 import { isAlwaysOnThinkingAnthropicModel } from "./alwaysOnThinking.js";
-import { CLAUDE_OPUS_5_5, isClaudeModel } from "./claudeModelId.js";
+import { CLAUDE_OPUS_5_5, CLAUDE_SONNET_5_5, isClaudeModel } from "./claudeModelId.js";
 
 export type AnthropicThinkingControl = "always_on" | "adaptive" | "budget";
 
 export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+// Sonnet 5.5 (official migration guide, 2026-09-29) thinks by default,
+// rejects forced tools even at its lowest `between_tools` setting, and
+// accepts no manual budget or disabled thinking. Do not infer this from
+// the broader Sonnet 5 family: the older model has a different contract.
+export function anthropicSupportsBetweenToolsThinking(model: string): boolean {
+  return isClaudeModel(model, CLAUDE_SONNET_5_5);
+}
 
 function familySpelling(model: string): string {
   // Bedrock inference profiles brand the segment "anthropic.agenc-<model>".
@@ -78,7 +86,9 @@ const ANTHROPIC_EFFORT_CONTRACTS: readonly {
 const OPUS_5_5_EFFORT_LEVELS: readonly AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
-  if (isClaudeModel(model, CLAUDE_OPUS_5_5)) return OPUS_5_5_EFFORT_LEVELS;
+  if (isClaudeModel(model, CLAUDE_OPUS_5_5) || anthropicSupportsBetweenToolsThinking(model)) {
+    return OPUS_5_5_EFFORT_LEVELS;
+  }
   return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];
 }
 

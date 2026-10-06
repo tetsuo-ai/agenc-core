@@ -280,13 +280,11 @@ describe("session transcript coverage swarm row 003", () => {
 
     const contents = systemContents(transcript);
 
-    expect(contents[0]).toContain("0 in");
-    expect(contents[0]).toContain("2 out");
-    expect(contents[0]).toContain("2 total");
-    expect(contents[0]).toContain("est.");
-    expect(contents[0]).not.toContain("unknown");
-    expect(contents[1]).toContain("Background agent running: word0 word1");
-    expect(contents[1]!.length).toBeLessThan(210);
+    // Sparse usage still normalizes into a finite cost, and adds no row.
+    expect(Number.isFinite(transcript.sessionCostUsd)).toBe(true);
+    expect(transcript.sessionCostUsd).toBeGreaterThanOrEqual(0);
+    expect(contents[0]).toContain("Background agent running: word0 word1");
+    expect(contents[0]!.length).toBeLessThan(210);
     expect(contents).toContain("Background agent completed");
     expect(contents).toContain("Background agent cancelled");
     expect(contents).toContain("Background agent custom-status");

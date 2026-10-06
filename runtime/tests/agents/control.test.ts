@@ -1,3 +1,4 @@
+import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import Database from "better-sqlite3";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { injectChildToolArgs } from "../../src/agents/run-agent.js";
+import { bindLiveAgentSession } from "../../src/agents/live-session.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import {
   AgentControl,
@@ -167,6 +169,49 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("reads lossless bounded final-result pages only for the owning parent and exact turn", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const child = await control.spawn({ parentPath: "/root" });
+    const text = ' \n' + JSON.stringify({ rows: '🐈 " &amp;'.repeat(5000) }) + '\n ';
+    child.completedTaskResults = new CompletedTaskResults();
+    child.completedTaskResults.set("done", text);
+    let result = "", offset = 0;
+    for (;;) {
+      const page = control.readChildResultPage(session.conversationId, child.agentId, "done", offset);
+      expect(page.text.length).toBeLessThanOrEqual(8192);
+      expect(Buffer.from(page.text, "utf8").toString("utf8")).toBe(page.text);
+      result += page.text;
+      if (page.next_offset === null) break;
+      offset = page.next_offset;
+    }
+    expect(result).toBe(text);
+    expect(JSON.parse(result)).toEqual(JSON.parse(text));
+    expect(() => control.readChildResultPage("another-parent", child.agentId, "done")).toThrow(/not a child/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "stale")).toThrow(/no completed/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "done", -1)).toThrow(/nonnegative/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "done", text.indexOf("🐈") + 1)).toThrow(/splits a Unicode character/);
+    await control.shutdownAll();
+  });
+
+  it("reads exact recovered results through the authorized durable reader, without restarting a child", () => {
+    const message = JSON.stringify({ data: "x".repeat(12000) });
+    const read = vi.fn(() => [{ receipt: { turnId: "old-turn", outcome: "completed", message } }]);
+    const store = { listThreadSpawnDescendants: () => [],
+      listThreadSpawnChildren: (parent: string) => parent === "session-test" ? [{ childThreadId: "old-child" }] : [],
+      readThreadSpawnTaskReceipts: read } as unknown as RolloutStore;
+    const session = stubSession({ rolloutStore: store });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    expect(() => control.readChildResultPage("outsider", "old-child", "old-turn")).toThrow(/not a child/);
+    expect(read).not.toHaveBeenCalled();
+    const first = control.readChildResultPage(session.conversationId, "old-child", "old-turn");
+    const last = control.readChildResultPage(session.conversationId, "old-child", "old-turn", first.next_offset!);
+    expect(first.text + last.text).toBe(message);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   it("snapshots and interrupts a worker with a string status projection", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });
@@ -197,10 +242,33 @@ describe("AgentControl", () => {
         reason: "completed", dispatch: "sent", completedWork: "done" });
       worker.status.markIdle("turn-1", terminal);
       expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
-        agentId: worker.agentId, status: "idle", terminal,
+        agentId: worker.agentId, status: "idle", provider: "fake", model: "fake-model", terminal,
       });
+      expect(control.listAgents().find((item) => item.agentName === worker.agentPath))
+        .toMatchObject({ provider: "fake", model: "fake-model" });
     } finally { await control.shutdownAll(); }
   });
+  it("uses the initial child admission before binding and never infers its labels from the parent", async () => {
+    const session = stubSession();
+    const parentCurrent = vi.fn(() => ({ provider: "grok", model: "parent-current-model" }));
+    Object.assign(session, { providerService: { current: parentCurrent } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root", initialTask: {
+      text: "inspect", provider: "deepseek", model: "deepseek-v4-flash",
+    } });
+    const unknown = await control.spawn({ parentPath: "/root" });
+    parentCurrent.mockReturnValue({ provider: "openai", model: "changed-parent-model" });
+    try {
+      expect(control.listAgents().find((item) => item.agentName === worker.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === worker.agentId))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash" });
+      expect(control.listAgents().find((item) => item.agentName === unknown.agentPath)).not.toHaveProperty("provider");
+      expect(control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === unknown.agentId)).not.toHaveProperty("model");
+    } finally { await control.shutdownAll(); }
+  });
+
   it("preserves actual turn timing when interrupting a worker by its thread ID", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });
@@ -282,6 +350,11 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 3 });
     const inspector = await control.spawn({ parentPath: "/root", roleName: "default" });
+    const callerSession = Object.assign(stubSession({ conversationId: inspector.agentId }), {
+      abortController: new AbortController(),
+      onBeforeDurableClose: () => () => {},
+    });
+    const revoke = bindLiveAgentSession(inspector, callerSession);
     context = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
     const writer = await control.spawn({ parentPath: "/root", roleName: "default" });
     const tools = createMultiAgentV2Tools({ getSession: () => session, workspace: control.roleWorkspace, roleCatalog: control.roleCatalog, ensureAgentControl: () => ({ control, registry }) });
@@ -292,6 +365,7 @@ describe("AgentControl", () => {
       expect(result.isError, result.content).toBe(true);
       expect(result.content).toContain("own constrained descendants");
     }
+    revoke();
   });
 
   it("spawn() produces a LiveAgent with allocated path + nickname", async () => {
@@ -1212,10 +1286,23 @@ describe("AgentControl", () => {
         .rejects.toThrow(/consent provenance/u);
       expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
       expect(control.getAgentConfigSnapshot(live.agentId)?.executionPlan).toEqual(plan);
+      const childSession = Object.assign(stubSession({ conversationId: live.agentId }), {
+        abortController: new AbortController(), onBeforeDurableClose: () => () => {},
+        providerService: { current: () => ({ provider: "openai", model: "unexpected-provider-drift" }) },
+      });
+      const revokeChild = bindLiveAgentSession(live, childSession);
       expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
         .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
       expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
         .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+      live.status.markIdle("finished-task", childTerminalOutcome({ provider: "deepseek", model: "terminal-actual-model",
+        reason: "completed", dispatch: "sent", completedWork: "done" }));
+      expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "terminal-actual-model" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
+        .toMatchObject({ provider: "deepseek", model: "terminal-actual-model" });
+      revokeChild();
       allowed = ["deepseek", "openai"];
       await expect(control.resume({ parentPath: "/root", metadata: live.metadata }))
         .rejects.toThrow(/execution plan.*policy changed/u);

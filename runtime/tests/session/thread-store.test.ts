@@ -174,6 +174,45 @@ afterEach(() => {
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
 });
 
+describe("bounded thread registry updates", () => {
+  it("registers and patches one thread without enumerating or rewriting unrelated history", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const driver = openStateDatabases({ cwd, agencHome });
+    const threads = new StateThreadRepository(driver);
+    for (let i = 0; i < 100; i += 1) {
+      threads.upsertThread({ threadId: `history_${i}`, name: `History ${i}`,
+        createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" });
+    }
+    const before = threads.listThreads();
+    const enumerate = vi.spyOn(StateThreadRepository.prototype, "listThreads");
+    const write = vi.spyOn(StateThreadRepository.prototype, "upsertThread");
+    const rollout = openStore({ cwd, sessionId: "bounded" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    try {
+      store.createThread({ threadId: "bounded", rolloutStore: rollout });
+      store.updateThreadMetadata({ threadId: "bounded", patch: { name: "Changed" }, includeArchived: false });
+      expect(enumerate).not.toHaveBeenCalled();
+      expect(write.mock.calls.every(([entry]) => entry.threadId === "bounded")).toBe(true);
+      expect(threads.getThread("bounded")?.name).toBe("Changed");
+      for (const entry of before) expect(threads.getThread(entry.threadId)).toEqual(entry);
+      // A second connection's metadata and archive state must be read afresh,
+      // even after this store has completed its once-only legacy import.
+      const current = threads.getThread("bounded")!;
+      threads.upsertThread({ ...current, model: "external-model" });
+      store.updateThreadMetadata({ threadId: "bounded", patch: { name: "Again" }, includeArchived: false });
+      expect(threads.getThread("bounded")?.model).toBe("external-model");
+      threads.upsertThread({ ...threads.getThread("bounded")!, archivedAt: "2026-10-02T00:00:00Z" });
+      expect(() => store.updateThreadMetadata({ threadId: "bounded", patch: { name: "Forbidden" }, includeArchived: false }))
+        .toThrow();
+      expect(threads.getThread("bounded")?.name).toBe("Again");
+    } finally {
+      enumerate.mockRestore(); write.mockRestore();
+      store.close(); rollout.close(); driver.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("FileThreadStore.createThread", () => {
   it("registers a new thread and persists a registry entry", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));

@@ -1,3 +1,4 @@
+import { EndpointMetadataCache, type EndpointMetadataScope } from "./endpoint-metadata-cache.js";
 import {
   readProviderConfig,
 } from "../config/resolve-provider.js";
@@ -78,6 +79,8 @@ export interface ModelMetadataResolverOptions {
    * map) with other resolvers. Without it, this resolver downloads its own.
    */
   readonly publicCatalogs?: PublicModelCatalogCache;
+  /** Explicitly opt this resolver into one private transport partition. */
+  readonly endpointCatalogs?: EndpointMetadataCache;
 }
 
 interface LookupParams {
@@ -166,11 +169,13 @@ export class ModelMetadataResolver {
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
   private readonly publicCatalogs?: PublicModelCatalogCache;
-  private readonly inFlightJson = new Map<
+  private readonly endpointCatalogs?: EndpointMetadataCache;
+  private endpointRevision = -1;
+  private inFlightJson = new Map<
     string,
     Promise<MetadataJson | undefined>
   >();
-  private readonly jsonCache = new Map<string, MetadataJson | undefined>();
+  private jsonCache = new Map<string, MetadataJson | undefined>();
   private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
@@ -179,6 +184,36 @@ export class ModelMetadataResolver {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
     this.onWarn = options.onWarn;
     this.publicCatalogs = options.publicCatalogs;
+    this.endpointCatalogs = options.endpointCatalogs;
+  }
+
+  /** Observe authority changes even when an upper-level model cache has a hit. */
+  cacheRevision(params: LookupParams): number {
+    this.endpointScope(params);
+    const revision = this.endpointCatalogs?.revision ?? 0;
+    if (revision !== this.endpointRevision) {
+      // Replace maps, do not clear them: an old pending download owns the old
+      // maps and must not republish data into this generation.
+      this.inFlightJson = new Map();
+      this.jsonCache = new Map();
+      this.endpointRevision = revision;
+    }
+    return revision;
+  }
+
+  private endpointScope(params: LookupParams): EndpointMetadataScope | undefined {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return this.endpointCatalogs?.observe(provider, this.endpointConfiguration(params));
+  }
+
+  private endpointConfiguration(params: LookupParams): unknown {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return {
+      config: readProviderConfig(params.config, provider),
+      baseUrl: providerBaseUrl(params.config, provider, this.env),
+      headers: authHeaders(provider, params.config, this.env),
+      timeoutMs: this.timeoutMs,
+    };
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -201,6 +236,23 @@ export class ModelMetadataResolver {
   }
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
+    const scope = this.endpointScope(params);
+    this.cacheRevision(params);
+    const metadata = await this.resolveMetadata(params);
+    // Other sessions may rotate the shared scope while this request is in
+    // flight. Their rotation only revokes shared publication. If this caller's
+    // own authority changed, fail explicitly rather than using old limits or
+    // extending the discovery timeout with an automatic retry.
+    if (scope !== undefined && !this.endpointCatalogs!.matchesConfiguration(
+      scope, this.endpointConfiguration(params),
+    )) {
+      this.endpointCatalogs!.invalidate(scope);
+      throw new Error("Provider metadata configuration changed during discovery; retry with the current configuration");
+    }
+    return metadata;
+  }
+
+  private async resolveMetadata(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
     if (shouldPreferLiveEndpointOverExplicit(params, this.env)) {
       const live = await this.resolveLiveEndpointMetadata(params);
@@ -264,11 +316,22 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    const builtIn = inferBuiltInMetadata(params.provider, params.model);
     // An explicit output cap overrides that field, not the model's remaining
     // metadata. Dropping its known context window makes session admission fail.
-    const mergedMetadata = source === "explicit_config"
-      ? { ...inferBuiltInMetadata(params.provider, params.model), ...metadata }
+    const sourced = source === "explicit_config"
+      ? { ...builtIn, ...metadata }
       : metadata;
+    // Any source can know a model's output limit and not its window: an
+    // explicit cap, or a models list that names the window in a field not read
+    // here. A session without a window fails every turn before sending it, so
+    // the built-in window stays, and a model nothing here knows plans against
+    // the conservative window, as it does when no source answers at all.
+    const knownContextWindow = sourced.contextWindow ?? builtIn?.contextWindow;
+    const mergedMetadata = {
+      ...sourced,
+      contextWindow: knownContextWindow ?? CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+    };
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
       mergedMetadata,
@@ -280,15 +343,14 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(mergedMetadata.contextWindow !== undefined
-        ? { contextWindow: mergedMetadata.contextWindow }
-        : {}),
+      contextWindow: mergedMetadata.contextWindow,
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
       maxOutputTokensExplicit: output.maxOutputTokensExplicit,
       maxOutputTokensCappedDefault: output.maxOutputTokensCappedDefault,
       source,
-      usedFallbackModelMetadata,
+      usedFallbackModelMetadata:
+        usedFallbackModelMetadata || knownContextWindow === undefined,
     };
   }
 
@@ -311,7 +373,7 @@ export class ModelMetadataResolver {
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama" && provider !== "ollama-cloud") {
-      const response = await this.fetchJson(modelsUrlFromBaseUrl(baseUrl), {
+      const response = await this.fetchEndpointJson(params, baseUrl, modelsUrlFromBaseUrl(baseUrl), {
         headers,
       });
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
@@ -342,11 +404,33 @@ export class ModelMetadataResolver {
     params: LookupParams,
     headers: Readonly<Record<string, string>> | undefined,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(ollamaShowUrlFromBaseUrl(baseUrl), {
+    const response = await this.fetchEndpointJson(params, baseUrl, ollamaShowUrlFromBaseUrl(baseUrl), {
       ...(headers !== undefined ? { headers } : {}),
       jsonBody: { model: params.model },
     });
     return metadataFromOllamaShowResponse(response);
+  }
+
+  private async fetchEndpointJson(
+    params: LookupParams,
+    baseUrl: string,
+    url: string,
+    options: FetchJsonOptions,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.endpointCatalogs;
+    const scope = this.endpointScope(params);
+    if (shared === undefined || scope === undefined) return this.fetchJson(url, options);
+    return this.fetchJson(url, options, () => shared.get(scope, {
+      baseUrl,
+      url,
+      method: options.jsonBody === undefined ? "GET" : "POST",
+      headers: {
+        ...options.headers,
+        ...(options.jsonBody !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(options.jsonBody !== undefined ? { body: JSON.stringify(options.jsonBody) } : {}),
+      timeoutMs: this.timeoutMs,
+    }, () => this.fetchJsonUncached(url, options)));
   }
 
   private async resolveOpenRouterMetadata(
@@ -530,15 +614,40 @@ function shouldQueryLiveEndpoint(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const provider = normalizeMetadataProviderIdentity(params.provider);
-  const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
     provider === "ollama" ||
     provider === "ollama-cloud" ||
-    Boolean(providerConfig?.base_url?.trim()) ||
-    Boolean(envBaseUrl(provider, env))
+    hasCustomProviderBaseUrl(
+      provider,
+      providerBaseUrl(params.config, provider, env),
+    )
   );
+}
+
+function hasCustomProviderBaseUrl(
+  provider: string,
+  baseUrl: string | undefined,
+): boolean {
+  if (!baseUrl?.trim()) return false;
+  const defaultBaseUrl = defaultProviderBaseUrl(provider);
+  if (!defaultBaseUrl) return true;
+  try {
+    const configured = new URL(baseUrl.trim());
+    const official = new URL(defaultBaseUrl);
+    const path = (url: URL) => url.pathname.replace(/\/+$/, "") || "/";
+    return configured.protocol !== official.protocol ||
+      configured.hostname !== official.hostname ||
+      configured.port !== official.port ||
+      path(configured) !== path(official) ||
+      configured.username !== official.username ||
+      configured.password !== official.password ||
+      configured.search !== official.search ||
+      configured.hash !== official.hash;
+  } catch {
+    return true;
+  }
 }
 
 function shouldPreferLiveEndpointOverExplicit(
@@ -852,13 +961,15 @@ function metadataFromGenericRecord(
   const topProvider = asRecord(record.top_provider);
   return {
     // The served window is checked before the model's advertised maximum: a
-    // local server refuses anything past what it actually loaded.
+    // local server refuses anything past what it actually loaded. DeepSeek's
+    // /models names the advertised window `context_window`.
     ...(servedContextWindow(record) !== undefined
       ? { contextWindow: servedContextWindow(record) }
       : readPositiveInteger(
         record,
         "max_model_len",
         "context_length",
+        "context_window",
         "max_context_length",
         "max_input_tokens",
         "max_tokens",
@@ -868,6 +979,7 @@ function metadataFromGenericRecord(
             record,
             "max_model_len",
             "context_length",
+            "context_window",
             "max_context_length",
             "max_input_tokens",
             "max_tokens",

@@ -6,6 +6,7 @@ import {
   type TurnCheckpointV3Event,
   type TurnCheckpointV4Event,
 } from "./event-log.js";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import type { ToolResultIntegrityResponseItem } from "./rollout-item.js";
 import {
   assertAgentInvocationChannelMessage,
@@ -883,7 +884,9 @@ function assertResponseItemShape(
     if (
       (!validV1 && !validV2) ||
       typeof providerReasoning.content !== "string" ||
-      providerReasoning.content.length === 0
+      (providerReasoning.content.length === 0 &&
+        !(validV2 && Array.isArray(item.toolCalls) && item.toolCalls.length > 0 &&
+          isKnownEmptyProviderReasoning(providerReasoning.content, providerReasoning)))
     ) {
       throw malformed(
         `checkpoint response item ${index} has invalid provider reasoning replay`,
@@ -1062,6 +1065,8 @@ function parseCheckpointAdmissionState(
 }
 
 interface ParsedCheckpointModelSampleState {
+  reasoningOnlyRecoveryPending?: true;
+  reasoningOnlyRecoveryCount?: number;
   modelSampleOrdinal?: number;
   modelSampleResumePrompt?: "continuation_nudge" | "empty_response" | "text_tool_call_correction";
   textToolCallCorrectionCount?: number;
@@ -1072,6 +1077,17 @@ function parseCheckpointModelSampleState(
   value: Record<string, unknown>,
 ): ParsedCheckpointModelSampleState {
   const result: ParsedCheckpointModelSampleState = {};
+  if (value.reasoningOnlyRecoveryCount !== undefined) {
+    result.reasoningOnlyRecoveryCount = nonNegativeInteger(
+      value.reasoningOnlyRecoveryCount, "resumableState.reasoningOnlyRecoveryCount",
+    );
+  }
+  if (value.reasoningOnlyRecoveryPending !== undefined) {
+    if (value.reasoningOnlyRecoveryPending !== true) {
+      throw malformed("resumableState.reasoningOnlyRecoveryPending is invalid");
+    }
+    result.reasoningOnlyRecoveryPending = true;
+  }
   if (value.modelSampleOrdinal !== undefined) {
     result.modelSampleOrdinal = nonNegativeInteger(
       value.modelSampleOrdinal,

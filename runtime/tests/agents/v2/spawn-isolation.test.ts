@@ -118,6 +118,31 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
+  it("hands a long referenced task to delegate verbatim using the caller's session", async () => {
+    const session = makeSession();
+    const task = ' Unicode 🐈 &amp; "quoted" \n'.repeat(2_000);
+    Object.assign(session, { currentRootHumanTurn: () => ({ turnId: "turn-1", text: `Parent\n<task>${task}</task>` }) });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      task_name: "worker", fork_turns: "none", exact_output: true,
+      message_ref: { source: "current_user_message", after: "<task>", before: "</task>" },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ parent: session, taskPrompt: task, exactOutput: true });
+  });
+
+  it("rejects an invalid handoff before admission or child creation", async () => {
+    const session = makeSession();
+    Object.assign(session, { currentRootHumanTurn: () => null });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      task_name: "worker", message_ref: { source: "current_user_message" },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("no active human message");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   // Automatic choice is on, so a spawn needs no user message naming its provider.
   async function crossProviderFixture(allowed: readonly string[], enabled = true, activeProvider: "grok" | "deepseek" = "grok",
     agents: Partial<AgentsConfig> = {}) {
@@ -441,6 +466,23 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
+  it("reports a child that planning refused as a spawn with no effect", async () => {
+    const { session } = await crossProviderFixture(["deepseek"]);
+    const refusal = "Sub-agents on DeepSeek use its default endpoint, but a custom base URL is set (DEEPSEEK_BASE_URL). " +
+      "Remove it, or use DeepSeek as the main session's provider.";
+    Object.assign(session.providerService, {
+      previewChildDestination: async () => { throw new Error(refusal); },
+    });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("custom base URL is set");
+    // Nothing was spawned, so the session must not wait for an effect review.
+    expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   /** A grok session that may reach DeepSeek through the managed AgenC route. */
   async function managedRouteFixture(agents: Partial<AgentsConfig>) {
     const fixture = await crossProviderFixture(["agenc", "deepseek"], true, "grok", agents);
@@ -600,6 +642,40 @@ describe("spawn_agent isolation", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain(expected);
     expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it.each(["default", "standard", "none", "Default"])(
+    "treats service_tier %s as the standard tier on a model without tiers",
+    async (service_tier) => {
+      const { tool } = await crossProviderFixture(["deepseek"]);
+      mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+      const result = await tool.execute({
+        message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro", service_tier,
+      });
+      expect(result.isError).not.toBe(true);
+      expect(mockDelegate).toHaveBeenCalledOnce();
+      expect(mockDelegate.mock.calls[0]?.[0].plan?.serviceTier).toBeUndefined();
+    },
+  );
+
+  it("treats service_tier default as the standard tier on a model that offers priority", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "look", task_name: "helper", model: "grok-4.7", service_tier: "default",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].serviceTier ?? null).toBeNull();
+  });
+
+  it("lets a full-history fork ask for the standard tier, which it ignores", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "continue", task_name: "fork", fork_turns: "all", service_tier: "default",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
   });
 
   it("validates a role's effective service tier against the target model", async () => {

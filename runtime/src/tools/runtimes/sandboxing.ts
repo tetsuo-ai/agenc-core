@@ -39,6 +39,8 @@ import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { protectAgencHomeUnderWritableRoot, sandboxAgencHome } from "../../sandbox/agenc-home-protection.js";
+import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface RuntimeSandboxProfileOptions {
@@ -283,6 +285,26 @@ export function permissionProfileForRuntimeContext(
   context: ToolRuntimeAttemptContext,
   options: RuntimeSandboxProfileOptions,
 ): PermissionProfile {
+  const profile = basePermissionProfileForRuntimeContext(context, options);
+  if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) return profile;
+  const session = context.invocation.session as {
+    readonly services?: {
+      readonly configStore?: { readonly homeContext?: { readonly path?: string } };
+      readonly runtimeOptions?: { readonly sessionTempRoot?: string };
+    };
+  } | undefined;
+  const temp = session?.services?.runtimeOptions?.sessionTempRoot;
+  if (typeof temp !== "string" || !path.isAbsolute(temp)) {
+    throw new Error("[sandbox_surface_uncovered] authenticated runtime session has no absolute captured temp-root authority");
+  }
+  return protectAgencHomeUnderWritableRoot(profile,
+    sandboxAgencHome(session?.services?.configStore?.homeContext?.path), options.cwd, temp);
+}
+
+function basePermissionProfileForRuntimeContext(
+  context: ToolRuntimeAttemptContext,
+  options: RuntimeSandboxProfileOptions,
+): PermissionProfile {
   if (!sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
     return applyRuntimeAdditionalPermissions(
       permissionProfileForSandboxMode(context.sandboxMode, options),
@@ -300,10 +322,10 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  const protectedProfile = protectCronAuthority(protectDesktopAuthority(
+  const protectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  ));
+  )));
   return routineRunOptions(context.invocation.session) === undefined
     ? protectedProfile
     : confineRoutineProfile(protectedProfile);
@@ -447,7 +469,13 @@ export function enforceRuntimeSandboxAttempt(
     : analyzeWrites(input.tool, input.args, cwd);
   const authorityRoot = runtimeDesktopAuthorityRoot(input.context);
   const cronAuthorityRoots = cronLockAuthorityRoots();
+  const socketAuthorityRoots = daemonSocketAuthorityRoots();
   for (const target of writes.targets) {
+    if (socketAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
+      throw new SandboxDeniedError("Daemon sockets are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
     if (cronAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Cron locks are reserved for the native host", {
         denial: "filesystem", target, policy,
@@ -487,6 +515,12 @@ export function enforceRuntimeSandboxAttempt(
     );
   }
 
+  // Only the existing file-tool plan/memory and fixed runtime-output exceptions
+  // may bypass the home reservation. Evaluate them against the original profile
+  // so operator denies and the other non-grantable reservations still win.
+  const fileToolProfile = shellAccess === null
+    ? basePermissionProfileForRuntimeContext(input.context, { cwd })
+    : profile;
   for (const target of writes.targets) {
     if (
       !canWritePathWithCwd(
@@ -498,10 +532,10 @@ export function enforceRuntimeSandboxAttempt(
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
           isDurableMemoryWritePath(target)) &&
-        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot)) &&
+        agencHomeCarveOutAllowsWrite(fileToolProfile.fileSystem, target, cwd, sessionTempRoot)) &&
       !(shellAccess === null &&
         (writes.declared ?? []).includes(target) &&
-        canWriteRuntimeOwnedPathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot))
+        canWriteRuntimeOwnedPathWithCwd(fileToolProfile.fileSystem, target, cwd, sessionTempRoot))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,

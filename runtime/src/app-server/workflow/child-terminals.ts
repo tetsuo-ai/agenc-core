@@ -15,6 +15,7 @@ import type {
 import { canonicalizeJson } from "../../eval-contract/canonical-json.js";
 import type { ReviewOutput } from "../../session/review.js";
 import type { StateRunDurabilityRepository } from "../../state/run-durability.js";
+import { isWorkflowChildStopReason } from "./stop-reasons.js";
 import type { WorkflowChildOutcome } from "./verified-change-controller.js";
 
 /** Deterministic event id for a child's durable terminal record. */
@@ -73,7 +74,7 @@ export function inspectWorkflowChildTerminal(
   if (terminal === undefined) return undefined;
   return {
     status: terminal.status,
-    ...(terminal.stopReason === "approval_required" || terminal.stopReason === "policy_denied"
+    ...(isWorkflowChildStopReason(terminal.stopReason)
       ? { stopReason: terminal.stopReason }
       : {}),
     finalMessage: terminal.finalMessage,
