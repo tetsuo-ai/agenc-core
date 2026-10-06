@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -139,10 +140,48 @@ static bool reset_signals(bool init) {
   return sigprocmask(SIG_SETMASK, &empty, NULL) == 0;
 }
 
+static void child_changed(int signal_number) { (void)signal_number; }
+
+static bool watch_broker(void) {
+  /* Exec can reset an inherited parent-death signal. Re-arm it, but do not
+   * use getppid() as a liveness check: our parent is outside this namespace.
+   * The report pipe's sole reader belongs to the broker and also closes the
+   * race where that parent died before we could arm the signal. */
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) return false;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = child_changed;
+  sigemptyset(&action.sa_mask);
+  sigset_t blocked;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGCHLD);
+  return sigaction(SIGCHLD, &action, NULL) == 0 &&
+         sigprocmask(SIG_BLOCK, &blocked, NULL) == 0;
+}
+
+static bool broker_alive(void) {
+  struct pollfd report = {REPORT_FD, 0, 0};
+  int result;
+  do { result = poll(&report, 1, 0); } while (result < 0 && errno == EINTR);
+  return result == 0 && report.revents == 0;
+}
+
 static pid_t wait_child(int *status, int options) {
-  pid_t child;
-  do { child = waitpid(-1, status, options); } while (child < 0 && errno == EINTR);
-  return child;
+  for (;;) {
+    if (!broker_alive()) { errno = EPIPE; return -1; }
+    pid_t child = waitpid(-1, status, options | WNOHANG);
+    if (child < 0 && errno == EINTR) continue;
+    if (child != 0 || (options & WNOHANG) != 0) return child;
+    /* SIGCHLD is blocked around waitpid. Atomically unblock it while waiting
+     * for either a child transition or loss of the broker's pipe reader.
+     * No sleep, polling interval, or grace window decides residual status. */
+    struct pollfd report = {REPORT_FD, 0, 0};
+    sigset_t empty;
+    sigemptyset(&empty);
+    int result = ppoll(&report, 1, NULL, &empty);
+    if (result < 0 && errno == EINTR) continue;
+    if (result < 0 || report.revents != 0) { errno = EPIPE; return -1; }
+  }
 }
 
 static bool terminal_status(int status) {
@@ -188,7 +227,8 @@ int main(int argc, char **argv) {
   if (argc < 3 || strcmp(argv[1], "--namespace-init-v1") != 0 ||
       argv[2][0] != '/' || getpid() != 1 || !private_descriptors() ||
       !unprivileged() || prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
-      prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0 || !reset_signals(true))
+      prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0 || !reset_signals(true) ||
+      !watch_broker() || !broker_alive())
     return FAILURE;
   pid_t command = fork();
   if (command < 0) return FAILURE;
