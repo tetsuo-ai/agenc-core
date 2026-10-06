@@ -15,6 +15,8 @@
  *        ten-minute default idle expiry (`stream_watchdog_timeout_ms`,
  *        `0` disables) that aborts the underlying fetch via the scoped
  *        AbortController. Reasoning progress is guarded even without a config store.
+ *        A separate non-aborting observer warns on quiet model output, including
+ *        when the configured progress deadline is disabled.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -43,9 +45,13 @@ import type {
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
+  formatStreamQuietWarning,
   installStreamWatchdog,
   resolveSessionStreamIdleTimeoutMs,
+  resolveStreamIdleWarningMs,
   STREAM_IDLE_ABORT_REASON,
+  STREAM_IDLE_WARNING_REASON,
+  streamChunkHasDelta,
 } from "../llm/stream-watchdog.js";
 import { DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS } from "../config/schema.js";
 import {
@@ -1008,8 +1014,8 @@ export async function streamModel(
   // idle timeout from the canonical config snapshot (default ten minutes,
   // `0` disables). Provider suggestions may raise a configured value; they
   // never invent one. xAI streams reasoning deltas continuously, so ten
-  // minutes of total silence is a dead socket rather than thinking; the
-  // watchdog warns at half time and the abort is retryable (`stream_idle`).
+  // minutes without meaningful progress trigger the configured deadline.
+  // A separate observer warns at half time; the abort is retryable (`stream_idle`).
   const configuredWatchdogMs = (() => {
     const services = session.services as {
       configStore?: StreamWatchdogConfigStore;
@@ -1061,6 +1067,26 @@ export async function streamModel(
           payload: {
             cause: STREAM_IDLE_ABORT_REASON,
             message: `stream idle ${info.elapsedMs}ms (limit ${watchdog.timeoutMs}ms)`,
+          },
+        },
+      });
+    },
+  });
+
+  // Transport/model-delta observations must never reset the phase deadline.
+  // This observer only warns; meaningful progress alone kicks the watchdog.
+  const quietObserver = installStreamWatchdog({
+    abortController: scoped,
+    timeoutMs: 0,
+    warningMs: resolveStreamIdleWarningMs({ timeoutMs: watchdog.timeoutMs }),
+    onWarning: (info) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: STREAM_IDLE_WARNING_REASON,
+            message: formatStreamQuietWarning(info.elapsedMs),
           },
         },
       });
@@ -1132,6 +1158,7 @@ export async function streamModel(
     // Includes tool-only chunks, before the early streaming executor can run.
     flushStartupLogIndex();
     receivedProviderChunk = true;
+    quietObserver.kick(streamChunkHasDelta(chunk) ? "delta" : "bytes");
     const previousVisibleText = display.visibleText;
     const previousPlanText = display.parser.planText;
     let newVisibleText = false;
@@ -1409,6 +1436,7 @@ export async function streamModel(
       }
     }
     watchdog.stop();
+    quietObserver.stop();
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }
 
