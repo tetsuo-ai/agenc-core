@@ -1,3 +1,4 @@
+import { createWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -147,6 +148,7 @@ describe("exec_command tool", () => {
       readonly added?: readonly string[];
       readonly approvalResolved?: boolean;
       readonly platformSandbox?: boolean;
+      readonly toolName?: string;
       /** The session's tool registry, read for the file tools a refusal names. */
       readonly registry?: ToolRegistry;
     } = {},
@@ -155,7 +157,7 @@ describe("exec_command tool", () => {
     const sandboxMode = options.sandboxMode ?? "danger_full_access";
     attachToolRuntimeContext(args, {
       callId: "call-context",
-      toolName: "exec_command",
+      toolName: options.toolName ?? "exec_command",
       runtimeKind: "function",
       classification: "exclusive",
       supportsParallelToolCalls: false,
@@ -281,6 +283,30 @@ describe("exec_command tool", () => {
       );
       expect(result.content).toContain("require_escalated");
       expect(result.content).not.toContain("Do not run this command again");
+    });
+
+    test.each(["exec_command", "write_stdin"])("%s explains a finished DNS failure under disabled network", async toolName => {
+      const output = failedExecOutput("npm error getaddrinfo EAI_AGAIN registry.npmjs.org", 1);
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30_000,
+        execCommand: vi.fn(async () => output),
+        writeStdin: vi.fn(async () => output),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = toolName === "exec_command"
+        ? createExecCommandTool({ cwd: root, unifiedExecManager: manager })
+        : createWriteStdinTool({ cwd: root, unifiedExecManager: manager });
+      const raw = toolName === "exec_command" ? { cmd: "npx --no-install missing" } : { session_id: 11, chars: "" };
+      const result = await tool.execute(contextArgs(raw, {
+        sandboxMode: "read_only", platformSandbox: true, toolName,
+      }));
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("npm error getaddrinfo EAI_AGAIN");
+      expect(result.content).toContain("network access was disabled");
+      expect(result.content).toContain("approval is unavailable");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
+      const outside = await tool.execute(contextArgs(raw, { toolName }));
+      expect(outside.content).not.toContain("[sandbox]");
     });
 
     test("an ordinary failure is left alone", async () => {
