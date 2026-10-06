@@ -1201,7 +1201,9 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         finalMessage: expect.stringContaining("parent_cancel_locked"),
       });
       expect(harness.spawner.spawns).toHaveLength(0);
-      expect(harness.worktrees.discards).toMatchObject([{ terminal: "cancelled" }]);
+      // Main keeps a cancelled Goal's worktree (interrupted work is retained).
+      expect(harness.worktrees.provisions).toBe(1);
+      expect(harness.worktrees.discards).toHaveLength(0);
     } finally {
       kernel.close();
     }
