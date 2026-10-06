@@ -19,10 +19,8 @@ export function execNetworkFailureNotice(params: {
     !LOOKUP_FAILURE.test(params.output)
   ) return null;
 
-  return "[sandbox] This lookup failed while network access was disabled for the command. " +
-    "A longer timeout does not grant network access or enable downloads. " +
-    "Use installed tools or cached dependencies. " +
+  return "[sandbox] This command's network access was disabled; " +
     (params.escalationAvailable
-      ? "If network access is required, request it through the session's approval flow before retrying."
-      : "Network approval is unavailable in this session; report the missing dependency instead of retrying the download.");
+      ? "request network access through the session's approval flow before retrying."
+      : "network approval is unavailable in this session, so use local dependencies or report the blocker.");
 }
