@@ -1227,7 +1227,7 @@ describe("exec_command tool", () => {
         writeStdin: vi.fn(async () => ({ ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome })),
         closeAll: vi.fn(async () => {}),
       };
-      const tool = createWriteStdinTool({ manager, cwd: root });
+      const tool = createWriteStdinTool({ unifiedExecManager: manager, cwd: root, allowedPaths: [root] });
       const result = await tool.execute(fullAccessArgs({ session_id: 17, chars: "" }));
       expect(result.isError).toBe(true);
       expect(result.effectDisposition?.disposition).toBe("remains_unknown");
