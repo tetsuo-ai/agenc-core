@@ -1208,6 +1208,33 @@ describe("exec_command tool", () => {
       expect(execCommand).not.toHaveBeenCalled();
     });
 
+    test.each(["aborted", "unavailable"] as const)("keeps %s effects unresolved and never classifies them as no-effect", async command_outcome => {
+      const { tool, execCommand } = mockManagerTool({ execCommand: vi.fn(async () => ({
+        ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome,
+      })) });
+      const result = await tool.execute(fullAccessArgs({ cmd: "printf partial" }));
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.metadata).toMatchObject({ commandOutcome: command_outcome });
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
+      expect(result.content).not.toContain("left processes");
+    });
+
+    test.each(["aborted", "unavailable"] as const)("write_stdin preserves %s uncertainty after a yielded command settles", async command_outcome => {
+      const manager: UnifiedExecProcessManagerLike = {
+        maxTimeoutMs: 30000,
+        execCommand: vi.fn(async () => completedExecOutput("")),
+        writeStdin: vi.fn(async () => ({ ...completedExecOutput("partial"), exitCode: null, exit_code: null, command_outcome })),
+        closeAll: vi.fn(async () => {}),
+      };
+      const tool = createWriteStdinTool({ unifiedExecManager: manager, cwd: root, allowedPaths: [root] });
+      const result = await tool.execute(fullAccessArgs({ session_id: 17, chars: "" }));
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("remains_unknown");
+      expect(result.codeModeResult).toMatchObject({ command_outcome, cleanup_complete: true });
+    });
+
     test("the residue note follows the footer when leftover processes were stopped", async () => {
       // Before: `nginx` returned exit 0, the daemon was gone, and the model
       // had no way to learn why. Now the result says so and points at detach.

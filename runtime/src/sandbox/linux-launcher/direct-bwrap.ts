@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareNamespaceInitArtifact } from "./namespace-init-artifact.js";
+import { serializeProcessBrokerV3Payload } from "../../utils/process-broker-protocol-v3.js";
 import { serializeProcessBrokerV2Payload } from "../../utils/process-broker-protocol-v2.js";
 import { permissionProfileToRuntimePermissions } from "../engine/policy.js";
 import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
@@ -81,12 +83,23 @@ function prepareSeccompSource(sessionTempRoot: string, bytes: Buffer): { fd: num
 /** Ordinary pipe-shell invocation only; the caller excludes wrappers,
  * delegated inspection, TTY and detached routes before calling this planner.
  * Any miss is before dispatch and retains the original Node launcher. */
-export function prepareDirectBwrapPlan(input: {
+interface DirectBwrapInput {
   readonly program: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<NodeJS.ProcessEnv>;
-}): PreparedDirectBwrap | undefined {
+}
+
+export function prepareDirectBwrapPlan(input: DirectBwrapInput): PreparedDirectBwrap | undefined {
+  return preparePlan(input, false);
+}
+
+/** Authenticated namespace-init route with the fixed installed artifact. */
+export function prepareDirectBwrapV3Plan(input: DirectBwrapInput): PreparedDirectBwrap | undefined {
+  return preparePlan(input, true);
+}
+
+function preparePlan(input: DirectBwrapInput, namespaceInit: boolean): PreparedDirectBwrap | undefined {
   if (process.platform !== "linux") return undefined;
   let source: ReturnType<typeof prepareSeccompSource> | undefined;
   try {
@@ -138,20 +151,24 @@ export function prepareDirectBwrapPlan(input: {
         inheritedReadOnlyCwd: false, chdirToCommandCwd: true,
       });
     if (!bwrap.usesBubblewrap || bwrap.protectedCreateTargets.length !== 0) return undefined;
+    const artifact = namespaceInit ? prepareNamespaceInitArtifact(root, bwrap.args) : undefined;
+    if (namespaceInit && artifact === undefined) return undefined;
     const isCurrent = (): boolean => {
       try {
-        return [input.program, helper, shell].every((file, index) => fileIdentity(file) === identities[index]) &&
+        return (artifact === undefined || artifact.isCurrent()) && [input.program, helper, shell].every((file, index) => fileIdentity(file) === identities[index]) &&
           bubblewrapCapabilityContext(launcher.program, input.cwd, env) === context;
       } catch { return false; }
     };
     if (!isCurrent()) return undefined;
     const seccomp = seccompMode === null ? undefined : createNetworkSeccompProgram(seccompMode);
     if (seccomp !== undefined) source = prepareSeccompSource(options.sessionTempRoot, seccomp);
-    const payload = serializeProcessBrokerV2Payload({ program: launcher.program, args: bwrap.args,
+    const serialize = namespaceInit ? serializeProcessBrokerV3Payload : serializeProcessBrokerV2Payload;
+    const payload = serialize({ program: launcher.program, args: bwrap.args,
       env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }, ownerPid: process.pid,
       ...(seccomp === undefined ? {} : { seccomp }) });
     const ownedSource = source;
-    const plan = registerDirectBwrapPlan({ payload, sourceFd: source?.fd, isCurrent,
+    const plan = registerDirectBwrapPlan({ payload,
+      ...(artifact === undefined ? {} : { namespaceInitArtifact: artifact.target }), sourceFd: source?.fd, isCurrent,
       dispose: () => ownedSource?.dispose() });
     source = undefined;
     return plan;
