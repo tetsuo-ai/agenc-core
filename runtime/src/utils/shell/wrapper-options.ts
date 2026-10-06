@@ -16,6 +16,7 @@
  *
  * Each reader follows one family. From a word it does not know, it leaves
  * the code unknown, so a caller can judge every word that could be the code.
+ * `readShellWrapperCode` picks the reader by the shell's name.
  */
 
 /**
@@ -232,4 +233,60 @@ export function readFishWrapperCode(args: readonly string[]): readonly string[] 
     index = next;
   }
   return code;
+}
+
+/**
+ * Shells read with `parseShellWrapperOptions`. The ones beyond bash, dash,
+ * zsh and ksh93 take `-c` and short option clusters the same way, and the
+ * options they read differently, such as mksh's attached `-oNAME`, are ones
+ * that reader leaves unknown.
+ */
+const POSIX_WRAPPER_SHELLS = new Set([
+  "sh",
+  "bash",
+  "rbash",
+  "zsh",
+  "dash",
+  "ash",
+  "hush",
+  "posh",
+  "yash",
+  "ksh",
+  "ksh93",
+  "rksh",
+  "mksh",
+  "lksh",
+]);
+/** ksh and its variants. ksh93 runs a script operand it cannot open as code; the others are read the same way. */
+const KSH_WRAPPER_SHELLS = new Set(["ksh", "ksh93", "rksh", "mksh", "lksh"]);
+
+/**
+ * Every text a shell wrapper's argument vector may run as code, read the way
+ * that shell reads its options: `bash -c -e CODE` runs CODE and `tcsh -c A
+ * -c B` runs B. Where the options leave the code unknown, every word from
+ * there on is returned. For ksh, a script operand is returned alone and
+ * joined with the words "$@" passes it; when any later word could be the
+ * operand, the joined words cover each of them. Empty for a wrapper that
+ * runs a script or reads stdin, undefined for a shell not read here. `shell`
+ * is the lowercase name the wrapper runs as, without its directory.
+ */
+export function readShellWrapperCode(
+  shell: string,
+  args: readonly string[],
+): readonly string[] | undefined {
+  if (shell === "csh" || shell === "tcsh") return readCshWrapperCode(args);
+  if (shell === "fish") return readFishWrapperCode(args);
+  if (!POSIX_WRAPPER_SHELLS.has(shell)) return undefined;
+  const ksh = KSH_WRAPPER_SHELLS.has(shell);
+  const operand = parseShellWrapperOptions(shell, args);
+  if (operand.kind === "code") return [args[operand.index]!];
+  if (operand.kind === "unknown") {
+    const words = args.slice(operand.from);
+    return ksh && words.length > 1 ? [...words, words.join(" ")] : words;
+  }
+  if (!ksh) return [];
+  const operandWord = args[operand.index]!;
+  return operand.index + 1 < args.length
+    ? [operandWord, args.slice(operand.index).join(" ")]
+    : [operandWord];
 }

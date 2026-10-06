@@ -55,11 +55,7 @@ import {
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { wrapCommandForShell } from "../../utils/shell/commandExecution.js";
-import {
-  parseShellWrapperOptions,
-  readCshWrapperCode,
-  readFishWrapperCode,
-} from "../../utils/shell/wrapper-options.js";
+import { readShellWrapperCode } from "../../utils/shell/wrapper-options.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -614,33 +610,16 @@ export function validateShellCommand(
 
 /**
  * Every text a direct shell wrapper invocation may run as code, read the way
- * that shell reads its options: `bash -c -e CODE` runs CODE and `tcsh -c A
- * -c B` runs B. Where the options leave the code unknown, every word from
- * there on is returned. ksh93 runs a script operand it cannot open as the
- * code `OPERAND "$@"`, so for ksh the operand is returned alone and joined
- * with the words "$@" passes; when any later word could be the operand, the
- * joined words cover each of them. Empty for a wrapper that runs a script or
- * reads stdin, undefined for a command that is not a shell wrapper.
+ * that shell reads its options (`readShellWrapperCode`). Empty for a wrapper
+ * that runs a script or reads stdin, undefined for a command that is not a
+ * shell wrapper.
  */
 function shellWrapperCode(
   command: string,
   args: readonly string[],
 ): readonly string[] | undefined {
   const shell = basename(command).toLowerCase();
-  if (!SHELL_WRAPPER_COMMANDS.has(shell)) return undefined;
-  if (shell === "csh" || shell === "tcsh") return readCshWrapperCode(args);
-  if (shell === "fish") return readFishWrapperCode(args);
-  const operand = parseShellWrapperOptions(shell, args);
-  if (operand.kind === "code") return [args[operand.index]!];
-  if (operand.kind === "unknown") {
-    const words = args.slice(operand.from);
-    return shell === "ksh" && words.length > 1 ? [...words, words.join(" ")] : words;
-  }
-  if (shell !== "ksh") return [];
-  const operandWord = args[operand.index]!;
-  return operand.index + 1 < args.length
-    ? [operandWord, args.slice(operand.index).join(" ")]
-    : [operandWord];
+  return SHELL_WRAPPER_COMMANDS.has(shell) ? readShellWrapperCode(shell, args) : undefined;
 }
 
 /** Detect whether a command string requires shell interpretation. */
