@@ -30,12 +30,21 @@ import {
   verifyAllowedRoots,
 } from "./_deps/filesystem-args.js";
 
-/** The file tools that create, change or delete a file at a path they are given. */
+/**
+ * The file tools that create, change or delete a file at a path they are
+ * given. Compatibility `system.mkdir` / `system.delete` / `system.move` share
+ * the parent's workspace allowlist with Write: after a checkout Write is
+ * refused, `system.searchTools` still offers them, and an absolute checkout
+ * path then lands in the user's files.
+ */
 const PATH_WRITE_TOOLS: Readonly<Record<string, readonly string[]>> = {
   Write: ["file_path"],
   Edit: ["file_path"],
   MultiEdit: ["file_path"],
   NotebookEdit: ["notebook_path"],
+  "system.mkdir": ["path"],
+  "system.delete": ["path"],
+  "system.move": ["source", "destination"],
 };
 const APPLY_PATCH_TOOL = "apply_patch";
 
