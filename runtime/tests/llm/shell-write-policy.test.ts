@@ -640,7 +640,7 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     ["/usr/bin/time -o tmp/timing.txt make", ["/repo/tmp/timing.txt"]],
     ["/usr/bin/time -o /dev/null make", []],
     ["nohup node server.js > tmp/server.log 2>&1 &", ["/repo/tmp/server.log"]],
-    ["ls | xargs -I{} cp {} tmp/", ["/repo/tmp"]],
+    ["ls | xargs -I{} cp {} tmp/", ["/repo/tmp/$@"]],
     ["timeout 30 npm test", []],
     ['timeout "$LIMIT" npm test', []],
     ["nice -n 10 make", []],
@@ -705,7 +705,7 @@ describe("classifyShellWorkspaceWritePolicy for a command behind a builtin or a 
     ["echo .git | xargs rm -rf", []],
     ["xargs -a tmp/list rm -f", []],
     ["xargs rm -f src/a.ts", ["/repo/src/a.ts"]],
-    ["xargs -I % mv % tmp/", ["/repo/tmp"]],
+    ["xargs -I % mv % tmp/", ["/repo/tmp/$@"]],
     ["xargs -i cp {} {}.bak", []],
     ["xargs sed -i 's/a/b/'", []],
     ['xargs -I "$R" rm -f src/a.ts', ["/repo/src/a.ts"]],
@@ -1245,7 +1245,7 @@ describe("classifyShellWorkspaceWritePolicy for the home directory, globs and di
     ["rm -rf .git*", "/repo/.git*"],
     ["rm -rf .*", "/repo/.*"],
     ["rm -f src/.[g]it", "/repo/src/.[g]it"],
-    ['rm -rf "$DIR"/.git', "/repo/$DIR/.git"],
+    ['rm -rf "$DIR"/.git', "$DIR/.git"],
     ["rm -f ~/.agenc/*.json", `${homedir()}/.agenc/*.json`],
     ["mv .git/* /tmp/agenc-moved/", "/repo/.git/*"],
     ["find .git/* -delete", "/repo/.git/*"],
@@ -1262,7 +1262,7 @@ describe("classifyShellWorkspaceWritePolicy for the home directory, globs and di
   it.each([
     ["echo x > .git/$NAME", "/repo/.git/$NAME"],
     ["cp hook.sh .git/hooks/*", "/repo/.git/hooks/*"],
-    ['tee "$D"/.git/config', "/repo/$D/.git/config"],
+    ['tee "$D"/.git/config', "$D/.git/config"],
   ])("refuses a write that reaches a protected path whatever it expands to, in every mode: %s", (command, refused) => {
     for (const mode of MODES) {
       const decision = classifyIn(command, mode);
@@ -1360,6 +1360,168 @@ describe("classifyShellWorkspaceWritePolicy for the home directory, globs and di
       ]);
     });
   });
+});
+
+describe("classifyShellWorkspaceWritePolicy for braces, emptied roots, globbed copies, protected writes and a changed HOME", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+  const [ASKS, ACCEPTS_EDITS, BYPASSES] = MODES;
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "linux",
+      ...mode,
+    });
+  }
+
+  it.each([
+    ["rm -rf {.git,x}", "/repo/.git"],
+    ["rm -rf .{git,agenc}", "/repo/.git"],
+    ["rm -rf .git{,.bak}", "/repo/.git"],
+    ["rm -rf {src,.agents}/cache", "/repo/.agents/cache"],
+    ["mv {.git,notes} /tmp/agenc-moved/", "/repo/.git"],
+    ["rm -f ~/.{bashrc,zshrc}", join(homedir(), ".bashrc")],
+  ])("refuses the protected path brace expansion makes, in every mode: %s", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toContain(refused);
+      expect(decision.message, JSON.stringify(mode)).toContain("may not delete or move protected paths");
+    }
+  });
+
+  it("reads the words brace expansion makes as the program gets them", () => {
+    const sequence = classifyIn("rm -f tmp/log{1..3} tmp/{a,b}.txt", ASKS);
+    expect(sequence.indeterminate).toBe(false);
+    expect(sequence.blocked).toBe(false);
+    expect(sequence.observedTargets).toEqual([
+      "/repo/tmp/log1", "/repo/tmp/log2", "/repo/tmp/log3", "/repo/tmp/a.txt", "/repo/tmp/b.txt",
+    ]);
+    for (const mode of MODES) {
+      expect(classifyIn("touch src/{a,b}.ts", mode).blockedTargets, JSON.stringify(mode)).toEqual([
+        "/repo/src/a.ts",
+        "/repo/src/b.ts",
+      ]);
+    }
+    // `{x}`, `{}` and `${HOME}` are not brace groups.
+    expect(classifyIn("rm -rf {x}", BYPASSES).indeterminate).toBe(true);
+    expect(classifyIn("find tmp -exec rm {} +", ASKS).deletionTargets).toEqual(["/repo/tmp"]);
+  });
+
+  it.each([
+    ["rm -rf /*", "/*"],
+    ["rm -rf /*/*", "/*/*"],
+    ["rm -rf ~/*", `${homedir()}/*`],
+    ['rm -rf "$HOME"/*', `${homedir()}/*`],
+    ["rm -rf ~/[a-z]*", `${homedir()}/[a-z]*`],
+    ["mv ~/* /tmp/agenc-moved/", `${homedir()}/*`],
+  ])("refuses a glob that empties / or the home directory, in every mode: %s", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([refused]);
+      expect(decision.message, JSON.stringify(mode)).toContain("may not delete or move protected paths");
+    }
+  });
+
+  it.each(["rm -rf ~/*.log", "rm -rf ~/.cache/pip/*", "rm -rf /tmp/*", "rm -rf build/*", "rm -rf ~/projects/*/node_modules"])(
+    "keeps a glob that names some files under a root indeterminate: %s",
+    (command) => {
+      for (const mode of MODES) {
+        const decision = classifyIn(command, mode);
+        expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+        expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([]);
+        expect(decision.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
+      }
+    },
+  );
+
+  it.each([
+    ["cp /tmp/*.ts .", ["/repo/*.ts"]],
+    ["cp /tmp/*.ts src/", ["/repo/src/*.ts"]],
+    ["mv /tmp/*.ts .", ["/repo/*.ts"]],
+    ['cp "$SRC" .', ["/repo/$SRC"]],
+    ["cp -r /tmp/template/ .", ["/repo/*"]],
+  ])("routes a globbed source copied or moved into the workspace like the literal form: %s", (command, routed) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(routed);
+    }
+  });
+
+  it.each([
+    ["cp /tmp/*.o build/", ["/repo/build/*.o"]],
+    ["cp src/*.ts /tmp/agenc-out/", ["/tmp/agenc-out/*.ts"]],
+  ])("allows a globbed source copied into a generated or outside directory: %s", (command, observed) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.observedTargets, JSON.stringify(mode)).toEqual(observed);
+    }
+  });
+
+  it.each([
+    ["echo x >> ~/.bashrc", join(homedir(), ".bashrc")],
+    ["tee -a ~/.zshrc", join(homedir(), ".zshrc")],
+    ["cp dotfiles/gitconfig ~/.gitconfig", join(homedir(), ".gitconfig")],
+    ["mv profile ~/.profile", join(homedir(), ".profile")],
+    ["install zprofile ~/.zprofile", join(homedir(), ".zprofile")],
+    ["ln -sf rc ~/.ripgreprc", join(homedir(), ".ripgreprc")],
+    ["echo x > tmp/.git/config", "/repo/tmp/.git/config"],
+    ["touch /etc/skel/.bashrc", "/etc/skel/.bashrc"],
+  ])("refuses a literal write to a protected file outside the routed workspace, in every mode: %s", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toContain(refused);
+      expect(decision.message, JSON.stringify(mode)).toContain("may not write protected paths");
+    }
+  });
+
+  it.each(["echo x >> ~/notes.txt", "tee /tmp/agenc-out.txt", "echo x > tmp/out.txt", "cp a.txt /tmp/agenc-out/"])(
+    "allows a write to an unprotected file outside the routed workspace: %s",
+    (command) => {
+      expect(classifyIn(command, BYPASSES).blocked).toBe(false);
+      expect(classifyIn(command, BYPASSES).indeterminate).toBe(false);
+    },
+  );
+
+  it.each([
+    "export HOME=/repo; rm -rf ~/src",
+    "HOME=/repo; rm -rf ~/src",
+    "unset HOME; rm -rf ~/src",
+    'export HOME=/repo && rm -rf "$HOME"/src',
+    "export HOME=/tmp/h && bash -c 'rm -rf ~/src'",
+  ])("does not trust a home path after the line may change HOME: %s", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
+    }
+  });
+
+  it("still refuses the home directory a changed HOME may not reach", () => {
+    // The shell expands `~` before the assignment, so this removes the home directory.
+    const decision = classifyIn("HOME=/repo rm -rf ~", BYPASSES);
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedDeletions).toEqual([homedir()]);
+  });
+
+  it.each(['rm -rf "$HOME"', "rm -rf ~/scratch", "HOME=/x npm test", "export HOME=/x; ls ~"])(
+    "keeps reading the home directory where HOME does not change, and lines that write nothing: %s",
+    (command) => {
+      expect(classifyIn(command, BYPASSES).indeterminate).toBe(false);
+    },
+  );
 });
 
 describe("classifyShellWorkspaceWritePolicy for eval", () => {

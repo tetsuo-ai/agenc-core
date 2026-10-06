@@ -197,11 +197,6 @@ interface ShellMove {
 interface ShellWriteTargetCollection {
   targets: string[];
   /**
-   * Targets whose protected-path check runs before the generated-root and
-   * outside-workspace exemptions (sed's, which are resolved through symlinks).
-   */
-  protectedFirstTargets: string[];
-  /**
    * sed targets whose destination could not be determined, such as a symlink
    * loop. They are refused in every mode, since they could reach a protected path.
    */
@@ -242,7 +237,6 @@ function resolveWorkingDirectory(
 function emptyTargetCollection(): ShellWriteTargetCollection {
   return {
     targets: [],
-    protectedFirstTargets: [],
     unresolvedProtectedFirst: [],
     deletions: [],
     expandingTargets: [],
@@ -266,7 +260,6 @@ function mergeTargetCollections(
   from: ShellWriteTargetCollection,
 ): void {
   for (const target of from.targets) pushUnique(into.targets, target);
-  for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
   for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
   for (const target of from.expandingTargets) pushUnique(into.expandingTargets, target);
@@ -304,7 +297,9 @@ function normalizeConcreteTargetPath(
   }
   const path = expandLeadingHome(rawPath);
   if (DYNAMIC_SHELL_TARGET_RE.test(path)) {
-    return { ...indeterminateTargetCollection(), expandingTargets: [kernelPath(cwd, path)] };
+    // A glob stays under the working directory; `$DIR/x` may be anywhere, so it is kept as written.
+    const expanding = /^[$~`{]/u.test(path) ? path : kernelPath(cwd, path);
+    return { ...indeterminateTargetCollection(), expandingTargets: [expanding] };
   }
   return { ...emptyTargetCollection(), targets: [resolvePath(cwd, path)] };
 }
@@ -638,22 +633,37 @@ function isDirectoryDestination(raw: string, cwd: string): boolean {
 }
 
 /**
- * The name a source takes inside a destination directory. Undefined where
- * the line does not show it: a source the shell expands, and one whose
- * contents are copied rather than itself (`src/`, `src/.`).
+ * The name a source takes inside a destination directory: its own, or the
+ * pattern of it the shell still expands (`*.ts` for `/tmp/*.ts`). A source
+ * whose contents are copied rather than itself (`src/`, `src/.`) puts names
+ * the line does not show there, read as `*`.
  */
-function nameInDestinationDirectory(source: string): string | undefined {
-  if (DYNAMIC_SHELL_TARGET_RE.test(expandLeadingHome(source)) || source.endsWith("/")) return undefined;
+function nameInDestinationDirectory(source: string): string {
   const name = basename(source);
-  return name === "." || name === ".." ? undefined : name;
+  return source.endsWith("/") || name === "." || name === ".." ? "*" : name;
+}
+
+/**
+ * The path a source takes inside a destination directory. A name the
+ * shell still expands is also kept as an expanding target, so a pattern
+ * that can match a protected name stays refused.
+ */
+function collectDestinationDirectoryTarget(
+  collection: ShellWriteTargetCollection,
+  directory: string,
+  source: string,
+): string {
+  const path = join(directory, nameInDestinationDirectory(source));
+  pushUnique(collection.targets, path);
+  if (DYNAMIC_SHELL_TARGET_RE.test(basename(path))) pushUnique(collection.expandingTargets, path);
+  return path;
 }
 
 /**
  * Where `cp`, `install` or `ln` writes: the destination, or, when it is a
  * directory the sources go into, each source's name inside it (`cp
- * /tmp/x.ts .` writes ./x.ts). A source whose name the line does not show
- * is judged by the directory. `ln` with a single operand links it into the
- * working directory.
+ * /tmp/x.ts .` writes ./x.ts, `cp /tmp/*.ts .` writes ./*.ts). `ln` with a
+ * single operand links it into the working directory.
  */
 function collectDestinationTarget(
   command: string,
@@ -688,10 +698,7 @@ function collectDestinationTarget(
   const directory = destination.targets[0];
   if (!intoDirectory || directory === undefined) return destination;
   const collection = emptyTargetCollection();
-  for (const source of sources) {
-    const name = nameInDestinationDirectory(source);
-    pushUnique(collection.targets, name === undefined ? directory : join(directory, name));
-  }
+  for (const source of sources) collectDestinationDirectoryTarget(collection, directory, source);
   if (sources.length === 0) pushUnique(collection.targets, directory);
   return collection;
 }
@@ -732,35 +739,24 @@ function collectMoveTargets(
   const destination = normalizeConcreteTargetPath(destinationRaw, cwd);
   collection.indeterminate ||= destination.indeterminate;
   for (const target of destination.expandingTargets) pushUnique(collection.expandingTargets, target);
-  const sources: { readonly raw: string; readonly path: string }[] = [];
-  // A source the shell expands goes into the directory under a name the line does not show.
-  let unnamedSource = false;
+  const destinationPath = destination.targets[0];
+  const sources: string[] = [];
   for (const raw of sourceRaws) {
     const normalized = asDeletions(normalizeConcreteTargetPath(raw, cwd));
-    collection.indeterminate ||= normalized.indeterminate;
-    unnamedSource ||= normalized.indeterminate;
-    for (const target of normalized.expandingDeletions) pushUnique(collection.expandingDeletions, target);
-    for (const path of normalized.deletions) {
-      if (!sources.some((source) => source.path === path)) sources.push({ raw, path });
-    }
+    mergeTargetCollections(collection, { ...normalized, deletions: [] });
+    for (const path of normalized.deletions) pushUnique(sources, path);
+    if (!intoDirectory || destinationPath === undefined) continue;
+    // A source the shell expands moves under a name the line shows only as a pattern.
+    const written = emptyTargetCollection();
+    const target = collectDestinationDirectoryTarget(written, destinationPath, raw);
+    for (const path of written.expandingTargets) pushUnique(collection.expandingTargets, path);
+    collection.moves.push({ sources: normalized.deletions, destination: target });
   }
-  const destinationPath = destination.targets[0];
   if (destinationPath === undefined) {
-    for (const source of sources) pushUnique(collection.deletions, source.path);
-    return collection;
+    for (const source of sources) pushUnique(collection.deletions, source);
+  } else if (!intoDirectory) {
+    collection.moves.push({ sources, destination: destinationPath });
   }
-  if (!intoDirectory) {
-    collection.moves.push({ sources: sources.map((source) => source.path), destination: destinationPath });
-    return collection;
-  }
-  for (const source of sources) {
-    const name = nameInDestinationDirectory(source.raw);
-    collection.moves.push({
-      sources: [source.path],
-      destination: name === undefined ? destinationPath : join(destinationPath, name),
-    });
-  }
-  if (unnamedSource) collection.moves.push({ sources: [], destination: destinationPath });
   return collection;
 }
 
@@ -774,6 +770,11 @@ interface ShellWriteEnvironment {
    * moved the shell, so whether a file exists there is not known.
    */
   readonly directoryUnknown?: boolean;
+  /**
+   * The line may give HOME another value before a `~` or `$HOME` reads it,
+   * so they may not lead to the daemon's home directory.
+   */
+  readonly homeMayChange?: boolean;
 }
 
 /** Hosts whose `sed` is BSD sed unless GNU sed comes first on the PATH. */
@@ -879,7 +880,6 @@ function collectSedWriteTargets(params: {
     }
     const target = reached ?? resolvePath(cwd, name);
     pushUnique(collection.targets, target);
-    pushUnique(collection.protectedFirstTargets, target);
   };
   // sed opens the `w` files while it compiles, before it edits anything.
   for (const name of writes.scriptWrites) {
@@ -1840,6 +1840,112 @@ function writeCommandWordIndex(words: readonly ShellToken[]): number {
   return commandWordIndexAfter(words, COMMAND_PREFIX_RESERVED_WORDS);
 }
 
+/** Brace expansion that would make more words than this from one word is not read. */
+const BRACE_EXPANSION_LIMIT = 256;
+
+/**
+ * The words of a sequence expression `{1..3}`, `{01..10..2}` or `{a..e}`;
+ * undefined for any other body, or one that makes too many words.
+ */
+function braceSequence(body: string): readonly string[] | undefined {
+  const numbers = /^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/u.exec(body);
+  const letters = /^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?$/u.exec(body);
+  const match = numbers ?? letters;
+  if (match === null) return undefined;
+  const from = numbers === null ? match[1]!.charCodeAt(0) : Number(match[1]);
+  const to = numbers === null ? match[2]!.charCodeAt(0) : Number(match[2]);
+  const step = Math.abs(Number(match[3] ?? 1)) || 1;
+  if (Math.abs(to - from) / step >= BRACE_EXPANSION_LIMIT) return undefined;
+  // `{01..10}` pads every number to the wider end.
+  const padded = numbers !== null && (/^-?0\d/u.test(match[1]!) || /^-?0\d/u.test(match[2]!));
+  const width = padded ? Math.max(match[1]!.length, match[2]!.length) : 0;
+  const words: string[] = [];
+  for (let value = from; from <= to ? value <= to : value >= to; value += from <= to ? step : -step) {
+    if (numbers === null) {
+      words.push(String.fromCharCode(value));
+    } else {
+      const digits = String(Math.abs(value)).padStart(value < 0 ? width - 1 : width, "0");
+      words.push(value < 0 ? `-${digits}` : digits);
+    }
+  }
+  return words;
+}
+
+/**
+ * The first brace group bash expands in a word: a `{` not after `$` (which
+ * opens a parameter) with a matching `}` and either a comma at its own
+ * level or a sequence inside. `{}` and `{x}` are not groups.
+ */
+function findBraceGroup(
+  word: string,
+): { readonly start: number; readonly end: number; readonly alternatives: readonly string[] } | undefined {
+  for (let start = 0; start < word.length; start += 1) {
+    if (word[start] !== "{" || word[start - 1] === "$") continue;
+    let depth = 0;
+    const commas: number[] = [];
+    for (let at = start; at < word.length; at += 1) {
+      const character = word[at];
+      if (character === "," && depth === 1) commas.push(at);
+      if (character === "{") depth += 1;
+      if (character !== "}") continue;
+      depth -= 1;
+      if (depth > 0) continue;
+      const bounds = [start, ...commas, at];
+      const alternatives = commas.length > 0
+        ? bounds.slice(0, -1).map((from, index) => word.slice(from + 1, bounds[index + 1]))
+        : braceSequence(word.slice(start + 1, at));
+      if (alternatives !== undefined) return { start, end: at, alternatives };
+      break;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The words bash makes of one word by brace expansion, left to right:
+ * `{.git,x}` is `.git` and `x`, `.{git,agenc}` is `.git` and `.agenc`.
+ * Undefined when that makes more than BRACE_EXPANSION_LIMIT words.
+ */
+function expandBraces(word: string): readonly string[] | undefined {
+  const group = findBraceGroup(word);
+  if (group === undefined) return [word];
+  const words: string[] = [];
+  for (const alternative of group.alternatives) {
+    const expanded = expandBraces(`${word.slice(0, group.start)}${alternative}${word.slice(group.end + 1)}`);
+    if (expanded === undefined) return undefined;
+    words.push(...expanded);
+    if (words.length > BRACE_EXPANSION_LIMIT) return undefined;
+  }
+  return words;
+}
+
+/**
+ * A command's arguments as the program gets them after brace expansion,
+ * the one expansion that turns a word into several. A word that brace
+ * expansion leaves as it is keeps the lexer's mark; one it makes is
+ * expanded further only if it still has an expansion in it.
+ */
+function braceExpandedArguments(tokens: readonly ShellToken[]): {
+  readonly values: readonly string[];
+  readonly expands: readonly boolean[];
+} {
+  const values: string[] = [];
+  const expands: boolean[] = [];
+  for (const token of tokens) {
+    const words = token.requiresExpansion ? expandBraces(token.value) : undefined;
+    if (words === undefined || (words.length === 1 && words[0] === token.value)) {
+      values.push(token.value);
+      expands.push(token.requiresExpansion);
+      continue;
+    }
+    for (const word of words) {
+      values.push(word);
+      expands.push(DYNAMIC_SHELL_TARGET_RE.test(word));
+    }
+  }
+  return { values, expands };
+}
+
 function collectSegmentCommandWriteTargets(
   segment: readonly ShellToken[],
   cwd: string,
@@ -1870,11 +1976,11 @@ function collectSegmentCommandWriteTargets(
     TEST_COMMAND_WORDS.has(command.value) &&
     prefix.some((word) => COMMAND_PREFIX_RESERVED_WORDS.has(word.value));
   if (command.requiresExpansion && !testCommand) return indeterminateTargetCollection();
-  const args = stripped.slice(commandIndex + 1);
+  const args = braceExpandedArguments(stripped.slice(commandIndex + 1));
   const collection = collectDirectCommandWriteTargets({
     command: command.value,
-    args: args.map((token) => token.value),
-    argsRequiringExpansion: args.map((token) => token.requiresExpansion),
+    args: args.values,
+    argsRequiringExpansion: args.expands,
     cwd,
     environment,
   });
@@ -2334,12 +2440,61 @@ function collectTargetsFollowingDirectoryChanges(
   return collection;
 }
 
+/**
+ * Whether a line may give HOME another value: it names HOME other than to
+ * read it (`HOME=/x`, `export HOME`, `unset HOME`, `${HOME:-/x}`).
+ */
+function lineMayChangeHome(tokens: readonly ShellToken[]): boolean {
+  return tokens.some((token) =>
+    token.value.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/gu, "").includes("HOME"),
+  );
+}
+
+/** Whether a collection names the home directory or a path under it. */
+function namesHomePath(collection: ShellWriteTargetCollection): boolean {
+  const home = homedir();
+  return [
+    ...collection.targets,
+    ...collection.deletions,
+    ...collection.expandingTargets,
+    ...collection.expandingDeletions,
+    ...collection.moves.flatMap((move) => [...move.sources, move.destination]),
+  ].some((path) => path === home || isStrictlyUnder(home, path));
+}
+
+/**
+ * A leading `~` or `$HOME` is read as the daemon's home directory. Where
+ * the line may give HOME another value, that reading still counts, since
+ * `HOME=/x rm -rf ~` expands `~` before the assignment, but the targets it
+ * gives are indeterminate.
+ */
 function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
   environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const parsed = lexShellCommand(commandLine);
+  const homeMayChange = environment.homeMayChange === true || lineMayChangeHome(parsed.tokens);
+  const collection = collectLineWriteTargets(
+    parsed,
+    cwd,
+    homeMayChange ? { ...environment, homeMayChange } : environment,
+  );
+  if (
+    homeMayChange &&
+    parsed.tokens.some((token) => LEADING_HOME_RE.test(token.value)) &&
+    namesHomePath(collection)
+  ) {
+    collection.indeterminate = true;
+  }
+  return collection;
+}
+
+function collectLineWriteTargets(
+  parsed: ReturnType<typeof lexShellCommand>,
+  cwd: string,
+  environment: ShellWriteEnvironment,
+): ShellWriteTargetCollection {
   if (lineChangesDirectory(parsed.tokens)) {
     return collectTargetsFollowingDirectoryChanges(parsed, cwd, environment);
   }
@@ -2456,6 +2611,24 @@ function globMayMatchProtectedName(pattern: string): boolean {
 }
 
 /**
+ * A target the shell still expands, split at the last `/` before its first
+ * expansion: the directory its literal start names, undefined when it
+ * starts with an expansion that may lead anywhere (`$DIR/x`), and the parts
+ * after it.
+ */
+function splitExpandingTarget(path: string): {
+  readonly directory?: string;
+  readonly components: readonly string[];
+} {
+  const first = path.search(DYNAMIC_SHELL_TARGET_RE);
+  const directoryEnd = first < 0 ? -1 : path.lastIndexOf(sep, first);
+  const components = path.slice(directoryEnd + 1).split(sep).filter((component) => component.length > 0);
+  return directoryEnd < 0
+    ? { components }
+    : { directory: resolvePath(path.slice(0, directoryEnd + 1)), components };
+}
+
+/**
  * Whether a target the shell still expands reaches a protected path
  * whatever it expands to: the directory its literal start names is
  * protected (`.git/*`, `.agenc/*.json`), a glob in it may match a protected
@@ -2467,19 +2640,34 @@ function expandingTargetIsProtected(
   workspaceRoot: string,
   protectedRoots: readonly string[],
 ): boolean {
-  const first = path.search(DYNAMIC_SHELL_TARGET_RE);
-  const directoryEnd = first < 0 ? -1 : path.lastIndexOf(sep, first);
-  if (directoryEnd < 0) return false;
-  const directory = resolvePath(path.slice(0, directoryEnd + 1));
-  if (isProtectedWriteTarget(directory, workspaceRoot, protectedRoots)) return true;
-  return path
-    .slice(directoryEnd + 1)
-    .split(sep)
-    .some((component) =>
-      DYNAMIC_SHELL_TARGET_RE.test(component)
-        ? globMayMatchProtectedName(component)
-        : PROTECTED_NAMES.includes(component),
-    );
+  const { directory, components } = splitExpandingTarget(path);
+  if (directory !== undefined && isProtectedWriteTarget(directory, workspaceRoot, protectedRoots)) {
+    return true;
+  }
+  return components.some((component) =>
+    DYNAMIC_SHELL_TARGET_RE.test(component)
+      ? globMayMatchProtectedName(component)
+      : PROTECTED_NAMES.includes(component),
+  );
+}
+
+/** A path component made only of wildcards, so it matches nearly every name: `*`, `?*`, `[a-z]*`, `.*`. */
+const WILDCARD_COMPONENT_RE = /^\.?(?:[*?]|\[[^\]]+\])+$/u;
+
+/**
+ * Whether a removal the shell still expands empties `/`, a drive root or
+ * the home directory: every part after it is only wildcards (`/*`, `~/*`,
+ * or `*` again a level down), so it removes everything there, as removing
+ * the root itself would. `~/*.log` names some files and stays as it was.
+ */
+function expandingRemovalEmptiesDangerousRoot(path: string): boolean {
+  const { directory, components } = splitExpandingTarget(path);
+  return (
+    directory !== undefined &&
+    isDangerousRemovalRoot(directory) &&
+    components.length > 0 &&
+    components.every((component) => WILDCARD_COMPONENT_RE.test(component))
+  );
 }
 
 function isProtectedDeletionPath(
@@ -2821,23 +3009,20 @@ export function classifyShellWorkspaceWritePolicy(
   }
 
   const protectedRoots = params.protectedRoots ?? [];
-  // A protected path stays refused under a generated root and outside the
-  // workspace. For now only sed's targets are checked this way.
-  const protectedTargets = writes.filter(
-    (target) =>
-      collected.protectedFirstTargets.includes(target) &&
-      isProtectedWriteTarget(target, workspaceRoot, protectedRoots),
+  // A protected path stays refused under a generated root and outside the workspace.
+  const protectedTargets = writes.filter((target) =>
+    isProtectedWriteTarget(target, workspaceRoot, protectedRoots),
   );
+  // Wherever the shell takes these, they land on a protected path.
+  for (const target of collected.expandingTargets) {
+    if (expandingTargetIsProtected(target, workspaceRoot, protectedRoots)) pushUnique(protectedTargets, target);
+  }
   const routedTargets = writes.filter(
     (target) =>
       !protectedTargets.includes(target) &&
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
   );
-  // Wherever the shell takes these, they land on a protected path.
-  for (const target of collected.expandingTargets) {
-    if (expandingTargetIsProtected(target, workspaceRoot, protectedRoots)) pushUnique(protectedTargets, target);
-  }
   const unresolvedTargets = writes.filter((target) => collected.unresolvedProtectedFirst.includes(target));
   const blockedTargets = [...protectedTargets, ...routedTargets];
   for (const target of unresolvedTargets) pushUnique(blockedTargets, target);
@@ -2869,8 +3054,10 @@ export function classifyShellWorkspaceWritePolicy(
       );
     }
   }
-  const protectedExpandingDeletions = collected.expandingDeletions.filter((target) =>
-    expandingTargetIsProtected(target, workspaceRoot, protectedRoots),
+  const protectedExpandingDeletions = collected.expandingDeletions.filter(
+    (target) =>
+      expandingTargetIsProtected(target, workspaceRoot, protectedRoots) ||
+      expandingRemovalEmptiesDangerousRoot(target),
   );
   for (const target of protectedExpandingDeletions) {
     pushUnique(blockedDeletions, target);
