@@ -494,9 +494,13 @@ Standard process and desktop discovery inputs:
 | Family | Direct inputs |
 | --- | --- |
 | Home, user, temp, and application data | `APPDATA`, `FULLNAME`, `HOME`, `LOCALAPPDATA`, `LOGNAME`, `NAME`, `ProgramData`, `REALNAME`, `TEMP`, `TMPDIR`, `USER`, `USERNAME`, `USERPROFILE` |
-| Shell, editor, locale, and process execution | `BROWSER`, `ComSpec`, `EDITOR`, `LANG`, `LC_ALL`, `LC_TERMINAL`, `LC_TIME`, `MSYSTEM`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `P4PORT`, `PATH`, `PATHEXT`, `SHELL`, `SystemRoot`, `VISUAL`, `VSCODE_GIT_ASKPASS_MAIN`, `VisualStudioVersion`, `WINDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` |
+| Shell, editor, locale, and process execution | `BROWSER`, `CDPATH`, `ComSpec`, `EDITOR`, `LANG`, `LC_ALL`, `LC_TERMINAL`, `LC_TIME`, `MSYSTEM`, `NODE_ENV`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `P4PORT`, `PATH`, `PATHEXT`, `SHELL`, `SystemRoot`, `VISUAL`, `VSCODE_GIT_ASKPASS_MAIN`, `VisualStudioVersion`, `WINDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` |
 | Local graphical desktop | `DISPLAY`, `WAYLAND_DISPLAY` |
 | Terminal detection and styling | `ALACRITTY_LOG`, `BAT_THEME`, `COLORTERM`, `ConEmuANSI`, `ConEmuPID`, `ConEmuTask`, `GNOME_TERMINAL_SERVICE`, `ITERM_SESSION_ID`, `KITTY_WINDOW_ID`, `KONSOLE_VERSION`, `PTYXIS_VERSION`, `SSH_CLIENT`, `SSH_CONNECTION`, `SSH_TTY`, `STY`, `TERMINAL_EMULATOR`, `TERMINATOR_UUID`, `TERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TILIX_ID`, `TMUX`, `TMUX_PANE`, `VTE_VERSION`, `WSL_DISTRO_NAME`, `WT_SESSION`, `XTERM_VERSION`, `ZED_TERM`, `__CFBundleIdentifier` |
+
+The shell write fence reads `CDPATH`. When it is set, `cd name` can land in a
+folder the command line does not spell out, so the fence treats that `cd` as
+an unknown directory change.
 
 OAuth browser opening uses a snapshot of the local TUI process environment,
 not a remote session's provider or home settings. On Linux, `DISPLAY` or
