@@ -98,3 +98,49 @@ describe("Responses structured overload failures", () => {
     terminal(error);
   });
 });
+
+const outputSnapshots = [
+  { type: "message", role: "assistant", content: [{ type: "output_text", text: "Started." }] },
+  { type: "reasoning", id: "reason1", summary: [{ type: "summary_text", text: "Considering." }] },
+  { type: "function_call", id: "fc1", call_id: "call1", name: "exec", arguments: '{"command":"touch marker"}' },
+];
+
+describe.each([false, true])("overload output snapshots (configured fallback=%s)", fallback => {
+  test.each(outputSnapshots)("terminal $type snapshot forbids reconnect without earlier deltas", async item => {
+    const { error, chunks } = await failure([frame("response.failed", { response: {
+      status: "failed", error: overload, output: [item],
+    } })], fallback);
+    expect(error).toMatchObject({ reason: "partial_output" });
+    terminal(error);
+    expect(chunks).toEqual([]);
+  });
+});
+
+test.each(outputSnapshots)("earlier $type snapshot is retained even if the failed snapshot omits output", async item => {
+  const { error } = await failure([
+    frame("response.in_progress", { response: { status: "in_progress", output: [item] } }),
+    failed(overload),
+  ], true);
+  expect(error).toMatchObject({ reason: "partial_output" });
+  terminal(error);
+});
+
+test("an empty failed output snapshot remains eligible for bounded reconnect", async () => {
+  const { error } = await failure([frame("response.failed", { response: { status: "failed", error: overload, output: [] } })]);
+  expect(error).toBeInstanceOf(LLMServerError);
+  expect(isRetryableStreamError(new StreamModelError(error))).toBe(true);
+});
+
+test.each([400, 401, 403, 404, 422])("explicit client status %s stays terminal if the next read disconnects", async status => {
+  let read = 0;
+  const stream = new ReadableStream<Uint8Array>({ pull(controller) {
+    if (read++ === 0) controller.enqueue(new TextEncoder().encode(frame("error", { ...overload, status })));
+    else controller.error(new Error("socket hang up"));
+  } });
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+  const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-6-luna", useResponsesApi: true, fetchImpl });
+  const error = await provider.chatStream([{ role: "user", content: "go" }], () => {}).then(() => undefined, (error: unknown) => error);
+  expect(fetchImpl).toHaveBeenCalledOnce();
+  expect(error).toBeInstanceOf(status === 401 || status === 403 ? LLMAuthenticationError : LLMStreamRetryDeniedError);
+  terminal(error);
+});

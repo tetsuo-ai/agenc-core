@@ -1556,15 +1556,23 @@ export class OpenAIProvider implements LLMProvider {
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
+        const responseSnapshot = event.data.response;
+        const snapshotOutput = responseSnapshot && typeof responseSnapshot === "object"
+          ? (responseSnapshot as Record<string, unknown>).output : undefined;
+        // Failed responses can contain output only in their snapshot, without
+        // any earlier deltas. Treat every nonempty output snapshot as partial.
         hasResponseOutput ||= eventType.startsWith("response.output_") ||
-          eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning");
+          eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+          (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
         if (eventType === "error" && this.name === "openai") {
           retryDenied ||= forbidsStreamRetry(event.data);
           if (readNestedProviderCode(event.data) === "server_is_overloaded") {
             overloadEvent = event.data;
+            const status = inferErrorStatus(event.data);
+            const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;
             // Do not let a subsequent transport drop turn a forbidden retry
             // into a generic truncation/network recovery.
-            if (retryDenied || hasResponseOutput) {
+            if (retryDenied || hasResponseOutput || terminalClientStatus) {
               throw mapOpenAIStreamError({
                 providerName: this.name,
                 errorBody: event.data,
