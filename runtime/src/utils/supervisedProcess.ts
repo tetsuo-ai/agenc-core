@@ -578,7 +578,7 @@ type LinuxSubreaperBoundary = {
 const linuxSubreaperBoundaries = new WeakMap<object, LinuxSubreaperBoundary>();
 
 /** Available only after transport EOF AND independently proven tree cleanup. */
-export function containedProcessCommandOutcome(child: ChildProcessWithoutNullStreams): ProcessBrokerV3Outcome | undefined {
+export function containedProcessCommandOutcome(child: ProcessTreeChild): ProcessBrokerV3Outcome | undefined {
   const boundary = linuxSubreaperBoundaries.get(child);
   return boundary?.closed && boundary.verified && boundary.protocolError === undefined
     ? boundary.commandOutcome : undefined;
@@ -2533,7 +2533,7 @@ export async function terminateProcessTreeAndReport(
   );
 }
 
-function completedTreeOutcome(child: ChildProcessWithoutNullStreams, legacyTerminated: boolean): TerminateProcessTreeOutcome {
+function completedTreeOutcome(child: ProcessTreeChild, legacyTerminated: boolean): TerminateProcessTreeOutcome {
   const commandOutcome = containedProcessCommandOutcome(child);
   if (commandOutcome === undefined) return legacyTerminated ? RESIDUE_TERMINATED : TREE_ALREADY_GONE;
   return { residualProcessesTerminated: false, commandOutcome,
