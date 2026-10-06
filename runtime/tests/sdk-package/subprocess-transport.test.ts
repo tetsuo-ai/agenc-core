@@ -7,11 +7,17 @@
  * emits it.
  */
 
+import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_BUFFERED_PROMPT_EVENTS,
+  AGENC_SDK_MAX_FRAME_BYTES,
   promptViaSubprocess,
+  signalOwnedDetachedProcessGroup,
   type AgencPromptEvent,
   type AgencSubprocessChild,
   type AgencSubprocessSpawnFn,
@@ -47,7 +53,9 @@ function createFakeSpawn(script: FakeChildScript): {
     const stdout = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
-    stdout.setEncoding = () => {};
+    stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
     const stderr = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
@@ -59,6 +67,7 @@ function createFakeSpawn(script: FakeChildScript): {
           return true;
         },
         on: () => {},
+        removeListener: () => {},
         end: () => {
           capture.stdinEnded = true;
           // Replay the scripted run asynchronously, split mid-line to prove
@@ -74,6 +83,8 @@ function createFakeSpawn(script: FakeChildScript): {
               stderr.emit("data", script.stderr);
             }
             emitter.emit("exit", script.exitCode, null);
+            stdout.emit("end");
+            emitter.emit("close", script.exitCode, null);
           });
         },
       },
@@ -83,8 +94,21 @@ function createFakeSpawn(script: FakeChildScript): {
         emitter.once(event, listener as (...args: unknown[]) => void);
         return child;
       },
+      on: (event: string, listener: (...args: never[]) => void) => {
+        emitter.on(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      removeListener: (event: string, listener: (...args: never[]) => void) => {
+        emitter.removeListener(
+          event,
+          listener as (...args: unknown[]) => void,
+        );
+        return child;
+      },
       kill: () => {
         emitter.emit("exit", null, "SIGTERM");
+        stdout.emit("end");
+        emitter.emit("close", null, "SIGTERM");
         return true;
       },
     };
@@ -106,21 +130,38 @@ function createManualChild(): {
   const stdout = new EventEmitter() as EventEmitter & {
     setEncoding: (encoding: string) => void;
   };
-  stdout.setEncoding = () => {};
+  stdout.setEncoding = () => {
+    throw new Error("stdout setEncoding must not be called");
+  };
   const stderr = new EventEmitter() as EventEmitter & {
     setEncoding: (encoding: string) => void;
   };
   stderr.setEncoding = () => {};
   const child: AgencSubprocessChild = {
-    stdin: { write: () => true, on: () => {}, end: () => {} },
+    stdin: {
+      write: () => true,
+      on: () => {},
+      removeListener: () => {},
+      end: () => {},
+    },
     stdout: stdout as unknown as AgencSubprocessChild["stdout"],
     stderr: stderr as unknown as AgencSubprocessChild["stderr"],
     once: (event: string, listener: (...args: never[]) => void) => {
       emitter.once(event, listener as (...args: unknown[]) => void);
       return child;
     },
+    on: (event: string, listener: (...args: never[]) => void) => {
+      emitter.on(event, listener as (...args: unknown[]) => void);
+      return child;
+    },
+    removeListener: (event: string, listener: (...args: never[]) => void) => {
+      emitter.removeListener(event, listener as (...args: unknown[]) => void);
+      return child;
+    },
     kill: () => {
       emitter.emit("exit", null, "SIGTERM");
+      stdout.emit("end");
+      emitter.emit("close", null, "SIGTERM");
       return true;
     },
   };
@@ -131,6 +172,8 @@ function createManualChild(): {
     },
     exit: (code) => {
       emitter.emit("exit", code, null);
+      stdout.emit("end");
+      emitter.emit("close", code, null);
     },
   };
 }
@@ -141,6 +184,300 @@ const agentId = "agent_sub_1";
 function eventLine(event: unknown): unknown {
   return { type: "event", sessionId, agentId, event };
 }
+
+function streamResult(finalMessage: string, exitCode = 0): unknown {
+  return {
+    type: "result",
+    sessionId,
+    agentId,
+    exitCode,
+    finalMessage,
+    deniedPermissionRequestIds: [],
+  };
+}
+
+interface ControllableChild {
+  readonly pid: number;
+  readonly kills: string[];
+  emitExit(code: number | null, signal?: string | null): void;
+  emitClose(code: number | null, signal?: string | null): void;
+  emitSpawnError(error: Error): void;
+  writeStdout(chunk: string): void;
+  endStdout(): void;
+  writeStderr(chunk: string): void;
+  listenerCounts(): {
+    child: { error: number; exit: number; close: number };
+    stdout: { data: number; end: number };
+    stderr: { data: number };
+    stdin: { error: number };
+  };
+}
+
+function createControllableSpawn(): {
+  readonly spawn: AgencSubprocessSpawnFn;
+  readonly child: () => ControllableChild;
+} {
+  let handle: ControllableChild | undefined;
+  const spawn: AgencSubprocessSpawnFn = () => {
+    const processEmitter = new EventEmitter();
+    const stdout = new EventEmitter() as EventEmitter & {
+      setEncoding: (encoding: string) => void;
+    };
+    stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
+    const stderr = new EventEmitter() as EventEmitter & {
+      setEncoding: (encoding: string) => void;
+    };
+    stderr.setEncoding = () => {};
+    const stdin = new EventEmitter();
+    const kills: string[] = [];
+    const child = {
+      pid: 4242,
+      stdin: {
+        write: () => true,
+        end: () => undefined,
+        on: (event: "error", listener: (error: Error) => void) => {
+          stdin.on(event, listener);
+          return child.stdin;
+        },
+        removeListener: (event: "error", listener: (error: Error) => void) => {
+          stdin.removeListener(event, listener);
+          return child.stdin;
+        },
+      },
+      stdout: stdout as unknown as AgencSubprocessChild["stdout"],
+      stderr: stderr as unknown as AgencSubprocessChild["stderr"],
+      once: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.once(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      on: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.on(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      removeListener: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.removeListener(
+          event,
+          listener as (...args: unknown[]) => void,
+        );
+        return child;
+      },
+      kill: (signal?: string) => {
+        kills.push(signal ?? "SIGTERM");
+        return true;
+      },
+    } as unknown as AgencSubprocessChild;
+    handle = {
+      pid: 4242,
+      kills,
+      emitExit: (code, signal = null) => {
+        processEmitter.emit("exit", code, signal);
+      },
+      emitClose: (code, signal = null) => {
+        processEmitter.emit("close", code, signal);
+      },
+      emitSpawnError: (error) => {
+        processEmitter.emit("error", error);
+      },
+      writeStdout: (chunk) => {
+        stdout.emit("data", chunk);
+      },
+      endStdout: () => {
+        stdout.emit("end");
+      },
+      writeStderr: (chunk) => {
+        stderr.emit("data", chunk);
+      },
+      listenerCounts: () => ({
+        child: {
+          error: processEmitter.listenerCount("error"),
+          exit: processEmitter.listenerCount("exit"),
+          close: processEmitter.listenerCount("close"),
+        },
+        stdout: {
+          data: stdout.listenerCount("data"),
+          end: stdout.listenerCount("end"),
+        },
+        stderr: { data: stderr.listenerCount("data") },
+        stdin: { error: stdin.listenerCount("error") },
+      }),
+    };
+    return child;
+  };
+  return {
+    spawn,
+    child: () => {
+      if (handle === undefined) {
+        throw new Error("spawn has not been called");
+      }
+      return handle;
+    },
+  };
+}
+
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+function reapProcess(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already exited.
+  }
+}
+
+/** Busy-wait until a descendant has written `readyPath`. Caller must define `fs`. */
+function waitForDescendantReady(readyPath: string): string {
+  return [
+    `const ready=${JSON.stringify(readyPath)};const deadline=Date.now()+2000;`,
+    "while(!fs.existsSync(ready)){if(Date.now()>deadline)process.exit(1);",
+    "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}",
+  ].join("");
+}
+
+function writeNodeScript(scriptPath: string, source: string): readonly [string, string] {
+  writeFileSync(scriptPath, source);
+  return [process.execPath, scriptPath];
+}
+
+/**
+ * Overflow writer plus a grandchild that installs SIGTERM before signalling ready.
+ * The wrapper waits for that ready file before writing past the frame limit.
+ * `leaderExitsOnTerm` makes the leader die on SIGTERM while the grandchild
+ * ignores it and keeps inherited stdout open.
+ */
+function overflowGroupCommand(
+  pidPath: string,
+  leaderExitsOnTerm: boolean,
+): readonly [string, string] {
+  const readyPath = `${pidPath}.ready`;
+  const grandchild = [
+    'process.on("SIGTERM",()=>{});',
+    `require("node:fs").writeFileSync(${JSON.stringify(readyPath)},"1");`,
+    "setInterval(()=>{},1000);",
+  ].join("");
+  const stdio = leaderExitsOnTerm ? '["ignore","inherit","inherit"]' : '"ignore"';
+  const onTerm = leaderExitsOnTerm
+    ? 'process.on("SIGTERM",()=>{process.exit(0);});'
+    : 'process.on("SIGTERM",()=>{});';
+  const wrapper = [
+    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
+    'process.stdout.on("error",()=>{});',
+    onTerm,
+    `const child=spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:${stdio}});`,
+    "child.unref();",
+    waitForDescendantReady(readyPath),
+    `fs.writeFileSync(${JSON.stringify(pidPath)},process.pid+"\\n"+String(child.pid));`,
+    `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES + 1},0x61));`,
+    "setInterval(()=>{},1000);",
+  ].join("");
+  return writeNodeScript(`${pidPath}.overflow.cjs`, wrapper);
+}
+
+/**
+ * Default-spawner argv: node runs a wrapper that leaves a descendant holding
+ * inherited stdout, writes that pid, then exits with no stream-json result.
+ * `signalPath` makes the descendant record SIGTERM before it exits.
+ */
+function detachedHolderCommand(
+  pidPath: string,
+  signalPath?: string,
+): readonly [string, string] {
+  const readyPath = `${pidPath}.ready`;
+  const onTerm =
+    signalPath === undefined
+      ? ""
+      : `process.on("SIGTERM",()=>{require("node:fs").writeFileSync(${JSON.stringify(signalPath)},"SIGTERM");process.exit(0);});`;
+  const descendant = `${onTerm}require("node:fs").writeFileSync(${JSON.stringify(readyPath)},"1");setInterval(()=>{},1000);`;
+  const wrapper = [
+    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
+    `const child=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","inherit","inherit"]});`,
+    "child.unref();",
+    waitForDescendantReady(readyPath),
+    `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));process.exit(0);`,
+  ].join("");
+  return writeNodeScript(`${pidPath}.wrapper.cjs`, wrapper);
+}
+
+function spawnLateResultWrapper(): AgencSubprocessSpawnFn {
+  return (_command, _args, options) => {
+    const result = JSON.stringify(streamResult("late-pipe"));
+    const descendant = `setTimeout(() => { process.stdout.write(${JSON.stringify(`${result}\n`)}); }, 40);`;
+    const wrapper = `
+      const { spawn } = require("node:child_process");
+      const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      child.unref();
+      process.exit(0);
+    `;
+    return nodeSpawn(process.execPath, ["-e", wrapper], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as unknown as AgencSubprocessChild;
+  };
+}
+
+describe("signalOwnedDetachedProcessGroup", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("signals only a detached group whose pid is a safe integer above 1 and not this process", () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    expect(signalOwnedDetachedProcessGroup(1, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(0, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(-4242, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(1.5, "SIGKILL", true)).toBe(false);
+    expect(
+      signalOwnedDetachedProcessGroup(Number.MAX_SAFE_INTEGER + 1, "SIGKILL", true),
+    ).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(process.pid, "SIGKILL", true)).toBe(
+      false,
+    );
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", false)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(undefined, "SIGTERM", true)).toBe(
+      false,
+    );
+    if (process.platform === "win32") {
+      expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", true)).toBe(false);
+      expect(kill).not.toHaveBeenCalled();
+      return;
+    }
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", true)).toBe(true);
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-4242, "SIGKILL");
+  });
+
+  it("returns false when the group signal fails", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      throw new Error("ESRCH");
+    });
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGTERM", true)).toBe(false);
+  });
+});
 
 describe("agenc-sdk subprocess transport", () => {
   it("uses the combined dangerous flag only when explicitly requested", async () => {
@@ -352,7 +689,9 @@ describe("agenc-sdk subprocess transport", () => {
       const stdout = new EventEmitter() as EventEmitter & {
         setEncoding: (encoding: string) => void;
       };
-      stdout.setEncoding = () => {};
+      stdout.setEncoding = () => {
+        throw new Error("stdout setEncoding must not be called");
+      };
       const stderr = new EventEmitter() as EventEmitter & {
         setEncoding: (encoding: string) => void;
       };
@@ -363,6 +702,20 @@ describe("agenc-sdk subprocess transport", () => {
         stderr: stderr as unknown as AgencSubprocessChild["stderr"],
         once: (event: string, listener: (...args: never[]) => void) => {
           emitter.once(event, listener as (...args: unknown[]) => void);
+          return child;
+        },
+        on: (event: string, listener: (...args: never[]) => void) => {
+          emitter.on(event, listener as (...args: unknown[]) => void);
+          return child;
+        },
+        removeListener: (
+          event: string,
+          listener: (...args: never[]) => void,
+        ) => {
+          emitter.removeListener(
+            event,
+            listener as (...args: unknown[]) => void,
+          );
           return child;
         },
         kill: () => true,
@@ -527,6 +880,243 @@ describe("agenc-sdk subprocess transport", () => {
       expect(rest[1]).toMatchObject({ eventId: "e211" });
       expect(rest.at(-1)).toMatchObject({ eventId: "e1210" });
       expect(rest).toHaveLength(MAX_BUFFERED_PROMPT_EVENTS + 1);
+    });
+  });
+
+  it("resolves a valid result delivered after exit but before close", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("late result", { spawn });
+    const pending = run.result();
+
+    child().emitExit(0, null);
+    await Promise.resolve();
+    child().writeStdout(`${JSON.stringify(streamResult("after-exit"))}\n`);
+    child().endStdout();
+    child().emitClose(0, null);
+
+    await expect(pending).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "after-exit",
+      stopReason: "completed",
+    });
+  });
+
+  it("parses the final unterminated stream-json line once after stdout ends", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("partial line", { spawn });
+
+    child().writeStdout(JSON.stringify(streamResult("unterminated")));
+    child().endStdout();
+    child().writeStdout(`${JSON.stringify(streamResult("should-be-ignored"))}\n`);
+    child().emitExit(0, null);
+    child().emitClose(0, null);
+
+    await expect(run.result()).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "unterminated",
+    });
+  });
+
+  it("still rejects with the missing stream-json result error when the child closes empty", async () => {
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("hello", { spawn });
+
+    child().writeStderr("agenc: no prompt provided");
+    child().emitExit(1, null);
+    child().endStdout();
+    child().emitClose(1, null);
+
+    await expect(run.result()).rejects.toThrow(
+      /exited \(code 1\).*no prompt provided/s,
+    );
+  });
+
+  it("settles abort and spawn-error races once and removes every listener", async () => {
+    const abort = new AbortController();
+    const { spawn, child } = createControllableSpawn();
+    const run = promptViaSubprocess("race", {
+      spawn,
+      signal: abort.signal,
+    });
+    const first = run.result();
+    const second = run.result();
+
+    abort.abort();
+    child().emitSpawnError(new Error("spawn ENOENT"));
+    child().emitExit(null, "SIGTERM");
+    child().endStdout();
+    child().emitClose(null, "SIGTERM");
+
+    await expect(first).rejects.toThrow(/failed to spawn AgenC CLI|exited/);
+    await expect(second).rejects.toBe(await first.catch((error: unknown) => error));
+    expect(child().listenerCounts()).toEqual({
+      child: { error: 0, exit: 0, close: 0 },
+      stdout: { data: 0, end: 0 },
+      stderr: { data: 0 },
+      stdin: { error: 0 },
+    });
+    expect(getEventListeners(abort.signal, "abort")).toHaveLength(0);
+  });
+
+  it("times out a post-exit drain with a distinct error and kills retained descendants", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const { spawn, child } = createControllableSpawn();
+      const run = promptViaSubprocess("hung stdout", {
+        spawn,
+        detachProcessGroup: true,
+        postExitDrainTimeoutMs: 30,
+      });
+
+      child().emitExit(0, null);
+      await expect(run.result()).rejects.toThrow(
+        /exited \(code 0\).*did not close within 30ms/s,
+      );
+      expect(child().kills).toContain("SIGKILL");
+      expect(kill).not.toHaveBeenCalled();
+      expect(child().listenerCounts()).toEqual({
+        child: { error: 0, exit: 0, close: 0 },
+        stdout: { data: 0, end: 0 },
+        stderr: { data: 0 },
+        stdin: { error: 0 },
+      });
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  describe("owned detached process group", () => {
+    const descendants: number[] = [];
+
+    afterEach(() => {
+      for (const pid of descendants.splice(0)) reapProcess(pid);
+    });
+
+    async function overflowGroupPids(
+      label: string,
+      leaderExitsOnTerm: boolean,
+    ): Promise<{ readonly root: string; readonly leader: number; readonly grandchild: number; readonly pending: Promise<unknown> }> {
+      const root = mkdtempSync(join(tmpdir(), `agenc-sdk-${label}-`));
+      const pidPath = join(root, "group.pid");
+      const run = promptViaSubprocess(label, {
+        agencCommand: overflowGroupCommand(pidPath, leaderExitsOnTerm),
+        detachProcessGroup: true,
+      });
+      const pending = run.result();
+      expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
+      const [leader, grandchild] = readFileSync(pidPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((value) => Number(value));
+      expect(leader).toBeGreaterThan(1);
+      expect(grandchild).toBeGreaterThan(1);
+      descendants.push(leader, grandchild);
+      return { root, leader, grandchild, pending };
+    }
+
+    async function readLiveDescendantPid(pidPath: string): Promise<number> {
+      expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
+      const pid = Number(readFileSync(pidPath, "utf8"));
+      expect(pid).toBeGreaterThan(1);
+      expect(pid).not.toBe(process.pid);
+      descendants.push(pid);
+      expect(await pollUntil(() => isLiveProcess(pid), 1_000)).toBe(true);
+      return pid;
+    }
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached group that ignores SIGTERM after stdout overflow",
+      async () => {
+        const group = await overflowGroupPids("overflow-group", false);
+        try {
+          await expect(group.pending).rejects.toThrow(/stdout frame exceeded/i);
+          expect(
+            await pollUntil(
+              () => !isLiveProcess(group.leader) && !isLiveProcess(group.grandchild),
+              2_000,
+            ),
+          ).toBe(true);
+          expect(() => process.kill(-group.leader, 0)).toThrow(/ESRCH/u);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(group.root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached grandchild when the overflow leader exits on SIGTERM",
+      async () => {
+        const group = await overflowGroupPids("overflow-leader", true);
+        try {
+          await expect(group.pending).rejects.toThrow(/stdout frame exceeded/i);
+          expect(await pollUntil(() => !isLiveProcess(group.grandchild), 2_000)).toBe(true);
+          expect(() => process.kill(-group.leader, 0)).toThrow(/ESRCH/u);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(group.root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached descendant that keeps stdout open after the wrapper exits",
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-drain-group-"));
+        const pidPath = join(root, "descendant.pid");
+        try {
+          const run = promptViaSubprocess("held stdout", {
+            agencCommand: detachedHolderCommand(pidPath),
+            detachProcessGroup: true,
+            postExitDrainTimeoutMs: 80,
+          });
+          const pending = run.result();
+          const pid = await readLiveDescendantPid(pidPath);
+
+          await expect(pending).rejects.toThrow(/did not close within 80ms/);
+          expect(await pollUntil(() => !isLiveProcess(pid), 2_000)).toBe(true);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "forwards SIGTERM to a detached descendant on cancel",
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-cancel-group-"));
+        const pidPath = join(root, "descendant.pid");
+        const signalPath = join(root, "signal");
+        try {
+          const run = promptViaSubprocess("cancel group", {
+            agencCommand: detachedHolderCommand(pidPath, signalPath),
+            detachProcessGroup: true,
+            postExitDrainTimeoutMs: 2_000,
+          });
+          const pending = run.result();
+          const pid = await readLiveDescendantPid(pidPath);
+
+          run.cancel();
+          await expect(pending).rejects.toThrow(/without a stream-json result/);
+          expect(await pollUntil(() => existsSync(signalPath), 2_000)).toBe(true);
+          expect(readFileSync(signalPath, "utf8")).toBe("SIGTERM");
+          expect(await pollUntil(() => !isLiveProcess(pid), 2_000)).toBe(true);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+  });
+
+  it("accepts a real wrapper that exits before an inherited-stdout descendant writes the result", async () => {
+    const run = promptViaSubprocess("real late pipe", {
+      spawn: spawnLateResultWrapper(),
+    });
+    await expect(run.result()).resolves.toMatchObject({
+      exitCode: 0,
+      finalMessage: "late-pipe",
     });
   });
 });
