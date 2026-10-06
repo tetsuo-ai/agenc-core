@@ -2445,6 +2445,18 @@ function createRuntimeSettingsReconciler(params: {
     barrier: async () => {
       await queue;
       if (failure !== null) throw failure;
+      // A connection gap cannot heal: the next "connected" state fails this
+      // reconciler because no authoritative snapshot is replayed. Fail now,
+      // before authority-dependent work (a submission) waits inside the
+      // client's reconnect and reaches the restarted daemon after the fence.
+      if (observedConnectionGap) {
+        fail(
+          new Error(
+            "daemon disconnected and cannot resume without an authoritative runtime-settings snapshot; re-attach is required",
+          ),
+        );
+        if (failure !== null) throw failure;
+      }
     },
     waitFor: async (eventId) => {
       if (eventId.length === 0) {

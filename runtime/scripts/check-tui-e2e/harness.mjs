@@ -501,7 +501,7 @@ export function normalizePtyOutput(raw, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function frameLooksBusy(frame) {
+export function frameLooksBusy(frame) {
   return (
     /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame)
   );
