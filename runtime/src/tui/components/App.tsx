@@ -126,7 +126,8 @@ import type {
   McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
   McpSurfaceTool,
 } from "../../session/session.js";
-import { useSessionTranscript } from "../session-transcript.js";
+import { makeUserMessage, useSessionTranscript } from "../session-transcript.js";
+import { countUserTextRows, lastUserText, type PendingUserEcho, withPendingUserEcho } from "../pending-user-echo.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
@@ -2316,6 +2317,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
   const pendingSubmissionIdRef = useRef<string | null>(null);
+  // See pending-user-echo.ts: the sent prompt shows at once, before the
+  // daemon's own user row lands.
+  const [pendingEcho, setPendingEcho] = useState<PendingUserEcho | null>(null);
   const latestSubmissionIdRef = useRef<string | null>(null);
   const activeModelSubmissionTokensRef = useRef(new Set<symbol>());
   // `pendingSubmission` can clear as soon as the daemon acknowledges the
@@ -2616,6 +2620,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // getMessagesAfterCompactBoundary(context.messages); an empty array
   // would crash them mid-flow).
   const transcriptMessagesRef = useRef<readonly unknown[]>(transcript.messages);
+  // The echo leaves with the pending state if the submission fails or is
+  // cancelled, and a newer submission replaces it.
+  const echoSubmitting =
+    pendingEcho !== null &&
+    latestSubmissionIdRef.current === pendingEcho.id &&
+    (pendingSubmission || activeModelSubmissionCount > 0);
+  const displayedMessages = useMemo(
+    () => withPendingUserEcho(transcript.messages, pendingEcho, echoSubmitting),
+    [transcript.messages, pendingEcho, echoSubmitting],
+  );
   useEffect(() => {
     transcriptMessagesRef.current = transcript.messages;
   }, [transcript.messages]);
@@ -3473,6 +3487,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setSubmitCount((count) => count + 1);
       if (parsedSlashCommand === null && parsedDollarSkill === null) {
         startPendingSubmission();
+        if (!options?.fromQueue && historyDisplay.length > 0) {
+          setPendingEcho({
+            id: clientMessageId,
+            message: makeUserMessage(historyDisplay, `pending-echo:${clientMessageId}`),
+            text: historyDisplay,
+            userRowsBefore: countUserTextRows(transcriptMessagesRef.current),
+            lastUserTextBefore: lastUserText(transcriptMessagesRef.current),
+          });
+        }
         // Snap the transcript to the bottom on every prompt submit. The
         // welcome→transcript layout flip (first message) can leave the
         // ScrollBox parked above the viewport, hiding the just-sent message
@@ -4646,7 +4669,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     <Box paddingX={TRANSCRIPT_INSET} flexDirection="column">
       <ContentWidthProvider width={Math.max(1, terminalColumns - 2 * TRANSCRIPT_INSET)}>
         <Messages
-          messages={transcript.messages as any[]}
+          messages={displayedMessages as any[]}
           tools={tools as any}
           commands={commands as unknown as Command[]}
           verbose={screen === "transcript"}
