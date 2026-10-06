@@ -47,6 +47,9 @@ function currentEffortValue(ctx: SlashCommandContext): unknown {
 
 type ProviderAuthContext = Parameters<typeof getAvailableEffortLevelsForContext>[1];
 
+/** JSON-RPC invalid params: how a daemon that cannot clear an effort refuses null. */
+const INVALID_PARAMS = -32602;
+
 
 /**
  * Save the choice as the default for new sessions, mirror it in app state,
@@ -79,29 +82,38 @@ async function applyEffortChoice(
   };
   // Apply only the effort to the live session. A full config reload would
   // also re-read model and provider and undo a session-only /model switch.
-  // The daemon cannot clear a session's effort, so "default" sends the level
-  // the model runs at when none is set, in the daemon's own vocabulary.
+  // "default" clears the session's effort (null), so each model runs at its
+  // own default, now and after a model switch. A daemon from before that
+  // refuses null; it gets the level the model runs at when none is set.
   const defaultEffort = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
   const liveEffort = choice === "default"
-    ? defaultEffort
+    ? null
     : effortValueToReasoningEffort(choice, available);
   const applyDaemonConfig = asRecord(ctx.session)?.applyDaemonConfig;
+  const keepsCurrentEffort = {
+    ok: true,
+    message: `Saved: new sessions use the ${model} default. This session keeps its current effort.`,
+  };
   if (typeof applyDaemonConfig === "function" && liveEffort === undefined) {
     // Nothing to send: do not claim the running session follows a default.
-    return {
-      ok: true,
-      message: `Saved: new sessions use the ${model} default. This session keeps its current effort.`,
-    };
+    return keepsCurrentEffort;
   }
   if (typeof applyDaemonConfig === "function" && liveEffort !== undefined) {
-    try {
-      const result = (await applyDaemonConfig.call(ctx.session, {
-        reasoningEffort: liveEffort,
-      })) as {
+    const apply = async (reasoningEffort: string | null) =>
+      (await applyDaemonConfig.call(ctx.session, { reasoningEffort })) as {
         readonly sessionId?: string;
         readonly applied?: boolean;
         readonly summary?: string;
       };
+    try {
+      let result;
+      try {
+        result = await apply(liveEffort);
+      } catch (error) {
+        if (liveEffort !== null || asRecord(error)?.code !== INVALID_PARAMS) throw error;
+        if (defaultEffort === undefined) return keepsCurrentEffort;
+        result = await apply(defaultEffort);
+      }
       // Before the first turn there is no live session yet; the saved
       // setting is what the first conversation starts with.
       if (result?.applied === false && result.sessionId !== "pending" && result.summary) {

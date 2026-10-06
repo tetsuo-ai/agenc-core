@@ -112,6 +112,7 @@ import {
   AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
   AGENC_RUN_START_LIGHT_MODE_CAPABILITY,
   AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY,
+  AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY,
   AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -523,6 +524,7 @@ function buildServerCapabilities(
     ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
     ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
     ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]: true } : {}),
+    ...(hasMethod(agentManager, "applyConfigToSession") ? { [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -4465,14 +4467,17 @@ function validateSessionApplyConfigParams(
 ): SessionApplyConfigParams {
   const validated = validateObjectShape(params, {
     methodName: "session.applyConfig",
-    stringFields: ["sessionId", "profile", "reasoningEffort"],
-    valueFields: ["reload", "modelVerbosity"],
+    stringFields: ["sessionId", "profile"],
+    valueFields: ["reload", "modelVerbosity", "reasoningEffort"],
   });
   validateRequiredString(validated, "session.applyConfig", "sessionId");
+  // Null clears the session's effort so it follows the model default.
   if (validated.reasoningEffort !== undefined &&
-    (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'none'].includes(String(validated.reasoningEffort)) ||
+    ((validated.reasoningEffort !== null &&
+      (typeof validated.reasoningEffort !== "string" ||
+        !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'none'].includes(validated.reasoningEffort))) ||
       validated.profile !== undefined || validated.reload !== undefined)) {
-    throw invalidParams("session.applyConfig reasoningEffort must be a native effort and cannot be combined with reload or profile");
+    throw invalidParams("session.applyConfig reasoningEffort must be a native effort or null and cannot be combined with reload or profile");
   }
   if (validated.modelVerbosity !== undefined &&
     (validated.modelVerbosity !== null &&

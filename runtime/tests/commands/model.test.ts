@@ -208,25 +208,22 @@ describe("checkModelHistoryCompat", () => {
     expect(result.reason).toMatch(/openrouter \/ openai\/gpt-oss-120b/);
   });
 
-  it("treats reasoning effort as a compatibility requirement", () => {
+  it("does not refuse a switch over reasoning effort", () => {
     const session = stubSession({
       provider: "grok",
       model: "grok-4-fast",
       reasoningEffort: "high",
       configStore: commandConfigStore(TEST_HOME, {
-        providers: {
-          grok: {
-            capability_overrides: {
-              "grok-4-fast": { acceptsReasoningEffort: false },
-            },
-          },
-        },
+        providers: { grok: { capability_overrides: { acceptsReasoningEffort: false } } },
       }),
     });
 
-    const result = checkModelHistoryCompat(session, "grok-4-fast");
-    expect(result.compatible).toBe(false);
-    expect(result.missingCapabilities).toEqual(["reasoning effort"]);
+    // The switch drops a level the model rejects and says so
+    // (tests/session/reasoning-effort-for-model.test.ts).
+    expect(checkModelHistoryCompat(session, "grok-4-fast")).toEqual({
+      compatible: true,
+      missingCapabilities: [],
+    });
   });
 });
 
@@ -247,26 +244,28 @@ describe("Bedrock profile switch compatibility", () => {
         "amazon-bedrock",
       ),
     ).toEqual({ compatible: true, missingCapabilities: [] });
-    // Unmapped, the profile names no model and cannot take the effort.
-    expect(
-      checkModelHistoryCompat(session({}), profile, "amazon-bedrock").missingCapabilities,
-    ).toEqual(["reasoning effort"]);
+    // Unmapped, the profile cannot take the effort; the switch drops it
+    // instead of refusing (tests/session/reasoning-effort-for-model.test.ts).
+    expect(checkModelHistoryCompat(session({}), profile, "amazon-bedrock")).toEqual({
+      compatible: true,
+      missingCapabilities: [],
+    });
   });
 });
 
 describe("Gemini effort switch compatibility", () => {
   it.each([
-    ["grok", "grok-4.6", "high", "gemini", "gemini-3.1-pro-preview", true],
-    ["grok", "grok-4.6", "xhigh", "gemini", "gemini-3.1-pro-preview", false],
-    ["gemini", "gemini-3.5-flash", "minimal", "gemini", "gemini-3.1-pro-preview", false],
-    ["gemini", "gemini-3.1-pro-preview", "medium", "gemini", "gemini-3-pro-preview", false],
-    ["gemini", "gemini-3.1-pro-preview", "low", "grok", "grok-4.6", true],
-    ["gemini", "gemini-3.5-flash", "minimal", "grok", "grok-4.6", false],
-    ["gemini", "gemini-3.1-pro-preview", "none", "gemini", "gemini-2.5-flash", true],
-    ["gemini", "gemini-3.1-pro-preview", "high", "gemini", "gemini-2.5-flash", false],
-  ] as const)("checks %s/%s %s against %s/%s", (provider, model, reasoningEffort, targetProvider, targetModel, compatible) => {
+    ["grok", "grok-4.6", "xhigh", "gemini", "gemini-3.1-pro-preview"],
+    ["gemini", "gemini-3.5-flash", "minimal", "gemini", "gemini-3.1-pro-preview"],
+    ["gemini", "gemini-3.1-pro-preview", "medium", "gemini", "gemini-3-pro-preview"],
+    ["gemini", "gemini-3.5-flash", "minimal", "grok", "grok-4.6"],
+    ["gemini", "gemini-3.1-pro-preview", "high", "gemini", "gemini-2.5-flash"],
+    ["gemini", "gemini-3.5-flash", "medium", "gemini", "gemma-4-31b-it"],
+  ] as const)("switches %s/%s at %s to %s/%s, which does not take it", async (provider, model, reasoningEffort, targetProvider, targetModel) => {
     const session = stubSession({ provider, model, reasoningEffort });
-    expect(checkModelHistoryCompat(session, targetModel, targetProvider).compatible).toBe(compatible);
+    expect(checkModelHistoryCompat(session, targetModel, targetProvider).compatible).toBe(true);
+    const outcome = await applyModelSwitch(session, targetModel, targetProvider);
+    expect(outcome).toMatchObject({ applied: true, provider: targetProvider, model: targetModel });
   });
 });
 
@@ -558,6 +557,36 @@ describe("modelCommand", () => {
     });
     expect(setModel).toHaveBeenCalledOnce();
     expect(setModel).toHaveBeenCalledWith("grok-4-fast");
+  });
+
+  it.each([
+    ["drops", undefined, undefined],
+    ["keeps", "high", "high"],
+  ] as const)("the status line %s the chosen effort as the daemon session does", async (_case, liveEffort, effortValue) => {
+    // A daemon session mirrors the journaled settings the switch produced.
+    const session = stubSession({ provider: "gemini", model: "gemini-3.5-flash" });
+    const sessionConfiguration: { collaborationMode: Record<string, unknown> } = {
+      collaborationMode: { model: "gemini-3.5-flash", reasoningEffort: "medium" },
+    };
+    Object.assign(session, {
+      sessionConfiguration,
+      applyProviderModelSelection: vi.fn(async () => {
+        sessionConfiguration.collaborationMode = {
+          model: "gemma-4-31b-it",
+          ...(liveEffort !== undefined ? { reasoningEffort: liveEffort } : {}),
+        };
+        return { applied: true, provider: "gemini", model: "gemma-4-31b-it", summary: "switched" };
+      }),
+    });
+    let appState: Record<string, unknown> = { mainLoopModel: "gemini-3.5-flash", effortValue: liveEffort ?? "medium" };
+    const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
+      appState = updater(appState) as Record<string, unknown>;
+    });
+
+    await modelCommand.execute(mkctx(session, "gemini:gemma-4-31b-it", { setAppState }));
+
+    expect(appState.mainLoopModel).toBe("gemma-4-31b-it");
+    expect(appState.effortValue).toBe(effortValue);
   });
 
   it("returns an authoritative daemon rejection without updating chrome", async () => {

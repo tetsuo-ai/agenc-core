@@ -27,7 +27,11 @@ import type {
 import type { AdmissionLease } from "../budget/admission-types.js";
 import { WorkflowHandoffSpool } from "../agents/workflow-handoff-spool.js";
 import { defaultConfig } from "../config/schema.js";
-import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
+import {
+  STREAM_IDLE_ABORT_REASON,
+  STREAM_IDLE_WARNING_REASON,
+  STREAM_QUIET_WARNING_MS,
+} from "../llm/stream-watchdog.js";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -634,6 +638,112 @@ describe("streamModel — live assistant text sanitization", () => {
       expect((error as Error).message).toMatch(/^stream_idle: no progress for 600000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stream warns despite byte heartbeats and aborts from its last meaningful progress", async () => {
+    vi.useFakeTimers();
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const external = new AbortController();
+    try {
+      const ctx = mkCtx("chat");
+      let providerSignal: AbortSignal | undefined;
+      const provider = mkProvider(
+        (_messages, onChunk, options) =>
+          new Promise<LLMResponse>((_resolve, reject) => {
+            providerSignal = options?.signal;
+            onChunk({ content: "hi", done: false });
+            const heartbeat = setInterval(() => onChunk({ content: "", done: false }), 10);
+            options?.signal?.addEventListener(
+              "abort",
+              () => {
+                clearInterval(heartbeat);
+                reject(new Error(String(options.signal?.reason)));
+              },
+              { once: true },
+            );
+          }),
+      );
+      const { session, events } = mkSession(provider);
+      (session.services as { configStore?: unknown }).configStore = {
+        current: () => ({ stream_watchdog_timeout_ms: 100 }),
+      };
+
+      const outcome = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+        external.signal,
+      ).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(51);
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "warning" &&
+            (event.msg.payload as { cause?: string }).cause ===
+              STREAM_IDLE_WARNING_REASON,
+        ),
+      ).toBe(true);
+      expect(providerSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(providerSignal?.aborted).toBe(true);
+      expect(providerSignal?.reason).toBe(STREAM_IDLE_ABORT_REASON);
+      expect(
+        events.some((event) => event.msg.type === "stream_error"),
+      ).toBe(true);
+
+      const error = await outcome;
+      expect((error as Error).message).toMatch(/^stream_idle: no progress for 100ms/);
+    } finally {
+      monotonicClock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("quiet observation warns with abort disabled and stops on cancellation", async () => {
+    vi.useFakeTimers();
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const external = new AbortController();
+    try {
+      const ctx = mkCtx("chat");
+      let providerSignal: AbortSignal | undefined;
+      const provider = mkProvider((_messages, onChunk, options) =>
+        new Promise<LLMResponse>((_resolve, reject) => {
+          providerSignal = options?.signal;
+          const heartbeat = setInterval(() => onChunk({ content: "", done: false }), 10_000);
+          options?.signal?.addEventListener("abort", () => {
+            clearInterval(heartbeat);
+            reject(new Error(String(options.signal?.reason)));
+          }, { once: true });
+        }),
+      );
+      const { session, events } = mkSession(provider);
+      (session.services as { configStore?: unknown }).configStore = {
+        current: () => ({ stream_watchdog_timeout_ms: 0 }),
+      };
+      const outcome = streamModel(mkState(ctx), ctx, session,
+        mkRequest([{ role: "user", content: "hello" }]), external.signal).catch(error => error);
+      await vi.advanceTimersByTimeAsync(STREAM_QUIET_WARNING_MS + 1);
+      const warnings = () => events.filter(event => event.msg.type === "warning" &&
+        (event.msg.payload as { cause?: string }).cause === STREAM_IDLE_WARNING_REASON);
+      expect(warnings()).toHaveLength(1);
+      expect(providerSignal?.aborted).toBe(false);
+      external.abort("user stop");
+      await outcome;
+      expect(providerSignal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(STREAM_QUIET_WARNING_MS * 2);
+      expect(warnings()).toHaveLength(1);
+      expect(events.some(event => event.msg.type === "stream_error")).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      monotonicClock.mockRestore();
       vi.useRealTimers();
     }
   });

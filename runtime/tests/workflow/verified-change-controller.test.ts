@@ -2112,6 +2112,50 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     });
   });
 
+  it("ends cancelled when Stop wins just before plan admission", async () => {
+    harness.cleanup();
+    let client: ExecutionAdmissionClient;
+    harness = makeHarness({ admission: () => client });
+    const kernel = new ExecutionAdmissionKernel({ agencHome: harness.home });
+    try {
+      client = kernel.bindClient({
+        cwd: harness.cwd,
+        scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: true },
+      });
+      const acquire = client.acquire.bind(client);
+      const deniedSteps: string[] = [];
+      vi.spyOn(client, "acquire").mockImplementation(async (input, signal) => {
+        if (input.stepId.startsWith("workflow.plan")) {
+          // Force Stop to commit before the next stage asks for admission.
+          client.cancelRun("operator_cancel");
+          try {
+            return await acquire(input, signal);
+          } catch (error) {
+            expect(error).toMatchObject({ reason: "parent_cancel_locked" });
+            deniedSteps.push(input.stepId);
+            throw error;
+          }
+        }
+        return acquire(input, signal);
+      });
+
+      await runToTerminal(harness);
+
+      expect(deniedSteps).toHaveLength(1);
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+        status: "cancelled",
+        stopReason: null,
+        finalMessage: expect.stringContaining("parent_cancel_locked"),
+      });
+      expect(harness.spawner.spawns).toHaveLength(0);
+      // Main keeps a cancelled Goal's worktree (interrupted work is retained).
+      expect(harness.worktrees.provisions).toBe(1);
+      expect(harness.worktrees.discards).toHaveLength(0);
+    } finally {
+      kernel.close();
+    }
+  });
+
   it("policy_denied at intake terminates before any pipeline step", async () => {
     harness.admission.denials.push({
       match: (stepId) => stepId === "workflow.intake",

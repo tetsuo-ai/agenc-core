@@ -3766,6 +3766,84 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it.each([
+    { label: "drops", effort: "medium", journaled: null },
+    { label: "keeps", effort: "high", journaled: "high" },
+  ] as const)("a resume onto another model $label an effort it may not take", async (entry) => {
+    const runId = `session-settings-resume-effort-${entry.label}`;
+    const baseline = canonicalRuntimeSettings({
+      provider: "gemini",
+      model: "gemini-3.5-flash",
+      reasoningEffort: entry.effort,
+    });
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "resume on another model",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        provider: "gemini",
+        model: "gemma-4-31b-it",
+      }),
+    ).resolves.toBe(true);
+
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject({
+      reason: "model_provider_changed",
+      model: "gemma-4-31b-it",
+      reasoningEffort: entry.journaled,
+    });
+    // The resumed session switches at its next turn; the level stays live
+    // until then, and that switch drops it and says so.
+    expect(harness.session.pendingProviderSwitch).toMatchObject({ model: "gemma-4-31b-it" });
+    const restored = harness.sessionState.sessionConfiguration as {
+      readonly collaborationMode: { readonly reasoningEffort?: string };
+      readonly reasoningEffortCleared?: boolean;
+    };
+    expect(restored.collaborationMode.reasoningEffort).toBe(entry.effort);
+    expect(restored.reasoningEffortCleared).toBeUndefined();
+  });
+
+  it.each([
+    { label: "none keeps following the model default", effort: null, cleared: true },
+    { label: "a level is a chosen level", effort: "high", cleared: undefined },
+  ] as const)("a restored journal with $label", async (entry) => {
+    const runId = `session-settings-restored-effort-${entry.effort ?? "none"}`;
+    const baseline = canonicalRuntimeSettings({ reasoningEffort: entry.effort });
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "restore the journaled effort",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+      }),
+    ).resolves.toBe(true);
+
+    const restored = harness.sessionState.sessionConfiguration as {
+      readonly collaborationMode: { readonly reasoningEffort?: string };
+      readonly reasoningEffortCleared?: boolean;
+    };
+    expect(restored.collaborationMode.reasoningEffort).toBe(entry.effort ?? undefined);
+    // A cleared session must not pick up the configured reasoning_effort
+    // after a daemon restart either.
+    expect(restored.reasoningEffortCleared).toBe(entry.cleared);
+  });
+
+  it.each([
     {
       label: "a conflicting pair",
       override: { provider: "grok", model: "gpt-5" },
@@ -6552,6 +6630,215 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
   });
 
+  describe("reasoning effort across a model switch", () => {
+    async function startOn(agentId: string, provider: string, model: string) {
+      const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+      h.sessionState.sessionConfiguration.provider.slug = provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = model;
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      return h;
+    }
+    const liveConfiguration = (h: ReturnType<typeof makeTopLevelRunner>) =>
+      h.sessionState.sessionConfiguration as {
+        readonly collaborationMode: { readonly reasoningEffort?: string };
+        readonly reasoningEffortCleared?: boolean;
+      };
+    const liveEffort = (h: ReturnType<typeof makeTopLevelRunner>) =>
+      liveConfiguration(h).collaborationMode.reasoningEffort;
+    const journaledEffort = async (h: ReturnType<typeof makeTopLevelRunner>, agentId: string) =>
+      (await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.reasoningEffort;
+    const pin = (h: ReturnType<typeof makeTopLevelRunner>, reasoningEffort: string | null) =>
+      h.runner.applyAgentConfig(h.session.conversationId, { sessionId: "session_1", reasoningEffort });
+    const gemmaNotice =
+      "gemma-4-31b-it does not support medium reasoning effort, so the session now uses its default effort.";
+
+    it("journals none for a level the new model rejects, says so, and keeps it live until the switch applies", async () => {
+      const agentId = "switch-drops-unsupported-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      // What /effort default used to pin on gemini-3.5-flash.
+      await pin(h, "medium");
+
+      const result = await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+
+      // Main refused this switch over the effort; a config reload let it
+      // through and every Gemma request then failed at medium.
+      expect(result).toMatchObject({ applied: true, provider: "gemini", model: "gemma-4-31b-it" });
+      expect(result.summary).toContain(gemmaNotice);
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload).toMatchObject({
+        reason: "model_provider_changed",
+        model: "gemma-4-31b-it",
+        reasoningEffort: null,
+      });
+      // The old model keeps the level until the switch applies (Session
+      // publication drops it), so a switch that never applies loses nothing.
+      expect(h.session.pendingProviderSwitch).toMatchObject({ model: "gemma-4-31b-it" });
+      expect(liveEffort(h)).toBe("medium");
+    });
+
+    it("keeps journaling what the next turn runs while the switch is staged", async () => {
+      const agentId = "staged-switch-capture";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+
+      // Any other settings change captures the live session again.
+      await h.runner.setAgentPermissionMode(agentId, { sessionId: agentId, mode: "plan" });
+
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload).toMatchObject({
+        permissionMode: "plan",
+        model: "gemma-4-31b-it",
+        reasoningEffort: null,
+      });
+    });
+
+    it("keeps an explicit level the new model accepts", async () => {
+      const agentId = "switch-keeps-supported-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "high");
+
+      const result = await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+
+      expect(result.summary).not.toContain("reasoning effort");
+      expect(liveEffort(h)).toBe("high");
+      expect(await journaledEffort(h, agentId)).toBe("high");
+    });
+
+    it("clears to the model default on purpose, so a switch to GPT-6 Sol gets its own default, not none", async () => {
+      const agentId = "default-effort-follows-each-model";
+      const h = await startOn(agentId, "mistral", "mistral-medium-latest");
+      await pin(h, "high");
+
+      // /effort default now sends null instead of Mistral's native none.
+      await expect(pin(h, null)).resolves.toMatchObject({
+        applied: true,
+        summary: "Reasoning effort follows the model default",
+      });
+      expect(liveEffort(h)).toBeUndefined();
+      // Marked, so the configured reasoning_effort does not refill it.
+      expect(liveConfiguration(h).reasoningEffortCleared).toBe(true);
+      expect(await journaledEffort(h, agentId)).toBeNull();
+
+      const result = await h.runner.setAgentModel(agentId, { model: "gpt-6-sol" });
+      expect(result).toMatchObject({ applied: true, provider: "openai", model: "gpt-6-sol" });
+      expect(result.summary).not.toContain("reasoning effort");
+      expect(liveEffort(h)).toBeUndefined();
+      expect(liveConfiguration(h).reasoningEffortCleared).toBe(true);
+      expect(await journaledEffort(h, agentId)).toBeNull();
+
+      // Choosing a level again ends the cleared state.
+      await pin(h, "low");
+      expect(liveEffort(h)).toBe("low");
+      expect(liveConfiguration(h).reasoningEffortCleared).toBeUndefined();
+    });
+
+    it("keeps an explicit none for a model that has none", async () => {
+      const agentId = "switch-keeps-explicit-none";
+      const h = await startOn(agentId, "mistral", "mistral-medium-latest");
+      await pin(h, "none");
+
+      await h.runner.setAgentModel(agentId, { model: "gpt-6-sol" });
+
+      expect(liveEffort(h)).toBe("none");
+      expect(await journaledEffort(h, agentId)).toBe("none");
+    });
+
+    it("journals none when a config reload switches to a model that rejects the level", async () => {
+      const agentId = "reload-drops-unsupported-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      Object.assign(h.configStore, {
+        current: () => ({ model_provider: "gemini", model: "gemma-4-31b-it" }),
+      });
+
+      const result = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reload: true });
+
+      expect(result).toMatchObject({ applied: true, model: "gemma-4-31b-it" });
+      expect(result.summary).toContain(gemmaNotice);
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      expect(liveEffort(h)).toBe("medium");
+    });
+
+    it("journals none for a configured level the reloaded model rejects", async () => {
+      const agentId = "reload-drops-configured-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      Object.assign(h.configStore, {
+        current: () => ({
+          model_provider: "gemini",
+          model: "gemma-4-31b-it",
+          reasoning_effort: "medium",
+        }),
+      });
+
+      const result = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reload: true });
+
+      expect(result.summary).toContain(gemmaNotice);
+      expect(result.summary).not.toContain("reasoning effort ->medium");
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      // The configured level reaches the running model; the switch drops it.
+      expect(liveEffort(h)).toBe("medium");
+    });
+
+    it("journals none in a busy session and aborts the running turn", async () => {
+      const agentId = "busy-switch-drops-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      Object.assign(h.session, { activeTurn: h.activeTurn });
+      h.setActiveTurn("running-turn");
+
+      // The effort itself only changes between turns.
+      await expect(pin(h, null)).rejects.toThrow("between turns");
+      expect(liveEffort(h)).toBe("medium");
+
+      const result = await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+
+      expect(result.summary).toContain("Current turn aborted");
+      expect(result.summary).toContain(gemmaNotice);
+      expect(h.session.abortTerminal).toHaveBeenCalledWith("provider_switched");
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      // The running turn is not changed under it.
+      expect(liveEffort(h)).toBe("medium");
+    });
+
+    it("judges the live level against each staged model, so a later switch can keep it", async () => {
+      const agentId = "switch-chain-rejudges-live-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+      expect(await journaledEffort(h, agentId)).toBeNull();
+
+      const next = await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemini-3.6-flash" });
+
+      // Journal and live session agree on what gemini-3.6-flash runs.
+      expect(next.summary).not.toContain("reasoning effort");
+      expect(await journaledEffort(h, agentId)).toBe("medium");
+      expect(liveEffort(h)).toBe("medium");
+    });
+
+    it("keeps the level and the journal when the switch fails after staging", async () => {
+      const agentId = "failed-switch-keeps-effort";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      Object.assign(h.session, {
+        activeTurn: h.activeTurn,
+        abortTerminal: vi.fn(() => {
+          throw new Error("injected abort failure");
+        }),
+      });
+      h.setActiveTurn("running-turn");
+
+      await expect(
+        h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" }),
+      ).rejects.toThrow("injected abort failure");
+
+      expect(h.session.pendingProviderSwitch).toBeNull();
+      expect(liveEffort(h)).toBe("medium");
+      expect(await h.runner.getAgentSnapshot(agentId)).toMatchObject({
+        runtimeSettings: { model: "gemini-3.5-flash", reasoningEffort: "medium" },
+      });
+    });
+  });
+
   it("restores the configured verbosity when a session override is cleared", async () => {
     const agentId = "response-detail-inherits-config";
     const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
@@ -7997,7 +8284,7 @@ describe("AgenC delegate background-agent runner", () => {
             model_provider: "openai",
             profiles: {
               fast: {
-                model: "fast-model",
+                model: "gpt-6-sol",
                 model_provider: "openai",
                 reasoning_effort: "high",
               },
@@ -8042,7 +8329,7 @@ describe("AgenC delegate background-agent runner", () => {
     // Model/provider delta staged through the genuine switch seam, with the
     // profile threaded so consumePendingProviderSwitch re-resolves it.
     expect(stagedSwitches).toEqual([
-      { provider: "openai", model: "fast-model", profile: "fast" },
+      { provider: "openai", model: "gpt-6-sol", profile: "fast" },
     ]);
     // Reasoning effort written onto the live sessionConfiguration — the piece
     // the model-switch seam alone cannot do.
@@ -8067,7 +8354,7 @@ describe("AgenC delegate background-agent runner", () => {
             model_provider: "grok",
             profiles: {
               fast: {
-                model: "fast-model",
+                model: "gpt-6-sol",
                 model_provider: "openai",
                 reasoning_effort: "high",
               },
@@ -8108,7 +8395,7 @@ describe("AgenC delegate background-agent runner", () => {
       {
         pending: {
           provider: "openai",
-          model: "fast-model",
+          model: "gpt-6-sol",
           profile: "fast",
         },
         reasoningEffort: "high",
@@ -8167,7 +8454,7 @@ describe("AgenC delegate background-agent runner", () => {
             model_provider: "grok",
             profiles: {
               fast: {
-                model: "fast-model",
+                model: "gpt-6-sol",
                 model_provider: "openai",
                 reasoning_effort: "high",
               },
@@ -8278,7 +8565,7 @@ describe("AgenC delegate background-agent runner", () => {
             model_provider: "grok",
             profiles: {
               fast: {
-                model: "fast-model",
+                model: "gpt-6-sol",
                 model_provider: "openai",
                 reasoning_effort: "high",
               },
@@ -8298,7 +8585,7 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(session.pendingProviderSwitch).toEqual({
       provider: "openai",
-      model: "fast-model",
+      model: "gpt-6-sol",
       profile: "fast",
     });
     expect(
@@ -8309,7 +8596,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(settingsEvents[1]?.msg?.payload).toMatchObject({
       reason: "config_applied",
       provider: "openai",
-      model: "fast-model",
+      model: "gpt-6-sol",
       profile: "fast",
       reasoningEffort: "high",
     });
@@ -8317,7 +8604,7 @@ describe("AgenC delegate background-agent runner", () => {
       runtimeSettingsEventId: settingsEvents[1]?.eventId,
       runtimeSettings: {
         provider: "openai",
-        model: "fast-model",
+        model: "gpt-6-sol",
         profile: "fast",
         reasoningEffort: "high",
       },
@@ -8356,7 +8643,7 @@ describe("AgenC delegate background-agent runner", () => {
             model_provider: "grok",
             profiles: {
               fast: {
-                model: "fast-model",
+                model: "gpt-6-sol",
                 model_provider: "openai",
                 reasoning_effort: "high",
               },
@@ -8394,7 +8681,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(settingsEvents[1]?.msg?.payload).toMatchObject({
       reason: "config_applied",
       provider: "openai",
-      model: "fast-model",
+      model: "gpt-6-sol",
       profile: "fast",
       reasoningEffort: "high",
     });

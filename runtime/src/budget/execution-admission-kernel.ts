@@ -427,7 +427,10 @@ export class ExecutionAdmissionKernel {
     const attempt = this.admit(binding, input);
     if (attempt.decision.decision === "deny") {
       return Promise.reject(
-        new AdmissionDeniedError(attempt.decision.reason ?? "denied"),
+        new AdmissionDeniedError(
+          attempt.decision.reason ?? "denied",
+          admissionDenialDecision(attempt.record),
+        ),
       );
     }
     if (attempt.decision.decision === "approval_required") {
@@ -1235,7 +1238,13 @@ export class ExecutionAdmissionKernel {
       }
       if (result.kind === "not_claimed") {
         this.#pending.delete(entry.key);
-        this.#settlePending(entry, new AdmissionDeniedError(result.reason));
+        this.#settlePending(
+          entry,
+          new AdmissionDeniedError(
+            result.reason,
+            admissionDenialDecision(result.record),
+          ),
+        );
         madeProgress = true;
       }
     }
@@ -1909,6 +1918,20 @@ function scheduleAt(
       timer = undefined;
     },
   };
+}
+
+function admissionDenialDecision(
+  record: PersistedAdmissionRecord,
+): "deny" | "cancelled" {
+  // The durable AdmissionDecision vocabulary encodes cancellations as deny.
+  // Restore their cause before consumers classify a denial as budget failure.
+  return record.status === "cancelled" ||
+    (record.reason === "parent_cancel_locked" &&
+      record.parentLockCause === "cancellation") ||
+    record.reason?.startsWith("cancelled_before_dispatch:") === true ||
+    record.reason?.startsWith("cancelled_after_dispatch:") === true
+    ? "cancelled"
+    : "deny";
 }
 
 function normalizePositiveInteger(

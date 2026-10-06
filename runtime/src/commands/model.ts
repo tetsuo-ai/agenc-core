@@ -34,6 +34,7 @@ import {
 } from "../llm/shape-request.js";
 import { readCommandConfig } from "./config-context.js";
 import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
+import { asRecord } from "../utils/record.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -76,9 +77,6 @@ export function checkModelHistoryCompat(
     typeof peekState === "function"
       ? (peekState.call((session as unknown as { state?: unknown }).state) as {
           history?: unknown[];
-          sessionConfiguration?: {
-            collaborationMode?: { reasoningEffort?: string };
-          };
         })
       : null;
   if (snapshot === null) {
@@ -300,6 +298,23 @@ function resolveCommandSelection(
   }
 }
 
+/**
+ * App state after a model switch. The daemon drops a level the new model
+ * does not accept, and the session's live settings then carry none, so the
+ * status line stops showing that level. A level the model accepts stays.
+ */
+export function effortStateAfterModelSwitch(
+  session: unknown,
+): { readonly effortValue?: undefined } {
+  const collaborationMode = asRecord(
+    asRecord(asRecord(session)?.sessionConfiguration)?.collaborationMode,
+  );
+  return collaborationMode !== null &&
+    collaborationMode.reasoningEffort === undefined
+    ? { effortValue: undefined }
+    : {};
+}
+
 function updateModelChrome(ctx: SlashCommandContext, model: string): void {
   if (typeof ctx.appState?.setAppState === "function") {
     ctx.appState.setAppState((prev: unknown): unknown => {
@@ -308,6 +323,7 @@ function updateModelChrome(ctx: SlashCommandContext, model: string): void {
         ...prev,
         mainLoopModel: model,
         mainLoopModelForSession: model,
+        ...effortStateAfterModelSwitch(ctx.session),
       };
     });
     return;

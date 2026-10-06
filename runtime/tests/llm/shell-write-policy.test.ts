@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -258,11 +258,12 @@ describe("classifyShellWorkspaceWritePolicy", () => {
       });
 
       expect(withHome.blocked).toBe(true);
-      // `~/` expands dynamically, so it also makes the command indeterminate.
-      expect(withHome.indeterminate).toBe(true);
+      // `~/` is the home directory, not an unknown target.
+      expect(withHome.indeterminate).toBe(false);
       expect(withHome.blockedDeletions).toEqual([
         "/repo",
         "/Users/dev/agenc-home/state",
+        homedir(),
       ]);
     });
 
@@ -906,6 +907,458 @@ describe("classifyShellWorkspaceWritePolicy names only the session's file tools"
       expect(decision.blocked).toBe(true);
       expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
     }
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for find", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+  const [ASKS, ACCEPTS_EDITS, BYPASSES] = MODES;
+
+  function classifyIn(command: string, mode: (typeof MODES)[number]) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot: WORKSPACE_ROOT,
+      platform: "linux",
+      ...mode,
+    });
+  }
+
+  it.each([
+    // -delete removes what it finds under each starting point, as rm -r would.
+    ["find src/old -delete", "rm -r src/old"],
+    ["find src -name '*.pyc' -delete", "rm -r src"],
+    ["find build -name '*.o' -delete", "rm -r build"],
+    ["find src tmp -type f -mtime +30 -delete", "rm -r src tmp"],
+    ["find .git -name '*.lock' -delete", "rm -r .git"],
+    ["find /tmp/agenc-find -delete", "rm -r /tmp/agenc-find"],
+    ["find /etc/nginx -name '*.bak' -delete", "rm -r /etc/nginx"],
+    ["find -P -s -x src -delete", "rm -r src"],
+    ["find -sx -f src -- -name x -delete", "rm -r src"],
+    ["find -D tree -O3 src -delete", "rm -r src"],
+    ["gfind .git -delete", "rm -r .git"],
+    ["nohup find .git -delete", "rm -r .git"],
+    // The commands -exec, -execdir, -ok and -okdir run, read as written.
+    ["find . -name x -exec rm -rf .git \\;", "rm -rf .git"],
+    ["find . -name x -exec rm -rf .git ';'", "rm -rf .git"],
+    ["find . -ok rm -rf .git \\;", "rm -rf .git"],
+    ["find . -exec touch src/stamp \\;", "touch src/stamp"],
+    ["find . -exec touch tmp/stamp \\;", "touch tmp/stamp"],
+    ["find src -exec rm ../outside.txt \\;", "rm ../outside.txt"],
+    ["find . -exec sh -c 'rm -rf .git' \\;", "rm -rf .git"],
+    ["find . -exec nohup rm -rf .git \\; -print", "rm -rf .git"],
+    // The files find writes itself.
+    ["find . -fprint src/list.txt", "touch src/list.txt"],
+    ["find . -name x -fprintf tmp/list.txt '%p\\n'", "touch tmp/list.txt"],
+    ["find . -fls /etc/list -fprint0 tmp/list0", "touch /etc/list tmp/list0"],
+  ])("gives %s the verdict of %s", (command, reference) => {
+    for (const mode of MODES) {
+      expect(classifyIn(command, mode), JSON.stringify(mode)).toEqual(classifyIn(reference, mode));
+    }
+  });
+
+  it("asks before removing workspace files and backs them up once allowed", () => {
+    const asked = classifyIn("find src -name '*.pyc' -delete", ASKS);
+    expect(asked.blocked).toBe(true);
+    expect(asked.blockedDeletions).toEqual(["/repo/src"]);
+    expect(asked.message).toContain("needs the user's approval");
+
+    const allowed = classifyIn("find src -name '*.pyc' -delete", ACCEPTS_EDITS);
+    expect(allowed.blocked).toBe(false);
+    expect(allowed.indeterminate).toBe(false);
+    expect(allowed.deletionTargets).toEqual(["/repo/src"]);
+    expect(
+      collectShellWorkspaceDeletionTargets({
+        toolName: "exec_command",
+        args: { command: "find src/old -delete" },
+        workspaceRoot: WORKSPACE_ROOT,
+      }),
+    ).toEqual(["/repo/src/old"]);
+  });
+
+  it("refuses a removal outside the workspace unless approvals and the sandbox are bypassed", () => {
+    for (const mode of [ASKS, ACCEPTS_EDITS]) {
+      const decision = classifyIn("find /etc/nginx -name '*.bak' -delete", mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.message, JSON.stringify(mode)).toContain("only inside the workspace");
+    }
+    expect(classifyIn("find /etc/nginx -name '*.bak' -delete", BYPASSES).blocked).toBe(false);
+    expect(classifyIn("find /tmp/agenc-find -delete", ASKS).blocked).toBe(false);
+  });
+
+  it.each([
+    "find . -name x -execdir rm -rf .git \\;",
+    "find . -name x -okdir rm -rf .git \\;",
+    "find src -execdir rm -rf ../.git \\;",
+  ])("refuses the protected removal %s runs in each file's directory", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toContain("/repo/.git");
+    }
+  });
+
+  it.each([
+    ["find .git -exec rm -rf {} +", ["/repo/.git"]],
+    ["find .git -name '*.pack' -exec rm {} \\;", ["/repo/.git"]],
+    ["find .git -ok rm {} \\;", ["/repo/.git"]],
+    ["find .git -execdir rm {} \\;", ["/repo/.git"]],
+    ["find .git -okdir rm {} \\;", ["/repo/.git"]],
+    ["find .git -exec mv {} /tmp/agenc-moved \\;", ["/repo/.git"]],
+    ['find "$DIR" -exec rm -rf .git {} +', ["/repo/.git"]],
+  ])("refuses a protected removal through {} under the full bypass: %s", (command, refused) => {
+    const decision = classifyIn(command, BYPASSES);
+    expect(decision.blocked).toBe(true);
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blockedDeletions).toEqual(refused);
+    expect(decision.message).toContain("may not delete or move protected paths");
+  });
+
+  /** The refusal that points find at narrower starting points. */
+  const NAME_SUBDIRECTORIES = "name the subdirectories to search instead";
+
+  it.each([
+    ["find . -name '*.pyc' -delete", "/repo"],
+    ["find -name '*.pyc' -delete", "/repo"],
+    ["find . -maxdepth 1 -name '*.log' -delete", "/repo"],
+    ["find . -path ./.git -prune -o -name '*.pyc' -delete", "/repo"],
+    ["find . -type d -name __pycache__ -exec rm -rf {} +", "/repo"],
+    ["find . -name '*.log' -execdir rm {} \\;", "/repo"],
+    ["find / -name core -delete", "/"],
+  ])("tells %s to search narrower starting points instead of removing the one it names", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([refused]);
+      expect(decision.message, JSON.stringify(mode)).toContain("shell_workspace_file_delete_disallowed");
+      expect(decision.message, JSON.stringify(mode)).toContain(NAME_SUBDIRECTORIES);
+      expect(decision.message, JSON.stringify(mode)).toContain("find src tests -name '*.pyc' -delete");
+      expect(decision.message, JSON.stringify(mode)).not.toContain("ask the user to remove");
+    }
+  });
+
+  it("does not offer a narrower search for a starting point that is protected itself", () => {
+    const decision = classifyIn("find .git -name '*.lock' -delete", BYPASSES);
+    expect(decision.message).toContain("may not delete or move protected paths");
+    expect(decision.message).not.toContain(NAME_SUBDIRECTORIES);
+  });
+
+  it("tells find to search under the system temp directory rather than remove it", () => {
+    const decision = classifyIn("find /tmp -name 'x*' -delete", ACCEPTS_EDITS);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/tmp"]);
+    expect(decision.message).toContain(NAME_SUBDIRECTORIES);
+    expect(decision.message).not.toContain("ask the user to remove");
+    expect(classifyIn("find /tmp/agenc-find -name 'x*' -delete", ACCEPTS_EDITS).blocked).toBe(false);
+  });
+
+  it("keeps the generic refusal for a removal find names outright", () => {
+    const decision = classifyIn("find . -name x -exec rm -rf . \\;", BYPASSES);
+    expect(decision.blockedDeletions).toEqual(["/repo"]);
+    expect(decision.message).toContain("may not delete or move protected paths");
+    expect(decision.message).not.toContain(NAME_SUBDIRECTORIES);
+  });
+
+  it("allows the narrower search the refusal names", () => {
+    for (const mode of [ACCEPTS_EDITS, BYPASSES]) {
+      const decision = classifyIn("find src tests -name '*.pyc' -delete", mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.deletionTargets, JSON.stringify(mode)).toEqual(["/repo/src", "/repo/tests"]);
+    }
+    expect(classifyIn("find src tests -name '*.pyc' -delete", ASKS).message).toContain(
+      "needs the user's approval",
+    );
+  });
+
+  it("judges the starting point a command writes through {} and leaves the files under it unknown", () => {
+    const removal = classifyIn("find build -name '*.o' -exec rm {} +", BYPASSES);
+    expect(removal.blocked).toBe(false);
+    expect(removal.indeterminate).toBe(true);
+    expect(removal.deletionTargets).toEqual(["/repo/build"]);
+
+    for (const mode of MODES) {
+      const write = classifyIn("find src -name '*.ts' -exec cp header.ts {} \\;", mode);
+      expect(write.blocked, JSON.stringify(mode)).toBe(true);
+      expect(write.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(write.blockedTargets, JSON.stringify(mode)).toEqual(["/repo/src"]);
+    }
+  });
+
+  it.each([
+    "find",
+    "find . -name '*.ts'",
+    "find src -type f -name '*.ts' -exec grep -l foo {} +",
+    "find . -name '*.md' -exec cat {} \\;",
+    "find src -execdir ls {} \\;",
+    "find . -ok echo {} \\;",
+    "find . -path ./node_modules -prune -o -name '*.js' -print",
+    "find . \\\( -name a -o -name b \\\) ! -name c -print0",
+    "find src -mtime -1 -size +10k -perm -u+x -ls",
+    "find . -newermt 2024-01-01 -maxdepth 2 -printf '%p\\n'",
+    "find . -depth 2",
+    "find -L . -name x",
+    "find -H -s -x . -type l -follow",
+    "find -E . -regex '.*[.]ts'",
+    "find -x / -name x",
+    "find -follow -name x",
+    'find . -name "$PATTERN"',
+    'find "$DIR" -name x',
+    "find . -name -delete",
+    "find . -exec echo -delete \\;",
+    "find . -fprint /dev/stdout -fls /dev/null",
+    "gfind . -name x",
+  ])("allows %s, which writes nothing", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.observedTargets, JSON.stringify(mode)).toEqual([]);
+    }
+  });
+
+  it.each([
+    // A command the shell still expands, or the file found as the command.
+    "find . -name x -exec $CMD {} \\;",
+    'find . -exec "$EDITOR" {} \\;',
+    "find . -okdir $CMD \\;",
+    "find . -exec {} \\;",
+    // Words find does not read as written.
+    "find . -name x $ACTION",
+    "find . -name x -frobnicate",
+    "find . -exec rm -rf x",
+    "find . -exec \\;",
+    "find . -name",
+    // Starting points or files the line does not show.
+    'find "$DIR" -delete',
+    "find $DIRS -exec rm {} +",
+    "find -files0-from list.txt -delete",
+    'find src -fprint "$OUT"',
+    // Symlinks followed out of a starting point.
+    "find -L src -delete",
+    "find src -follow -delete",
+    // Files and directories under a starting point.
+    "find src -name x -exec rm {} +",
+    "find src -execdir touch stamp \\;",
+    "find tmp -execdir touch stamp \\;",
+  ])("fails closed when it cannot read what find writes: %s", (command) => {
+    const decision = classifyIn(command, ACCEPTS_EDITS);
+
+    expect(decision.indeterminate).toBe(true);
+    expect(decision.blocked).toBe(true);
+  });
+
+  it("reads a word before the starting points as GNU's primary as well as BSD's options", () => {
+    // BSD's getopt reads `-fprint` as `-f print`, a starting point.
+    const decision = classifyIn("find -fprint src/out.txt", ACCEPTS_EDITS);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedTargets).toEqual(["/repo/src/out.txt"]);
+  });
+
+  it("reads find's argument vector", () => {
+    const classifyVector = (args: string[]) =>
+      classifyShellWorkspaceWritePolicy({
+        toolName: "exec_command",
+        args: { command: "/usr/bin/find", args },
+        workspaceRoot: WORKSPACE_ROOT,
+        ...BYPASSES,
+      });
+
+    expect(classifyVector([".", "-name", "x", "-exec", "rm", "-rf", ".git", ";"]).blockedDeletions)
+      .toEqual(["/repo/.git"]);
+    const found = classifyVector(["build", "-exec", "rm", "{}", "+"]);
+    expect(found.blocked).toBe(false);
+    expect(found.indeterminate).toBe(true);
+    expect(found.deletionTargets).toEqual(["/repo/build"]);
+  });
+});
+
+describe("classifyShellWorkspaceWritePolicy for the home directory, globs and directory destinations", () => {
+  /** The permission settings a verdict can differ in. */
+  const MODES = [
+    { allowWorkspaceDeletions: false, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: false },
+    { allowWorkspaceDeletions: true, bypassesApprovalsAndSandbox: true },
+  ] as const;
+  const [ASKS, ACCEPTS_EDITS, BYPASSES] = MODES;
+
+  function classifyIn(command: string, mode: (typeof MODES)[number], workspaceRoot = WORKSPACE_ROOT) {
+    return classifyShellWorkspaceWritePolicy({
+      toolName: "exec_command",
+      args: { command },
+      workspaceRoot,
+      platform: "linux",
+      ...mode,
+    });
+  }
+
+  it.each([
+    "rm -rf ~",
+    "rm -rf ~/",
+    'rm -rf "$HOME"',
+    "rm -rf ${HOME}",
+    'rm -rf "${HOME}/"',
+    "rm -r ~",
+    "rm -R ~",
+    "rm --recursive ~",
+    "nohup rm -rf ~",
+    "find ~ -delete",
+    'find "$HOME" -name "*.log" -delete',
+    "find ~ -exec rm -rf {} +",
+  ])("refuses removing the home directory in every mode: %s", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([homedir()]);
+    }
+  });
+
+  it("reads a path under the home directory as that path", () => {
+    const decision = classifyIn("rm -rf ~/scratch", BYPASSES);
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.observedTargets).toEqual([join(homedir(), "scratch")]);
+    expect(classifyIn("rm -f ~/.gitconfig", BYPASSES).blockedDeletions).toEqual([join(homedir(), ".gitconfig")]);
+  });
+
+  it.each(["rm -rf ~other", "rm -rf ~+", 'rm -rf "$HOME$X"', 'rm -rf "$HOMEDIR"'])(
+    "leaves another expansion unknown: %s",
+    (command) => {
+      const decision = classifyIn(command, BYPASSES);
+      expect(decision.blocked).toBe(false);
+      expect(decision.indeterminate).toBe(true);
+    },
+  );
+
+  it.each([
+    ["rm -rf .git/*", "/repo/.git/*"],
+    ["rm -rf .git/**", "/repo/.git/**"],
+    ["rm .agenc/*.json", "/repo/.agenc/*.json"],
+    ['rm -rf .agents/"$NAME"', "/repo/.agents/$NAME"],
+    ["rm -rf src/.git/objects/*", "/repo/src/.git/objects/*"],
+    ["rm -rf .git*", "/repo/.git*"],
+    ["rm -rf .*", "/repo/.*"],
+    ["rm -f src/.[g]it", "/repo/src/.[g]it"],
+    ['rm -rf "$DIR"/.git', "/repo/$DIR/.git"],
+    ["rm -f ~/.agenc/*.json", `${homedir()}/.agenc/*.json`],
+    ["mv .git/* /tmp/agenc-moved/", "/repo/.git/*"],
+    ["find .git/* -delete", "/repo/.git/*"],
+    ["find .git/* -exec rm -rf {} +", "/repo/.git/*"],
+  ])("refuses a removal that reaches a protected path whatever it expands to, in every mode: %s", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([refused]);
+      expect(decision.message, JSON.stringify(mode)).toContain("may not delete or move protected paths");
+    }
+  });
+
+  it.each([
+    ["echo x > .git/$NAME", "/repo/.git/$NAME"],
+    ["cp hook.sh .git/hooks/*", "/repo/.git/hooks/*"],
+    ['tee "$D"/.git/config', "/repo/$D/.git/config"],
+  ])("refuses a write that reaches a protected path whatever it expands to, in every mode: %s", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toContain(refused);
+      expect(decision.message, JSON.stringify(mode)).toContain("may not write protected paths");
+    }
+  });
+
+  it.each([
+    "rm -rf build/*",
+    "rm -rf /tmp/x*",
+    "rm -rf *",
+    "rm -f src/*.swp",
+    "rm -f src/.*.swp",
+    "rm -rf node_modules/.cache/*",
+  ])("keeps a removal that may reach no protected path indeterminate: %s", (command) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([]);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(mode !== BYPASSES);
+    }
+  });
+
+  it.each([
+    ["cp /tmp/x.ts .", ["/repo/x.ts"]],
+    ["cp /tmp/x.ts src/", ["/repo/src/x.ts"]],
+    ["cp /tmp/x.ts ./", ["/repo/x.ts"]],
+    ["cp /tmp/a.ts /tmp/b.ts src", ["/repo/src/a.ts", "/repo/src/b.ts"]],
+    ["cp -t src /tmp/a.ts /tmp/b.ts", ["/repo/src/a.ts", "/repo/src/b.ts"]],
+    ["cp -r /tmp/lib src/..", ["/repo/lib"]],
+    ["mv /tmp/x.ts .", ["/repo/x.ts"]],
+    ["install /tmp/x.sh .", ["/repo/x.sh"]],
+    ["ln -s /tmp/x.ts .", ["/repo/x.ts"]],
+    ["ln -s /tmp/x.ts", ["/repo/x.ts"]],
+  ])("routes a file copied, moved or linked into a workspace directory to the editing tools: %s", (command, routed) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedTargets, JSON.stringify(mode)).toEqual(routed);
+      expect(decision.message, JSON.stringify(mode)).toContain("shell_workspace_file_write_disallowed");
+    }
+  });
+
+  it.each([
+    ["cp /tmp/x build/", ["/repo/build/x"]],
+    ["cp -r /tmp/dist .", ["/repo/dist"]],
+    ["cp src/a.ts /tmp/", ["/tmp/a.ts"]],
+    ["cp src/a.ts src/b.ts /tmp/agenc-out", ["/tmp/agenc-out/a.ts", "/tmp/agenc-out/b.ts"]],
+  ])("allows a copy into a generated or outside directory: %s", (command, observed) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.observedTargets, JSON.stringify(mode)).toEqual(observed);
+    }
+  });
+
+  it("reads -T as naming the file written", () => {
+    expect(classifyIn("cp -T /tmp/x.ts src/", ASKS).blockedTargets).toEqual(["/repo/src"]);
+  });
+
+  it("renames a workspace file into a directory under its own name", () => {
+    for (const [command, renamed] of [
+      ["mv src/a.ts lib/", "/repo/lib/a.ts"],
+      ["mv src/a.ts .", "/repo/a.ts"],
+    ] as const) {
+      const decision = classifyIn(command, ACCEPTS_EDITS);
+      expect(decision.blocked, command).toBe(false);
+      expect(decision.deletionTargets, command).toEqual(["/repo/src/a.ts", renamed]);
+    }
+  });
+
+  describe("in a real workspace", () => {
+    let workspace: string;
+
+    beforeAll(() => {
+      workspace = realpathSync(mkdtempSync(join(tmpdir(), "agenc-dir-destination-")));
+      mkdirSync(join(workspace, "src"));
+      mkdirSync(join(workspace, "build"));
+      writeFileSync(join(workspace, "notes.txt"), "");
+    });
+
+    afterAll(() => {
+      rmSync(workspace, { recursive: true, force: true });
+    });
+
+    it("writes into a destination that exists as a directory", () => {
+      expect(classifyIn("cp /tmp/x.ts src", ASKS, workspace).blockedTargets).toEqual([join(workspace, "src/x.ts")]);
+      expect(classifyIn("mv /tmp/x.ts src", ASKS, workspace).blockedTargets).toEqual([join(workspace, "src/x.ts")]);
+      expect(classifyIn("cp /tmp/x.ts build", ASKS, workspace).blocked).toBe(false);
+      expect(classifyIn("cp /tmp/x.ts notes.txt", ASKS, workspace).blockedTargets).toEqual([
+        join(workspace, "notes.txt"),
+      ]);
+    });
   });
 });
 
