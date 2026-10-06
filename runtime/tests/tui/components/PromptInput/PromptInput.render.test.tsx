@@ -756,6 +756,10 @@ import { sendDirectMemberMessage } from "../../../utils/directMemberMessage.js";
 import { getImageFromClipboard } from "../../../utils/imagePaste.js";
 import { cacheImagePath, storeImage } from "../../../utils/imageStore.js";
 import { logError } from "../../../utils/log.js";
+import {
+  type ComposerSubmitHelpers,
+  submitViaElicitationPrompt,
+} from "../../elicitation-submit-routing.js";
 import PromptInput from "./PromptInput.js";
 
 function sleep(ms: number): Promise<void> {
@@ -910,6 +914,19 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
       await sleep(25);
     },
   };
+}
+
+function rerenderPromptInput(
+  rendered: Awaited<ReturnType<typeof renderPromptInput>>,
+  overrides: Record<string, unknown>,
+): void {
+  rendered.root.render(
+    <PromptInput
+      {...({ ...rendered.props, ...overrides } as unknown as React.ComponentProps<
+        typeof PromptInput
+      >)}
+    />,
+  );
 }
 
 describe("PromptInput render surface", () => {
@@ -1141,13 +1158,7 @@ describe("PromptInput render surface", () => {
       draftRestoreRevision: 0,
     });
     const rerender = (draftRestoreRevision: number) =>
-      rendered.root.render(
-        <PromptInput
-          {...({ ...rendered.props, draftRestoreRevision } as unknown as React.ComponentProps<
-            typeof PromptInput
-          >)}
-        />,
-      );
+      rerenderPromptInput(rendered, { draftRestoreRevision });
 
     try {
       await waitForPromptInputProps();
@@ -1170,6 +1181,33 @@ describe("PromptInput render surface", () => {
       rerender(1);
       await sleep(25);
       expect(harness.baseProps?.cursorOffset).toBe(3);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("keeps the cursor through a submit until the owner clears the input", async () => {
+    const draft = "and again";
+    const submit = vi.fn(async () => {});
+    const onSubmit = vi.fn((value: string, helpers: ComposerSubmitHelpers) =>
+      submitViaElicitationPrompt({ submit: () => false }, submit, value, helpers),
+    );
+    const rendered = await renderPromptInput({ input: draft, onSubmit });
+
+    try {
+      await waitForPromptInputProps();
+      const submitKey = harness.keybindingRegistrations.find(
+        (item) => item.action === "chat:submit",
+      )?.handler as () => void;
+      submitKey();
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith(draft, undefined));
+      await sleep(25);
+      // The owner kept the text (a refused busy retry, an elicitation
+      // answer), so typing must still append to it.
+      expect(harness.baseProps?.cursorOffset).toBe(draft.length);
+
+      rerenderPromptInput(rendered, { input: "" });
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(0));
     } finally {
       await rendered.dispose();
     }

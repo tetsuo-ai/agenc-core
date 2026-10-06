@@ -2176,21 +2176,34 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
   });
 
-  test("bumps the draft restore revision when a rejected submission restores its draft", async () => {
+  test("restores a rejected draft without resetting the cursor, also when a busy retry is refused", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     resetShellSurfaceProbe();
+    let activeTurn: { turnId: string } | null = null;
     const session = {
       ...createSession(),
+      activeTurn: { unsafePeek: () => activeTurn },
       submit: vi.fn(async () => {
         throw new Error("re-attach is required");
       }),
-    } satisfies AgenCBridgeSession;
+    };
     const helpers = { clearBuffer: vi.fn(), resetHistory: vi.fn(), setCursorOffset: vi.fn() };
     await withRenderedApp(<AgenCTuiApp session={session} isInteractive={false} />, async () => {
+      const send = () => (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, submitHelpers: typeof helpers) => Promise<void>)("and again", helpers);
       expect(providerProbe.promptProps.at(-1)?.draftRestoreRevision).toBe(0);
-      await (providerProbe.promptProps.at(-1)!.onSubmit as (value: string, submitHelpers: typeof helpers) => Promise<void>)("and again", helpers);
-      expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
-      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "and again", draftRestoreRevision: 1 }));
+      await send();
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "and again", draftRestoreRevision: 1, isLoading: false }));
+
+      // Enter on the restored draft while another turn runs is refused and
+      // keeps the text, so nothing may move the cursor to the front of it.
+      activeTurn = { turnId: "other-turn" };
+      providerProbe.setAppState!((prev) => ({ ...prev }));
+      await vi.waitFor(() => expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(true));
+      await send();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(session.submit).toHaveBeenCalledOnce();
+      expect(providerProbe.promptProps.at(-1)).toMatchObject({ input: "and again", draftRestoreRevision: 1 });
+      expect(helpers.setCursorOffset).not.toHaveBeenCalled();
     });
   });
 
