@@ -200,7 +200,7 @@ async function handleProfileSubcommand(
   });
   return {
     kind: "text",
-    text: `Profile switch to "${name}" staged — takes effect on next turn.`,
+    text: `Profile switch to "${name}" staged. It takes effect on the next turn.`,
   };
 }
 
@@ -289,7 +289,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
   const spawner = deps.spawner ?? spawnConfigEditor;
   return {
     name: "config",
-    description: "Manage configuration — opens a picker",
+    description: "Manage configuration (opens a picker)",
     immediate: true,
     userInvocable: true,
     execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>

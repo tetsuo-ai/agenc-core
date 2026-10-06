@@ -18,8 +18,8 @@ export class StateSchemaMismatchError extends StateStoreError {
     public readonly knownVersion: number,
   ) {
     super(
-      `state schema v${appliedVersion} is newer than runtime v${knownVersion} — ` +
-        "please upgrade @tetsuo-ai/runtime",
+      `state schema v${appliedVersion} is newer than runtime v${knownVersion}. ` +
+        "Please upgrade @tetsuo-ai/runtime",
     );
     this.name = "StateSchemaMismatchError";
   }

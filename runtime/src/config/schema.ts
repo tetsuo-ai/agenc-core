@@ -4340,7 +4340,7 @@ export class AmbiguousModelError extends Error {
       .map((c) => `${c.provider}:${c.model}`)
       .join(", ");
     super(
-      `Model slug "${slug}" is ambiguous — matches ${candidates.length} providers. ` +
+      `Model slug "${slug}" is ambiguous: it matches ${candidates.length} providers. ` +
         `Recommend explicit provider:model form. Candidates: ${recommended}`,
     );
     this.name = "AmbiguousModelError";

@@ -109,11 +109,11 @@ const CHANNEL_GUIDES: Readonly<Record<string, readonly string[]>> = {
     "  1. https://discord.com/developers/applications → New Application",
     "  2. Bot tab → Reset Token → copy it",
     "  3. IMPORTANT: on the same Bot tab, enable the 'MESSAGE CONTENT'",
-    "     privileged intent — without it your bot sees empty messages.",
+    "     privileged intent. Without it your bot sees empty messages.",
     "  4. OAuth2 → URL Generator → scope 'bot' → open the URL to invite it",
   ],
   slack: [
-    "Slack setup (Socket Mode — no public URL needed):",
+    "Slack setup (Socket Mode, no public URL needed):",
     "  1. https://api.slack.com/apps → Create App (from scratch)",
     "  2. Socket Mode: enable it; create an app-level token (xapp-…)",
     "     with the connections:write scope",
@@ -144,10 +144,10 @@ export async function runChannelAct(
   io.say("");
 
   const channel = await io.select("Which surface first?", [
-    { key: "telegram", label: "Telegram", hint: "recommended — 2-minute setup" },
+    { key: "telegram", label: "Telegram", hint: "recommended, 2-minute setup" },
     { key: "discord", label: "Discord" },
     { key: "slack", label: "Slack", hint: "Socket Mode, no public URL" },
-    { key: "webchat", label: "WebChat", hint: "no account needed — a local URL" },
+    { key: "webchat", label: "WebChat", hint: "no account needed, a local URL" },
   ]);
 
   const entries: Record<string, string> = {};
@@ -179,7 +179,7 @@ export async function runChannelAct(
       }
       io.say(`That token did not verify: ${check.detail ?? "unknown error"}`);
       io.say("(A valid token that still fails later usually means the");
-      io.say(" MESSAGE CONTENT intent toggle was missed — see step 3.)");
+      io.say(" MESSAGE CONTENT intent toggle was missed. See step 3.)");
       if (!(await io.confirm("Try again?", true))) return 1;
     }
   } else if (channel === "slack") {
@@ -200,7 +200,7 @@ export async function runChannelAct(
 
   if (Object.keys(entries).length > 0) {
     updateGatewayCredentialEnvironment(home, entries);
-    io.say("Stored in the home-bound native secure storage — available to");
+    io.say("Stored in the home-bound native secure storage, available to");
     io.say("`agenc gateway run` and the gateway service, never the daemon.");
   }
 
@@ -228,7 +228,7 @@ export async function runChannelAct(
       if (channel === "webchat") {
         io.say("");
         io.say(`Open this in your browser: ${handle.webchatUrl ?? "(no url?)"}`);
-        io.say("Send a message there — the token in the URL is your auth.");
+        io.say("Send a message there. The token in the URL is your auth.");
         const replied = await io.confirm("Did the agent reply?", true);
         io.say(replied ? "Channel live." : "See the log lines above for what happened.");
       } else {
@@ -255,11 +255,11 @@ export async function runChannelAct(
           const replied = await io.confirm("Did the agent reply?", true);
           io.say(
             replied
-              ? "Channel live — your agent answers on your phone now."
+              ? "Channel live. Your agent answers on your phone now."
               : "Check the log lines above; `agenc gateway status` also helps.",
           );
         } else {
-          io.say("No pairing seen yet — that's fine. The gateway keeps the");
+          io.say("No pairing seen yet. That's fine. The gateway keeps the");
           io.say("same behavior whenever you run it; pair any time.");
         }
       }

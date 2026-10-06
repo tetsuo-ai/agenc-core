@@ -5866,7 +5866,7 @@ function inactiveAgentMessage(
   }
   return (
     `AgenC daemon agent ${agentId} is no longer running (status: ${agent.status}). ` +
-    `Its run has ended and cannot accept new input — start a new session to continue. ` +
+    `Its run has ended and cannot accept new input. Start a new session to continue. ` +
     `Run \`agenc run status ${agentId}\` for why it ended.`
   );
 }

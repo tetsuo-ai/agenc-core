@@ -1438,7 +1438,7 @@ export function formatStructuredToolResult(
       return [
         {
           type: "text",
-          text: `Loaded skill ${name} (${raw.length} chars of instructions — hidden from chat)`,
+          text: `Loaded skill ${name} (${raw.length} chars of instructions, hidden from chat)`,
         },
       ];
     }

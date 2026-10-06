@@ -21,7 +21,7 @@ export function formatAgenCTrajectoriesCliHelpText(): string {
     "",
     "Curate the redacted trajectory exports written by the session sink",
     "(enable with AGENC_TRAJECTORY_EXPORT_DIR=<dir>, then run sessions)",
-    "into training-data JSONL. Local file processing only — no network.",
+    "into training-data JSONL. Local file processing only, no network.",
     "",
     "Only trajectories that completed at least one turn with no error",
     "event, no abort/interrupt, and no user tool-use rejection are kept.",
@@ -37,7 +37,7 @@ export function formatAgenCTrajectoriesCliHelpText(): string {
     "  --out <file>        Write JSONL here instead of stdout",
     "  -h, --help          Show this help text",
     "",
-    "Note: --require-eval-passed is not available — exported records",
+    "Note: --require-eval-passed is not available. Exported records",
     "carry no evaluation outcome field to filter on.",
   ].join("\n");
 }

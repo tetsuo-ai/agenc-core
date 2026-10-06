@@ -438,7 +438,7 @@ export const ledgerCommand: SlashCommand = {
         const sessionText =
           session.stdout.trim().length > 0
             ? session.stdout.trimEnd()
-            : "(no saved accounts yet — run /ledger account discover <network>)";
+            : "(no saved accounts yet; run /ledger account discover <network>)";
         return {
           kind: "text",
           text: `${sessionText}\n\n${QUICK_START}`,

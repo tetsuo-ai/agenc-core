@@ -92,7 +92,7 @@ export function formatGrokAuthCliHelpText(): string {
     "  agenc grok-logout [--json]",
     "  agenc grok-auth-status [--json]",
     "",
-    "Sign in with your X / xAI account for subscription Grok access — no",
+    "Sign in with your X / xAI account for subscription Grok access. No",
     "XAI_API_KEY needed. The browser PKCE flow is used by default; pass",
     "`device` (or lose the loopback port) for the RFC 8628 device-code flow.",
     "The consent screen may be labeled \"Grok Build\": that is xAI's shared",

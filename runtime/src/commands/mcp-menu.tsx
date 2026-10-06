@@ -268,7 +268,7 @@ function FormModal({
           {field.label}
         </ThemedText>,
         <ThemedText key="value" color={active ? "text" : "subtle"} wrap="truncate-middle">
-          {`${field.value || "—"}${active && field.editable ? "█" : ""}`}
+          {`${field.value || "not set"}${active && field.editable ? "█" : ""}`}
         </ThemedText>,
       ]}
       preview={
@@ -600,7 +600,7 @@ function McpMenuView({
         items={[
           ["server", mode.serverName],
           ["name", mode.tool.name],
-          ["description", mode.tool.description ?? "—"],
+          ["description", mode.tool.description ?? "none"],
         ] as const}
         activeIndex={0}
         renderRow={row => [
@@ -663,7 +663,7 @@ function McpMenuView({
       ["required", row.required ? "yes" : "no"],
       ["target", row.target],
       ["tools", String(row.toolCount)],
-      ["error", row.error ?? "—"],
+      ["error", row.error ?? "none"],
     ] as const;
     return (
       <MenuModal

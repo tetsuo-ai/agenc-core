@@ -73,10 +73,12 @@ describe("CLI cold executor boundary", () => {
 
   // Exact UTF-8 output pinned from the pre-extraction facade implementations at
   // aaf332b45d0ec7b2f6f7b6e223b5648c8bab2d6d, not generated from the new leaves.
+  // The doctor and trajectories hashes were re-pinned when their help copy
+  // dropped em dashes on purpose.
   it.each([
     [mcpArgs.formatAgenCMcpCliHelpText, "21613cd36317296cb82c71adc4d5b409c5cf335237eb48f721421e93b68e3a8e"],
-    [doctorArgs.formatAgenCDoctorCliHelpText, "bcb925c28985e8b5865c0f6c3bbf757f5b0e423506321430bb561f058d67d8eb"],
-    [trajectoryArgs.formatAgenCTrajectoriesCliHelpText, "8a581b90a079bfe4f05e0f2ce414c08dcb4e7a878ace073aa152697f2b06d7cd"],
+    [doctorArgs.formatAgenCDoctorCliHelpText, "bfca5950e52f64e51e1886c1e054101f17024f3302c6b493b7f31bdd4fa08b8a"],
+    [trajectoryArgs.formatAgenCTrajectoriesCliHelpText, "f277b4824a353d6a57f219703f57118accf06a89e3334c9c5e1d3c80a55f5552"],
     [skillsArgs.formatAgenCSkillsCliHelpText, "b5c2fecf62ce0cfe2fd1e41a46a32ad638724ae581c02a3bb7837bfa574e6902"],
   ] as const)("preserves exact pre-extraction help bytes (%#)", (format, hash) => {
     expect(createHash("sha256").update(format()).digest("hex")).toBe(hash);

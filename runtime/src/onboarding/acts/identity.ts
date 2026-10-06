@@ -133,7 +133,7 @@ export async function runIdentityAct(
   // SOUL.md — 3 quick choices, never clobbered.
   const soulPath = join(workspace, "SOUL.md");
   if (existsSync(soulPath)) {
-    io.say(`SOUL.md already exists — keeping it (edit ${soulPath} any time).`);
+    io.say(`SOUL.md already exists. Keeping it (edit ${soulPath} any time).`);
   } else {
     const tone = await io.select("Pick a personality baseline:", [
       { key: "direct", label: "Direct", hint: "answer-first, no filler" },
@@ -151,7 +151,7 @@ export async function runIdentityAct(
   // USER.md — who the human is, never clobbered.
   const userPath = join(workspace, "USER.md");
   if (existsSync(userPath)) {
-    io.say("USER.md already exists — keeping it.");
+    io.say("USER.md already exists. Keeping it.");
   } else {
     const name = await io.ask("What should the agent call you?", "friend");
     const context = await io.ask(
@@ -168,7 +168,7 @@ export async function runIdentityAct(
     const identity = readFileSync(identityPath, "utf8").trim().split("\n")[0];
     io.say("");
     io.say(`This agent already has an identity: ${identity}`);
-    io.say(`(Edit ${identityPath} to change it — the ritual never re-runs.)`);
+    io.say(`(Edit ${identityPath} to change it. The ritual never re-runs.)`);
   } else {
     const bootstrapPath = join(workspace, "BOOTSTRAP.md");
     if (!existsSync(bootstrapPath)) {
@@ -192,16 +192,16 @@ export async function runIdentityAct(
         );
       } else if (result.ok) {
         io.say(
-          "The turn ran but IDENTITY.md was not written — the ritual will re-offer on the agent's next session in this workspace.",
+          "The turn ran but IDENTITY.md was not written. The ritual will re-offer on the agent's next session in this workspace.",
         );
       } else {
         io.say(
-          "The ritual turn failed (see output above). BOOTSTRAP.md stays in place — the agent will pick it up on its next session here.",
+          "The ritual turn failed (see output above). BOOTSTRAP.md stays in place. The agent will pick it up on its next session here.",
         );
       }
     } else {
       io.say(
-        "Skipped — the agent will run the ritual on its first real session in this workspace.",
+        "Skipped. The agent will run the ritual on its first real session in this workspace.",
       );
     }
   }

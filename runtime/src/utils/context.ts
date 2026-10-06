@@ -202,7 +202,7 @@ export function getContextWindowForModelForContext(
       return openaiWindow
     }
     console.error(
-      `[context] Warning: model "${model}" not in context window table — using conservative 128k default. ` +
+      `[context] Warning: model "${model}" not in context window table; using conservative 128k default. ` +
       'Add it to src/utils/model/openaiContextWindows.ts for accurate compaction.',
     )
     return openAiFallbackContextWindow(environment)

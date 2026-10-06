@@ -660,7 +660,7 @@ function assistantMessageFromResponse(
   // clear user-visible body so the renderer doesn't show a blank turn.
   const text =
     apiError === "refusal" && visible.text.length === 0
-      ? "The model declined to answer this request (stop reason: refusal). No content was returned — rephrase the request or try a different model."
+      ? "The model declined to answer this request (stop reason: refusal). No content was returned. Rephrase the request or try a different model."
       : visible.text;
   return {
     uuid: crypto.randomUUID(),

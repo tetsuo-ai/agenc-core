@@ -1023,7 +1023,7 @@ function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
       providerCredentialEnvironmentLabel("amazon-bedrock") ??
       "the required AWS SigV4 credential fields";
     throw new Error(
-      `amazon-bedrock provider requires AWS credentials — set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
+      `amazon-bedrock provider requires AWS credentials: set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
     );
   }
   return {

@@ -806,7 +806,7 @@ async function execCommandHook(
     if (!(await pathExists(pluginRoot))) {
       throw new Error(
         `Plugin directory does not exist: ${pluginRoot}` +
-          (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ""),
+          (pluginId ? ` (${pluginId}; run /plugin to reinstall)` : ""),
       );
     }
     // Use the function form of replace so paths containing `$` are not
