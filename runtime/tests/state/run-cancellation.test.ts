@@ -846,7 +846,10 @@ describe("fresh root admission ancestry proof", () => {
       { run(status, status); expect(inspect(status)).toMatchObject({reason: "parent_cancel_locked"}); }
     new StateRunDurabilityRepository(driver).ensureInitialEpoch({runId:"canonical-root",openedAt:T0});
     expect(inspect("canonical-root")).toBeUndefined();
-    expect(inspect("child", true, "missing-parent")).toMatchObject({reason:"ancestor_unresolved"});
+    // A declared parent is itself a permitted unpersisted root in the existing contract.
+    expect(inspect("child", true, "missing-parent")).toBeUndefined();
+    run("declared-locked", "cancelled");
+    expect(inspect("child", true, "declared-locked")).toMatchObject({reason:"parent_cancel_locked"});
   });
 
   it("observes cancellation committed on another connection after a successful check", () => {
