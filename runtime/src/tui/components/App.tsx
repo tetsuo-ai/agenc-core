@@ -2345,6 +2345,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     retrySubmissionRef.current = null;
     setPastedContents(nextContents);
   }, []);
+  // Counts restored drafts so PromptInput can put the cursor after the
+  // restored text even when the submit clear and the restore commit in one
+  // render, where the input prop never visibly changes.
+  const [draftRestoreRevision, setDraftRestoreRevision] = useState(0);
   const liveComposerDraftRef = useRef({ input, pastedContents });
   liveComposerDraftRef.current = { input, pastedContents };
   const setComposerInput = useCallback((nextInput: string): void => {
@@ -2392,6 +2396,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       liveComposerDraftRef.current = restoredDraft;
       setInput(restoredDraft.input);
       setPastedContents(restoredDraft.pastedContents);
+      setDraftRestoreRevision((revision) => revision + 1);
     },
     [],
   );
@@ -4584,6 +4589,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             queueOwner={commandQueueOwner}
             queueExecutionCwd={queueWorkspaceRoot}
             restoreComposerDraft={restoreComposerDraft}
+            draftRestoreRevision={draftRestoreRevision}
             onboardingInput={onboardingInput}
             onSubmit={async (value_0, helpers) => {
               if (isExitSlashCommand(value_0)) {
@@ -4787,6 +4793,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       queueOwner={commandQueueOwner}
       queueExecutionCwd={queueWorkspaceRoot}
       restoreComposerDraft={restoreComposerDraft}
+      draftRestoreRevision={draftRestoreRevision}
       isLocalJSXCommandActive={isLocalJSXCommandActive}
       onSubmissionBlocked={(reason) => {
         showTransientResult(reason, { display: "error" });

@@ -1126,6 +1126,55 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("puts the cursor after a draft restored in the same commit as the submit clear", async () => {
+    const draft = "and again";
+    const onInputChange = vi.fn();
+    const onSubmit = vi.fn(
+      async (_value: string, helpers: { setCursorOffset(offset: number): void }) => {
+        helpers.setCursorOffset(0);
+      },
+    );
+    const rendered = await renderPromptInput({
+      input: draft,
+      onInputChange,
+      onSubmit,
+      draftRestoreRevision: 0,
+    });
+    const rerender = (draftRestoreRevision: number) =>
+      rendered.root.render(
+        <PromptInput
+          {...({ ...rendered.props, draftRestoreRevision } as unknown as React.ComponentProps<
+            typeof PromptInput
+          >)}
+        />,
+      );
+
+    try {
+      await waitForPromptInputProps();
+      const submit = harness.keybindingRegistrations.find(
+        (item) => item.action === "chat:submit",
+      )?.handler as () => void;
+      submit();
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(0));
+      expect(onSubmit).toHaveBeenCalledWith(draft, expect.anything(), undefined, expect.anything());
+
+      // The owner cleared and restored the same text in one commit: the input
+      // prop never changes, only the restore revision does.
+      rerender(1);
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(draft.length));
+      harness.keybindings["chat:newline"]?.();
+      expect(onInputChange).toHaveBeenLastCalledWith(`${draft}\n`);
+
+      // A rerender without a new restore keeps a cursor the user moved.
+      (harness.baseProps?.onChangeCursorOffset as (offset: number) => void)(3);
+      rerender(1);
+      await sleep(25);
+      expect(harness.baseProps?.cursorOffset).toBe(3);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("handles escape/backspace shortcuts against current text input state before rerender", async () => {
     const onInputChange = vi.fn();
     const onModeChange = vi.fn();
