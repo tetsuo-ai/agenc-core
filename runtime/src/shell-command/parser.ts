@@ -1662,7 +1662,7 @@ function hasInPlaceFlag(tokens: readonly string[]): boolean {
   );
 }
 
-function shlexJoin(tokens: readonly string[]): string {
+export function shlexJoin(tokens: readonly string[]): string {
   if (tokens.length === 0) return "";
   return tokens.map(shellQuote).join(" ");
 }

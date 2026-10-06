@@ -2,8 +2,12 @@ import path from "node:path";
 
 import type { ApprovalPolicy, GranularApprovalConfig } from "../../permissions/approval-policy.js";
 import { isDangerousCommand, shouldUseSandbox } from "../../permissions/bash.js";
-import { parseWordOnlyShellSequence } from "../../shell-command/parser.js";
-import type { Decision } from "../execpolicy/decision.js";
+import { parseWordOnlyShellSequence, shlexJoin } from "../../shell-command/parser.js";
+import {
+  parseShellWrapperOptions,
+  readShellWrapperCode,
+} from "../../utils/shell/wrapper-options.js";
+import { maxDecision, type Decision } from "../execpolicy/decision.js";
 import type { Evaluation, Policy } from "../execpolicy/policy.js";
 import {
   hasAdditionalSandboxPermissions,
@@ -64,6 +68,12 @@ export interface InterceptedExecEvaluation {
 export interface InterceptedExecCommands {
   readonly commands: readonly (readonly string[])[];
   readonly usedComplexParsing: boolean;
+  /**
+   * The commands of code a shell wrapper may run that `commands` does not
+   * show (`bash -ec CODE`, `bash -c -e CODE`, `ksh CODE`). They can only
+   * make the decision stricter.
+   */
+  readonly wrappedCommands: readonly (readonly string[])[];
 }
 
 export type EscalationFileSystemSandboxKind =
@@ -220,18 +230,43 @@ export function evaluateInterceptedExecPolicy(opts: {
     argv: opts.argv,
     parseShellWrapper: opts.parseShellWrapper ?? false,
   });
-  return {
-    commands: parsed.commands,
-    usedComplexParsing: parsed.usedComplexParsing,
-    evaluation: opts.policy.checkMultipleWithOptions(
-      parsed.commands,
+  const evaluate = (
+    commands: readonly (readonly string[])[],
+    usedComplexParsing: boolean,
+  ): Evaluation =>
+    opts.policy.checkMultipleWithOptions(
+      commands,
       (command) =>
         renderDecisionForUnmatchedCommand(command, {
           ...opts.unmatchedCommandContext,
-          usedComplexParsing: parsed.usedComplexParsing,
+          usedComplexParsing,
         }),
       { resolveHostExecutables: true },
-    ),
+    );
+  const evaluation = evaluate(parsed.commands, parsed.usedComplexParsing);
+  return {
+    commands: parsed.commands,
+    usedComplexParsing: parsed.usedComplexParsing,
+    evaluation:
+      parsed.wrappedCommands.length === 0
+        ? evaluation
+        : stricterEvaluation(evaluation, evaluate(parsed.wrappedCommands, false)),
+  };
+}
+
+/**
+ * The code a shell wrapper runs can only make the wrapper's decision
+ * stricter. When it does, that decision stands with every match behind it.
+ * Otherwise the wrapper's own argv decides, so a rule allowing the code
+ * never allows, or unsandboxes, a wrapper whose options may run other code.
+ */
+function stricterEvaluation(evaluation: Evaluation, wrapped: Evaluation): Evaluation {
+  if (maxDecision([evaluation.decision, wrapped.decision]) === evaluation.decision) {
+    return evaluation;
+  }
+  return {
+    decision: wrapped.decision,
+    matchedRules: [...evaluation.matchedRules, ...wrapped.matchedRules],
   };
 }
 
@@ -250,16 +285,20 @@ function commandsForInterceptedExecPolicyDetailed(opts: {
 }): InterceptedExecCommands {
   const normalizedCommand = joinProgramAndArgv(opts.program, opts.argv);
   if (opts.parseShellWrapper !== true) {
-    return { commands: [normalizedCommand], usedComplexParsing: false };
+    return { commands: [normalizedCommand], usedComplexParsing: false, wrappedCommands: [] };
   }
-  const script = extractShellScript(opts.program, opts.argv);
+  const script = extractShellScript(opts.program, normalizedCommand);
   if (script === null) {
-    return { commands: [normalizedCommand], usedComplexParsing: false };
+    return {
+      commands: [normalizedCommand],
+      usedComplexParsing: false,
+      wrappedCommands: wrappedShellCommands(opts.program, normalizedCommand),
+    };
   }
   const parsed = parseWordOnlyShellSequence(script.script);
   return parsed === null
-    ? { commands: [normalizedCommand], usedComplexParsing: true }
-    : { commands: parsed, usedComplexParsing: false };
+    ? { commands: [normalizedCommand], usedComplexParsing: true, wrappedCommands: [] }
+    : { commands: parsed, usedComplexParsing: false, wrappedCommands: [] };
 }
 
 function renderDecisionForUnmatchedCommand(
@@ -271,7 +310,10 @@ function renderDecisionForUnmatchedCommand(
     return "allow";
   }
 
-  const dangerous = isDangerousCommand(commandText);
+  // Joined with spaces, a wrapped script loses its quoting and reads as
+  // separate words (`find . -exec sh -c rm -rf ~/ ;`); quoted, it does not.
+  const dangerous =
+    isDangerousCommand(commandText) || isDangerousCommand(shlexJoin(command));
   if (dangerous) {
     if (context.approvalPolicy === "never") {
       return context.fileSystemSandboxKind === "restricted"
@@ -305,22 +347,43 @@ function renderDecisionForUnmatchedCommand(
   }
 }
 
+/**
+ * The script of `sh`, `bash` or `zsh` run as `-c SCRIPT` or `-lc SCRIPT`,
+ * when the shell's options make that word its code. Any other spelling,
+ * including one where the word after `-c` is an option (`bash -c -e CODE`)
+ * or `-c` is not an option (`bash script.sh -c CODE`), returns null.
+ */
 function extractShellScript(
   program: string,
-  argv: readonly string[],
+  command: readonly string[],
 ): { readonly shell: string; readonly flag: "-c" | "-lc"; readonly script: string } | null {
   const shell = path.basename(program);
   if (shell !== "sh" && shell !== "bash" && shell !== "zsh") {
     return null;
   }
-  for (let i = 0; i + 1 < argv.length; i += 1) {
-    const flag = argv[i];
-    const script = argv[i + 1];
-    if ((flag === "-c" || flag === "-lc") && typeof script === "string") {
-      return { shell, flag, script };
-    }
+  const operand = parseShellWrapperOptions(shell, command.slice(1));
+  if (operand.kind !== "code") return null;
+  const flag = command[operand.index];
+  const script = command[operand.index + 1];
+  if ((flag === "-c" || flag === "-lc") && script !== undefined) {
+    return { shell, flag, script };
   }
   return null;
+}
+
+/**
+ * The commands of every text a shell wrapper may run as code, read the way
+ * that shell reads its options (`bash -c -e CODE`, `bash -ec CODE`,
+ * `ksh CODE`, `tcsh -c A -c B`). A text that is not a word-only script gives
+ * none; the wrapper's own argv is still judged.
+ */
+function wrappedShellCommands(
+  program: string,
+  command: readonly string[],
+): readonly (readonly string[])[] {
+  const shell = path.basename(program).toLowerCase().replace(/\.exe$/u, "");
+  const scripts = readShellWrapperCode(shell, command.slice(1)) ?? [];
+  return scripts.flatMap((script) => parseWordOnlyShellSequence(script) ?? []);
 }
 
 export function joinProgramAndArgv(
