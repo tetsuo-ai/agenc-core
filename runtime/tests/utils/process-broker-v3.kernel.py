@@ -51,7 +51,7 @@ def frame(command, *, bpf=None, mutations=None, env=None):
 
 
 def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None,
-           on_ready=None, stdin_data=None):
+           on_ready=None, stdin_data=None, protocol="v3"):
     output_read, output_write = os.pipe()
     status_read, status_write = os.pipe()
     bootstrap_read, bootstrap_write = os.pipe()
@@ -77,7 +77,7 @@ def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None,
             for target, fd in enumerate(copies):
                 os.dup2(fd, target)
             os.closerange(len(copies), 4096)
-            os.execve(str(BROKER), [str(BROKER), "--bootstrap-v3"], {"PATH": "/usr/bin:/bin"})
+            os.execve(str(BROKER), [str(BROKER), "--bootstrap-" + protocol], {"PATH": "/usr/bin:/bin"})
         finally:
             os._exit(126)
     for fd in [*copies, null, output_write, status_write, bootstrap_read]:
@@ -87,6 +87,8 @@ def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None,
     prefix = b""
     try:
         message = frame(command, bpf=bpf, mutations=mutations) if payload is None else payload
+        if protocol == "v2":
+            message = b"AGB2" + message[4:]
         offset = 0
         while offset < len(message):
             offset += os.write(bootstrap_write, message[offset:])

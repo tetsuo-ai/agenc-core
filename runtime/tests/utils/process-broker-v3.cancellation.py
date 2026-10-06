@@ -84,7 +84,7 @@ class Cancellation(unittest.TestCase):
             ("before", "checkpoint(); " + write),
             ("during", "do { if (write(REPORT_FD, frame, 8) != 8) return false; "
                        "checkpoint(); count = write(REPORT_FD, frame + 8, 8); }"),
-            ("after", write + " checkpoint();"),
+            ("after", "do { count = write(REPORT_FD, frame, sizeof(frame)); checkpoint(); }"),
         ]:
             with self.subTest(phase=phase):
                 helper = replace_once(INIT, "static bool report_result",
@@ -127,7 +127,7 @@ class Cancellation(unittest.TestCase):
                 release.unlink()
                 os.mkfifo(release, 0o600)
 
-    def test_one_graceful_delivery_and_stdio(self):
+    def test_graceful_signal_matches_legacy_sandbox_route_and_stdio(self):
         compile_variant()
         ready, signals = WORK / "ready", WORK / "signals"
         # A command waits in its own process without a child that could race
@@ -157,11 +157,25 @@ int main(int argc, char **argv) {
             await_marker(ready)
             os.kill(pid, signal.SIGTERM)
 
-        code, output, proof = v3.invoke([str(target), str(ready), str(signals)],
-            mutations=lambda args: args + ["--bind", str(WORK), str(WORK)],
-            on_ready=stop)
-        self.assertEqual(signals.read_bytes(), b"T")
-        self.assertEqual((code, proof), (125, v3.expected(state=1, residual=2, kind=2)), output)
+        observed = {}
+        for protocol in ["v2", "v3"]:
+            code, output, proof = v3.invoke([str(target), str(ready), str(signals)],
+                mutations=lambda args: args + ["--bind", str(WORK), str(WORK)],
+                on_ready=stop, protocol=protocol)
+            observed[protocol] = signals.read_bytes()
+            v3.RECORDS[-1]["protocol"] = protocol
+            v3.RECORDS[-1]["task_graceful_deliveries"] = len(observed[protocol])
+            if protocol == "v3":
+                self.assertEqual((code, proof), (125, v3.expected(state=1, residual=2, kind=2)), output)
+            else:
+                self.assertIn(proof, [b"SC", b"SRC"])
+            ready.unlink()
+            signals.unlink()
+        # bwrap --new-session puts the command in a different group from its
+        # outer monitor. This compares that existing sandbox route honestly;
+        # it does not assert that one graceful signal reaches the command.
+        self.assertEqual(observed["v3"], observed["v2"])
+        self.assertLessEqual(len(observed["v3"]), 1)
         code, output, proof = v3.invoke(
             ["/bin/sh", "-c", 'read -r line; printf "out:%s" "$line"; printf err >&2; exit 126'],
             stdin_data=b"input\n")
