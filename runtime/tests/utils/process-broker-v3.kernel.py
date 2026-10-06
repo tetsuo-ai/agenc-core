@@ -50,11 +50,18 @@ def frame(command, *, bpf=None, mutations=None, env=None):
                                   0, int(bpf is not None), os.getpid()) + body + b"\xa5"
 
 
-def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None):
+def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None,
+           on_ready=None, stdin_data=None):
     output_read, output_write = os.pipe()
     status_read, status_write = os.pipe()
     bootstrap_read, bootstrap_write = os.pipe()
-    null = os.open("/dev/null", os.O_RDONLY)
+    if stdin_data is None:
+        null = os.open("/dev/null", os.O_RDONLY)
+    else:
+        null, input_write = os.pipe()
+        assert len(stdin_data) <= 4096
+        assert os.write(input_write, stdin_data) == len(stdin_data)
+        os.close(input_write)
     source = None
     if bpf is not None:
         source = tempfile.TemporaryFile(dir=D)
@@ -85,11 +92,14 @@ def invoke(command, *, bpf=None, mutations=None, cancel=False, payload=None):
             offset += os.write(bootstrap_write, message[offset:])
         os.close(bootstrap_write)
         bootstrap_write = None
-        if cancel:
+        if cancel or on_ready is not None:
             assert select.select([status_read], [], [], 3)[0], "missing readiness"
             prefix = os.read(status_read, 1)
             assert prefix == b"S", prefix
-            os.kill(pid, signal.SIGTERM)
+            if on_ready is not None:
+                on_ready(pid)
+            if cancel:
+                os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 10
         while True:
             got, status = os.waitpid(pid, os.WNOHANG)
