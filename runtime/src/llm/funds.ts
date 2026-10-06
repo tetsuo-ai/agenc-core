@@ -1,5 +1,19 @@
 /** Provider billing refusals. Keep this independent of retry and agent modules. */
-import { listBuiltInProviderInfo } from "./registry/provider-info.js";
+
+/**
+ * Provider display names for the billing sentence. This module imports
+ * nothing: errors.ts imports it, and the model catalog imports errors.ts, so
+ * importing the provider registry here would load the catalog before it is
+ * initialized. The registry registers its lookup when it loads instead.
+ */
+let providerDisplayName: ((provider: string) => string | undefined) | undefined;
+
+/** Called once by the provider registry; until then the sentence uses the provider id. */
+export function registerProviderFundsDisplayNames(
+  lookup: (provider: string) => string | undefined,
+): void {
+  providerDisplayName = lookup;
+}
 
 const EXHAUSTED_CREDITS_RE = /\b(?:used all (?:available |your )?credits|(?:no|insufficient) (?:available |remaining )?credits|(?:run |ran )?out of credits|credits? (?:balance )?(?:is |are |has been )?(?:exhausted|depleted|too low)|(?:reached|exceeded) (?:its |your |the )?(?:monthly )?spending limit|spending limit (?:has been |is )?(?:reached|exceeded|exhausted))\b/i;
 
@@ -49,7 +63,7 @@ export function providerFundsMessage(providerName: string, error: unknown): stri
   if (!hasCreditEvidence) return undefined;
   const provider = providerName.toLowerCase();
   const displayName = provider === "grok" || provider === "xai" ? "xAI" :
-    listBuiltInProviderInfo().find((info) => info.id === provider)?.name ?? providerName;
+    providerDisplayName?.(provider) ?? providerName;
   return `${displayName} says the account has no credits left or has reached its spending limit.`;
 }
 
