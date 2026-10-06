@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProcessBrokerV3StatusDecoder } from "../../src/utils/process-broker-protocol-v3.js";
+import { ProcessBrokerV3StatusDecoder, serializeProcessBrokerV3Payload } from "../../src/utils/process-broker-protocol-v3.js";
 
 // Hand-written wire fixtures, independent of a production serializer.
 const reportedZero = Buffer.from([0x53, 0x41, 0x47, 0x43, 0x33, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -93,5 +93,21 @@ describe("AGB3 outcome and containment status", () => {
     const decoder = new ProcessBrokerV3StatusDecoder();
     expect(() => decoder.push(new Uint8Array(1024 * 1024))).toThrow("extra status bytes");
     expect(() => decoder.push(reportedZero)).toThrow("already terminal");
+  });
+});
+
+
+describe("AGB3 bootstrap payload", () => {
+  it("uses only the original owner and bounded seccomp role, without a caller init FD", () => {
+    const payload = serializeProcessBrokerV3Payload({ program: "/usr/bin/bwrap", ownerPid: 123,
+      args: ["--seccomp", "3", "--", "/bin/true"], env: { PATH: "/bin" }, seccomp: new Uint8Array(8) });
+    expect(payload.subarray(0, 4).toString()).toBe("AGB3");
+    expect(payload.readUInt32BE(24)).toBe(123);
+    expect([28, 32, 36, 40].map(offset => payload.readUInt32BE(offset))).toEqual([5, 3, 1, 8]);
+    expect(payload.at(-1)).toBe(0xa5);
+    for (const role of ["--ro-bind-data", "--bind-fd", "--info-fd", "--sync-fd"]) {
+      expect(() => serializeProcessBrokerV3Payload({ program: "/usr/bin/bwrap", ownerPid: 123,
+        args: [role, "6", "--", "/bin/true"], env: {} })).toThrow("descriptor role");
+    }
   });
 });

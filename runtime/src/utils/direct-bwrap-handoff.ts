@@ -2,6 +2,8 @@ const brand = Symbol("prepared direct bubblewrap");
 export interface PreparedDirectBwrap { readonly [brand]: true }
 export interface DirectBwrapHandoff {
   readonly payload: Buffer;
+  /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
+  readonly namespaceInitArtifact?: string;
   readonly sourceFd: number | undefined;
   readonly isCurrent: () => boolean;
   readonly dispose: () => void;

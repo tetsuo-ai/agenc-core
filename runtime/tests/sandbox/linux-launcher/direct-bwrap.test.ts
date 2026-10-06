@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { consumeDirectBwrapPlan, prepareDirectBwrapPlan, type PreparedDirectBwrap } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
+import { consumeDirectBwrapPlan, prepareDirectBwrapPlan, prepareDirectBwrapV3Plan, type PreparedDirectBwrap } from "../../../src/sandbox/linux-launcher/direct-bwrap.js";
 import * as platform from "../../../src/sandbox/linux-launcher/direct-bwrap-platform.js";
 import * as legacy from "../../../src/sandbox/linux-launcher/linux-run-main.js";
 import * as launcher from "../../../src/sandbox/linux-launcher/launcher.js";
@@ -43,6 +43,33 @@ function decode(payload: Buffer) {
 }
 
 describe.runIf(process.platform === "linux")("guarded immutable direct bwrap planning", () => {
+  it("prepares V3 against the packaged reserved artifact without changing task policy or BPF", () => {
+    const f = fixture();
+    const legacy = consumeDirectBwrapPlan(prepareDirectBwrapPlan(f)!);
+    const plan = prepareDirectBwrapV3Plan(f);
+    expect(plan).toBeDefined();
+    const v3 = consumeDirectBwrapPlan(plan!);
+    try {
+      expect(v3.payload.subarray(0, 4).toString()).toBe("AGB3");
+      expect(v3.payload.subarray(4)).toEqual(legacy.payload.subarray(4));
+      expect(v3.namespaceInitArtifact).toBe(path.join(runtime, "dist/agenc-namespace-init-entry"));
+      expect(v3.isCurrent()).toBe(true);
+      expect(decode(v3.payload).args).not.toContain("--ro-bind-data");
+      expect(decode(v3.payload).args).not.toContain("--as-pid-1");
+    } finally { legacy.dispose(); v3.dispose(); }
+  });
+
+  it("declines V3 before creating a BPF source when private proc is unavailable", () => {
+    const f = fixture();
+    vi.mocked(proc.runProcMountProbe).mockReturnValue({ status: 1,
+      stderr: "bwrap: can't mount new procfs" } as ReturnType<typeof proc.runProcMountProbe>);
+    expect(prepareDirectBwrapV3Plan(f)).toBeUndefined();
+    expect(fs.readdirSync(f.temp)).toEqual([]);
+    const legacy = prepareDirectBwrapPlan(f);
+    expect(legacy).toBeDefined();
+    consumeDirectBwrapPlan(legacy!).dispose();
+  });
+
   it("binds the actual owner and BPF, unlinks its source, and disposes exactly once", () => {
     const f = fixture();
     const plan = prepareDirectBwrapPlan(f);

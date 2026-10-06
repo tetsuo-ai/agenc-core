@@ -1,3 +1,17 @@
+import { serializeProcessBrokerV2Payload } from "./process-broker-protocol-v2.js";
+
+export const PROCESS_BROKER_V3_CAPABILITY = "AGB3 owner-pid sealed-static-init-ro-artifact-v1";
+
+/** Same bounded invocation and one-role seccomp map as V2. The native broker
+ * creates the init's private report/reference/source descriptors itself. */
+export function serializeProcessBrokerV3Payload(
+  input: Parameters<typeof serializeProcessBrokerV2Payload>[0],
+): Buffer {
+  const payload = serializeProcessBrokerV2Payload(input);
+  payload.write("AGB3", 0, "ascii");
+  return payload;
+}
+
 /** AGB3 containment completion is independent of the command outcome.
  * This decoder is intentionally separate from the legacy S/[R]/C protocol.
  * Nothing is authoritative until the unique status writer closes its pipe. */
