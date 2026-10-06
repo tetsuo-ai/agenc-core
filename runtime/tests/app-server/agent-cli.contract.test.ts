@@ -1,10 +1,12 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
+import { isCanonicalSessionAlreadyActiveError } from "../../src/bin/daemon-one-shot-continue.js";
 import {
+  AgenCDaemonResponseError,
   collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   createAgenCJsonLineDaemonClient,
@@ -23,6 +25,7 @@ import {
 } from "./agent-cli.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
+import { resolveAgenCDaemonSpawnStderrPath } from "./daemon-control.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
@@ -82,6 +85,31 @@ function sequence(values: readonly string[]): () => string {
     index += 1;
     return value;
   };
+}
+
+/** Serve a dispatcher on a unix socket, one daemon connection per socket connection. */
+async function listenWithDispatcher(
+  socketPath: string,
+  dispatcher: AgenCDaemonJsonRpcDispatcher,
+): Promise<AgenCUnixSocketServer> {
+  const connections = new Map<
+    number,
+    ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>
+  >();
+  const server = new AgenCUnixSocketServer({
+    socketPath,
+    onMessage: async (message, context) => {
+      const connection =
+        connections.get(context.connectionId) ?? dispatcher.createConnection();
+      connections.set(context.connectionId, connection);
+      await context.send(await connection.dispatch(message));
+    },
+    onConnectionClosed: (connectionId) => {
+      connections.delete(connectionId);
+    },
+  });
+  await server.listen();
+  return server;
 }
 
 async function waitFor(
@@ -2259,6 +2287,121 @@ autostart = false
     expect(io.stderrText()).toContain(
       "Daemon connection closed before response",
     );
+  });
+});
+
+describe("one-shot daemon request errors", () => {
+  const resumeSourceProof = {
+    dev: "1",
+    ino: "2",
+    size: "3",
+    sha256: "a".repeat(64),
+    cwdDev: "1",
+    cwdIno: "4",
+  };
+
+  it("keep the daemon's code and data, so a resume that races a startup restore can attach", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-create-active-"));
+    const cwd = await workspaces.create();
+    const agentManager = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => {
+          throw new Error("a resume must not start a new agent");
+        },
+      },
+    });
+    // What startup restore publishes for a session open at the last shutdown.
+    await agentManager.restoreAgent({
+      agentId: "conv-restored1",
+      objective: "hi",
+      status: "idle",
+      runtimeAvailable: true,
+      cwd,
+      metadata: { agentPath: "/root" },
+    });
+    const server = await listenWithDispatcher(
+      join(dir, "daemon.sock"),
+      new AgenCDaemonJsonRpcDispatcher({
+        agentManager,
+        initializeAuthenticator: (params) => params.authCookie === "restore-cookie",
+      }),
+    );
+    try {
+      const error = await createAgenCJsonLineDaemonClient({
+        socketPath: join(dir, "daemon.sock"),
+        authCookie: "restore-cookie",
+      })
+        .createAgent({
+          resumeSessionId: "conv-restored1",
+          resumeRolloutPath: join(cwd, "rollout-conv-restored1.jsonl"),
+          resumeSourceProof,
+          cwd,
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        })
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(AgenCDaemonResponseError);
+      expect(error).toMatchObject({
+        code: -32602,
+        message: "canonical session conv-restored1 already has a live daemon agent",
+        data: { code: "CANONICAL_SESSION_ALREADY_ACTIVE" },
+      });
+      expect(isCanonicalSessionAlreadyActiveError(error)).toBe(true);
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keep the daemon's answer typed when it reads like a connection failure", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-create-enoent-"));
+    const socketPath = join(dir, "daemon.sock");
+    const spawnStderrPath = resolveAgenCDaemonSpawnStderrPath();
+    await mkdir(join(spawnStderrPath, ".."), { recursive: true });
+    await writeFile(spawnStderrPath, "daemon started\n");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        await context.send(
+          message.method === "initialize"
+            ? { jsonrpc: "2.0", id: message.id, result: {} }
+            : {
+                jsonrpc: "2.0",
+                id: message.id,
+                error: {
+                  code: -32602,
+                  message: "canonical resume source is gone: ENOENT",
+                  data: { code: "INVALID_ARGUMENT" },
+                },
+              },
+        );
+      },
+    });
+    await server.listen();
+    try {
+      const error = await createAgenCJsonLineDaemonClient({
+        socketPath,
+        authCookie: "any-cookie",
+      })
+        .createAgent({
+          resumeSessionId: "conv-gone1",
+          resumeRolloutPath: join(dir, "rollout-conv-gone1.jsonl"),
+          resumeSourceProof,
+          cwd: dir,
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        })
+        .catch((caught: unknown) => caught);
+      // A daemon answer is not a failed connection: no startup log is
+      // appended, and the code stays readable.
+      expect(error).toBeInstanceOf(AgenCDaemonResponseError);
+      expect(error).toMatchObject({
+        message: "canonical resume source is gone: ENOENT",
+        data: { code: "INVALID_ARGUMENT" },
+      });
+    } finally {
+      await server.close();
+      await rm(spawnStderrPath, { force: true });
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
