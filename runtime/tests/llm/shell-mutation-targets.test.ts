@@ -38,6 +38,13 @@ describe("collectShellMutationTargets", () => {
     expect(targets("bash -c 'cd sub && rm a'").targets).toEqual([join(ROOT, "sub/a")]);
   });
 
+  it("reads the command behind a builtin or a wrapper where the cd left the shell", () => {
+    expect(targets("cd sub && nohup rm a && sudo -u www touch b").targets).toEqual([
+      join(ROOT, "sub/b"),
+      join(ROOT, "sub/a"),
+    ]);
+  });
+
   it("ends a subshell's cd with the subshell", () => {
     expect(targets("(cd sub && rm a) && rm b").targets).toEqual([join(ROOT, "sub/a"), join(ROOT, "b")]);
   });
