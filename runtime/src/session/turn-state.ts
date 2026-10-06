@@ -386,12 +386,14 @@ export interface TurnState {
   /** Carry fire-and-forget fork cache-write suppression into provider options. */
   skipCacheWrite: boolean | undefined;
 
-  /** Consecutive max-output-tokens recovery attempts. Cap at
-   *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
-   *  up. AgenC query.ts:1273. */
   /** Names only: incomplete argument bytes never become executable history. */
   truncatedToolCallNames?: readonly string[];
+  /** Cumulative non-thinking-off retry spending; not forgiven by productive recovery. */
   maxOutputTokensRecoveryCount: number;
+  /** Durable intent for the next sample only; transport retries reuse it. */
+  reasoningOnlyRecoveryPending?: true;
+  /** Unproductive native reasoning-only retries since the last productive recovery. */
+  reasoningOnlyRecoveryCount?: number;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
    *  re-entry cap). Wired in T8 — incremented at each recovery
@@ -667,6 +669,8 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     turnCount: number;
     recoveryReentryCount: number;
     maxOutputTokensRecoveryCount: number;
+    reasoningOnlyRecoveryPending?: true;
+    reasoningOnlyRecoveryCount?: number;
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
@@ -693,6 +697,12 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
+  }
+  if (state.reasoningOnlyRecoveryCount !== undefined) {
+    slice.reasoningOnlyRecoveryCount = state.reasoningOnlyRecoveryCount;
+  }
+  if (state.reasoningOnlyRecoveryPending === true) {
+    slice.reasoningOnlyRecoveryPending = true;
   }
   if (state.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
@@ -788,6 +798,8 @@ export function restoreFromCheckpoint(
     state.textToolCallCorrectionCount = slice.textToolCallCorrectionCount;
   }
   state.textToolCallCorrection = readTextToolCallCorrection(slice.textToolCallCorrection);
+  state.reasoningOnlyRecoveryPending = slice.reasoningOnlyRecoveryPending === true ? true : undefined;
+  state.reasoningOnlyRecoveryCount = slice.reasoningOnlyRecoveryCount;
   if (state.modelSampleResumePrompt === "text_tool_call_correction" &&
       (!state.textToolCallCorrection || state.textToolCallCorrectionCount < 1)) {
     throw new Error("Cannot resume tool-call correction without its validated identity and spent correction count.");

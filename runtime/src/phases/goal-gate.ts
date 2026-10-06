@@ -268,6 +268,7 @@ export async function goalGate(
   // Same recovery-shared resets as the completion gate: the re-entry is a
   // fresh sample, not a continuation of a recovery ladder.
   state.maxOutputTokensRecoveryCount = 0;
+  state.reasoningOnlyRecoveryCount = undefined;
   state.hasAttemptedReactiveCompact = false;
   state.maxOutputTokensOverride = undefined;
   state.pendingToolUseSummary = undefined;

@@ -12,7 +12,10 @@ import { COMPACTION_EVENT_FORMAT_VERSION, COMPACTION_SOURCE_DIGEST_DOMAIN } from
 import { canonicalCompactionProjectionMessages } from "../../src/services/compact/projection-digest.js";
 import { digestSourceWithDomain } from "../../src/services/compact/summary-v1.js";
 
-const origin = { provider: "zai-coding-plan", model: "glm-5.3-flash" };
+describe.each([
+  { provider: "zai-coding-plan", model: "glm-5.3-flash" },
+  { provider: "deepseek", model: "deepseek-flash" },
+])("explicit empty $provider reasoning durability", origin => {
 const source: LLMMessage = { role: "assistant", content: "", providerReasoningContent: "",
   providerReasoningProvenance: origin, toolCalls: [{ id: "call-1", name: "FileRead", arguments: "{}" }] };
 const replay = { version: 2 as const, content: "", ...origin };
@@ -30,7 +33,7 @@ function rollback(message: ResponseItem) {
   });
 }
 
-describe("explicit empty GLM reasoning durability", () => {
+
   test("preserves the bound tuple in durable, checkpoint and replacement projections", () => {
     for (const project of [llmMessageToDurableResponseItem, llmMessageToCheckpointResponseItem, llmMessageToReplacementResponseItem]) {
       const projected = project(source);

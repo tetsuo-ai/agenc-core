@@ -369,7 +369,7 @@ function toChatCompletionsMessages(
     if (
       !replaysReasoningContent ||
       !allowsFullReasoningHistoryReplay ||
-      (!message.providerReasoningContent && !(replayOnlyAdjacentToolContinuation &&
+      (!message.providerReasoningContent && !(message.toolCalls?.length &&
         isKnownEmptyProviderReasoning(
           message.providerReasoningContent, message.providerReasoningProvenance,
         ))) ||
@@ -734,8 +734,9 @@ export function buildChatCompletionsRequest(
     body.thinking = {
       // MiniMax-M3's switch has two positions: a low effort answers without
       // thinking, every other effort keeps the provider's adaptive default.
-      type:
-        thinkingConfig.type === "adaptive"
+      type: thinkingConfig.allowsRecoveryDisable === true && input.options?.disableThinkingForRecovery === true
+        ? "disabled"
+        : thinkingConfig.type === "adaptive"
           ? MINIMAX_THINKING_OFF_EFFORTS.has(input.options?.reasoningEffort ?? "")
             ? "disabled"
             : "adaptive"
@@ -1047,7 +1048,7 @@ export function parseChatCompletionsResponse(
       // A missing history field, truncated call or discarded stream fragment
       // must never acquire this representation during replay or recovery.
       : request.providerCapabilityHints
-          ?.replaysReasoningContentOnlyForAdjacentToolContinuation === true &&
+          ?.replaysReasoningContent === true &&
           reconstruction?.discardedReasoningContent !== true &&
           reconstruction?.conflictingReasoningModel !== true &&
           finishReason === "tool_calls" && toolCalls.length > 0 &&
