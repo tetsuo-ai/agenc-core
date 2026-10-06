@@ -785,6 +785,206 @@ describe("AgenC TUI daemon session adapter", () => {
     );
   });
 
+  describe("re-attach after a daemon restart", () => {
+    function settingsSnapshot(
+      permissionMode: "default" | "acceptEdits" | "plan",
+    ): JsonObject {
+      const event = runtimeSettingsEvent("snapshot", null, permissionMode);
+      const payload = ((event.params as JsonObject).event as JsonObject)
+        .payload as JsonObject;
+      // The fields a settings event carries, as the reconciler reads them.
+      return {
+        permissionMode: payload.permissionMode,
+        prePlanMode: payload.prePlanMode,
+        autoModeActive: payload.autoModeActive,
+        autoModeAvailable: payload.autoModeAvailable,
+        bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
+        bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+        bypassPermissionsConsentWorkspace: payload.bypassPermissionsConsentWorkspace,
+        model: payload.model,
+        provider: payload.provider,
+        profile: payload.profile,
+        reasoningEffort: payload.reasoningEffort,
+        modelVerbosity: payload.modelVerbosity,
+        serviceTier: payload.serviceTier,
+        hooksDisabled: payload.hooksDisabled,
+      } as JsonObject;
+    }
+
+    function reattachingClient(
+      attach: (params: JsonObject | undefined) => Promise<unknown>,
+    ) {
+      const client = createClient();
+      client.connectionState = { status: "connected", id: "c1" };
+      const request = client.request.bind(client);
+      client.request = (async (method, params, options) => {
+        if (method === "agent.attach") {
+          client.requests.push({ method, params });
+          return attach(params);
+        }
+        return request(method, params, options);
+      }) as typeof client.request;
+      return client;
+    }
+
+    function startSubmit(session: { submit(text: string): Promise<unknown> }) {
+      const result: { outcome: "pending" | "resolved" | Error } = {
+        outcome: "pending",
+      };
+      void session.submit("and again").then(
+        () => {
+          result.outcome = "resolved";
+        },
+        (error: unknown) => {
+          result.outcome = error as Error;
+        },
+      );
+      return result;
+    }
+
+    it("attaches again after the reconnect and sends a submission made during the gap under the restored settings", async () => {
+      const authority = runtimeAuthorityBase();
+      const client = reattachingClient(async () => ({
+        agentId: "agent_1",
+        attachmentId: "attachment_2",
+        sessionIds: ["session_1"],
+        runtimeOptions: {},
+        runtimeSettings: settingsSnapshot("acceptEdits"),
+        runtimeSettingsEventId: "R1",
+        sessions: [],
+      }));
+      const session = createDaemonTuiSession({
+        baseSession: authority.baseSession,
+        client,
+        sessionId: "session_1",
+        agentId: "agent_1",
+        clientId: "tui_reattach",
+        runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+      });
+      const notices: string[] = [];
+      const unsubscribe = session.subscribeToEvents((event) => {
+        const payload = (event as JsonObject).payload as JsonObject | undefined;
+        if ((event as JsonObject).type === "warning" && typeof payload?.message === "string") {
+          notices.push(payload.message);
+        }
+      });
+
+      client.emitConnection({ status: "disconnected", message: "socket error" });
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      client.emitConnection({ status: "reconnecting" });
+      const submit = startSubmit(session);
+      await flush();
+      expect(client.requests.some((entry) => entry.method === "message.stream")).toBe(false);
+      // A settings change from the restarted daemon that follows its snapshot
+      // can arrive before the re-attach; it applies after it.
+      client.emit("session_1", runtimeSettingsEvent("R2", "R1", "plan", "acceptEdits"));
+      client.emitConnection({ status: "connected", id: "c2" });
+
+      await vi.waitFor(() =>
+        expect(client.requests.some((entry) => entry.method === "message.stream")).toBe(true),
+      );
+      const methods = client.requests.map((entry) => entry.method);
+      expect(methods.indexOf("agent.attach")).toBeLessThan(methods.indexOf("message.stream"));
+      expect(client.requests.find((entry) => entry.method === "agent.attach")?.params).toEqual({
+        agentId: "agent_1",
+        clientId: "tui_reattach",
+      });
+      expect(authority.currentMode()).toBe("plan");
+      expect(submit.outcome).not.toBeInstanceOf(Error);
+      expect(authority.abortTerminal).not.toHaveBeenCalled();
+      expect(notices).toContain("daemon reconnected");
+      unsubscribe();
+    });
+
+    it("fails with the --continue hint when the daemon restored the session without its runtime", async () => {
+      const authority = runtimeAuthorityBase();
+      const client = reattachingClient(async () => {
+        throw new AgenCDaemonResponseError({
+          code: -32000,
+          message: "AgenC daemon agent recovered without a live runtime: agent_1",
+          data: { code: "BACKGROUND_RUNNER_UNAVAILABLE" },
+        });
+      });
+      const session = createDaemonTuiSession({
+        baseSession: authority.baseSession,
+        client,
+        sessionId: "session_1",
+        agentId: "agent_1",
+        clientId: "tui_reattach_deferred",
+        runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+      });
+
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      client.emitConnection({ status: "reconnecting" });
+      const submit = startSubmit(session);
+      await flush();
+      client.emitConnection({ status: "connected", id: "c2" });
+
+      await vi.waitFor(() => expect(submit.outcome).toBeInstanceOf(Error));
+      expect((submit.outcome as Error).message).toBe(
+        "the daemon restarted and could not bring this session back; quit and run agenc --continue to pick it up",
+      );
+      expect(client.requests.some((entry) => entry.method === "message.stream")).toBe(false);
+      expect(authority.abortTerminal).toHaveBeenCalledExactlyOnceWith(
+        "runtime_settings_authority_gap",
+      );
+    });
+
+    it("fails when the daemon does not come back in time", async () => {
+      const authority = runtimeAuthorityBase();
+      const client = reattachingClient(async () => {
+        throw new Error("agent.attach must not run without a connection");
+      });
+      const session = createDaemonTuiSession({
+        baseSession: authority.baseSession,
+        client,
+        sessionId: "session_1",
+        agentId: "agent_1",
+        clientId: "tui_reattach_timeout",
+        reattachWaitMs: 20,
+        runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+      });
+
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      client.emitConnection({ status: "reconnecting" });
+      const submit = startSubmit(session);
+
+      await vi.waitFor(() => expect(submit.outcome).toBeInstanceOf(Error));
+      expect((submit.outcome as Error).message).toMatch(
+        /^the daemon did not come back within \d+ s; quit and run agenc --continue to pick it up$/u,
+      );
+      expect(client.requests.some((entry) => entry.method === "agent.attach")).toBe(false);
+      expect(client.requests.some((entry) => entry.method === "message.stream")).toBe(false);
+    });
+
+    it("fails as soon as the client gives up reconnecting", async () => {
+      const authority = runtimeAuthorityBase();
+      const client = reattachingClient(async () => {
+        throw new Error("agent.attach must not run without a connection");
+      });
+      const session = createDaemonTuiSession({
+        baseSession: authority.baseSession,
+        client,
+        sessionId: "session_1",
+        agentId: "agent_1",
+        clientId: "tui_reattach_gave_up",
+        runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+      });
+
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      client.emitConnection({ status: "reconnecting" });
+      const submit = startSubmit(session);
+      await flush();
+      expect(submit.outcome).toBe("pending");
+      client.emitConnection({ status: "disconnected", message: "connect ENOENT" });
+
+      await vi.waitFor(() => expect(submit.outcome).toBeInstanceOf(Error));
+      expect((submit.outcome as Error).message).toBe(
+        "the daemon did not come back after disconnecting; quit and run agenc --continue to pick it up",
+      );
+    });
+  });
+
   it("fails closed on an explicit pre-subscribe authority overflow marker", async () => {
     const authority = runtimeAuthorityBase();
     const client = createClient();

@@ -921,6 +921,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     baseSession: unknown;
     client: unknown;
     sessionId: string;
+    agentId?: string;
     conversationId?: string;
     transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
     clientId: string;
@@ -932,6 +933,7 @@ async function loadCreateDaemonTuiSession(): Promise<
       baseSession: unknown;
       client: unknown;
       sessionId: string;
+      agentId?: string;
       conversationId?: string;
       transcriptSnapshot?: import("../app-server/protocol/index.js").SessionTranscriptV2Result;
       clientId: string;
@@ -1802,6 +1804,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
             baseSession: liveBridgeBaseSession,
             client: startupClient,
             sessionId,
+            agentId: started.agentId,
             conversationId:
               attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
             clientId: params.clientId,
@@ -3370,6 +3373,7 @@ export async function attachAgentTuiEntry(
         baseSession,
         client: daemonClient,
         sessionId,
+        agentId: args.agentId,
         conversationId: runtimeSessionId,
         clientId: args.clientId,
         transcriptSnapshot,
