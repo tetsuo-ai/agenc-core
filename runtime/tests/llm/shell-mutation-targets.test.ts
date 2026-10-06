@@ -74,6 +74,15 @@ describe("collectShellMutationTargets", () => {
     expect(found.indeterminate).toBe(true);
   });
 
+  it("reports the file a copy writes into a directory and a path under the home directory", () => {
+    expect(targets("cp /tmp/x.ts . && mv /tmp/y.ts lib/").targets).toEqual([
+      join(ROOT, "x.ts"),
+      "/tmp/y.ts",
+      join(ROOT, "lib/y.ts"),
+    ]);
+    expect(targets("rm -rf ~/scratch")).toEqual({ targets: [join(homedir(), "scratch")], indeterminate: false });
+  });
+
   it("ends a subshell's cd with the subshell", () => {
     expect(targets("(cd sub && rm a) && rm b").targets).toEqual([join(ROOT, "sub/a"), join(ROOT, "b")]);
   });
