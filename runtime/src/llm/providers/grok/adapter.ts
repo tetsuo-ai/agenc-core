@@ -7,6 +7,7 @@
  * @module
  */
 
+import { observeInitialHttpResponse, withInitialHttpRejection } from "../../initial-http-rejection.js";
 import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
@@ -36,6 +37,8 @@ import {
 } from "../../wire/mcp-tool-naming.js";
 import { LLMProviderError, LLMServerError, LLMStreamTruncatedError, mapLLMError,
   LLMRequestRebuiltError,
+  markLLMPreGenerationRejection,
+  isLLMPreGenerationRejection,
 } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -789,35 +792,37 @@ async function createWithResponseMetadata<T>(
   response?: Response;
   requestId?: string | null;
 }> {
-  const request = (client as any).responses.create(params, {
-    signal,
-    ...(singleWireAttempt ? { maxRetries: 0 } : {}),
-  });
-  if (
-    request &&
-    typeof request === "object" &&
-    typeof (request as { withResponse?: unknown }).withResponse === "function"
-  ) {
-    const result = await (
-      request as {
-        withResponse(): Promise<{
-          data: T;
-          response: Response;
-          request_id: string | null;
-        }>;
-      }
-    ).withResponse();
+  return withInitialHttpRejection("grok", singleWireAttempt, async () => {
+    const request = (client as any).responses.create(params, {
+      signal,
+      ...(singleWireAttempt ? { maxRetries: 0 } : {}),
+    });
+    if (
+      request &&
+      typeof request === "object" &&
+      typeof (request as { withResponse?: unknown }).withResponse === "function"
+    ) {
+      const result = await (
+        request as {
+          withResponse(): Promise<{
+            data: T;
+            response: Response;
+            request_id: string | null;
+          }>;
+        }
+      ).withResponse();
+      return {
+        data: result.data,
+        response: result.response,
+        requestId: result.request_id,
+      };
+    }
+    const data = await request as T;
     return {
-      data: result.data,
-      response: result.response,
-      requestId: result.request_id,
+      data,
+      requestId: extractProviderRequestId(data),
     };
-  }
-  const data = await request as T;
-  return {
-    data,
-    requestId: extractProviderRequestId(data),
-  };
+  });
 }
 
 function emitProviderTraceEvent(
@@ -2315,7 +2320,8 @@ export class GrokProvider implements LLMProvider {
         baseURL: this.config.baseURL,
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
-        ...(this.config.fetchImpl ? { fetch: this.config.fetchImpl } : {}),
+        fetch: ((...args: Parameters<typeof fetch>) =>
+          (this.config.fetchImpl ?? fetch)(...args).then(observeInitialHttpResponse)) as typeof fetch,
       });
       installAgenCManagedSdkFetch(client);
       return client;
@@ -3338,10 +3344,12 @@ export class GrokProvider implements LLMProvider {
   }
 
   private mapError(err: unknown, timeoutMs?: number): Error {
-    return (
+    const mapped = (
       xaiBillingRefusalError(this.name, err) ??
       mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0)
     );
+    return isLLMPreGenerationRejection(err, this.name)
+      ? markLLMPreGenerationRejection(mapped, this.name) : mapped;
   }
 
   private logPromptOverflowDiagnostics(
