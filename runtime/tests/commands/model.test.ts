@@ -8,7 +8,8 @@ import {
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";
-import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
+import { switchProviderModel } from "./provider.js";
 import type { EnvSnapshot } from "../config/env.js";
 import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import type { ConfigStore } from "../config/store.js";
@@ -329,20 +330,16 @@ describe("modelCommand", () => {
 
       await modelCommand.execute(mkctx(session, "", { setToolJSX }));
       const payload = setToolJSX.mock.calls[0]?.[0] as {
-        jsx?: {
-          props?: {
-            onSelect?: (
-              provider: "grok",
-              model: string,
-            ) => Promise<{ message: string; shouldClose: boolean }>;
-          };
-        };
+        jsx?: { props?: { initialProvider?: string } };
       };
+      expect(payload.jsx?.props?.initialProvider).toBe("grok");
+      // The screen switches through the same path; the current pair is a no-op.
       await expect(
-        payload.jsx?.props?.onSelect?.("grok", "grok-4.6"),
-      ).resolves.toEqual({
-        message: "Model unchanged: grok/grok-4.6.",
-        shouldClose: true,
+        switchProviderModel(mkctx(session, ""), "grok", "grok-4.6"),
+      ).resolves.toMatchObject({
+        applied: false,
+        unchanged: true,
+        message: "Provider unchanged: grok/grok-4.6.",
       });
       expect(
         (session as unknown as { pendingProviderSwitch: unknown })
@@ -365,7 +362,7 @@ describe("modelCommand", () => {
     }
   });
 
-  it("routes picker selections through provider-model authority", async () => {
+  it("opens the providers screen on the current provider and routes its choices through provider-model authority", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4" });
     const setToolJSX = vi.fn();
 
@@ -375,22 +372,16 @@ describe("modelCommand", () => {
 
     expect(res.kind).toBe("skip");
     const payload = setToolJSX.mock.calls[0]?.[0] as {
-      jsx?: {
-        props?: {
-          onSelect?: (
-            provider: "grok",
-            model: string,
-          ) => Promise<{ message: string; shouldClose: boolean }>;
-        };
-      };
+      jsx?: { props?: { initialProvider?: string } };
     };
-    const onSelect = payload.jsx?.props?.onSelect;
-    expect(onSelect).toBeTypeOf("function");
-    await expect(onSelect!("grok", "gpt-5")).resolves.toEqual({
+    expect(payload.jsx?.props?.initialProvider).toBe("grok");
+    await expect(
+      switchProviderModel(mkctx(session, ""), "grok", "gpt-5"),
+    ).resolves.toMatchObject({
+      applied: false,
       message: expect.stringContaining(
         "belongs to provider 'openai', not explicitly selected provider 'grok'",
       ),
-      shouldClose: false,
     });
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
@@ -852,30 +843,16 @@ describe("modelCommand", () => {
     );
   });
 
-  it("applies a Copilot menu route as the same provider-local pair", async () => {
+  it("applies a Copilot route as the same provider-local pair", async () => {
     const session = stubSession({ provider: "github", model: "gpt-5-mini" });
-    const setToolJSX = vi.fn();
 
-    const result = await modelCommand.execute(
-      mkctx(session, "", { setToolJSX }),
-    );
-
-    expect(result.kind).toBe("skip");
-    const payload = setToolJSX.mock.calls[0]?.[0] as {
-      jsx?: {
-        props?: {
-          onSelect?: (
-            provider: "github",
-            model: string,
-          ) => Promise<{ message: string; shouldClose: boolean }>;
-        };
-      };
-    };
-    const onSelect = payload.jsx?.props?.onSelect;
-    expect(onSelect).toBeTypeOf("function");
     await expect(
-      onSelect!("github", "github:copilot:gpt-5.3-codex"),
-    ).resolves.toMatchObject({ shouldClose: true });
+      switchProviderModel(
+        mkctx(session, ""),
+        "github",
+        "github:copilot:gpt-5.3-codex",
+      ),
+    ).resolves.toMatchObject({ applied: true });
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,

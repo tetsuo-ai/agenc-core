@@ -27,6 +27,7 @@ const BUILT_IN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "stats",
   "model",
   "provider",
+  "providers",
   "effort",
   "resolve",
   "resolve-effects",

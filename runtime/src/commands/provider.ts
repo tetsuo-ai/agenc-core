@@ -245,9 +245,71 @@ function updateProviderChrome(ctx: SlashCommandContext, model: string): void {
   ctx.appState?.setModel?.(model);
 }
 
+export type ProviderModelSwitchResult = {
+  readonly applied: boolean;
+  readonly unchanged: boolean;
+  readonly provider: string;
+  readonly model: string;
+  readonly message: string;
+};
+
+/**
+ * Switch the session to one provider and model as a pair, with the same
+ * selection, access and history checks as `/provider <name> <model>`.
+ */
+export async function switchProviderModel(
+  ctx: SlashCommandContext,
+  provider: string,
+  model: string,
+): Promise<ProviderModelSwitchResult> {
+  const selection = resolveProviderCommandSelection(ctx, provider, model);
+  if (!selection.ok) {
+    return { applied: false, unchanged: false, provider, model, message: selection.error };
+  }
+  const access = createProviderCommandAccessOverlay(ctx).inspect({
+    provider: selection.provider,
+    model: selection.model,
+  });
+  const rejection = formatProviderCommandRejection(access, "provider");
+  if (rejection !== undefined) {
+    return {
+      applied: false,
+      unchanged: false,
+      provider: selection.provider,
+      model: selection.model,
+      message: rejection,
+    };
+  }
+  if (access.effect === "unchanged") {
+    return {
+      applied: false,
+      unchanged: true,
+      provider: selection.provider,
+      model: selection.model,
+      message: `Provider unchanged: ${selection.provider}/${selection.model}.`,
+    };
+  }
+  const outcome = await applyProviderSwitch(
+    ctx.session,
+    selection.provider,
+    selection.model,
+  );
+  if (outcome.applied) {
+    updateProviderChrome(ctx, outcome.model);
+  }
+  return {
+    applied: outcome.applied,
+    unchanged: false,
+    provider: outcome.provider,
+    model: outcome.model,
+    message: outcome.summary,
+  };
+}
+
 export const providerCommand: SlashCommand = {
   name: "provider",
-  description: "Switch the LLM provider for subsequent turns",
+  aliases: ["providers"],
+  description: "Connect providers and pick a model",
   supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,
   immediate: true,
@@ -255,58 +317,13 @@ export const providerCommand: SlashCommand = {
     safeExecute(async () => {
       const trimmed = ctx.argsRaw.trim();
       if (trimmed.length === 0) {
-        const snapshot = readProviderMenuSnapshot(ctx);
         if (
           typeof ctx.appState?.setToolJSX === "function" &&
-          (await import("./provider-menu.js")).openProviderMenu(ctx, snapshot, async (provider, model) => {
-            const selection = resolveProviderCommandSelection(
-              ctx,
-              provider,
-              model,
-            );
-            if (!selection.ok) {
-              return {
-                message: selection.error,
-                shouldClose: false,
-              };
-            }
-            const access = createProviderCommandAccessOverlay(ctx).inspect({
-              provider: selection.provider,
-              model: selection.model,
-            });
-            const rejection = formatProviderCommandRejection(
-              access,
-              "provider",
-            );
-            if (rejection !== undefined) {
-              return {
-                message: rejection,
-                shouldClose: false,
-              };
-            }
-            if (access.effect === "unchanged") {
-              return {
-                message: `Provider unchanged: ${selection.provider}/${selection.model}.`,
-                shouldClose: true,
-              };
-            }
-            const outcome = await applyProviderSwitch(
-              ctx.session,
-              selection.provider,
-              selection.model,
-            );
-            if (outcome.applied) {
-              updateProviderChrome(ctx, outcome.model);
-            }
-            return {
-              message: outcome.summary,
-              shouldClose: outcome.applied,
-            };
-          })
+          (await import("./providers-hub.js")).openProvidersHub(ctx)
         ) {
           return { kind: "skip" };
         }
-        return { kind: "text", text: providerMenuFallback(snapshot) };
+        return { kind: "text", text: providerMenuFallback(readProviderMenuSnapshot(ctx)) };
       }
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       const targetModel =
