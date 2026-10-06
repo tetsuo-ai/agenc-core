@@ -101,7 +101,7 @@ describe("EndpointMetadataCache", () => {
     await Promise.resolve();
     if (outcome === "success") old.resolve({ old: true });
     else old.reject(new Error("old transport failure"));
-    expect(await oldResult).toBeUndefined();
+    expect(await oldResult).toEqual(outcome === "success" ? { old: true } : undefined);
     const joined = cache.get(newScope, request, download);
     next.resolve({ new: true });
     expect(await newResult).toEqual({ new: true });

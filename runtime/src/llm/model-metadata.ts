@@ -203,12 +203,17 @@ export class ModelMetadataResolver {
 
   private endpointScope(params: LookupParams): EndpointMetadataScope | undefined {
     const provider = normalizeMetadataProviderIdentity(params.provider);
-    return this.endpointCatalogs?.observe(provider, {
+    return this.endpointCatalogs?.observe(provider, this.endpointConfiguration(params));
+  }
+
+  private endpointConfiguration(params: LookupParams): unknown {
+    const provider = normalizeMetadataProviderIdentity(params.provider);
+    return {
       config: readProviderConfig(params.config, provider),
       baseUrl: providerBaseUrl(params.config, provider, this.env),
       headers: authHeaders(provider, params.config, this.env),
       timeoutMs: this.timeoutMs,
-    });
+    };
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -231,7 +236,23 @@ export class ModelMetadataResolver {
   }
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
+    const scope = this.endpointScope(params);
     this.cacheRevision(params);
+    const metadata = await this.resolveMetadata(params);
+    // Other sessions may rotate the shared scope while this request is in
+    // flight. Their rotation only revokes shared publication. If this caller's
+    // own authority changed, fail explicitly rather than using old limits or
+    // extending the discovery timeout with an automatic retry.
+    if (scope !== undefined && !this.endpointCatalogs!.matchesConfiguration(
+      scope, this.endpointConfiguration(params),
+    )) {
+      this.endpointCatalogs!.invalidate(scope);
+      throw new Error("Provider metadata configuration changed during discovery; retry with the current configuration");
+    }
+    return metadata;
+  }
+
+  private async resolveMetadata(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
     if (shouldPreferLiveEndpointOverExplicit(params, this.env)) {
       const live = await this.resolveLiveEndpointMetadata(params);

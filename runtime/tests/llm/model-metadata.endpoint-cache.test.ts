@@ -115,3 +115,107 @@ describe("endpoint cache resolver wiring", () => {
     expect(cache.observe("openai", "test-account")).not.toBe(next);
   });
 });
+
+function pendingResponse() {
+  let release!: (response: Response) => void;
+  let entered!: () => void;
+  const ready = new Promise<void>((resolve) => { entered = resolve; });
+  const pending = new Promise<Response>((resolve) => { release = resolve; });
+  return { release, entered, ready, pending };
+}
+
+describe("concurrent endpoint metadata callers", () => {
+  it.each([
+    [false, "endpoint"], [true, "endpoint"],
+    [false, "credential"], [true, "credential"],
+  ] as const)("retains each caller's authoritative limit across %s manager / %s rotation", async (manager, rotation) => {
+    const endpointCatalogs = new EndpointMetadataCache();
+    const first = pendingResponse();
+    let callsA = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      const isA = rotation === "endpoint"
+        ? String(input).startsWith("https://models.example/")
+        : new Headers(init?.headers).get("authorization") === "Bearer a";
+      if (!isA) return response(32000);
+      callsA += 1;
+      if (callsA > 1) return response(12000);
+      first.entered();
+      return first.pending;
+    });
+    const make = (account: "a" | "b") => {
+      const ownConfig = rotation === "endpoint" && account === "b"
+        ? mergeConfigs(config, { providers: { "openai-compatible": { base_url: "https://second.example/v1" } } })
+        : config;
+      const metadata = { endpointCatalogs, fetchImpl, env: { OPENAI_COMPATIBLE_API_KEY: rotation === "credential" ? account : "same" } };
+      if (manager) {
+        const instance = new StaticModelsManager({ config: ownConfig, metadata });
+        return () => instance.getModelInfoForProvider(lookup.provider, lookup.model);
+      }
+      const instance = new ModelMetadataResolver(metadata);
+      return () => instance.resolve({ ...lookup, config: ownConfig });
+    };
+    const resolveA = make("a");
+    const a = resolveA();
+    await first.ready;
+    expect((await make("b")()).contextWindow).toBe(32000);
+    first.release(response(16000));
+    expect((await a).contextWindow).toBe(16000);
+    // The old response belongs to A's completed call but is not published to
+    // shared storage or served through A's old local generation on reuse.
+    expect((await resolveA()).contextWindow).toBe(12000);
+    expect(callsA).toBe(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    [false, "refresh"], [true, "refresh"],
+    [false, "error"], [true, "error"],
+  ] as const)("preserves pending caller limits across %s manager / %s invalidation", async (manager, invalidation) => {
+    const endpointCatalogs = new EndpointMetadataCache();
+    const first = pendingResponse();
+    let calls = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      calls += 1;
+      if (calls > 1) return response(12000);
+      first.entered();
+      return first.pending;
+    });
+    const make = () => {
+      const metadata = { endpointCatalogs, fetchImpl, env: {} };
+      if (manager) {
+        const instance = new StaticModelsManager({ config, metadata });
+        return () => instance.getModelInfoForProvider(lookup.provider, lookup.model);
+      }
+      const instance = new ModelMetadataResolver(metadata);
+      return () => instance.resolve(lookup);
+    };
+    const active = make();
+    const a = active();
+    await first.ready;
+    if (invalidation === "refresh") refreshEndpointMetadata();
+    else endpointCatalogs.failureHandler(lookup.provider)();
+    expect((await active()).contextWindow).toBe(12000);
+    first.release(response(16000));
+    expect((await a).contextWindow).toBe(16000);
+    expect((await active()).contextWindow).toBe(12000);
+    expect((await make()()).contextWindow).toBe(12000);
+    expect(calls).toBe(2);
+  });
+
+  it("fails explicitly if the waiting caller's own credential changes", async () => {
+    const endpointCatalogs = new EndpointMetadataCache();
+    const first = pendingResponse();
+    const env = { OPENAI_COMPATIBLE_API_KEY: "a" };
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      first.entered();
+      return first.pending;
+    });
+    const resolver = new ModelMetadataResolver({ endpointCatalogs, fetchImpl, env });
+    const result = resolver.resolve(lookup);
+    await first.ready;
+    env.OPENAI_COMPATIBLE_API_KEY = "b";
+    first.release(response(16000));
+    await expect(result).rejects.toThrow("Provider metadata configuration changed during discovery");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

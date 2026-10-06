@@ -108,6 +108,11 @@ export class EndpointMetadataCache {
     return scope;
   }
 
+  /** Compare caller authority without rotating any other session's scope. */
+  matchesConfiguration(scope: EndpointMetadataScope, configuration: unknown): boolean {
+    return scope.identity === fingerprint(configuration);
+  }
+
   invalidate(scope: EndpointMetadataScope): void {
     if (!this.#current(scope)) return;
     this.#scopes.delete(scope.provider);
@@ -151,7 +156,7 @@ export class EndpointMetadataCache {
     },
     download: () => Promise<EndpointMetadataJson | undefined>,
   ): Promise<EndpointMetadataJson | undefined> {
-    if (!this.#current(scope)) return undefined;
+    const current = this.#current(scope);
     const key = fingerprint([scope.provider, scope.identity, request.baseUrl,
       request.url, request.method, [...new Headers(request.headers)].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       request.body ?? null, request.timeoutMs]);
@@ -160,28 +165,29 @@ export class EndpointMetadataCache {
       if (now >= value.expires) this.#remove(id);
     }
     const hit = this.#downloaded.get(key);
-    if (hit !== undefined) {
+    if (current && hit?.scope === scope) {
       this.#downloaded.delete(key);
       this.#downloaded.set(key, hit);
       return JSON.parse(hit.json) as EndpointMetadataJson;
     }
     const pending = this.#pending.get(key);
-    if (pending !== undefined) {
+    if (current && pending?.scope === scope) {
       const json = await pending.result;
-      return json === undefined || !this.#current(scope) ? undefined : JSON.parse(json) as EndpointMetadataJson;
+      return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     }
-    const retain = this.#pendingCount < this.#maxPending;
+    const retain = current && this.#pendingCount < this.#maxPending;
     const load = async (): Promise<string | undefined> => {
       try {
         const value = await download();
-        if (!this.#current(scope)) return undefined;
         if (value === undefined) {
           this.invalidate(scope);
           return undefined;
         }
         const json = JSON.stringify(value);
         const bytes = Buffer.byteLength(json);
-        if (retain && bytes <= this.#maxEntryBytes && bytes <= this.#maxBytes) {
+        // Invalidation revokes publication, not this caller's successful
+        // response. Dropping it could replace a real lower limit with fallback.
+        if (retain && this.#current(scope) && bytes <= this.#maxEntryBytes && bytes <= this.#maxBytes) {
           this.#remove(key);
           while (this.#downloaded.size >= this.#maxEntries || this.#bytes + bytes > this.#maxBytes) {
             this.#remove(this.#downloaded.keys().next().value!);
@@ -205,7 +211,7 @@ export class EndpointMetadataCache {
     }
     try {
       const json = await record.result;
-      return json === undefined || !this.#current(scope) ? undefined : JSON.parse(json) as EndpointMetadataJson;
+      return json === undefined ? undefined : JSON.parse(json) as EndpointMetadataJson;
     } finally {
       if (retain) this.#pendingCount -= 1;
       if (this.#pending.get(key) === record) this.#pending.delete(key);
