@@ -4898,6 +4898,10 @@ describe("bootstrap private endpoint metadata reuse", () => {
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     const requests: string[] = [];
+    // Unknown local models also issue an independent capability health probe.
+    // Keep that probe real and count its GET separately from metadata reuse.
+    const { OpenAIProvider } = await import("../llm/providers/openai/adapter.js");
+    const healthChecks = vi.spyOn(OpenAIProvider.prototype, "healthCheck");
     const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       requests.push(String(input));
       return jsonResponse({ data: [
@@ -4922,7 +4926,7 @@ describe("bootstrap private endpoint metadata reuse", () => {
       try { return boot.modelInfo; }
       finally { await boot.shutdown(); }
     };
-    const discoveries = () => requests.filter((url) => url.endsWith("/models")).length;
+    const discoveries = () => requests.filter((url) => url.endsWith("/models")).length - healthChecks.mock.calls.length;
     try {
       expect((await start("local-model")).contextWindow).toBe(64000);
       expect((await start("other-model")).contextWindow).toBe(32000);

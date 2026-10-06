@@ -88,11 +88,11 @@ describe("endpoint cache resolver wiring", () => {
 
   it("keeps the catalog fast path for default endpoints but discovers known models on custom endpoints", async () => {
     const endpointCatalogs = new EndpointMetadataCache();
-    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ data: [{ id: "deepseek-chat", context_length: 64000 }] })));
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ data: [{ id: "deepseek-flash", context_length: 64000 }] })));
     const resolver = () => new ModelMetadataResolver({ endpointCatalogs, fetchImpl, env: {} });
-    await resolver().resolve({ provider: "deepseek", model: "deepseek-chat", config: defaultConfig() });
+    await resolver().resolve({ provider: "deepseek", model: "deepseek-flash", config: defaultConfig() });
     expect(fetchImpl).not.toHaveBeenCalled();
-    const params = { provider: "deepseek", model: "deepseek-chat", config: mergeConfigs(defaultConfig(), { providers: { deepseek: { base_url: "https://custom.example/v1" } } }) };
+    const params = { provider: "deepseek", model: "deepseek-flash", config: mergeConfigs(defaultConfig(), { providers: { deepseek: { base_url: "https://custom.example/v1" } } }) };
     const cold = await resolver().resolve(params);
     const warm = await resolver().resolve(params);
     expect(warm).toEqual(cold);
