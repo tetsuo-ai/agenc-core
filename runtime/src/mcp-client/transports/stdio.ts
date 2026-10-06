@@ -11,7 +11,6 @@
  *     surface in this subsystem yet.
  */
 
-import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -35,12 +34,11 @@ import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
@@ -396,6 +394,18 @@ export class AgenCStdioClientTransport implements Transport {
       return;
     }
     this.stderrBuffer = Buffer.concat([this.stderrBuffer, chunk]);
+    this.logCompleteStderrLines();
+    // Defense-in-depth: a child that streams stderr without a newline would
+    // otherwise grow stderrBuffer without bound. Once the unterminated residue
+    // exceeds the cap, flush the oversized prefix with a truncation notice so
+    // memory stays bounded; any trailing bytes keep accumulating toward the
+    // next newline as before.
+    while (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
+      this.flushOversizedStderrPrefix();
+    }
+  };
+
+  private logCompleteStderrLines(): void {
     for (;;) {
       const index = this.stderrBuffer.indexOf("\n");
       if (index === -1) break;
@@ -409,47 +419,61 @@ export class AgenCStdioClientTransport implements Transport {
       this.noteStderrLine(safe);
       this.logger.info(`MCP server stderr (${this.server.command}): ${safe}`);
     }
-    // Defense-in-depth: a child that streams stderr without a newline would
-    // otherwise grow stderrBuffer without bound. Once the unterminated residue
-    // exceeds the cap, flush the oversized prefix with a truncation notice so
-    // memory stays bounded; any trailing bytes keep accumulating toward the
-    // next newline as before.
-    while (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
-      const secrets = literalSecretsForAttachmentLogger(this.logger);
-      const maxSecretBytes = secrets.reduce((max, secret) => Math.max(max, secret.length), 0);
-      let cut = Math.min(STDERR_BUFFER_MAX_BYTES, this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1));
-      // A complete match may cross the tentative cut. Move the cut before
-      // its start, and keep enough raw suffix to recognize a future match.
-      for (;;) {
-        let earlier = cut;
-        for (const secret of secrets) {
-          let at = this.stderrBuffer.indexOf(secret, Math.max(0, cut - secret.length + 1));
-          while (at >= 0 && at < cut) {
-            if (at + secret.length > cut) earlier = Math.min(earlier, at);
-            at = this.stderrBuffer.indexOf(secret, at + 1);
-          }
-        }
-        if (earlier === cut) break;
-        cut = earlier;
-      }
-      while (cut > 0 && cut < this.stderrBuffer.length && (this.stderrBuffer[cut]! & 0xc0) === 0x80) cut -= 1;
-      if (cut === 0) {
-        // Overlapping matches can connect the entire buffer. Omit that prefix
-        // and retain only the suffix needed to detect a match in the next chunk.
-        const consumed = this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1);
-        this.stderrBuffer = this.stderrBuffer.subarray(consumed);
-        this.stderrOmittedPrefix = true;
-        this.logger.info(`MCP server stderr (${this.server.command}) [truncated ${consumed} bytes, no newline: overlapping credentials omitted]`);
-        continue;
-      }
-      const truncated = this.stderrOmittedPrefix ? "[omitted: overlapping credentials]" :
-        redactAttachmentLoggerText(this.logger, this.stderrBuffer.subarray(0, cut).toString("utf8"));
-      this.stderrBuffer = this.stderrBuffer.subarray(cut);
-      this.logger.info(
-        `MCP server stderr (${this.server.command}) [truncated ${cut} bytes, no newline]: ${truncated}`,
-      );
+  }
+
+  /** One step of the unterminated-stderr cap: log (redacted) or omit a prefix of stderrBuffer. */
+  private flushOversizedStderrPrefix(): void {
+    const secrets = literalSecretsForAttachmentLogger(this.logger);
+    const maxSecretBytes = secrets.reduce((max, secret) => Math.max(max, secret.length), 0);
+    const tentative = Math.min(STDERR_BUFFER_MAX_BYTES, this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1));
+    const cut = this.alignStderrCutToUtf8(this.stderrCutBeforeSecrets(secrets, tentative));
+    if (cut === 0) {
+      // Overlapping matches can connect the entire buffer. Omit that prefix
+      // and retain only the suffix needed to detect a match in the next chunk.
+      const consumed = this.stderrBuffer.length - Math.max(0, maxSecretBytes - 1);
+      this.stderrBuffer = this.stderrBuffer.subarray(consumed);
+      this.stderrOmittedPrefix = true;
+      this.logger.info(`MCP server stderr (${this.server.command}) [truncated ${consumed} bytes, no newline: overlapping credentials omitted]`);
+      return;
     }
-  };
+    const truncated = this.stderrOmittedPrefix ? "[omitted: overlapping credentials]" :
+      redactAttachmentLoggerText(this.logger, this.stderrBuffer.subarray(0, cut).toString("utf8"));
+    this.stderrBuffer = this.stderrBuffer.subarray(cut);
+    this.logger.info(
+      `MCP server stderr (${this.server.command}) [truncated ${cut} bytes, no newline]: ${truncated}`,
+    );
+  }
+
+  /**
+   * A complete match may cross the tentative cut. Move the cut before its
+   * start, and keep enough raw suffix to recognize a future match.
+   */
+  private stderrCutBeforeSecrets(secrets: readonly Buffer[], tentative: number): number {
+    let cut = tentative;
+    for (;;) {
+      const earlier = secrets.reduce((min, secret) => Math.min(min, this.earliestStderrMatchCrossing(secret, cut)), cut);
+      if (earlier === cut) return cut;
+      cut = earlier;
+    }
+  }
+
+  /** Start of the earliest match of `secret` that begins before `cut` and ends after it, else `cut`. */
+  private earliestStderrMatchCrossing(secret: Buffer, cut: number): number {
+    let earlier = cut;
+    let at = this.stderrBuffer.indexOf(secret, Math.max(0, cut - secret.length + 1));
+    while (at >= 0 && at < cut) {
+      if (at + secret.length > cut) earlier = Math.min(earlier, at);
+      at = this.stderrBuffer.indexOf(secret, at + 1);
+    }
+    return earlier;
+  }
+
+  /** Move the cut back off UTF-8 continuation bytes so a character is never split. */
+  private alignStderrCutToUtf8(cut: number): number {
+    let aligned = cut;
+    while (aligned > 0 && aligned < this.stderrBuffer.length && (this.stderrBuffer[aligned]! & 0xc0) === 0x80) aligned -= 1;
+    return aligned;
+  }
 
   private flushStderr(): void {
     if (this.stderrBuffer.length === 0) return;
@@ -587,6 +611,7 @@ export async function createStdioMCPConnection(
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -597,20 +622,13 @@ export async function createStdioMCPConnection(
     sandboxExecutionBroker,
     parentEnvironment,
   );
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP stdio server "${config.name}"...`, {
     command: config.command,
