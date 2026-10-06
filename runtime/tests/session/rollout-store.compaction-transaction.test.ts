@@ -1,3 +1,4 @@
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   existsSync,
   fsyncSync,
@@ -1058,9 +1059,14 @@ describe("RolloutStore transactional compaction", () => {
     }
   });
 
-  it.each(["references", "failure-binding", "unrelated-row"] as const)(
-    "does not publish failed-payload repair over corrupt %s",
-    (corruption) => {
+  it.each(
+    (["open", "canonical-terminal", "projected-terminal"] as const).flatMap(
+      (state) => (["references", "missing-references", "reference-authority",
+        "failure-binding", "unrelated-row", "none"] as const).map(
+        (corruption) => ({ state, corruption }),
+      ),
+    ),
+  )("validates proposed repair for $state with $corruption corruption", ({ state, corruption }) => {
       const cwd = createTestWorkspace();
       temporaryWorkspaces.push(cwd);
       const sessionId = `failed-repair-${corruption}`;
@@ -1073,6 +1079,25 @@ describe("RolloutStore transactional compaction", () => {
           configurationDigest: "cd".repeat(32), accountingRef: "ef".repeat(32),
           detailDigest: "4".repeat(64),
         });
+        if (state !== "open") {
+          appendCompletedRunTerminal(store, sessionId);
+          if (state === "projected-terminal") {
+            const terminal = store.readAll().find((row) =>
+              row.type === "event_msg" && row.payload.msg.type === "run_terminal");
+            if (terminal?.type !== "event_msg" || terminal.payload.msg.type !== "run_terminal") {
+              throw new Error("test terminal is missing");
+            }
+            const driver = openStateDatabases({ cwd, agencHome: temporaryHome });
+            try {
+              new StateRunDurabilityRepository(driver).recordTerminalResult({
+                epoch: 1, eventId: terminal.payload.eventId!,
+                result: { ...terminal.payload.msg.payload, lastSequence: terminal.payload.seq! },
+              });
+            } finally {
+              driver.close();
+            }
+          }
+        }
       } finally {
         store.close();
       }
@@ -1081,7 +1106,34 @@ describe("RolloutStore transactional compaction", () => {
       if (corruption === "references") {
         mutatePayloadChunk(rolloutPath, "active_history_refs", (fragment) =>
           `${fragment} `);
-      } else {
+      } else if (corruption === "missing-references") {
+        writeTestRolloutRows(rolloutPath, readTestRolloutRows(rolloutPath).filter(
+          (row) => row.type !== "compaction_payload_chunk" ||
+            (row.payload as CompactionPayloadChunkV1).payload_kind !== "active_history_refs",
+        ));
+      } else if (corruption === "reference-authority") {
+        const rows = readTestRolloutRows(rolloutPath);
+        const index = rows.findIndex((row) => row.type === "compaction_intent");
+        const row = rows[index]!;
+        const intent = row.payload as CompactionPersistedIntentV1;
+        const entries = reconstructTestPayload(
+          rows, intent.source.active_history_refs_manifest,
+        ) as readonly CompactionActiveHistoryEntryV1[];
+        const bundle = createCompactionPayloadBundleV1({
+          attemptId: intent.attempt_id, recordedAtMs: intent.recorded_at_ms,
+          payloadKind: "active_history_refs", itemCount: entries.length,
+          value: entries.map((entry) => ({ ...entry, sequence: intent.source.last_sequence + 1 })),
+        });
+        rows[index] = { ...row, payload: {
+          ...intent, source: { ...intent.source, active_history_refs_manifest: bundle.manifest },
+        } };
+        const chunkIndex = rows.findIndex((item) => item.type === "compaction_payload_chunk" &&
+          (item.payload as CompactionPayloadChunkV1).payload_kind === "active_history_refs");
+        rows.splice(chunkIndex, 1, ...bundle.chunks.map((payload) => ({
+          type: "compaction_payload_chunk", payload,
+        })));
+        writeTestRolloutRows(rolloutPath, rows);
+      } else if (corruption !== "none") {
         const rows = readTestRolloutRows(rolloutPath);
         if (corruption === "failure-binding") {
           const index = rows.findIndex((row) => row.type === "compaction_failed");
@@ -1095,8 +1147,23 @@ describe("RolloutStore transactional compaction", () => {
         writeTestRolloutRows(rolloutPath, rows);
       }
       const before = readFileSync(rolloutPath);
-      expect(() => openStore(sessionId, { resume: true }, cwd)).toThrow();
-      expect(readFileSync(rolloutPath)).toEqual(before);
+      const reopen = () => openStore(sessionId, {
+        resume: true, reopenTerminalRun: state !== "open",
+      }, cwd);
+      if (corruption === "none") {
+        const repaired = reopen();
+        try {
+          const kinds = readTestRolloutRows(rolloutPath)
+            .filter((row) => row.type === "compaction_payload_chunk")
+            .map((row) => (row.payload as CompactionPayloadChunkV1).payload_kind);
+          expect(kinds).toEqual(["active_history_refs"]);
+        } finally {
+          repaired.close();
+        }
+      } else {
+        expect(reopen).toThrow();
+        expect(readFileSync(rolloutPath)).toEqual(before);
+      }
     },
   );
 

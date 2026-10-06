@@ -3242,9 +3242,13 @@ export class SessionStore {
     // ordering and source binding must also validate. Check the entire proposed
     // journal before publishing any deletion, including all unrelated rows.
     const excludedLines = new Set(exclusions.map((entry) => entry.lineNumber));
+    const compactionItems: RolloutItem[] = [];
     const validator = new StrictCanonicalJournalValidator({
       expectedRunId: this.sessionId,
       retainRecords: false,
+      onRecord: ({ item }) => {
+        if (item.type.startsWith("compaction_")) compactionItems.push(item);
+      },
     });
     let start = 0;
     let lineNumber = 0;
@@ -3258,6 +3262,11 @@ export class SessionStore {
     }
     validator.push(bytes.subarray(start));
     validator.finish();
+    // Lifecycle validation does not reconstruct a failed intent's mandatory
+    // reference manifest. Check its chain, digest and hydrated source authority
+    // here even when SQLite already projects the terminal and open skipped its
+    // preliminary readAll(). No deletion is published before hydration succeeds.
+    hydrateManifestCompactionItems(compactionItems);
     this.rewriteRolloutExcludingPhysicalLinesAtomically(
       exclusions,
       digestDomain,
