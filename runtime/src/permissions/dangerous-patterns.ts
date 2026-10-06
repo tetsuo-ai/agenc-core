@@ -8,6 +8,7 @@
 
 import { expandTilde, isDangerousRemovalPath } from "./path-validation.js";
 import { isPowerShellForcedDeleteScript } from "../shell-command/safety.js";
+import { readShellWrapperCode } from "../utils/shell/wrapper-options.js";
 
 /**
  * Cross-platform code-execution entry points present on both Unix and Windows.
@@ -319,10 +320,9 @@ function powerShellForcedDelete(command: string): boolean {
   while (commandIndex !== null) {
     const name = normalizedCommandName(words[commandIndex] ?? "");
     if (isShellScriptCommand(name)) {
-      const script = shellCommandString(words, commandIndex);
-      if (script === null) return false;
-      return (POWERSHELL_SCRIPT_SHELLS.has(name) && isPowerShellForcedDeleteScript(script)) ||
-        powerShellForcedDelete(script);
+      return shellCommandStrings(words, commandIndex).some((script) =>
+        (POWERSHELL_SCRIPT_SHELLS.has(name) && isPowerShellForcedDeleteScript(script)) ||
+        powerShellForcedDelete(script));
     }
     if (!RM_WRAPPER_COMMANDS.has(name)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, name);
@@ -462,8 +462,8 @@ function xargsContainsDangerousCommand(command: string): boolean {
  */
 function xargsInputCommand(nested: readonly string[]): readonly string[] {
   if (!isRestOfLineShell(nested[0] ?? "")) return nested;
-  const script = shellCommandString(nested, 0);
-  const last = script === null ? undefined : splitShellFragments(script).at(-1);
+  const script = shellCommandStrings(nested, 0)[0];
+  const last = script === undefined ? undefined : splitShellFragments(script).at(-1);
   return last === undefined ? nested : splitSimpleShellWords(last);
 }
 
@@ -533,9 +533,19 @@ function xargsShellCommandRemovesSuppliedArgs(
   const command = normalizedCommandName(nestedWords[0] ?? "");
   if (!isShellScriptCommand(command)) return false;
 
-  const scriptIndex = shellCommandStringIndex(nestedWords, 0);
-  if (scriptIndex === null) return false;
-  const trailingArgs = nestedWords.slice(scriptIndex + 1);
+  let scripts: readonly string[];
+  let trailingArgs: readonly string[];
+  if (isRestOfLineShell(command)) {
+    const scriptIndex = shellCommandStringIndex(nestedWords, 0);
+    if (scriptIndex === null) return false;
+    scripts = [stripShellQuotes(nestedWords[scriptIndex]!)];
+    trailingArgs = nestedWords.slice(scriptIndex + 1);
+  } else {
+    // The options can leave the code unknown, so any word after the shell
+    // may follow it and receive what xargs supplies.
+    scripts = shellCommandStrings(nestedWords, 0);
+    trailingArgs = nestedWords.slice(1);
+  }
   const xargsCanSupplyPositionals = replacementTokens.length === 0 ||
     trailingArgs.some((arg) =>
       replacementTokens.some((token) =>
@@ -544,10 +554,8 @@ function xargsShellCommandRemovesSuppliedArgs(
     );
   if (!xargsCanSupplyPositionals) return false;
 
-  return shellScriptRemovesPlaceholder(
-    stripShellQuotes(nestedWords[scriptIndex]!),
-    SHELL_POSITIONAL_TARGETS,
-  );
+  return scripts.some((script) =>
+    shellScriptRemovesPlaceholder(script, SHELL_POSITIONAL_TARGETS));
 }
 
 function envSplitStringContainsDangerousCommand(command: string): boolean {
@@ -755,7 +763,7 @@ function shellExecutesDownloadedContent(command: string): boolean {
       if (shellCommandStringContainsDownloadSubstitution(words, commandIndex)) {
         return true;
       }
-      if (rawShellCommandStringUsesDownloadSubstitution(command, commandName)) {
+      if (rawShellCommandStringUsesDownloadSubstitution(command, words, commandIndex)) {
         return true;
       }
       return shellInputContainsDownloadSubstitution(command);
@@ -770,8 +778,8 @@ function shellCommandStringContainsDownloadSubstitution(
   words: readonly string[],
   shellIndex: number,
 ): boolean {
-  const script = shellCommandString(words, shellIndex);
-  return script !== null && shellTextContainsDownloadSubstitution(script);
+  return shellCommandStrings(words, shellIndex).some((script) =>
+    shellTextContainsDownloadSubstitution(script));
 }
 
 function shellInputContainsDownloadSubstitution(command: string): boolean {
@@ -781,21 +789,27 @@ function shellInputContainsDownloadSubstitution(command: string): boolean {
   );
 }
 
-const RAW_POSIX_SCRIPT_SUBSTITUTION_RE =
-  /(?:^|\s)-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:\$\(|`)/;
 const RAW_WINDOWS_SCRIPT_SUBSTITUTION_RE =
   /(?:^|\s)(?:[-\u2013\u2014\u2015]{1,2}|\/{1,2})(?:[cC][A-Za-z]*|[kKrR])\s+(?:--\s+)?(?:\$\(|`)/u;
+/** A code word that an unquoted substitution was split across: `$`, `$(curl`, `` `curl ``. */
+const SPLIT_SUBSTITUTION_CODE_RE = /\$$|\$\(|`/u;
 
+/**
+ * An unquoted substitution splits into several words here, so the code word
+ * shows only its start (`bash -c $(curl URL)` gives the code `$`). When a
+ * code word the shell may run holds such a start, the raw command is checked
+ * for a download.
+ */
 function rawShellCommandStringUsesDownloadSubstitution(
   command: string,
-  shell: string,
+  words: readonly string[],
+  shellIndex: number,
 ): boolean {
-  const introducer = isRestOfLineShell(shell)
-    ? RAW_WINDOWS_SCRIPT_SUBSTITUTION_RE
-    : RAW_POSIX_SCRIPT_SUBSTITUTION_RE;
-  return (
-    introducer.test(command) && shellTextContainsDownloadSubstitution(command)
-  );
+  const introduced = isRestOfLineShell(words[shellIndex] ?? "")
+    ? RAW_WINDOWS_SCRIPT_SUBSTITUTION_RE.test(command)
+    : shellCommandStrings(words, shellIndex).some((script) =>
+      SPLIT_SUBSTITUTION_CODE_RE.test(script));
+  return introduced && shellTextContainsDownloadSubstitution(command);
 }
 
 function rawEvalUsesDownloadSubstitution(command: string): boolean {
@@ -1412,54 +1426,38 @@ function shellScriptContainsDanger(
   shellIndex: number,
   matchesDanger: (script: string) => boolean,
 ): boolean {
-  const script = shellCommandString(words, shellIndex);
-  return script === null ? false : matchesDanger(script);
+  return shellCommandStrings(words, shellIndex).some(matchesDanger);
 }
 
 /**
- * The script a shell runs from its command line, or null when it reads a file
- * or stdin instead. A Windows shell runs every word after its command switch,
- * and cmd drops its `^` escapes first (`cmd /c r^m -rf /`). PowerShell's
- * `-EncodedCommand` script is decoded.
+ * The scripts a shell may run from its command line; empty when it reads a
+ * file or stdin instead. A Windows shell runs every word after its command
+ * switch, and cmd drops its `^` escapes first (`cmd /c r^m -rf /`).
+ * PowerShell's `-EncodedCommand` script is decoded. Any other shell is read
+ * the way it reads its options (`readShellWrapperCode`): `bash -c -e CODE`
+ * runs CODE, `tcsh -c A -c B` runs B, fish runs every `-c` and `-C`, and
+ * where the options leave the code unknown every later word is returned.
  */
-function shellCommandString(
+function shellCommandStrings(
   words: readonly string[],
   shellIndex: number,
-): string | null {
+): readonly string[] {
   const shell = normalizedCommandName(words[shellIndex] ?? "");
-  if (shell === "fish") return fishCommandString(words, shellIndex);
-  const source = shellScriptSource(words, shellIndex);
-  if (source === null) return null;
-  const first = stripShellQuotes(words[source.index]!);
-  if (source.kind === "encoded") return decodePowerShellEncodedCommand(first);
-  if (!isRestOfLineShell(shell)) return first;
-  const script = words.slice(source.index).map(stripShellQuotes).join(" ");
-  return shell === CMD_SCRIPT_SHELL
-    ? script.replace(/\^([\s\S])/gu, "$1")
-    : script;
-}
-
-/**
- * fish runs every `-c`, `-C`, `--command` and `--init-command` it is given,
- * including the `--command=...` forms, so all of them are checked.
- */
-function fishCommandString(
-  words: readonly string[],
-  shellIndex: number,
-): string | null {
-  const scripts: string[] = [];
-  for (let i = shellIndex + 1; i < words.length; i++) {
-    const flag = stripShellQuotes(words[i]!);
-    const inline = /^--(?:init-)?command=(.*)$/su.exec(flag)?.[1];
-    if (inline !== undefined) {
-      scripts.push(inline);
-      continue;
-    }
-    if (shellScriptSwitchKind("fish", flag) !== "word") continue;
-    if (stripShellQuotes(words[i + 1] ?? "") === "--") i++;
-    if (i + 1 < words.length) scripts.push(stripShellQuotes(words[++i]!));
+  if (!isRestOfLineShell(shell)) {
+    const args = words.slice(shellIndex + 1).map(stripShellQuotes);
+    return readShellWrapperCode(shell, args) ?? [];
   }
-  return scripts.length === 0 ? null : scripts.join("\n");
+  const source = shellScriptSource(words, shellIndex);
+  if (source === null) return [];
+  const first = stripShellQuotes(words[source.index]!);
+  if (source.kind === "encoded") {
+    const decoded = decodePowerShellEncodedCommand(first);
+    return decoded === null ? [] : [decoded];
+  }
+  const script = words.slice(source.index).map(stripShellQuotes).join(" ");
+  return [
+    shell === CMD_SCRIPT_SHELL ? script.replace(/\^([\s\S])/gu, "$1") : script,
+  ];
 }
 
 function shellCommandStringIndex(
@@ -1496,18 +1494,11 @@ const WINDOWS_SWITCH_RE = /^(?:[-\u2013\u2014\u2015]{1,2}|\/{1,2})([a-z]+)$/iu;
  * `/command`, en or em dash forms) or `-CommandWithArgs`, and a base64 script
  * after any prefix of `-EncodedCommand` (`-e`, `-enc`, `-ec`). cmd reads it
  * after `/c`, `/k` or `/r`, and Git Bash users double the slash (`cmd //c`).
- * fish also takes `-C`, `--command` and `--init-command`.
  */
 function shellScriptSwitchKind(
   shell: string,
   flag: string,
 ): "word" | "encoded" | null {
-  if (!isRestOfLineShell(shell)) {
-    if (isShellCommandStringFlag(flag)) return "word";
-    const fishCommand = shell === "fish" &&
-      (/^-[A-Za-z]*C$/u.test(flag) || flag === "--command" || flag === "--init-command");
-    return fishCommand ? "word" : null;
-  }
   const option = WINDOWS_SWITCH_RE.exec(flag)?.[1]?.toLowerCase();
   if (option === undefined) return null;
   if (shell === CMD_SCRIPT_SHELL) {
@@ -1524,11 +1515,6 @@ function decodePowerShellEncodedCommand(value: string): string | null {
   if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) return null;
   const bytes = Buffer.from(value, "base64");
   return bytes.length % 2 === 0 ? bytes.toString("utf16le").replace(/^\uFEFF/u, "") : null;
-}
-
-function isShellCommandStringFlag(flag: string): boolean {
-  if (flag === "-c") return true;
-  return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
 function rmArgsHaveForceWithoutRecursive(args: readonly string[]): boolean {
@@ -1816,11 +1802,9 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
       return true;
     }
     if (isShellScriptCommand(commandName)) {
-      const script = shellCommandString(words, commandIndex);
-      return script === null
-        ? shellInputContainsShellConstruct(normalized)
-        : shellCommandHasShellConstruct(script, depth + 1) ||
-            shellInputContainsShellConstruct(normalized);
+      return shellCommandStrings(words, commandIndex).some((script) =>
+        shellCommandHasShellConstruct(script, depth + 1)) ||
+        shellInputContainsShellConstruct(normalized);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
