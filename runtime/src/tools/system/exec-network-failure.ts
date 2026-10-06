@@ -20,7 +20,7 @@ export function execNetworkFailureNotice(params: {
   ) return null;
 
   return "[sandbox] This lookup failed while network access was disabled for the command. " +
-    "External name resolution and downloads cannot work with this policy; a longer timeout does not enable them. " +
+    "A longer timeout does not grant network access or enable downloads. " +
     "Use installed tools or cached dependencies. " +
     (params.escalationAvailable
       ? "If network access is required, request it through the session's approval flow before retrying."

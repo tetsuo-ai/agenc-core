@@ -378,7 +378,7 @@ describe("exec_command tool", () => {
 
     attachToolRuntimeContext(args, {
       callId: "call-network-proxy",
-      toolName: options.toolName ?? "exec_command",
+      toolName: "exec_command",
       runtimeKind: "function",
       classification: "exclusive",
       supportsParallelToolCalls: false,
