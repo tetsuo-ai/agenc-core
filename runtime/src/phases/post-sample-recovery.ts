@@ -840,6 +840,7 @@ export async function applyPendingBudgetContinuation(
   state.transition = { reason: "token_budget_continuation" };
   state.hasAttemptedReactiveCompact = false;
   state.maxOutputTokensRecoveryCount = 0;
+  state.reasoningOnlyRecoveryCount = undefined;
   state.maxOutputTokensOverride = undefined;
   state.pendingToolUseSummary = undefined;
   state.stopHookActive = undefined;
