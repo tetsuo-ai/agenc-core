@@ -25,7 +25,8 @@ describe('AssistantTextMessage ordinary text coverage', () => {
       100,
     )
 
-    expect(output).toContain('AGENC')
-    expect(output).toContain('Ready to proceed')
+    // AgenC chrome is the ● glyph; the agenc label itself is hidden.
+    expect(output).toContain('● Ready to proceed')
+    expect(output).not.toContain('AGENC')
   })
 })

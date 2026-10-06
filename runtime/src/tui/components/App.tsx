@@ -127,6 +127,8 @@ import type {
   McpSurfaceTool,
 } from "../../session/session.js";
 import { useSessionTranscript } from "../session-transcript.js";
+import { useTerminalSize } from "../hooks/useTerminalSize.js";
+import { ContentWidthProvider } from "../context/contentWidthContext.js";
 import { useDaemonProcessTasks } from "../hooks/useDaemonProcessTasks.js";
 import { useDaemonWorkerTasks } from "../hooks/useDaemonWorkerTasks.js";
 import type { DaemonSessionSnapshot } from "../state/daemonWorkerTasks.js";
@@ -2179,8 +2181,11 @@ export function getTuiProviderEnvironment(
   return environment;
 }
 
+const TRANSCRIPT_INSET = 2;
+
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
+  const { columns: terminalColumns } = useTerminalSize();
   const settings = useSettings();
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
@@ -4626,30 +4631,36 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       </FullscreenModeProvider>
     );
   }
+  // The transcript sits two columns in from both edges, the same inset as
+  // the status line; rows measure against that narrower width.
   const messagesElement = isLocalJSXCommandActive ? null : (
-    <Messages
-      messages={transcript.messages as any[]}
-      tools={tools as any}
-      commands={commands as unknown as Command[]}
-      verbose={screen === "transcript"}
-      toolJSX={toolJSX as any}
-      toolUseConfirmQueue={toolUseConfirmQueue as never[]}
-      inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
-      isMessageSelectorVisible={isMessageSelectorVisible}
-      conversationId={props.session.conversationId}
-      screen={screen as any}
-      streamingToolUses={transcript.streamingToolUses}
-      showAllInTranscript={showAllInTranscript}
-      providerAuthContext={remoteAuthSessionContext}
-      stateRepository={stateRepository}
-      settingsAuthority={configStore}
-      isLoading={isLoading}
-      streamingText={transcript.streamingText}
-      streamingThinking={transcript.streamingThinking as never}
-      hidePastThinking={screen === "transcript"}
-      scrollRef={fullscreen ? scrollRef : undefined}
-      trackStickyPrompt={fullscreen ? true : undefined}
-    />
+    <Box paddingX={TRANSCRIPT_INSET} flexDirection="column">
+      <ContentWidthProvider width={Math.max(1, terminalColumns - 2 * TRANSCRIPT_INSET)}>
+        <Messages
+          messages={transcript.messages as any[]}
+          tools={tools as any}
+          commands={commands as unknown as Command[]}
+          verbose={screen === "transcript"}
+          toolJSX={toolJSX as any}
+          toolUseConfirmQueue={toolUseConfirmQueue as never[]}
+          inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
+          isMessageSelectorVisible={isMessageSelectorVisible}
+          conversationId={props.session.conversationId}
+          screen={screen as any}
+          streamingToolUses={transcript.streamingToolUses}
+          showAllInTranscript={showAllInTranscript}
+          providerAuthContext={remoteAuthSessionContext}
+          stateRepository={stateRepository}
+          settingsAuthority={configStore}
+          isLoading={isLoading}
+          streamingText={transcript.streamingText}
+          streamingThinking={transcript.streamingThinking as never}
+          hidePastThinking={screen === "transcript"}
+          scrollRef={fullscreen ? scrollRef : undefined}
+          trackStickyPrompt={fullscreen ? true : undefined}
+        />
+      </ContentWidthProvider>
+    </Box>
   );
   const toolOwnsPrompt =
     toolJSX?.isLocalJSXCommand === true &&

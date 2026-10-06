@@ -99,13 +99,13 @@ export default async function (session) {
   );
 
   // The first turn is the user's own, against the mock model. Match the
-  // reply row under the AGENC header: the transcript also shows the
-  // submitted prompt, which contains the same word.
+  // agent's reply row (a ● then the text): the transcript also shows the
+  // submitted prompt, which contains the same word after a ❯.
   await session.submit("reply with the single word ONBOARDED");
   await session.waitForAssistantReply({ timeout: 60_000 });
   await waitForFrameText(
     session,
-    /\u2502 AGENC[^\n]*\n\u2502 ONBOARDED\b/u,
+    /^\s*\u25cf ONBOARDED\b/mu,
     "ONBOARDED reply",
     15_000,
   );

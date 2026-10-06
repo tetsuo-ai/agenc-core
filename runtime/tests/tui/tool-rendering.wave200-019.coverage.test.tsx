@@ -10,6 +10,7 @@ vi.mock("./ink.js", () => {
   return { Box, Text };
 });
 
+import { ResultLine } from "./components/v2/primitives.js";
 import {
   BashOutputView,
   createTuiTool,
@@ -68,15 +69,28 @@ describe("TUI tool result rendering dispatch", () => {
         .toBe(content);
     }
 
+    // Unrouted tools summarize to one "└" result line in the transcript; a
+    // single short line is shown as itself.
     const generic = createTuiTool("OtherTool").renderToolResultMessage(
       "plain output",
       [],
     );
-    expect((generic as { readonly type: { readonly name?: string } }).type.name).toBe(
+    expect((generic as { readonly type: unknown }).type).toBe(ResultLine);
+    expect(
+      (generic as { readonly props: { readonly children: string } }).props.children,
+    ).toBe("plain output");
+
+    // Verbose (ctrl+o) keeps the full text in the generic Box/Text body.
+    const verboseGeneric = createTuiTool("OtherTool").renderToolResultMessage(
+      "plain output",
+      [],
+      { verbose: true },
+    );
+    expect((verboseGeneric as { readonly type: { readonly name?: string } }).type.name).toBe(
       "Box",
     );
     expect(
-      (generic as { readonly props: { readonly children: { readonly props: { readonly children: string } } } })
+      (verboseGeneric as { readonly props: { readonly children: { readonly props: { readonly children: string } } } })
         .props.children.props.children,
     ).toBe("plain output");
   });

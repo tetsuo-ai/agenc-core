@@ -341,7 +341,9 @@ describe("PromptInputFooterLeftSide rendering", () => {
     // The footer must NOT repeat "esc to interrupt" — the spinner byline owns
     // that affordance (SpinnerAnimationRow). Revert-sensitive.
     expect(output).not.toContain("esc to interrupt");
-    expect(output).toContain("ctrl+t to show tasks");
+    // Task items alone do not earn the ctrl+t hint: the task list already
+    // shows under the working line. Only running teammates bring it back.
+    expect(output).not.toContain("ctrl+t");
 
     footerMock.appState.tasks = {
       teammate: { status: "running", type: "in_process_teammate" },
@@ -356,6 +358,7 @@ describe("PromptInputFooterLeftSide rendering", () => {
       />,
     );
     expect(output).toContain("TASKS selected:true viewing:false idle:true index:1");
+    // A running in-process teammate brings the toggle hint back.
     expect(output).toContain("ctrl+t to show tasks");
 
     footerMock.appState.viewSelectionMode = "viewing-agent";

@@ -420,9 +420,10 @@ function getSpinnerHintParts(isLoading: boolean, todosShortcut: string, killAgen
     toggleAction = expandedView === 'tasks' ? 'hide tasks' : 'show tasks';
   }
 
-  // Show the toggle hint only when there are task items to display or
-  // teammates to cycle to
-  const showToggleHint = hasTaskItems || hasTeammates;
+  // The tasks toggle keeps its key (ctrl+t) but no footer hint: the task
+  // list already shows under the working line, and the footer stays quiet.
+  void hasTaskItems;
+  const showToggleHint = hasTeammates;
   // "esc to interrupt" is deliberately NOT rendered here: the spinner byline
   // already ends with that affordance (SpinnerAnimationRow), and the codebase
   // convention (see PromptInputQueuedCommands) is to never repeat it.

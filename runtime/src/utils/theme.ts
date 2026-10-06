@@ -79,6 +79,16 @@ export type Theme = {
   /** Fill behind the prompt input. It replaces the prompt border, so it must
    *  stay visible against the terminal's own background. */
   promptBackground: string
+  /** Brand purple: the user's ❯, the reply ●, and the working line. */
+  accent: string
+  /** Softer brand violet: file names, the model name, the shimmer peak. */
+  accentSoft: string
+  /** A tool step that finished. */
+  stepOk: string
+  /** A tool step that failed. */
+  stepFail: string
+  /** Band behind the user's own messages. */
+  userBand: string
   briefLabelWorker: string
   planModeWash: string
 
@@ -201,6 +211,11 @@ const chromaticDarkTheme: Theme = {
   line: 'rgb(52,53,57)',
   lineSoft: 'rgb(34,35,39)',
   promptBackground: 'rgb(34,35,39)',
+  accent: 'rgb(206,92,255)',
+  accentSoft: 'rgb(178,140,255)',
+  stepOk: 'rgb(44,214,139)',
+  stepFail: 'rgb(255,79,122)',
+  userBand: 'rgb(36,25,49)',
   briefLabelWorker: 'rgb(255,151,72)',
   planModeWash: 'rgb(46,26,22)',
 
@@ -225,11 +240,13 @@ const chromaticDarkTheme: Theme = {
   rainbow_violet_shimmer: 'rgb(230,180,210)',
 }
 
-// Every theme is deliberately monochrome: painted surfaces take the
-// terminal's own background (black or white) and every semantic foreground
-// takes the opposite ink. Meaning is carried by copy, glyphs, weight, and
-// layout rather than hue, which also makes the themes color-blind safe. The
-// chromatic palette above only supplies the token list.
+// Every theme starts monochrome: painted surfaces take one background
+// (black or white) and every foreground takes the opposite ink, so hierarchy
+// comes from weight and gray steps. A few accents then carry meaning: the
+// brand purple marks who speaks, green and red mark how a step ended and
+// what an edit changed. Glyphs and copy still carry the same meaning, so
+// color is never the only signal. The chromatic palette above supplies the
+// token list.
 const monochromeBackgroundTokens = new Set<keyof Theme>([
   'background',
   'diffAdded',
@@ -276,6 +293,21 @@ const darkTheme = monochromeTheme('rgb(0,0,0)', 'rgb(255,255,255)', {
   line: 'rgb(48,48,48)',
   lineSoft: 'rgb(34,34,34)',
   promptBackground: 'rgb(34,34,34)',
+  // Color only where it carries meaning: the brand purple marks who speaks,
+  // green and red mark how a step ended and what an edit changed.
+  accent: 'rgb(206,92,255)',
+  accentSoft: 'rgb(178,140,255)',
+  stepOk: 'rgb(44,214,139)',
+  stepFail: 'rgb(255,79,122)',
+  userBand: 'rgb(36,25,49)',
+  success: 'rgb(44,214,139)',
+  error: 'rgb(255,79,122)',
+  diffAdded: 'rgb(14,48,34)',
+  diffRemoved: 'rgb(56,20,32)',
+  diffAddedDimmed: 'rgb(10,30,22)',
+  diffRemovedDimmed: 'rgb(36,14,22)',
+  diffAddedWord: 'rgb(44,214,139)',
+  diffRemovedWord: 'rgb(255,79,122)',
 })
 
 // The light grays keep the dark theme's contrast against the surface, so
@@ -288,6 +320,19 @@ const lightTheme = monochromeTheme('rgb(255,255,255)', 'rgb(0,0,0)', {
   line: 'rgb(204,204,204)',
   lineSoft: 'rgb(225,225,225)',
   promptBackground: 'rgb(232,232,232)',
+  accent: 'rgb(134,46,200)',
+  accentSoft: 'rgb(110,70,190)',
+  stepOk: 'rgb(16,140,84)',
+  stepFail: 'rgb(204,32,72)',
+  userBand: 'rgb(244,238,252)',
+  success: 'rgb(16,140,84)',
+  error: 'rgb(204,32,72)',
+  diffAdded: 'rgb(222,246,232)',
+  diffRemoved: 'rgb(253,228,234)',
+  diffAddedDimmed: 'rgb(236,250,242)',
+  diffRemovedDimmed: 'rgb(254,240,243)',
+  diffAddedWord: 'rgb(16,140,84)',
+  diffRemovedWord: 'rgb(204,32,72)',
 })
 
 // Sixteen-color terminals have one gray on each side, so the ANSI themes use
@@ -300,6 +345,15 @@ const darkAnsiTheme = monochromeTheme('ansi:black', 'ansi:whiteBright', {
   line: 'ansi:blackBright',
   lineSoft: 'ansi:blackBright',
   promptBackground: 'ansi:blackBright',
+  accent: 'ansi:magentaBright',
+  accentSoft: 'ansi:magenta',
+  stepOk: 'ansi:greenBright',
+  stepFail: 'ansi:redBright',
+  userBand: 'ansi:blackBright',
+  success: 'ansi:greenBright',
+  error: 'ansi:redBright',
+  diffAddedWord: 'ansi:greenBright',
+  diffRemovedWord: 'ansi:redBright',
 })
 
 const lightAnsiTheme = monochromeTheme('ansi:whiteBright', 'ansi:black', {
@@ -310,9 +364,57 @@ const lightAnsiTheme = monochromeTheme('ansi:whiteBright', 'ansi:black', {
   line: 'ansi:white',
   lineSoft: 'ansi:white',
   promptBackground: 'ansi:white',
+  accent: 'ansi:magenta',
+  accentSoft: 'ansi:magenta',
+  stepOk: 'ansi:green',
+  stepFail: 'ansi:red',
+  userBand: 'ansi:white',
+  success: 'ansi:green',
+  error: 'ansi:red',
+  diffAddedWord: 'ansi:green',
+  diffRemovedWord: 'ansi:red',
 })
 
+/**
+ * Without truecolor (Apple Terminal, most 256-color terminals) a dark tint
+ * such as the user band's rgb(36,25,49) rounds to a saturated palette entry
+ * (#5f005f, a loud magenta), and a light tint rounds to plain white. Tinted
+ * backgrounds then fall back to the neutral prompt gray and the surface, so
+ * diffs keep only their green and red text. Foreground accents survive the
+ * 256-color palette and stay.
+ */
+const lowColorThemes = new WeakMap<Theme, Theme>()
+/**
+ * Whether row tints (a faint green or red behind a diff line) render as
+ * tints. Without truecolor they quantize to saturated palette colors, so
+ * rows carry their meaning in colored text alone.
+ */
+export function supportsRowTints(): boolean {
+  return chalk.level >= 3
+}
+
+function forTerminalColorDepth(theme: Theme): Theme {
+  if (chalk.level >= 3) return theme
+  let lowColor = lowColorThemes.get(theme)
+  if (lowColor === undefined) {
+    lowColor = {
+      ...theme,
+      userBand: theme.promptBackground,
+      diffAdded: theme.surfaceBackground,
+      diffRemoved: theme.surfaceBackground,
+      diffAddedDimmed: theme.surfaceBackground,
+      diffRemovedDimmed: theme.surfaceBackground,
+    }
+    lowColorThemes.set(theme, lowColor)
+  }
+  return lowColor
+}
+
 export function getTheme(themeName: ThemeName): Theme {
+  return forTerminalColorDepth(getBaseTheme(themeName))
+}
+
+function getBaseTheme(themeName: ThemeName): Theme {
   switch (themeName) {
     case 'light':
     // Monochrome has no red/green pairs, so the color-blind variants share

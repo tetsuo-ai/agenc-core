@@ -180,7 +180,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 describe('live daemon TUI tool output (real createTuiTools render path)', () => {
-  it('Grep: readable args ("pattern" in path), capped "Found N matches", once', async () => {
+  it('Grep: readable args ("pattern" in path), one "└ N matches" result line, once', async () => {
     const c = buildLiveCase({
       id: 'tu_grep',
       toolName: 'Grep',
@@ -210,15 +210,16 @@ describe('live daemon TUI tool output (real createTuiTools render path)', () => 
     expect(row).not.toContain('{"pattern"')
     expect(row).not.toContain('"path":')
 
-    // Capped result preview appears, exactly once.
+    // One result line with the bare count appears, exactly once.
     const combined = `${row}\n${body}`
-    expect(body).toContain('Found 3 matches')
-    expect(countOccurrences(combined, 'Found 3 matches')).toBe(1)
+    expect(body).toContain('└ 3 matches')
+    expect(countOccurrences(combined, '3 matches')).toBe(1)
+    expect(combined).not.toContain('Found')
     // The raw match list must NOT be dumped under the call row.
     expect(combined).not.toContain('IO_NUMBER a')
   })
 
-  it('FileRead: path args, "Read N lines" preview, once (never vanishes)', async () => {
+  it('FileRead: path args, "└ N lines" result line, once (never vanishes)', async () => {
     const fileBody = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join(
       '\n',
     )
@@ -241,14 +242,16 @@ describe('live daemon TUI tool output (real createTuiTools render path)', () => 
 
     expect(row).toContain('PLAN.md')
     const combined = `${row}\n${body}`
-    expect(body).toContain('Read 12 lines')
-    expect(countOccurrences(combined, 'Read 12 lines')).toBe(1)
+    // The step row already says "Read"; the result line is the bare count.
+    expect(body).toContain('└ 12 lines')
+    expect(countOccurrences(combined, '12 lines')).toBe(1)
+    expect(body).not.toContain('Read 12 lines')
     // Result must NOT vanish and the file body must NOT be dumped.
     expect(body.trim().length).toBeGreaterThan(0)
     expect(combined).not.toContain('line 7')
   })
 
-  it('exec_command: command args, capped stdout + "+N lines", once', async () => {
+  it('exec_command: command args, one "└ N lines" receipt, once', async () => {
     const stdout = Array.from({ length: 9 }, (_, i) => `out ${i}`).join('\n')
     const c = buildLiveCase({
       id: 'tu_exec',
@@ -269,12 +272,13 @@ describe('live daemon TUI tool output (real createTuiTools render path)', () => 
     expect(row).toContain('cmake --build build')
 
     const combined = `${row}\n${body}`
-    // A succeeded command is a receipt: one line of stdout, the rest collapsed
-    // behind the count. Failures still show head+tail (next case).
-    expect(body).toContain('out 0')
-    expect(body).not.toContain('out 1')
-    expect(body).toContain('+8 lines')
-    expect(countOccurrences(combined, 'out 0')).toBe(1)
+    // A succeeded command is a receipt: one line that counts the output. The
+    // stdout itself stays in the ctrl+o view. Failures lead with the exit code
+    // and the reason (next case).
+    expect(body).toContain('└ 9 lines')
+    expect(countOccurrences(combined, '9 lines')).toBe(1)
+    expect(combined).not.toContain('out 0')
+    expect(combined).not.toContain('out 8')
   })
 
   it('exec_command: non-zero exit surfaces stderr', async () => {
@@ -297,7 +301,7 @@ describe('live daemon TUI tool output (real createTuiTools render path)', () => 
       resultMessage: c.resultMessage,
       lookups: c.lookups,
     })
-    expect(body).toContain('error: undefined reference')
+    expect(body).toContain('└ exit 2, error: undefined reference')
   })
 
   it('Edit: path args, compact "(+a -r)" diff with green/red, once', async () => {

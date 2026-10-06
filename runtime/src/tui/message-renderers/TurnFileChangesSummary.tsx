@@ -58,7 +58,7 @@ function FileEntry({ change }: { readonly change: TurnFileChange }): React.React
   // '+' = new file (success), '~' = edited file (agenc) — reusing the diff-card
   // CREATE/EDIT distinction in a single-glyph form.
   const marker = isCreate ? "+" : "~";
-  const markerColor = isCreate ? "success" : "agenc";
+  const markerColor = isCreate ? "stepOk" : "accentSoft";
   const showStats = change.additions > 0 || change.removals > 0;
   return (
     <Box flexDirection="row" flexShrink={0} gap={1}>
@@ -94,16 +94,18 @@ export function TurnFileChangesSummary({
 }: {
   readonly changes: readonly TurnFileChange[];
 }): React.ReactNode {
-  if (changes.length === 0) return null;
+  // One changed file is already named on its own "Edited …" step; the
+  // rollup only earns a row when the turn touched several files.
+  if (changes.length < 2) return null;
 
   const shown = changes.slice(0, MAX_FILES_SHOWN);
   const hidden = changes.length - shown.length;
 
   return (
-    <Box flexDirection="row" paddingLeft={1} gap={1}>
-      {/* Same `⎿` continuation gutter the diff cards / tool results use, so the
-          summary reads as a child of the turn's tool activity. */}
-      <ThemedText color="muted3">⎿</ThemedText>
+    <Box flexDirection="row" paddingLeft={2} gap={1}>
+      {/* Same `└` line the tool results use, so the summary reads as a child
+          of the turn's tool activity. */}
+      <ThemedText color="subtle">└</ThemedText>
       <Box flexDirection="row" flexWrap="wrap" flexGrow={1} columnGap={2}>
         <ThemedText color="subtle">files changed</ThemedText>
         {shown.map(change => (

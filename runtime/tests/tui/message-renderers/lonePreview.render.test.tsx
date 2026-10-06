@@ -116,7 +116,7 @@ beforeEach(() => {
 })
 
 describe('lone Read/Grep keeps its per-call preview in NON-verbose live mode (FIX 2)', () => {
-  it('a lone Read survives collapse and renders "Read N lines"', async () => {
+  it('a lone Read survives collapse and renders its "└ N lines" result line', async () => {
     const fileBody = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
     const { use, resultMessage } = buildPair({
       id: 'tu_read',
@@ -145,13 +145,13 @@ describe('lone Read/Grep keeps its per-call preview in NON-verbose live mode (FI
       id: 'tu_read',
       resultMessage,
     })
-    // Per-call result preview — NOT just a count summary.
-    expect(body).toContain('Read 12 lines')
+    // Per-call result line under the Read step (the step row says "Read").
+    expect(body).toContain('└ 12 lines')
     // The file body must not be dumped.
     expect(body).not.toContain('line 7')
   })
 
-  it('a lone Grep survives collapse and renders "Found N matches"', async () => {
+  it('a lone Grep survives collapse and renders its "└ N matches" result line', async () => {
     const { use, resultMessage } = buildPair({
       id: 'tu_grep',
       toolName: 'Grep',
@@ -181,7 +181,7 @@ describe('lone Read/Grep keeps its per-call preview in NON-verbose live mode (FI
       id: 'tu_grep',
       resultMessage,
     })
-    expect(body).toContain('Found 3 matches')
+    expect(body).toContain('└ 3 matches')
     expect(body).not.toContain('IO_NUMBER a')
   })
 })

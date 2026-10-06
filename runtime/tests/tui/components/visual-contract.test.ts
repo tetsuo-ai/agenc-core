@@ -101,8 +101,8 @@ describe("TUI visual contract", () => {
     ).toEqual([]);
   });
 
-  it("pins the highlighted YOU message box to full width like its sibling renderers", () => {
-    // BUG C regression: the YOU prompt highlight Box sets backgroundColor +
+  it("pins the highlighted user message box to full width like its sibling renderers", () => {
+    // BUG C regression: the user prompt highlight Box sets backgroundColor +
     // paddingRight but, UNLIKE SystemTextMessage/AssistantTextMessage, used to
     // omit width="100%". When a body/queued line word-wraps at exactly the
     // content-width boundary, that full-width wrap row rendered one column wider
@@ -116,13 +116,13 @@ describe("TUI visual contract", () => {
       "utf8",
     );
 
-    // The single Box that paints the user-message highlight (it is the only line
-    // carrying both the userMessageBackground token and paddingRight).
+    // The single Box that paints the user-message band (it is the only line
+    // carrying both the userBand token and paddingRight).
     const highlightBoxLine = userSource
       .split("\n")
       .find(
         (line) =>
-          line.includes("userMessageBackground") && line.includes("paddingRight"),
+          line.includes("'userBand'") && line.includes("paddingRight"),
       );
 
     expect(highlightBoxLine).toBeDefined();
