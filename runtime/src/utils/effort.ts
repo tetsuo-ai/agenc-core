@@ -553,8 +553,10 @@ function getDefaultEffortForModelForOptionalContext(
       provider: registeredProvider,
       model,
     }).defaultLevel
-    if (coreDefault !== undefined && isAvailableEffortLevel(coreDefault)) {
-      return coreDefault
+    if (coreDefault !== undefined) {
+      // A native "none" has no UI tier: effort is off by default. Never fall
+      // through to a guessed level the daemon would reject for this model.
+      return isAvailableEffortLevel(coreDefault) ? coreDefault : undefined
     }
   }
   const registeredEntry =
@@ -624,4 +626,28 @@ export function getDefaultEffortForModelForContext(
   context: ProviderAuthReadContext,
 ): EffortValue | undefined {
   return getDefaultEffortForModelForOptionalContext(model, context)
+}
+
+/**
+ * The effort the provider applies to this model when a session sets none,
+ * in Core's own vocabulary, so a native "none" stays "none". This is the
+ * value to send when a session goes back to the model default. Undefined
+ * when Core registers no default for the model.
+ */
+export function getNativeDefaultReasoningEffortForContext(
+  model: string,
+  context?: ProviderAuthReadContext,
+): string | undefined {
+  const provider = inferCatalogProvider(model, context)
+  if (provider === undefined) return undefined
+  return resolveReasoningEffort({ provider, model }).defaultLevel
+}
+
+/** How a native effort reads in the TUI: "none" means effort is off. */
+export function nativeEffortLabel(value: string): string {
+  return value === 'none'
+    ? 'off'
+    : isAvailableEffortLevel(value)
+      ? convertEffortValueToLevel(value)
+      : value
 }

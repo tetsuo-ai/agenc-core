@@ -240,3 +240,57 @@ describe("/effort picker and live session", () => {
     if (result.kind === "error") expect(result.message).toContain("read-only settings");
   });
 });
+
+describe("/effort default with a native none default", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("sends the native none to the running session and says effort is off", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "default", {
+      provider: "mistral",
+    });
+    const applyDaemonConfig = vi.fn(async () => ({ sessionId: "s1", applied: true, summary: "ok" }));
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    // Never a guessed tier: the daemon only accepts none or high here.
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: "none" });
+    expect(settings.update).toHaveBeenCalledWith("userSettings", { reasoning_effort: undefined });
+    expect(getAppState().effortValue).toBeUndefined();
+    expect(result).toEqual({
+      kind: "text",
+      text: "Effort follows the mistral-medium-latest default (off).",
+    });
+  });
+
+  test("a busy session that refuses the reset is reported, not claimed", async () => {
+    const { context } = commandContext("mistral-medium-latest", "default", { provider: "mistral" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => {
+      throw new Error("Reasoning effort and response detail can only change between turns");
+    });
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toEqual({
+      kind: "error",
+      message:
+        "Saved for new sessions. This session did not take it: Reasoning effort and response detail can only change between turns",
+    });
+  });
+
+  test("a session that answers not applied is reported too", async () => {
+    const { context } = commandContext("mistral-medium-latest", "high", { provider: "mistral" });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => ({
+      sessionId: "s1",
+      applied: false,
+      summary: "a turn is running",
+    }));
+
+    const result = await effortCommand.execute(context);
+
+    expect(result).toEqual({
+      kind: "error",
+      message: "Saved for new sessions. This session did not take it: a turn is running",
+    });
+  });
+});

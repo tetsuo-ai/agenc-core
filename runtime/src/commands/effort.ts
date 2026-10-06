@@ -14,7 +14,9 @@ import {
   getDefaultEffortForModelForContext,
   getDisplayedEffortLevelForContext,
   getEffortLevelLabel,
+  getNativeDefaultReasoningEffortForContext,
   isAvailableEffortLevel,
+  nativeEffortLabel,
   modelSupportsEffortForContext,
   effortValueToReasoningEffort,
   reasoningEffortToEffortLevel,
@@ -46,6 +48,24 @@ function currentEffortValue(ctx: SlashCommandContext): unknown {
 type ProviderAuthContext = Parameters<typeof getAvailableEffortLevelsForContext>[1];
 
 /**
+ * The effort a session at the model default runs at, as the daemon names
+ * it: Core's native default ("none" included), else the TUI's own default
+ * for models Core does not register. Undefined when neither knows one.
+ */
+function modelDefaultEffort(
+  model: string,
+  providerAuthContext: ProviderAuthContext,
+  available: readonly AvailableEffortLevel[],
+): string | undefined {
+  const native = getNativeDefaultReasoningEffortForContext(model, providerAuthContext);
+  if (native !== undefined) return native;
+  const fallback = getDefaultEffortForModelForContext(model, providerAuthContext);
+  return typeof fallback === "string"
+    ? effortValueToReasoningEffort(fallback, available)
+    : undefined;
+}
+
+/**
  * Save the choice as the default for new sessions, mirror it in app state,
  * and apply it to the running daemon session so the next turn already runs
  * at the chosen level.
@@ -72,15 +92,24 @@ async function applyEffortChoice(
   }));
   // Apply only the effort to the live session. A full config reload would
   // also re-read model and provider and undo a session-only /model switch.
-  // "default" sends the level the model uses when none is set.
-  const liveLevel = choice === "default"
-    ? getDefaultEffortForModelForContext(model, providerAuthContext)
-    : choice;
+  // The daemon cannot clear a session's effort, so "default" sends the level
+  // the model runs at when none is set, in the daemon's own vocabulary.
+  const defaultEffort = modelDefaultEffort(model, providerAuthContext, available);
+  const liveEffort = choice === "default"
+    ? defaultEffort
+    : effortValueToReasoningEffort(choice, available);
   const applyDaemonConfig = asRecord(ctx.session)?.applyDaemonConfig;
-  if (typeof applyDaemonConfig === "function" && typeof liveLevel === "string") {
+  if (typeof applyDaemonConfig === "function" && liveEffort === undefined) {
+    // Nothing to send: do not claim the running session follows a default.
+    return {
+      ok: true,
+      message: `Saved: new sessions use the ${model} default. This session keeps its current effort.`,
+    };
+  }
+  if (typeof applyDaemonConfig === "function" && liveEffort !== undefined) {
     try {
       const result = (await applyDaemonConfig.call(ctx.session, {
-        reasoningEffort: effortValueToReasoningEffort(liveLevel as AvailableEffortLevel, available),
+        reasoningEffort: liveEffort,
       })) as {
         readonly sessionId?: string;
         readonly applied?: boolean;
@@ -102,10 +131,9 @@ async function applyEffortChoice(
     }
   }
   if (choice === "default") {
-    const fallback = getDefaultEffortForModelForContext(model, providerAuthContext);
     return {
       ok: true,
-      message: `Effort follows the ${model} default${fallback !== undefined ? ` (${convertEffortValueToLevel(fallback)})` : ""}.`,
+      message: `Effort follows the ${model} default${defaultEffort !== undefined ? ` (${nativeEffortLabel(defaultEffort)})` : ""}.`,
     };
   }
   return {
@@ -126,13 +154,13 @@ function effortMenuSnapshot(
     typeof explicit === "string" && (levels as readonly string[]).includes(explicit)
       ? explicit
       : "default";
-  const modelDefault = getDefaultEffortForModelForContext(model, providerAuthContext);
+  const modelDefault = modelDefaultEffort(model, providerAuthContext, levels);
   const rows: EffortMenuRow[] = [
     {
       choice: "default",
       label: "Default",
       detail: modelDefault !== undefined
-        ? `follows the model (${convertEffortValueToLevel(modelDefault)})`
+        ? `follows the model (${nativeEffortLabel(modelDefault)})`
         : "follows the model",
       current: current === "default",
     },

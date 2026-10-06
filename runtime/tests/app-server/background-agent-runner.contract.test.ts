@@ -6519,6 +6519,39 @@ describe("AgenC delegate background-agent runner", () => {
     await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "high" })).rejects.toThrow("between turns");
   });
 
+  it("resets a live session to a native none default, which the next request uses, and refuses a guessed tier", async () => {
+    const agentId = "native-none-effort-reset";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "mistral";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "mistral-medium-latest";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reasoningEffort: "high" }))
+      .resolves.toMatchObject({ applied: true });
+    expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe("high");
+
+    // /effort default sends the model's native default, as the TUI now does.
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reasoningEffort: "none" }))
+      .resolves.toMatchObject({ applied: true });
+    // The next request reads its effort from here.
+    expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe("none");
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.reasoningEffort).toBe("none");
+
+    // The guess the TUI used to send is not a level of this model.
+    const before = recordedRuntimeSettingsEvents(h.rolloutItems);
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reasoningEffort: "medium" }))
+      .rejects.toThrow("does not support this reasoning effort");
+    expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe("none");
+
+    // A busy session refuses the change and keeps its effort.
+    Object.assign(h.session, { activeTurn: h.activeTurn });
+    h.setActiveTurn("running-turn");
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", reasoningEffort: "high" }))
+      .rejects.toThrow("between turns");
+    expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe("none");
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+  });
+
   it("restores the configured verbosity when a session override is cleared", async () => {
     const agentId = "response-detail-inherits-config";
     const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
