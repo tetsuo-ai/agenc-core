@@ -3422,7 +3422,6 @@ function PromptInput({
         justifyContent="center"
         width="100%"
         paddingX={1}
-        backgroundColor="surfaceBackground"
         opaque
       >
         <Text dimColor italic>
@@ -3435,10 +3434,11 @@ function PromptInput({
     <ConfiguredPromptTextInput baseProps={baseProps} />
   );
   return (
+    // Opaque without a color of its own: the area clears to the screen's
+    // background, so the gray band never sits inside a darker frame.
     <Box
       flexDirection="column"
       marginTop={briefOwnsGap ? 0 : 1}
-      backgroundColor="surfaceBackground"
       opaque
     >
       {!isFullscreen && (
@@ -3491,8 +3491,8 @@ function PromptInput({
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          marginX={1}
-          paddingX={2}
+          marginX={2}
+          paddingX={1}
           paddingY={1}
           backgroundColor="promptBackground"
           opaque
@@ -3595,7 +3595,6 @@ function PromptInput({
           flexDirection="column"
           justifyContent="flex-end"
           overflow="hidden"
-          backgroundColor="surfaceBackground"
           opaque
         >
           <Notifications

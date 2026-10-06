@@ -15,6 +15,7 @@ import type {
   RuntimeTranscriptMessage,
 } from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
+import { clampMarkerLine, looksLikeRawToolError, summarizeToolError } from "./tool-error-text.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 import {
@@ -587,7 +588,9 @@ export function makeSystemMessage(
   return {
     type: "system",
     subtype: "informational",
-    content,
+    // A tool error that surfaces as a transcript line reads as its reason,
+    // never as protocol tags and exec trailers.
+    content: looksLikeRawToolError(content) ? summarizeToolError(content) : content,
     isMeta: false,
     timestamp: timestamp(),
     uuid,
@@ -1727,18 +1730,39 @@ export function formatStructuredToolResult(
 const GENERIC_RESULT_MAX_CHARS = 200;
 const GENERIC_RESULT_HEAD_LINES = 1;
 
+// The `[exec exit_code=…]` trailer a shell result ends with.
+const EXEC_TRAILER_AT_END_RE = /\n*(\[exec exit_code=-?\d+[^\]]*\])\s*$/u;
+
 export function clampGenericToolResult(text: string): string {
   if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
+  // A shell result keeps its exit trailer and its last output line. The
+  // trailer routes it to the shell view, and the last line is where a failing
+  // command says why ("zsh:1: === not found"); cutting both left a failed row
+  // with only the output's first line.
+  const trailer = EXEC_TRAILER_AT_END_RE.exec(text);
+  if (trailer !== null) {
+    const body = text.slice(0, trailer.index).replace(/\s+$/u, "");
+    return `${clampResultBody(body, true)}\n\n${trailer[1]}`;
+  }
+  return clampResultBody(text, false);
+}
+
+function clampResultBody(text: string, keepLastLine: boolean): string {
   const lines = text.split("\n");
   if (lines.length <= GENERIC_RESULT_HEAD_LINES) {
-    return `${text.slice(0, GENERIC_RESULT_MAX_CHARS)}\n… +${
-      text.length - GENERIC_RESULT_MAX_CHARS
-    } more characters (ctrl+o for the full result)`;
+    if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
+    return `${text.slice(0, GENERIC_RESULT_MAX_CHARS)}\n${clampMarkerLine(
+      text.length - GENERIC_RESULT_MAX_CHARS,
+      "characters",
+    )}`;
   }
   const head = lines.slice(0, GENERIC_RESULT_HEAD_LINES).join("\n");
-  return `${head}\n… +${
-    lines.length - GENERIC_RESULT_HEAD_LINES
-  } more lines (ctrl+o for the full result)`;
+  const tail = keepLastLine ? lines.at(-1) ?? "" : "";
+  if (keepLastLine && lines.length <= GENERIC_RESULT_HEAD_LINES + 1) return text;
+  const hidden = lines.length - GENERIC_RESULT_HEAD_LINES - (keepLastLine ? 1 : 0);
+  return keepLastLine
+    ? `${head}\n${clampMarkerLine(hidden, "lines")}\n${tail}`
+    : `${head}\n${clampMarkerLine(hidden, "lines")}`;
 }
 
 /**
@@ -1787,6 +1811,40 @@ function stopThinkingBlock(
   return { ...current, isStreaming: false, streamingEndedAt: Date.now() };
 }
 
+/**
+ * The same notice several times in a row (a retried tool failing the same
+ * way) reads as one line with a count: "… was provided (×5)". The first row
+ * keeps its key so the line does not jump while the count grows.
+ */
+function collapseRepeatedSystemLines(messages: any[]): any[] {
+  const collapsed: any[] = [];
+  let repeatedContent: string | null = null;
+  let count = 0;
+  for (const message of messages) {
+    const isNotice =
+      message?.type === "system" &&
+      message.subtype === "informational" &&
+      typeof message.content === "string";
+    const previous = collapsed[collapsed.length - 1];
+    if (
+      isNotice &&
+      repeatedContent === message.content &&
+      previous?.level === message.level
+    ) {
+      count += 1;
+      collapsed[collapsed.length - 1] = {
+        ...previous,
+        content: `${repeatedContent} (×${count})`,
+      };
+      continue;
+    }
+    collapsed.push(message);
+    repeatedContent = isNotice ? message.content : null;
+    count = 1;
+  }
+  return collapsed;
+}
+
 export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
@@ -1819,6 +1877,9 @@ export function adaptTranscriptEvents(
   let lastThinkingText = "";
   let currentTurnId: string | null = null;
   let currentTurnTimestamp: string | undefined;
+  // Model calls dispatched since the current turn started, for the quiet
+  // "done in 5.5s · 3 model calls" line under each finished turn.
+  let currentTurnModelCalls = 0;
   let currentTurnAssistantMessageIndexes: number[] = [];
   let lastAssistantText = "";
   let lastAssistantTextForActiveTurn = "";
@@ -1971,6 +2032,7 @@ export function adaptTranscriptEvents(
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
         currentTurnAssistantMessageIndexes = [];
+        currentTurnModelCalls = 0;
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -2034,6 +2096,18 @@ export function adaptTranscriptEvents(
             }
           }
         }
+        if (typeof payload.durationMs === "number" && payload.durationMs >= 0) {
+          out.push({
+            type: "system",
+            subtype: "turn_duration",
+            durationMs: payload.durationMs,
+            ...(currentTurnModelCalls > 0 ? { modelCalls: currentTurnModelCalls } : {}),
+            timestamp: completionTimestamp,
+            uuid: nextUuid(),
+            isMeta: false,
+          });
+        }
+        currentTurnModelCalls = 0;
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         streamingText = "";
@@ -2093,6 +2167,9 @@ export function adaptTranscriptEvents(
           : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
       case "execution_admission":
+        if (payload.event === "dispatched" && payload.kind === "model_turn") {
+          currentTurnModelCalls += 1;
+        }
         // A denied model turn is the ONLY admission outcome a person must see:
         // the turn then "completes" in a few hundred ms with an empty
         // lastAgentMessage, and without this line the chat shows nothing at
@@ -2917,7 +2994,7 @@ export function adaptTranscriptEvents(
   }
 
   return {
-    messages: out,
+    messages: collapseRepeatedSystemLines(out),
     streamingText:
       streamingText.length > 0
         ? streamingText

@@ -180,7 +180,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 describe('LIVE raw daemon tool results (no envelope) — capped industry-standard views', () => {
-  it('exec_command: strips [exec ...] trailer, caps stdout to first lines + "+N lines"', async () => {
+  it('exec_command: strips [exec ...] trailer, summarizes stdout as one "└ N lines" receipt', async () => {
     // RAW shape: stdout, then blank lines, then the exec trailer line.
     const stdout = Array.from({ length: 9 }, (_, i) => `out ${i}`).join('\n')
     const raw = `${stdout}\n\n\n[exec exit_code=0 wall_time=0.0300s tokens=69]`
@@ -199,20 +199,20 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // A succeeded command is a receipt: one line of stdout, the rest collapsed
-    // behind the count. (Failures keep head+tail so the verdict survives — see
-    // the non-zero-exit case below.)
-    expect(body).toContain('out 0')
-    expect(body).not.toContain('out 1')
-    expect(body).toContain('+8 lines')
+    // A succeeded command is a receipt: one line that counts the output; the
+    // stdout itself stays in the ctrl+o view. (Failures lead with the exit
+    // code and the reason instead; see the non-zero-exit case below.)
+    expect(body).toContain('└ 9 lines')
+    expect(combined).not.toContain('out 0')
+    expect(combined).not.toContain('out 8')
     // The [exec ...] trailer line must be stripped from the visible output.
     expect(combined).not.toContain('[exec exit_code')
     expect(combined).not.toContain('wall_time')
     expect(combined).not.toContain('tokens=69')
-    expect(countOccurrences(combined, 'out 0')).toBe(1)
+    expect(countOccurrences(combined, '9 lines')).toBe(1)
   })
 
-  it('exec_command: non-zero exit shows a compact "(exit N)" indicator, no trailer', async () => {
+  it('exec_command: non-zero exit shows a compact "exit N, reason" line, no trailer', async () => {
     const raw = `boom\n\n\n[exec exit_code=2 wall_time=0.0860s tokens=526]`
     const c = buildRawCase({
       id: 'tu_exec_fail',
@@ -226,12 +226,12 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
       resultMessage: c.resultMessage,
       lookups: c.lookups,
     })
-    expect(body).toContain('boom')
-    expect(body).toContain('(exit 2)')
+    expect(body).toContain('└ exit 2, boom')
+    expect(body).not.toContain('(exit 2)')
     expect(body).not.toContain('[exec exit_code')
   })
 
-  it('FileRead: line-numbered raw content renders "Read N lines", not the body', async () => {
+  it('FileRead: line-numbered raw content renders "└ N lines", not the body', async () => {
     // RAW shape: file body with line-number prefixes "  N→...".
     const raw = Array.from(
       { length: 12 },
@@ -253,13 +253,15 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     const combined = `${row}\n${body}`
 
     expect(row).toContain('ast.h')
-    expect(body).toContain('Read 12 lines')
-    expect(countOccurrences(combined, 'Read 12 lines')).toBe(1)
+    // The step row already says "Read"; the result line is the bare count.
+    expect(body).toContain('└ 12 lines')
+    expect(countOccurrences(combined, '12 lines')).toBe(1)
+    expect(body).not.toContain('Read 12 lines')
     // The raw body must NOT be dumped.
     expect(combined).not.toContain('content line 7')
   })
 
-  it('Grep: files-with-matches "Found 1 file" renders a tidy file count', async () => {
+  it('Grep: files-with-matches "Found 1 file" renders a tidy "└ 1 file" count', async () => {
     const raw = 'Found 1 file\nsrc/syntax/lexer.c'
     const c = buildRawCase({
       id: 'tu_grep_file',
@@ -278,8 +280,9 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
 
     // Readable args, not raw JSON.
     expect(row).toContain('"IO_NUMBER" in src/syntax/lexer.c')
-    expect(body).toContain('Found 1 file')
-    expect(countOccurrences(combined, 'Found 1 file')).toBe(1)
+    expect(body).toContain('└ 1 file')
+    expect(countOccurrences(combined, '1 file')).toBe(1)
+    expect(combined).not.toContain('Found')
     // The matched path must NOT be dumped under the call row.
     expect(body).not.toContain('src/syntax/lexer.c')
   })
@@ -299,7 +302,8 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
       resultMessage: c.resultMessage,
       lookups: c.lookups,
     })
-    expect(body).toContain('Found 5 matches in 3 files')
+    expect(body).toContain('└ 5 matches in 3 files')
+    expect(body).not.toContain('Found')
     // The raw per-file counts must NOT be dumped.
     expect(body).not.toContain('src/app/cli.c:2')
   })
@@ -328,10 +332,10 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // The diff stats + diff chrome render on the CALL ROW. An Edit to an
-    // existing file is labelled EDIT (distinct from a first-write CREATE).
-    expect(row).toContain('EDIT')
-    expect(row).toContain('+3 -2')
+    // The diff stats + changed lines render on the CALL ROW. An Edit to an
+    // existing file reads "Edited" (distinct from a first write's "Wrote").
+    expect(row).toContain('● Edited src/syntax/alias.c')
+    expect(row).toContain('└ +3 -2')
     // The removed and added lines are present in the diff.
     expect(row).toContain('M0 stubs')
     expect(row).toContain('PLAN §8.1')
@@ -363,9 +367,9 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // A MultiEdit changes an existing file → EDIT (not a first-write CREATE).
-    expect(row).toContain('EDIT')
-    expect(row).toContain('+2 -2')
+    // A MultiEdit changes an existing file → "Edited" (not a first write's "Wrote").
+    expect(row).toContain('● Edited src/syntax/alias.c')
+    expect(row).toContain('└ +2 -2')
     expect(row).toContain('aliasmap_alloc')
     expect(combined).not.toContain('updated successfully')
   })
@@ -389,11 +393,12 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const combined = `${row}\n${body}`
 
-    // A first Write of a new file is labelled CREATE (distinct from an EDIT to
-    // an existing file), so the user can tell "made a new file" apart.
-    expect(row).toContain('CREATE')
+    // A first Write of a new file reads "Wrote" (distinct from "Edited" for an
+    // existing file), so the user can tell "made a new file" apart.
+    expect(row).toContain('● Wrote src/new.c')
+    expect(row).not.toContain('Edited')
     // Whole-file add: 3 additions, 0 removals.
-    expect(row).toContain('+3 -0')
+    expect(row).toContain('└ +3 -0')
     expect(row).toContain('int main')
     expect(combined).not.toContain('written successfully')
   })
@@ -412,8 +417,12 @@ describe('LIVE raw daemon tool results (no envelope) — capped industry-standar
     })
     const row = await renderCallRow(c.param, c.lookups)
     // Failed row surfaces the friendly reason, and no diff chrome at all —
-    // neither the old 'DIFF' label nor the new operation labels render.
+    // neither the old 'DIFF'/'EDIT'/'CREATE' labels nor the "+a -b" stats
+    // render, and the verb stays present tense (nothing was edited).
     expect(row).toContain('File must be read first')
+    expect(row).toContain('● Edit src/syntax/alias.c')
+    expect(row).not.toContain('Edited')
+    expect(row).not.toContain('+1 -1')
     expect(row).not.toContain('DIFF')
     expect(row).not.toContain('EDIT')
     expect(row).not.toContain('CREATE')

@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe("SpinnerAnimationRow coverage swarm row 189", () => {
-  test("uses paused elapsed time and renders the responding token glyph", async () => {
+  test("uses paused elapsed time and renders the token count without an arrow glyph", async () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
@@ -67,7 +67,8 @@ describe("SpinnerAnimationRow coverage swarm row 189", () => {
     expect(output).toContain("Working");
     expect(output).toContain("40s");
     expect(output).toContain("200 tokens");
-    expect(output.match(/↓/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // The byline is plain text: no ↓/↑ before the verb or the token count.
+    expect(output).not.toMatch(/[↓↑]/u);
   });
 
   test("shows aggregate teammate tokens without adding a token glyph", async () => {
@@ -82,7 +83,7 @@ describe("SpinnerAnimationRow coverage swarm row 189", () => {
 
     expect(output).toContain("10s");
     expect(output).toContain("3.5k tokens");
-    expect(output.match(/↓/g)?.length ?? 0).toBe(1);
+    expect(output).not.toMatch(/[↓↑]/u);
   });
 
   test("covers tool-input status while suppressing zero token metadata", async () => {
@@ -94,7 +95,10 @@ describe("SpinnerAnimationRow coverage swarm row 189", () => {
       verbose: true,
     });
 
-    expect(withTokens).toContain("⣟⣹");
+    // Tool input shows no activity glyph (no Braille matrix): the row is the
+    // inset verb, two spaces, then the byline.
+    expect(withTokens).not.toMatch(/[\u2800-\u28FF]/u);
+    expect(withTokens).toMatch(/^ {2}Working {2}31s/mu);
     expect(withTokens).toContain("300 tokens");
 
     const withoutTokens = await renderRow({

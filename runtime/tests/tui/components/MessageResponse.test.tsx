@@ -27,7 +27,7 @@ describe('MessageResponse', () => {
     )
 
     expect(output).toContain('|_ result')
-    expect(output).not.toContain('⎿')
+    expect(output).not.toContain('└')
   })
 
   it('uses the unicode response gutter by default', async () => {
@@ -40,6 +40,8 @@ describe('MessageResponse', () => {
       40,
     )
 
-    expect(output).toContain('⎿ result')
+    expect(output).toContain('└ result')
+    // The retired corner glyph stays gone.
+    expect(output).not.toContain('⎿')
   })
 })

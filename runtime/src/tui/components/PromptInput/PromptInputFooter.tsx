@@ -145,7 +145,7 @@ function PromptInputFooter({
     // PromptSuggestionsOverlay. Do not also render the ordinary footer below
     // the composer: it duplicated "? for shortcuts" while the popup was open.
     if (isFullscreen) return null;
-    return <Box paddingX={2} paddingY={0} backgroundColor="surfaceBackground" opaque>
+    return <Box paddingX={2} paddingY={0} opaque>
         <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} suggestionType={suggestionType} />
       </Box>;
   }
@@ -153,7 +153,7 @@ function PromptInputFooter({
     return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} runtimeState={runtimeState} />;
   }
   return <>
-      <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>
+      <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} opaque>
         <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
           {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} providerContext={remoteAuthSessionContext} />}
           <PromptInputFooterLeftSide exitMessage={exitMessage} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
