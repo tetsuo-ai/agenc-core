@@ -934,12 +934,9 @@ describe("classifyShellWorkspaceWritePolicy for find", () => {
     ["find src -name '*.pyc' -delete", "rm -r src"],
     ["find build -name '*.o' -delete", "rm -r build"],
     ["find src tmp -type f -mtime +30 -delete", "rm -r src tmp"],
-    ["find . -name '*.pyc' -delete", "rm -r ."],
-    ["find -name '*.pyc' -delete", "rm -r ."],
     ["find .git -name '*.lock' -delete", "rm -r .git"],
     ["find /tmp/agenc-find -delete", "rm -r /tmp/agenc-find"],
     ["find /etc/nginx -name '*.bak' -delete", "rm -r /etc/nginx"],
-    ["find / -name core -delete", "rm -r /"],
     ["find -P -s -x src -delete", "rm -r src"],
     ["find -sx -f src -- -name x -delete", "rm -r src"],
     ["find -D tree -O3 src -delete", "rm -r src"],
@@ -1013,8 +1010,6 @@ describe("classifyShellWorkspaceWritePolicy for find", () => {
     ["find .git -execdir rm {} \\;", ["/repo/.git"]],
     ["find .git -okdir rm {} \\;", ["/repo/.git"]],
     ["find .git -exec mv {} /tmp/agenc-moved \\;", ["/repo/.git"]],
-    // The workspace root holds .git.
-    ["find . -type d -name __pycache__ -exec rm -rf {} +", ["/repo"]],
     ['find "$DIR" -exec rm -rf .git {} +', ["/repo/.git"]],
   ])("refuses a protected removal through {} under the full bypass: %s", (command, refused) => {
     const decision = classifyIn(command, BYPASSES);
@@ -1022,6 +1017,63 @@ describe("classifyShellWorkspaceWritePolicy for find", () => {
     expect(decision.indeterminate).toBe(true);
     expect(decision.blockedDeletions).toEqual(refused);
     expect(decision.message).toContain("may not delete or move protected paths");
+  });
+
+  /** The refusal that points find at narrower starting points. */
+  const NAME_SUBDIRECTORIES = "name the subdirectories to search instead";
+
+  it.each([
+    ["find . -name '*.pyc' -delete", "/repo"],
+    ["find -name '*.pyc' -delete", "/repo"],
+    ["find . -maxdepth 1 -name '*.log' -delete", "/repo"],
+    ["find . -path ./.git -prune -o -name '*.pyc' -delete", "/repo"],
+    ["find . -type d -name __pycache__ -exec rm -rf {} +", "/repo"],
+    ["find . -name '*.log' -execdir rm {} \\;", "/repo"],
+    ["find / -name core -delete", "/"],
+  ])("tells %s to search narrower starting points instead of removing the one it names", (command, refused) => {
+    for (const mode of MODES) {
+      const decision = classifyIn(command, mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(true);
+      expect(decision.blockedDeletions, JSON.stringify(mode)).toEqual([refused]);
+      expect(decision.message, JSON.stringify(mode)).toContain("shell_workspace_file_delete_disallowed");
+      expect(decision.message, JSON.stringify(mode)).toContain(NAME_SUBDIRECTORIES);
+      expect(decision.message, JSON.stringify(mode)).toContain("find src tests -name '*.pyc' -delete");
+      expect(decision.message, JSON.stringify(mode)).not.toContain("ask the user to remove");
+    }
+  });
+
+  it("does not offer a narrower search for a starting point that is protected itself", () => {
+    const decision = classifyIn("find .git -name '*.lock' -delete", BYPASSES);
+    expect(decision.message).toContain("may not delete or move protected paths");
+    expect(decision.message).not.toContain(NAME_SUBDIRECTORIES);
+  });
+
+  it("tells find to search under the system temp directory rather than remove it", () => {
+    const decision = classifyIn("find /tmp -name 'x*' -delete", ACCEPTS_EDITS);
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedDeletions).toEqual(["/tmp"]);
+    expect(decision.message).toContain(NAME_SUBDIRECTORIES);
+    expect(decision.message).not.toContain("ask the user to remove");
+    expect(classifyIn("find /tmp/agenc-find -name 'x*' -delete", ACCEPTS_EDITS).blocked).toBe(false);
+  });
+
+  it("keeps the generic refusal for a removal find names outright", () => {
+    const decision = classifyIn("find . -name x -exec rm -rf . \\;", BYPASSES);
+    expect(decision.blockedDeletions).toEqual(["/repo"]);
+    expect(decision.message).toContain("may not delete or move protected paths");
+    expect(decision.message).not.toContain(NAME_SUBDIRECTORIES);
+  });
+
+  it("allows the narrower search the refusal names", () => {
+    for (const mode of [ACCEPTS_EDITS, BYPASSES]) {
+      const decision = classifyIn("find src tests -name '*.pyc' -delete", mode);
+      expect(decision.blocked, JSON.stringify(mode)).toBe(false);
+      expect(decision.indeterminate, JSON.stringify(mode)).toBe(false);
+      expect(decision.deletionTargets, JSON.stringify(mode)).toEqual(["/repo/src", "/repo/tests"]);
+    }
+    expect(classifyIn("find src tests -name '*.pyc' -delete", ASKS).message).toContain(
+      "needs the user's approval",
+    );
   });
 
   it("judges the starting point a command writes through {} and leaves the files under it unknown", () => {

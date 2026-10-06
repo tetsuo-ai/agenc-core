@@ -207,11 +207,16 @@ interface ShellWriteTargetCollection {
    */
   unresolvedProtectedFirst: string[];
   deletions: string[];
+  /**
+   * Removals that are a find starting point: find removes what it finds
+   * under it, which a narrower starting point reaches as well.
+   */
+  findStartingPoints: string[];
   moves: ShellMove[];
   indeterminate: boolean;
 }
 
-type DeletionBlockReason = "needs_approval" | "outside" | "protected";
+type DeletionBlockReason = "needs_approval" | "outside" | "protected" | "find_starting_point";
 
 function resolveWorkingDirectory(
   workspaceRoot: string,
@@ -227,7 +232,15 @@ function resolveWorkingDirectory(
 }
 
 function emptyTargetCollection(): ShellWriteTargetCollection {
-  return { targets: [], protectedFirstTargets: [], unresolvedProtectedFirst: [], deletions: [], moves: [], indeterminate: false };
+  return {
+    targets: [],
+    protectedFirstTargets: [],
+    unresolvedProtectedFirst: [],
+    deletions: [],
+    findStartingPoints: [],
+    moves: [],
+    indeterminate: false,
+  };
 }
 
 function indeterminateTargetCollection(): ShellWriteTargetCollection {
@@ -246,6 +259,7 @@ function mergeTargetCollections(
   for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
   for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
+  for (const target of from.findStartingPoints) pushUnique(into.findStartingPoints, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
 }
@@ -1472,6 +1486,7 @@ function collectFindCommandWriteTargets(params: {
   const collection = emptyTargetCollection();
   const read = (found: FindWord, directory: string): void => {
     const { values, expands } = substituteFoundFile(command.words, found);
+    if (usesFound && !found.expands) pushUnique(collection.findStartingPoints, resolvePath(directory, found.value));
     mergeTargetCollections(collection, collectCommandWordWriteTargets(
       { args: values, argsRequiringExpansion: expands, cwd: directory, environment },
       0,
@@ -1543,7 +1558,10 @@ function collectFindReadingWriteTargets(
       // To find, a starting point named `-` is a file, not stdin.
       const removed = normalizeConcreteTargetPath(point.value === "-" ? "./-" : point.value, cwd);
       collection.indeterminate ||= removed.indeterminate;
-      for (const target of removed.targets) pushUnique(collection.deletions, target);
+      for (const target of removed.targets) {
+        pushUnique(collection.deletions, target);
+        pushUnique(collection.findStartingPoints, target);
+      }
     }
   }
   const found = unseen
@@ -2354,6 +2372,24 @@ function classifyDeletionTarget(
     : { kind: "blocked", reason: "needs_approval" };
 }
 
+/**
+ * Whether a removal was refused only for what it holds: the workspace root,
+ * `/` or the home, or the system temp directory itself. As a find starting
+ * point it stands for the files find removes under it, which a narrower
+ * starting point can reach.
+ */
+function isRefusedAsSearchRoot(
+  target: string,
+  reason: DeletionBlockReason,
+  workspaceRoot: string,
+): boolean {
+  if (reason === "outside") return shellTempRoots().includes(target);
+  return (
+    reason === "protected" &&
+    (workspaceRelation(target, workspaceRoot) !== "outside" || isDangerousRemovalRoot(target))
+  );
+}
+
 /** The editing tools a refusal names, and the tool that loads them if they are not listed. */
 interface NamedFileWriteTools {
   readonly names: readonly string[];
@@ -2459,6 +2495,16 @@ function buildDeletionPolicyMessage(
         "move protected paths (the workspace root, .git, .agenc, .agents, the " +
         "AgenC home, shell and git config files); ask the user to remove them " +
         "themselves.",
+    );
+  }
+  if (reasons.has("find_starting_point")) {
+    parts.push(
+      "shell_workspace_file_delete_disallowed: find's -delete, and an -exec, " +
+        "-execdir, -ok or -okdir command that removes or moves {}, are read as " +
+        "removing each starting point, and a starting point that is or holds the " +
+        "workspace root, /, the home or the system temp directory may not be " +
+        "removed; name the subdirectories to search instead, for example " +
+        "`find src tests -name '*.pyc' -delete`.",
     );
   }
   return `${parts.join(" ")} Blocked target(s): ${blockedDeletions.join(", ")}`;
@@ -2631,7 +2677,12 @@ export function classifyShellWorkspaceWritePolicy(
         continue;
       }
       blockedDeletions.push(target);
-      deletionReasons.add(verdict.reason);
+      deletionReasons.add(
+        collected.findStartingPoints.includes(target) &&
+          isRefusedAsSearchRoot(target, verdict.reason, workspaceRoot)
+          ? "find_starting_point"
+          : verdict.reason,
+      );
     }
   }
 
