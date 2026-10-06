@@ -136,6 +136,11 @@ embedding application's intended path explicitly, for example
 `envOverrides: { PATH: process.env.PATH ?? "" }`. Do not forward the entire
 environment just to populate `PATH`.
 
+After a daemon restart, a session whose `envOverrides` carried a credential
+for its model provider comes back without a live runtime, because the daemon
+never stores credential values. Resume it with `envOverrides` again. Other
+values, such as a base URL, are restored from the run's record.
+
 The public CLI supplies its captured command environment automatically. On
 Linux, a restrictive sandbox may need a trusted system directory containing
 `bubblewrap` in the session's `PATH`. If that environment cannot enforce the

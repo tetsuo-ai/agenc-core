@@ -135,6 +135,19 @@ function resolveProviderInfo(
   return resolveBuiltInProviderInfo(provider);
 }
 
+/** Variables the selected provider itself reads: its credential fields and base-URL override. */
+export function providerEnvironmentKeys(provider: string | undefined): readonly string[] {
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info === undefined) return [];
+  const keys = [...info.baseURLEnvVars];
+  const credentials = info.credentials;
+  if (credentials.kind === "api-key") keys.push(...credentials.apiKey.envVars);
+  else if (credentials.kind === "aws-sigv4") {
+    keys.push(...credentials.accessKeyId.envVars, ...credentials.secretAccessKey.envVars, ...credentials.sessionToken.envVars, ...credentials.regionEnvVars);
+  }
+  return keys;
+}
+
 /** Resolve every environment-backed credential field from registry metadata. */
 export function resolveProviderCredentialEnvironment(
   provider: string,

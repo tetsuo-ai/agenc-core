@@ -738,6 +738,18 @@ export class TuiSession {
     return startTuiGateDaemon(this.gateState, BIN_AGENC);
   }
 
+  /**
+   * Captured stderr of the gate daemon with this pid (bounded). Scenarios use
+   * it to wait for a daemon log line, such as the startup restore summary.
+   */
+  gateDaemonStderr(pid) {
+    const record = this.gateState?.daemonProcesses.get(pid);
+    if (record === undefined) {
+      throw new Error(`no private TUI gate daemon with pid ${pid}`);
+    }
+    return record.stderr;
+  }
+
   async abort(reason = new Error("TUI scenario aborted")) {
     if (this.abortError === null) {
       this.abortError =
