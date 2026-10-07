@@ -9,7 +9,7 @@ import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
 import {
   applyMigrations,
@@ -27,6 +27,109 @@ import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 let home = "";
 let cwd = "";
 let originalAgencHome = "";
+
+describe("state transaction invocation isolation", () => {
+  it("keeps recursive operations and caught inner rollbacks separate", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      const insert = (value: string) => driver.prepareState(
+        "INSERT INTO transaction_probe (value) VALUES (?)",
+      ).run(value);
+      const result = driver.transactionImmediate(() => {
+        insert("outer-before");
+        expect(() => driver.transaction(() => {
+          insert("rolled-back-inner");
+          throw new Error("inner failure");
+        })).toThrow("inner failure");
+        expect(driver.transactionImmediate(() => {
+          insert("inner-kept");
+          return "inner result";
+        })).toBe("inner result");
+        insert("outer-after");
+        return "outer result";
+      });
+      expect(result).toBe("outer result");
+      expect(driver.transaction(() => "next operation")).toBe("next operation");
+      expect(driver.state.inTransaction).toBe(false);
+    } finally {
+      driver.close();
+    }
+    const reopened = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(reopened.prepareState<[], { value: string }>(
+        "SELECT value FROM transaction_probe ORDER BY value",
+      ).all().map(row => row.value)).toEqual([
+        "inner-kept", "outer-after", "outer-before",
+      ]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("rolls back an outer failure and rejects a returned thenable", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      const insert = (value: string) => driver.prepareState(
+        "INSERT INTO transaction_probe (value) VALUES (?)",
+      ).run(value);
+      expect(() => driver.transaction(() => {
+        insert("outer");
+        driver.transactionImmediate(() => insert("inner"));
+        throw new Error("outer failure");
+      })).toThrow("outer failure");
+      const then = vi.fn();
+      expect(() => driver.transactionImmediate(() => {
+        insert("thenable");
+        return { then };
+      })).toThrow("Transaction function cannot return a promise");
+      expect(then).not.toHaveBeenCalled();
+      expect(driver.prepareState<[], { count: number }>(
+        "SELECT COUNT(*) AS count FROM transaction_probe",
+      ).get()?.count).toBe(0);
+      driver.transaction(() => insert("next"));
+    } finally {
+      driver.close();
+    }
+    const reopened = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(reopened.prepareState<[], { value: string }>(
+        "SELECT value FROM transaction_probe",
+      ).all()).toEqual([{ value: "next" }]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("keeps lazy logs independent of a failing state transaction and stays closed", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    expect(existsSync(driver.logsDbPath)).toBe(false);
+    try {
+      driver.state.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+      expect(() => driver.transactionImmediate(() => {
+        driver.prepareState("INSERT INTO transaction_probe (value) VALUES ('state')").run();
+        expect(driver.logsTransaction(() => {
+          driver.logs.exec("CREATE TABLE transaction_probe (value TEXT PRIMARY KEY)");
+          driver.prepareLogs("INSERT INTO transaction_probe (value) VALUES ('logs')").run();
+          return "log result";
+        })).toBe("log result");
+        throw new Error("state rollback");
+      })).toThrow("state rollback");
+      expect(driver.prepareState("SELECT * FROM transaction_probe").all()).toEqual([]);
+      expect(driver.prepareLogs("SELECT * FROM transaction_probe").all()).toEqual([{ value: "logs" }]);
+    } finally {
+      driver.close();
+    }
+    expect(() => driver.transaction(() => "closed")).toThrow();
+    expect(() => driver.transactionImmediate(() => "closed")).toThrow();
+    expect(() => driver.logsTransaction(() => "closed")).toThrow();
+
+    const unopenedLogs = openStateDatabases({ cwd: join(cwd, "another"), agencHome: home, deferLogs: true });
+    unopenedLogs.close();
+    expect(() => unopenedLogs.logsTransaction(() => "closed")).toThrow("cannot open logs on a closed state driver");
+  });
+});
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-state-home-"));

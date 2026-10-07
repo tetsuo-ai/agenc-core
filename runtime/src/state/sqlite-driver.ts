@@ -62,6 +62,15 @@ export const STATE_PRE_V21_BACKUP_FILENAME = "agenc-state_1.pre-v21.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 
+type TransactionOperation = () => unknown;
+type TransactionRunner = BetterSqlite3.Transaction<
+  (operation: TransactionOperation) => unknown
+>;
+
+function runTransactionOperation(operation: TransactionOperation): unknown {
+  return operation();
+}
+
 /** One free-page reclaim pass over a state database. */
 export interface StateFreePageReclaim {
   readonly mode: "none" | "incremental" | "full";
@@ -149,6 +158,8 @@ export class StateSqliteDriver {
   #logs: SqliteDatabase | undefined;
   readonly #stateStatements: PreparedStatementCache;
   #logsStatements: PreparedStatementCache | undefined;
+  readonly #stateTransaction: TransactionRunner;
+  #logsTransaction: TransactionRunner | undefined;
 
   constructor(
     paths: StateDatabasePaths,
@@ -170,6 +181,10 @@ export class StateSqliteDriver {
       applyStateMigrations(state, paths);
       if (logs !== undefined) applyLogsMigrations(logs);
       replayAtomicSessionSnapshotWrites(state, this.projectDir);
+      this.#stateTransaction = state.transaction(runTransactionOperation);
+      if (logs !== undefined) {
+        this.#logsTransaction = logs.transaction(runTransactionOperation);
+      }
     } catch (error) {
       if (state.open) state.close();
       if (logs?.open) logs.close();
@@ -188,6 +203,7 @@ export class StateSqliteDriver {
     try {
       configureDatabase(logs);
       applyLogsMigrations(logs);
+      this.#logsTransaction = logs.transaction(runTransactionOperation);
     } catch (error) {
       if (logs.open) logs.close();
       throw error;
@@ -220,7 +236,7 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.state, () => this.state.transaction(fn)());
+    return this.withTransactionDurability(this.state, () => this.#stateTransaction(fn) as T);
   }
 
   /**
@@ -231,11 +247,12 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
+    return this.withTransactionDurability(this.state, () => this.#stateTransaction.immediate(fn) as T);
   }
 
   logsTransaction<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.logs, () => this.logs.transaction(fn)());
+    const logs = this.logs;
+    return this.withTransactionDurability(logs, () => this.#logsTransaction!(fn) as T);
   }
 
   private withTransactionDurability<T>(db: SqliteDatabase, operation: () => T): T {
