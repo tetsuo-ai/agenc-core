@@ -569,7 +569,9 @@ describe("project-scoped browser profiles", () => {
   });
 
   it.skipIf(process.platform === "win32")("accepts an agencHome named through a symlinked tmp path", async () => {
-    const alias = profileRoot.replace(/^\/private\/tmp\//, "/tmp/").replace(/^\/private\/var\//, "/var/");
+    const alias = join(profileRoot, "tmp-alias");
+    symlinkSync(profileRoot, alias, "dir");
+    expect(realpathSync.native(alias)).toBe(profileRoot);
     expect(alias).not.toBe(profileRoot);
     const home = join(profileRoot, "home");
     mkdirSync(home);
