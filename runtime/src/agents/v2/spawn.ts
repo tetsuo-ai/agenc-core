@@ -608,7 +608,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
       ...(automaticSelectionOn(session) ? {
-        routing_preference: { type: "string", enum: [...ROUTING_PREFERENCES], description: "User budget or speed preference for automatic selection. Defaults to balanced." },
+        routing_preference: { type: "string", enum: [...ROUTING_PREFERENCES], description: "How much a dollar saving counts against quality under a spend cap (max_cost_usd or a budget), or fast for quicker models. Without a cap price never moves the child off your model. Defaults to balanced." },
         routing: { type: "string", enum: ["auto", "inherit"], description: "Optional routing override. Auto requires enabled automatic selection. Inherit keeps the parent model." },
         task_kind: { type: "string", enum: [...CHILD_TASK_KINDS], description: "Optional task category for automatic selection." },
         complexity: { type: "string", enum: [...CHILD_TASK_COMPLEXITIES], description: "Optional task difficulty for automatic selection." },

@@ -94,6 +94,17 @@ describe("spawn_agent with automatic selection off", () => {
     expect(surface(on.tool, on.session).description).toContain("routing=inherit");
   });
 
+  it("offers routing_preference only with automatic selection on, and validates it there", async () => {
+    const on = await fixture({ cross_provider_enabled: true, cross_provider_auto: true });
+    const properties = surface(on.tool, on.session).inputSchema.properties as Record<string, { enum?: string[]; description?: string }>;
+    expect(properties.routing_preference?.enum).toEqual(["balanced", "economy", "quality", "fast"]);
+    expect(properties.routing_preference?.description).toContain("Without a cap price never moves the child off your model.");
+    const invalid = await on.tool.execute({ message: "Extract names", task_name: "worker", routing_preference: "cheapest" });
+    expect(invalid.isError).toBe(true);
+    expect(JSON.parse(invalid.content)).toEqual({ error: "Invalid routing preference" });
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   it.each(Object.entries(AUTOMATIC_ARGUMENTS))("rejects %s as an unknown field before any child exists", async (key, value) => {
     const { tool } = await fixture({ cross_provider_enabled: true, cross_provider_auto: false });
     const result = await tool.execute({ message: "Extract names", task_name: "worker", [key]: value });
