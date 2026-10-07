@@ -32,6 +32,7 @@ export type ModelCosts = {
   inputTokens: number
   outputTokens: number
   promptCacheWriteTokens: number
+  promptCacheWrite1hTokens?: number
   promptCacheReadTokens: number
   webSearchRequests: number
 }
@@ -142,6 +143,15 @@ export const COST_HAIKU_45 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+export const COST_HAIKU_55 = {
+  inputTokens: 0.1, outputTokens: 0.5, promptCacheWriteTokens: 0.125,
+  promptCacheWrite1hTokens: 0.2, promptCacheReadTokens: 0.01, webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+export const COST_HAIKU_55_LONG = {
+  inputTokens: 0.5, outputTokens: 2.5, promptCacheWriteTokens: 0.625,
+  promptCacheWrite1hTokens: 1, promptCacheReadTokens: 0.05, webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
@@ -189,6 +199,7 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 // Costs from https://agenc.tech/docs/en/about-agenc/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
+  "claude-haiku-5-5": COST_HAIKU_55,
   [firstPartyNameToCanonicalForCost(AGENC_3_5_HAIKU_CONFIG.firstParty)]:
     COST_HAIKU_35,
   [firstPartyNameToCanonicalForCost(AGENC_HAIKU_4_5_CONFIG.firstParty)]:
@@ -249,13 +260,15 @@ const FAST_MODE_COSTS: Readonly<Record<ModelShortName, ModelCosts | undefined>> 
  * Calculates the USD cost based on token usage and model cost configuration
  */
 function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
+  const writes = usage.cache_creation_input_tokens ?? 0
+  const oneHour = Math.min(writes, Math.max(0, usage.cache_creation?.ephemeral_1h_input_tokens ?? 0))
   return (
     (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
     (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
     ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
       modelCosts.promptCacheReadTokens +
-    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
-      modelCosts.promptCacheWriteTokens +
+    ((writes - oneHour) / 1_000_000) * modelCosts.promptCacheWriteTokens +
+    (oneHour / 1_000_000) * (modelCosts.promptCacheWrite1hTokens ?? modelCosts.promptCacheWriteTokens) +
     (usage.server_tool_use?.web_search_requests ?? 0) *
       modelCosts.webSearchRequests
   )
@@ -263,6 +276,10 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalNameForCost(model)
+  if (shortName === 'claude-haiku-5-5') {
+    const prompt = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+    return prompt > 100_000 ? COST_HAIKU_55_LONG : COST_HAIKU_55
+  }
 
   // A turn the API reports as served in fast mode bills at that model's
   // documented fast-mode rates.
@@ -349,6 +366,10 @@ export function formatModelPricing(costs: ModelCosts): string {
  */
 export function getModelPricingString(model: string): string | undefined {
   const shortName = getCanonicalNameForCost(model)
+  if (shortName === 'claude-haiku-5-5') {
+    const prompt = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+    return prompt > 100_000 ? COST_HAIKU_55_LONG : COST_HAIKU_55
+  }
   const costs = MODEL_COSTS[shortName]
   if (!costs) return undefined
   return formatModelPricing(costs)

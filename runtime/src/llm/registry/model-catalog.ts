@@ -35,7 +35,7 @@ import {
 } from "./gemini-thinking-models.js";
 import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
-import { anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
+import { isHaiku55, anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -823,6 +823,14 @@ const ANTHROPIC_SONNET_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
   priority: 1,
 });
 
+// Official Haiku 5.5 overview and effort docs, checked 2026-10-07.
+const ANTHROPIC_HAIKU_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model: "claude-haiku-5-5",
+  displayName: "Claude Haiku 5.5",
+  priority: 3,
+});
+
 const ANTHROPIC_HAIKU_4_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
   ...ANTHROPIC_OPUS_5_5_ENTRY,
   model: "claude-haiku-4-5-20251001",
@@ -834,7 +842,7 @@ const ANTHROPIC_HAIKU_4_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
   // parameter. A visible model does not have to expose an effort dial.
   supportedReasoningLevels: NO_REASONING_LEVELS,
   defaultReasoningLevel: undefined,
-  priority: 3,
+  priority: 9,
 });
 
 // Already-supported Claude models previously inherited the generic 200K /
@@ -908,6 +916,7 @@ const NON_OPENROUTER_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     ...MISTRAL_MODEL_CATALOG,
     ANTHROPIC_OPUS_5_5_ENTRY,
     ANTHROPIC_SONNET_5_5_ENTRY,
+    ANTHROPIC_HAIKU_5_5_ENTRY,
     ANTHROPIC_HAIKU_4_5_ENTRY,
     ...ANTHROPIC_EXISTING_ENTRIES,
     ...ANTHROPIC_UNCURATED_ENTRIES,
@@ -1928,15 +1937,15 @@ function bedrockClaudeCatalogEntry(
   model: string,
 ): RegisteredModelCatalogEntry {
   const { defaultReasoningLevel, ...contract } = row;
-  const levels = isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
+  const levels = isHaiku55(row.model) || isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
     ? row.supportedReasoningLevels
     : NO_REASONING_LEVELS;
   return Object.freeze({
     ...contract,
     provider: "amazon-bedrock",
     model,
-    inputModalities: TEXT_MODALITIES,
-    supportsParallelToolCalls: false,
+    inputModalities: isHaiku55(row.model) ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+    supportsParallelToolCalls: isHaiku55(row.model),
     supportsStructuredOutput: false,
     supportsStructuredOutputWithTools: false,
     supportsSearchTool: false,

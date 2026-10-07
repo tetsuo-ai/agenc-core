@@ -208,6 +208,7 @@ function pricedEntry(model: string, provider: string): ModelCostEntry {
     entry.outputUsdPer1K,
     entry.cachedInputUsdPer1K ?? 0,
     entry.cacheCreationUsdPer1K ?? 0,
+    entry.cacheCreation1hUsdPer1K ?? 0,
     entry.reasoningOutputUsdPer1K ?? 0,
     entry.webSearchUsdPerRequest ?? 0,
   ];
@@ -311,6 +312,7 @@ function maximumTokenCostUsd(
     entry.inputUsdPer1K,
     entry.cachedInputUsdPer1K ?? 0,
     entry.cacheCreationUsdPer1K ?? 0,
+    entry.cacheCreation1hUsdPer1K ?? 0,
   );
   const worstOutputRate = Math.max(
     entry.outputUsdPer1K,
@@ -378,6 +380,7 @@ function usageCostUsd(
     cachedInputTokens,
     cacheCreationInputTokens:
       reconstructedCacheWriteTokens ?? usage.cacheCreationInputTokens ?? 0,
+    cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
     reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
     webSearchRequests: usage.webSearchRequests ?? 0,
     totalTokens: usage.totalTokens,

@@ -811,6 +811,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       totalTokens: isNumber,
       cachedInputTokens: isNumber,
       cacheCreationInputTokens: isNumber,
+      cacheCreation1hInputTokens: isNumber,
       reasoningOutputTokens: isNumber,
       reasoningIncludedInCompletion: isTrue,
       webSearchRequests: isNumber,

@@ -947,3 +947,16 @@ Cloud quota and model availability depend on the Ollama account.
 
 Sources: https://docs.ollama.com/cloud and
 https://docs.ollama.com/api/openai-compatibility.
+
+Claude Haiku 5.5 is selectable as `claude-haiku-5-5` on Anthropic, with 1M
+context, 128K maximum output, adaptive thinking and medium default effort.
+It supports low, medium, high, xhigh and max. Fast mode and Priority Tier are
+not supported. Prices depend on total prompt length: $0.10/$0.50 per million
+input/output tokens through 100,000 prompt tokens, and $0.50/$2.50 above that.
+Haiku 4.5 remains selectable; no provider default changes.
+
+On Amazon Bedrock, use `anthropic.claude-haiku-5-5`; Core routes it through
+Bedrock Mantle's Messages API with AWS SigV4 authentication, including SSE
+streaming. OpenRouter lists `anthropic/claude-haiku-5.5`. See the
+[Anthropic model reference](anthropic-models.md) for cache prices, thinking,
+tokenizer and migration details.

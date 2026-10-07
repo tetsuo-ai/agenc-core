@@ -2,6 +2,7 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getCanonicalName } from './model/model.js'
+import { isHaiku55 } from './model/anthropicThinkingControl.js'
 import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
@@ -188,6 +189,7 @@ export function modelSupportsThinking(model: string): boolean {
   // 3P (Bedrock/Vertex): Opus 4+, Sonnet 4+, and the always-on-thinking
   // Fable 5 family (thinking cannot be turned off there at all).
   return (
+    isHaiku55(canonical) ||
     canonical.includes('sonnet-4') ||
     canonical.includes('opus-4') ||
     canonical.includes('fable-5')
@@ -210,6 +212,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   }
   // Supported by a subset of AgenC 4 models
   if (
+    isHaiku55(canonical) ||
     canonical.includes('opus-5') ||
     canonical.includes('sonnet-5') ||
     canonical.includes('opus-4-8') ||

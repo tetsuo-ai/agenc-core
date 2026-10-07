@@ -396,6 +396,7 @@ export interface TokenCountEvent {
   readonly totalTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
+  readonly cacheCreation1hInputTokens?: number;
   readonly reasoningOutputTokens?: number;
   /**
    * True when `reasoningOutputTokens` is already inside `completionTokens`.
@@ -2000,6 +2001,8 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
       ...(usage.cachedInputTokens !== undefined
         ? { cachedInputTokens: usage.cachedInputTokens }
         : {}),
+      ...(usage.cacheCreation1hInputTokens !== undefined
+        ? { cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens } : {}),
       ...(usage.cacheCreationInputTokens !== undefined
         ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
         : {}),

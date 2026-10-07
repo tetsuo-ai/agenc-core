@@ -780,6 +780,7 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-3-5-sonnet')) {
     return 'AgenC 3.5 Sonnet'
   }
+  if (canonical === 'claude-haiku-5-5') return 'Haiku 5.5'
   if (canonical.includes('claude-haiku-4-5')) {
     return 'Haiku 4.5'
   }
