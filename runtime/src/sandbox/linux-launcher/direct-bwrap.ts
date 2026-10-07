@@ -14,6 +14,7 @@ import { createNetworkSeccompProgram, networkSeccompMode } from "./landlock.js";
 import { preferredBubblewrapLauncher } from "./launcher.js";
 import { createProcMountProbeArgs, runProcMountProbe } from "./proc-probe.js";
 import { capabilityDigest } from "./capability-hint.js";
+import { consumePreparedProcProbe } from "./probe-cache.js";
 
 import { registerDirectBwrapPlan, type PreparedDirectBwrap } from "../../utils/direct-bwrap-handoff.js";
 export { consumeDirectBwrapPlan, type PreparedDirectBwrap } from "../../utils/direct-bwrap-handoff.js";
@@ -134,7 +135,12 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean): PreparedD
     const probeOptions = { launcher, fileSystem: permissions.fileSystem,
       sandboxPolicyCwd: options.sandboxPolicyCwd, commandCwd: options.commandCwd,
       networkMode, sessionTempRoot: options.sessionTempRoot } as const;
-    if (mountProc) {
+    // The daemon just resolved this launch's probe arguments and verified a
+    // successful proc capability. Reuse only its one-use, identity-bound
+    // evidence, never a serialized hint or a filesystem/policy plan. A stale
+    // success can only make the real --proc launch fail; it cannot omit it.
+    const preparedProcProbe = consumePreparedProcProbe(input.args, context);
+    if (mountProc && !preparedProcProbe) {
       const probe = createProcMountProbeArgs(probeOptions);
       if (probe.usesBubblewrap && launcher.capabilityHint?.procArgs !== capabilityDigest(probe.args)) {
         const result = runProcMountProbe(probeOptions, probe.args, env);
