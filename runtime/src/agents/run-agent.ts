@@ -3545,6 +3545,13 @@ function prepareChildSessionAuthority(
   };
 }
 
+/** Construction failed before the caller could retain the child Session. */
+class ChildConstructionCleanupError extends AggregateError {
+  constructor(constructionError: unknown, cleanupError: unknown) {
+    super([constructionError, cleanupError], "child construction and exec cleanup failed");
+  }
+}
+
 async function buildChildSession(
   params: RunAgentParams,
   provider: LLMProvider,
@@ -3713,7 +3720,7 @@ async function buildChildSession(
     try {
       await execOwnerBinding?.prepareForDurableClose();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "child construction and exec cleanup failed");
+      throw new ChildConstructionCleanupError(error, cleanupError);
     }
     throw error;
   }
@@ -3758,6 +3765,7 @@ export async function* runAgent(
   let turnId: string = params.initialTurnId ?? crypto.randomUUID();
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
+  let childConstructionCleanupError: ChildConstructionCleanupError | undefined;
   let workerAdmission: ExecutionAdmissionClient | undefined;
   let taskAdmission: ExecutionAdmissionClient | undefined;
   let workerAdmissionReleased = false;
@@ -5199,6 +5207,13 @@ export async function* runAgent(
       toolCallCount,
     };
   } catch (err) {
+    if (err instanceof ChildConstructionCleanupError) {
+      // No child was returned, but its cleanup proof failed. Carry that fact to
+      // finally even when Stop also fired; neither a task receipt nor the
+      // fallback terminal may claim that this lifecycle has settled.
+      childConstructionCleanupError = err;
+      throw err;
+    }
     // Signal-abort-driven failures can surface as thrown errors from
     // the provider — prefer the interrupted outcome in that case.
     if (merged.signal.aborted) {
@@ -5284,7 +5299,7 @@ export async function* runAgent(
     unsubscribeChildUsage?.();
     unsubscribeChildUsage = null;
     const cleanupErrors: unknown[] = [];
-    let durableCloseError: unknown;
+    let durableCloseError: unknown = childConstructionCleanupError;
     if (childSandboxExecutionBroker !== undefined) {
       try {
         await shutdownLspServerManager(childSandboxExecutionBroker);
@@ -5299,7 +5314,7 @@ export async function* runAgent(
       } catch (error) {
         durableCloseError = error;
       }
-    } else {
+    } else if (childConstructionCleanupError === undefined) {
       try {
         const rolloutPath = recordUnconstructedChildRunTerminal({
           parent,
