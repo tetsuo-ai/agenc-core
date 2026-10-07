@@ -10,6 +10,7 @@ import { resolveAgenCDaemonRuntimeInfoPath, writeDaemonRuntimeInfo } from "../..
 import { openResidentPrintConnection } from "../../src/app-server/micro-print-connection.js";
 import { MicroPrintTransport, MICRO_PRINT_MAX_FRAME_BYTES, writeMicroOutput } from "../../src/app-server/micro-print-transport.js";
 import { tryMicroPrint, type MicroPrintInvocation } from "../../src/bin/micro-print-client.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION } from "../../src/app-server/protocol/index.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -31,7 +32,7 @@ async function fixture() {
     beforeReply?: (method: string, socket: Socket) => void | Promise<void>;
     invoke?: (socket: Socket) => void;
     admit?: (socket: Socket) => void;
-  } = { identity, cookie: "cookie", protocol: "1.30.0", capability: true, ping: { ok: true, now: "now" }, exitCode: 0 };
+  } = { identity, cookie: "cookie", protocol: AGENC_DAEMON_PROTOCOL_VERSION, capability: true, ping: { ok: true, now: "now" }, exitCode: 0 };
   const send = (socket: Socket, message: unknown) => socket.write(JSON.stringify(message) + "\n");
   const notice = (socket: Socket, method: string, params: Record<string, unknown>) => send(socket, { jsonrpc: "2.0", method, params: { invocationId, ...params } });
   const result = (socket: Socket, value: unknown) => send(socket, { jsonrpc: "2.0", id: invokeId, result: value });
@@ -46,7 +47,7 @@ async function fixture() {
         void (async () => {
           await behavior.beforeReply?.(request.method, socket);
           if (socket.destroyed) return;
-          if (request.method === "initialize" && (request.params.authCookie !== behavior.cookie || behavior.protocol !== "1.30.0")) {
+          if (request.method === "initialize" && (request.params.authCookie !== behavior.cookie || behavior.protocol !== AGENC_DAEMON_PROTOCOL_VERSION)) {
             send(socket, { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "unsupported or unauthorized" } }); return;
           }
           if (request.method === "print.invoke") {
