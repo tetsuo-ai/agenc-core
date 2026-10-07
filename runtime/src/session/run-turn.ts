@@ -3060,14 +3060,23 @@ async function* runTurnKernelInner(
               return false;
             }
             proactiveDispatchCompactionAttempted = false;
-            if (deferredCompaction) return false;
-            if (await requestFits()) return true;
-            const tiers = state.compactionLadder?.tiersAttempted ?? [];
-            throw new DeferredCompactionError(
-              "Compaction could not shrink the context enough for the next request and reserved output." +
-                (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
-                (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
-            );
+            /*
+             * Advisory no-shrink / summary rejection sets deferredCompaction
+             * and returns without climbing the ladder. That refusal must not
+             * spend the one re-prepare: the mandatory attempt below owns it,
+             * and a successful shrink has to come back here for the smaller
+             * request. Returning false here discarded that shrink and ended
+             * the turn as compact_failed.
+             */
+            if (!deferredCompaction) {
+              if (await requestFits()) return true;
+              const tiers = state.compactionLadder?.tiersAttempted ?? [];
+              throw new DeferredCompactionError(
+                "Compaction could not shrink the context enough for the next request and reserved output." +
+                  (tiers.length > 0 ? ` (compact_ladder_exhausted: tiers=[${tiers.join(",")}])` : "") +
+                  (session.services?.runtimeOptions?.nonInteractive !== true ? "; run /compact to retry manually" : ""),
+              );
+            }
           }
           if (!deferredCompaction) {
             proactiveDispatchCompactionAttempted = false;

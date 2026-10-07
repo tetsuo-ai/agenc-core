@@ -169,4 +169,79 @@ describe("auto-compaction from a conservative-fallback estimate", () => {
       failureCode: "turn_execution_failed",
     }));
   });
+
+  test("advisory no-shrink on the prepared request still sends a later mandatory compaction", async () => {
+    const { provider, ctx } = zaiContext();
+    let samples = 0;
+    const seen: string[] = [];
+    const toolCall = { id: "read-1", name: "read_probe", arguments: "{\"round\":1}" };
+    provider.chatStream = async (messages, _onChunk, _options): Promise<LLMResponse> => {
+      samples += 1;
+      seen.push(JSON.stringify(messages));
+      if (samples === 1) {
+        return {
+          content: "Continue the implementation.",
+          toolCalls: [toolCall],
+          usage: { promptTokens: 2_000, completionTokens: 8, totalTokens: 2_008 },
+          providerReasoningContent: RETAINED_REASONING,
+          providerReasoningProvenance: { provider: "zai-coding-plan", model: "glm-5.3" },
+          model: "glm-5.3",
+          finishReason: "tool_calls",
+        };
+      }
+      return {
+        content: "done",
+        usage: { promptTokens: 100, completionTokens: 1, totalTokens: 101 },
+        model: "glm-5.3",
+        finishReason: "stop",
+      };
+    };
+    const registry = {
+      tools: [{
+        name: "read_probe",
+        description: "Read the next result",
+        inputSchema: { type: "object" },
+        requiresApproval: false,
+        recoveryCategory: "read-only",
+        execute: async () => ({ content: "probe ok", isError: false }),
+      }],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "probe ok", isError: false }),
+    } as unknown as ToolRegistry;
+    const { session, events } = mkSession({ provider, registry });
+    let attempts = 0;
+    setAutoCompactImplForTests(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return {
+          wasCompacted: false,
+          skippedCode: "no_shrink",
+          skippedReason: "compaction candidate cannot meet minimum savings",
+          consecutiveFailures: 1,
+        };
+      }
+      return {
+        wasCompacted: true,
+        compactionResult: {
+          message: "small summary",
+          replacementHistory: [{ role: "user", content: "small summary" }],
+        },
+      };
+    });
+
+    await drain(runTurn(session, ctx, "finish the implementation"));
+
+    expect(attempts).toBe(2);
+    expect(samples).toBe(2);
+    expect(seen[1]).toContain("small summary");
+    expect(seen[1]).not.toContain(RETAINED_REASONING.slice(0, 64));
+    const terminals = events.map((event) => classifyTurnTerminal(event.msg));
+    expect(terminals).toContainEqual(expect.objectContaining({
+      outcome: "completed",
+      code: 0,
+    }));
+    expect(terminals).not.toContainEqual(expect.objectContaining({
+      failureCode: "compact_failed",
+    }));
+  });
 });
