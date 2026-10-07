@@ -82,6 +82,17 @@ static int v2_seccomp_argv(const struct launch_payload *payload, bool has_fd);
 static int read_v2_payload(struct launch_payload *payload, int *snapshot_fd);
 static int read_owned_payload(struct launch_payload *payload, int *snapshot_fd,
                               const char *magic);
+static int v3_high_fd(int fd);
+static bool v3_path_contains(const char *parent, const char *path);
+static bool v3_paths_overlap(const char *left, const char *right);
+static bool v3_normal_path(const char *path);
+static int v3_artifact_path(char *target, char *parent);
+static char **v3_init_argv(const struct launch_payload *payload, char *target,
+                            const char *parent);
+static int v3_image_reference(void);
+static _Noreturn void run_v3_target_child(struct launch_payload *payload,
+    char **argv, int snapshot, int reference, int writer, pid_t broker);
+static bool v3_trusted_abort(void);
 static int describe_v3_protocol(void);
 static int launch_v3_supervised_target(sigset_t *wait_mask);
 static int complete_v3_cleanup(int root_status);
