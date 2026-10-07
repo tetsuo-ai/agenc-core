@@ -283,9 +283,12 @@ describe("Windows cron storage uses private-path persistence", () => {
     const planted = join(outside, "scheduled_tasks.json");
     writeFileSync(planted, "outside");
     symlinkSync(outside, join(workspace, ".agenc"));
-    await expect(writeRecord()).rejects.toThrow(
-      "Cron storage must be owned by the current user and not writable by other users",
-    );
+    const linked = join(workspace, ".agenc");
+    const message = `${PERMISSIONS_ERROR}: ${linked} is a symbolic link, a junction or not a directory, and it was ` +
+      "left unchanged. Remove it, or replace it with a regular directory, then retry.";
+    // No ACL repair is offered for a linked .agenc, on write or read.
+    await expect(writeRecord()).rejects.toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL", message });
+    await expect(readCronTasks(workspace)).rejects.toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL", message });
     expect(await readFile(planted, "utf8")).toBe("outside");
     expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
   });
