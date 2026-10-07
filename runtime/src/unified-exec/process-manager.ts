@@ -27,6 +27,8 @@ import {
   type TerminateOwnedProcessesRequest,
   type TerminateProcessRequest,
   type UnifiedExecManagerOptions,
+  type UnifiedExecOwnerBinding,
+  type UnifiedExecOwnerLifetime,
   type UnifiedExecProcessManagerLike,
   type UnifiedExecBackgroundProcess,
   type UnifiedExecRuntimeSandbox,
@@ -312,6 +314,7 @@ interface ProcessEntry {
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   /** Conversation/agent that started this process (TOOL-01 isolation). */
   readonly ownerId?: string;
+  readonly ownerLifetime?: OwnerLifetimeState;
   readonly startedAt: number;
   readonly output: ProcessOutputBuffer;
   readonly stored: StoredProcess;
@@ -338,6 +341,21 @@ interface ProcessEntry {
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
+}
+
+interface OwnerLifetimeState {
+  readonly ownerId: string;
+  readonly children: Set<OwnerLifetimeState>;
+  activeBinding?: OwnerBindingState;
+  closing: boolean;
+  closed: boolean;
+  closeTask?: Promise<void>;
+}
+
+interface OwnerBindingState {
+  readonly lifetime: OwnerLifetimeState;
+  active: boolean;
+  closeTask?: Promise<void>;
 }
 
 declare const unifiedExecSandboxAuthorityQuiesceBrand: unique symbol;
@@ -539,6 +557,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private sandboxAuthorityCleanupFailure: Error | undefined;
   private durableCloseTask: Promise<void> | undefined;
   private durableCloseStarted = false;
+  private readonly ownerLifetimes = new Map<string, OwnerLifetimeState>();
+  private readonly ownerBindings = new WeakMap<UnifiedExecOwnerBinding, OwnerBindingState>();
   private activeSandboxAuthorityQuiesce:
     | UnifiedExecSandboxAuthorityQuiesceToken
     | undefined;
@@ -643,6 +663,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
     const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
+    this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -708,6 +729,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { argv0: spawnCommand.argv0 }
         : {}),
       ...(ownerId !== undefined ? { ownerId } : {}),
+      ...(request.ownerBinding !== undefined ? { ownerBinding: request.ownerBinding } : {}),
       tty,
       allowDirectBwrap: direct === undefined && this.commandWrapperArgv.length === 0,
       startedAt,
@@ -791,6 +813,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     request: DetachedProcessRequest,
   ): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
+    this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -924,6 +947,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
     this.assertSandboxAuthorityAdmission();
     const entry = this.processes.get(request.session_id);
+    const input = request.chars ?? "";
+    const bindingState = request.ownerBinding === undefined
+      ? undefined : this.ownerBindings.get(request.ownerBinding);
+    const collectingClosedOutput = input.length === 0 && entry?.exitState != null &&
+      bindingState?.closeTask !== undefined && bindingState.lifetime.closed &&
+      bindingState.lifetime === entry.ownerLifetime;
+    if (!collectingClosedOutput) this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (!entry) {
       throw new UnifiedExecError(
         "unknown_process",
@@ -931,7 +961,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
     enforceOwnerAccess(entry, request.ownerId);
-    const input = request.chars ?? "";
+    if (entry.ownerLifetime !== undefined &&
+        bindingState?.lifetime !== entry.ownerLifetime &&
+        (entry.exitState === null || input.length > 0)) {
+      throw new UnifiedExecError("owner_denied", "process belongs to a different exec lifetime");
+    }
+    // A current same-owner binding may collect settled output from a prior
+    // generation. It cannot write stdin or control a prior live process.
     if (
       request.runtimeSandbox !== undefined &&
       !runtimeSandboxesCompatible(entry.runtimeSandbox, request.runtimeSandbox)
@@ -1163,6 +1199,106 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
   }
 
+  /** Create authority once per durable child, or once per logical compat task. */
+  createOwnerLifetime(
+    ownerId: string,
+    parentBinding?: UnifiedExecOwnerBinding,
+  ): UnifiedExecOwnerLifetime {
+    this.assertSandboxAuthorityAdmission();
+    const normalized = normalizeOwnerId(ownerId);
+    if (normalized === undefined) throw new Error("exec owner id must be nonempty");
+    const parent = parentBinding === undefined ? undefined : this.ownerBindings.get(parentBinding);
+    if (parentBinding !== undefined) {
+      this.assertOwnerAdmission(parentBinding.ownerId, parentBinding);
+      if (parent!.lifetime.ownerId === normalized) throw new Error("exec child cannot alias its parent owner");
+    }
+    const previous = this.ownerLifetimes.get(normalized);
+    if (previous !== undefined && !previous.closed) {
+      throw new Error("exec owner lifetime is already open or cleanup is unproven");
+    }
+    const state: OwnerLifetimeState = {
+      ownerId: normalized, children: new Set(), closing: false, closed: false,
+    };
+    const lifetime = Object.freeze({
+      ownerId: normalized,
+      get closed() { return state.closed; },
+      bind: () => this.bindOwnerLifetime(state),
+      prepareForDurableClose: () => this.closeOwnerLifetime(state),
+    }) as UnifiedExecOwnerLifetime;
+    this.ownerLifetimes.set(normalized, state);
+    parent?.lifetime.children.add(state);
+    return lifetime;
+  }
+
+  private bindOwnerLifetime(lifetime: OwnerLifetimeState): UnifiedExecOwnerBinding {
+    this.assertSandboxAuthorityAdmission();
+    if (lifetime.closing || this.ownerLifetimes.get(lifetime.ownerId) !== lifetime) {
+      throw new Error("exec owner lifetime is closed");
+    }
+    if (lifetime.activeBinding !== undefined) {
+      throw new Error("exec owner already has an active projection");
+    }
+    const state: OwnerBindingState = { lifetime, active: true };
+    const binding = Object.freeze({
+      ownerId: lifetime.ownerId,
+      assertCurrent: () => {
+        if (state.closeTask === undefined &&
+            (!state.active || this.ownerLifetimes.get(lifetime.ownerId) !== lifetime)) {
+          throw new Error("exec owner projection was released");
+        }
+      },
+      release: () => {
+        state.active = false;
+        if (lifetime.activeBinding === state) lifetime.activeBinding = undefined;
+      },
+      prepareForDurableClose: () => {
+        if (state.closeTask !== undefined) return state.closeTask;
+        if (!state.active) return Promise.reject(new Error("exec owner projection was released"));
+        state.closeTask = this.closeOwnerLifetime(lifetime);
+        return state.closeTask;
+      },
+    }) as UnifiedExecOwnerBinding;
+    lifetime.activeBinding = state;
+    this.ownerBindings.set(binding, state);
+    return binding;
+  }
+
+  /** Validate the captured capability, never upgrade an old closure by id. */
+  assertOwnerAdmission(ownerId: string | undefined, binding?: UnifiedExecOwnerBinding): void {
+    this.assertSandboxAuthorityAdmission();
+    const normalized = normalizeOwnerId(ownerId);
+    const state = binding === undefined ? undefined : this.ownerBindings.get(binding);
+    if (binding === undefined && (normalized === undefined || !this.ownerLifetimes.has(normalized))) return;
+    if (state === undefined || !state.active || state.lifetime.closing ||
+        state.lifetime.ownerId !== normalized || this.ownerLifetimes.get(normalized!) !== state.lifetime) {
+      throw new UnifiedExecError("owner_denied", "exec owner lifetime is closed or its binding is invalid");
+    }
+  }
+
+  private closeOwnerLifetime(lifetime: OwnerLifetimeState): Promise<void> {
+    if (lifetime.closeTask !== undefined) return lifetime.closeTask;
+    // Invalidates pending PTY loads and native handoffs before taking a snapshot.
+    lifetime.closing = true;
+    const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
+    lifetime.closeTask = Promise.resolve().then(async () => {
+      if (this.sandboxAuthorityCleanupFailure !== undefined) throw this.sandboxAuthorityCleanupFailure;
+      const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
+      const outcomes = await Promise.allSettled([
+        ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
+      ]);
+      const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      if (this.sandboxAuthorityCleanupFailure !== undefined) failures.push(this.sandboxAuthorityCleanupFailure);
+      if (failures.length > 0) {
+        const error = new AggregateError(failures, "unified exec owner cleanup is unproven at durable close");
+        this.poisonSandboxAuthority(error);
+        throw error;
+      }
+      // Keep settled yielded entries for status/output collection and pruning.
+      lifetime.closed = true;
+    });
+    return lifetime.closeTask;
+  }
+
   /** Freeze admission and prove containment before a durable terminal tail. */
   prepareForDurableClose(): Promise<void> {
     if (this.durableCloseTask !== undefined) return this.durableCloseTask;
@@ -1342,6 +1478,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly env: Record<string, string>;
     readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
     readonly ownerId?: string;
+    readonly ownerBinding?: UnifiedExecOwnerBinding;
     readonly argv0?: string;
     readonly tty: boolean;
     readonly allowDirectBwrap: boolean;
@@ -1350,6 +1487,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly sandboxAuthorityGeneration: number;
   }): Promise<ProcessEntry> {
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+    this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
     const output = new ProcessOutputBuffer();
     const abortController = new AbortController();
     const exit = makeDeferredExit();
@@ -1368,6 +1506,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { runtimeSandbox: params.runtimeSandbox }
         : {}),
       ...(params.ownerId !== undefined ? { ownerId: params.ownerId } : {}),
+      ...(params.ownerBinding !== undefined
+        ? { ownerLifetime: this.ownerBindings.get(params.ownerBinding)!.lifetime }
+        : {}),
       startedAt: params.startedAt,
       output,
       callId: params.callId,
@@ -1419,6 +1560,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         this.assertSandboxAuthorityAdmission(
           params.sandboxAuthorityGeneration,
         );
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
         processHandle = pty.spawn(ptyCommand.program, [...ptyCommand.args], {
           name: "xterm-256color",
           cols: 80,
@@ -1454,6 +1596,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+    this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
     const probeHint = params.runtimeSandbox === undefined ? undefined
       : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
     let child: ChildProcessWithoutNullStreams;
@@ -1467,7 +1610,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             protocol: "v3",
             prepare: () => prepareDirectBwrapV3Plan({ program: params.program,
               args: probeHint?.args ?? params.args, cwd: params.cwd, env: params.env }),
-            validateAdmission: () => this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration),
+            validateAdmission: () => {
+              this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+              this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+            },
             signal: abortController.signal,
           },
         } : {}),

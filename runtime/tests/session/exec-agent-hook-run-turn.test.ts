@@ -38,6 +38,7 @@ import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
 import {
   enqueue,
+  getCommandQueueSnapshot,
   resetCommandQueueForTesting,
 } from "../utils/messageQueueManager.js";
 import { parseRuleString } from "../permissions/rules.js";
@@ -1257,9 +1258,18 @@ describe("execAgentHook run-turn integration", () => {
 
   test("projects visible queued prompts into recordable messages", async () => {
     const queuedUuid = crypto.randomUUID();
+    const parentQueuedUuid = crypto.randomUUID();
+    const childId = "queued-prompt-child";
     enqueue({
       uuid: queuedUuid,
       value: "side prompt",
+      mode: "prompt",
+      priority: "next",
+      queueOwner: { kind: "session", conversationId: childId },
+    });
+    enqueue({
+      uuid: parentQueuedUuid,
+      value: "parent-only prompt",
       mode: "prompt",
       priority: "next",
       queueOwner: { kind: "session", conversationId: "parent-test" },
@@ -1304,7 +1314,7 @@ describe("execAgentHook run-turn integration", () => {
         querySource: "sdk",
         maxTurns: 3,
       },
-      { conversationId: "parent-test" },
+      { conversationId: childId },
     )) {
       events.push(event);
     }
@@ -1324,6 +1334,9 @@ describe("execAgentHook run-turn integration", () => {
         event.message.uuid === queuedUuid,
     );
     expect(projected?.message.message.content).toBe("side prompt");
+    expect(getCommandQueueSnapshot().map((command) => command.uuid)).toEqual([
+      parentQueuedUuid,
+    ]);
   });
 
   test("emits progress while a provider stream is still open", async () => {

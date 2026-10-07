@@ -21,7 +21,7 @@ import type {
   UnifiedExecProcessManagerLike,
   UnifiedExecRuntimeSandbox,
 } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
   WindowsSandboxLevel,
@@ -1241,12 +1241,15 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
+        const ownerBinding = execOwnerBindingFromToolArgs(args as Record<string, unknown>);
         const shellRequest = {
           ...(workdir !== undefined ? { workdir } : {}),
           ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
           ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
         };
         const commonRequest = {
+          ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(ownerBinding !== undefined ? { ownerBinding } : {}),
           cmd,
           callId: asString(args.__callId),
           ...(asNumber(args.yield_time_ms) !== undefined

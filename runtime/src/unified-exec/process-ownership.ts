@@ -1,4 +1,23 @@
-import type { OwnedProcessView } from "./types.js";
+import type { OwnedProcessView, UnifiedExecOwnerBinding } from "./types.js";
+
+/** Internal transport; the receiving manager authenticates the object identity. */
+export function attachExecOwnerBinding(
+  args: Record<string, unknown>,
+  binding: UnifiedExecOwnerBinding | undefined,
+): void {
+  delete args.__agencExecOwnerBinding;
+  if (binding !== undefined) {
+    Object.defineProperty(args, "__agencExecOwnerBinding", {
+      value: binding, enumerable: false, configurable: true,
+    });
+  }
+}
+
+export function execOwnerBindingFromToolArgs(
+  args: Readonly<Record<string, unknown>>,
+): UnifiedExecOwnerBinding | undefined {
+  return args.__agencExecOwnerBinding as UnifiedExecOwnerBinding | undefined;
+}
 /**
  * Multi-agent process ownership for the shared UnifiedExecProcessManager.
  *

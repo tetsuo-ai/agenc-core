@@ -1,4 +1,5 @@
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
+import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
 import { randomUUID, type UUID } from "node:crypto";
 import type { z } from "zod/v4";
 
@@ -225,91 +226,97 @@ export async function createTurnCompatSession(
     readonly executionAdmission?: ExecutionAdmissionClient;
   } = {},
 ): Promise<TurnCompatSession> {
-  assertTurnCompatAgentCatalog(parent, params.toolUseContext);
-  const catalogWorkspaceId =
-    params.toolUseContext.options.agentDefinitions.agentRoleWorkspaceId;
-  if (catalogWorkspaceId === undefined) {
-    throw new Error("turn compatibility agent catalog provenance is missing");
-  }
-  const scopedAgentDefinitions = {
-    ...params.toolUseContext.options.agentDefinitions,
-    agentRoleWorkspaceId: catalogWorkspaceId,
+  const conversationId = opts.conversationId ?? params.toolUseContext.agentId ??
+    `${parent.conversationId}:turn:${randomUUID()}`;
+  const execOwnerBinding = parent.acquireCompatibilityExecBinding?.(conversationId);
+  let providerLease: TurnCompatProviderLease | undefined;
+  const disposeProjection = (): Promise<void> => {
+    // Revoke synchronously: provider disposal may yield or fail.
+    execOwnerBinding?.release();
+    return providerLease?.disposeOwnedProvider() ?? Promise.resolve();
   };
-  const appState = params.toolUseContext.getAppState();
-  const foregroundMemoryScope = resolveForegroundAgentMemoryScope(
-    appState.agent,
-    scopedAgentDefinitions.activeAgents,
-  );
-  const model = params.toolUseContext.options.mainLoopModel;
-  const systemPrompt = appendSystemContext(
-    params.systemPrompt,
-    params.systemContext,
-  ).join("\n\n");
-  const { history, userMessage } = splitMessagesForTurn(
-    prependUserContext([...params.messages], params.userContext),
-    parent.services.runtimeOptions?.lightMode === true,
-  );
-  const effectiveCwd =
-    getCwdOverrideForCurrentContext() ??
-    parent.sessionConfiguration.cwd ??
-    parent.config.cwd;
-  const livePermissionContext = appState.toolPermissionContext as unknown as
-    ToolPermissionContext;
-  const inheritedPermissionContext = transitionPermissionMode(
-    livePermissionContext.mode,
-    livePermissionContext.mode,
-    livePermissionContext,
-    { workspacePath: effectiveCwd },
-  );
-  if ("error" in inheritedPermissionContext) {
-    throw new Error(
-      "turn compatibility cannot inherit bypassPermissions without exact canonical cwd consent",
-    );
-  }
-  const sandboxExecutionBroker =
-    parent.services.sandboxExecutionBroker?.forkForCwd(effectiveCwd);
-  const scopedToolUseContext =
-    sandboxExecutionBroker === undefined
-      ? params.toolUseContext
-      : ({
-          ...params.toolUseContext,
-          services: {
-            ...(
-              params.toolUseContext as ToolUseContext & {
-                readonly services?: Record<string, unknown>;
-              }
-            ).services,
-            sandboxExecutionBroker,
-          },
-        } as ToolUseContext);
-  const registry = await createToolRegistryFromToolContext({
-    tools: scopedToolUseContext.options.tools,
-    toolUseContext: scopedToolUseContext,
-    canUseTool: params.canUseTool,
-  });
-  const sessionConfiguration = {
-    ...parent.sessionConfiguration,
-    cwd: effectiveCwd,
-    collaborationMode: {
-      ...parent.sessionConfiguration.collaborationMode,
-      model,
-    },
-  };
-  const selectedProvider = params.toolUseContext.provider ??
-    parent.services.provider;
-  const providerLease = createTurnCompatProviderLease({
-    provider: selectedProvider,
-    cwd: effectiveCwd,
-    sandboxExecutionBroker,
-  });
-  let session: Session;
   try {
-    session = new Session({
+    assertTurnCompatAgentCatalog(parent, params.toolUseContext);
+    const catalogWorkspaceId =
+      params.toolUseContext.options.agentDefinitions.agentRoleWorkspaceId;
+    if (catalogWorkspaceId === undefined) {
+      throw new Error("turn compatibility agent catalog provenance is missing");
+    }
+    const scopedAgentDefinitions = {
+      ...params.toolUseContext.options.agentDefinitions,
+      agentRoleWorkspaceId: catalogWorkspaceId,
+    };
+    const appState = params.toolUseContext.getAppState();
+    const foregroundMemoryScope = resolveForegroundAgentMemoryScope(
+      appState.agent,
+      scopedAgentDefinitions.activeAgents,
+    );
+    const model = params.toolUseContext.options.mainLoopModel;
+    const systemPrompt = appendSystemContext(
+      params.systemPrompt,
+      params.systemContext,
+    ).join("\n\n");
+    const { history, userMessage } = splitMessagesForTurn(
+      prependUserContext([...params.messages], params.userContext),
+      parent.services.runtimeOptions?.lightMode === true,
+    );
+    const effectiveCwd =
+      getCwdOverrideForCurrentContext() ??
+      parent.sessionConfiguration.cwd ??
+      parent.config.cwd;
+    const livePermissionContext = appState.toolPermissionContext as unknown as
+      ToolPermissionContext;
+    const inheritedPermissionContext = transitionPermissionMode(
+      livePermissionContext.mode,
+      livePermissionContext.mode,
+      livePermissionContext,
+      { workspacePath: effectiveCwd },
+    );
+    if ("error" in inheritedPermissionContext) {
+      throw new Error(
+        "turn compatibility cannot inherit bypassPermissions without exact canonical cwd consent",
+      );
+    }
+    const sandboxExecutionBroker =
+      parent.services.sandboxExecutionBroker?.forkForCwd(effectiveCwd);
+    const scopedToolUseContext =
+      sandboxExecutionBroker === undefined
+        ? params.toolUseContext
+        : ({
+            ...params.toolUseContext,
+            services: {
+              ...(
+                params.toolUseContext as ToolUseContext & {
+                  readonly services?: Record<string, unknown>;
+                }
+              ).services,
+              sandboxExecutionBroker,
+            },
+          } as ToolUseContext);
+    const registry = await createToolRegistryFromToolContext({
+      tools: scopedToolUseContext.options.tools,
+      toolUseContext: scopedToolUseContext,
+      canUseTool: params.canUseTool,
+    });
+    const sessionConfiguration = {
+      ...parent.sessionConfiguration,
+      cwd: effectiveCwd,
+      collaborationMode: {
+        ...parent.sessionConfiguration.collaborationMode,
+        model,
+      },
+    };
+    const selectedProvider = params.toolUseContext.provider ??
+      parent.services.provider;
+    providerLease = createTurnCompatProviderLease({
+      provider: selectedProvider,
+      cwd: effectiveCwd,
+      sandboxExecutionBroker,
+    });
+    const session = new Session({
       fileReadScope: parent.fileReadScope,
-      conversationId:
-        opts.conversationId ??
-        params.toolUseContext.agentId ??
-        `${parent.conversationId}:turn:${randomUUID()}`,
+      conversationId,
+      unifiedExecOwnership: { kind: "borrowed", binding: execOwnerBinding },
       roleWorkspace: parent.roleWorkspace,
       agentDefinitions: scopedAgentDefinitions,
       initialState: {
@@ -364,27 +371,27 @@ export async function createTurnCompatSession(
           : {}),
       },
     });
+    session.onBeforeDurableClose(disposeProjection);
+    attachToolContextSurface(session, scopedToolUseContext);
+    return {
+      session,
+      history,
+      userMessage,
+      systemPrompt,
+      foregroundMemoryScope,
+      disposeOwnedProvider: disposeProjection,
+    };
   } catch (error) {
     try {
-      await providerLease.disposeOwnedProvider();
+      await disposeProjection();
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        "turn compatibility session construction and provider cleanup failed",
+        "turn compatibility construction and provider cleanup failed",
       );
     }
     throw error;
   }
-  session.onBeforeDurableClose(providerLease.disposeOwnedProvider);
-  attachToolContextSurface(session, scopedToolUseContext);
-  return {
-    session,
-    history,
-    userMessage,
-    systemPrompt,
-    foregroundMemoryScope,
-    disposeOwnedProvider: providerLease.disposeOwnedProvider,
-  };
 }
 
 export function assertTurnCompatAgentCatalog(
@@ -1398,6 +1405,14 @@ function copyExecutionBoundary(
   source: Record<string, unknown>,
   target: Record<string, unknown>,
 ): void {
+  attachExecOwnerBinding(target, execOwnerBindingFromToolArgs(source));
+  for (const key of ["__agencSessionId", "__agencSessionIdSig"]) {
+    if (typeof source[key] === "string") {
+      Object.defineProperty(target, key, {
+        value: source[key], enumerable: false, configurable: true,
+      });
+    }
+  }
   const runtimeContext = readToolRuntimeContext(source);
   if (runtimeContext !== undefined) {
     attachToolRuntimeContext(target, runtimeContext);

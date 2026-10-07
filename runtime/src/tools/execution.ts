@@ -59,6 +59,7 @@
  * @module
  */
 
+import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
 import { beginExecutingToolCall } from "../session/executing-tool-calls.js";
 import { normalizeModelToolArgs, validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
@@ -1911,6 +1912,9 @@ export async function runToolUse(
       });
     }
   }
+  attachExecOwnerBinding(argsForTool, (invocation.session as unknown as {
+    readonly unifiedExecOwnerBinding?: import("../unified-exec/types.js").UnifiedExecOwnerBinding;
+  }).unifiedExecOwnerBinding);
   if (opts.runtimeAttemptContext !== undefined) {
     attachToolRuntimeContext(argsForTool, opts.runtimeAttemptContext);
     enforceRuntimeSandboxAttempt({
