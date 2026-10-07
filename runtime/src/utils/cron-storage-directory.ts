@@ -186,24 +186,61 @@ export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
 }
 
 /**
- * PowerShell repair for one `.agenc` directory (Windows PowerShell 5.1 and
- * PowerShell 7). It refuses a `.agenc` that is itself a junction or symbolic
- * link, then walks the tree with an explicit stack. A directory is made
- * private before its entries are listed, so nobody else can add or swap an
- * entry while the walk is inside it. Entries that are reparse points
- * (junctions, symbolic links) are skipped and never entered, and files with
- * more than one hard link are skipped, so nothing outside `.agenc` is
- * changed. Every other directory and file gets the descriptor
- * `workflow-private-path.ts` writes: owner = current user, protected DACL,
- * one allow FullControl entry for that user ((OI)(CI) on directories). The
- * script stops at the first error.
+ * C# helper the repair loads with `Add-Type`: handle-based opens and
+ * descriptor writes. No single quotes (the source is a PowerShell
+ * single-quoted literal) and C# 5 only (Windows PowerShell 5.1).
+ */
+const WINDOWS_REPAIR_HELPER = [
+  "using System; using System.ComponentModel; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;",
+  "public static class AgencCronRepair {",
+  "[StructLayout(LayoutKind.Sequential)] public struct Info { public uint Attributes, Created1, Created2, Accessed1, Accessed2, Written1, Written2, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow; }",
+  "[StructLayout(LayoutKind.Sequential)] struct Text { public ushort Length, MaximumLength; public IntPtr Buffer; }",
+  "[StructLayout(LayoutKind.Sequential)] struct Target { public int Length; public IntPtr Root, Name; public uint Flags; public IntPtr Descriptor, Quality; }",
+  "[StructLayout(LayoutKind.Sequential)] struct Result { public IntPtr Status, Information; }",
+  "[DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);",
+  "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool GetFileInformationByHandle(SafeFileHandle handle, out Info info);",
+  "[DllImport(\"advapi32.dll\", SetLastError = true)] static extern bool SetKernelObjectSecurity(SafeFileHandle handle, uint information, byte[] descriptor);",
+  "[DllImport(\"ntdll.dll\")] static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref Target target, out Result result, IntPtr size, uint attributes, uint share, uint disposition, uint options, IntPtr extra, uint extraLength);",
+  "[DllImport(\"ntdll.dll\")] static extern int RtlNtStatusToDosError(int status);",
+  "static Exception Fail(int code, string path) { return new Win32Exception(code, \"Not repaired: \" + path + \" (\" + new Win32Exception(code).Message + \")\"); }",
+  // READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES (+ FILE_TRAVERSE for the folder);
+  // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT: a link at the path is opened, never followed.
+  "public static SafeFileHandle OpenFolder(string path) { SafeFileHandle handle = CreateFileW(path, 0x1E00A0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero); if (handle.IsInvalid) throw Fail(Marshal.GetLastWin32Error(), path); return handle; }",
+  // Opened relative to the folder handle (FILE_OPEN, FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT): it is an entry of that very folder.
+  "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0); if (status == unchecked((int)0xC0000034)) return null; if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
+  "public static Info Describe(SafeFileHandle handle, string path) { Info info; if (!GetFileInformationByHandle(handle, out info)) throw Fail(Marshal.GetLastWin32Error(), path); return info; }",
+  // OWNER | DACL | PROTECTED_DACL on the open handle only (NtSetSecurityObject): nothing is propagated to children.
+  "public static void Protect(SafeFileHandle handle, byte[] descriptor, string path) { if (!SetKernelObjectSecurity(handle, 0x80000005, descriptor)) throw Fail(Marshal.GetLastWin32Error(), path); }",
+  "}",
+].join(" ");
+
+/**
+ * Minimal PowerShell repair for one `.agenc` (Windows PowerShell 5.1 and
+ * PowerShell 7). It changes at most two objects: the `.agenc` directory
+ * itself and, if present, its `scheduled_tasks.json`. Each gets the
+ * descriptor `workflow-private-path.ts` writes: owner = current user,
+ * protected DACL, one allow FullControl entry for that user ((OI)(CI) on
+ * the directory so cron's new files inherit it). Other entries in `.agenc`
+ * keep their current ACLs, and nothing is walked.
  *
- * Descriptors are written with `SetFileSecurityW`, which changes only the
- * named object. `Set-Acl`, .NET `SetAccessControl` and `icacls` all go
- * through `SetNamedSecurityInfo`, which also rewrites the inherited entries
- * of every existing child, so a hard link under `.agenc` to an outside file
- * would change that file (seen on Windows 11). `icacls /T` also follows
- * junctions, and `/L` covers only symbolic links.
+ * Containment does not rest on skipping links. `.agenc` is opened once
+ * with FILE_FLAG_OPEN_REPARSE_POINT, and its type, reparse attribute and
+ * file ID are read from that handle; the descriptor is written through the
+ * same handle with `SetKernelObjectSecurity`, so a path swapped after the
+ * open cannot redirect the write. The task file is opened relative to that
+ * directory handle (NtCreateFile with RootDirectory, FILE_OPEN_REPARSE_POINT)
+ * and is written only when the handle shows a regular file with one link.
+ * `.agenc` is reopened at the end and must have the same volume serial and
+ * file ID. `Set-Acl`, .NET `SetAccessControl` and `icacls` are not used:
+ * they go through `SetNamedSecurityInfo`, which also rewrites inherited
+ * entries of existing children (on Windows 11 it changed an outside file
+ * hard-linked into `.agenc`), and `icacls /T` follows junctions.
+ *
+ * Remaining race: whatever directory is at the path when it is opened is
+ * the one made private. Someone who can rename entries in the project
+ * folder could put their own real directory there first; it is then made
+ * private to the current user, and the final identity check reports a
+ * later swap. The script stops at the first error.
  *
  * The path is a PowerShell single-quoted literal; PowerShell also treats
  * U+2018-U+201B as single quotes, so those are doubled too.
@@ -213,26 +250,39 @@ export function windowsCronRepairCommand(directory: string): string {
   return [
     "& { $ErrorActionPreference = 'Stop'",
     `$root = ${literal}`,
-    "$link = [IO.FileAttributes]::ReparsePoint",
-    "$folder = [IO.FileAttributes]::Directory",
-    "$a = [IO.File]::GetAttributes($root)",
-    "if (($a -band $link) -ne 0 -or ($a -band $folder) -eq 0) { throw \"Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead.\" }",
-    "Add-Type -Namespace AgencCronRepair -Name Native -MemberDefinition '[DllImport(\"advapi32.dll\", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool SetFileSecurityW(string path, int info, byte[] descriptor);'",
+    `Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}'`,
     "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User",
-    "$private = { param($path, $isFolder) if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); if (-not [AgencCronRepair.Native]::SetFileSecurityW($path, 0x80000005, $acl.GetSecurityDescriptorBinaryForm())) { $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); $why = (New-Object ComponentModel.Win32Exception($code)).Message; throw (New-Object ComponentModel.Win32Exception($code, \"Not repaired: $path ($why)\")) } }",
-    "& $private $root $true",
-    "$todo = New-Object Collections.Stack",
-    "$todo.Push($root)",
-    "$skipped = 0",
-    "while ($todo.Count -gt 0) { foreach ($path in [IO.Directory]::GetFileSystemEntries($todo.Pop())) { $a = [IO.File]::GetAttributes($path); if (($a -band $link) -ne 0) { Write-Warning \"Skipped link: $path\"; $skipped++ } elseif (($a -band $folder) -ne 0) { & $private $path $true; $todo.Push($path) } elseif ((Get-Item -LiteralPath $path -Force).LinkType -eq 'HardLink') { Write-Warning \"Skipped hard-linked file: $path\"; $skipped++ } else { & $private $path $false } } }",
-    "\"Repaired $root ($skipped links skipped)\" }",
+    "$descriptor = { param($isFolder) if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); ,$acl.GetSecurityDescriptorBinaryForm() }",
+    "$link = 0x400",
+    "$folder = 0x10",
+    "$task = $root + '\\scheduled_tasks.json'",
+    "$dir = [AgencCronRepair]::OpenFolder($root)",
+    "try { $id = [AgencCronRepair]::Describe($dir, $root); " +
+      "if (($id.Attributes -band $link) -ne 0 -or ($id.Attributes -band $folder) -eq 0) { throw \"Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead.\" }; " +
+      "[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root); " +
+      "$file = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task); " +
+      "if ($file) { try { $info = [AgencCronRepair]::Describe($file, $task); " +
+        "if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw \"Not repaired: $task is a link, a hard-linked file or not a regular file. Remove or replace it, then run this again.\" }; " +
+        "[AgencCronRepair]::Protect($file, (& $descriptor $false), $task) } finally { $file.Dispose() } }; " +
+      "$again = [AgencCronRepair]::OpenFolder($root); try { $now = [AgencCronRepair]::Describe($again, $root) } finally { $again.Dispose() }; " +
+      "if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw \"Not repaired: $root was replaced during the repair. Check it, then run this again.\" } " +
+      "} finally { $dir.Dispose() }",
+    "\"Repaired $root and its task file; other entries in it keep their ACLs.\" }",
   ].join("; ");
 }
 
+/** Who loses access when the repair replaces `.agenc`'s ACL. */
+const WINDOWS_REPAIR_ACCESS_LOSS =
+  "This replaces the ACL of that directory and task file with one full-control entry for the current user, " +
+  "so every other account loses access to them: SYSTEM, Administrators, Users, Authenticated Users, Everyone, " +
+  "sandbox or AppContainer groups such as CodexSandboxUsers, and any other explicit entries " +
+  "(for example, backup or antivirus software running as SYSTEM can no longer list the directory or read the task file). " +
+  "Other entries in the directory keep their current ACLs, links are refused, nothing outside it is changed, " +
+  "and the script stops at the first error.";
+
 function windowsRepairAdvice(directory: string, extra = ""): string {
-  return `To make ${directory} and everything in it private to the current user ` +
-    "(junctions, symbolic links and hard-linked files inside it are skipped, its parent is not changed, " +
-    `and the script stops at the first error), run this in PowerShell${extra}, then retry: ` +
+  return `To make ${directory} itself and its scheduled_tasks.json private to the current user, ` +
+    `run this in PowerShell${extra}, then retry. ${WINDOWS_REPAIR_ACCESS_LOSS} Command: ` +
     windowsCronRepairCommand(directory);
 }
 
@@ -256,10 +306,13 @@ export function windowsCronAclError(
   const failure = classifyWindowsCronFailure(cause);
   const fail = (message: string) => new CronStorageAclError(message, directory, { cause });
   if (failure.kind === "volume") {
+    const where = failure.reason === "NTFS is required"
+      ? `${directory} is on a volume that is not NTFS (for example a ReFS Dev Drive, FAT32 or exFAT)`
+      : `${directory} is a network or device path`;
     return fail(
-      `${OWNERSHIP_ERROR}: ${directory} is on a volume that Windows durable cron storage does not support ` +
-        `(${failure.reason}). Its permissions were left unchanged. Keep the project on a local NTFS volume, ` +
-        "or schedule the task with durable:false.",
+      `Durable cron storage on Windows requires a local NTFS volume, and ${where}. ` +
+        "This is a platform limitation that no permission change can fix; its permissions were left unchanged. " +
+        "Move the project to a local NTFS volume, or schedule the task with durable:false.",
     );
   }
   if (state === "inaccessible" || failure.kind === "denied") {
