@@ -1,3 +1,4 @@
+import { legacyCacheCreationUsage } from "../llm/usage.js";
 /**
  * Helper for running forked agent query loops with usage tracking.
  *
@@ -647,6 +648,7 @@ function usageFromLlmUsage(usage: LLMUsage): NonNullableUsage {
     output_tokens: usage.completionTokens ?? 0,
     cache_read_input_tokens: usage.cachedInputTokens ?? 0,
     cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
+    ...legacyCacheCreationUsage(usage),
     server_tool_use: {
       web_search_requests: usage.webSearchRequests ?? 0,
       web_fetch_requests: 0,

@@ -1,3 +1,4 @@
+import { legacyCacheCreationUsage } from "../llm/usage.js";
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
@@ -331,6 +332,7 @@ export function calculateCostFromTokens(
     outputTokens: number
     cacheReadInputTokens: number
     cacheCreationInputTokens: number
+    cacheCreation1hInputTokens?: number
   },
 ): number {
   const usage: Usage = {
@@ -338,6 +340,7 @@ export function calculateCostFromTokens(
     output_tokens: tokens.outputTokens,
     cache_read_input_tokens: tokens.cacheReadInputTokens,
     cache_creation_input_tokens: tokens.cacheCreationInputTokens,
+    ...legacyCacheCreationUsage(tokens),
   } as Usage
   return calculateUSDCost(model, usage)
 }

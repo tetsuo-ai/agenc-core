@@ -130,6 +130,7 @@ describe("cost tracker facade", () => {
       output_tokens: 250,
       cache_read_input_tokens: 400,
       cache_creation_input_tokens: 25,
+      cache_creation: { ephemeral_1h_input_tokens: 10 },
       server_tool_use: { web_search_requests: 2 },
     };
 
@@ -143,6 +144,7 @@ describe("cost tracker facade", () => {
       outputTokens: 250,
       cachedInputTokens: 400,
       cacheCreationInputTokens: 25,
+      cacheCreation1hInputTokens: 10,
       webSearchRequests: 2,
     });
     dispose();

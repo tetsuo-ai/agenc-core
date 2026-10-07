@@ -1244,6 +1244,9 @@ function subtractModelUsage(
       0,
       a.cacheCreationInputTokens - b.cacheCreationInputTokens,
     ),
+    ...(a.cacheCreation1hInputTokens !== undefined || b.cacheCreation1hInputTokens !== undefined
+      ? { cacheCreation1hInputTokens: Math.max(0, (a.cacheCreation1hInputTokens ?? 0) - (b.cacheCreation1hInputTokens ?? 0)) }
+      : {}),
     reasoningOutputTokens: Math.max(
       0,
       a.reasoningOutputTokens - b.reasoningOutputTokens,
@@ -2140,6 +2143,9 @@ export class CostSidecar implements Sidecar {
         usage.outputTokens += msg.payload.completionTokens ?? 0;
         usage.cachedInputTokens += msg.payload.cachedInputTokens ?? 0;
         usage.cacheCreationInputTokens += msg.payload.cacheCreationInputTokens ?? 0;
+        if (msg.payload.cacheCreation1hInputTokens !== undefined) {
+          usage.cacheCreation1hInputTokens = (usage.cacheCreation1hInputTokens ?? 0) + msg.payload.cacheCreation1hInputTokens;
+        }
         usage.reasoningOutputTokens += msg.payload.reasoningOutputTokens ?? 0;
         usage.webSearchRequests += msg.payload.webSearchRequests ?? 0;
         usage.totalTokens += msg.payload.totalTokens ?? 0;
@@ -2400,6 +2406,9 @@ export class CostSidecar implements Sidecar {
     usage.cacheCreationInputTokens += normalizeCounter(
       delta.cacheCreationInputTokens,
     );
+    if (delta.cacheCreation1hInputTokens !== undefined) {
+      usage.cacheCreation1hInputTokens = (usage.cacheCreation1hInputTokens ?? 0) + normalizeCounter(delta.cacheCreation1hInputTokens);
+    }
     usage.reasoningOutputTokens += reasoningOutputTokens;
     usage.webSearchRequests += normalizeCounter(delta.webSearchRequests);
     usage.totalTokens += totalTokens;
@@ -2421,6 +2430,7 @@ export class CostSidecar implements Sidecar {
           cacheCreationInputTokens: normalizeCounter(
             delta.cacheCreationInputTokens,
           ),
+          cacheCreation1hInputTokens: delta.cacheCreation1hInputTokens,
           reasoningOutputTokens,
           webSearchRequests: normalizeCounter(delta.webSearchRequests),
           totalTokens,
@@ -2451,6 +2461,9 @@ export class CostSidecar implements Sidecar {
     explicit.outputTokens += delta.outputTokens;
     explicit.cachedInputTokens += delta.cachedInputTokens;
     explicit.cacheCreationInputTokens += delta.cacheCreationInputTokens;
+    if (delta.cacheCreation1hInputTokens !== undefined) {
+      explicit.cacheCreation1hInputTokens = (explicit.cacheCreation1hInputTokens ?? 0) + delta.cacheCreation1hInputTokens;
+    }
     explicit.reasoningOutputTokens += delta.reasoningOutputTokens;
     explicit.webSearchRequests += delta.webSearchRequests;
     explicit.totalTokens += delta.totalTokens;

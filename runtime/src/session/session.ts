@@ -325,6 +325,7 @@ export interface SessionState {
     readonly totalTokens?: number;
     readonly cachedInputTokens?: number;
     readonly cacheCreationInputTokens?: number;
+    readonly cacheCreation1hInputTokens?: number;
     readonly reasoningOutputTokens?: number;
     readonly webSearchRequests?: number;
   };

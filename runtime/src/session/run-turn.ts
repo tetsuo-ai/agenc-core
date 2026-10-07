@@ -500,6 +500,9 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     cacheCreationInputTokens:
       (acc.cacheCreationInputTokens ?? 0) +
       (next.cacheCreationInputTokens ?? 0),
+    ...(acc.cacheCreation1hInputTokens !== undefined || next.cacheCreation1hInputTokens !== undefined
+      ? { cacheCreation1hInputTokens: (acc.cacheCreation1hInputTokens ?? 0) + (next.cacheCreation1hInputTokens ?? 0) }
+      : {}),
     reasoningOutputTokens:
       (acc.reasoningOutputTokens ?? 0) + (next.reasoningOutputTokens ?? 0),
     webSearchRequests:

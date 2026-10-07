@@ -406,14 +406,14 @@ describe("usage propagation — completed turn reaches every TUI sink", () => {
             { id: "t-1", name: "Probe", arguments: JSON.stringify({ q: "x" }) },
           ],
           finishReason: "tool_calls",
-          usage: { promptTokens: 8, completionTokens: 3, totalTokens: 11 },
+          usage: { promptTokens: 8, completionTokens: 3, totalTokens: 11, cacheCreationInputTokens: 10, cacheCreation1hInputTokens: 3 },
         };
       }
       return {
         content: "ok",
         toolCalls: [],
         finishReason: "stop",
-        usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6 },
+        usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6, cacheCreationInputTokens: 20, cacheCreation1hInputTokens: 5 },
       };
     });
     const { registry } = mkScriptedRegistry(["Probe"], () => ({
@@ -430,6 +430,8 @@ describe("usage propagation — completed turn reaches every TUI sink", () => {
     // turn_complete carries the CUMULATIVE usage of both completed steps.
     const tc = lastTurnComplete(yielded);
     expect(tc?.usage.totalTokens).toBe(17);
+    expect(tc?.usage.cacheCreationInputTokens).toBe(30);
+    expect(tc?.usage.cacheCreation1hInputTokens).toBe(8);
     // both steps each emitted a token_count event for the CostSidecar.
     const tcounts = tokenCountEvents(events);
     expect(tcounts.length).toBe(2);

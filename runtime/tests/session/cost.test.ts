@@ -1017,4 +1017,5 @@ test("Haiku 5.5 session cost keeps per-request tiers and one-hour writes across 
   const short = (60_000 * 0.1 + 1000 * 0.5 + 20_000 * 0.01 + 10_000 * 0.125 + 10_000 * 0.2) / 1e6;
   const long = (60_001 * 0.5 + 1000 * 2.5 + 20_000 * 0.05 + 10_000 * 0.625 + 10_000 * 1) / 1e6;
   expect(sidecar.getTotalCostUsd()).toBeCloseTo(2 * short + long, 10);
+  expect(sidecar.getPerModelUsage()[0]?.cacheCreation1hInputTokens).toBe(30_000);
 });
