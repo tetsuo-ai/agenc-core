@@ -760,6 +760,37 @@ describe.skipIf(process.platform === "win32")(
       const child = scenario.children[0]!;
       expectSettledFromProcessEvidence(await childRunClosed(child), "tool:system.exec-command:process-exit");
       expectNothingToResolve(scenario, child);
+      await expectFollowUpRuns(scenario);
+    });
+
+    it("still closes exec admission and stops owned commands when the root session is finalized", async () => {
+      const scenario = createScenario({ childExec: () => ({ cmd: "true" }) });
+      cleanups.push(scenario.cleanup);
+      const result = await scenario.manager.execCommand({
+        cmd: `echo $$ > ${JSON.stringify(scenario.pidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
+        yield_time_ms: 250,
+        ownerId: scenario.root.conversationId,
+      });
+      expect(result.session_id).toBeDefined();
+      const pid = await waitFor(
+        () => readPid(scenario.pidFile),
+        PROCESS_GONE_BOUND_MS,
+        "the root command to start",
+      );
+      expect(processIsRunning(pid)).toBe(true);
+
+      await scenario.root.shutdown();
+
+      await waitFor(
+        () => processIsRunning(pid) ? undefined : true,
+        PROCESS_GONE_BOUND_MS,
+        "the root command to end at finalization",
+      );
+      await expect(scenario.manager.execCommand({
+        cmd: `echo unexpected > ${JSON.stringify(scenario.followUpMarker)}`,
+        ownerId: scenario.root.conversationId,
+      })).rejects.toThrow("unified exec is closed for durable session finalization");
+      expect(existsSync(scenario.followUpMarker)).toBe(false);
     });
 
     it("keeps a service the sub-agent detached, settles its call, and takes the next prompt", async () => {

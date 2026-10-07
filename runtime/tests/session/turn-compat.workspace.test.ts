@@ -34,6 +34,143 @@ import { frameUntrustedToolResultContent } from '../../src/tools/untrusted-tool-
 import { createAssistantMessage, createUserMessage } from '../../src/utils/messages.js'
 import { asSystemPrompt } from '../../src/utils/systemPromptType.js'
 import { mkSession as mkRuntimeSession } from '../fixtures.js'
+import { UnifiedExecProcessManager } from '../../src/unified-exec/process-manager.js'
+import type { UnifiedExecOwnerBinding } from '../../src/unified-exec/types.js'
+import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from '../../src/unified-exec/process-ownership.js'
+
+describe('turn compatibility exec lifetime', () => {
+  function fixture() {
+    const cwd = tempRoot('compat-exec')
+    const parent = foregroundParent(cwd)
+    const manager = new UnifiedExecProcessManager({ cwd, sessionTempRoot: cwd, shellPath: '/bin/sh' })
+    ;(parent.services as { unifiedExecManager?: UnifiedExecProcessManager }).unifiedExecManager = manager
+    const toolUseContext = foregroundToolContext(cwd, [], undefined)
+    const create = (conversationId = 'compat-child') => createTurnCompatSession(parent, {
+      messages: [], systemPrompt: asSystemPrompt(['system']), userContext: {}, systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }), toolUseContext, querySource: 'repl_main_thread',
+    }, { conversationId })
+    const launch = (ownerId: string, ownerBinding?: UnifiedExecOwnerBinding) => manager.execCommand({
+      cmd: 'echo retained-child-output; exec sleep 60', ownerId, ownerBinding, yield_time_ms: 1,
+    })
+    return { parent, manager, toolUseContext, create, launch }
+  }
+
+  it('retains yielded work across turns, closes descendants, and keeps the parent reusable', async () => {
+    const f = fixture()
+    try {
+      const first = await f.create()
+      const command = await f.launch('compat-child', first.session.unifiedExecOwnerBinding)
+      const nested = first.session.createChildExecLifetime('compat-grandchild')!.bind()
+      await f.launch('compat-grandchild', nested)
+      const staleLaunch = () => f.launch('compat-child', first.session.unifiedExecOwnerBinding)
+      const finalizer = vi.fn()
+      first.session.onBeforeDurableClose(finalizer)
+      await first.disposeOwnedProvider()
+      const second = await f.create()
+      await expect(staleLaunch()).rejects.toThrow(/binding|lifetime/)
+      await expect(first.session.shutdown()).rejects.toThrow(/released/)
+      expect(() => first.session.acquireCompatibilityExecBinding('late-grandchild')).toThrow(/binding|lifetime/)
+      expect(finalizer).not.toHaveBeenCalled()
+      expect(f.manager.listOwnedProcesses({ ownerId: 'compat-child' })[0]?.status).toBe('running')
+      const polled = await f.manager.writeStdin({ session_id: command.session_id!, ownerId: 'compat-child',
+        ownerBinding: second.session.unifiedExecOwnerBinding, yield_time_ms: 1 })
+      expect(polled.session_id).toBe(command.session_id)
+      await second.session.shutdown()
+      await second.disposeOwnedProvider()
+      expect(f.manager.listOwnedProcesses({ ownerId: 'compat-child' })[0]?.status).toBe('killed')
+      expect(f.manager.listOwnedProcesses({ ownerId: 'compat-grandchild' })[0]?.status).toBe('killed')
+      const third = await f.create()
+      const teardown = vi.spyOn(second.session, 'abortAllTasks')
+      await second.session.shutdown()
+      expect(teardown).not.toHaveBeenCalled()
+      expect(() => f.manager.assertOwnerAdmission('compat-child', third.session.unifiedExecOwnerBinding)).not.toThrow()
+      // The replacement may collect settled output but must not write to it.
+      await expect(f.manager.writeStdin({ session_id: command.session_id!, ownerId: 'compat-child',
+        ownerBinding: third.session.unifiedExecOwnerBinding, chars: 'new input' })).rejects.toThrow(/different exec lifetime/)
+      const collected = await f.manager.writeStdin({ session_id: command.session_id!, ownerId: 'compat-child',
+        ownerBinding: third.session.unifiedExecOwnerBinding })
+      expect(collected.session_id).toBeUndefined()
+      expect(command.stdout + polled.stdout + collected.stdout).toContain('retained-child-output')
+      await third.session.shutdown()
+      await third.disposeOwnedProvider()
+      const parentCommand = await f.manager.execCommand({ cmd: 'echo parent-still-runs', ownerId: f.parent.conversationId })
+      expect(parentCommand.stdout).toContain('parent-still-runs')
+      await f.parent.shutdown()
+      await expect(f.create()).rejects.toThrow(/shutting down/)
+    } finally {
+      await f.parent.shutdown()
+      await f.manager.closeAll()
+    }
+  }, 15_000)
+
+  it('rejects overlap and parent aliases before setup side effects', async () => {
+    const f = fixture()
+    try {
+      const first = await f.create()
+      const setup = vi.spyOn(f.toolUseContext, 'getAppState')
+      await expect(f.create()).rejects.toThrow(/active projection/)
+      await expect(f.create(f.parent.conversationId)).rejects.toThrow(/alias/)
+      expect(setup).not.toHaveBeenCalled()
+      await first.disposeOwnedProvider()
+      const second = await f.create()
+      // An old disposer cannot revoke a replacement binding.
+      await first.disposeOwnedProvider()
+      expect(() => f.manager.assertOwnerAdmission('compat-child', second.session.unifiedExecOwnerBinding)).not.toThrow()
+      await second.session.shutdown()
+      await second.disposeOwnedProvider()
+    } finally {
+      await f.parent.shutdown()
+    }
+  })
+
+  it('releases failed setup and cannot close or release its replacement', async () => {
+    const f = fixture()
+    try {
+      const setup = vi.spyOn(f.toolUseContext, 'getAppState').mockImplementationOnce(() => { throw new Error('compat setup failed') })
+      await expect(f.create()).rejects.toThrow('compat setup failed')
+      setup.mockRestore()
+      const recovered = await f.create()
+      expect(() => f.manager.assertOwnerAdmission('compat-child', recovered.session.unifiedExecOwnerBinding)).not.toThrow()
+      await recovered.session.shutdown()
+      await recovered.disposeOwnedProvider()
+    } finally {
+      await f.parent.shutdown()
+    }
+  })
+
+  it('preserves captured authority through legacy argument and permission rewrites', async () => {
+    const f = fixture()
+    const call = vi.fn(async (args: Record<string, unknown>) => {
+      f.manager.assertOwnerAdmission(String(args.__agencSessionId), execOwnerBindingFromToolArgs(args))
+      return { data: 'authorized' }
+    })
+    ;(f.toolUseContext.options as unknown as { tools: unknown[] }).tools = [{
+      name: 'CompatExecProbe', inputJSONSchema: { type: 'object', properties: {} },
+      prompt: async () => 'checks exec authority', recoveryCategory: 'idempotent', call,
+      mapToolResultToToolResultBlockParam: (data: string) => ({ type: 'tool_result', content: data }),
+    }]
+    let turn: Awaited<ReturnType<typeof f.create>> | undefined
+    try {
+      turn = await createTurnCompatSession(f.parent, {
+        messages: [], systemPrompt: asSystemPrompt(['system']), userContext: {}, systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: { replacement: true } }),
+        toolUseContext: f.toolUseContext, querySource: 'repl_main_thread',
+      }, { conversationId: 'compat-child' })
+      const tool = turn.session.services.registry.tools.find(tool => tool.name === 'CompatExecProbe')!
+      const args = { __agencSessionId: 'compat-child' }
+      attachExecOwnerBinding(args, turn.session.unifiedExecOwnerBinding)
+      await tool.execute(args)
+      expect(call.mock.calls[0]?.[0].replacement).toBe(true)
+      expect(execOwnerBindingFromToolArgs(call.mock.calls[0]![0])).toBe(turn.session.unifiedExecOwnerBinding)
+      expect(Object.keys(call.mock.calls[0]![0])).not.toContain('__agencExecOwnerBinding')
+      await turn.disposeOwnedProvider()
+      await expect(tool.execute(args)).rejects.toThrow(/binding/)
+    } finally {
+      await turn?.disposeOwnedProvider()
+      await f.parent.shutdown()
+    }
+  })
+})
 
 const tempRoots: string[] = []
 

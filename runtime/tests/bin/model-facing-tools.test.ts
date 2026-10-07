@@ -8,6 +8,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
+import { withExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import { defaultConfig } from "../config/schema.js";
@@ -670,6 +673,33 @@ describe("model-facing tools", () => {
         },
       },
     });
+  });
+
+  it("carries captured exec authority through the PowerShell adapter", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "powershell-owner-binding-"));
+    const manager = new UnifiedExecProcessManager({ cwd, sessionTempRoot: cwd });
+    const binding = manager.createOwnerLifetime("powershell-child").bind();
+    // Discovery needs a file, but the intercepted launch does not execute it.
+    await writeFile(join(cwd, "pwsh"), "");
+    const exec = vi.spyOn(manager, "execCommand").mockImplementation(async request => {
+      manager.assertOwnerAdmission(request.ownerId, request.ownerBinding);
+      return { stdout: "scoped-powershell", stderr: "", exitCode: 0, durationMs: 0 } as never;
+    });
+    try {
+      const tool = createModelFacingTools({ workspaceRoot: cwd, getSession: () => null,
+        env: { PATH: cwd }, unifiedExecManager: manager }).find(tool => tool.name === "PowerShell")!;
+      const args = withExplicitDangerBoundary({ command: "echo scoped-powershell", __agencSessionId: "powershell-child" });
+      attachExecOwnerBinding(args, binding);
+      const result = await tool.execute(args);
+      expect(result.content).toContain("scoped-powershell");
+      expect(exec.mock.calls[0]?.[0].ownerBinding).toBe(binding);
+      binding.release();
+      await expect(tool.execute(args)).rejects.toThrow(/binding/);
+    } finally {
+      exec.mockRestore();
+      await manager.closeAll();
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("exposes LSP in the default visible surface with per-op backing documented", () => {

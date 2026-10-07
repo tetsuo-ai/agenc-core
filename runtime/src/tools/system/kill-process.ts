@@ -22,7 +22,7 @@ import type {
   TerminateOwnedProcessesOutcome,
   UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs, isLiveOwnedProcess } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 
 export interface KillProcessToolConfig {
@@ -224,6 +224,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       const ownerId = processOwnerIdFromToolArgs(args);
       const ownerArg = ownerId !== undefined ? { ownerId } : {};
       try {
+        manager.assertOwnerAdmission?.(ownerId, execOwnerBindingFromToolArgs(args));
         let body: Record<string, unknown>;
         switch (selection.kind) {
           case "one": {

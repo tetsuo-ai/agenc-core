@@ -139,6 +139,7 @@ export interface ToolAdmissionUsage {
  * on them being present for correctness.
  */
 export interface ToolExecutionInjectedArgs {
+  readonly __agencExecOwnerBinding?: import("../unified-exec/types.js").UnifiedExecOwnerBinding;
   readonly __onProgress?: (event: {
     readonly chunk: string;
     readonly stream?: "stdout" | "stderr" | "status";

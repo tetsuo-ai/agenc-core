@@ -19,7 +19,7 @@ import type {
   OwnedProcessView,
   UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs, isLiveOwnedProcess } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, isLiveOwnedProcess, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 
 export interface ListProcessesToolConfig {
   readonly cwd?: string;
@@ -113,6 +113,11 @@ export function createListProcessesTool(config?: ListProcessesToolConfig): Tool 
         };
       }
       const ownerId = processOwnerIdFromToolArgs(args);
+      try {
+        manager.assertOwnerAdmission?.(ownerId, execOwnerBindingFromToolArgs(args));
+      } catch (error) {
+        return { content: safeStringify({ error: error instanceof Error ? error.message : String(error) }), isError: true };
+      }
       const views = manager.listOwnedProcesses({
         ...(ownerId !== undefined ? { ownerId } : {}),
       });

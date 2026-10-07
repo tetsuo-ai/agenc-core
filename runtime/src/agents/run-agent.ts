@@ -17,6 +17,7 @@
  * @module
  */
 
+import { attachExecOwnerBinding } from "../unified-exec/process-ownership.js";
 import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
@@ -3232,6 +3233,7 @@ async function prepareChildToolCall(
       configurable: true,
     });
   }
+  attachExecOwnerBinding(childArgs, childSession?.unifiedExecOwnerBinding);
   if (tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
     attachChildToolSearchScope(childArgs, advertisedToolNames, opts.toolCatalogScope);
   }
@@ -3543,13 +3545,13 @@ function prepareChildSessionAuthority(
   };
 }
 
-function buildChildSession(
+async function buildChildSession(
   params: RunAgentParams,
   provider: LLMProvider,
   authority: ChildSessionAuthority,
   terminalResult: () => ChildRunTerminalResult,
   executionAdmission?: ExecutionAdmissionClient,
-): ChildSession {
+): Promise<ChildSession> {
   const { sessionConfiguration, sandboxExecutionBroker } = authority;
   if (sandboxExecutionBroker !== undefined) {
     initializeForkedLspServerManager(
@@ -3580,130 +3582,141 @@ function buildChildSession(
     getSession: () => childSession,
   });
 
-  childSession = new ChildSession({
-    conversationId: params.live.agentId,
-    fileReadScope: params.parent.fileReadScope,
-    roleWorkspace: params.parent.roleWorkspace,
-    // A worktree changes execution cwd, never the role trust domain or its
-    // canonical executable catalog. Clone the complete parent envelope so a
-    // nested Agent call cannot silently fall back to built-ins/config roles.
-    agentDefinitions: {
-      agentRoleWorkspaceId: params.parent.agentDefinitions.agentRoleWorkspaceId,
-      activeAgents: [...params.parent.agentDefinitions.activeAgents],
-      ...(params.parent.agentDefinitions.allAgents !== undefined
-        ? { allAgents: [...params.parent.agentDefinitions.allAgents] }
-        : {}),
-      ...(params.parent.agentDefinitions.allowedAgentTypes !== undefined
-        ? {
-            allowedAgentTypes: [
-              ...params.parent.agentDefinitions.allowedAgentTypes,
-            ],
-          }
-        : {}),
-    },
-    initialState: {
-      sessionConfiguration: { ...sessionConfiguration, provider },
-      history: [],
-    },
-    features: params.parent.features,
-    mcpManagerOwnership: "borrowed",
-    services: {
-      ...params.parent.services,
-      readOnlyDelegation: params.live.metadata.executionConstraint,
-      provider,
-      // A provider service is session-owned. Do not let the parent's service
-      // survive the spread above and silently override the forked provider in
-      // the ChildSession constructor.
-      providerService: params.parent.providerService.forkForChild(provider, {
-        provider: params.providerSelection?.provider ??
-          params.parent.providerService.current().provider,
-        model: sessionConfiguration.collaborationMode.model,
-      }, params.plan?.crossProvider ? params.plan.route : undefined),
-      providerEnvironment: params.parent.providerService.environment(),
-      registry,
-      // Explicitly shadow the inherited service even for admission-free embeds.
-      executionAdmission,
-      // A child has no independently owned MCP transport in this path. Never
-      // retain the parent's manager or its live tool closures under a forked
-      // sandbox authority; refresh is deliberately inert and local.
-      mcpManager: createInertMcpManager(),
-      lspManager: undefined,
-      ...(sandboxExecutionBroker !== undefined
-        ? { sandboxExecutionBroker }
-        : {}),
-      // Startup-prewarm handles are session-owned; sharing the parent's store
-      // lets a child consume or clear the parent's provider resources.
-      startupPrewarm: undefined,
-      querySource: params.querySource ?? params.parent.services.querySource,
-      ...(params.deferInteractiveApprovals !== undefined ? {
-        deferInteractiveApprovals: (toolName: string) => {
-          params.deferInteractiveApprovals!(toolName);
-          childSession?.abortController.abort("background maintenance requires approval");
-        },
-      } : {}),
-      // Permission mode is parent-owned live authority. Sharing the registry
-      // keeps persistent children from retaining a more permissive spawn-time
-      // snapshot after the parent downgrades the session.
-      permissionModeRegistry: params.parent.permissionModeRegistry,
-    },
-    jsRepl: params.parent.jsRepl,
-    config: buildChildConfig(params.parent, sessionConfiguration),
-    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration, params.modelInfo),
-  });
-  params.live.configSnapshot = threadConfigSnapshot(
-    sessionConfiguration,
-  ) as unknown as Record<string, unknown>;
-  if (params.plan !== undefined) {
-    params.live.configSnapshot = {
-      ...params.live.configSnapshot,
-      provider: params.plan.destination.provider,
-      model: params.plan.destination.model,
-      reasoningEffort: params.plan.reasoningEffort,
-      executionPlan: params.plan,
-    };
-  }
-  if (params.providerSelection !== undefined) {
-    // TODO(phase 4): project provider/model and reconciled child cost into the
-    // protocol/native worker status together with the admission run ID.
-    params.live.configSnapshot = {
-      ...params.live.configSnapshot,
-      crossProvider: {
-        ...params.providerSelection,
-        policy: "user-or-managed-agents-v1",
-      },
-    };
-  }
-
+  const execOwnerBinding = params.parent.createChildExecLifetime?.(params.live.agentId)?.bind();
   try {
-    const childRolloutStore = mountChildRunJournal({
-      parent: params.parent,
-      child: childSession,
-      originator: "agenc-subagent",
-      terminalResult,
-      ...(params.plan !== undefined ? { destination: params.plan.destination } : {}),
+    childSession = new ChildSession({
+      conversationId: params.live.agentId,
+      unifiedExecOwnership: { kind: "borrowed", binding: execOwnerBinding },
+      fileReadScope: params.parent.fileReadScope,
+      roleWorkspace: params.parent.roleWorkspace,
+      // A worktree changes execution cwd, never the role trust domain or its
+      // canonical executable catalog. Clone the complete parent envelope so a
+      // nested Agent call cannot silently fall back to built-ins/config roles.
+      agentDefinitions: {
+        agentRoleWorkspaceId: params.parent.agentDefinitions.agentRoleWorkspaceId,
+        activeAgents: [...params.parent.agentDefinitions.activeAgents],
+        ...(params.parent.agentDefinitions.allAgents !== undefined
+          ? { allAgents: [...params.parent.agentDefinitions.allAgents] }
+          : {}),
+        ...(params.parent.agentDefinitions.allowedAgentTypes !== undefined
+          ? {
+              allowedAgentTypes: [
+                ...params.parent.agentDefinitions.allowedAgentTypes,
+              ],
+            }
+          : {}),
+      },
+      initialState: {
+        sessionConfiguration: { ...sessionConfiguration, provider },
+        history: [],
+      },
+      features: params.parent.features,
+      mcpManagerOwnership: "borrowed",
+      services: {
+        ...params.parent.services,
+        readOnlyDelegation: params.live.metadata.executionConstraint,
+        provider,
+        // A provider service is session-owned. Do not let the parent's service
+        // survive the spread above and silently override the forked provider in
+        // the ChildSession constructor.
+        providerService: params.parent.providerService.forkForChild(provider, {
+          provider: params.providerSelection?.provider ??
+            params.parent.providerService.current().provider,
+          model: sessionConfiguration.collaborationMode.model,
+        }, params.plan?.crossProvider ? params.plan.route : undefined),
+        providerEnvironment: params.parent.providerService.environment(),
+        registry,
+        // Explicitly shadow the inherited service even for admission-free embeds.
+        executionAdmission,
+        // A child has no independently owned MCP transport in this path. Never
+        // retain the parent's manager or its live tool closures under a forked
+        // sandbox authority; refresh is deliberately inert and local.
+        mcpManager: createInertMcpManager(),
+        lspManager: undefined,
+        ...(sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker }
+          : {}),
+        // Startup-prewarm handles are session-owned; sharing the parent's store
+        // lets a child consume or clear the parent's provider resources.
+        startupPrewarm: undefined,
+        querySource: params.querySource ?? params.parent.services.querySource,
+        ...(params.deferInteractiveApprovals !== undefined ? {
+          deferInteractiveApprovals: (toolName: string) => {
+            params.deferInteractiveApprovals!(toolName);
+            childSession?.abortController.abort("background maintenance requires approval");
+          },
+        } : {}),
+        // Permission mode is parent-owned live authority. Sharing the registry
+        // keeps persistent children from retaining a more permissive spawn-time
+        // snapshot after the parent downgrades the session.
+        permissionModeRegistry: params.parent.permissionModeRegistry,
+      },
+      jsRepl: params.parent.jsRepl,
+      config: buildChildConfig(params.parent, sessionConfiguration),
+      modelInfo: buildChildModelInfo(params.parent, sessionConfiguration, params.modelInfo),
     });
-    if (childRolloutStore) {
-      params.live.rolloutPath = childRolloutStore.rolloutPath;
+    params.live.configSnapshot = threadConfigSnapshot(
+      sessionConfiguration,
+    ) as unknown as Record<string, unknown>;
+    if (params.plan !== undefined) {
+      params.live.configSnapshot = {
+        ...params.live.configSnapshot,
+        provider: params.plan.destination.provider,
+        model: params.plan.destination.model,
+        reasoningEffort: params.plan.reasoningEffort,
+        executionPlan: params.plan,
+      };
     }
-  } catch (err) {
-    if (err instanceof TerminalRunEpochOpenError) throw err;
-    const requiresCanonicalJournal =
-      childSession.services.executionAdmission !== undefined ||
-      childSession.services.admissionRequired !== false;
-    if (!requiresCanonicalJournal) {
-      emitWarning(
-        params.parent.eventLog,
-        params.parent.nextInternalSubId(),
-        "subagent_rollout_init_failed",
-        err instanceof Error ? err.message : String(err),
-      );
-    } else {
-      throw err;
+    if (params.providerSelection !== undefined) {
+      // TODO(phase 4): project provider/model and reconciled child cost into the
+      // protocol/native worker status together with the admission run ID.
+      params.live.configSnapshot = {
+        ...params.live.configSnapshot,
+        crossProvider: {
+          ...params.providerSelection,
+          policy: "user-or-managed-agents-v1",
+        },
+      };
     }
-  }
 
-  registerChildApprovalSession(childSession, params.parent);
-  return childSession;
+    try {
+      const childRolloutStore = mountChildRunJournal({
+        parent: params.parent,
+        child: childSession,
+        originator: "agenc-subagent",
+        terminalResult,
+        ...(params.plan !== undefined ? { destination: params.plan.destination } : {}),
+      });
+      if (childRolloutStore) {
+        params.live.rolloutPath = childRolloutStore.rolloutPath;
+      }
+    } catch (err) {
+      if (err instanceof TerminalRunEpochOpenError) throw err;
+      const requiresCanonicalJournal =
+        childSession.services.executionAdmission !== undefined ||
+        childSession.services.admissionRequired !== false;
+      if (!requiresCanonicalJournal) {
+        emitWarning(
+          params.parent.eventLog,
+          params.parent.nextInternalSubId(),
+          "subagent_rollout_init_failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    registerChildApprovalSession(childSession, params.parent);
+    return childSession;
+  } catch (error) {
+    try {
+      await execOwnerBinding?.prepareForDurableClose();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "child construction and exec cleanup failed");
+    }
+    throw error;
+  }
 }
 
 /** A forked session must not carry the parent's model-specific base prompt. */
@@ -4472,7 +4485,7 @@ export async function* runAgent(
         return typeof member === "function" ? member.bind(current) : member;
       },
     });
-    childSession = buildChildSession(
+    childSession = await buildChildSession(
       params,
       childProvider,
       childAuthority,

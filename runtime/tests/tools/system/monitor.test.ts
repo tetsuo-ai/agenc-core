@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import { createMonitorTool as createUnboundMonitorTool } from "./monitor.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { attachExecOwnerBinding } from "../../../src/unified-exec/process-ownership.js";
 
 const createMonitorTool = (
   config: Parameters<typeof createUnboundMonitorTool>[0],
@@ -33,6 +34,20 @@ describe("Monitor", () => {
     });
     expect(result.isError).toBe(true);
     expect(String(result.content)).toContain("command must be a non-empty");
+  });
+
+  test("uses the captured child binding and refuses it after release", async () => {
+    const binding = manager.createOwnerLifetime("monitor-child").bind();
+    const tool = createMonitorTool({ cwd: process.cwd(), unifiedExecManager: manager });
+    const args = { command: "printf scoped-monitor", description: "check scoped output", __agencSessionId: "monitor-child" };
+    attachExecOwnerBinding(args, binding);
+    const result = await tool.execute(args);
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata?.stdout).toBe("scoped-monitor");
+    binding.release();
+    const refused = await tool.execute(args);
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain("binding");
   });
 
   test("rejects empty description", async () => {
