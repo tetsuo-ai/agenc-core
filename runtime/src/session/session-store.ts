@@ -99,6 +99,7 @@ import {
   serializeRolloutItem,
   type RolloutItem,
 } from "./rollout-item.js";
+import { assertRunLifecycleAppendOrder } from "./run-lifecycle-append-order.js";
 import type {
   CompactionActiveHistoryEntryV1,
   CompactionPayloadChunkV1,
@@ -2281,6 +2282,20 @@ export class SessionStore {
   append(event: Event, opts: AppendOptions = {}): boolean {
     if (!this.opened || this.closed) return false;
     this.lastBoundReadProof = undefined;
+    // A clearing run_reopened is appended after the terminal it supersedes.
+    // The opposite order is the only one that could hide that reopen outside
+    // a tail window which still contains the terminal.
+    if (
+      event.msg.type === "run_terminal" ||
+      event.msg.type === "run_reopened"
+    ) {
+      assertRunLifecycleAppendOrder(
+        this.readCurrentRolloutBytes(),
+        this.pending,
+        event,
+      );
+      this.lastBoundReadProof = undefined;
+    }
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
     if (event.seq !== undefined && event.seq <= this.lastSeqWritten) {

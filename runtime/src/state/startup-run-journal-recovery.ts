@@ -471,10 +471,16 @@ const INITIAL_COMMITTED_JOURNAL_TAIL_BYTES = 64 * 1024;
  * The first read is 64 KiB. A trailing partial line is dropped. When the
  * suffix starts after byte 0 and does not yet decide this run, the window
  * doubles until it does, or until it reaches two maximum records (~8 MiB).
- * A same-epoch terminal does not stop the scan while earlier bytes remain:
- * a `run_reopened` before that terminal still has to clear it. A superseding
- * reopen does stop the scan. An empty complete-line list does not. A last
- * line longer than the window can end inside it and still be only a prefix.
+ * A same-epoch terminal does not stop the look-back, and a superseding
+ * reopen does. A clearing reopen cannot sit in bytes older than that
+ * terminal: `SessionStore.append` accepts `run_reopened` only after the
+ * terminal is already in this file, and it refuses a later terminal for
+ * the superseded epoch. `reopenTerminalEpoch` records the SQLite terminal,
+ * then appends the reopen. When that reopen exists, every suffix that
+ * contains the terminal contains the reopen too, so the capped suffix is
+ * still decisive. An empty complete-line list does not stop the scan. A
+ * last line longer than the window can end inside it and still be only a
+ * prefix.
  *
  * One unparseable line rejects the suffix that contains it; growth does not
  * skip that line. A terminal from an epoch SQLite has not projected is not
@@ -509,6 +515,8 @@ function readCommittedJournalTail(
       ) {
         return lines;
       }
+      // Omitted prefix bytes cannot hold a clearing reopen for an in-window
+      // same-epoch terminal. The writer appends that reopen after the terminal.
       if (window >= limit) return lines;
       const next = Math.min(limit, window * 2);
       if (next <= window) return lines;
@@ -526,7 +534,9 @@ function readCommittedJournalTail(
  *
  * Stop once a reopen for this run sits above the SQLite epoch, or once an
  * unparseable line has already failed the suffix closed. A same-epoch
- * terminal does not stop the scan: the reopen that clears it may be earlier.
+ * terminal does not stop the look-back. A superseding reopen is appended
+ * after that terminal, so when one exists it is already in this suffix.
+ * Bytes before the terminal cannot clear it.
  */
 function committedTailNeedsEarlierBytes(
   lines: readonly string[],
