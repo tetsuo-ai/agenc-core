@@ -4461,10 +4461,13 @@ export async function* runAgent(
     bindTaskAdmission(currentTaskId, params.plan);
     // Session services are immutable. Keep a stable facade whose per-task
     // methods resolve to the active durable allocation on reusable workers.
+    // Usage reports cover the whole worker run, as for any child: the child
+    // journal subscribes once, and a task's summary covers only that task.
     const admission = workerAdmission === undefined ? undefined : new Proxy(workerAdmission, {
       get(_target, property) {
         if (property === "release") return releaseWorkerAdmission;
-        const current = taskAdmission ?? workerAdmission!;
+        const current = property === "getUsageSummary" || property === "subscribeUsage"
+          ? workerAdmission! : taskAdmission ?? workerAdmission!;
         const member: unknown = Reflect.get(current, property, current);
         return typeof member === "function" ? member.bind(current) : member;
       },
