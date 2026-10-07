@@ -29,6 +29,41 @@ let cwd = "";
 let originalAgencHome = "";
 
 describe("state transaction invocation isolation", () => {
+  it("preserves immediate callback receivers and retained callable families", () => {
+    const driver = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    try {
+      let firstCalls = 0;
+      let firstReceiver: unknown;
+      expect(driver.transactionImmediate(function (this: unknown) {
+        firstCalls += 1;
+        if (firstCalls === 1) firstReceiver = this;
+        expect(driver.state.inTransaction).toBe(true);
+        return "first operation";
+      })).toBe("first operation");
+      const secondReceiver = driver.transactionImmediate(function (this: unknown) {
+        return this;
+      });
+      expect(typeof firstReceiver).toBe("function");
+      expect(firstReceiver).not.toBe(secondReceiver);
+      const first = firstReceiver as Database.Transaction<() => string>;
+      expect(first.database).toBe(driver.state);
+      expect(first.default).toBe(first);
+      expect(first.immediate.database).toBe(driver.state);
+      // A retained receiver must still invoke its original callback, including
+      // when nested in another operation after a later invocation completed.
+      driver.transaction(() => {
+        expect(first.immediate()).toBe("first operation");
+        expect(driver.state.inTransaction).toBe(true);
+      });
+      expect(firstCalls).toBe(2);
+      expect(driver.state.inTransaction).toBe(false);
+      expect(driver.transaction(function (this: unknown) { return this; })).toBeUndefined();
+      expect(driver.logsTransaction(function (this: unknown) { return this; })).toBeUndefined();
+    } finally {
+      driver.close();
+    }
+  });
+
   it("keeps recursive operations and caught inner rollbacks separate", () => {
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {

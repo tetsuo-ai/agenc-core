@@ -247,7 +247,9 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    return this.withTransactionDurability(this.state, () => this.#stateTransaction.immediate(fn) as T);
+    // The mode method supplies its fresh default wrapper as the callback's
+    // receiver. Retain that callable family and per-invocation identity.
+    return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
   }
 
   logsTransaction<T>(fn: () => T): T {
