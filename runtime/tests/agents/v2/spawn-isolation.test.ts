@@ -184,7 +184,10 @@ describe("spawn_agent isolation", () => {
   it("automatically selects a connected permitted model and returns an explanation and task cap", async () => {
     const { tool } = await crossProviderFixture(["deepseek"]);
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5 });
+    // The parent model's 500k window cannot hold this context, so selection
+    // has to leave it.
+    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5,
+      context_tokens: 600_000 });
     expect(result.isError).not.toBe(true);
     expect(JSON.parse(result.content)).toMatchObject({ provider: "deepseek", model: "deepseek-flash", routing_reason: expect.any(String) });
     expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({

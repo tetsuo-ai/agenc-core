@@ -65,6 +65,7 @@ export interface ChildProviderHealth {
 export interface ChildRoutingSnapshot {
   readonly aggregates: readonly ChildRoutingAggregate[];
   readonly health: readonly ChildProviderHealth[];
+  readonly abilities?: readonly import("./provider-selector-irt.js").ModelAbility[];
 }
 
 /** Execution completion and independently verified quality are separate signals. */
@@ -79,6 +80,7 @@ export interface ChildRoutingOutcome {
   readonly success: boolean;
   /** Set only from an independent task verifier, never just a completed turn. */
   readonly verifiedSuccess?: boolean;
+  readonly features?: import("./provider-selector-irt.js").TaskFeatures;
   readonly latencyMs: number;
   /** Reconciled dollars only. Omit when usage remains unknown. */
   readonly costUsd?: number;

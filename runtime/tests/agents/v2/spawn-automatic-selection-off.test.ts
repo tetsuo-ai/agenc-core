@@ -24,7 +24,7 @@ const mockDelegate = vi.mocked(delegate);
 const MAIN_PROPERTIES = ["message", "message_ref", "task_name", "description", "agent_type", "model", "provider",
   "reasoning_effort", "service_tier", "exact_output", "tool_free", "fork_turns", "isolation"];
 const AUTOMATIC_ARGUMENTS = {
-  routing: "inherit", task_kind: "extraction", complexity: "simple", requires_vision: false,
+  routing: "inherit", routing_preference: "economy", task_kind: "extraction", complexity: "simple", requires_vision: false,
   context_tokens: 1_000, max_cost_usd: 0.5,
 } as const;
 const MAIN_GUIDANCE = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -92,6 +92,18 @@ describe("spawn_agent with automatic selection off", () => {
     for (const key of Object.keys(AUTOMATIC_ARGUMENTS)) delete enabled.properties[key];
     expect(JSON.stringify(surface(off.tool, off.session).inputSchema)).toBe(JSON.stringify(enabled));
     expect(surface(on.tool, on.session).description).toContain("routing=inherit");
+  });
+
+  it("offers routing_preference only with automatic selection on, and validates it there", async () => {
+    const on = await fixture({ cross_provider_enabled: true, cross_provider_auto: true });
+    const properties = surface(on.tool, on.session).inputSchema.properties as Record<string, { enum?: string[]; description?: string }>;
+    expect(properties.routing_preference?.enum).toEqual(["balanced", "economy", "quality", "fast"]);
+    expect(properties.routing_preference?.description).toContain("Without a cap price never moves the child off your model.");
+    expect(properties.routing_preference?.description).toContain("balanced, the default, and quality keep your model while it is adequate");
+    const invalid = await on.tool.execute({ message: "Extract names", task_name: "worker", routing_preference: "cheapest" });
+    expect(invalid.isError).toBe(true);
+    expect(JSON.parse(invalid.content)).toEqual({ error: "Invalid routing preference" });
+    expect(mockDelegate).not.toHaveBeenCalled();
   });
 
   it.each(Object.entries(AUTOMATIC_ARGUMENTS))("rejects %s as an unknown field before any child exists", async (key, value) => {

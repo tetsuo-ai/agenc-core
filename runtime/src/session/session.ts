@@ -1339,6 +1339,8 @@ export interface StateDbContext {
 
 /** DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Independent task checks supplied by a trusted host, never by the child model. */
+  readonly childRoutingVerifier?: import("../agents/child-routing-verifier.js").ChildRoutingVerifier;
   /** Flush only auxiliary startup log indexing at the first provider outcome. */
   readonly flushStartupLogIndex?: () => void;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;

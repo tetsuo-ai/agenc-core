@@ -23,8 +23,9 @@ describe("automatic fallback through spawn_agent", () => {
       const result = await value.tool.execute(args);
       expect(result.isError).not.toBe(true);
       expect(mockDelegate).toHaveBeenCalledOnce();
+      // Parent first: the child starts on the parent's own model.
       const firstProvider = mockDelegate.mock.calls[0]![0].plan?.destination.provider;
-      expect(["deepseek", "openai"]).toContain(firstProvider);
+      expect(firstProvider).toBe("grok");
       value.finishFirst(reason);
       await vi.waitFor(() => expect(mockDelegate).toHaveBeenCalledTimes(2));
       await vi.waitFor(() => expect(value.send.mock.calls.some(([message]) => message.content.includes("Finished after 2 attempts"))).toBe(true));
@@ -36,7 +37,8 @@ describe("automatic fallback through spawn_agent", () => {
       expect(retry?.plan?.task.id).not.toBe(initial?.plan?.task.id);
       const began = value.events.filter(event => event.msg?.type === "collab_agent_spawn_begin").map(event => event.msg?.payload?.callId);
       expect(new Set(began).size).toBe(2);
-      expect(value.requestConsent).toHaveBeenCalledTimes(2);
+      // Only the retry leaves the parent's provider, so only it asks.
+      expect(value.requestConsent).toHaveBeenCalledOnce();
     },
   );
 
@@ -73,7 +75,7 @@ describe("automatic fallback through spawn_agent", () => {
     await value.tool.execute(args);
     value.denyConsent();
     value.finishFirst("insufficient_funds");
-    await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(value.send.mock.calls.some(([message]) => message.content.includes("Stopped automatic fallback"))).toBe(true));
     expect(mockDelegate).toHaveBeenCalledOnce();
   });
@@ -126,9 +128,9 @@ describe("automatic fallback through spawn_agent", () => {
   it("keeps the child's retries when the next provider would need a new consent", async () => {
     const value = await fixture();
     await value.tool.execute(args);
-    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("openai");
+    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("grok");
     expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);
-    // The next candidate is deepseek, which would now need a person to approve it.
+    // The next candidate is on another provider, which would now need a person to approve it.
     value.consentAsks();
     expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false);
   });
@@ -137,7 +139,8 @@ describe("automatic fallback through spawn_agent", () => {
     const value = await fixture();
     value.config.agents.allowed_providers = ["deepseek"];
     value.consentAsks();
-    await value.tool.execute(args);
+    // Economy under a small cap moves the child to deepseek's cheaper model.
+    await value.tool.execute({ ...args, max_cost_usd: 0.2, routing_preference: "economy" });
     expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("deepseek");
     // The next candidate is the parent's own grok model: no consent at all.
     expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);

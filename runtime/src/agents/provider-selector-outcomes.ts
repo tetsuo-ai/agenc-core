@@ -1,3 +1,4 @@
+import { abilityPrior, updateAbility, validAbility, validFeatures, type TaskFeatures, type ModelAbility } from "./provider-selector-irt.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -28,7 +29,7 @@ interface StoredHistory extends ChildRoutingSnapshot {
 }
 
 function emptyHistory(): StoredHistory {
-  return { version: 1, aggregates: [], health: [], receipts: [], receiptFloorMs: 0 };
+  return { version: 1, aggregates: [], health: [], abilities: [], receipts: [], receiptFloorMs: 0 };
 }
 
 function finite(value: unknown): value is number {
@@ -63,6 +64,12 @@ function validHealth(value: unknown): value is ChildProviderHealth {
     (item.blockedReason === undefined || item.blockedReason === "insufficient_funds" || item.blockedReason === "auth_required");
 }
 
+function usableAbility(value: unknown): value is ModelAbility {
+  if (value === null || typeof value !== "object") return false;
+  const item = value as ModelAbility;
+  return validAbility(item) && identity(item.provider) && identity(item.model);
+}
+
 function parseHistory(text: string): StoredHistory | undefined {
   try {
     const value = JSON.parse(text) as StoredHistory;
@@ -71,10 +78,15 @@ function parseHistory(text: string): StoredHistory | undefined {
         !Array.isArray(value.health) || value.health.length > MAX_HEALTH || !value.health.every(validHealth) ||
         !Array.isArray(value.receipts) || value.receipts.length > MAX_RECEIPTS ||
         !value.receipts.every(item => item !== null && identity(item.id) && finite(item.atMs)) ||
-        !finite(value.receiptFloorMs)) return undefined;
+        !finite(value.receiptFloorMs) || (value.abilities !== undefined && (!Array.isArray(value.abilities) ||
+        value.abilities.length > MAX_AGGREGATES))) return undefined;
     // Rebuild the allowed fields. Extra fields from disk must never survive a write.
     return {
       version: 1,
+      // An ability from another IRT revision, or a damaged one, is dropped on
+      // its own. It must never take health blocks and receipts with it.
+      abilities: (value.abilities ?? []).filter(usableAbility).map(item => ({ provider: item.provider, model: item.model,
+        skill: item.skill, revision: item.revision, mean: item.mean, variance: item.variance, observations: item.observations })),
       aggregates: value.aggregates.map(item => ({
         provider: item.provider, model: item.model, taskKind: item.taskKind, complexity: item.complexity,
         profileRevision: item.profileRevision, attempts: item.attempts, successes: item.successes,
@@ -100,6 +112,7 @@ function validOutcome(item: ChildRoutingOutcome): boolean {
     (INFRASTRUCTURE_FAILURES.has(item.terminalReason) || TASK_OUTCOMES.has(item.terminalReason)) &&
     (!item.success || item.terminalReason === "completed") &&
     (item.verifiedSuccess === undefined || typeof item.verifiedSuccess === "boolean") &&
+    (item.features === undefined || validFeatures(item.features)) &&
     (item.costUsd === undefined || finite(item.costUsd)) && (item.retryAfterMs === undefined || finite(item.retryAfterMs)) &&
     (item.retryable === undefined || typeof item.retryable === "boolean");
 }
@@ -156,11 +169,21 @@ function applyOutcome(history: StoredHistory, item: ChildRoutingOutcome): Stored
   const removed = allReceipts.slice(0, Math.max(0, allReceipts.length - MAX_RECEIPTS));
   return {
     version: 1,
+    abilities: qualityObservation && item.features !== undefined
+      ? updatedAbilities(history.abilities ?? [], item.provider, item.model, item.features, item.verifiedSuccess!)
+      : history.abilities ?? [],
     aggregates: [...history.aggregates.filter(entry => aggregateKey(entry) !== key), row]
       .sort((left, right) => right.lastObservedAtMs - left.lastObservedAtMs).slice(0, MAX_AGGREGATES),
     health: health.slice(-MAX_HEALTH), receipts: allReceipts.slice(-MAX_RECEIPTS),
     receiptFloorMs: Math.max(history.receiptFloorMs, ...removed.map(receipt => receipt.atMs)),
   };
+}
+
+function updatedAbilities(abilities: readonly ModelAbility[], provider: string, model: string,
+  features: TaskFeatures, passed: boolean): readonly ModelAbility[] {
+  const matches = (item: ModelAbility) => item.provider === provider && item.model === model && item.skill === features.skill;
+  const prior = abilities.find(matches) ?? abilityPrior(provider, model, features.skill);
+  return [...abilities.filter(item => !matches(item)), updateAbility(prior, features, passed)].slice(-MAX_AGGREGATES);
 }
 
 function hasProviderFailure(history: StoredHistory, provider: string): boolean {
@@ -222,7 +245,8 @@ export class ChildRoutingOutcomeStore {
   }
 
   snapshot(): ChildRoutingSnapshot {
-    return structuredClone({ aggregates: this.#history.aggregates, health: this.#history.health });
+    return structuredClone({ aggregates: this.#history.aggregates, health: this.#history.health,
+      ...(this.#history.abilities?.length ? { abilities: this.#history.abilities } : {}) });
   }
 
   /** Reread the shared file so outcomes another process recorded count too. */
@@ -242,6 +266,29 @@ export class ChildRoutingOutcomeStore {
       return this.#update(history =>
         item.atMs <= history.receiptFloorMs || history.receipts.some(receipt => receipt.id === item.receiptId)
           ? undefined : applyOutcome(history, item));
+    });
+    this.#pending = pending.catch(() => undefined);
+    return pending;
+  }
+
+  /** Add a delayed independent verdict without counting execution or dollars twice. */
+  recordVerification(outcome: { readonly receiptId: string; readonly provider: string; readonly model: string;
+    readonly features: TaskFeatures; readonly passed: boolean; readonly atMs: number }): Promise<boolean> {
+    const item = structuredClone(outcome);
+    const pending = this.#pending.then(async () => {
+      const id = `verified:${item.receiptId}`;
+      if (!identity(id) || !identity(item.provider) || !identity(item.model) || !validFeatures(item.features) ||
+          typeof item.passed !== "boolean" || !finite(item.atMs)) throw new Error("Invalid independent verdict");
+      return this.#update(history => {
+        if (item.atMs <= history.receiptFloorMs || history.receipts.some(receipt => receipt.id === id)) return undefined;
+        const receipts = [...history.receipts, { id, atMs: item.atMs }]
+          .sort((left, right) => left.atMs - right.atMs || left.id.localeCompare(right.id));
+        const removed = receipts.slice(0, Math.max(0, receipts.length - MAX_RECEIPTS));
+        return { ...history,
+          abilities: updatedAbilities(history.abilities ?? [], item.provider, item.model, item.features, item.passed),
+          receipts: receipts.slice(-MAX_RECEIPTS),
+          receiptFloorMs: Math.max(history.receiptFloorMs, ...removed.map(receipt => receipt.atMs)) };
+      });
     });
     this.#pending = pending.catch(() => undefined);
     return pending;

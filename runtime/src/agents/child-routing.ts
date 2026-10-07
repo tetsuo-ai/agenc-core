@@ -1,9 +1,12 @@
+import { extractTaskFeatures, type TaskFeatures } from "./provider-selector-irt.js";
+import { selectChildProviderV2, type V2Selection, type RoutingPreferences } from "./provider-selector-v2.js";
+import type { TrustedChildVerification } from "./child-routing-verifier.js";
 import type { Session } from "../session/session.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
 import { allowedChildPairs, childModelInfo, currentChildProvider, childProviderPolicy } from "./cross-provider.js";
-import { classifyChildTask, selectChildProvider, type ChildProviderCandidate,
-  type ChildRoutingSnapshot, type ChildSelectionResult, type ChildSelectionTask } from "./provider-selector.js";
+import { classifyChildTask, type ChildProviderCandidate,
+  type ChildRoutingSnapshot, type ChildSelectionTask } from "./provider-selector.js";
 import { childModelProfile } from "./provider-selector-profiles.js";
 import { subagentLimit } from "./subagent-limits.js";
 import { join } from "node:path";
@@ -75,6 +78,7 @@ export interface ChildRoutingRequest {
   readonly contextTokens?: number;
   readonly maxCostUsd?: number;
   readonly outcomes?: ChildRoutingSnapshot;
+  readonly preferences?: RoutingPreferences;
 }
 
 /** The ranking estimate never replaces atomic admission at the provider wire. */
@@ -91,15 +95,58 @@ export function childRoutingBudget(session: Session, requested?: number): number
   return requested === undefined ? remaining : remaining === undefined ? requested : Math.min(requested, remaining);
 }
 
+/** A host verifier that has not prepared its check by then blocks the spawn. */
+export const CHILD_VERIFIER_PREPARE_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the host's verifier for this task's check. Undefined means the host
+ * does not check this task. A verifier that throws, does not answer in time
+ * or returns no usable check stops the spawn: the caller reports that no
+ * child started.
+ */
+async function prepareChildVerification(session: Session,
+  request: { readonly prompt: string; readonly features: TaskFeatures }): Promise<TrustedChildVerification | undefined> {
+  const verifier = session.services.childRoutingVerifier;
+  if (verifier === undefined) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let prepared: TrustedChildVerification | undefined;
+  try {
+    prepared = await Promise.race([
+      Promise.resolve().then(() => verifier.prepare(request)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `The host task verifier did not prepare a check within ${CHILD_VERIFIER_PREPARE_TIMEOUT_MS / 1_000} seconds.`)),
+        CHILD_VERIFIER_PREPARE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message.startsWith("The host task verifier") ? message : `The host task verifier failed: ${message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (prepared === undefined) return undefined;
+  const usable = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (prepared === null || typeof prepared !== "object" || prepared.available !== true || typeof prepared.check !== "function" ||
+      typeof prepared.retrySafe !== "boolean" || !usable(prepared.costUsd) || !usable(prepared.latencyMs)) {
+    throw new Error("The host task verifier returned no usable check.");
+  }
+  return prepared;
+}
+
 /** No provider discovery, credential refresh or remote router call is performed. */
 export async function routeChildTask(session: Session, request: ChildRoutingRequest): Promise<{
   readonly task: ChildSelectionTask;
-  readonly result: ChildSelectionResult;
+  readonly result: V2Selection;
+  readonly features: TaskFeatures;
+  readonly verification?: TrustedChildVerification;
 }> {
   const store = request.outcomes === undefined ? await outcomeStore(session) : undefined;
   await store?.refresh();
   const outcomes = request.outcomes ?? store?.snapshot();
   const inferred = classifyChildTask(request.prompt, request.role);
+  const features = extractTaskFeatures(request.prompt, request.requiresTools ?? true);
+  const verification = await prepareChildVerification(session, { prompt: request.prompt, features });
   const kind = request.taskKind ?? inferred.kind;
   const complexity = request.complexity ?? inferred.complexity;
   const maxCostUsd = childRoutingBudget(session, request.maxCostUsd);
@@ -122,10 +169,11 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   // credentials during ordinary plan preparation after consent.
   const connected = new Map<string, Promise<{ readonly connected: boolean; readonly billingSource?: string }>>();
   // The parent's own model is always a candidate. It needs no entry in
-  // allowed_providers, because a child on it stays on the parent's provider.
+  // allowed_providers, because a child on it stays on the parent's provider,
+  // and no routing profile, because the selector keeps it as the default.
   const allowedPairs = allowedChildPairs(session);
   const pairs = [...allowedPairs, ...(allowedPairs.some(isParentModel) ? [] : [{ provider: active.provider, model: active.model }])]
-    .filter(pair => childModelProfile(pair.provider, pair.model) !== undefined);
+    .filter(pair => isParentModel(pair) || childModelProfile(pair.provider, pair.model) !== undefined);
   for (const pair of pairs) {
     if (!connected.has(pair.provider)) {
       connected.set(pair.provider, typeof session.providerService?.childProviderRoutingInfo === "function"
@@ -165,6 +213,17 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
       // connected provider unavailable. Dispatch still checks exact metadata.
     }
   }
-  return { task, result: selectChildProvider({ task, candidates,
-    ...(outcomes !== undefined ? { outcomes } : {}) }) };
+  return { task, features, ...(verification !== undefined ? { verification } : {}),
+    result: selectChildProviderV2({ task, features, parent: active, candidates,
+      ...(request.preferences !== undefined ? { preferences: request.preferences } : {}),
+      ...(verification !== undefined ? { verification } : {}),
+      ...(outcomes !== undefined ? { outcomes } : {}) }) };
+}
+
+/** Receipt-deduplicated quality update, separate from terminal execution telemetry. */
+export async function recordChildRoutingVerification(session: Session, receiptId: string,
+  terminal: ChildTerminalOutcome, features: TaskFeatures, passed: boolean): Promise<void> {
+  try { await (await outcomeStore(session))?.recordVerification({ receiptId, provider: terminal.provider,
+    model: terminal.model, features, passed, atMs: Date.now() }); }
+  catch { /* Verifier telemetry must not invalidate the durable attempt. */ }
 }

@@ -1,0 +1,23 @@
+[
+  {
+    "comparator": "openrouter_restricted",
+    "pairs": 14,
+    "wins": 1,
+    "losses": 0,
+    "exactPairedP": 1
+  },
+  {
+    "comparator": "openrouter_unrestricted",
+    "pairs": 14,
+    "wins": 1,
+    "losses": 0,
+    "exactPairedP": 1
+  },
+  {
+    "comparator": "always_cheapest",
+    "pairs": 14,
+    "wins": 0,
+    "losses": 0,
+    "exactPairedP": 1
+  }
+]
