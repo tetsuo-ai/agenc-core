@@ -756,37 +756,30 @@ function indexAppendedTail(args: {
   // an append and then jump back on the next full reconcile. Carry the prior
   // updatedAt forward so it only advances when a newer meta timestamp appears,
   // matching the full-reconcile semantics.
-  threads.commitRolloutProjection(
-    () => {
-      const prior = threads.getThread(threadId);
-      mergeThreadFromMeta({
-        threads,
-        threadId,
-        rolloutPath,
-        archived: args.archived,
-        now,
-        createdAt: firstMeta?.payload.timestamp ?? prior?.createdAt,
-        updatedAt: prior?.updatedAt,
-        metaForUpdate: latestMeta?.payload,
-        metaForCreate: firstMeta?.payload,
-      });
-      threads.appendRolloutItems({
-        threadId,
-        sourcePath: rolloutPath,
-        items,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-        // Carry the prior full-file digest forward rather than re-hashing the whole
-        // file on every append (which would reintroduce the O(N^2) behaviour). The
-        // canonical full-file hash is re-established whenever a full reconcile runs.
-        // Change detection here relies on mtime+size, not this digest.
-        sha256: existing.sha256,
-        lineCount: existing.lineCount + (lines.length - 1),
-        totalItemCount: itemIndex,
-      });
+  threads.appendRolloutProjection({
+    threadId,
+    sourcePath: rolloutPath,
+    items,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    // Carry the prior digest forward, as before: append change detection uses
+    // mtime/size. Full reconciliation re-establishes the full-file digest.
+    sha256: existing.sha256,
+    lineCount: existing.lineCount + (lines.length - 1),
+    totalItemCount: itemIndex,
+    threadMetadata: {
+      fallbackTimestamp: now,
+      createdAt: firstMeta?.payload.timestamp,
+      updatedAt: latestMeta?.payload.timestamp,
+      cwd: latestMeta?.payload.cwd ?? firstMeta?.payload.cwd,
+      source: latestMeta?.payload.source ?? firstMeta?.payload.source,
+      model: latestMeta?.payload.model ?? firstMeta?.payload.model,
+      modelProvider: latestMeta?.payload.modelProvider ?? firstMeta?.payload.modelProvider,
+      memoryMode: normalizeMemoryMode(latestMeta?.payload.memoryMode),
+      archived: args.archived,
     },
-    () => assertSnapshotStillCanonical(rolloutPath, stat),
-  );
+    validateCanonical: () => assertSnapshotStillCanonical(rolloutPath, stat),
+  });
   return { itemsIndexed: items.length };
 }
 

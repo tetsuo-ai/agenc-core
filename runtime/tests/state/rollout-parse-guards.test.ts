@@ -452,12 +452,14 @@ describe("rollout parse guards — corrupt interior line", () => {
       backfillRolloutFile({ rolloutPath, threads });
       const receiptBefore = threads.getBackfillFile(rolloutPath);
       appendFileSync(rolloutPath, second);
-      const append = threads.appendRolloutItems.bind(threads);
+      const append = threads.appendRolloutProjection.bind(threads);
       const aside = `${rolloutPath}.during-tail-commit`;
-      vi.spyOn(threads, "appendRolloutItems").mockImplementationOnce((params) => {
-        append(params);
-        renameSync(rolloutPath, aside);
-        writeFileSync(rolloutPath, first);
+      vi.spyOn(threads, "appendRolloutProjection").mockImplementationOnce((params) => {
+        append({ ...params, validateCanonical: () => {
+          renameSync(rolloutPath, aside);
+          writeFileSync(rolloutPath, first);
+          params.validateCanonical();
+        } });
       });
 
       expect(() => backfillRolloutFile({ rolloutPath, threads })).toThrow(

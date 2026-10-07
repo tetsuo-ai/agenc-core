@@ -45,6 +45,35 @@ interface ThreadRow {
   readonly archive_cleanup_generation: string | null;
 }
 
+interface AppendRolloutItemsParameters {
+  readonly threadId: ThreadId;
+  readonly sourcePath: string;
+  readonly items: ReadonlyArray<RolloutItemRow>;
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly sha256: string;
+  readonly lineCount: number;
+  readonly totalItemCount: number;
+}
+
+interface IncrementalProjectionMetadata {
+  readonly fallbackTimestamp: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+  readonly cwd?: string;
+  readonly source?: ThreadSource;
+  readonly model?: string;
+  readonly modelProvider?: string;
+  readonly memoryMode?: "enabled" | "disabled";
+  readonly archived?: boolean;
+}
+
+type ThreadUpsertValues = [
+  string, string | null, string, string, string | null, string | null,
+  string | null, string | null, string | null, string | null,
+  string | null, string | null, string | null, string | null,
+];
+
 export class StateThreadRepository {
   constructor(private readonly driver: StateSqliteDriver) {}
 
@@ -101,6 +130,10 @@ export class StateThreadRepository {
   }
 
   upsertThread(record: IndexedThreadRecord): void {
+    this.upsertThreadValues(threadUpsertValues(record));
+  }
+
+  private upsertThreadValues(values: ThreadUpsertValues): void {
     this.driver
       .prepareState(
         `INSERT INTO threads (
@@ -147,82 +180,23 @@ export class StateThreadRepository {
            OR threads.archived_rollout_path IS NOT excluded.archived_rollout_path
            OR threads.archive_cleanup_generation IS NOT excluded.archive_cleanup_generation`,
       )
-      .run(
-        record.threadId,
-        record.name ?? null,
-        record.createdAt,
-        record.updatedAt,
-        record.archivedAt ?? null,
-        record.cwd ?? null,
-        record.source === undefined ? null : JSON.stringify(record.source),
-        record.forkedFromId ?? null,
-        record.model ?? null,
-        record.modelProvider ?? null,
-        record.memoryMode ?? null,
-        record.rolloutPath ?? null,
-        record.archivedRolloutPath ?? null,
-        record.archiveCleanupGeneration ?? null,
-      );
+      .run(...values);
   }
 
   mergeThread(
     record: IndexedThreadRecord,
     opts: { readonly replaceArchiveState?: boolean } = {},
   ): void {
-    const existing = this.getThread(record.threadId);
-    const replaceArchiveState = opts.replaceArchiveState === true;
-    // An active thread's archived path is a pending cleanup cursor after
-    // unarchive. Recovery may replace archive metadata without erasing it.
-    const preservePendingCleanup = existing?.archivedAt === undefined &&
-      existing?.archivedRolloutPath !== undefined && record.archivedAt === undefined;
-    const name = record.name ?? existing?.name;
-    const model = record.model ?? existing?.model;
-    const modelProvider = record.modelProvider ?? existing?.modelProvider;
-    const memoryMode = record.memoryMode ?? existing?.memoryMode;
-    const cwd = record.cwd ?? existing?.cwd;
-    const source = record.source ?? existing?.source;
-    const forkedFromId = record.forkedFromId ?? existing?.forkedFromId;
-    const merged: IndexedThreadRecord = {
-      threadId: record.threadId,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-      ...(name !== undefined ? { name } : {}),
-      ...(model !== undefined ? { model } : {}),
-      ...(modelProvider !== undefined ? { modelProvider } : {}),
-      ...(memoryMode !== undefined ? { memoryMode } : {}),
-      ...(!replaceArchiveState && existing?.archivedAt !== undefined
-        ? { archivedAt: existing.archivedAt }
-        : {}),
-      ...(record.archivedAt !== undefined
-        ? { archivedAt: record.archivedAt }
-        : {}),
-      ...(cwd !== undefined ? { cwd } : {}),
-      ...(source !== undefined ? { source } : {}),
-      ...(forkedFromId !== undefined ? { forkedFromId } : {}),
-      ...(!replaceArchiveState && existing?.rolloutPath !== undefined
-        ? { rolloutPath: existing.rolloutPath }
-        : {}),
-      ...(record.rolloutPath !== undefined
-        ? { rolloutPath: record.rolloutPath }
-        : {}),
-      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archivedRolloutPath !== undefined
-        ? { archivedRolloutPath: existing.archivedRolloutPath }
-        : {}),
-      ...(record.archivedRolloutPath !== undefined
-        ? { archivedRolloutPath: record.archivedRolloutPath }
-        : {}),
-      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archiveCleanupGeneration !== undefined
-        ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
-        : {}),
-      ...(record.archiveCleanupGeneration !== undefined
-        ? { archiveCleanupGeneration: record.archiveCleanupGeneration }
-        : {}),
-    };
-    this.upsertThread(merged);
+    this.upsertThread(mergeThreadRecord(record, this.getThread(record.threadId), opts));
   }
 
   getThread(threadId: ThreadId): IndexedThreadRecord | undefined {
-    const row = this.driver
+    const row = this.getThreadRow(threadId);
+    return row === undefined ? undefined : rowToThread(row);
+  }
+
+  private getThreadRow(threadId: ThreadId): ThreadRow | undefined {
+    return this.driver
       .prepareState<[ThreadId], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
@@ -233,7 +207,6 @@ export class StateThreadRepository {
          WHERE thread_id = ?`,
       )
       .get(threadId);
-    return row === undefined ? undefined : rowToThread(row);
   }
 
   listThreads(): ReadonlyArray<IndexedThreadRecord> {
@@ -363,52 +336,85 @@ export class StateThreadRepository {
    * the previously recorded `line_count`). Use `replaceRolloutItems` for the
    * full reconcile path when the prefix may have changed.
    */
-  appendRolloutItems(params: {
-    readonly threadId: ThreadId;
-    readonly sourcePath: string;
-    readonly items: ReadonlyArray<RolloutItemRow>;
-    readonly mtimeMs: number;
-    readonly size: number;
-    readonly sha256: string;
-    readonly lineCount: number;
-    readonly totalItemCount: number;
+  appendRolloutItems(params: AppendRolloutItemsParameters): void {
+    this.driver.transaction(() => this.appendRolloutItemsInTransaction(params));
+  }
+
+  /**
+   * Apply one incremental projection before its synchronous publication
+   * boundary. The fresh metadata read, rows, receipts and final filesystem
+   * validation share one immediate transaction. Nothing catches an append
+   * failure here, so the outer rollback also covers its private append body.
+   */
+  appendRolloutProjection(params: AppendRolloutItemsParameters & {
+    readonly threadMetadata: IncrementalProjectionMetadata;
+    readonly validateCanonical: () => void;
   }): void {
-    this.driver.transaction(() => {
-      const insert = this.driver.prepareState(
-        `INSERT INTO thread_rollout_items (
-          thread_id, source_path, line_number, byte_offset, item_index,
-          item_type, event_version, event_id, event_seq, payload_json, line_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      for (const item of params.items) {
-        insert.run(
-          params.threadId,
-          params.sourcePath,
-          item.lineNumber,
-          item.byteOffset,
-          item.itemIndex,
-          item.itemType,
-          item.eventVersion ?? null,
-          item.eventId ?? null,
-          item.eventSeq ?? null,
-          item.payloadJson,
-          item.lineHash,
-        );
-      }
-      this.writeBackfillReceipts({
+    this.driver.transactionImmediate(() => {
+      const raw = this.getThreadRow(params.threadId);
+      const prior = raw === undefined ? undefined : rowToThread(raw);
+      const meta = params.threadMetadata;
+      const incoming: IndexedThreadRecord = {
         threadId: params.threadId,
-        sourcePath: params.sourcePath,
-        mtimeMs: params.mtimeMs,
-        size: params.size,
-        // Change-detection digest only. On the append path this is the prior
-        // full-file hash carried forward, so it goes stale vs the on-disk file
-        // until the next full reconcile re-establishes it. Skip decisions rely
-        // on mtime+size (authoritative), not this hash, so it is intentionally
-        // not recomputed per append (doing so would defeat the perf fix).
-        sha256: params.sha256,
-        lineCount: params.lineCount,
-        itemCount: params.totalItemCount,
-      });
+        createdAt: meta.createdAt ?? prior?.createdAt ?? meta.fallbackTimestamp,
+        updatedAt: meta.updatedAt ?? prior?.updatedAt ?? meta.fallbackTimestamp,
+        cwd: meta.cwd,
+        source: meta.source,
+        model: meta.model,
+        modelProvider: meta.modelProvider,
+        memoryMode: meta.memoryMode,
+        ...(meta.archived === true
+          ? { archivedAt: meta.fallbackTimestamp, archivedRolloutPath: params.sourcePath }
+          : { rolloutPath: params.sourcePath }),
+      };
+      const values = threadUpsertValues(mergeThreadRecord(incoming, prior, {
+        replaceArchiveState: meta.archived !== undefined,
+      }));
+      // Compare persisted columns, not decoded objects: parsing may normalize
+      // invalid source JSON or memory modes, even on an ordinary event tail.
+      if (raw === undefined || !threadRowMatchesUpsert(raw, values)) {
+        this.upsertThreadValues(values);
+      }
+      this.appendRolloutItemsInTransaction(params);
+      params.validateCanonical();
+    });
+  }
+
+  private appendRolloutItemsInTransaction(params: AppendRolloutItemsParameters): void {
+    const insert = this.driver.prepareState(
+      `INSERT INTO thread_rollout_items (
+        thread_id, source_path, line_number, byte_offset, item_index,
+        item_type, event_version, event_id, event_seq, payload_json, line_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const item of params.items) {
+      insert.run(
+        params.threadId,
+        params.sourcePath,
+        item.lineNumber,
+        item.byteOffset,
+        item.itemIndex,
+        item.itemType,
+        item.eventVersion ?? null,
+        item.eventId ?? null,
+        item.eventSeq ?? null,
+        item.payloadJson,
+        item.lineHash,
+      );
+    }
+    this.writeBackfillReceipts({
+      threadId: params.threadId,
+      sourcePath: params.sourcePath,
+      mtimeMs: params.mtimeMs,
+      size: params.size,
+      // Change-detection digest only. On the append path this is the prior
+      // full-file hash carried forward, so it goes stale vs the on-disk file
+      // until the next full reconcile re-establishes it. Skip decisions rely
+      // on mtime+size (authoritative), not this hash, so it is intentionally
+      // not recomputed per append (doing so would defeat the perf fix).
+      sha256: params.sha256,
+      lineCount: params.lineCount,
+      itemCount: params.totalItemCount,
     });
   }
 
@@ -762,6 +768,90 @@ export interface RolloutItemRow {
   readonly eventSeq?: number;
   readonly payloadJson: string;
   readonly lineHash: string;
+}
+
+function mergeThreadRecord(
+  record: IndexedThreadRecord,
+  existing: IndexedThreadRecord | undefined,
+  opts: { readonly replaceArchiveState?: boolean },
+): IndexedThreadRecord {
+  const replaceArchiveState = opts.replaceArchiveState === true;
+  // An active thread's archived path is a pending cleanup cursor after
+  // unarchive. Recovery may replace archive metadata without erasing it.
+  const preservePendingCleanup = existing?.archivedAt === undefined &&
+    existing?.archivedRolloutPath !== undefined && record.archivedAt === undefined;
+  const name = record.name ?? existing?.name;
+  const model = record.model ?? existing?.model;
+  const modelProvider = record.modelProvider ?? existing?.modelProvider;
+  const memoryMode = record.memoryMode ?? existing?.memoryMode;
+  const cwd = record.cwd ?? existing?.cwd;
+  const source = record.source ?? existing?.source;
+  const forkedFromId = record.forkedFromId ?? existing?.forkedFromId;
+  return {
+    threadId: record.threadId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(name !== undefined ? { name } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(modelProvider !== undefined ? { modelProvider } : {}),
+    ...(memoryMode !== undefined ? { memoryMode } : {}),
+    ...(!replaceArchiveState && existing?.archivedAt !== undefined
+      ? { archivedAt: existing.archivedAt }
+      : {}),
+    ...(record.archivedAt !== undefined
+      ? { archivedAt: record.archivedAt }
+      : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(forkedFromId !== undefined ? { forkedFromId } : {}),
+    ...(!replaceArchiveState && existing?.rolloutPath !== undefined
+      ? { rolloutPath: existing.rolloutPath }
+      : {}),
+    ...(record.rolloutPath !== undefined
+      ? { rolloutPath: record.rolloutPath }
+      : {}),
+    ...((!replaceArchiveState || preservePendingCleanup) && existing?.archivedRolloutPath !== undefined
+      ? { archivedRolloutPath: existing.archivedRolloutPath }
+      : {}),
+    ...(record.archivedRolloutPath !== undefined
+      ? { archivedRolloutPath: record.archivedRolloutPath }
+      : {}),
+    ...((!replaceArchiveState || preservePendingCleanup) && existing?.archiveCleanupGeneration !== undefined
+      ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+      : {}),
+    ...(record.archiveCleanupGeneration !== undefined
+      ? { archiveCleanupGeneration: record.archiveCleanupGeneration }
+      : {}),
+  };
+}
+
+function threadUpsertValues(record: IndexedThreadRecord): ThreadUpsertValues {
+  return [
+    record.threadId,
+    record.name ?? null,
+    record.createdAt,
+    record.updatedAt,
+    record.archivedAt ?? null,
+    record.cwd ?? null,
+    record.source === undefined ? null : JSON.stringify(record.source),
+    record.forkedFromId ?? null,
+    record.model ?? null,
+    record.modelProvider ?? null,
+    record.memoryMode ?? null,
+    record.rolloutPath ?? null,
+    record.archivedRolloutPath ?? null,
+    record.archiveCleanupGeneration ?? null,
+  ];
+}
+
+function threadRowMatchesUpsert(row: ThreadRow, values: ThreadUpsertValues): boolean {
+  return row.thread_id === values[0] && row.name === values[1] &&
+    row.created_at === values[2] && row.updated_at === values[3] &&
+    row.archived_at === values[4] && row.cwd === values[5] &&
+    row.source_json === values[6] && row.forked_from_id === values[7] &&
+    row.model === values[8] && row.model_provider === values[9] &&
+    row.memory_mode === values[10] && row.rollout_path === values[11] &&
+    row.archived_rollout_path === values[12] && row.archive_cleanup_generation === values[13];
 }
 
 function rowToThread(row: ThreadRow): IndexedThreadRecord {
