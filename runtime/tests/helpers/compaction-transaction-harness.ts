@@ -159,8 +159,12 @@ export function createCompactionTransactionHarness(
           ? { compactionHistory: message.runtimeOnly.compactionHistory }
           : {}),
       },
-    }, { durable: true });
+    });
   }
+  // Fixture construction has no observable intermediate crash boundary. Make
+  // the complete source durable once before exercising the real transaction,
+  // rather than issuing one journal commit per synthetic message.
+  store.flushDurable();
 
   const provider = createProvider(options.chat);
   const kernel = new ExecutionAdmissionKernel({
