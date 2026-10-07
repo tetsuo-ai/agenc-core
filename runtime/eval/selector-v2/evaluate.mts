@@ -1,4 +1,9 @@
-/** Locked policy replay over real frozen provider responses. No API calls and no fitting. */
+/**
+ * Locked policy replay over real frozen provider responses. No API calls and no fitting.
+ * Two settings: the frozen cheap parent under a $0.05 cap, and the predeclared
+ * premium arm as an uncapped parent, which parent-first routing must keep
+ * unless supported evidence says otherwise.
+ */
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -36,6 +41,10 @@ function row(t: any, arm: string, rs: any[], extra: any = {}) {
     models: rs.map(r => r.provider + "/" + r.model), actualModels: rs.map(r => r.actualModel),
     costReconciled: rs.every(r => r.costReconciled), errors: rs.map(r => r.error).filter(Boolean), ...extra };
 }
+const settings = [
+  { suffix: "", parent: cal.parent, maxCostUsd: 0.05 as number | undefined },
+  { suffix: "_premium_uncapped", parent: cfg.baselines.strongest, maxCostUsd: undefined },
+];
 for (const t of tasks) {
   const labels = classifyChildTask(t.prompt);
   const task = { ...labels, requiresTools: false, inputTokens: Math.ceil(Buffer.byteLength(cfg.systemPrompt + "\n" + t.prompt) / 3), outputTokens: 4096, expectedModelCalls: 1, maxCostUsd: 0.05 };
@@ -47,25 +56,33 @@ for (const t of tasks) {
     const r = record(t, pairKey(pair as any)); output.push(row(t, arm, r ? [r] : []));
   }
   for (const arm of ["openrouter_restricted", "openrouter_unrestricted"]) { const r = record(t, arm); output.push(row(t, arm, r ? [r] : [])); }
-  for (const arm of ["v2_cold", "v2_irt", "selector_v2"]) {
+  for (const setting of settings) for (const base of ["v2_cold", "v2_irt", "selector_v2"]) {
+    const arm = base + setting.suffix;
+    const cold = base === "v2_cold";
     // Calibration v2 rows use precomputed leave-one-task-out predictions; never score a task with its own fitted label.
-    if (t.split === "calibration") {
-      const configName = arm === "v2_cold" ? "parent_first_cold" : arm === "v2_irt" ? "irt" : cal.chosen.name;
+    if (t.split === "calibration" && setting.suffix === "") {
+      const configName = cold ? "parent_first_cold" : base === "v2_irt" ? "irt" : cal.chosen.name;
       const r = cal.trials.find((x: any) => x.config.name === configName).rows.find((x: any) => x.taskId === t.id);
       const rs = r.requestIds.map((id: string) => records.find(x => x.requestId === id));
       output.push(row(t, arm, rs, { mode: r.mode, reason: r.decision.reason, calibrationMode: "leave-one-task-out" })); continue;
     }
-    const verified = arm === "selector_v2";
-    const decision = selectChildProviderV2({ task, features, parent: cal.parent, candidates: cal.candidates, nowMs: 0,
-      abilities: arm === "v2_cold" ? [] : cal.fit.abilities, outcomes: arm === "v2_cold" ? { aggregates: [], health: [] } : cal.fit.outcomes,
+    // Calibration has no leave-one-task-out fit for the premium setting, so
+    // only its cold arm, which uses no fitted state, scores calibration tasks.
+    if (t.split === "calibration" && !cold) continue;
+    const verified = base === "selector_v2";
+    const { maxCostUsd: _cap, ...uncapped } = task;
+    const settingTask = setting.maxCostUsd === undefined ? uncapped : task;
+    const decision = selectChildProviderV2({ task: settingTask, features, parent: setting.parent, candidates: cal.candidates, nowMs: 0,
+      abilities: cold ? [] : cal.fit.abilities, outcomes: cold ? { aggregates: [], health: [] } : cal.fit.outcomes,
       preferences: verified ? cal.chosen.preferences : { cost: "balanced" },
       ...(verified ? { verification: { available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1,
         targetQuality: cal.chosen.target, conditional: cal.fit.conditional } } : {}) });
     const rs: any[] = [];
     let verificationMs = 0;
     const chain = decision.cascade?.candidates ?? (decision.selected ? [decision.selected] : []);
-    const result = await runChildRoutingFallback({ candidates: chain, maxAttempts: 2, maxModelCalls: 2, maxCostUsd: task.maxCostUsd,
-      ...(verified ? { verification: { retrySafe: true, costUsd: 0, check: async (attempt: any) => {
+    const result = await runChildRoutingFallback({ candidates: chain, maxAttempts: 2, maxModelCalls: 2,
+      ...(setting.maxCostUsd !== undefined ? { maxCostUsd: setting.maxCostUsd } : {}),
+      ...(verified ? { verification: { retrySafe: true, costUsd: 0, escalate: decision.cascade !== undefined, check: async (attempt: any) => {
         const started = performance.now(); const verdict = grade(t, attempt.value); verificationMs += performance.now() - started;
         return verdict.pass ? "pass" as const : "fail" as const;
       } } } : {}),
@@ -81,5 +98,5 @@ for (const t of tasks) {
 }
 writeFileSync(outputPath, JSON.stringify({ generatedAt: new Date().toISOString(), policyFreezeSha256: hash(readFileSync(freezePath)),
   taskSha256: hash(readFileSync(resolve(bench, "tasks.json"))), matrixSha256: hash(matrix), missing, rows: output,
-  methodology: "Matched real first recorded responses; frozen task graders act as independent local verifiers; no answers or expected values enter routing; no holdout updates; calibration uses leave-one-task-out; direct costs exclude daemon/parent overhead." }, null, 2) + "\n");
+  methodology: "Matched real first recorded responses; frozen task graders act as independent local verifiers; no answers or expected values enter routing; no holdout updates; calibration uses leave-one-task-out; the premium uncapped setting scores calibration tasks only in its cold arm; direct costs exclude daemon/parent overhead." }, null, 2) + "\n");
 console.log(JSON.stringify({ rows: output.length, missing: missing.length, newProviderCalls: 0 }));

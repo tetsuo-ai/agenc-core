@@ -4,7 +4,28 @@ PR: [tetsuo-ai/agenc-core#2808](https://github.com/tetsuo-ai/agenc-core/pull/280
 
 Built on `xprov/automatic-selection` at `02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7`, in the independent `xprov/selector-v2` checkout. Runtime implementation and compatibility commits: `94f6b0b9abed`, `4e962317b520`, `6225ea0e919e`. No release, deployment or merge.
 
-## Verdict
+Everything below the post-review section describes the policy frozen on 2026-09-29, before the code review. The review changed the policy, so its verdict does not carry over.
+
+## Post-review policy
+
+The review found that the frozen policy treated a missing cap as a $0.05 cap, which made uncapped sessions the most price averse and sent strong parents' hard work to weaker, cheaper models. It also found that the vendor benchmark priors compared different benchmarks between models. The fixed policy weighs price only under a cap, requires the maintained tier quality floor for the task's complexity (the parent included), counts a higher tier as a reason to leave the parent only with verified local outcomes, never moves a hard task below the parent's rating, and anchors every prior on the maintained tiers. `calibrate.mts` then refit it on calibration data only; the grid chose a 0.80 target with economy cost preference.
+
+This is a replay on held-out tasks whose results were already public, not a blind result. Full tables are in `post-review-tables.md`.
+
+| Arm | Calibration | Held out |
+|---|---:|---:|
+| V2 parent-first cold, $0.05 cap | 26/28, $0.036869 | 11/14, $0.022005 |
+| V2 IRT without verifier, $0.05 cap | 26/28, $0.057761 | 12/14, $0.036939 |
+| Selector v2 (verified), $0.05 cap | 26/28, $0.013231 | 11/14, $0.016051 |
+| V2 parent-first cold, uncapped `kimi/kimi-k3` parent | 25/28, $0.379328 | 11/14, $0.293116 |
+| V2 IRT without verifier, uncapped `kimi/kimi-k3` parent | not scored | 11/14, $0.256937 |
+| Selector v2 (verified), uncapped `kimi/kimi-k3` parent | not scored | 12/14, $0.139200 |
+| OpenRouter Auto restricted | 26/28, $0.038639 | 11/14, $0.022757 |
+| OpenRouter Auto unrestricted | 25/28, $0.019927 | 11/14, $0.016186 |
+
+The cold arms keep the parent on every task in both settings: the cheap capped parent as before, and the premium parent without a cap, where price alone no longer moves it. The verified capped policy now cascades on every task and passes 11/14 held-out tasks for $0.016051. That ties both Auto arms on passes, costs 29.5% less than restricted Auto and about the same as unrestricted Auto. The frozen verdict's extra held-out pass (`hold-hard-coding`) is lost. Without a verifier, verified calibration outcomes moved 4 held-out tasks off the parent; that added one pass and cost more. With the uncapped premium parent, verified cascades move 13 of 14 held-out tasks to cheaper first models because paired recovery evidence supports their quality, not their price. The calibration rows of the premium IRT and verified arms are not scored, because calibration has no leave-one-task-out fit for that setting.
+
+## Verdict (frozen policy)
 
 The frozen verified-policy replay meets the requested numerical target against both OpenRouter Auto arms: **12/14 held-out passes for $0.011888654**, versus **11/14 for $0.022757472 restricted** and **11/14 for $0.016185956 unrestricted**. That is one additional pass, with 47.8% and 26.5% lower recorded total cost respectively.
 
@@ -166,8 +187,8 @@ Final known-key scans cover all regular files in this job's Mac task root, isola
 
 ## Sources and replay
 
-- [DeepSeek official release notes](https://api-docs.deepseek.com/updates/), dated 2026-09-10 and 2026-08-13, retrieved 2026-09-29. The exact score anchors and dates are embedded in `provider-selector-irt.ts`.
-- [Meta Muse Spark benchmarks](https://dev.meta.ai/models/muse-spark), undated page retrieved 2026-09-29. The contributor billing variant has no separate published ability measurement. These heterogeneous vendor results are deliberately weak priors.
+- [DeepSeek official release notes](https://api-docs.deepseek.com/updates/), dated 2026-09-10 and 2026-08-13, retrieved 2026-09-29. The frozen policy embedded these score anchors in `provider-selector-irt.ts`; the review removed them.
+- [Meta Muse Spark benchmarks](https://dev.meta.ai/models/muse-spark), undated page retrieved 2026-09-29. The contributor billing variant has no separate published ability measurement. The frozen policy used these heterogeneous vendor results as weak priors; the review removed them.
 - [FrugalGPT](https://arxiv.org/abs/2305.05176), 2023. Motivates verified cost-aware cascades; this is not a replication of its learned answer scorer.
 - [RouteLLM](https://arxiv.org/abs/2406.18665), 2024. Context for task-dependent routing and held-out evaluation; no claimed reproduction.
 - [OpenRouter Auto documentation](https://openrouter.ai/docs/guides/routing/routers/auto-router), retrieved 2026-09-29, for router restrictions and the comparison arm semantics.

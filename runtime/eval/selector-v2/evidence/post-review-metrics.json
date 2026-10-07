@@ -1,0 +1,376 @@
+[
+  {
+    "split": "calibration",
+    "arm": "selector_v2",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.013230728,
+    "costPerTask": 0.000472526,
+    "p50": 6.556480884552002,
+    "p95": 28.729922139644607,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "current_selector",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.006957471999999999,
+    "costPerTask": 0.00024848114285714283,
+    "p50": 6.424468040466309,
+    "p95": 22.151496529579163,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "fixed_parent",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.036869268000000004,
+    "costPerTask": 0.0013167595714285716,
+    "p50": 3.0280755758285522,
+    "p95": 7.561827170848846,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "always_strongest",
+    "n": 28,
+    "passes": 25,
+    "quality": 0.8928571428571429,
+    "wilson": [
+      0.7280414845132842,
+      0.9628816331706992
+    ],
+    "costUsd": 0.3793283999999999,
+    "costPerTask": 0.013547442857142853,
+    "p50": 13.568308591842651,
+    "p95": 45.77644215822219,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "always_cheapest",
+    "n": 28,
+    "passes": 25,
+    "quality": 0.8928571428571429,
+    "wilson": [
+      0.7280414845132842,
+      0.9628816331706992
+    ],
+    "costUsd": 0.007001172000000002,
+    "costPerTask": 0.0002500418571428572,
+    "p50": 6.009397506713867,
+    "p95": 22.973651432991023,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "openrouter_restricted",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.038638979999999996,
+    "costPerTask": 0.0013799635714285712,
+    "p50": 3.1367111206054688,
+    "p95": 11.7231609582901,
+    "covered": 28,
+    "reconciledTasks": 28
+  },
+  {
+    "split": "calibration",
+    "arm": "openrouter_unrestricted",
+    "n": 28,
+    "passes": 25,
+    "quality": 0.8928571428571429,
+    "wilson": [
+      0.7280414845132842,
+      0.9628816331706992
+    ],
+    "costUsd": 0.019927436,
+    "costPerTask": 0.0007116941428571428,
+    "p50": 5.066933631896973,
+    "p95": 15.501242935657498,
+    "covered": 28,
+    "reconciledTasks": 28
+  },
+  {
+    "split": "calibration",
+    "arm": "v2_cold",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.036869268000000004,
+    "costPerTask": 0.0013167595714285716,
+    "p50": 3.0280755758285522,
+    "p95": 7.561827170848846,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "v2_irt",
+    "n": 28,
+    "passes": 26,
+    "quality": 0.9285714285714286,
+    "wilson": [
+      0.7735463743160151,
+      0.9801879358846937
+    ],
+    "costUsd": 0.057760799999999994,
+    "costPerTask": 0.002062885714285714,
+    "p50": 3.2374210357666016,
+    "p95": 15.779779124259948,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "calibration",
+    "arm": "v2_cold_premium_uncapped",
+    "n": 28,
+    "passes": 25,
+    "quality": 0.8928571428571429,
+    "wilson": [
+      0.7280414845132842,
+      0.9628816331706992
+    ],
+    "costUsd": 0.3793283999999999,
+    "costPerTask": 0.013547442857142853,
+    "p50": 13.568308591842651,
+    "p95": 45.77644215822219,
+    "covered": 28,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "selector_v2",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.016051153999999998,
+    "costPerTask": 0.0011465109999999998,
+    "p50": 7.12725754706964,
+    "p95": 56.287143170491426,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "current_selector",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.0035519720000000005,
+    "costPerTask": 0.00025371228571428574,
+    "p50": 8.879328966140747,
+    "p95": 34.03369265794754,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "fixed_parent",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.022005168,
+    "costPerTask": 0.0015717977142857141,
+    "p50": 3.341858386993408,
+    "p95": 22.102531027793884,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "always_strongest",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.2931156,
+    "costPerTask": 0.02093682857142857,
+    "p50": 19.57991361618042,
+    "p95": 138.73077486753462,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "always_cheapest",
+    "n": 14,
+    "passes": 12,
+    "quality": 0.8571428571428571,
+    "wilson": [
+      0.6005862050303044,
+      0.9599060787285338
+    ],
+    "costUsd": 0.004265886000000002,
+    "costPerTask": 0.00030470614285714296,
+    "p50": 7.588852643966675,
+    "p95": 54.3613603234291,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "openrouter_restricted",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.022757471999999997,
+    "costPerTask": 0.001625533714285714,
+    "p50": 4.472693085670471,
+    "p95": 13.007580935955048,
+    "covered": 14,
+    "reconciledTasks": 14
+  },
+  {
+    "split": "holdout",
+    "arm": "openrouter_unrestricted",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.016185956,
+    "costPerTask": 0.0011561397142857144,
+    "p50": 6.486552953720093,
+    "p95": 25.63233346939086,
+    "covered": 14,
+    "reconciledTasks": 14
+  },
+  {
+    "split": "holdout",
+    "arm": "v2_cold",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.022005168,
+    "costPerTask": 0.0015717977142857141,
+    "p50": 3.341858386993408,
+    "p95": 22.102531027793884,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "v2_irt",
+    "n": 14,
+    "passes": 12,
+    "quality": 0.8571428571428571,
+    "wilson": [
+      0.6005862050303044,
+      0.9599060787285338
+    ],
+    "costUsd": 0.036939200000000005,
+    "costPerTask": 0.0026385142857142862,
+    "p50": 3.6530474424362183,
+    "p95": 30.22654272317886,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "v2_cold_premium_uncapped",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.2931156,
+    "costPerTask": 0.02093682857142857,
+    "p50": 19.57991361618042,
+    "p95": 138.73077486753462,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "v2_irt_premium_uncapped",
+    "n": 14,
+    "passes": 11,
+    "quality": 0.7857142857142857,
+    "wilson": [
+      0.5241076941340045,
+      0.9242861328730662
+    ],
+    "costUsd": 0.25693675,
+    "costPerTask": 0.018352625,
+    "p50": 19.57991361618042,
+    "p95": 138.73077486753462,
+    "covered": 14,
+    "reconciledTasks": 0
+  },
+  {
+    "split": "holdout",
+    "arm": "selector_v2_premium_uncapped",
+    "n": 14,
+    "passes": 12,
+    "quality": 0.8571428571428571,
+    "wilson": [
+      0.6005862050303044,
+      0.9599060787285338
+    ],
+    "costUsd": 0.13919980199999996,
+    "costPerTask": 0.009942842999999996,
+    "p50": 7.571209710956848,
+    "p95": 140.38675955848112,
+    "covered": 14,
+    "reconciledTasks": 0
+  }
+]
