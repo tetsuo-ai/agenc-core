@@ -1394,8 +1394,9 @@ export class VerifiedChangeWorkflowController {
 
   /**
    * A terminal that was only queued becomes projectable once close drains it
-   * into a complete fsynced line. Until that line is in the file, SQLite
-   * stays empty: a detached row would name a different event.
+   * into a complete fsynced line. A failed fsync truncates that append, so
+   * the line is not in the file and SQLite stays empty. A detached row would
+   * name a different event.
    */
   #projectDrainedTerminal(
     ctx: RunContext,

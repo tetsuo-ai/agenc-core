@@ -4890,6 +4890,15 @@ export class Session {
     }
     // I-27 + M4: allocate identity/sequence first, but do not let a listener
     // observe a durable transition until its rollout append has fsynced.
+    // A lifecycle refusal has to happen before stamp. The suffix lookup
+    // can miss a buried terminal; the append checker reads the whole file,
+    // and a sequence consumed for that refusal becomes a sequence_gap.
+    if (
+      this.rolloutStore !== null &&
+      (event.msg.type === "run_terminal" || event.msg.type === "run_reopened")
+    ) {
+      this.rolloutStore.assertLifecycleAppendBeforeStamp(event);
+    }
     const stamped = this.eventLog.stamp(event);
     const derivedTurnId =
       appendOpts.turnId ??
@@ -6312,7 +6321,8 @@ export class Session {
     if (this.rolloutStore) {
       try {
         this.rolloutStore.flushDurable();
-        this.rolloutStore.close();
+        const closed = this.rolloutStore.close();
+        if (closed instanceof Promise) await closed;
       } catch {
         /* best-effort */
       }

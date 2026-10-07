@@ -69,6 +69,18 @@ export interface CommittedSuffix {
 }
 
 /**
+ * `found`: the suffix contains this epoch's terminal.
+ * `absent`: the suffix proves this epoch has no committed terminal.
+ * `undecided`: the read failed, or the window hit its cap without the
+ * terminal and without the reopen that opened the epoch. That is not
+ * absence. Callers read the whole file before stamping a sequence.
+ */
+export type CommittedRunTerminalLookup =
+  | { readonly status: "found"; readonly terminal: CanonicalRunTerminal }
+  | { readonly status: "absent" }
+  | { readonly status: "undecided" };
+
+/**
  * Last complete `run_terminal` for this epoch in a growing file suffix.
  *
  * The window starts at 64 KiB and doubles until it decides, or until it
@@ -78,26 +90,29 @@ export interface CommittedSuffix {
  * same-epoch terminal follows: a committed reopen has its terminal at a
  * lower offset, in an earlier write or earlier in the same ordered fsync,
  * and this epoch's terminal is appended after that reopen. A capped suffix
- * that contains neither is not absence. Callers that still need the buried
- * line read the whole file.
+ * that contains neither is `undecided`, not absence.
  */
 export function canonicalRunTerminalFromGrowingTail(
   size: number,
   readSuffix: (window: number) => CommittedSuffix | undefined,
   runId: string,
   epoch: number,
-): CanonicalRunTerminal | undefined {
-  if (!Number.isSafeInteger(size) || size <= 0) return undefined;
+): CommittedRunTerminalLookup {
+  if (!Number.isSafeInteger(size) || size <= 0) return { status: "absent" };
   const limit = Math.min(size, MAX_RECOVERY_CANONICAL_LINE_BYTES * 2);
   let window = Math.min(size, INITIAL_COMMITTED_RUN_TERMINAL_TAIL_BYTES);
   for (;;) {
     const suffix = readSuffix(window);
-    if (suffix === undefined) return undefined;
+    if (suffix === undefined) return { status: "undecided" };
     const decision = decideCommittedRunTerminal(suffix, runId, epoch);
-    if (decision.decided) return decision.terminal;
-    if (window >= limit) return undefined;
+    if (decision.decided) {
+      return decision.terminal === undefined
+        ? { status: "absent" }
+        : { status: "found", terminal: decision.terminal };
+    }
+    if (window >= limit) return { status: "undecided" };
     const next = Math.min(limit, window * 2);
-    if (next <= window) return undefined;
+    if (next <= window) return { status: "undecided" };
     window = next;
   }
 }

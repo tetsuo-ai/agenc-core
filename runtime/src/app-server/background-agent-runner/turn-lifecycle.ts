@@ -536,8 +536,10 @@ function commitDurableRunTerminal(
     return terminal;
   };
   // A complete fsynced line is the only terminal this producer adopts.
-  // A queued copy is not durable: stamping again would allocate another
-  // sequence for the same epoch.
+  // A queued copy is not durable. Throw before closeFailedRunTurn and
+  // emit so a new turn_failed id is not appended. Stamp of this fixed
+  // run-terminal id throws before lastSeq moves; it does not allocate
+  // another sequence.
   const existing = rollout.committedRunTerminal(runId, epoch);
   if (existing !== undefined) return remember(existing);
   const queued = rollout.queuedRunTerminal(runId, epoch);

@@ -1013,6 +1013,14 @@ export class RolloutStore {
   }
 
   /**
+   * Refuse a lifecycle append that the full journal cannot accept, before
+   * the caller stamps a sequence. An identical retry does not throw.
+   */
+  assertLifecycleAppendBeforeStamp(event: Event): void {
+    this.store.assertLifecycleAppendBeforeStamp(event);
+  }
+
+  /**
    * `run_terminal` for this epoch held in the in-flight drain slice, the
    * degraded ring, or the unflushed batch. Not a complete fsynced line.
    */
@@ -3898,10 +3906,25 @@ export class RolloutStore {
     this.store.setOnRolloutCommitted(listener);
   }
 
-  close(): void {
+  close(): void | Promise<void> {
     this.scheduler.stop();
     this.canonicalScanner.close();
-    try { this.store.close(); } finally { this.stateDriver.close(); }
+    let closed: void | Promise<void>;
+    try {
+      closed = this.store.close();
+    } catch (error) {
+      this.stateDriver.close();
+      throw error;
+    }
+    if (closed instanceof Promise) {
+      const settled = closed.finally(() => {
+        this.stateDriver.close();
+      });
+      // Ignored by synchronous callers. Awaiters still observe a rejection.
+      void settled.catch(() => undefined);
+      return settled;
+    }
+    this.stateDriver.close();
   }
 
   private requireRunEpoch(runId: string) {

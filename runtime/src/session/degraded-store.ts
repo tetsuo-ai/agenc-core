@@ -69,6 +69,8 @@ export class DegradedStore<T> {
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
   private stopped = false;
+  /** The `tryFlush` body currently writing, including a failed requeue. */
+  private activeFlush: Promise<boolean> | null = null;
 
   constructor(opts: DegradedStoreOptions<T>) {
     this.capacity = opts.capacity ?? DEFAULT_DEGRADED_CAPACITY;
@@ -181,6 +183,14 @@ export class DegradedStore<T> {
   }
 
   /**
+   * Promise for the unsettled `tryFlush`, if one is writing. Resolves
+   * only after a failed flush has put its slice back on the buffer.
+   */
+  inFlightFlush(): Promise<boolean> | undefined {
+    return this.activeFlush ?? undefined;
+  }
+
+  /**
    * Attempt to flush the buffer via `flushFn`. On success: clear
    * buffer, exit degraded mode, fire `exited` status change.
    * Retried by the interval timer on failure.
@@ -191,6 +201,16 @@ export class DegradedStore<T> {
       this.exitDegraded(0);
       return true;
     }
+    const pending = this.flushTakenBuffer();
+    this.activeFlush = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.activeFlush === pending) this.activeFlush = null;
+    }
+  }
+
+  private async flushTakenBuffer(): Promise<boolean> {
     this.flushing = true;
     // #12: drain by IDENTITY, not by index. We remove the snapshot from
     // the buffer up front so a concurrent at-capacity append() during
