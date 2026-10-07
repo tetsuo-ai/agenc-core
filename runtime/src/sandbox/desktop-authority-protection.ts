@@ -3,13 +3,26 @@ import path from "node:path";
 import { resolveHomeContext } from "../config/home.js";
 import type { PermissionProfile } from "./engine/index.js";
 
+function resolveExistingAuthorityPath(target: string): string {
+  if (process.platform === "linux") {
+    try {
+      return realpathSync.native(target);
+    } catch {
+      // Preserve the existing resolver's result/error on native misses. Some
+      // libc environments need /proc for native realpath; authority checks
+      // must not change when that implementation is unavailable.
+    }
+  }
+  return realpathSync(target);
+}
+
 /** Resolve missing leaves through their existing ancestor; never trust a tool's env. */
 export function canonicalAuthorityPath(target: string): string {
   let ancestor = path.resolve(target);
   const suffix: string[] = [];
   for (;;) {
     try {
-      return path.join(realpathSync(ancestor), ...suffix);
+      return path.join(resolveExistingAuthorityPath(ancestor), ...suffix);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = path.dirname(ancestor);

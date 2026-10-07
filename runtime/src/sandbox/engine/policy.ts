@@ -503,9 +503,13 @@ function writableRootsAllow(
   cwd: string,
   sessionTempRoot: string,
 ): boolean {
-  if ((policy.reservedReadOnlyPaths ?? []).some((root) =>
-    isWithinAuthorityPath(canonicalAuthorityPath(path.resolve(cwd, target)), root)
-  )) return false;
+  const reserved = policy.reservedReadOnlyPaths ?? [];
+  if (reserved.length > 0) {
+    // One fresh physical target for this decision, checked against every
+    // reservation. Never retain this observation across permission checks.
+    const physicalTarget = canonicalAuthorityPath(path.resolve(cwd, target));
+    if (reserved.some((root) => isWithinAuthorityPath(physicalTarget, root))) return false;
+  }
   return canWriteAccess(
     resolveAccessWithCwd(policy, target, cwd, sessionTempRoot),
   );
