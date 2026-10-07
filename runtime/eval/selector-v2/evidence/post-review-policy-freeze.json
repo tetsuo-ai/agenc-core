@@ -1,16 +1,16 @@
 {
-  "frozenAt": "2026-10-07T08:33:23+00:00",
+  "frozenAt": "2026-10-07T08:46:06+00:00",
   "files": {
     "../../../src/agents/provider-selector-irt.ts": "b718707cc924a5d3b206606206c77c2971ed362b1a282d235e86d72b6e0c5f41",
     "../../../src/agents/provider-selector-outcomes.ts": "d26f6bf8028caaaa82a91ffcad91e697f1ddbfba1f17a06e7e71977dc29933a5",
     "../../../src/agents/provider-selector-types.ts": "4c81cb53be903031e73681696940555c7e373babd788292443243a3a2ef34d3e",
-    "../../../src/agents/provider-selector-v2.ts": "ae395a924e330da99176db57e31ea251cd441eb8ca1c9fad0a5d1a99304c3dc2",
+    "../../../src/agents/provider-selector-v2.ts": "ed414ce8a66271dfd61d2ed31891323fb5d592f8e6aff663e6377c5bd576c90e",
     "../../../src/agents/provider-selector-profiles.ts": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
     "../../../src/agents/provider-selector.ts": "0261f8be4c4bda5c00a713844406cdc0264ffefd3cf4b7c241970e569a64c838",
     "../../../src/agents/child-routing-fallback.ts": "9f9b8934a4c0e666e242c0f47105edd2ced9ca577692b1a496a26014bfe4602b",
     "../calibrate.mts": "5283969dfd10ddf2a8adadac2e4f9f83942c0996ea6a3ebca1b3bf50c1e2cf7b",
     "../evaluate.mts": "ce8e1d72d945303696f94224e2e7139a41fbdf3c85358ec9b56c78333ea5c106",
-    "calibration-post-review.json": "9817b1e86362440fa2b974810afb938040724c5f0342c29d463b44416e7f2cc8",
+    "calibration-post-review.json": "649ae251e2503e3a101148b6041d9311c8db684264dccb4da6db3ce690e9d216",
     "calibration-input.json": "2b68752adc3bb288b51e2fea8997a00a70b75f98b08a84cf7b4cfce61ac81166"
   },
   "fitOnCalibrationOnly": true,
