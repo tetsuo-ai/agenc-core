@@ -514,7 +514,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
-| `model_verbosity` | `low`, `medium`, or `high`. |
+| `model_verbosity` | `low`, `medium`, or `high`. Sets response detail via the native verbosity parameter on supported direct OpenAI models; other routes (including DeepSeek, GLM, Anthropic and ChatGPT subscription models) use a Response Detail instruction. Applies at the top level or in a profile. A runtime response-detail override takes precedence; clearing it restores the configured value. Unset adds no response-detail instruction or native verbosity parameter. This controls user-facing prose, not the work, checks, or required error reporting. |
 | `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price), Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic), and xAI priority processing on Grok 4.7 and Grok 4.6 (`service_tier: "priority"`, 2x price, API-key billing only; a session signed in with X does not send it). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |

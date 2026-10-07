@@ -630,7 +630,7 @@ export interface TurnContext {
   /** Provider-facing output verbosity hint. */
   readonly modelVerbosity?: "low" | "medium" | "high";
 
-  /** Explicit session response-detail override; null keeps inherited requests unchanged. */
+  /** Effective response detail for prompt fallback routes, including inherited config. */
   readonly responseDetailOverride?: "low" | "medium" | "high" | null;
 
   /** Provider-facing service-tier hint. */
@@ -1301,7 +1301,10 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     reasoningEffort,
     reasoningSummary,
     modelVerbosity: sc.modelVerbosity,
-    responseDetailOverride: sc.modelVerbosityOverride,
+    // Clearing the runtime override restores the configured level. Prompt
+    // assembly and the concrete wire adapter decide whether to use this
+    // fallback or the provider's native verbosity parameter, never both.
+    responseDetailOverride: sc.modelVerbosityOverride ?? sc.modelVerbosity,
     serviceTier: sc.serviceTier,
     sessionSource: sc.sessionSource,
     environment: opts.environment,
