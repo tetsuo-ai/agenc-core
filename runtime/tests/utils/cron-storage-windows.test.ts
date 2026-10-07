@@ -504,8 +504,11 @@ describe("Windows cron storage uses private-path persistence", () => {
     // WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES), so share mode 0 would
     // lock nothing; a name added before the write is caught by the link count
     // read again after it.
-    expect(command).toContain("NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0)");
-    const recount = command.indexOf("if ([AgencCronRepair]::Describe($file, $task).Links -ne 1) { throw ");
+    expect(command).toContain(
+      "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path) { return OpenChild(folder, name, path, 0x1E0080); }",
+    );
+    expect(command).toContain("NtCreateFile(out handle, access, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0)");
+    const recount = command.indexOf("if ($written.Links -ne 1) { throw ");
     expect(recount).toBeGreaterThan(protectFile);
     expect(command).toContain("$root and that file are already private; remove the other name, then run this again.");
     // .agenc must still be the same object at the end.
@@ -523,6 +526,129 @@ describe("Windows cron storage uses private-path persistence", () => {
     // The C# source sits in one single-quoted PowerShell literal.
     expect(addTypeSource(command)).not.toContain("'");
     expect(command.indexOf("'; $descriptor = { param($isFolder)")).toBeGreaterThan(0);
+  });
+
+  test("checks the volume first, then catches a task file renamed and replaced during the repair", () => {
+    const command = windowsCronRepairCommand("C:\\p\\.agenc");
+    const protectDir = command.indexOf("[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root)");
+    const protectFile = command.indexOf("[AgencCronRepair]::Protect($file, (& $descriptor $false), $task)");
+    // Without Full Language Mode the script stops before Add-Type, and says why.
+    const guard = command.indexOf("if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw \"Not repaired: ");
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(command.indexOf("Add-Type -TypeDefinition"));
+    expect(command).toContain("mode and the repair needs Add-Type (Full Language Mode). Nothing was changed.");
+    // A session that ran this before keeps the static prefix: reset it after Add-Type.
+    expect(command.indexOf("[AgencCronRepair]::Prefix = 'Not repaired: '")).toBeGreaterThan(command.indexOf("Add-Type -TypeDefinition"));
+    // NTFS is read from the directory handle before the task file is opened and before either write.
+    const system = command.indexOf("$system = [AgencCronRepair]::FileSystem($dir, $root)");
+    const refuseSystem = command.indexOf("if ($system -ne 'NTFS') { throw \"Not repaired: $root is on $system, not NTFS. Nothing was changed.\" }");
+    expect(system).toBeGreaterThan(command.indexOf("$id = [AgencCronRepair]::Describe($dir, $root)"));
+    expect(refuseSystem).toBeGreaterThan(system);
+    expect(refuseSystem).toBeLessThan(command.indexOf("$file = [AgencCronRepair]::OpenChild("));
+    // After the file's write: same link count, then the NAME is opened again relative to the
+    // directory handle (attributes only, share 7) and must be the written file with one link.
+    const written = command.indexOf("$written = [AgencCronRepair]::Describe($file, $task)");
+    const reopen = command.indexOf("$same = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080)");
+    const compare = command.indexOf(
+      "if (-not $same -or $seen.Volume -ne $written.Volume -or $seen.IndexHigh -ne $written.IndexHigh -or " +
+      "$seen.IndexLow -ne $written.IndexLow -or $seen.Links -ne 1) { throw \"Stopped: scheduled_tasks.json was replaced during the repair. ",
+    );
+    expect(written).toBeGreaterThan(protectFile);
+    expect(reopen).toBeGreaterThan(written);
+    expect(command).toContain("if ($same) { try { $seen = [AgencCronRepair]::Describe($same, $task) } finally { $same.Dispose() } }");
+    expect(compare).toBeGreaterThan(reopen);
+    expect(command).toContain("$root and the original task file are private now; the file now at $task was not changed.");
+    // No task file at the start: one that appears during the repair also stops it.
+    expect(command).toContain(
+      "else { $late = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
+      "if ($late) { $late.Dispose(); throw \"Stopped: scheduled_tasks.json appeared during the repair. ",
+    );
+    expect(command.indexOf("$again = [AgencCronRepair]::OpenFolder($root)")).toBeGreaterThan(compare);
+    expect(command.indexOf("\"Repaired $root")).toBeGreaterThan(compare);
+    // Every message after the first write says "Stopped" and what is already private; "Not repaired" means unchanged.
+    expect(command.indexOf("[AgencCronRepair]::Prefix = \"Stopped ($root is already private): \"")).toBeGreaterThan(protectDir);
+    expect(command.indexOf("[AgencCronRepair]::Prefix = \"Stopped ($root is already private): \"")).toBeLessThan(protectFile);
+    const throws = [...command.matchAll(/throw "([A-Z][a-z]+)/gu)];
+    expect(throws.length).toBeGreaterThan(6);
+    for (const match of throws) {
+      expect([match.index! < protectDir ? "before" : "after", match[1]]).toEqual(
+        [match.index! < protectDir ? "before" : "after", match.index! < protectDir ? "Not" : "Stopped"],
+      );
+    }
+    expect(command).toContain("throw \"Stopped: $root was replaced during the repair. The directory opened there is private now; ");
+    expect(command).not.toContain("Not repaired: $root was replaced during the repair");
+  });
+
+  test("names Add-Type and Constrained Language Mode when a created .agenc cannot load the helper", async () => {
+    const directory = metadataDirectory();
+    const echo = (detail: string) => `throw "Add-Type is unavailable ($($ExecutionContext.SessionState.LanguageMode))"_x000D__x000A_</S>` +
+      `<S S="Error">Add-Type is unavailable (${detail})`;
+    const tail = "Constrained Language Mode, and AppLocker or WDAC (Windows Defender Application Control) policies, block it. " +
+      "No ACL was written, and the directory was left unchanged. Allow Add-Type for this account, or remove that directory " +
+      "and schedule the task with durable:false.";
+    for (const [reason, why] of [
+      [echo("ConstrainedLanguage"), " (PowerShell runs in ConstrainedLanguage mode)"],
+      ["Add-Type is unavailable (FileLoadException)", " (Add-Type failed with FileLoadException)"],
+      [`throw "Add-Type is unavailable ($($_.Exception.GetType().Name))"`, ""],
+    ]) {
+      acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+        throw verifierFailure(path, reason);
+      });
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+      expect(error.message).toBe(
+        `Durable cron storage on Windows could not make ${directory} private: that step loads a small C# helper ` +
+        `with PowerShell Add-Type, and Add-Type is not available here${why}. ${tail}`,
+      );
+      expect(error.message).not.toMatch(/Command:|repair it/u);
+      expect(await readdir(directory)).toEqual([]);
+      expect(pathBasedDirectoryInits()).toHaveLength(0);
+      await rm(directory, { recursive: true });
+    }
+  });
+
+  test("checks the language mode and Add-Type before any handle, with no path-based fallback", async () => {
+    await writeRecord();
+    const script = decodedInitScript();
+    const mode = script.indexOf(
+      "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') " +
+      "{ throw \"Add-Type is unavailable ($($ExecutionContext.SessionState.LanguageMode))\" }",
+    );
+    const load = script.indexOf("try { Add-Type -TypeDefinition '");
+    expect(mode).toBeGreaterThan(0);
+    expect(load).toBeGreaterThan(mode);
+    expect(script).toContain("' } catch { throw \"Add-Type is unavailable ($($_.Exception.GetType().Name))\" }");
+    expect(script.indexOf("$probe = [AgencCronRepair]::Probe($target)")).toBeGreaterThan(load);
+    expect(script).not.toMatch(/SetAccessControl|Set-Acl|icacls/u);
+  });
+
+  test("leaves an unsafe task file in place on update, and the docs say the repair keeps its bytes", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    privatePaths.add(`directory\0${directory}`);
+    const record = join(directory, "scheduled_tasks.json");
+    writeFileSync(record, body);
+    // A regular, single-link task file that is not private. Every task update
+    // (mutateCronFile, the only storage.write caller) reads first, under the
+    // cron lock, which this Linux run cannot take; the same read-then-write
+    // sequence stops at the read and never reaches the atomic replacement.
+    let wrote = false;
+    const error = await withCronStorage(workspace, true, async (storage) => {
+      await storage.read();
+      wrote = true;
+      await storage.write(body.replace("survive restart", "rewritten"));
+    }).catch((caught: unknown) => caught) as Error;
+    expect(wrote).toBe(false);
+    expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(error.message).toContain("The task file was left unchanged.");
+    expect(await readFile(record, "utf8")).toBe(body);
+    expect(aclMutations()).toHaveLength(0);
+    const docs = await readFile(resolve(__dirname, "../../../docs/durable-cron-storage.md"), "utf8");
+    expect(docs).not.toContain("an unsafe task file is replaced atomically");
+    expect(docs).toContain("rejected on read and on update and left\nunchanged; durable cron does not rewrite it.");
+    expect(docs).toContain("**Task contents are kept.** The repair changes ACLs only. It keeps the bytes");
+    expect(docs).toContain("inspect it, or delete it, before you run the repair.");
+    expect(docs).toContain("Loading that helper needs PowerShell Full Language Mode.");
   });
 
   test("makes a created .agenc private through a handle bound to its lstat, never by path", async () => {
