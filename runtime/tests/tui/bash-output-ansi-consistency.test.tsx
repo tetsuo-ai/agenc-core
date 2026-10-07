@@ -17,6 +17,10 @@ import { selectAgenCTuiGlyphs } from '../../src/tui/glyphs.js'
 // renders through `<Ansi>` so the program color is preserved intact; only PLAIN
 // lines (no SGR of their own) are dimmed. So a single report is never
 // half-dim / half-raw.
+//
+// The transcript now shows one summary line per step; the full stdout body
+// these tests inspect renders in the verbose (ctrl+o) view, so every render
+// here passes `verbose`.
 
 // The true-color theme tone that `dimColor`/muted text resolves to in the
 // rendered output (the tone the plain sibling lines + the gutter carry). Used to
@@ -28,20 +32,19 @@ function plainExec(...stdoutLines: string[]): string {
 }
 
 /**
- * A non-zero exit, where the preview keeps several lines instead of the single
- * line a success shows. Needed whenever an assertion has to see a colored row
- * and a plain row in the SAME render.
+ * A non-zero exit, so the colored row and the plain row are checked on the
+ * failure branch of the full view too, in the SAME render.
  */
 function failingExec(...stdoutLines: string[]): string {
   return `${stdoutLines.join('\n')}\n\n[exec exit_code=1 wall_time=0.03s tokens=10]`
 }
 
-// The dim `  ⎿  ` continuation gutter prefixes the FIRST content row and is
+// The dim `  └  ` continuation gutter prefixes the FIRST content row and is
 // ALWAYS dim (correctly). Strip it so the body-color assertions look only at the
 // stdout line content, not the intentionally-dim gutter. Rows without the gutter
 // glyph are returned unchanged.
 function bodyAfterGutter(row: string): string {
-  const idx = row.indexOf('⎿')
+  const idx = row.indexOf(selectAgenCTuiGlyphs().responseGutter)
   return idx === -1 ? row : row.slice(idx + 1)
 }
 
@@ -53,7 +56,7 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
       '\x1b[31m[1] version\x1b[39m Expected type str',
       'plain sibling line',
     )
-    const ansi = await renderToAnsiString(<BashOutputView content={content} />, {
+    const ansi = await renderToAnsiString(<BashOutputView content={content} verbose />, {
       columns: 120,
       rows: 20,
       color: true,
@@ -75,7 +78,7 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
 
   test('a PLAIN stdout line (no own SGR) is still dimmed', async () => {
     const content = plainExec('plain line one', 'plain line two')
-    const ansi = await renderToAnsiString(<BashOutputView content={content} />, {
+    const ansi = await renderToAnsiString(<BashOutputView content={content} verbose />, {
       columns: 120,
       rows: 20,
       color: true,
@@ -92,7 +95,7 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
       '\x1b[31mERR\x1b[39m the rest of the colored line',
       'a totally plain line',
     )
-    const ansi = await renderToAnsiString(<BashOutputView content={content} />, {
+    const ansi = await renderToAnsiString(<BashOutputView content={content} verbose />, {
       columns: 120,
       rows: 20,
       color: true,
@@ -111,30 +114,31 @@ describe('BashOutputView ANSI consistency (BUG 2: no half-dim/half-raw lines)', 
 })
 
 // ---------------------------------------------------------------------------
-// BUG 3: empty command output `(No output)` must nest under the `⎿` gutter.
+// BUG 3: empty command output `(No output)` must nest under the `└` gutter.
 //
 // iter-26 nested NON-EMPTY Bash/Run stdout under the `● Run(...)` call row with a
-// `  ⎿  ` gutter, but the silent/empty branch still returned a BARE
+// `  ⎿  ` gutter (now `└`), but the silent/empty branch still returned a BARE
 // `<Text dimColor>(No output)</Text>` with no gutter — so `(No output)` rendered
 // flush at the bullet column instead of nested at the gutter column like every
 // other tool-result body. The fix renders the silent line behind the SAME gutter
-// row layout the non-empty branch uses.
+// row layout the non-empty branch uses. These checks cover the verbose (ctrl+o)
+// view; the transcript's one-line form is checked at the end.
 // ---------------------------------------------------------------------------
 
 // A plain-exec trailer with NO stdout/stderr (the silent case).
 const EMPTY_EXEC = '\n\n[exec exit_code=0 wall_time=0.03s tokens=10]'
 const EMPTY_EXEC_FAILURE = '\n\n[exec exit_code=1 wall_time=0.03s tokens=10]'
 
-describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under ⎿)', () => {
+describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under └)', () => {
   test('a silent zero-exit command nests `(No output)` under the gutter', async () => {
-    const out = await renderToString(<BashOutputView content={EMPTY_EXEC} />, {
+    const out = await renderToString(<BashOutputView content={EMPTY_EXEC} verbose />, {
       columns: 120,
       rows: 20,
     })
     const gutter = selectAgenCTuiGlyphs().responseGutter
     const row = out.split('\n').find((line) => line.includes('(No output)'))
     expect(row).toBeDefined()
-    // The line carries the `⎿` continuation gutter (it nests under `● Run(...)`).
+    // The line carries the `└` continuation gutter (it nests under `● Run ...`).
     // Against the pre-fix code the silent branch returned a bare `(No output)`
     // with NO gutter glyph on its row.
     expect(row).toContain(gutter)
@@ -144,7 +148,7 @@ describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under ⎿
   })
 
   test('a silent non-zero-exit command nests its `(no output, non-zero exit)` under the gutter', async () => {
-    const out = await renderToString(<BashOutputView content={EMPTY_EXEC_FAILURE} />, {
+    const out = await renderToString(<BashOutputView content={EMPTY_EXEC_FAILURE} verbose />, {
       columns: 120,
       rows: 20,
     })
@@ -161,12 +165,15 @@ describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under ⎿
 
   test('the empty-output gutter aligns with the non-empty-output gutter column', async () => {
     const gutter = selectAgenCTuiGlyphs().responseGutter
-    const empty = await renderToString(<BashOutputView content={EMPTY_EXEC} />, {
+    const empty = await renderToString(<BashOutputView content={EMPTY_EXEC} verbose />, {
       columns: 120,
       rows: 20,
     })
     const nonEmpty = await renderToString(
-      <BashOutputView content={`hello world\n\n[exec exit_code=0 wall_time=0.03s tokens=10]`} />,
+      <BashOutputView
+        content={`hello world\n\n[exec exit_code=0 wall_time=0.03s tokens=10]`}
+        verbose
+      />,
       { columns: 120, rows: 20 },
     )
     const emptyRow = empty.split('\n').find((l) => l.includes('(No output)'))
@@ -176,5 +183,20 @@ describe('BashOutputView empty-output gutter (BUG 3: (No output) nests under ⎿
     // The gutter glyph sits at the SAME column in both — the empty line is no
     // longer flush at the bullet column while the real output sits at the gutter.
     expect(emptyRow!.indexOf(gutter)).toBe(nonEmptyRow!.indexOf(gutter))
+  })
+
+  test('the transcript form nests the silent result on one └ result line', async () => {
+    // Default (non-verbose) view: the same nesting, as one quiet result line.
+    const success = await renderToString(<BashOutputView content={EMPTY_EXEC} />, {
+      columns: 120,
+      rows: 20,
+    })
+    const failure = await renderToString(<BashOutputView content={EMPTY_EXEC_FAILURE} />, {
+      columns: 120,
+      rows: 20,
+    })
+    expect(success.trim()).toBe('└ no output')
+    expect(success).toContain('  └ no output')
+    expect(failure.trim()).toBe('└ exit 1')
   })
 })

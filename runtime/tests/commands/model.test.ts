@@ -8,7 +8,8 @@ import {
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";
-import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu.js";
+import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu-snapshot.js";
+import { switchProviderModel } from "./provider.js";
 import type { EnvSnapshot } from "../config/env.js";
 import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import type { ConfigStore } from "../config/store.js";
@@ -201,31 +202,28 @@ describe("checkModelHistoryCompat", () => {
       ],
     });
 
-    const result = checkModelHistoryCompat(session, "openai/gpt-4.1");
+    const result = checkModelHistoryCompat(session, "openai/gpt-oss-120b");
     expect(result.compatible).toBe(false);
     expect(result.missingCapabilities).toEqual(["image history"]);
-    expect(result.reason).toMatch(/openrouter \/ openai\/gpt-4\.1/);
+    expect(result.reason).toMatch(/openrouter \/ openai\/gpt-oss-120b/);
   });
 
-  it("treats reasoning effort as a compatibility requirement", () => {
+  it("does not refuse a switch over reasoning effort", () => {
     const session = stubSession({
       provider: "grok",
       model: "grok-4-fast",
       reasoningEffort: "high",
       configStore: commandConfigStore(TEST_HOME, {
-        providers: {
-          grok: {
-            capability_overrides: {
-              "grok-4-fast": { acceptsReasoningEffort: false },
-            },
-          },
-        },
+        providers: { grok: { capability_overrides: { acceptsReasoningEffort: false } } },
       }),
     });
 
-    const result = checkModelHistoryCompat(session, "grok-4-fast");
-    expect(result.compatible).toBe(false);
-    expect(result.missingCapabilities).toEqual(["reasoning effort"]);
+    // The switch drops a level the model rejects and says so
+    // (tests/session/reasoning-effort-for-model.test.ts).
+    expect(checkModelHistoryCompat(session, "grok-4-fast")).toEqual({
+      compatible: true,
+      missingCapabilities: [],
+    });
   });
 });
 
@@ -246,26 +244,28 @@ describe("Bedrock profile switch compatibility", () => {
         "amazon-bedrock",
       ),
     ).toEqual({ compatible: true, missingCapabilities: [] });
-    // Unmapped, the profile names no model and cannot take the effort.
-    expect(
-      checkModelHistoryCompat(session({}), profile, "amazon-bedrock").missingCapabilities,
-    ).toEqual(["reasoning effort"]);
+    // Unmapped, the profile cannot take the effort; the switch drops it
+    // instead of refusing (tests/session/reasoning-effort-for-model.test.ts).
+    expect(checkModelHistoryCompat(session({}), profile, "amazon-bedrock")).toEqual({
+      compatible: true,
+      missingCapabilities: [],
+    });
   });
 });
 
 describe("Gemini effort switch compatibility", () => {
   it.each([
-    ["grok", "grok-4.6", "high", "gemini", "gemini-3.1-pro-preview", true],
-    ["grok", "grok-4.6", "xhigh", "gemini", "gemini-3.1-pro-preview", false],
-    ["gemini", "gemini-3.5-flash", "minimal", "gemini", "gemini-3.1-pro-preview", false],
-    ["gemini", "gemini-3.1-pro-preview", "medium", "gemini", "gemini-3-pro-preview", false],
-    ["gemini", "gemini-3.1-pro-preview", "low", "grok", "grok-4.6", true],
-    ["gemini", "gemini-3.5-flash", "minimal", "grok", "grok-4.6", false],
-    ["gemini", "gemini-3.1-pro-preview", "none", "gemini", "gemini-2.5-flash", true],
-    ["gemini", "gemini-3.1-pro-preview", "high", "gemini", "gemini-2.5-flash", false],
-  ] as const)("checks %s/%s %s against %s/%s", (provider, model, reasoningEffort, targetProvider, targetModel, compatible) => {
+    ["grok", "grok-4.6", "xhigh", "gemini", "gemini-3.1-pro-preview"],
+    ["gemini", "gemini-3.5-flash", "minimal", "gemini", "gemini-3.1-pro-preview"],
+    ["gemini", "gemini-3.1-pro-preview", "medium", "gemini", "gemini-3-pro-preview"],
+    ["gemini", "gemini-3.5-flash", "minimal", "grok", "grok-4.6"],
+    ["gemini", "gemini-3.1-pro-preview", "high", "gemini", "gemini-2.5-flash"],
+    ["gemini", "gemini-3.5-flash", "medium", "gemini", "gemma-4-31b-it"],
+  ] as const)("switches %s/%s at %s to %s/%s, which does not take it", async (provider, model, reasoningEffort, targetProvider, targetModel) => {
     const session = stubSession({ provider, model, reasoningEffort });
-    expect(checkModelHistoryCompat(session, targetModel, targetProvider).compatible).toBe(compatible);
+    expect(checkModelHistoryCompat(session, targetModel, targetProvider).compatible).toBe(true);
+    const outcome = await applyModelSwitch(session, targetModel, targetProvider);
+    expect(outcome).toMatchObject({ applied: true, provider: targetProvider, model: targetModel });
   });
 });
 
@@ -329,20 +329,16 @@ describe("modelCommand", () => {
 
       await modelCommand.execute(mkctx(session, "", { setToolJSX }));
       const payload = setToolJSX.mock.calls[0]?.[0] as {
-        jsx?: {
-          props?: {
-            onSelect?: (
-              provider: "grok",
-              model: string,
-            ) => Promise<{ message: string; shouldClose: boolean }>;
-          };
-        };
+        jsx?: { props?: { initialProvider?: string } };
       };
+      expect(payload.jsx?.props?.initialProvider).toBe("grok");
+      // The screen switches through the same path; the current pair is a no-op.
       await expect(
-        payload.jsx?.props?.onSelect?.("grok", "grok-4.6"),
-      ).resolves.toEqual({
-        message: "Model unchanged: grok/grok-4.6.",
-        shouldClose: true,
+        switchProviderModel(mkctx(session, ""), "grok", "grok-4.6"),
+      ).resolves.toMatchObject({
+        applied: false,
+        unchanged: true,
+        message: "Provider unchanged: grok/grok-4.6.",
       });
       expect(
         (session as unknown as { pendingProviderSwitch: unknown })
@@ -365,7 +361,7 @@ describe("modelCommand", () => {
     }
   });
 
-  it("routes picker selections through provider-model authority", async () => {
+  it("opens the providers screen on the current provider and routes its choices through provider-model authority", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4" });
     const setToolJSX = vi.fn();
 
@@ -375,22 +371,16 @@ describe("modelCommand", () => {
 
     expect(res.kind).toBe("skip");
     const payload = setToolJSX.mock.calls[0]?.[0] as {
-      jsx?: {
-        props?: {
-          onSelect?: (
-            provider: "grok",
-            model: string,
-          ) => Promise<{ message: string; shouldClose: boolean }>;
-        };
-      };
+      jsx?: { props?: { initialProvider?: string } };
     };
-    const onSelect = payload.jsx?.props?.onSelect;
-    expect(onSelect).toBeTypeOf("function");
-    await expect(onSelect!("grok", "gpt-5")).resolves.toEqual({
+    expect(payload.jsx?.props?.initialProvider).toBe("grok");
+    await expect(
+      switchProviderModel(mkctx(session, ""), "grok", "gpt-5"),
+    ).resolves.toMatchObject({
+      applied: false,
       message: expect.stringContaining(
         "belongs to provider 'openai', not explicitly selected provider 'grok'",
       ),
-      shouldClose: false,
     });
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
@@ -569,6 +559,36 @@ describe("modelCommand", () => {
     expect(setModel).toHaveBeenCalledWith("grok-4-fast");
   });
 
+  it.each([
+    ["drops", undefined, undefined],
+    ["keeps", "high", "high"],
+  ] as const)("the status line %s the chosen effort as the daemon session does", async (_case, liveEffort, effortValue) => {
+    // A daemon session mirrors the journaled settings the switch produced.
+    const session = stubSession({ provider: "gemini", model: "gemini-3.5-flash" });
+    const sessionConfiguration: { collaborationMode: Record<string, unknown> } = {
+      collaborationMode: { model: "gemini-3.5-flash", reasoningEffort: "medium" },
+    };
+    Object.assign(session, {
+      sessionConfiguration,
+      applyProviderModelSelection: vi.fn(async () => {
+        sessionConfiguration.collaborationMode = {
+          model: "gemma-4-31b-it",
+          ...(liveEffort !== undefined ? { reasoningEffort: liveEffort } : {}),
+        };
+        return { applied: true, provider: "gemini", model: "gemma-4-31b-it", summary: "switched" };
+      }),
+    });
+    let appState: Record<string, unknown> = { mainLoopModel: "gemini-3.5-flash", effortValue: liveEffort ?? "medium" };
+    const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
+      appState = updater(appState) as Record<string, unknown>;
+    });
+
+    await modelCommand.execute(mkctx(session, "gemini:gemma-4-31b-it", { setAppState }));
+
+    expect(appState.mainLoopModel).toBe("gemma-4-31b-it");
+    expect(appState.effortValue).toBe(effortValue);
+  });
+
   it("returns an authoritative daemon rejection without updating chrome", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4" });
     const summary =
@@ -631,7 +651,7 @@ describe("modelCommand", () => {
       ],
     });
 
-    const res = await modelCommand.execute(mkctx(session, "openai/gpt-4.1"));
+    const res = await modelCommand.execute(mkctx(session, "openrouter:openai/gpt-oss-120b"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/blocked/);
@@ -662,7 +682,7 @@ describe("modelCommand", () => {
     const setModel = vi.fn();
 
     const res = await modelCommand.execute(
-      mkctx(session, "openai/gpt-4.1", { setModel }),
+      mkctx(session, "openrouter:openai/gpt-oss-120b", { setModel }),
     );
 
     expect(res.kind).toBe("text");
@@ -852,30 +872,16 @@ describe("modelCommand", () => {
     );
   });
 
-  it("applies a Copilot menu route as the same provider-local pair", async () => {
+  it("applies a Copilot route as the same provider-local pair", async () => {
     const session = stubSession({ provider: "github", model: "gpt-5-mini" });
-    const setToolJSX = vi.fn();
 
-    const result = await modelCommand.execute(
-      mkctx(session, "", { setToolJSX }),
-    );
-
-    expect(result.kind).toBe("skip");
-    const payload = setToolJSX.mock.calls[0]?.[0] as {
-      jsx?: {
-        props?: {
-          onSelect?: (
-            provider: "github",
-            model: string,
-          ) => Promise<{ message: string; shouldClose: boolean }>;
-        };
-      };
-    };
-    const onSelect = payload.jsx?.props?.onSelect;
-    expect(onSelect).toBeTypeOf("function");
     await expect(
-      onSelect!("github", "github:copilot:gpt-5.3-codex"),
-    ).resolves.toMatchObject({ shouldClose: true });
+      switchProviderModel(
+        mkctx(session, ""),
+        "github",
+        "github:copilot:gpt-5.3-codex",
+      ),
+    ).resolves.toMatchObject({ applied: true });
     expect(
       (session as unknown as { pendingProviderSwitch: unknown })
         .pendingProviderSwitch,

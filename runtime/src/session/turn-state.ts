@@ -18,7 +18,7 @@
 
 import type { CompactionLadderTier } from "../services/compact/ladder.js";
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
-import type { CompletionGatePlan } from "../phases/completion-gate.js";
+import type { CompletionGatePlan, CompletionGateRequest } from "../phases/completion-gate.js";
 import { readTextToolCallCorrection, type TextToolCallCorrection } from "../recovery/rejected-text-tool-call.js";
 import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../conversation/token-budget.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
@@ -386,10 +386,14 @@ export interface TurnState {
   /** Carry fire-and-forget fork cache-write suppression into provider options. */
   skipCacheWrite: boolean | undefined;
 
-  /** Consecutive max-output-tokens recovery attempts. Cap at
-   *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
-   *  up. AgenC query.ts:1273. */
+  /** Names only: incomplete argument bytes never become executable history. */
+  truncatedToolCallNames?: readonly string[];
+  /** Cumulative non-thinking-off retry spending; not forgiven by productive recovery. */
   maxOutputTokensRecoveryCount: number;
+  /** Durable intent for the next sample only; transport retries reuse it. */
+  reasoningOnlyRecoveryPending?: true;
+  /** Unproductive native reasoning-only retries since the last productive recovery. */
+  reasoningOnlyRecoveryCount?: number;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
    *  re-entry cap). Wired in T8 — incremented at each recovery
@@ -430,6 +434,11 @@ export interface TurnState {
   completionGateRound: number;
   /** `completedToolResults.length` when the last gate prompt was injected. */
   completionGateToolLedgerMark: number;
+  /**
+   * The verdict the last gate prompt was built from. Runtime-only like the
+   * ledger mark: a resumed turn has none, so it is asked once more.
+   */
+  completionGateLastRequest: CompletionGateRequest | undefined;
   /** Latched once a final answer was accepted (verified, exhausted or skipped). */
   completionGateSettled: boolean;
   /**
@@ -601,6 +610,7 @@ export function buildInitialTurnState(
     completionGate: undefined,
     completionGateRound: 0,
     completionGateToolLedgerMark: 0,
+    completionGateLastRequest: undefined,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
     goalGateToolLedgerMark: 0,
@@ -659,6 +669,8 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     turnCount: number;
     recoveryReentryCount: number;
     maxOutputTokensRecoveryCount: number;
+    reasoningOnlyRecoveryPending?: true;
+    reasoningOnlyRecoveryCount?: number;
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
@@ -685,6 +697,12 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
+  }
+  if (state.reasoningOnlyRecoveryCount !== undefined) {
+    slice.reasoningOnlyRecoveryCount = state.reasoningOnlyRecoveryCount;
+  }
+  if (state.reasoningOnlyRecoveryPending === true) {
+    slice.reasoningOnlyRecoveryPending = true;
   }
   if (state.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
@@ -780,6 +798,8 @@ export function restoreFromCheckpoint(
     state.textToolCallCorrectionCount = slice.textToolCallCorrectionCount;
   }
   state.textToolCallCorrection = readTextToolCallCorrection(slice.textToolCallCorrection);
+  state.reasoningOnlyRecoveryPending = slice.reasoningOnlyRecoveryPending === true ? true : undefined;
+  state.reasoningOnlyRecoveryCount = slice.reasoningOnlyRecoveryCount;
   if (state.modelSampleResumePrompt === "text_tool_call_correction" &&
       (!state.textToolCallCorrection || state.textToolCallCorrectionCount < 1)) {
     throw new Error("Cannot resume tool-call correction without its validated identity and spent correction count.");

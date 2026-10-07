@@ -54,6 +54,10 @@ describe("child provider selection", () => {
       parentPath: "/root", taskId: "pricing", taskName: "review", taskText: "review",
       toolFree: false, forkedHistory: false, serviceTier: "priority" });
     expect(buildCrossProviderDisclosure(plan).price).toEqual({ inputUsdPer1K: 0.008, outputUsdPer1K: 0.030 });
+    const standard = buildCrossProviderDisclosure({ ...plan, serviceTier: undefined });
+    expect(buildCrossProviderDisclosure(plan).scopeKey).not.toBe(standard.scopeKey);
+    expect(buildCrossProviderDisclosure({ ...plan, reasoningEffort: "high" }).scopeKey)
+      .not.toBe(buildCrossProviderDisclosure({ ...plan, reasoningEffort: "low" }).scopeKey);
   });
 
   it.each([
@@ -82,6 +86,17 @@ describe("child provider selection", () => {
     config = { ...config, agents: { ...config.agents, ...change } };
     await expect(assertChildExecutionPlan(session, approved.plan)).rejects.toThrow(/policy changed/u);
     const changedConfig = config;
+    config = originalConfig;
+    const consentService = session.services.crossProviderConsent!;
+    const request = consentService.request.bind(consentService);
+    Object.assign(consentService, { request: async (...args: Parameters<typeof request>) => {
+      const outcome = await request(...args);
+      config = changedConfig;
+      return outcome;
+    } });
+    await expect(authorizeChildExecutionPlan(session, proposed)).resolves.toMatchObject({
+      kind: "consent_unavailable", reason: expect.stringContaining("policy changed"),
+    });
     config = originalConfig;
     Object.assign(session.providerService, { previewChildDestination: async () => {
       config = changedConfig;

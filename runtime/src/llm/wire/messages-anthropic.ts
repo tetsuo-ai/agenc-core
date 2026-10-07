@@ -5,6 +5,7 @@
  */
 
 import { resolveReasoningEffort } from "../reasoning-effort.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
@@ -45,6 +46,7 @@ import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
+  anthropicSupportsBetweenToolsThinking,
   anthropicThinkingControl,
 } from "../../utils/model/anthropicThinkingControl.js";
 
@@ -242,6 +244,97 @@ function appendDynamicTailBlock(
   message.content = blocks;
 }
 
+/** Serialize a user or assistant message as one Messages API turn. */
+function toAnthropicTurn(message: LLMMessage): Record<string, unknown> {
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    const assistantContent = contentBlocksOf(
+      normalizeAnthropicMessageContent(message),
+    );
+    const toolUseBlocks = message.toolCalls.map((toolCall) => {
+      // History tool-call arguments are not re-validated, so a
+      // malformed JSON string must not throw here — that would
+      // also break parseAnthropicMessagesResponse, which rebuilds
+      // this request purely for metrics after a successful call.
+      let parsedInput: unknown = {};
+      try {
+        parsedInput = JSON.parse(toolCall.arguments || "{}");
+      } catch {
+        parsedInput = {};
+      }
+      return {
+        type: "tool_use",
+        id: toolCall.id,
+        // The messages API enforces the strict
+        // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
+        // dotted MCP form before sending. The response parser
+        // decodes back to the internal-registry form.
+        name: encodeMcpToolNameForWire(toolCall.name),
+        input: parsedInput,
+      };
+    });
+    const content =
+      hasEphemeralCacheControl(message)
+        ? withEphemeralCacheControl([
+          ...assistantContent,
+          ...toolUseBlocks,
+        ])
+        : [
+          ...assistantContent,
+          ...toolUseBlocks,
+        ];
+    return {
+      role: "assistant",
+      content,
+    };
+  }
+  return {
+    role: message.role,
+    content: normalizeAnthropicMessageContent(message),
+  };
+}
+
+function toAnthropicToolResultBlock(
+  message: LLMMessage,
+): Record<string, unknown> {
+  const block = {
+    type: "tool_result",
+    tool_use_id: message.toolCallId,
+    content: toAnthropicToolResultContent(message.content),
+  };
+  return hasEphemeralCacheControl(message)
+    ? { ...block, cache_control: { type: "ephemeral" } }
+    : block;
+}
+
+/**
+ * Serialize the conversation as Messages API turns. The results of one
+ * parallel tool turn go back as the ordered `tool_result` blocks of a single
+ * user message, the format the API documents for parallel tool use: a
+ * separate user message per result teaches Claude to stop calling tools in
+ * parallel. Each block keeps its own message's cache breakpoint, so a marker
+ * stays on the result normalization placed it on (a fork's skipCacheWrite
+ * marker can sit on a result before the last).
+ */
+function toAnthropicTurns(
+  conversation: readonly LLMMessage[],
+): Array<Record<string, unknown>> {
+  const turns: Array<Record<string, unknown>> = [];
+  let toolResults: Array<Record<string, unknown>> | undefined;
+  for (const message of conversation) {
+    if (message.role !== "tool") {
+      toolResults = undefined;
+      turns.push(toAnthropicTurn(message));
+      continue;
+    }
+    if (toolResults === undefined) {
+      toolResults = [];
+      turns.push({ role: "user", content: toolResults });
+    }
+    toolResults.push(toAnthropicToolResultBlock(message));
+  }
+  return turns;
+}
+
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
@@ -249,7 +342,9 @@ export function buildAnthropicMessagesRequest(
   const systemMessages = messages.filter((message) =>
     message.role === "system" || message.role === "developer"
   );
-  const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const optionSystemPrompt = withResponseDetailSystemPrompt(
+    input.options?.systemPrompt?.trim(), input.options?.responseDetailOverride,
+  );
   const optionSplit = optionSystemPrompt
     ? splitOptionSystemPrompt(optionSystemPrompt)
     : undefined;
@@ -260,77 +355,11 @@ export function buildAnthropicMessagesRequest(
 
   const body: Record<string, unknown> = {
     model: input.model,
-    messages: messages
-      .filter((message) =>
+    messages: toAnthropicTurns(
+      messages.filter((message) =>
         message.role !== "system" && message.role !== "developer"
-      )
-      .map((message) => {
-        if (message.role === "assistant" && message.toolCalls?.length) {
-          const anthropicContent = normalizeAnthropicMessageContent(message);
-          const assistantContent =
-            typeof anthropicContent === "string"
-              ? anthropicContent.length > 0
-                ? [{
-                  type: "text",
-                  text: anthropicContent,
-                }]
-                : []
-              : anthropicContent;
-          const toolUseBlocks = message.toolCalls.map((toolCall) => {
-            // History tool-call arguments are not re-validated, so a
-            // malformed JSON string must not throw here — that would
-            // also break parseAnthropicMessagesResponse, which rebuilds
-            // this request purely for metrics after a successful call.
-            let parsedInput: unknown = {};
-            try {
-              parsedInput = JSON.parse(toolCall.arguments || "{}");
-            } catch {
-              parsedInput = {};
-            }
-            return {
-              type: "tool_use",
-              id: toolCall.id,
-              // The messages API enforces the strict
-              // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
-              // dotted MCP form before sending. The response parser
-              // decodes back to the internal-registry form.
-              name: encodeMcpToolNameForWire(toolCall.name),
-              input: parsedInput,
-            };
-          });
-          const content =
-            hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([
-                ...assistantContent,
-                ...toolUseBlocks,
-              ])
-              : [
-                ...assistantContent,
-                ...toolUseBlocks,
-              ];
-          return {
-            role: "assistant",
-            content,
-          };
-        }
-        if (message.role === "tool") {
-          const toolResultBlock = {
-            type: "tool_result",
-            tool_use_id: message.toolCallId,
-            content: toAnthropicToolResultContent(message.content),
-          };
-          return {
-            role: "user",
-            content: hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([toolResultBlock])
-              : [toolResultBlock],
-          };
-        }
-        return {
-          role: message.role,
-          content: normalizeAnthropicMessageContent(message),
-        };
-      }),
+      ),
+    ),
     max_tokens: maxTokens,
   };
 
@@ -381,6 +410,7 @@ export function buildAnthropicMessagesRequest(
   // 2026-07-08). Opus-family behavior is unchanged.
   const thinkingControl = anthropicThinkingControl(input.model);
   const alwaysOnThinking = thinkingControl === "always_on";
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(input.model);
   // `temperature` is "deprecated for this model" (400) on Opus 5, Sonnet 5,
   // Opus 4.8 and Opus 4.7 as well (probed 2026-09-11); the 4.6 generation
   // and older still take it.
@@ -425,7 +455,7 @@ export function buildAnthropicMessagesRequest(
   // and "any" are not supported for this model", Opus 5.5 migration guide,
   // 2026-09-22); falling back to auto never 400s.
   const thinkingEnabled =
-    alwaysOnThinking || input.options?.reasoningEffort !== undefined;
+    alwaysOnThinking || betweenToolsThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
     if (toolChoice !== undefined && (!thinkingEnabled || input.options.toolChoice === "none")) {
@@ -454,7 +484,14 @@ export function buildAnthropicMessagesRequest(
   const requestedEffort = input.options?.reasoningEffort;
   const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
     !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
-  if (thinkingEnabled && !alwaysOnThinking) {
+  if (betweenToolsThinking) {
+    // `none` turns off up-front reasoning, but Sonnet 5.5 still produces
+    // progress-update thinking between tools. It accepts no additional
+    // fields in this mode. All actual effort tiers retain adaptive thinking.
+    body.thinking = requestedEffort === "none"
+      ? { type: "between_tools" }
+      : { type: "adaptive", display: "summarized" };
+  } else if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = thinkingControl === "adaptive"
       ? { type: "adaptive" }
       : {

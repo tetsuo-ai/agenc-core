@@ -88,6 +88,7 @@ export interface DelegateOpts {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   /** Correlation id for the initial task/assignment. */
   readonly taskId?: string;
   readonly taskContent?: readonly LLMContentPart[];
@@ -109,6 +110,8 @@ export interface DelegateOpts {
   readonly serviceTier?: string | null;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
+  /** Internal workflow handoff. Inspect an already-owned worktree without creating or deleting it. */
+  readonly inspectionWorktree?: WorktreeHandle;
   readonly forkMode?: ForkMode;
   readonly parentMessagesOverride?: ReadonlyArray<LLMMessage>;
   readonly runInBackground?: boolean;
@@ -292,6 +295,11 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     requestedRole,
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
+  if (opts.inspectionWorktree !== undefined &&
+      (readOnlyConstraint === undefined || isolation !== "none")) {
+    const reason = "An inspection worktree requires read-only delegation and isolation none.";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+  }
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
     const reason =
       "Read-only delegation cannot create a worktree. Use isolation none.";
@@ -324,11 +332,19 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         };
 
   // Set up worktree if requested.
-  let worktree: WorktreeHandle | undefined;
+  // This invocation never owns lifecycle cleanup of an inspection checkout.
+  let worktree: WorktreeHandle | undefined = opts.inspectionWorktree === undefined
+    ? undefined : { ...opts.inspectionWorktree, created: false };
   let baseCommit: string | null = null;
   let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;
   let worktreeEvidenceRequiringReview: WorktreeTurnEvidence | undefined;
+  if (opts.inspectionWorktree !== undefined) {
+    const broker = opts.parent.services?.sandboxExecutionBroker;
+    if (broker === undefined) throw missingSandboxExecutionBoundary("child_agent");
+    baseCommit = await captureBaseCommit(opts.inspectionWorktree.path,
+      broker.forkForCwd(opts.inspectionWorktree.path));
+  }
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
@@ -579,6 +595,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       parentPath: opts.parentPath,
       control: opts.control,
       taskPrompt: opts.taskPrompt,
+      exactOutput: opts.exactOutput,
       ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
       initialMessages: fork.messages,
       ...(worktree !== undefined ? { worktree } : {}),
@@ -753,6 +770,7 @@ async function runDelegateAgentLoop(opts: {
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly taskId?: string;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
@@ -789,6 +807,7 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         initialMessages: opts.initialMessages,
         taskPrompt: opts.taskPrompt,
+        exactOutput: opts.exactOutput,
         ...(opts.taskId !== undefined ? { taskId: opts.taskId }
           : live.metadata.initialTaskAdmission !== undefined ? { taskId: live.metadata.initialTaskAdmission.taskId } : {}),
         ...(!startedRuns.has(live.agentId) && live.metadata.initialTaskAdmission !== undefined

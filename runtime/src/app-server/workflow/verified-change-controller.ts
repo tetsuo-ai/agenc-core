@@ -34,6 +34,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { ProviderWaitScope, type ProviderWait } from "../../recovery/provider-wait.js";
 import { workflowApprovalFailureCause } from "../../permissions/approval-failure.js";
 
@@ -44,6 +46,7 @@ import {
   type RunTerminalStatus,
   type RunUsageTotals,
   type WorkflowSpec,
+  type WorkflowContinuation,
   type WorkflowStepId,
   type WorkflowStopReason,
 } from "../../contracts/run-contracts.js";
@@ -97,7 +100,6 @@ import {
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
 import {
-  mintCancelledRunProof,
   mintSealedEvidenceProof,
   workflowWorktreeSlug,
   type BaseMovementCheck,
@@ -112,7 +114,14 @@ import {
   encodeWorkflowReviewTerminal,
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
+import { PLAN_BLOCKED_INSTRUCTIONS, parsePlanBlockedResponse, readPlanBlocked } from "./plan-blocked.js";
+import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
+import { isWorkflowChildStopReason, workflowAdmissionStopReason, workflowStopMessage, type WorkflowChildStopReason } from "./stop-reasons.js";
+import { WORKFLOW_PAUSE_PREFIX, workflowControlState } from "./control-state.js";
+import { AgenCDaemonWorkflowControlError } from "./run-control-service.js";
+import type { RunPauseParams, RunResumeParams, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
+import { completedContinuationSource, continuationRunId } from "./continuation.js";
 import {
   deriveStageProjection,
   finalizeIdempotencyKey,
@@ -181,6 +190,8 @@ export interface WorkflowRunJournal {
    * journal emit a faithful `run_terminal` event; test journals ignore it.
    */
   appendTerminal(intent?: WorkflowTerminalJournalIntent): WorkflowEffectEventRef;
+  /** Suspend only after every effect has durably settled. */
+  appendSuspended?(input: { readonly suspendedAt: string }): WorkflowEffectEventRef;
   close(): Promise<void>;
 }
 
@@ -215,6 +226,7 @@ export interface WorkflowDurabilityContext {
  */
 export interface WorkflowRunSessionPolicy {
   readonly permissionMode: WorkflowSpec["permissionMode"];
+  readonly lightMode?: boolean;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   /**
@@ -237,6 +249,8 @@ export interface WorkflowJournalWriter {
       readonly policy?: WorkflowRunSessionPolicy;
       /** In-memory bootstrap authority only, never journal evidence. */
       readonly envOverrides?: Readonly<Record<string, string>>;
+      /** Explicit authority to resume this exact user-paused checkpoint. */
+      readonly resumeSuspensionId?: string;
     },
   ): Promise<WorkflowRunJournal>;
 }
@@ -245,7 +259,7 @@ export type WorkflowSpawnKind = "plan" | "implement" | "verify_agent" | "review"
 
 export interface WorkflowChildOutcome {
   readonly status: RunTerminalStatus;
-  readonly stopReason?: "approval_required" | "policy_denied";
+  readonly stopReason?: WorkflowChildStopReason;
   readonly finalMessage: string | null;
   /**
    * Reconciled actual usage for the child's own admissions (null = nothing
@@ -288,8 +302,9 @@ export interface WorkflowWorktreeBroker {
     context?: { readonly runId?: string },
   ): Promise<BaseState>;
   provision(
-    spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit">,
+    spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit" | "continuationOf">,
   ): Promise<WorktreeHandle>;
+  validateContinuation?(input: { readonly runId: string; readonly repoPath: string; readonly source: WorkflowContinuation }): Promise<void>;
   exportPatch(input: {
     readonly handle: WorktreeHandle;
     readonly baseCommit: string;
@@ -369,7 +384,9 @@ export interface VerifiedChangeWorkflowControllerDeps {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowStartParams {
+  readonly continuation?: { readonly sourceRunId: string; readonly requestId: string };
   readonly goal: string;
+  readonly lightMode?: boolean;
   readonly repoPath: string;
   readonly model?: string;
   readonly provider?: string;
@@ -389,7 +406,10 @@ export interface WorkflowStartParams {
 }
 
 export interface WorkflowStartResult {
+  readonly replayed?: boolean;
+  readonly continuationOf?: WorkflowContinuation;
   readonly runId: string;
+  readonly lightMode?: boolean;
   readonly requestedPermissionMode: WorkflowSpec["permissionMode"];
   readonly effectivePermissionMode?: PermissionMode;
   readonly specDigest: Sha256Digest;
@@ -466,6 +486,8 @@ class WorkflowHaltError extends Error {
     this.name = "WorkflowHaltError";
   }
 }
+
+class WorkflowPausedError extends Error {}
 
 /** Gates the terminal choke point demands before it will record `completed`. */
 interface CompletedGates {
@@ -567,6 +589,11 @@ function truncate(text: string | null | undefined): string | undefined {
     : text;
 }
 
+function failedStepMessage(summary: string, result: EffectStepResult): string {
+  const detail = result.evidence.child?.finalMessage ?? result.evidence.failure?.message;
+  return detail?.trim() ? `${summary}. ${boundedWorkflowDiagnostic(detail)}` : summary;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -580,7 +607,14 @@ export class VerifiedChangeWorkflowController {
   readonly #now: () => Date;
   readonly #newRunId: () => string;
   readonly #active = new Map<string, Promise<void>>();
+  readonly #contexts = new Map<string, RunContext>();
+  readonly #resuming = new Map<string, { suspensionId: string; promise: Promise<RunWorkflowControlState> }>();
+  /** Includes starts waiting on bootstrap and stopped runs awaiting durable status. */
+  readonly #repositoryOwners = new Map<string, string>();
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
+  /** One bounded observation per stopped run; never an alternative terminal authority. */
+  readonly #runtimeFailures = new Map<string, RunWorkflowRuntimeFailure>();
+  readonly #continuationRequests = new Map<string, { digest: string; promise: Promise<WorkflowStartResult> }>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
     this.#deps = deps;
@@ -602,6 +636,60 @@ export class VerifiedChangeWorkflowController {
     params: WorkflowStartParams,
     envOverrides?: Readonly<Record<string, string>>,
   ): Promise<WorkflowStartResult> {
+    if (params.continuation === undefined) return this.#start(params, envOverrides);
+    const request = params.continuation;
+    if (!/^[a-zA-Z0-9._:-]{1,128}$/u.test(request.requestId) || !request.sourceRunId.trim()) {
+      throw new TypeError("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (params.runId !== undefined) throw new TypeError("A continuation run ID is assigned from its request ID.");
+    if (!params.goal.trim() || !Number.isFinite(params.budget?.maxCostUsd) || params.budget!.maxCostUsd! <= 0
+      || params.budget?.deadlineAt === undefined || !Number.isFinite(Date.parse(params.budget.deadlineAt))) {
+      throw new TypeError("Continue requires a new goal, an explicit additional cost limit, and a deadline.");
+    }
+    const runId = continuationRunId(request.sourceRunId, request.requestId);
+    const requestDigest = sha256Digest(canonicalizeJson(params));
+    const pending = this.#continuationRequests.get(runId);
+    if (pending !== undefined) {
+      if (pending.digest !== requestDigest) throw new TypeError("This continuation request ID was already used with different instructions or limits.");
+      return { ...await pending.promise, replayed: true };
+    }
+    const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
+    const previous = repo.getEffect(runId, "workflow.intake");
+    if (previous !== undefined) {
+      const evidence = readWorkflowStepEvidence(previous);
+      const spec = evidence.spec as WorkflowSpec | undefined;
+      if (previous.outcome !== "committed" || spec?.continuationOf?.requestDigest !== requestDigest
+        || spec.runId !== runId || evidence.specDigest !== computeSpecDigest(spec)) {
+        throw new TypeError("This continuation request ID is already recorded with different instructions or incomplete intake. Inspect its run before retrying.");
+      }
+      return { runId, specDigest: evidence.specDigest!, baseCommit: spec.baseCommit, baseDirty: spec.baseDirty,
+        requestedPermissionMode: spec.permissionMode, lightMode: spec.lightMode === true,
+        continuationOf: spec.continuationOf, replayed: true };
+    }
+    if (repo.currentEpoch(runId) !== undefined) {
+      throw new TypeError("This continuation request already opened a run but did not commit intake. Inspect its run before creating another request.");
+    }
+    if (Date.parse(params.budget.deadlineAt) <= this.#now().getTime()) throw new TypeError("The continuation deadline must be in the future.");
+    const source = completedContinuationSource({ repo: this.#deps.durability({ runId: request.sourceRunId }),
+      sourceRunId: request.sourceRunId, repoPath: params.repoPath, requestId: request.requestId, requestDigest });
+    const sourceIntake = this.#deps.durability({ runId: request.sourceRunId }).getEffect(request.sourceRunId, "workflow.intake")!;
+    const sourceSpec = readWorkflowStepEvidence(sourceIntake).spec as WorkflowSpec;
+    const continuationParams = params.lightMode === undefined
+      ? { ...params, lightMode: sourceSpec.lightMode === true }
+      : params;
+    // Reserve the request before bootstrap can yield. The durable intake is
+    // the retry authority once this short-lived promise is removed.
+    const promise = this.#start({ ...continuationParams, runId }, envOverrides, source);
+    this.#continuationRequests.set(runId, { digest: requestDigest, promise });
+    try { return await promise; }
+    finally { if (this.#continuationRequests.get(runId)?.promise === promise) this.#continuationRequests.delete(runId); }
+  }
+
+  async #start(
+    params: WorkflowStartParams,
+    envOverrides?: Readonly<Record<string, string>>,
+    continuationOf?: WorkflowContinuation,
+  ): Promise<WorkflowStartResult> {
     for (const command of params.requiredVerification) {
       if (isTrivialVerificationCommand(command.script)) {
         throw new TypeError(
@@ -611,55 +699,89 @@ export class VerifiedChangeWorkflowController {
       }
     }
     const runId = params.runId ?? this.#newRunId();
+    const repositoryKey = this.#repositoryKey(params.repoPath);
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
-    const journal = await this.#deps.journal.open(runId, {
-      repoPath: params.repoPath,
-      ...(envOverrides !== undefined ? { envOverrides } : {}),
-      policy: {
-        permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
-        ...(params.unattendedAllow !== undefined
-          ? { unattendedAllow: params.unattendedAllow }
-          : {}),
-        ...(params.unattendedDeny !== undefined
-          ? { unattendedDeny: params.unattendedDeny }
-          : {}),
-        // The model the run was asked for, on start as well as on resume:
-        // the session is bootstrapped from this policy, and without them it
-        // takes the daemon's default no matter what the caller requested.
-        ...(params.model !== undefined ? { model: params.model } : {}),
-        ...(params.provider !== undefined ? { provider: params.provider } : {}),
-      },
-    });
-    const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
-      runId,
-    });
-    const spec = freezeWorkflowSpec(
-      runId,
-      params,
-      base,
-      this.#deps.defaultReviewerModel?.(),
-    );
-    const specDigest = computeSpecDigest(spec);
-    const admission = this.#deps.admission({
-      runId,
-      sessionId: journal.sessionId,
-      ...(params.workspaceId !== undefined
-        ? { workspaceId: params.workspaceId }
-        : {}),
-      spec,
-    });
-    const ctx: RunContext = {
-      runId,
-      spec,
-      specDigest,
-      repo,
-      journal,
-      admission,
-      startedAt: this.#nowIso(),
-      usage: { input: 0, output: 0, cost: 0, any: false },
-      terminalized: false,
-    };
+    let owner = this.#repositoryOwners.get(repositoryKey);
+    if (owner !== undefined && repo.getCurrentTerminalResult(owner) !== undefined) {
+      this.#releaseRepository(owner);
+      owner = undefined;
+    }
+    if (owner === undefined) {
+      // A new request can arrive before the startup recovery sweep finishes.
+      // Durable ownership also protects that interval and an interrupted run.
+      owner = repo.listRunIdsWithStep("workflow.intake").find((candidate) => {
+        if (repo.getCurrentTerminalResult(candidate) !== undefined) return false;
+        const intake = repo.getEffect(candidate, "workflow.intake");
+        const spec = intake === undefined ? undefined : readWorkflowStepEvidence(intake).spec as WorkflowSpec | undefined;
+        return spec !== undefined && this.#repositoryKey(spec.repoPath) === repositoryKey;
+      });
+    }
+    if (owner !== undefined) {
+      throw new TypeError(`A Goal is already active for this repository (${owner}). Wait for it to finish or stop it before starting another Goal.`);
+    }
+    // No await before this reservation: two concurrent run.start calls cannot
+    // both open sessions or buy separate budgets for the same repository.
+    this.#repositoryOwners.set(repositoryKey, runId);
+    let journal: WorkflowRunJournal | undefined;
+    let admission: ExecutionAdmissionClient | undefined;
+    let ctx: RunContext | undefined;
     try {
+      journal = await this.#deps.journal.open(runId, {
+        repoPath: params.repoPath,
+        ...(envOverrides !== undefined ? { envOverrides } : {}),
+        policy: {
+          permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
+          ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
+          ...(params.unattendedAllow !== undefined
+            ? { unattendedAllow: params.unattendedAllow }
+            : {}),
+          ...(params.unattendedDeny !== undefined
+            ? { unattendedDeny: params.unattendedDeny }
+            : {}),
+          // The model the run was asked for, on start as well as on resume:
+          // the session is bootstrapped from this policy, and without them it
+          // takes the daemon's default no matter what the caller requested.
+          ...(params.model !== undefined ? { model: params.model } : {}),
+          ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        },
+      });
+      const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
+        runId,
+      });
+      if (continuationOf !== undefined) {
+        if (base.dirty || (base.baseCommit !== continuationOf.sourceBaseCommit && base.baseCommit !== continuationOf.sourceHeadCommit)) {
+          throw new TypeError("The checkout changed since the source Goal. Continue from its unchanged clean base or its exact delivered commit.");
+        }
+        if (this.#deps.worktrees.validateContinuation === undefined) throw new TypeError("This runtime cannot validate a delivered Goal for continuation.");
+        await this.#deps.worktrees.validateContinuation({ runId, repoPath: params.repoPath, source: continuationOf });
+      }
+      const spec = freezeWorkflowSpec(
+        runId,
+        params,
+        base,
+        this.#deps.defaultReviewerModel?.(),
+        continuationOf,
+      );
+      const specDigest = computeSpecDigest(spec);
+      admission = this.#deps.admission({
+        runId,
+        sessionId: journal.sessionId,
+        ...(params.workspaceId !== undefined
+          ? { workspaceId: params.workspaceId }
+          : {}),
+        spec,
+      });
+      ctx = {
+        runId,
+        spec,
+        specDigest,
+        repo,
+        journal,
+        admission,
+        startedAt: this.#nowIso(),
+        usage: { input: 0, output: 0, cost: 0, any: false },
+        terminalized: false,
+      };
       await this.#stageIntake(ctx);
     } catch (error) {
       try {
@@ -672,28 +794,48 @@ export class VerifiedChangeWorkflowController {
                 stopReason: null,
                 finalMessage: `workflow intake error: ${errorMessage(error)}`,
               } satisfies WorkflowTerminalIntent);
-        await this.#terminalize(ctx, terminal);
-        await this.#closeJournal(ctx);
+        if (journal !== undefined) {
+          ctx ??= this.#bareContext(runId, repo, journal);
+          await this.#terminalize(ctx, terminal);
+        }
         throw new WorkflowIntakeError(
           runId,
           terminal.stopReason,
           terminal.finalMessage ?? terminal.status,
         );
       } finally {
-        admission.release?.();
+        if (journal !== undefined) await this.#closeJournal(ctx ?? this.#bareContext(runId, repo, journal));
+        admission?.release?.();
+        if (ctx?.terminalized === true || repo.getEffect(runId, "workflow.intake") === undefined) {
+          this.#repositoryOwners.delete(repositoryKey);
+        }
       }
     }
-    const effectivePermissionMode = journal.effectivePermissionMode;
+    const effectivePermissionMode = ctx.journal.effectivePermissionMode;
     const pipeline = this.#continue(ctx);
     this.#active.set(runId, pipeline);
     return {
       runId,
-      specDigest,
-      baseCommit: spec.baseCommit,
-      baseDirty: spec.baseDirty,
-      requestedPermissionMode: spec.permissionMode,
+      lightMode: ctx.spec.lightMode === true,
+      specDigest: ctx.specDigest,
+      baseCommit: ctx.spec.baseCommit,
+      baseDirty: ctx.spec.baseDirty,
+      ...(ctx.spec.continuationOf !== undefined ? { continuationOf: ctx.spec.continuationOf } : {}),
+      requestedPermissionMode: ctx.spec.permissionMode,
       ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
     };
+  }
+
+  #repositoryKey(repoPath: string): string {
+    try { return realpathSync(repoPath); }
+    catch { return resolve(repoPath); }
+  }
+
+  #releaseRepository(runId: string): void {
+    this.#runtimeFailures.delete(runId);
+    for (const [key, owner] of this.#repositoryOwners) {
+      if (owner === runId) this.#repositoryOwners.delete(key);
+    }
   }
 
   /** Await the asynchronous pipeline for a started/resumed run (test hook). */
@@ -703,6 +845,76 @@ export class VerifiedChangeWorkflowController {
 
   activeRunIds(): readonly string[] {
     return [...this.#active.keys()];
+  }
+
+  controlState(runId: string): RunWorkflowControlState {
+    const repo = this.#deps.durability({ runId });
+    if (repo.getEffect(runId, "workflow.intake") === undefined) {
+      throw new AgenCDaemonWorkflowControlError("RUN_NOT_FOUND", "Goal run was not found.");
+    }
+    return workflowControlState({ runId, effects: repo.listEffects(runId),
+      suspensions: repo.listSuspensions(runId), terminal: repo.getCurrentTerminalResult(runId) !== undefined });
+  }
+
+  async requestPause(params: RunPauseParams): Promise<RunWorkflowControlState> {
+    const state = this.controlState(params.runId);
+    if (state.state !== "running") return state;
+    const ctx = this.#contexts.get(params.runId);
+    if (ctx === undefined || ctx.journal.appendSuspended === undefined) {
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_FAILED", "The Goal has no live writer. Reconnect after recovery before pausing it.");
+    }
+    const stepId = `${WORKFLOW_PAUSE_PREFIX}${sha256Digest(params.requestId).slice(7)}`;
+    const existing = ctx.repo.getEffect(params.runId, stepId);
+    // Retried delivery of an old request must not pause a later stage again.
+    if (existing?.outcome !== undefined) return state;
+    const requestedAt = existing?.intentAt ?? this.#nowIso();
+    if (existing === undefined) ctx.journal.appendIntent({
+      stepId, callId: params.requestId, toolName: "workflow.control.pause",
+      recoveryCategory: "idempotent", idempotencyKey: stepId,
+      intentDigest: sha256Digest(canonicalizeJson({ runId: params.runId, requestId: params.requestId })),
+      intentAt: requestedAt,
+    });
+    ctx.journal.appendResult({ stepId, outcome: "committed", evidence: { requestId: params.requestId, requestedAt }, completedAt: this.#nowIso() });
+    return this.controlState(params.runId);
+  }
+
+  async resumePaused(params: RunResumeParams): Promise<RunWorkflowControlState> {
+    const pending = this.#resuming.get(params.runId);
+    if (pending !== undefined) {
+      if (pending.suspensionId !== params.suspensionId) throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_CONFLICT", "A different checkpoint is already being resumed.");
+      return pending.promise;
+    }
+    const state = this.controlState(params.runId);
+    if (state.state === "terminal") return state;
+    const repo = this.#deps.durability({ runId: params.runId });
+    if (state.state !== "paused") {
+      const replayed = repo.listSuspensions(params.runId).find(item => item.eventId === params.suspensionId && item.resumeReason === "workflow_user_resume");
+      if (replayed !== undefined) return state;
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_NOT_PAUSED", "The Goal has not reached a paused checkpoint.");
+    }
+    if (state.suspensionId !== params.suspensionId) {
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_CONFLICT", "This pause checkpoint is stale. Refresh Goal status and resume the current checkpoint.");
+    }
+    const resume = (async () => {
+      // A pause is visible as soon as its boundary commits. Wait for the old
+      // writer to close before opening the exact same run and budget identity.
+      await this.awaitRun(params.runId);
+      try { await this.#resumeRun(repo, params.runId, params); }
+      catch (error) {
+        // Before the resume boundary commits, the original pause is still
+        // authoritative. Once consumed, a failed bootstrap must not look live.
+        if (repo.getActiveSuspension(params.runId)?.reason !== "workflow_user_pause") {
+          this.#recordDetachedTerminal(repo, params.runId, "failed",
+            `The Goal could not resume: ${errorMessage(error)}.${this.#retainedWork(repo, params.runId)}`,
+            { usage: this.#checkpointUsage(repo, params.runId) });
+        }
+        throw error;
+      }
+      return this.controlState(params.runId);
+    })();
+    this.#resuming.set(params.runId, { suspensionId: params.suspensionId, promise: resume });
+    try { return await resume; }
+    finally { if (this.#resuming.get(params.runId)?.promise === resume) this.#resuming.delete(params.runId); }
   }
 
   /** Observe live authority without opening or bootstrapping a run. */
@@ -716,6 +928,21 @@ export class VerifiedChangeWorkflowController {
     return active?.stepId === stepId ? active.scope.current() : undefined;
   }
 
+  /** Runtime-only health survives writer closure, but a durable terminal wins. */
+  currentRuntimeFailure(runId: string): RunWorkflowRuntimeFailure | undefined {
+    const failure = this.#runtimeFailures.get(runId);
+    if (failure === undefined) return undefined;
+    try {
+      if (this.#deps.durability({ runId }).getCurrentTerminalResult(runId) !== undefined) {
+        this.#runtimeFailures.delete(runId);
+        return undefined;
+      }
+    } catch {
+      // Unreadable storage must not hide an already observed execution stop.
+    }
+    return failure;
+  }
+
   /** Durable status projection with optional live session details. */
   status(runId: string): WorkflowRunStatus | undefined {
     const repo = this.#deps.durability({ runId });
@@ -725,15 +952,18 @@ export class VerifiedChangeWorkflowController {
     const projected = projectWorkflowStatus({
       runId,
       effects,
+      suspensions: repo.listSuspensions(runId),
       ...(terminal !== undefined ? { terminal } : {}),
     });
-    const effectivePermissionMode = terminal === undefined
+    const runtimeFailure = this.currentRuntimeFailure(runId);
+    const effectivePermissionMode = terminal === undefined && runtimeFailure === undefined
       ? this.currentPermissionMode(runId)
       : undefined;
     return {
       ...projected,
+      ...(runtimeFailure !== undefined ? { runtimeFailure } : {}),
       steps: projected.steps.map((step) => {
-        const providerWait = terminal === undefined && step.status === "running"
+        const providerWait = terminal === undefined && runtimeFailure === undefined && step.status === "running"
           ? this.currentProviderWait(runId, step.stepId)
           : undefined;
         return { ...step, ...(providerWait !== undefined ? { providerWait } : {}) };
@@ -754,7 +984,9 @@ export class VerifiedChangeWorkflowController {
     const repo = this.#deps.durability();
     const resumed: string[] = [];
     for (const runId of repo.listRunIdsWithStep("workflow.intake")) {
+      if (this.#resuming.has(runId)) continue;
       if (repo.getCurrentTerminalResult(runId) !== undefined) continue;
+      if (repo.getActiveSuspension(runId)?.reason === "workflow_user_pause") continue;
       try {
         const started = await this.#resumeRun(repo, runId);
         if (started) resumed.push(runId);
@@ -787,7 +1019,7 @@ export class VerifiedChangeWorkflowController {
    * projection directly so status and cancel agree.
    */
   cancelDetached(runId: string, reason: string): WorkflowDetachedCancelOutcome {
-    if (this.#active.has(runId)) return "live";
+    if (this.#active.has(runId) || this.#resuming.has(runId)) return "live";
     const repo = this.#deps.durability({ runId });
     if (repo.getEffect(runId, "workflow.intake") === undefined) {
       return "not_a_workflow";
@@ -799,10 +1031,22 @@ export class VerifiedChangeWorkflowController {
       repo,
       runId,
       "cancelled",
-      `cancelled by run.cancel (${reason}); the run had no live pipeline`,
+      `Goal cancelled (${reason}).${this.#retainedWork(repo, runId)}`,
+      { usage: this.#checkpointUsage(repo, runId) },
     )
       ? "cancelled"
       : "not_recorded";
+  }
+
+  #retainedWork(repo: StateRunDurabilityRepository, runId: string): string {
+    const worktree = repo.listEffects(runId).map(readWorkflowStepEvidence).find(item => item.worktree !== undefined)?.worktree;
+    return worktree === undefined ? "" : ` Work is retained in ${worktree.path} (branch ${worktree.branch}).`;
+  }
+
+  #checkpointUsage(repo: StateRunDurabilityRepository, runId: string): RunUsageTotals | null {
+    const checkpoint = repo.listEffects(runId).filter(effect => effect.toolName === "workflow.control.checkpoint" && effect.outcome === "committed")
+      .sort((a,b) => (b.resultSequence ?? 0) - (a.resultSequence ?? 0))[0];
+    return (checkpoint?.evidence as { usage?: RunUsageTotals | null } | undefined)?.usage ?? null;
   }
 
   /**
@@ -816,9 +1060,13 @@ export class VerifiedChangeWorkflowController {
     runId: string,
     status: "failed" | "cancelled",
     finalMessage: string,
+    details: { readonly stopReason?: WorkflowStopReason | null; readonly usage?: RunUsageTotals | null } = {},
   ): boolean {
     try {
-      if (repo.getCurrentTerminalResult(runId) !== undefined) return true;
+      if (repo.getCurrentTerminalResult(runId) !== undefined) {
+        this.#releaseRepository(runId);
+        return true;
+      }
       const epoch = repo.currentEpoch(runId)?.epoch;
       if (epoch === undefined) return false;
       repo.recordTerminalResult({
@@ -828,27 +1076,70 @@ export class VerifiedChangeWorkflowController {
           runId,
           status,
           exitCode: 1,
-          stopReason: null,
+          stopReason: details.stopReason ?? null,
           finalMessage,
-          usage: null,
+          usage: details.usage ?? null,
           lastSequence: null,
           finishedAt: this.#nowIso(),
         },
       });
+      this.#releaseRepository(runId);
       return true;
     } catch (error) {
       this.#deps.warn(
         `workflow ${runId} could not record its ${status} terminal: ${errorMessage(error)}`,
       );
+      this.#observePersistenceFailure(repo, runId, error, { usage: details.usage });
       return false;
     }
+  }
+
+  #observePersistenceFailure(
+    repo: StateRunDurabilityRepository,
+    runId: string,
+    error: unknown,
+    details: { readonly usage?: RunUsageTotals | null; readonly worktree?: { readonly path: string; readonly branch: string } } = {},
+  ): void {
+    let worktree = details.worktree;
+    if (worktree === undefined) {
+      try {
+        const recorded = repo.listEffects(runId).map(readWorkflowStepEvidence).find(item => item.worktree !== undefined)?.worktree;
+        if (recorded !== undefined) worktree = { path: recorded.path, branch: recorded.branch };
+      } catch { /* Storage may be unreadable as well as unwritable. */ }
+    }
+    const previous = this.#runtimeFailures.get(runId);
+    this.#runtimeFailures.set(runId, {
+      state: "stopped", reason: "terminal_persistence_failed",
+      observedAt: previous?.observedAt ?? this.#nowIso(),
+      message: `Goal stopped, but its final status could not be saved. Check disk space and storage access. ${errorMessage(error).slice(0, 2048)}`,
+      ...(worktree !== undefined ? { worktree } : previous?.worktree !== undefined ? { worktree: previous.worktree } : {}),
+      ...(details.usage != null ? { usage: { ...details.usage } } : previous?.usage !== undefined ? { usage: previous.usage } : {}),
+    });
   }
 
   async #resumeRun(
     repo: StateRunDurabilityRepository,
     runId: string,
+    resume?: RunResumeParams,
   ): Promise<boolean> {
-    const journal = await this.#deps.journal.open(runId);
+    if (this.#active.has(runId)) return false;
+    const journal = await this.#deps.journal.open(runId, resume === undefined ? undefined : {
+      resumeSuspensionId: resume.suspensionId,
+      ...(resume.envOverrides !== undefined ? { envOverrides: resume.envOverrides } : {}),
+    });
+    try { return await this.#resumeOpened(repo, runId, journal); }
+    catch (error) {
+      try { await journal.close(); }
+      catch (closeError) { this.#deps.warn(`Goal ${runId} resume cleanup failed: ${errorMessage(closeError)}`); }
+      throw error;
+    }
+  }
+
+  async #resumeOpened(repo: StateRunDurabilityRepository, runId: string, journal: WorkflowRunJournal): Promise<boolean> {
+    if (repo.getCurrentTerminalResult(runId) !== undefined) {
+      await journal.close();
+      return false;
+    }
     const intake = repo.getEffect(runId, "workflow.intake");
     if (intake === undefined) {
       await journal.close();
@@ -876,7 +1167,7 @@ export class VerifiedChangeWorkflowController {
         status: "failed",
         stopReason: null,
         finalMessage:
-          "workflow interrupted before the intake commit; the spec was never durable — re-submit the request",
+          "The Goal stopped before its instructions were saved. Start it again.",
       });
       await this.#closeJournal(ctx);
       return true;
@@ -894,6 +1185,13 @@ export class VerifiedChangeWorkflowController {
       return true;
     }
     const specDigest = (evidence.specDigest ?? computeSpecDigest(spec)) as Sha256Digest;
+    const repositoryKey = this.#repositoryKey(spec.repoPath);
+    const owner = this.#repositoryOwners.get(repositoryKey);
+    if (owner !== undefined && owner !== runId) {
+      await journal.close();
+      throw new Error(`Another Goal is active for this repository (${owner}). The interrupted work is retained.`);
+    }
+    this.#repositoryOwners.set(repositoryKey, runId);
     const admission = this.#deps.admission({
       runId,
       sessionId: journal.sessionId,
@@ -922,15 +1220,12 @@ export class VerifiedChangeWorkflowController {
             ? undefined
             : readWorkflowStepEvidence(planEffect).child?.finalMessage;
       }
+      this.#runtimeFailures.delete(runId);
       const pipeline = this.#continue(ctx);
       this.#active.set(runId, pipeline);
       return true;
     } catch (error) {
-      try {
-        await this.#closeJournal(ctx);
-      } finally {
-        admission.release?.();
-      }
+      admission.release?.();
       throw error;
     }
   }
@@ -958,13 +1253,20 @@ export class VerifiedChangeWorkflowController {
   // -------------------------------------------------------------------------
 
   async #continue(ctx: RunContext): Promise<void> {
+    this.#contexts.set(ctx.runId, ctx);
     try {
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageWorktree(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stagePlan(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#implementVerifyLoop(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageReview(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageFinalize(ctx);
     } catch (error) {
+      if (error instanceof WorkflowPausedError) return;
       if (error instanceof M5WorkflowFailpointError) throw error;
       const terminal =
         error instanceof WorkflowHaltError
@@ -980,15 +1282,49 @@ export class VerifiedChangeWorkflowController {
         );
       }
       await this.#terminalize(ctx, terminal);
-      await this.#discardCancelledWorktree(ctx);
     } finally {
-      this.#active.delete(ctx.runId);
+      if (ctx.terminalized) this.#releaseRepository(ctx.runId);
       try {
         await this.#closeJournal(ctx);
       } finally {
-        ctx.admission.release?.();
+        try { ctx.admission.release?.(); }
+        finally {
+          this.#active.delete(ctx.runId);
+          this.#contexts.delete(ctx.runId);
+        }
       }
     }
+  }
+
+  #pauseAtCheckpoint(ctx: RunContext): void {
+    const control = this.controlState(ctx.runId);
+    if (control.state !== "pause_requested") return;
+    // Recover an interrupted request append before suspending. A caller whose
+    // acknowledgement was lost can retry the same id without another action.
+    for (const effect of ctx.repo.listEffects(ctx.runId)) {
+      if (effect.stepId.startsWith(WORKFLOW_PAUSE_PREFIX) && effect.outcome === undefined) {
+        ctx.journal.appendResult({ stepId: effect.stepId, outcome: "committed",
+          evidence: { requestId: effect.callId, requestedAt: effect.intentAt }, completedAt: this.#nowIso() });
+      }
+      if (effect.toolName === "workflow.control.checkpoint" && effect.outcome === undefined) {
+        ctx.journal.appendResult({ stepId: effect.stepId, outcome: "committed",
+          evidence: { usage: this.#canonicalUsage(ctx) }, completedAt: this.#nowIso() });
+      }
+    }
+    // Recovery may still need to adopt an already-dispatched child first.
+    if (ctx.repo.listEffects(ctx.runId).some(effect => effect.outcome === undefined || effect.reviewStatus === "pending")) return;
+    if (ctx.journal.appendSuspended === undefined) throw new Error("Goal journal cannot persist a paused checkpoint.");
+    const checkpointId = `workflow.control.checkpoint.${sha256Digest(control.requestId!).slice(7)}`;
+    if (ctx.repo.getEffect(ctx.runId, checkpointId)?.outcome !== "committed") {
+      const at = this.#nowIso();
+      if (ctx.repo.getEffect(ctx.runId, checkpointId) === undefined) ctx.journal.appendIntent({
+        stepId: checkpointId, toolName: "workflow.control.checkpoint", recoveryCategory: "idempotent",
+        idempotencyKey: checkpointId, intentDigest: sha256Digest(checkpointId), intentAt: at,
+      });
+      ctx.journal.appendResult({ stepId: checkpointId, outcome: "committed", evidence: { usage: this.#canonicalUsage(ctx) }, completedAt: at });
+    }
+    ctx.journal.appendSuspended({ suspendedAt: this.#nowIso() });
+    throw new WorkflowPausedError("Goal paused at a durable checkpoint.");
   }
 
   async #closeJournal(ctx: RunContext): Promise<void> {
@@ -997,31 +1333,6 @@ export class VerifiedChangeWorkflowController {
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
-      );
-    }
-  }
-
-  /**
-   * A cancelled run has no further use for its worktree: nothing resumes a
-   * terminal run and nothing was delivered. Remove the worktree and its
-   * branch as a completed run's are removed, but only once the cancelled
-   * terminal is durable; until then a restart resumes the run, and the run
-   * needs the worktree it left. Failed and unknown-outcome runs keep theirs
-   * for review.
-   */
-  async #discardCancelledWorktree(ctx: RunContext): Promise<void> {
-    const handle = ctx.handle;
-    if (handle === undefined) return;
-    try {
-      const terminal = ctx.repo.getCurrentTerminalResult(ctx.runId);
-      if (terminal?.status !== "cancelled") return;
-      await this.#deps.worktrees.discard({
-        proof: mintCancelledRunProof({ runId: ctx.runId }),
-        handle,
-      });
-    } catch (error) {
-      this.#deps.warn(
-        `workflow ${ctx.runId} worktree cleanup failed after cancellation: ${errorMessage(error)}`,
       );
     }
   }
@@ -1130,16 +1441,23 @@ export class VerifiedChangeWorkflowController {
     const { result } = await this.#runStageWithRetries(ctx, {
       stage: "workflow.plan",
       maxAttempts: MAX_STAGE_ATTEMPTS,
-      makePlan: (attempt) =>
-        this.#spawnPlan(ctx, {
+      makePlan: (attempt) => {
+        const previous = attempt > 1
+          ? ctx.repo.getEffect(ctx.runId, stageStepId("workflow.plan", attempt - 1))
+          : undefined;
+        return this.#spawnPlan(ctx, {
           stage: "workflow.plan",
           stepId: stageStepId("workflow.plan", attempt),
           attempt,
           spawnKind: "plan",
           childRunId: `${ctx.runId}:plan#${attempt}`,
-          prompt: buildPlanPrompt(ctx.spec),
+          prompt: buildPlanPrompt(ctx.spec, previous === undefined
+            ? undefined : readWorkflowStepEvidence(previous).failure?.message),
           decorate: (outcome) => {
-            if (ctx.spec.requiredVerification.length > 0 || outcome.status !== "completed") return {};
+            if (outcome.status !== "completed") return {};
+            const planBlocked = parsePlanBlockedResponse(outcome.finalMessage);
+            if (planBlocked !== undefined) return { planBlocked };
+            if (ctx.spec.requiredVerification.length > 0) return {};
             try {
               // Freeze checks from the full response before bounding retained prose.
               return { requiredVerification: plannedVerification(outcome.finalMessage ?? "") };
@@ -1147,8 +1465,14 @@ export class VerifiedChangeWorkflowController {
               return { failure: { reason: "invalid_planned_verification", message: errorMessage(error) } };
             }
           },
-        }),
+        });
+      },
     });
+    const planBlocked = readPlanBlocked(result.evidence.planBlocked);
+    if (planBlocked !== undefined) {
+      throw new WorkflowHaltError({ status: "failed", stopReason: "requirement_conflict",
+        finalMessage: `The planner found conflicting requirements: ${boundedWorkflowDiagnostic(planBlocked.explanation)}` });
+    }
     ctx.planText = result.evidence.child?.finalMessage;
     if (ctx.spec.requiredVerification.length === 0) {
       ctx.plannedChecks = result.evidence.requiredVerification;
@@ -1169,6 +1493,7 @@ export class VerifiedChangeWorkflowController {
       ).attempts,
     );
     for (;;) {
+      this.#pauseAtCheckpoint(ctx);
       const implement = await this.#driveEffect(
         ctx,
         this.#spawnPlan(ctx, {
@@ -1200,13 +1525,15 @@ export class VerifiedChangeWorkflowController {
           throw new WorkflowHaltError({
             status: "failed",
             stopReason: "step_retries_exhausted",
-            finalMessage: `implement failed terminally after ${attempt} attempt(s)`,
+            finalMessage: failedStepMessage(`implement failed terminally after ${attempt} attempt(s)`, implement),
           });
         }
         attempt += 1;
         continue;
       }
+      this.#pauseAtCheckpoint(ctx);
       const passed = await this.#stageVerify(ctx, attempt);
+      this.#pauseAtCheckpoint(ctx);
       if (passed) return;
       if (attempt >= spec.maxImplementAttempts) {
         throw new WorkflowHaltError({
@@ -1245,6 +1572,20 @@ export class VerifiedChangeWorkflowController {
     const records: VerifiedChangeCommandRecord[] = [];
     for (const [index, command] of (ctx.plannedChecks ?? spec.requiredVerification).entries()) {
       const stepId = verifyCommandStepId(index + 1, attempt);
+      const intentDigest = sha256Digest(canonicalizeJson({
+        script: command.script,
+        treeHash: exported.treeHash,
+      }));
+      const previous = ctx.repo.getEffect(ctx.runId, stepId);
+      if (previous !== undefined && previous.intentDigest !== intentDigest) {
+        // Replaying a passing command for a changed tree would claim checks
+        // that never ran on the delivered files. Preserve the work for review.
+        throw new WorkflowHaltError({
+          status: "failed",
+          stopReason: "evidence_invalid",
+          finalMessage: "The Goal worktree changed since its verification was recorded. The saved checks cannot verify the changed files. Review the preserved work and run its checks again.",
+        });
+      }
       const result = await this.#driveEffect(ctx, {
         stepId,
         stage: "workflow.verify",
@@ -1256,12 +1597,7 @@ export class VerifiedChangeWorkflowController {
           command.script,
           exported.treeHash,
         ),
-        intentDigest: sha256Digest(
-          canonicalizeJson({
-            script: command.script,
-            treeHash: exported.treeHash,
-          }),
-        ),
+        intentDigest,
         estimate: ZERO_ESTIMATE,
         execute: async (signal) =>
           this.#executeVerificationCommand(ctx, command, attempt, signal),
@@ -1350,7 +1686,7 @@ export class VerifiedChangeWorkflowController {
       throw new WorkflowHaltError({
         status: "failed",
         stopReason: "step_retries_exhausted",
-        finalMessage: "adversarial verification agent run failed terminally",
+        finalMessage: failedStepMessage("adversarial verification agent run failed terminally", agent),
       });
     }
     const verdict = agent.evidence.verdict ?? "FAIL";
@@ -1500,18 +1836,20 @@ export class VerifiedChangeWorkflowController {
               );
             } catch (error) {
               const approvalFailure = workflowApprovalFailureCause(error);
-              if (approvalFailure !== undefined) {
+              const stopReason = approvalFailure?.stopReason ?? workflowAdmissionStopReason(error);
+              if (stopReason !== undefined) {
+                const message = approvalFailure?.message ?? workflowStopMessage(stopReason);
                 this.#recordReviewChildTerminal(ctx, childRunId, {
                   status: "failed",
-                  stopReason: approvalFailure.stopReason,
-                  finalMessage: approvalFailure.message,
+                  stopReason,
+                  finalMessage: message,
                   usage: null,
                 });
                 return {
                   outcome: "failed",
                   evidence: {
                     stage: "workflow.review", attempt,
-                    failure: { reason: approvalFailure.stopReason, message: approvalFailure.message },
+                    failure: { reason: stopReason, message },
                   },
                 };
               }
@@ -1590,6 +1928,7 @@ export class VerifiedChangeWorkflowController {
     const spec = ctx.spec;
     const handle = this.#requireHandle(ctx);
     const ledger = this.#requireLedger(ctx);
+    const verified = this.#requireExport(ctx);
     hitM5WorkflowFailpoint("before_patch_export");
     const exported = await this.#deps.worktrees.exportPatch({
       handle,
@@ -1597,6 +1936,13 @@ export class VerifiedChangeWorkflowController {
       step: { runId: ctx.runId, stepId: "workflow.finalize" },
       sink: ledger,
     });
+    if (exported.treeHash !== verified.treeHash || exported.patch.digest !== verified.patch.digest) {
+      throw new WorkflowHaltError({
+        status: "failed",
+        stopReason: "evidence_invalid",
+        finalMessage: "The Goal worktree changed after verification began. The result was not finalized because its checks and review cover a different snapshot. Review the preserved work and run its checks again.",
+      });
+    }
     ctx.export = exported;
     const movement = await this.#deps.worktrees.checkBaseMovement({
       spec,
@@ -1773,6 +2119,9 @@ export class VerifiedChangeWorkflowController {
       },
     );
     hitM5WorkflowFailpoint("after_terminal_before_cleanup");
+    // A sealed ledger alone does not authorize removing a resumable tree.
+    // If status storage failed, recovery still needs the exact worktree.
+    if (ctx.repo.getCurrentTerminalResult(ctx.runId)?.status !== "completed") return;
     try {
       await this.#deps.worktrees.cleanup({
         proof: mintSealedEvidenceProof({ runId: ctx.runId, sealDigest }),
@@ -2169,7 +2518,7 @@ export class VerifiedChangeWorkflowController {
         throw new WorkflowHaltError({
           status: "failed",
           stopReason: "step_retries_exhausted",
-          finalMessage: `${input.stage} failed terminally after ${attempt} attempt(s)`,
+          finalMessage: failedStepMessage(`${input.stage} failed terminally after ${attempt} attempt(s)`, result),
         });
       }
       attempt += 1;
@@ -2178,14 +2527,12 @@ export class VerifiedChangeWorkflowController {
 
   #haltPermanentChildFailure(result: EffectStepResult): void {
     const stopReason = result.evidence.child?.stopReason ?? result.evidence.failure?.reason;
-    if (stopReason !== "approval_required" && stopReason !== "policy_denied") return;
+    if (!isWorkflowChildStopReason(stopReason)) return;
     throw new WorkflowHaltError({
       status: "failed",
-      stopReason,
-      // Keep resolver diagnostics in step evidence, never in the final notice.
-      finalMessage: stopReason === "approval_required"
-        ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
-        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
+      stopReason: stopReason === "approval_required" || stopReason === "policy_denied"
+        ? stopReason : "budget_exhausted",
+      finalMessage: workflowStopMessage(stopReason),
     });
   }
 
@@ -2305,15 +2652,16 @@ export class VerifiedChangeWorkflowController {
         });
       }
       if (lease.signal.aborted) {
+        const bound = workflowAdmissionStopReason(lease.signal.reason);
         const result = this.#commitResult(
           ctx,
           plan,
           {
-            outcome: "cancelled",
+            outcome: bound === undefined ? "cancelled" : "failed",
             evidence: {
               stage: plan.stage,
               attempt: plan.attempt,
-              failure: { reason: "cancelled_before_dispatch" },
+              failure: { reason: bound ?? "cancelled_before_dispatch" },
             },
           },
           false,
@@ -2337,6 +2685,11 @@ export class VerifiedChangeWorkflowController {
         execution = await scope.run(() => plan.execute(lease.signal));
       } finally {
         this.#providerWaits.delete(ctx.runId);
+      }
+      const bound = lease.signal.aborted ? workflowAdmissionStopReason(lease.signal.reason) : undefined;
+      if (bound !== undefined) {
+        execution = { ...execution, outcome: "failed", evidence: { ...execution.evidence,
+          failure: { reason: bound, message: workflowStopMessage(bound) } } };
       }
       for (const failpoint of plan.beforeCommitFailpoints ?? []) {
         hitM5WorkflowFailpoint(failpoint);
@@ -2377,29 +2730,31 @@ export class VerifiedChangeWorkflowController {
         throw error;
       }
       if (!settled) {
-        if (dispatched && lease.signal.aborted) {
+        if (lease.signal.aborted) {
+          const bound = workflowAdmissionStopReason(lease.signal.reason);
           this.#commitResult(
             ctx,
             plan,
             {
-              outcome: "cancelled",
+              outcome: bound === undefined ? "cancelled" : "failed",
               evidence: {
                 stage: plan.stage,
                 attempt: plan.attempt,
                 failure: {
-                  reason: "cancelled_after_dispatch",
+                  reason: bound ?? (dispatched ? "cancelled_after_dispatch" : "cancelled_before_dispatch"),
                   message: errorMessage(error),
                 },
               },
             },
-            true,
+            dispatched,
           );
-          ctx.admission.holdUnknown(reservationId, "workflow_cancelled_after_dispatch");
+          if (dispatched) ctx.admission.holdUnknown(reservationId, "workflow_cancelled_after_dispatch");
+          else ctx.admission.void(reservationId, "workflow_cancelled_before_dispatch");
           settled = true;
           throw new WorkflowHaltError({
-            status: "cancelled",
-            stopReason: null,
-            finalMessage: `workflow cancelled during ${plan.stepId}`,
+            status: bound === undefined ? "cancelled" : "failed",
+            stopReason: bound === undefined ? null : "budget_exhausted",
+            finalMessage: bound === undefined ? `workflow cancelled during ${plan.stepId}` : workflowStopMessage(bound),
           });
         }
         if (dispatched && plan.recoveryCategory === "side-effecting") {
@@ -2500,6 +2855,11 @@ export class VerifiedChangeWorkflowController {
     plan: EffectStepPlan,
     error: AdmissionDeniedError,
   ): WorkflowHaltError {
+    const bound = workflowAdmissionStopReason(error);
+    if (bound !== undefined) {
+      return new WorkflowHaltError({ status: "failed", stopReason: "budget_exhausted",
+        finalMessage: workflowStopMessage(bound) });
+    }
     if (error.decision === "cancelled") {
       return new WorkflowHaltError({
         status: "cancelled",
@@ -2546,6 +2906,12 @@ export class VerifiedChangeWorkflowController {
       ctx.terminalized = true;
       return;
     }
+    if (terminal.status !== "completed" && ctx.handle !== undefined) {
+      terminal = {
+        ...terminal,
+        finalMessage: `${terminal.finalMessage ?? "The Goal stopped."} Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`,
+      };
+    }
     if (terminal.status === "completed") {
       const failures: string[] = [];
       if (gates === undefined) failures.push("completed gates missing");
@@ -2579,8 +2945,9 @@ export class VerifiedChangeWorkflowController {
         return;
       }
     }
+    let terminalWrite: Parameters<StateRunDurabilityRepository["recordTerminalResult"]>[0] | undefined;
+    let usage: RunUsageTotals | null = null;
     try {
-      let usage: RunUsageTotals | null = null;
       try {
         usage = this.#canonicalUsage(ctx);
       } catch (error) {
@@ -2588,14 +2955,15 @@ export class VerifiedChangeWorkflowController {
           `workflow ${ctx.runId} canonical usage is unavailable: ${errorMessage(error)}`,
         );
       }
+      const finishedAt = this.#nowIso();
       const terminalEvent = ctx.journal.appendTerminal({
         status: terminal.status,
         stopReason: terminal.stopReason,
         finalMessage: terminal.finalMessage,
         usage,
-        finishedAt: this.#nowIso(),
+        finishedAt,
       });
-      ctx.repo.recordTerminalResult({
+      terminalWrite = {
         epoch: ctx.journal.epoch,
         eventId: terminalEvent.eventId,
         result: {
@@ -2606,22 +2974,52 @@ export class VerifiedChangeWorkflowController {
           finalMessage: terminal.finalMessage,
           usage,
           lastSequence: terminalEvent.sequence,
-          finishedAt: this.#nowIso(),
+          finishedAt,
         },
-      });
+      };
+      ctx.repo.recordTerminalResult(terminalWrite);
       ctx.terminalized = true;
     } catch (error) {
       if (error instanceof M5WorkflowFailpointError) throw error;
-      // Terminal recording must never take the daemon down; the run stays
-      // open and startup recovery terminalizes it on the next resume.
       this.#deps.warn(
         `workflow ${ctx.runId} failed to record its terminal result: ${errorMessage(error)}`,
       );
+      if (terminalWrite !== undefined) {
+        // The journal append succeeded. Retry its exact projection so replay
+        // cannot later encounter a conflicting terminal event or timestamp.
+        try {
+          ctx.repo.recordTerminalResult(terminalWrite);
+          ctx.terminalized = true;
+        } catch (retryError) {
+          this.#deps.warn(`workflow ${ctx.runId} terminal projection retry failed: ${errorMessage(retryError)}`);
+        }
+      } else {
+        // A broken rollout file must not leave a stopped Goal looking live.
+        // The same durable-only path used by offline cancellation remains
+        // available when SQLite is writable. Never call this completion:
+        // without a terminal journal boundary the work needs recovery.
+        ctx.terminalized = this.#recordDetachedTerminal(
+          ctx.repo,
+          ctx.runId,
+          terminal.status === "cancelled" ? "cancelled" : "failed",
+          `The Goal stopped because its final status could not be saved to the run journal: ${errorMessage(error)}. ${terminal.finalMessage ?? ""}` +
+            (terminal.status === "completed" && ctx.handle !== undefined
+              ? ` Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`
+              : ""),
+          { usage, stopReason: terminal.status === "completed" ? "evidence_invalid" : terminal.stopReason },
+        );
+      }
+      if (!ctx.terminalized) {
+        this.#observePersistenceFailure(ctx.repo, ctx.runId, error, {
+          usage,
+          ...(ctx.handle !== undefined ? { worktree: { path: ctx.handle.path, branch: ctx.handle.branch } } : {}),
+        });
+      }
     }
   }
 
   #canonicalUsage(ctx: RunContext): RunUsageTotals | null {
-    const summary = ctx.admission.getUsageSummary?.();
+    const summary = ctx.admission?.getUsageSummary?.();
     if (summary !== undefined && summary.runId !== ctx.runId) {
       throw new Error(`canonical usage belongs to ${summary.runId}, not workflow ${ctx.runId}`);
     }
@@ -2694,12 +3092,15 @@ function freezeWorkflowSpec(
   params: WorkflowStartParams,
   base: BaseState,
   daemonDefaultModel: string | undefined,
+  continuationOf?: WorkflowContinuation,
 ): WorkflowSpec {
   return {
     runId,
     goal: params.goal,
+    ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
     repoPath: params.repoPath,
     baseCommit: base.baseCommit,
+    ...(continuationOf !== undefined ? { continuationOf } : {}),
     baseDirty: {
       dirty: base.dirty,
       summaryDigest: base.summaryDigest,
@@ -2729,13 +3130,19 @@ const AUTONOMOUS_GOAL_INSTRUCTIONS = [
   "Keep existing-project changes focused. Do not weaken, skip, or replace required verification to get a pass.",
 ].join("\n");
 
-function buildPlanPrompt(spec: WorkflowSpec): string {
+function buildPlanPrompt(spec: WorkflowSpec, previousFailure?: string): string {
   return [
     "You are the planning stage of a verified-change workflow.",
     "Produce a concrete implementation plan sufficient to fulfill the goal below.",
     AUTONOMOUS_GOAL_INSTRUCTIONS,
     "Include your interpretation, deliverables, and how each required command will verify them. In a greenfield workspace, plan the files and real checks the implementer must create; do not substitute true, :, exit 0, or echo.",
-    "Do NOT modify any files — respond with the plan only.",
+    "Do NOT modify any files. Respond with the plan or an explicit requirement conflict report.",
+    PLAN_BLOCKED_INSTRUCTIONS,
+    ...(previousFailure === undefined ? [] : [
+      "## Previous plan validation failure",
+      boundedWorkflowDiagnostic(previousFailure),
+      "Correct the plan's check construction without weakening the goal or its acceptance criteria. No implementation has started.",
+    ]),
     "",
     "## Goal",
     spec.goal,
@@ -2745,7 +3152,8 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
       "No client checks were supplied. Inspect the repository and select its real test, build or lint commands.",
       "For a new project, choose the commands the implementation will create, including tests and a CLI smoke run when applicable.",
       "These commands will be frozen when this plan commits and must pass unchanged. Run from the repository root; include any needed cd. Commands run in listed order.",
-      'End your plan with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
+      "Commands are shell scripts. Do not use legacy backtick command substitution. Literal Markdown backticks must be single-quoted or escaped; double quotes still allow shell substitution. Prefer repository test scripts. For a complex assertion, plan a test file and invoke it instead of embedding code in a shell string.",
+      'For an ordinary implementation plan, end with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
       '```agenc-verification',
       '["npm test", "npm run build && node dist/cli.js --help"]',
       '```',
@@ -2760,6 +3168,10 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
   const lines = [
     "You are the implementation stage of a verified-change workflow.",
     "Implement the goal below inside the current worktree.",
+    "This worktree is owned by Goal. Leave changed and new files here.",
+    "The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.",
+    "Do not run git add, git commit, git merge, or git push, or edit Git metadata.",
+    "After the required checks, report changed files and test results. A child commit is not required for this stage.",
     AUTONOMOUS_GOAL_INSTRUCTIONS,
     "If the plan only asks for clarification despite a reasonable interpretation, correct that plan and implement the goal. Create any missing project and verification files, then run the required checks.",
     "",

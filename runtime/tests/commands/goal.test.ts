@@ -70,6 +70,6 @@ test("status shows rounds, spend since the goal was set, the last verdict, and h
   );
   expect(text).toContain("Status: stopped: budget exhausted (the goal used all 20 rounds)");
   expect(text).toContain("Rounds: 20 of 20 · running 1 h 30 min · spent $2.25 of $5.00");
-  expect(text).toContain("Last verdict: verification failed — verification failed: tests");
+  expect(text).toContain("Last verdict: verification failed (verification failed: tests)");
   expect(text).toContain("/goal resume");
 });

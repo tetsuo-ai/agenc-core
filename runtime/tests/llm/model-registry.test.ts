@@ -54,7 +54,7 @@ describe("ModelRegistry", () => {
       slug: "gpt-5.4",
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+      supportedReasoningLevels: ["none", "low", "medium", "high", "xhigh"],
       serviceTiers: [
         {
           id: "priority",

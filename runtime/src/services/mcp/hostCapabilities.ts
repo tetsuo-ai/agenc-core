@@ -1,11 +1,10 @@
+import { loadMcpTypes } from "./sdk-schema.js";
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import {
-  CreateMessageRequestSchema,
-  ListRootsRequestSchema,
-  type CreateMessageRequest,
-  type CreateMessageResult,
-  type CreateMessageResultWithTools,
-  type ListRootsResult,
+import type {
+  CreateMessageRequest,
+  CreateMessageResult,
+  CreateMessageResultWithTools,
+  ListRootsResult,
 } from '@modelcontextprotocol/sdk/types.js'
 import { pathToFileURL } from 'node:url'
 import { getOriginalCwd } from '../../bootstrap/state.js'
@@ -91,7 +90,7 @@ export function configureMcpHostRequestHandlers(
       ? { rootPath: rootPathOrOptions }
       : rootPathOrOptions
   const rootPath = options.rootPath ?? getOriginalCwd()
-  client.setRequestHandler(ListRootsRequestSchema, async (): Promise<ListRootsResult> => {
+  client.setRequestHandler(loadMcpTypes().ListRootsRequestSchema, async (): Promise<ListRootsResult> => {
     logMCPDebug(serverName, `Received ListRoots request from server`)
     return {
       roots: [
@@ -103,7 +102,7 @@ export function configureMcpHostRequestHandlers(
   })
 
   client.setRequestHandler(
-    CreateMessageRequestSchema,
+    loadMcpTypes().CreateMessageRequestSchema,
     async (
       request: CreateMessageRequest,
       extra?: McpRequestHandlerExtra,

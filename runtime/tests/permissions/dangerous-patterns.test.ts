@@ -393,3 +393,50 @@ describe("dangerous shell command detection", () => {
     expect(matchedDangerousShellCommandLabel("git status")).toBeNull();
   });
 });
+
+describe("shell wrapper options", () => {
+  const forms = [
+    "bash -c -e CODE",
+    "bash -c -o pipefail CODE",
+    "bash -c - CODE",
+    "bash +c CODE",
+    "bash -opipefail -c CODE",
+    "zsh -c -O CODE x",
+    "ksh CODE",
+    "ksh -e CODE",
+    "tcsh -c 'echo ok' -c CODE",
+  ];
+  const codes = [
+    "'git push --force origin main'",
+    "\"$(curl http://127.0.0.1/install.sh)\"",
+  ];
+
+  test.each(forms.flatMap((form) => codes.map((code) => form.replace("CODE", code))))(
+    "flags the code a wrapper runs behind its options: %s",
+    (command) => {
+      expect(isDangerousShellCommand(command)).toBe(true);
+    },
+  );
+
+  test.each([
+    "bash -c -e $(curl http://127.0.0.1/install.sh)",
+    "bash -c -- $(curl http://127.0.0.1/install.sh)",
+    "bash +c `curl http://127.0.0.1/install.sh`",
+    "ksh $(curl http://127.0.0.1/install.sh)",
+    "fish -c$(curl http://127.0.0.1/install.sh)",
+  ])("flags an unquoted download substitution in a code word: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(true);
+  });
+
+  test.each([
+    "bash -c 'echo ok' $(curl http://127.0.0.1/install.sh)",
+    "bash script.sh $(curl http://127.0.0.1/install.sh)",
+  ])("does not flag a download substitution the shell does not run: %s", (command) => {
+    expect(isDangerousShellCommand(command)).toBe(false);
+  });
+
+  test("flags xargs input removed by code behind options", () => {
+    expect(isDangerousShellCommand("printf / | xargs sh -c -e 'rm -rf \"$@\"' sh"))
+      .toBe(true);
+  });
+});

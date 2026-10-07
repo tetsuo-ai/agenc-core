@@ -2,7 +2,7 @@ import React from 'react'
 import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
-import { renderToString } from '../../../utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../../utils/staticRender.js'
 import { Box, Text } from '../../ink.js'
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -167,27 +167,10 @@ describe('v2 primitives', () => {
   })
 
   it('renders the AURA cold-start welcome without chain hero state', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel
-        lastSession="12m ago · clean handoff"
-        recentSessions={[
-          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
-          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
-          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
-        ]}
-      />,
-      { columns: 120, rows: 24 },
-    )
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
     expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).not.toContain('a netrunner with hands on every file')
-    expect(output).toContain('workspace')
-    expect(output).toContain('model')
-    expect(output).toContain('last session')
-    expect(output).toContain('recent')
-    expect(output).toContain('[1] swap-program')
-    expect(output).toContain('[2] runtime coverage')
-    expect(output).toContain('[3] agent catalog')
     expect(output).not.toContain('STAKE')
     expect(output).not.toContain('18.40')
     expect(output).not.toContain('/claim')
@@ -259,54 +242,28 @@ describe('v2 primitives', () => {
     )
   })
 
-  it('fabricates no session data when the caller has none', async () => {
-    // The production caller (Messages.tsx) only passes `model` — with no real
-    // recent-session feed the card and the last-session row must not render.
+  it('fabricates no session data and repeats no status fact', async () => {
+    // The folder, model and mode live in the status line under the prompt,
+    // and there is no real recent-session feed, so none of them render here.
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
     expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
-    expect(output).toContain('workspace')
-    expect(output).toContain('model')
+    expect(output).not.toContain('workspace')
+    expect(output).not.toContain('model')
     expect(output).not.toContain('last session')
     expect(output).not.toContain('recent')
     expect(output).not.toContain('to resume')
-    expect(output).not.toContain('swap-program')
-    expect(output).not.toContain('12m ago')
   })
 
-  it('tells a new user how to start and that recent sessions resume', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel
-        recentSessions={[
-          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
-          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
-          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
-        ]}
-      />,
-      { columns: 120, rows: 24 },
-    )
+  it('tells a new user the keys in one line', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
-    // First-action guidance so the cold-start screen says HOW to begin.
-    expect(output).toContain('type a task and press')
-    expect(output).toContain('/ for commands')
-    expect(output).toContain('@ to attach')
-    expect(output).toContain('START HERE')
-    expect(output).toContain('COMMANDS')
-    expect(output).toContain('browse every action')
-    expect(output).toContain('ATTACH')
-    expect(output).toContain('add files to context')
-    expect(output).toContain('PERMISSIONS')
-    expect(output).toContain('choose how AgenC can act')
-    expect(output).toContain('TRANSCRIPT')
-    expect(output).toContain('inspect the full run')
-    expect(output).toContain('SHIFT+TAB')
-    expect(output).toContain('CTRL+O')
+    expect(output).toContain('/ commands')
+    expect(output).toContain('@ attach files')
+    expect(output).toContain('shift+tab change mode')
+    expect(output).toContain('? shortcuts')
+    expect(output).not.toContain('START HERE')
     expect(output).not.toContain('⇧')
-    // "? for shortcuts" moved out of this line: the composer footer already
-    // shows it, and the welcome screen was saying it twice.
-    expect(output).not.toContain('? for shortcuts')
-    // Resume affordance on the recent box so the [1]-[3] numbers read as shortcuts.
-    expect(output).toContain('press 1-3 to resume')
   })
 
   it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
@@ -315,38 +272,26 @@ describe('v2 primitives', () => {
     expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
     expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
     // The first segment always survives…
-    expect(output).toContain('type a task and press')
-    // …and narrower panes lose trailing segments whole: no mid-word ellipsis
-    // like "@ to atta…" (the literal regression this guards against).
-    expect(output).not.toMatch(/@ to att\S*…/)
+    expect(output).toContain('/ commands')
+    // …and narrower panes lose trailing segments whole, with no mid-word
+    // ellipsis.
+    expect(output).not.toContain('shift+tab')
+    expect(output).not.toContain('…')
   })
 
-  it('centers the compact mark above metadata and actions at 80 columns', async () => {
+  it('centers the compact mark above the name and the keys at 80 columns', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 80, rows: 30 })
     const lines = output.split(/\r?\n/u)
     const brandRowIndex = lines.findIndex(line =>
       line.includes(AGENC_LOGO_MARK_COMPACT_LINES[0]),
     )
-    const workspaceRowIndex = lines.findIndex(line => line.includes('workspace'))
-    const startRowIndex = lines.findIndex(line => line.includes('START HERE'))
+    const nameRowIndex = lines.findIndex(line => line.includes('agenc'))
+    const keysRowIndex = lines.findIndex(line => line.includes('/ commands'))
 
     expect(brandRowIndex).toBeGreaterThanOrEqual(0)
     expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_COMPACT_LINES[0])).toBeGreaterThan(20)
-    expect(lines[brandRowIndex]).not.toContain('workspace')
-    expect(workspaceRowIndex).toBeGreaterThan(brandRowIndex)
-    expect(startRowIndex).toBeGreaterThan(workspaceRowIndex)
-  })
-
-  it('omits the resume affordance when there are no recent sessions', async () => {
-    const output = await renderToString(
-      <WelcomeColdPanel recentSessions={[]} />,
-      { columns: 120, rows: 24 },
-    )
-
-    expect(output).not.toContain('recent')
-    expect(output).not.toContain('to resume')
-    // Guidance still helps a brand-new user with no history.
-    expect(output).toContain('type a task and press')
+    expect(nameRowIndex).toBeGreaterThan(brandRowIndex)
+    expect(keysRowIndex).toBeGreaterThan(nameRowIndex)
   })
 
   it('uses AURA lifecycle glyphs for plan rows', async () => {
@@ -414,7 +359,8 @@ describe('Msg queued header marker', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('YOU')
+    // Labels render as written (lowercase), after the user's ❯ glyph.
+    expect(output).toContain('❯ you')
     expect(output).toContain('pending prompt body')
     // The neutral marker stands in for the missing per-item enqueue time.
     // (Body text deliberately avoids the word "queued" so this assertion is
@@ -438,28 +384,47 @@ describe('Msg queued header marker', () => {
   })
 })
 
-describe('Tool call header paren spacing', () => {
-  it('hugs the args with parens — no space on the inside of either paren', async () => {
+describe('Tool call header arg spacing', () => {
+  it('puts the args one space after the verb, with no parentheses', async () => {
     const output = await renderToString(
       <Tool kind="edit" label="Write" args="index.html" />,
       { columns: 100, rows: 12 },
     )
 
-    // Industry convention: `Tool(arg)` with the parens hugging the argument.
-    // Revert-sensitive: putting the `(`, args, and `)` back as separate
-    // children of the gap={1} row re-introduces `( index.html )` and fails
-    // both assertions (the negative one most directly).
-    expect(output).toContain('(index.html)')
-    expect(output).not.toContain('( index.html )')
-    // The single space between the bold tool label and the opening paren is
-    // still supplied by the row's gap — `Write (index.html)`.
-    expect(output).toContain('Write (index.html)')
+    // A finished step reads `● Wrote index.html`: static dot, past-tense
+    // verb, one space from the row's gap, then the bare args. Revert-sensitive:
+    // bringing the `(`/`)` wrappers back, or dropping the past tense, fails it.
+    expect(output).toContain('● Wrote index.html')
+    expect(output).not.toContain('(index.html)')
+    expect(output).not.toContain('Wrote  index.html')
+  })
+
+  it('says the step state with the static dot color only, never a state glyph', async () => {
+    const dot = async (state: 'queued' | 'running' | 'done' | 'failed') => {
+      const ansi = await renderToAnsiString(<Tool kind="bash" label="Run" state={state} args="ls" />, {
+        columns: 40,
+        rows: 5,
+        color: true,
+      })
+      expect(ansi).not.toMatch(/[✶✕◐○]/u)
+      // eslint-disable-next-line no-control-regex
+      return /(\x1b\[[0-9;]*m)●/u.exec(ansi)?.[1]
+    }
+    const done = await dot('done')
+    const failed = await dot('failed')
+    const running = await dot('running')
+    expect(done).toBeDefined()
+    expect(failed).toBeDefined()
+    expect(running).toBeDefined()
+    // Green done, red failed, gray while queued or running.
+    expect(new Set([done, failed, running]).size).toBe(3)
+    expect(await dot('queued')).toBe(running)
   })
 })
 
-describe('Msg role gutter', () => {
+describe('Msg role glyph', () => {
 
-  it('renders a full-height left gutter (no single-row ▮ marker)', async () => {
+  it('marks an agenc reply with a single ● glyph and hides its label', async () => {
     const output = await renderToString(
       <Msg role="agenc" label="agenc">
         <Text>body</Text>
@@ -467,15 +432,16 @@ describe('Msg role gutter', () => {
       { columns: 100, rows: 12 },
     )
 
-    // The role identity is a left border spanning the WHOLE message (header
-    // AND body rows), blockquote-style, with exactly one padding space before
-    // the label. Revert-sensitive: restoring the ▮ marker fails all three.
-    expect(output).toContain('│ AGENC')
-    expect(output).toContain('│ body')
+    // The speaker is a one-cell glyph column, not a left border, and AgenC's
+    // own name is not repeated on every reply. Revert-sensitive: restoring the
+    // `│` gutter, the ▮ marker, or the AGENC label fails these.
+    expect(output).toContain('● body')
+    expect(output).not.toContain('│')
     expect(output).not.toContain('▮')
+    expect(output.toLowerCase()).not.toContain('agenc')
   })
 
-  it('renders the system role with the same gutter treatment', async () => {
+  it('renders the system role with the ● glyph and a lowercase label', async () => {
     const output = await renderToString(
       <Msg role="system" label="system">
         <Text>body</Text>
@@ -483,7 +449,10 @@ describe('Msg role gutter', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('│ SYSTEM')
-    expect(output).not.toContain('∙ SYSTEM')
+    expect(output).toContain('● system')
+    // The body sits in the content column, two cells in under the glyph.
+    expect(output).toContain('\n  body')
+    expect(output).not.toContain('SYSTEM')
+    expect(output).not.toContain('│')
   })
 })

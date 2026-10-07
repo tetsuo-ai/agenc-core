@@ -1,3 +1,4 @@
+import { parseBubblewrapCapabilityHint, type BubblewrapCapabilityHint } from "./capability-hint.js";
 import path from "node:path";
 
 import {
@@ -6,7 +7,7 @@ import {
   type PermissionEnforcement,
   type PermissionProfile,
   permissionProfileToRuntimePermissions,
-} from "../engine/index.js";
+} from "../engine/policy.js";
 import { INHERITED_CWD_SANDBOX_PATH } from "./config.js";
 import { parseBoundReadOnlyCwdIdentity, type BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 
@@ -18,6 +19,7 @@ export class LinuxSandboxCliError extends Error {
 }
 
 export interface LinuxSandboxLauncherOptions {
+  readonly capabilityHint?: BubblewrapCapabilityHint;
   readonly browserCdpOverStdio?: boolean;
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
@@ -69,6 +71,7 @@ const ENFORCEMENT_VALUES: ReadonlySet<string> = new Set(["default", "untrusted",
 export function parseLinuxSandboxLauncherArgs(
   argv: readonly string[],
 ): LinuxSandboxLauncherOptions {
+  let capabilityHint: BubblewrapCapabilityHint | undefined;
   let sandboxPolicyCwd: string | null = null;
   let commandCwd: string | null = null;
   let inheritedCwd = false;
@@ -101,6 +104,10 @@ export function parseLinuxSandboxLauncherArgs(
       break;
     }
     switch (arg) {
+      case "--bwrap-capability-hint":
+        capabilityHint = parseBubblewrapCapabilityHint(takeValue(arg, index));
+        index += 1;
+        break;
       case "--browser-cdp-over-stdio":
         browserCdpOverStdio = true;
         break;
@@ -181,6 +188,7 @@ export function parseLinuxSandboxLauncherArgs(
     ? INHERITED_CWD_SANDBOX_PATH
     : commandCwd ?? resolvedSandboxCwd;
   return {
+    ...(capabilityHint === undefined ? {} : { capabilityHint }),
     ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,

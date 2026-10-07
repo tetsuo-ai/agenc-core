@@ -57,7 +57,9 @@ Desktop can send the internal `session.applyConfig` request with an exclusive
 `reasoningEffort` field before a turn. It validates the selected model's
 native levels, rejects a running turn, records the durable runtime setting,
 and changes neither permission policy nor disk configuration. It cannot be
-combined with `profile` or `reload`. Desktop must wait for acknowledgement
+combined with `profile` or `reload`. `reasoningEffort: null` clears the
+session's effort so the model runs at its default; daemons that accept it
+advertise `session.applyConfig.reasoningEffortClear`. Desktop must wait for acknowledgement
 and reapply the captured selection after a cold resume.
 
 The provider contract tests cover native effort, explicit output overrides,

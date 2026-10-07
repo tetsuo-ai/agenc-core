@@ -120,11 +120,11 @@ const isTurnFailureTime: Validator<number> = (value): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 const isRunSuspensionReason: Validator<RunSuspensionReason> = (
   value,
-): value is RunSuspensionReason => value === "daemon_shutdown_idle";
+): value is RunSuspensionReason => value === "daemon_shutdown_idle" || value === "workflow_user_pause";
 const isRunResumeReason: Validator<RunResumeReason> = (
   value,
 ): value is RunResumeReason =>
-  value === "daemon_startup_restore" || value === "explicit_continue";
+  value === "daemon_startup_restore" || value === "explicit_continue" || value === "workflow_user_resume";
 const isRunRuntimePermissionMode: Validator<RunRuntimePermissionMode> = (
   value,
 ): value is RunRuntimePermissionMode =>
@@ -485,7 +485,7 @@ type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
 const isChildTerminalOutcome = objectShape(
   {
     provider: isString, model: isString,
-    reason: oneOf("step_limit", "no_progress", "completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
+    reason: oneOf("step_limit", "no_progress", "model_loop", "completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
     retryable: isBoolean,
     dispatch: oneOf("not_sent", "sent", "unknown"),
     completedWork: isString, unfinishedWork: isString,

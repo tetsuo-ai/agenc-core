@@ -1,3 +1,4 @@
+import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } from "../../registry/openai-current-models.js";
 /**
  * OpenAI provider adapter.
  *
@@ -27,16 +28,22 @@ import {
   LLMProviderError,
   LLMFundsError,
   LLMStreamTruncatedError,
+  LLMStreamRetryDeniedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
   LLMRateLimitError,
   LLMServerError,
   mapLLMError,
+  markLLMInitialHttpRejection,
+  isLLMPreGenerationRejection,
+  markLLMPreGenerationRejection,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
+import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
+  isInitialProviderHttpRejection,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
@@ -55,8 +62,11 @@ import {
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
+  assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   normalizeFinishReason,
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
@@ -65,6 +75,7 @@ import {
   buildOpenAIResponsesRequest,
   extractOpenAIReasoningReplay,
   parseOpenAIResponsesResponse,
+  parseOpenAIResponsesUsage,
 } from "../../wire/responses-openai.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
 import {
@@ -122,20 +133,14 @@ function decodeOpenAISseEvent(
   providerName: string,
 ): OpenAISseEvent | undefined {
   if (!frame.data) return undefined;
-  try {
-    return {
-      event: frame.event,
-      data: JSON.parse(frame.data) as Record<string, unknown>,
-    };
-  } catch (error) {
-    if (requiresStrictChatCompletionsSse(providerName)) {
-      throw new LLMInvalidResponseError(
-        providerName,
-        `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    return undefined;
-  }
+  return {
+    event: frame.event,
+    data: parseProviderJson(
+      providerName,
+      frame.data,
+      `${strictSseProviderLabel(providerName)} SSE event`,
+    ) as Record<string, unknown>,
+  };
 }
 
 function decodeOpenAISseEventBatch(
@@ -149,6 +154,44 @@ function decodeOpenAISseEventBatch(
     if (event !== undefined) events.push(event);
   }
   return { events, done: false };
+}
+
+type CompatibleSseRemainder =
+  | { readonly kind: "comment" }
+  | { readonly kind: "done" }
+  | { readonly kind: "event"; readonly event: OpenAISseEvent }
+  | { readonly kind: "unparsed" };
+
+function remainderIsCommentOnly(remainder: string): boolean {
+  const lines = remainder.replaceAll("\r", "").split("\n");
+  const nonempty = lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return nonempty.length > 0 && nonempty.every((line) => line.startsWith(":"));
+}
+
+function flushCompatibleSseRemainder(
+  remainder: string,
+  providerName: string,
+): CompatibleSseRemainder {
+  if (remainderIsCommentOnly(remainder)) return { kind: "comment" };
+  const flushed = parseSSEFrames(`${remainder}\n\n`, providerName);
+  for (const frame of flushed.frames) {
+    if (!frame.data) continue;
+    if (frame.data === "[DONE]") return { kind: "done" };
+    try {
+      const data = JSON.parse(frame.data) as unknown;
+      if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+        return {
+          kind: "event",
+          event: { event: frame.event, data: data as Record<string, unknown> },
+        };
+      }
+    } catch {
+      return { kind: "unparsed" };
+    }
+  }
+  return { kind: "unparsed" };
 }
 
 function resolveTimeoutMs(
@@ -266,7 +309,24 @@ function strictSseProviderLabel(providerName: string): string {
   if (providerName === "kimi") return "Kimi";
   if (providerName === "deepseek") return "DeepSeek";
   if (providerName === "meta") return "Meta";
-  return "Z.AI";
+  if (isZaiProviderName(providerName)) return "Z.AI";
+  if (providerName === "openai-compatible") return "OpenAI-compatible";
+  if (providerName === "openai") return "OpenAI";
+  return providerName;
+}
+
+function missingCompatibleTerminalMessage(
+  providerName: string,
+  endedWithUnterminatedEvent: boolean,
+  requireDoneMarker: boolean,
+): string {
+  const label = strictSseProviderLabel(providerName);
+  const terminal = requireDoneMarker
+    ? "a finish_reason or [DONE]"
+    : "any finish_reason";
+  return endedWithUnterminatedEvent
+    ? `${label} SSE stream ended with an unterminated event before ${terminal}`
+    : `${label} SSE stream closed before ${terminal}`;
 }
 
 /**
@@ -631,12 +691,28 @@ function mapOpenAINetworkFailureToError(args: {
   );
 }
 
+function forbidsStreamRetry(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const record = body as Record<string, unknown>;
+  const headers = record.headers;
+  return (headers !== null && typeof headers === "object" &&
+    Object.entries(headers).some(([name, value]) =>
+      name.toLowerCase() === "x-retry-metadata" && value === "NO_MORE_RETRY")) ||
+    (record.error !== null && typeof record.error === "object" &&
+      forbidsStreamRetry(record.error));
+}
+
 function mapOpenAIStreamError(args: {
   readonly providerName: string;
   readonly errorBody: unknown;
   readonly fallbackMessage: string;
+  readonly responsesAttempt?: {
+    readonly hasOutput: boolean;
+    readonly retryDenied: boolean;
+    readonly status?: number;
+  };
 }): Error {
-  const status = inferErrorStatus(args.errorBody);
+  const status = inferErrorStatus(args.errorBody) ?? args.responsesAttempt?.status;
   const message =
     typeof (args.errorBody as { message?: unknown })?.message === "string"
       ? String((args.errorBody as { message: string }).message)
@@ -663,6 +739,30 @@ function mapOpenAIStreamError(args: {
     const retryAfterMs = readRetryAfterMs(args.errorBody);
     if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
     return error;
+  }
+  // HTTP 200 can carry a statusless overload in Responses SSE. Only this
+  // structured code, before any output, enters the existing reconnect ladder.
+  // The earlier `error` event can carry a directive omitted by response.failed.
+  if (args.providerName === "openai" && args.responsesAttempt !== undefined &&
+    readNestedProviderCode(args.errorBody) === "server_is_overloaded") {
+    if (args.responsesAttempt.retryDenied || forbidsStreamRetry(args.errorBody)) {
+      return new LLMStreamRetryDeniedError(args.providerName, message, "provider_directive");
+    }
+    if (args.responsesAttempt.hasOutput) {
+      return new LLMStreamRetryDeniedError(args.providerName, message, "partial_output");
+    }
+    if (status === undefined) return new LLMServerError(args.providerName, 503, message);
+    if (status >= 400 && status < 500 && status !== 429) {
+      const failure = mapOpenAIHttpFailureToError({
+        providerName: args.providerName, message, status, body: args.errorBody,
+      });
+      // Preserve specific auth/context/billing types. An ordinary client error
+      // must also stay terminal even when its prose resembles a socket failure.
+      return failure.constructor === LLMProviderError
+        ? new LLMStreamRetryDeniedError(args.providerName, message, "provider_status", status)
+        : failure;
+    }
+    // A numeric status keeps the established auth/context/4xx mapping below.
   }
   if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
     return new LLMRateLimitError(
@@ -844,6 +944,12 @@ export class OpenAIProvider implements LLMProvider {
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
+    // Qwen's older open-source thinking deployments and Omni routes require
+    // SSE. Preserve the public chat() contract by buffering our existing
+    // stream parser, including tool arguments, reasoning provenance and usage.
+    if (this.name === "qwen" && resolveQwenCurrentModel(model)?.bufferedChat === true) {
+      return this.chatStream(messages, () => {}, options);
+    }
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
@@ -885,6 +991,8 @@ export class OpenAIProvider implements LLMProvider {
               options?.singleWireAttempt,
             ),
             singleWireAttempt: options?.singleWireAttempt,
+          }).catch(error => {
+            throw this.initialHttpRejection(error, options?.singleWireAttempt);
           });
           return parseOpenAIResponsesResponse(
             model,
@@ -934,6 +1042,8 @@ export class OpenAIProvider implements LLMProvider {
             options?.singleWireAttempt,
           ),
           singleWireAttempt: options?.singleWireAttempt,
+        }).catch(error => {
+          throw this.initialHttpRejection(error, options?.singleWireAttempt);
         });
         return parseChatCompletionsResponse(model, response.data, {
           model,
@@ -941,7 +1051,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: requestTools,
           options,
           maxTokens: this.resolveRequestMaxTokens(options),
-          maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+          maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
@@ -953,13 +1063,17 @@ export class OpenAIProvider implements LLMProvider {
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        const mappedError = mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+        if (isLLMPreGenerationRejection(error, this.name)) {
+          markLLMPreGenerationRejection(mappedError, this.name);
+        }
+        throw mappedError;
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -978,6 +1092,14 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    // o1-pro and o3-pro expose Responses without SSE. Keep the public stream
+    // contract while making exactly one ordinary, cancellable JSON request.
+    if (this.name === "openai" && openAiModelRequiresBufferedResponse(options?.model?.trim() || this.config.model)) {
+      const response = await this.chat(messages, options);
+      onChunk({ content: response.content, done: true,
+        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}) });
+      return response;
+    }
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
@@ -1001,19 +1123,27 @@ export class OpenAIProvider implements LLMProvider {
         );
       }, { singleWireAttempt: options?.singleWireAttempt, signal: options?.signal });
     } catch (error) {
+      // Structured provider failures are already classified; their prose is
+      // not evidence of a second, transport-level failure.
+      if (error instanceof LLMProviderError || error instanceof LLMServerError ||
+        error instanceof LLMAuthenticationError) throw error;
       if (isFallbackTriggeredError(error)) {
         throw error;
       }
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        const mappedError = mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+        if (isLLMPreGenerationRejection(error, this.name)) {
+          markLLMPreGenerationRejection(mappedError, this.name);
+        }
+        throw mappedError;
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -1039,6 +1169,7 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
   ): boolean {
     if (this.config.useResponsesApi !== false) return true;
+    if (this.name === "openai" && openAiModelRequiresResponses(model)) return true;
     return (
       this.name === "openai" &&
       tools.length > 0 &&
@@ -1061,12 +1192,19 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile() {
+  async getExecutionProfile(options?: LLMChatOptions) {
+    const model = options?.model?.trim() || this.config.model;
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    // An answer-only cap plus an independent thinking budget can produce more
+    // billable output than the single reservation. Keep uncapped sessions
+    // usable, but do not promise a total ceiling to hard-budget admission.
+    const separateThinkingLimit = qwenModel !== undefined &&
+      !qwenModel.totalOutputCap && qwenModel.thinking !== "none";
     return {
       provider: this.name,
-      model: this.config.model,
+      model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit,
       // Only the chat-completions path applies this buffer
       // (`fitRequestWithinContextWindow`). The Responses path does not, so it
       // must not inherit it.
@@ -1143,7 +1281,9 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
-  private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
+  private resolveChatCompletionsMaxTokenField(model: string): ChatCompletionsMaxTokenField {
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    if (qwenModel !== undefined && !qwenModel.totalOutputCap) return "max_tokens";
     if (
       this.name === "meta" ||
       this.name === "cerebras" ||
@@ -1314,12 +1454,20 @@ export class OpenAIProvider implements LLMProvider {
       tools: args.tools,
       options: args.options,
       maxTokens: this.resolveRequestMaxTokens(args.options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(args.model),
       providerCapabilityHints,
       sharedPrefixTail: sessionSharedPrefixTail(),
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
+    }
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(args.model) : undefined;
+    if (qwenModel?.model.startsWith("qwen") && !qwenModel.totalOutputCap &&
+      qwenModel.thinking !== "none" && request.enable_thinking !== false &&
+      request.thinking_budget === undefined && typeof request.max_tokens === "number") {
+      // These older Qwen routes cap the answer separately from reasoning.
+      // Bound both parts when Core supplies an output reservation.
+      request.thinking_budget = request.max_tokens;
     }
     if (typeof request.prompt_cache_key === "string") {
       request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
@@ -1465,169 +1613,266 @@ export class OpenAIProvider implements LLMProvider {
         string,
         { id: string; name: string; arguments: string }
       >();
+      const streamedFunctionItems: Record<string, unknown>[] = [];
+      const bufferedFunctionSnapshots = new Map<string, string>();
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
+      let hasResponseOutput = false;
+      let retryDenied = response.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
+      let overloadEvent: Record<string, unknown> | undefined;
 
-      for await (const event of this.readSseEvents(response)) {
-        const eventType = event.event ?? String(event.data.type ?? "");
-
-        if (eventType === "response.output_text.delta") {
-          const delta =
-            typeof event.data.delta === "string" ? event.data.delta : "";
-          if (delta.length > 0) {
-            streamedContent += delta;
-            onChunk({ content: delta, done: false });
+      let reportedUsage: LLMResponse["usage"] | undefined;
+      let reportedModel = model;
+      try {
+        for await (const event of this.readSseEvents(response)) {
+          const eventType = event.event ?? String(event.data.type ?? "");
+          const responseSnapshot = event.data.response;
+          if ((eventType === "response.failed" || eventType === "response.completed" ||
+               eventType === "response.incomplete") && responseSnapshot && typeof responseSnapshot === "object") {
+            const payload = responseSnapshot as Record<string, unknown>;
+            const usage = parseOpenAIResponsesUsage(payload);
+            if (usage.availability === "reported") {
+              reportedUsage = usage;
+              if (typeof payload.model === "string") reportedModel = payload.model;
+            }
           }
-          continue;
-        }
-
-        if (eventType === "response.output_item.done") {
-          const item =
-            event.data.item && typeof event.data.item === "object"
-              ? (event.data.item as Record<string, unknown>)
-              : undefined;
-          if (
-            item?.type === "reasoning" &&
-            requestOptions.reasoningReplayProvider !== undefined
-          ) {
-            streamedReasoningItems.push(item);
-          }
-          if (item?.type === "function_call") {
-            let toolCall: LLMToolCall;
-            try {
-              toolCall = validateProviderToolCallOrThrow(
-                this.name,
-                {
-                  id: String(item.call_id ?? item.id ?? "").trim(),
-                  // Streaming-path decode (mirrors the non-streaming
-                  // path in `parseOpenAIResponsesResponse`). Without
-                  // this, mid-stream `onChunk(toolCalls)` carries the
-                  // wire-form `mcp__server__tool` straight into the
-                  // dispatcher, which keys on the dotted internal form
-                  // and reports a silent dispatch miss.
-                  name: decodeMcpToolNameFromWire(
-                    String(item.name ?? "").trim(),
-                    requestOptions.tools.map((tool) => tool.function.name),
-                  ),
-                  arguments: String(item.arguments ?? "{}"),
-                },
-                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-              );
-            } catch (validationError) {
-              // A single malformed function_call must not discard output
-              // already forwarded to the consumer. When nothing has been
-              // emitted yet, rethrow so the outer fallback/retry path can
-              // act; otherwise surface a partial response (mirrors the
-              // Anthropic adapter's partial-recovery and the in-stream
-              // `response.failed` branch below).
-              if (
-                streamedContent.length === 0 &&
-                streamedToolCalls.size === 0
-              ) {
-                throw validationError;
+          const snapshotOutput = responseSnapshot && typeof responseSnapshot === "object"
+            ? (responseSnapshot as Record<string, unknown>).output : undefined;
+          // Failed responses can contain output only in their snapshot, without
+          // any earlier deltas. Treat every nonempty output snapshot as partial.
+          hasResponseOutput ||= eventType.startsWith("response.output_") ||
+            eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+            (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
+          if (eventType === "error" && this.name === "openai") {
+            retryDenied ||= forbidsStreamRetry(event.data);
+            if (readNestedProviderCode(event.data) === "server_is_overloaded") {
+              overloadEvent = event.data;
+              const status = inferErrorStatus(event.data);
+              const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;
+              // Do not let a subsequent transport drop turn a forbidden retry
+              // into a generic truncation/network recovery.
+              if (retryDenied || hasResponseOutput || terminalClientStatus) {
+                throw mapOpenAIStreamError({
+                  providerName: this.name,
+                  errorBody: event.data,
+                  fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+                  responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+                });
               }
-              const partialError =
-                validationError instanceof Error
-                  ? validationError
-                  : new LLMProviderError(
-                    this.name,
-                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-                  );
-              const recoveredToolCalls = Array.from(streamedToolCalls.values());
-              onChunk({
-                content: "",
-                done: true,
-                ...(recoveredToolCalls.length > 0
-                  ? { toolCalls: recoveredToolCalls }
-                  : {}),
-              });
-              return {
-                content: streamedContent,
-                toolCalls: recoveredToolCalls,
-                usage: coerceUsage({}),
-                model,
-                finishReason: "error",
-                error: partialError,
-                partial: true,
-              };
             }
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
-          continue;
-        }
 
-        if (
-          eventType === "response.completed" ||
-          eventType === "response.incomplete"
-        ) {
-          completedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : null;
-          break;
-        }
+          if (eventType === "response.output_text.delta") {
+            const delta =
+              typeof event.data.delta === "string" ? event.data.delta : "";
+            if (delta.length > 0) {
+              streamedContent += delta;
+              onChunk({ content: delta, done: false });
+            }
+            continue;
+          }
 
-        if (eventType === "response.failed") {
-          const failedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : {};
-          const failedError =
-            failedResponse.error && typeof failedResponse.error === "object"
-              ? (failedResponse.error as Record<string, unknown>)
-              : undefined;
-          const eventError =
-            event.data.error && typeof event.data.error === "object"
-              ? (event.data.error as Record<string, unknown>)
-              : undefined;
-          const message =
-            typeof failedError?.message === "string"
-              ? String(failedError.message)
-              : typeof eventError?.message === "string"
-                ? String(eventError.message)
-                : OPENAI_STREAM_FAILED_MESSAGE;
-          const errorBody = failedError ?? eventError ?? failedResponse;
-          const streamError = mapOpenAIStreamError({
-            providerName: this.name,
-            errorBody,
-            fallbackMessage: message,
-          });
-          if (!isProviderFundsFailure(this.name, streamError) &&
-            streamedContent.length === 0 && streamedToolCalls.size === 0) {
-            const fallbackDecision = this.evaluateConfiguredFallback(
-              openAIStreamFallbackCandidate(errorBody, message),
-              consecutiveFallbackFailures,
-              model,
-            );
+          if (eventType === "response.output_item.done") {
+            const item =
+              event.data.item && typeof event.data.item === "object"
+                ? (event.data.item as Record<string, unknown>)
+                : undefined;
             if (
-              options?.singleWireAttempt !== true &&
-              fallbackDecision?.kind === "wait" &&
-              await this.waitForConfiguredFallbackRetry(
-                fallbackDecision,
-                options?.signal,
-              )
+              item?.type === "reasoning" &&
+              requestOptions.reasoningReplayProvider !== undefined
             ) {
-              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
-              continue responseStreamAttempts;
+              streamedReasoningItems.push(item);
             }
+            if (item?.type === "function_call") {
+              // A done item can still belong to an output-limited response.
+              // Wait for the terminal status before validating or publishing it.
+              streamedFunctionItems.push(item);
+              const id = String(item.call_id ?? item.id ?? "").trim();
+              const name = String(item.name ?? "").trim();
+              const args = String(item.arguments ?? "");
+              const snapshot = JSON.stringify([name, args]);
+              if ((id || name || args.trim()) && bufferedFunctionSnapshots.get(id) !== snapshot) {
+                bufferedFunctionSnapshots.set(id, snapshot);
+                // Only signal new buffered output. Replayed items cannot reset
+                // the watchdog, and unvalidated tool text stays inside the adapter.
+                onChunk({ content: "", done: false, bufferedContentProgress: true });
+              }
+            }
+            continue;
           }
-          consecutiveFallbackFailures = 0;
-          throw streamError;
+
+          if (
+            eventType === "response.completed" ||
+            eventType === "response.incomplete"
+          ) {
+            completedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : null;
+            break;
+          }
+
+          if (eventType === "response.failed") {
+            const failedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : {};
+            const failedError =
+              failedResponse.error && typeof failedResponse.error === "object"
+                ? (failedResponse.error as Record<string, unknown>)
+                : undefined;
+            const eventError =
+              event.data.error && typeof event.data.error === "object"
+                ? (event.data.error as Record<string, unknown>)
+                : undefined;
+            const message =
+              typeof failedError?.message === "string"
+                ? String(failedError.message)
+                : typeof eventError?.message === "string"
+                  ? String(eventError.message)
+                  : OPENAI_STREAM_FAILED_MESSAGE;
+            const errorBody = failedError ?? eventError ?? failedResponse;
+            const streamError = mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody,
+              fallbackMessage: message,
+              responsesAttempt: {
+                hasOutput: hasResponseOutput, retryDenied,
+                status: inferErrorStatus(overloadEvent),
+              },
+            });
+            if (!(streamError instanceof LLMStreamRetryDeniedError) &&
+              !isProviderFundsFailure(this.name, streamError) &&
+              streamedContent.length === 0 && streamedToolCalls.size === 0) {
+              const fallbackDecision = this.evaluateConfiguredFallback(
+                openAIStreamFallbackCandidate(errorBody, message),
+                consecutiveFallbackFailures,
+                model,
+              );
+              if (
+                options?.singleWireAttempt !== true &&
+                fallbackDecision?.kind === "wait" &&
+                await this.waitForConfiguredFallbackRetry(
+                  fallbackDecision,
+                  options?.signal,
+                )
+              ) {
+                consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+                continue responseStreamAttempts;
+              }
+            }
+            consecutiveFallbackFailures = 0;
+            throw streamError;
+          }
         }
+
+        if (!completedResponse) {
+          if (overloadEvent !== undefined) {
+            throw mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody: overloadEvent,
+              fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+              responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+            });
+          }
+          throw new LLMStreamTruncatedError(
+            this.name,
+            "Stream closed without a response.completed payload",
+          );
+        }
+
+      } catch (error) {
+        if (reportedUsage === undefined) throw error;
+        // Accepted-stream failure is not a rejection. Retain billable reasoning
+        // even if no visible text was emitted, and preserve the recovery error.
+        const toolCalls = Array.from(streamedToolCalls.values());
+        onChunk({ content: "", done: true, ...(toolCalls.length > 0 ? { toolCalls } : {}) });
+        return {
+          content: streamedContent, toolCalls,
+          ...extractOpenAIReasoningReplay(streamedReasoningItems, requestOptions),
+          usage: reportedUsage, model: reportedModel, finishReason: "error", partial: true,
+          error: error instanceof Error ? error : new LLMProviderError(this.name, String(error)),
+        };
       }
 
-      if (!completedResponse) {
-        throw new LLMStreamTruncatedError(
-          this.name,
-          "Stream closed without a response.completed payload",
-        );
+      if (completedResponse.status === "completed" || completedResponse.status === undefined) {
+        for (const item of streamedFunctionItems) {
+          let toolCall: LLMToolCall;
+          try {
+            toolCall = validateProviderToolCallOrThrow(
+              this.name,
+              {
+                id: String(item.call_id ?? item.id ?? "").trim(),
+                // Streaming-path decode (mirrors the non-streaming
+                // path in `parseOpenAIResponsesResponse`). Without
+                // this, mid-stream `onChunk(toolCalls)` carries the
+                // wire-form `mcp__server__tool` straight into the
+                // dispatcher, which keys on the dotted internal form
+                // and reports a silent dispatch miss.
+                name: decodeMcpToolNameFromWire(
+                  String(item.name ?? "").trim(),
+                  requestOptions.tools.map((tool) => tool.function.name),
+                ),
+                arguments: String(item.arguments ?? "{}"),
+              },
+              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+            );
+          } catch (validationError) {
+            // A single malformed function_call must not discard output
+            // already forwarded to the consumer. When nothing has been
+            // emitted yet, rethrow so the outer fallback/retry path can
+            // act; otherwise surface a partial response (mirrors the
+            // Anthropic adapter's partial-recovery and the in-stream
+            // `response.failed` branch below).
+            if (
+              streamedContent.length === 0 &&
+              streamedToolCalls.size === 0
+            ) {
+              throw validationError;
+            }
+            const partialError =
+              validationError instanceof Error
+                ? validationError
+                : new LLMProviderError(
+                  this.name,
+                  OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                );
+            const recoveredToolCalls = Array.from(streamedToolCalls.values());
+            onChunk({
+              content: "",
+              done: true,
+              ...(recoveredToolCalls.length > 0
+                ? { toolCalls: recoveredToolCalls }
+                : {}),
+            });
+            return {
+              content: streamedContent,
+              toolCalls: recoveredToolCalls,
+              usage: reportedUsage ?? coerceUsage({}),
+              model,
+              finishReason: "error",
+              error: partialError,
+              partial: true,
+            };
+          }
+          streamedToolCalls.set(toolCall.id, toolCall);
+          onChunk({ content: "", done: false, toolCalls: [toolCall] });
+        }
       }
+      const terminalOutput = Array.isArray(completedResponse.output)
+        ? completedResponse.output as Record<string, unknown>[] : [];
+      // Some Responses backends omit streamed items in the terminal payload.
+      // Preserve their identities for recovery as well as completed calls.
+      const responseWithStreamedCalls = {
+        ...completedResponse,
+        output: terminalOutput.some(item => item.type === "function_call")
+          ? terminalOutput : [...terminalOutput, ...streamedFunctionItems],
+      };
 
       const parsed = withStreamingMetrics(
         parseOpenAIResponsesResponse(
           model,
-          completedResponse,
+          responseWithStreamedCalls,
           requestOptions,
         ),
       );
@@ -1677,7 +1922,7 @@ export class OpenAIProvider implements LLMProvider {
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       maxTokens: this.resolveRequestMaxTokens(options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(requestModel),
       providerCapabilityHints: streamCapabilityHints,
       toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
@@ -1757,6 +2002,8 @@ export class OpenAIProvider implements LLMProvider {
       // `reasoning`. Preserve either as an explicit hidden thinking channel;
       // neither may become canonical assistant content.
       let reasoningContent = "";
+      let discardedReasoningContent = false;
+      let conflictingReasoningModel = false;
       // Others (MiniMax M3, Qwen3, Kimi K2 templates) inline the
       // chain-of-thought in `delta.content` behind think markers; the
       // filter reroutes those spans to the same hidden channel so the
@@ -1817,6 +2064,11 @@ export class OpenAIProvider implements LLMProvider {
           throw streamError;
         }
 
+        if (chunk.model !== undefined &&
+            (typeof chunk.model !== "string" ||
+              chunk.model.trim().toLowerCase() !== requestModel.trim().toLowerCase())) {
+          conflictingReasoningModel = true;
+        }
         if (typeof chunk.model === "string" && chunk.model.length > 0) {
           model = chunk.model;
         }
@@ -1851,8 +2103,11 @@ export class OpenAIProvider implements LLMProvider {
             choice.delta && typeof choice.delta === "object"
               ? (choice.delta as Record<string, unknown>)
               : {};
-          if (typeof delta.content === "string" && delta.content.length > 0) {
-            const split = thinkFilter.push(delta.content);
+          const contentDelta = typeof delta.content === "string" ? delta.content
+            : streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? assistantTextFromContentBlocks(delta.content) : "";
+          if (contentDelta.length > 0) {
+            const split = thinkFilter.push(contentDelta);
             if (split.text.length > 0) {
               content += split.text;
               onChunk({ content: split.text, done: false });
@@ -1881,7 +2136,13 @@ export class OpenAIProvider implements LLMProvider {
               : delta.reasoning_content;
           const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
           const reasoningDelta = primaryReasoningDelta ??
-            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined) ??
+            (streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? thinkingTextFromContentBlocks(delta.content) : undefined);
+          if (reasoningDelta !== undefined && reasoningDelta !== null &&
+              typeof reasoningDelta !== "string") {
+            discardedReasoningContent = true;
+          }
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({
@@ -1912,10 +2173,13 @@ export class OpenAIProvider implements LLMProvider {
               name: "",
               arguments: "",
             };
+            let bufferedToolProgress = false;
             if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
+              bufferedToolProgress ||= existing.id !== toolCall.id;
               existing.id = toolCall.id;
             }
             if (typeof fn.name === "string" && fn.name.length > 0) {
+              bufferedToolProgress ||= existing.name !== fn.name;
               existing.name = fn.name;
             }
             if (fn.arguments !== undefined && fn.arguments !== null) {
@@ -1924,9 +2188,15 @@ export class OpenAIProvider implements LLMProvider {
               );
               if (argumentDelta.length > 0) {
                 existing.arguments += argumentDelta;
+                bufferedToolProgress ||= argumentDelta.trim().length > 0;
               }
             }
             toolCallAccumulator.set(index, existing);
+            if (bufferedToolProgress) {
+              // Keep slow tool generation alive without exposing an executable
+              // call before the complete stream has passed validation.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
+            }
           }
 
           if (typeof choice.finish_reason === "string") {
@@ -1960,25 +2230,36 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
-      if (
+      const missingStrictTerminal =
         requiresStrictChatCompletionsSse(this.name) &&
         !sawFinishReason &&
         !sawDone &&
         toolCallAccumulator.size === 0 &&
-        !unterminatedFragmentNamesToolCalls
-      ) {
-        // The connection ended before either terminal signal and before any
-        // tool call fragment, parsed or cut off, reached us. Nothing can have
-        // been dispatched: this is a cut stream the turn may sample again, not
-        // a malformed response.
+        !unterminatedFragmentNamesToolCalls;
+      const missingCompatibleTerminal =
+        !requiresStrictChatCompletionsSse(this.name) &&
+        streamCapabilityHints.acceptsCleanEofAsTerminal !== true &&
+        !sawFinishReason &&
+        !sawDone &&
+        !unterminatedFragmentNamesToolCalls;
+      if (missingStrictTerminal || missingCompatibleTerminal) {
+        // Strict providers: the connection ended before either terminal
+        // signal and before any tool call fragment. Compatible providers:
+        // EOF without finish_reason or [DONE] is the same cut-stream case.
         throw new LLMStreamTruncatedError(
           this.name,
-          endedWithUnterminatedEvent
-            ? `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event before any finish_reason`
-            : `${strictSseProviderLabel(this.name)} SSE stream closed before any finish_reason`,
+          missingCompatibleTerminalMessage(
+            this.name,
+            endedWithUnterminatedEvent,
+            missingCompatibleTerminal,
+          ),
         );
       }
-      if (endedWithUnterminatedEvent) {
+      if (
+        endedWithUnterminatedEvent &&
+        (requiresStrictChatCompletionsSse(this.name) ||
+          unterminatedFragmentNamesToolCalls)
+      ) {
         throw new LLMInvalidResponseError(
           this.name,
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
@@ -1990,6 +2271,17 @@ export class OpenAIProvider implements LLMProvider {
       // DeepSeek subagent whose Write call ran into its 64k output cap.
       const cutOffByOutputLimit =
         rawFinishReasons.size === 1 && rawFinishReasons.has("length");
+      if (
+        sawDone &&
+        !sawFinishReason &&
+        toolCallAccumulator.size > 0 &&
+        streamCapabilityHints.requiresExplicitFinishReason !== true
+      ) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          "Streamed tool calls arrived without finish_reason=tool_calls",
+        );
+      }
       if (
         streamCapabilityHints.requiresExplicitFinishReason === true &&
         (!sawFinishReason ||
@@ -2041,14 +2333,30 @@ export class OpenAIProvider implements LLMProvider {
 
       const includeToolCalls =
         finishReason === "stop" || finishReason === "tool_calls";
+      let toolCallRecovery: LLMResponse["toolCallRecovery"];
       const toolCalls = includeToolCalls
-        ? Array.from(toolCallAccumulator.values()).map((toolCall) =>
-          validateProviderToolCallOrThrow(
+        ? Array.from(toolCallAccumulator.values()).flatMap((toolCall) => {
+          const validation = validateToolCallDetailed(toolCall);
+          // Admit correction only for a solitary, advertised native call.
+          // A conversational preamble does not make its arguments valid.
+          // Never expose the rejected arguments as an executable tool call.
+          if (validation.failure?.code === "invalid_json" &&
+              toolCallAccumulator.size === 1 && finishReason === "tool_calls" &&
+              toolCall.name.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(toolCall.name) &&
+              requestOptions.tools.some(tool => tool.function.name === toolCall.name)) {
+            toolCallRecovery = { source: "native", reason: "invalid_arguments",
+              toolName: toolCall.name, message: "Tool call arguments are not valid JSON." };
+            return [];
+          }
+          return [validateProviderToolCallOrThrow(
             this.name,
             toolCall,
             OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
-          ))
-        : [];
+          )];
+        })
+        // The wire parser retains only identities at length, never arguments
+        // or executable calls. Recovery must know a handoff was interrupted.
+        : finishReason === "length" ? Array.from(toolCallAccumulator.values()) : [];
       const parsed = withStreamingMetrics(
         parseChatCompletionsResponse(
           requestModel,
@@ -2105,6 +2413,7 @@ export class OpenAIProvider implements LLMProvider {
               : {}),
           },
           requestOptions,
+          { discardedReasoningContent, conflictingReasoningModel },
         ),
       );
       onChunk({
@@ -2116,6 +2425,7 @@ export class OpenAIProvider implements LLMProvider {
       });
       return {
         ...parsed,
+        ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
         ...(reasoningContent.length > 0
           ? {
             thinking: Object.freeze([
@@ -2161,21 +2471,53 @@ export class OpenAIProvider implements LLMProvider {
       onDone?.();
       return;
     }
+    if (parsed.remaining.trim().length === 0) return;
+    if (!requiresStrictChatCompletionsSse(this.name)) {
+      const flushed = flushCompatibleSseRemainder(parsed.remaining, this.name);
+      switch (flushed.kind) {
+        case "comment":
+          return;
+        case "done":
+          onDone?.();
+          return;
+        case "event":
+          yield flushed.event;
+          return;
+        case "unparsed":
+          break;
+        default: {
+          const exhaustive: never = flushed;
+          throw new Error(`Unhandled SSE remainder: ${JSON.stringify(exhaustive)}`);
+        }
+      }
+    }
     if (
-      requiresStrictChatCompletionsSse(this.name) &&
-      parsed.remaining.trim().length > 0
+      requiresStrictChatCompletionsSse(this.name) ||
+      parsed.remaining.includes('"tool_calls"')
     ) {
-      // A caller that tracks the stream's terminal signals decides whether
-      // this is a cut connection or a malformed stream.
+      // A cut tool_calls fragment is still a malformed stream. Strict
+      // providers keep main's unterminated-event check unchanged.
       if (onUnterminatedEnd !== undefined) {
         onUnterminatedEnd(parsed.remaining);
         return;
       }
-      throw new LLMInvalidResponseError(
+      throw new LLMStreamTruncatedError(
         this.name,
         `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
       );
     }
+  }
+
+  private initialHttpRejection(
+    error: unknown,
+    singleWireAttempt: boolean | undefined,
+  ): unknown {
+    // Managed admission has its own authenticated request-bound evidence.
+    // Keep the raw transport error for existing auth/fallback classification.
+    if (isInitialProviderHttpRejection(error) && !this.config.managedRequestId) {
+      markLLMInitialHttpRejection(error, this.name, error.status, singleWireAttempt);
+    }
+    return error;
   }
 
   private async requestStream(args: {
@@ -2204,6 +2546,8 @@ export class OpenAIProvider implements LLMProvider {
       // Provider SSE streams do not expose resumable cursors; keep the
       // shared session contract but preserve single-attempt stream semantics.
       retryBudget: { maxRetries: 0 },
+    }).catch(error => {
+      throw this.initialHttpRejection(error, args.singleWireAttempt);
     });
   }
 

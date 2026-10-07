@@ -9,6 +9,10 @@ import { buildInitialTurnState, restoreFromCheckpoint, toCheckpointSlice } from 
 import { postSampleRecovery } from "../../src/phases/post-sample-recovery.js";
 import { clearTextToolCallCorrectionPrompt, currentTextToolCallCorrectionPrompt, injectTextToolCallCorrection, recoverRejectedTextToolCall, textToolCallCorrectionPrompt } from "../../src/recovery/rejected-text-tool-call.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
+import { MAX_OUTPUT_TOKENS_RECOVERY_LIMIT, RETRY_TRUNCATED_TOOL_CONTENT } from "../../src/recovery/max-output-tokens.js";
+import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
+import { bodyAt, sseResponse } from "../llm/providers/openai-compatible-test-helpers.js";
 
 const correction = { toolName: "system.readFile", reason: "invalid_arguments" } as const;
 const rejected = (overrides: Partial<LLMResponse> = {}): LLMResponse => ({
@@ -52,6 +56,101 @@ function sequence(responses: LLMResponse[], afterSample?: (index: number) => voi
 }
 
 describe("bounded admitted text-tool correction", () => {
+  test.each([
+    { exhausted: false, preamble: "" },
+    { exhausted: true, preamble: "" },
+    { exhausted: false, preamble: "I will delegate this now" },
+    { exhausted: true, preamble: "I will delegate this now" },
+  ])("DeepSeek native malformed JSON uses bounded correction (exhausted=$exhausted, preamble=$preamble)", async ({ exhausted, preamble }) => {
+    const r = registry();
+    const spawn = { ...r.registry.tools[0]!, name: "spawn_agent" };
+    const tools: ToolRegistry = { ...r.registry, tools: [spawn], toLLMTools: () => [{ type: "function", function: { name: spawn.name, description: spawn.description, parameters: spawn.inputSchema } }] };
+    const model = "test-model";
+    const frame = (delta: object, finish_reason: string | null = null) =>
+      `data: ${JSON.stringify({ id: "native-spawn", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+    const responses: LLMResponse[] = [
+      { ...success, content: preamble, finishReason: "tool_calls", toolCalls: [{ id: "cut", name: "spawn_agent", arguments: '{"file_path":"unfinished' }] },
+      { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "retry", name: "spawn_agent", arguments: '{"file_path":"fixture"}' }] },
+      success,
+    ];
+    let samples = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const response = responses[exhausted ? 0 : Math.min(samples, 2)]!;
+      samples += 1;
+      return sseResponse([
+        frame({ content: response.content, ...(response.toolCalls.length === 0 ? {} : {
+          tool_calls: response.toolCalls.map(call => ({ index: 0, id: call.id, type: "function",
+            function: { name: call.name, arguments: call.arguments } })),
+        }) }),
+        frame({}, response.finishReason), "data: [DONE]\n\n",
+      ]);
+    });
+    const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
+    const { session, events } = mkSession({ provider, registry: tools });
+    const ctx = mkCtx();
+    await drain(runTurn(session, { ...ctx, config: { ...ctx.config, model, model_provider: "deepseek" } }, "Read the fixture."));
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(r.execute).toHaveBeenCalledTimes(exhausted ? 0 : 1);
+    const retryMessages = bodyAt(fetchImpl, 1).messages as Array<{ content?: string; tool_calls?: unknown[] }>;
+    expect(retryMessages.some(message => message.content?.includes(textToolCallCorrectionPrompt({ toolName: "spawn_agent", reason: "invalid_arguments" })))).toBe(true);
+    expect(retryMessages.flatMap(message => message.tool_calls ?? [])).toEqual([]);
+    if (preamble) expect(retryMessages).toContainEqual(expect.objectContaining({ role: "assistant", content: preamble }));
+    expect(events.some(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut")).toBe(false);
+    if (exhausted) {
+      expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("correction is exhausted") } });
+    } else {
+      expect(r.execute.mock.calls[0]?.[0]).toMatchObject({ file_path: "fixture" });
+      expect(events.some(event => event.msg.type === "turn_complete")).toBe(true);
+    }
+  });
+
+  test.each([false, true])("Responses interrupted handoff uses bounded recovery (exhausted=%s)", async exhausted => {
+    const r = registry();
+    const spawn = { ...r.registry.tools[0]!, name: "spawn_agent" };
+    const tools: ToolRegistry = { ...r.registry, tools: [spawn], toLLMTools: () => [{ type: "function",
+      function: { name: spawn.name, description: spawn.description, parameters: spawn.inputSchema } }] };
+    const frame = (type: string, fields: object) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
+    let samples = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const index = samples++;
+      const cut = exhausted || index === 0;
+      const item = { type: "function_call", call_id: cut ? `cut-${index}` : "retry",
+        name: "spawn_agent", arguments: cut ? '{"file_path":"unfinished' : '{"file_path":"fixture"}' };
+      const output = cut || index === 1 ? [item] : [{ type: "message",
+        content: [{ type: "output_text", text: "Finished." }] }];
+      return sseResponse([
+        ...(cut || index === 1 ? [frame("response.output_item.done", { item })] : []),
+        frame(cut ? "response.incomplete" : "response.completed", { response: {
+          status: cut ? "incomplete" : "completed", output,
+          ...(cut ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+          usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        } }),
+      ]);
+    });
+    const provider = new OpenAIProvider({ apiKey: "test", model: "test-model", useResponsesApi: true, fetchImpl });
+    const { session, events } = mkSession({ provider, registry: tools });
+    const ctx = mkCtx();
+    await drain(runTurn(session, { ...ctx, config: { ...ctx.config, model: "test-model", model_provider: "openai" } }, "Read the fixture."));
+    expect(fetchImpl).toHaveBeenCalledTimes(exhausted ? MAX_OUTPUT_TOKENS_RECOVERY_LIMIT + 1 : 3);
+    expect(r.execute).toHaveBeenCalledTimes(exhausted ? 0 : 1);
+    const retryInput = bodyAt(fetchImpl, 1).input as Array<{ type: string; content?: unknown }>;
+    expect(JSON.stringify(retryInput)).toContain(RETRY_TRUNCATED_TOOL_CONTENT);
+    expect(JSON.stringify(retryInput)).toContain("message_ref");
+    expect(retryInput.some(item => item.type === "function_call" || item.type === "function_call_output")).toBe(false);
+    const closure = events.find(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut-0");
+    expect(closure?.msg).toMatchObject({ payload: { isError: true, result: expect.stringContaining('"executed":false') } });
+    if (exhausted) {
+      expect(events.some(event => event.msg.type === "turn_complete")).toBe(false);
+      expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: {
+        message: expect.stringContaining("Output recovery is exhausted"),
+      } });
+    } else {
+      expect(r.execute.mock.calls[0]?.[0]).toMatchObject({ file_path: "fixture" });
+      expect(events.some(event => event.msg.type === "turn_complete")).toBe(true);
+    }
+  });
+
   test("two rejected calls then a valid call use fresh samples, execute only once and retain usage/pairing", async () => {
     const r = registry();
     const wire = sequence([rejected(), rejected(), { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "real-read", name: "system.readFile", arguments: '{"file_path":"fixture"}' }] }, success]);
@@ -92,6 +191,16 @@ describe("bounded admitted text-tool correction", () => {
     expect(events.some(event => event.msg.type === "turn_complete")).toBe(false);
     expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("correction is exhausted") } });
     expect(wire.inputs.flat().some(message => typeof message.content === "string" && message.content.includes("no visible final answer"))).toBe(false);
+  });
+
+  test("text-parsed correction still rejects accompanying prose", async () => {
+    const r = registry();
+    const wire = sequence([rejected({ content: "I will read this now" })]);
+    const { session, events } = mkSession({ provider: wire.provider, registry: r.registry });
+    await drain(runTurn(session, mkCtx(), "Read the fixture."));
+    expect(wire.inputs).toHaveLength(1);
+    expect(r.execute).not.toHaveBeenCalled();
+    expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
   });
 
   test("unadvertised MCP is discovery-only and never auto-loaded or dispatched", async () => {

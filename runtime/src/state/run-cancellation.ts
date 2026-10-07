@@ -178,6 +178,7 @@ interface AncestorInspectionRow {
   readonly run_id: string;
   readonly status: string | null;
   readonly cancelled: number;
+  readonly cancellation_reason: string | null;
   readonly durable_identity: number;
   readonly parents_json: string;
 }
@@ -186,6 +187,7 @@ export interface CancellationAncestorDenial {
   readonly reason: CancellationAncestorDenialReason;
   readonly parentRunId: string;
   readonly parentStatus: string;
+  readonly lockReason?: string;
 }
 
 /**
@@ -202,6 +204,39 @@ export function inspectCancellationAncestors(
   },
 ): CancellationAncestorDenial | undefined {
   const includeAdmission = options.graphKind === CANCELLATION_GRAPH_ADMISSION;
+  // Root admissions dominate one-shot work. Prove that the start has no
+  // durable parent with indexed lookups in one fresh snapshot rather than
+  // materializing every edge in the workspace. Any parent (including a
+  // closed edge or an admission-only parent) takes the full bounded walk.
+  // This is deliberately not cached: a later cancellation or parent edge
+  // must affect the next enqueue/claim/dispatch boundary.
+  const root = includeAdmission && options.explicitParentRunId !== undefined
+    ? undefined
+    : driver.prepareState<[string], AncestorInspectionRow>(
+        `SELECT requested.run_id, run.status,
+                EXISTS (
+                  SELECT 1 FROM execution_admission_cancellations AS locked
+                  WHERE locked.run_id = requested.run_id
+                ) AS cancelled,
+                (run.id IS NOT NULL OR EXISTS (
+                  SELECT 1 FROM agent_jobs AS identity_job
+                  WHERE identity_job.admission_run_id = requested.run_id
+                ) OR EXISTS (
+                  SELECT 1 FROM run_lifecycle_epochs AS lifecycle
+                  WHERE lifecycle.run_id = requested.run_id
+                )) AS durable_identity,
+                '[]' AS parents_json
+         FROM (SELECT ? AS run_id) AS requested
+         LEFT JOIN agent_runs AS run ON run.id = requested.run_id
+         WHERE NOT EXISTS (
+           SELECT 1 FROM thread_spawn_edges AS edge
+           WHERE edge.child_thread_id = requested.run_id
+         )${includeAdmission ? ` AND NOT EXISTS (
+           SELECT 1 FROM agent_jobs AS parent_job
+           WHERE parent_job.admission_run_id = requested.run_id
+             AND parent_job.admission_parent_run_id IS NOT NULL
+         )` : ""}`,
+      ).get(options.startRunId);
   const parentEdgesSql = includeAdmission
     ? `SELECT child_thread_id AS child_run_id,
               parent_thread_id AS parent_run_id
@@ -225,7 +260,7 @@ export function inspectCancellationAncestors(
     );
   }
   params.push(options.startRunId, MAX_ANCESTOR_WALK + 1);
-  const rows = driver
+  const rows = root !== undefined ? [root] : driver
     .prepareState<unknown[], AncestorInspectionRow>(
       `WITH RECURSIVE
          parent_edges(child_run_id, parent_run_id) AS (
@@ -245,6 +280,10 @@ export function inspectCancellationAncestors(
                 SELECT 1 FROM execution_admission_cancellations AS locked
                 WHERE locked.run_id = ancestor.run_id
               ) AS cancelled,
+              (
+                SELECT locked.reason FROM execution_admission_cancellations AS locked
+                WHERE locked.run_id = ancestor.run_id
+              ) AS cancellation_reason,
               (
                 run.id IS NOT NULL OR EXISTS (
                   SELECT 1 FROM agent_jobs AS identity_job
@@ -283,6 +322,9 @@ export function inspectCancellationAncestors(
         reason: "parent_cancel_locked",
         parentRunId: row.run_id,
         parentStatus: row.status ?? "cancelled",
+        ...(row.cancellation_reason !== null
+          ? { lockReason: row.cancellation_reason }
+          : {}),
       };
     }
   }

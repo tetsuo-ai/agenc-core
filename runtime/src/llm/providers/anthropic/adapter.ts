@@ -17,10 +17,14 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   mapLLMError,
+  markLLMInitialHttpRejection,
+  isLLMPreGenerationRejection,
+  markLLMPreGenerationRejection,
 } from "../../errors.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
+  isInitialProviderHttpRejection,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import {
@@ -577,6 +581,11 @@ export class AnthropicProvider implements LLMProvider {
           options?.singleWireAttempt,
         ),
         singleWireAttempt: options?.singleWireAttempt,
+      }).catch(error => {
+        if (isInitialProviderHttpRejection(error)) {
+          markLLMInitialHttpRejection(error, this.name, error.status, options?.singleWireAttempt);
+        }
+        throw error;
       });
       const responseUsage = response.data.usage;
       this.noteServedSpeed(
@@ -596,10 +605,13 @@ export class AnthropicProvider implements LLMProvider {
       if (isFallbackTriggeredError(error)) {
         throw error;
       }
-      if (error instanceof ProviderHttpError && error.status === 401) {
-        throw new LLMAuthenticationError(this.name, error.status);
+      const mappedError = error instanceof ProviderHttpError && error.status === 401
+        ? new LLMAuthenticationError(this.name, error.status)
+        : mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (isLLMPreGenerationRejection(error, this.name)) {
+        markLLMPreGenerationRejection(mappedError, this.name);
       }
-      throw mapLLMError(this.name, error, timeoutMs ?? 0);
+      throw mappedError;
     }
   }
 
@@ -690,6 +702,11 @@ export class AnthropicProvider implements LLMProvider {
         // Provider SSE streams are not resumable; preserve single-attempt
         // stream semantics while using the shared session transport contract.
         retryBudget: { maxRetries: 0 },
+      }).catch(error => {
+        if (isInitialProviderHttpRejection(error)) {
+          markLLMInitialHttpRejection(error, this.name, error.status, options?.singleWireAttempt);
+        }
+        throw error;
       });
 
       for await (const event of this.readSseEvents(response)) {
@@ -1054,10 +1071,13 @@ export class AnthropicProvider implements LLMProvider {
         completedThinkingBlocks,
         onChunk,
       );
-      if (error instanceof ProviderHttpError && error.status === 401) {
-        throw new LLMAuthenticationError(this.name, error.status);
+      const mappedError = error instanceof ProviderHttpError && error.status === 401
+        ? new LLMAuthenticationError(this.name, error.status)
+        : mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (isLLMPreGenerationRejection(error, this.name)) {
+        markLLMPreGenerationRejection(mappedError, this.name);
       }
-      const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (error instanceof ProviderHttpError && error.status === 401) throw mappedError;
       const streamedToolCount = toolBlocks.size + completedToolCalls.length;
       const thinking = thinkingFromCompletedBlocks(completedThinkingBlocks);
       // What the #2463 reconnect ladder can re-sample: a transient transport

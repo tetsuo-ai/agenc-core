@@ -963,6 +963,13 @@ describe("daemon-owned scheduled turns", () => {
       registry.tools[0]!.execute = tool;
       const { session } = create("cron-delete", provider, registry);
       __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      const queued = Promise.withResolvers<void>();
+      const submitTurn = session.submit.bind(session);
+      vi.spyOn(session, "submit").mockImplementation((...args) => {
+        const completion = submitTurn(...args);
+        if (args[0] === "run the scheduled check") queued.resolve();
+        return completion;
+      });
       const active = session.submit("busy");
       try {
         await started.promise;
@@ -971,6 +978,9 @@ describe("daemon-owned scheduled turns", () => {
           { kind: "session", conversationId: session.conversationId }, workspaceRoot);
         const scheduler = await start(session);
         await advance();
+        // Real storage reads may outlive advance()'s timer/polling window.
+        // Prove the cancelled task is queued behind the busy turn first.
+        await queued.promise;
         expect(samples).toBe(1);
         const cronDelete = createModelFacingTools({ workspaceRoot, getSession: () => session })
           .find((candidate) => candidate.name === "CronDelete")!;
@@ -978,6 +988,10 @@ describe("daemon-owned scheduled turns", () => {
         expect(JSON.parse(String(result.content)).deleted).toBe(true);
         busy.resolve();
         await active;
+        // Cancellation retires this tick and re-arms the survivor on a new
+        // timer. Finish that real-I/O re-arm before advancing the fake clock;
+        // drain() alone does not fire timers created while it is waiting.
+        await scheduler.drain();
         await advance();
         await scheduler.drain();
         expect(tool).toHaveBeenCalledTimes(1);
@@ -4554,7 +4568,11 @@ describe("runTurn — model request context ordering", () => {
     expect(injectedRequest).toContain('"signals":["write_task"]');
   });
 
-  test("force-selects one initial spawn for a parallel swarm route", async () => {
+  test.each([
+    { swarm: true, task: "Review these areas:\n- API behavior\n- TUI behavior" },
+    { swarm: false, task: "Spawn one child to review the API behavior." },
+    { swarm: true, task: "Spawn two independent agents to review API and TUI behavior." },
+  ])("executes model-selected delegation without forcing in either mode: $task", async ({ swarm, task }) => {
     const toolChoices: Array<LLMToolChoice | undefined> = [];
     let providerCalls = 0;
     const provider: LLMProvider = {
@@ -4620,22 +4638,20 @@ describe("runTurn — model request context ordering", () => {
     const { session } = mkSession({
       provider,
       registry,
-      configStoreBase: { swarmMode: true },
+      configStoreBase: { swarmMode: swarm },
     });
 
     await drain(
-      session.runTurn("Review these areas:\n- API behavior\n- TUI behavior", {
+      session.runTurn(task, {
         ctx: { ...mkCtx(), subId: "turn-enforced-swarm" },
       }),
     );
 
     expect(toolChoices).toEqual([
-      { type: "function", name: "spawn_agent" },
+      undefined,
       undefined,
     ]);
-    expect(
-      getAttachmentTrackingState(session).lastSwarmSpawnToolChoiceTurnId,
-    ).toBe("turn-enforced-swarm");
+
   });
 });
 

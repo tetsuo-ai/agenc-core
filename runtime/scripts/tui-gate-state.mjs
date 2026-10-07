@@ -1,3 +1,4 @@
+import { agenCDaemonLocalEndpoint } from "../../packages/agenc-sdk/lib/local-endpoint.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -211,7 +212,7 @@ async function createShortGateRoot() {
 
 function assertShortSocketPath(agencHome) {
   if (process.platform === "win32") return;
-  const socketPath = path.join(agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(agencHome);
   if (Buffer.byteLength(socketPath) >= 96) {
     throw new Error(`private TUI gate socket path is too long: ${socketPath}`);
   }
@@ -503,7 +504,9 @@ async function assertOwnedState(state) {
   }
 
   for (const filename of ["daemon.pid", "daemon.sock"]) {
-    const candidate = path.join(expectedAgencHome, filename);
+    const candidate = filename === "daemon.sock"
+      ? agenCDaemonLocalEndpoint(expectedAgencHome)
+      : path.join(expectedAgencHome, filename);
     if (!(await pathExists(candidate))) continue;
     const metadata = await lstat(candidate);
     if (metadata.isSymbolicLink()) {
@@ -542,10 +545,10 @@ function appendBoundedOutput(record, chunk, key) {
   );
 }
 
-function spawnForegroundDaemon(state, binAgenc) {
+function spawnForegroundDaemon(state, binAgenc, nodeArgs) {
   const child = spawn(
     process.execPath,
-    [binAgenc, "daemon", "start", "--foreground"],
+    [...nodeArgs, binAgenc, "daemon", "start", "--foreground"],
     {
       env: state.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -583,7 +586,7 @@ function spawnForegroundDaemon(state, binAgenc) {
   return record;
 }
 
-async function waitForDaemonReady(state, binAgenc, record) {
+async function waitForDaemonReady(state, binAgenc, record, readiness) {
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
   let lastStatus = null;
   while (Date.now() < deadline) {
@@ -602,6 +605,15 @@ async function waitForDaemonReady(state, binAgenc, record) {
     }
     const pid = await readDaemonPid(state.agencHome);
     if (pid === record.pid) {
+      if (readiness === "announcement") {
+        // This retained child's announcement follows listener setup, identity
+        // publication and lifecycle-lock release. Avoid `daemon status` here:
+        // it explicitly requests health.stats, contaminating startup traces.
+        // The real one-shot still performs its authenticated instance proof.
+        if (record.stdout.split("\n").includes(`AgenC daemon running (pid ${record.pid})`)) return;
+        await sleep(DAEMON_POLL_MS);
+        continue;
+      }
       const status = daemonCommand(binAgenc, ["status"], state.env, 5_000);
       lastStatus = status;
       if (
@@ -628,7 +640,7 @@ async function waitForDaemonReady(state, binAgenc, record) {
   );
 }
 
-async function performStartTuiGateDaemon(state, binAgenc) {
+async function performStartTuiGateDaemon(state, binAgenc, nodeArgs, readiness) {
   await assertOwnedState(state);
   if (state.closing) {
     throw new Error("private TUI gate daemon start interrupted by cleanup");
@@ -638,9 +650,9 @@ async function performStartTuiGateDaemon(state, binAgenc) {
   );
   if (liveRecords.length > 0) return liveRecords[0].pid;
 
-  const record = spawnForegroundDaemon(state, binAgenc);
+  const record = spawnForegroundDaemon(state, binAgenc, nodeArgs);
   try {
-    await waitForDaemonReady(state, binAgenc, record);
+    await waitForDaemonReady(state, binAgenc, record, readiness);
     if (state.closing) {
       throw new Error("private TUI gate daemon start interrupted by cleanup");
     }
@@ -656,13 +668,31 @@ async function performStartTuiGateDaemon(state, binAgenc) {
   }
 }
 
-export function startTuiGateDaemon(state, binAgenc) {
+/**
+ * Start the private daemon as a retained child of the gate. `nodeArgs` are
+ * extra Node.js options for the daemon process only (for example a
+ * module-load trace hook); the environment stays the private gate env.
+ * The startup-module gate uses `announcement` to avoid requesting health
+ * diagnostics before the first model request. Other gates retain `status`.
+ */
+export function startTuiGateDaemon(state, binAgenc, { nodeArgs = [], readiness = "status" } = {}) {
   if (state.cleaned || state.closing) {
     return Promise.reject(
       new Error(`TUI gate state is shutting down: ${state.root}`),
     );
   }
-  const operation = performStartTuiGateDaemon(state, binAgenc);
+  if (
+    !Array.isArray(nodeArgs) ||
+    nodeArgs.some((arg) => typeof arg !== "string" || !arg.startsWith("--"))
+  ) {
+    return Promise.reject(
+      new Error("TUI gate daemon nodeArgs must be Node.js options"),
+    );
+  }
+  if (readiness !== "status" && readiness !== "announcement") {
+    return Promise.reject(new Error("invalid TUI gate daemon readiness mode"));
+  }
+  const operation = performStartTuiGateDaemon(state, binAgenc, [...nodeArgs], readiness);
   state.pendingDaemonStarts.add(operation);
   operation.then(
     () => state.pendingDaemonStarts.delete(operation),
@@ -761,7 +791,7 @@ export async function stopTuiGateDaemon(state) {
     );
   }
   const deadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
-  const socketPath = path.join(state.agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(state.agencHome);
   while (
     ((await pathExists(socketPath)) ||
       (await readDaemonPid(state.agencHome)) !== null) &&
@@ -821,7 +851,7 @@ async function performTeardown(state) {
     );
   }
 
-  const socketPath = path.join(state.agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(state.agencHome);
   const socketDeadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
   while ((await pathExists(socketPath)) && Date.now() < socketDeadline) {
     await sleep(DAEMON_POLL_MS);

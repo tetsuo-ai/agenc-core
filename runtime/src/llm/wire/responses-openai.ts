@@ -25,7 +25,6 @@ import {
   normalizeFinishReason,
   normalizeToolCallsStrict,
   openAiServedSpeed,
-  parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
   readDocumentPayload,
@@ -35,11 +34,13 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toOpenAIResponsesTools } from "./tools.js";
+import { getResponseDetailSection, withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
+import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -322,10 +323,6 @@ function resolveResponsesFinishReason(
   response: Record<string, unknown>,
   toolCalls: readonly LLMToolCall[],
 ): LLMResponse["finishReason"] {
-  if (toolCalls.length > 0) {
-    return "tool_calls";
-  }
-
   const status = String(response.status ?? "");
   if (status === "incomplete") {
     const details =
@@ -340,9 +337,7 @@ function resolveResponsesFinishReason(
     if (reason.includes("content_filter") || reason.includes("refusal")) {
       return "content_filter";
     }
-    if (reason.includes("error")) {
-      return "error";
-    }
+    return "error";
   }
 
   if (
@@ -353,13 +348,18 @@ function resolveResponsesFinishReason(
     return "error";
   }
 
-  return normalizeFinishReason(status);
+  return toolCalls.length > 0 ? "tool_calls" : normalizeFinishReason(status);
 }
 
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
+  const catalogEntry = resolveRegisteredModelCatalogEntry({ provider: "openai", model: input.model });
+  const nativeVerbosity = input.chatgptBackend !== true &&
+    catalogEntry?.model.toLowerCase() === input.model.trim().toLowerCase() &&
+    catalogEntry.supportsVerbosity;
+  const fallbackVerbosity = !nativeVerbosity ? input.options?.modelVerbosity : undefined;
   // Prefix-cache split: only the cross-turn-stable head of the system
   // prompt goes into `instructions` (part of the cached prefix); the
   // volatile tail is appended as the LAST input item below so the
@@ -368,7 +368,11 @@ export function buildOpenAIResponsesRequest(
     staticPrefix: staticSystemPrompt,
     sessionSuffix: sessionSystemPrompt,
     dynamicSuffix: dynamicSystemPrompt,
-  } = splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
+  } = splitSystemPromptOnDynamicBoundary(
+    input.chatgptBackend !== true && fallbackVerbosity !== undefined
+      ? withResponseDetailSystemPrompt(input.options?.systemPrompt, fallbackVerbosity)
+      : input.options?.systemPrompt,
+  );
   const instructions = [
     staticSystemPrompt,
     // Fixed for the session, so it stays in the cached instructions.
@@ -379,10 +383,9 @@ export function buildOpenAIResponsesRequest(
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
-    // The ChatGPT subscription backend rejects system-role input items
-    // outright ("System messages are not allowed"), so the volatile tail
-    // folds into instructions there: a colder prefix cache beats a turn
-    // that cannot run at all. Platform keys keep the split below.
+    // The ChatGPT subscription backend rejects system-role input items.
+    // Its existing volatile prompt tail stays in instructions; response
+    // detail is appended separately as an accepted user input item below.
     ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
       ? [dynamicSystemPrompt]
       : []),
@@ -464,6 +467,13 @@ export function buildOpenAIResponsesRequest(
       content: [{ type: "input_text", text: dynamicSystemPrompt }],
     });
   }
+  if (input.chatgptBackend === true && fallbackVerbosity !== undefined) {
+    responseInput.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: getResponseDetailSection(fallbackVerbosity) }],
+    });
+  }
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -478,7 +488,13 @@ export function buildOpenAIResponsesRequest(
   const tools = toOpenAIResponsesTools(input.tools);
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
-    body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
+    // Responses uses a flat named choice; Chat Completions nests function.name.
+    // https://developers.openai.com/api/docs/guides/function-calling#tool-choice
+    const choice = input.options.toolChoice;
+    body.tool_choice = typeof choice === "string" ? choice : {
+      type: "function",
+      name: encodeMcpToolNameForWire(choice.name),
+    };
   }
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
@@ -527,7 +543,7 @@ export function buildOpenAIResponsesRequest(
       summary: input.options.reasoningSummary,
     };
   }
-  if (input.options?.modelVerbosity !== undefined) {
+  if (nativeVerbosity && input.options?.modelVerbosity !== undefined) {
     body.text = {
       ...(body.text && typeof body.text === "object"
         ? (body.text as Record<string, unknown>)
@@ -549,42 +565,10 @@ export function buildOpenAIResponsesRequest(
   return body;
 }
 
-export function parseOpenAIResponsesResponse(
-  model: string,
-  response: Record<string, unknown>,
-  request: OpenAIResponsesRequestOptions,
-): LLMResponse {
+/** Read authoritative billing independently of output validation. */
+export function parseOpenAIResponsesUsage(response: Record<string, unknown>): LLMResponse["usage"] {
   const output = Array.isArray(response.output)
-    ? (response.output as Array<Record<string, unknown>>)
-    : [];
-  const toolCalls = normalizeToolCallsStrict(
-    output
-      .filter((item) => item.type === "function_call")
-      .map(
-        (item): LLMToolCall => ({
-          id: String(item.call_id ?? item.id ?? ""),
-          // Decode the strict-regex wire name back to the
-          // internal-registry form before dispatch.
-          name: decodeMcpToolNameFromWire(
-            String(item.name ?? ""),
-            request.tools.map((tool) => tool.function.name),
-          ),
-          arguments: String(item.arguments ?? "{}"),
-        }),
-      ),
-    "OpenAI Responses response emitted invalid function_call",
-  );
-
-  const content = output
-    .filter((item) => item.type === "message")
-    .map((item) => {
-      const contentBlocks = Array.isArray(item.content)
-        ? (item.content as readonly unknown[])
-        : [];
-      return assistantTextFromContentBlocks(contentBlocks);
-    })
-    .join("");
-
+    ? response.output.filter((item): item is Record<string, unknown> => item !== null && typeof item === "object") : [];
   const usageRecord =
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
@@ -604,6 +588,62 @@ export function parseOpenAIResponsesResponse(
   const webSearchRequests = output.filter(
     (item) => item.type === "web_search_call",
   ).length;
+  return coerceUsage({
+      promptTokens: usageRecord.input_tokens,
+      completionTokens: usageRecord.output_tokens,
+      totalTokens: usageRecord.total_tokens,
+      cachedInputTokens: inputDetails.cached_tokens,
+      // GPT-5.6 and later bill cache writes at 1.25x input; like cached
+      // tokens they are a subset of input_tokens (prompt-caching guide).
+      cacheCreationInputTokens: inputDetails.cache_write_tokens,
+      reasoningOutputTokens: outputDetails.reasoning_tokens,
+      webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
+      speed: openAiServedSpeed(response.service_tier),
+    });
+}
+
+export function parseOpenAIResponsesResponse(
+  model: string,
+  response: Record<string, unknown>,
+  request: OpenAIResponsesRequestOptions,
+): LLMResponse {
+  const output = Array.isArray(response.output)
+    ? (response.output as Array<Record<string, unknown>>)
+    : [];
+  const functionCalls = output.filter((item) => item.type === "function_call");
+  const initialFinishReason = resolveResponsesFinishReason(response, []);
+  const acceptsToolCalls = initialFinishReason === "stop" || initialFinishReason === "tool_calls";
+  // Output limits can cut off even a done item's JSON. Keep only identities
+  // for the turn's bounded recovery; never repair or execute partial calls.
+  const incompleteToolCalls = initialFinishReason === "length"
+    ? functionCalls.flatMap((item, index) => {
+      const name = decodeMcpToolNameFromWire(String(item.name ?? "").trim(),
+        request.tools.map((tool) => tool.function.name));
+      if (!name || name.length > 256) return [];
+      const id = String(item.call_id ?? item.id ?? "").trim() || `incomplete-${index}`;
+      return [{ id, name }];
+    }) : [];
+  const toolCalls = acceptsToolCalls ? normalizeToolCallsStrict(
+    functionCalls.map((item): LLMToolCall => ({
+      id: String(item.call_id ?? item.id ?? ""),
+      // Decode the strict-regex wire name before dispatch.
+      name: decodeMcpToolNameFromWire(String(item.name ?? ""),
+        request.tools.map((tool) => tool.function.name)),
+      arguments: String(item.arguments ?? "{}"),
+    })),
+    "OpenAI Responses response emitted invalid function_call",
+  ) : [];
+
+  const content = output
+    .filter((item) => item.type === "message")
+    .map((item) => {
+      const contentBlocks = Array.isArray(item.content)
+        ? (item.content as readonly unknown[])
+        : [];
+      return assistantTextFromContentBlocks(contentBlocks);
+    })
+    .join("");
+
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -624,19 +664,9 @@ export function parseOpenAIResponsesResponse(
   return {
     content,
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     ...extractOpenAIReasoningReplay(output, request),
-    usage: coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: usageRecord.total_tokens,
-      cachedInputTokens: inputDetails.cached_tokens,
-      // GPT-5.6 and later bill cache writes at 1.25x input; like cached
-      // tokens they are a subset of input_tokens (prompt-caching guide).
-      cacheCreationInputTokens: inputDetails.cache_write_tokens,
-      reasoningOutputTokens: outputDetails.reasoning_tokens,
-      webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
-      speed: openAiServedSpeed(response.service_tier),
-    }),
+    usage: parseOpenAIResponsesUsage(response),
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason,

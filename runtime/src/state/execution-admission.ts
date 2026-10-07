@@ -28,7 +28,7 @@ import {
   materializeCancellationSet,
   materializedCancellationRunIds,
   withCancellationOperation,
-  type CancellationAncestorDenialReason,
+  type CancellationAncestorDenial,
   type CancellationOperation,
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
@@ -620,7 +620,7 @@ export class ExecutionAdmissionRepository {
       let status: PersistedAdmissionStatus = "queued";
       let event: AdmissionJournalEvent["event"] = "queued";
       let reason: string | undefined;
-      const ancestorDenial = this.#ancestorDenialReason(request);
+      const ancestorDenial = this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         status = "denied";
         event = "denied";
@@ -762,7 +762,7 @@ export class ExecutionAdmissionRepository {
       }
 
       const request = parseRequest(row.input_json);
-      const ancestorDenial = this.#ancestorDenialReason(request);
+      const ancestorDenial = this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         const denied = this.#finishUnclaimedJobLocked(
           row,
@@ -809,12 +809,13 @@ export class ExecutionAdmissionRepository {
           row,
           request,
           "denied",
-          allocationResult,
+          allocationResult.reason,
           now,
+          allocationResult.details,
         );
         return {
           kind: "not_claimed",
-          reason: allocationResult,
+          reason: allocationResult.reason,
           record: denied,
         };
       }
@@ -945,7 +946,7 @@ export class ExecutionAdmissionRepository {
         const job = this.#requireJobByIdLocked(reservation.job_id);
         const request = parseRequest(job.input_json);
         if (reservation.status === "reserved") {
-          const ancestorDenial = this.#ancestorDenialReason(request);
+          const ancestorDenial = this.#ancestorDenial(request)?.reason;
           const stopReason =
             ancestorDenial ??
             (request.deadlineAt !== undefined &&
@@ -1711,6 +1712,15 @@ export class ExecutionAdmissionRepository {
     });
   }
 
+  /** Last event only: an earlier denial followed by work is not a terminal cause. */
+  getLatestJournalEvent(runId: string): AdmissionJournalEvent | undefined {
+    const row = this.#driver.prepareState<[string], JournalRow>(
+      `SELECT * FROM execution_admission_journal
+       WHERE run_id = ? ORDER BY sequence DESC LIMIT 1`,
+    ).get(runId);
+    return row === undefined ? undefined : journalFromRow(row);
+  }
+
   listJournal(
     options: ListAdmissionJournalOptions = {},
   ): readonly AdmissionJournalEvent[] {
@@ -1830,6 +1840,18 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : this.#reservationLocked(row.admission_reservation_id);
     const status = normalizePersistedStatus(row.status);
+    const ancestorDenial = row.admission_reason === "parent_cancel_locked"
+      ? this.#ancestorDenial(request)
+      : undefined;
+    const parentLockCause = ancestorDenial?.reason !== "parent_cancel_locked"
+      ? undefined
+      : ancestorDenial.parentStatus === "unknown_outcome" ||
+          ancestorDenial.lockReason === "unknown_outcome"
+        ? "unknown_outcome"
+        : ancestorDenial.parentStatus === "provider_overrun" ||
+            ancestorDenial.lockReason === "provider_overrun"
+          ? "provider_overrun"
+          : "cancellation";
     return {
       jobId: row.id,
       key: admissionRecordKey(request.step),
@@ -1854,6 +1876,7 @@ export class ExecutionAdmissionRepository {
       ...(row.admission_reason !== null
         ? { reason: row.admission_reason }
         : {}),
+      ...(parentLockCause !== undefined ? { parentLockCause } : {}),
       ...(reservation?.actual_tokens !== null &&
       reservation?.actual_tokens !== undefined
         ? { actualTokens: reservation.actual_tokens }
@@ -1874,6 +1897,7 @@ export class ExecutionAdmissionRepository {
     status: "denied" | "cancelled",
     reason: string,
     at: string,
+    details?: Readonly<Record<string, unknown>>,
   ): PersistedAdmissionRecord {
     this.#driver
       .prepareState(
@@ -1891,6 +1915,7 @@ export class ExecutionAdmissionRepository {
       request,
       event: status === "denied" ? "denied" : "cancelled",
       reason,
+      ...(details !== undefined ? { details } : {}),
     });
     return this.#recordFromRowLocked(this.#requireJobByIdLocked(row.id));
   }
@@ -1901,18 +1926,17 @@ export class ExecutionAdmissionRepository {
     reservedTokens: number,
     reservedCostNanos: number | null,
     now: string,
-  ):
-    | "budget_exceeded"
-    | "unpriced_under_hard_cap"
-    | "allocation_blocked"
-    | null {
+  ): {
+    readonly reason: "budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
+    readonly details?: Readonly<Record<string, unknown>>;
+  } | null {
     for (const scope of scopes) {
       this.#ensureAllocationLocked(request.step.runId, scope, now);
     }
     const closure = this.#allocationClosureLocked(scopes);
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
-        return "allocation_blocked";
+        return { reason: "allocation_blocked" };
       }
       if (
         allocation.max_tokens !== null &&
@@ -1922,10 +1946,17 @@ export class ExecutionAdmissionRepository {
           reservedTokens,
         ) > allocation.max_tokens
       ) {
-        return "budget_exceeded";
+        return { reason: "budget_exceeded", details: {
+          budgetDimension: "tokens",
+          allocationKey: allocation.scope_key,
+          usedTokens: allocation.used_tokens,
+          heldTokens: allocation.held_tokens,
+          requestedTokens: reservedTokens,
+          maxTokens: allocation.max_tokens,
+        } };
       }
       if (allocation.max_cost_nanos !== null) {
-        if (reservedCostNanos === null) return "unpriced_under_hard_cap";
+        if (reservedCostNanos === null) return { reason: "unpriced_under_hard_cap" };
         if (
           checkedNanoSum(
             allocation.used_cost_nanos,
@@ -1933,7 +1964,14 @@ export class ExecutionAdmissionRepository {
             reservedCostNanos,
           ) > allocation.max_cost_nanos
         ) {
-          return "budget_exceeded";
+          return { reason: "budget_exceeded", details: {
+            budgetDimension: "cost",
+            allocationKey: allocation.scope_key,
+            usedCostNanos: allocation.used_cost_nanos,
+            heldCostNanos: allocation.held_cost_nanos,
+            requestedCostNanos: reservedCostNanos,
+            maxCostNanos: allocation.max_cost_nanos,
+          } };
         }
       }
     }
@@ -2815,9 +2853,9 @@ export class ExecutionAdmissionRepository {
     return true;
   }
 
-  #ancestorDenialReason(
+  #ancestorDenial(
     request: RuntimeAdmissionRequest,
-  ): CancellationAncestorDenialReason | undefined {
+  ): CancellationAncestorDenial | undefined {
     return inspectCancellationAncestors(this.#driver, {
       startRunId: request.step.runId,
       graphKind: ADMISSION_CANCELLATION_GRAPH,
@@ -2827,7 +2865,7 @@ export class ExecutionAdmissionRepository {
       // A request without a declared/durable parent is itself a root. A
       // declared parent must resolve to durable identity before admission.
       allowUnpersistedStartRoot: request.step.parentRunId === undefined,
-    })?.reason;
+    });
   }
 
   #rebuildAllocationsLocked(at: string): readonly string[] {

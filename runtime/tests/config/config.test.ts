@@ -664,19 +664,21 @@ describe("provider resolution (T13)", () => {
     });
   });
 
-  test("buildProviderModelCatalog omits retired Groq Mixtral models", () => {
+  test("buildProviderModelCatalog lists current Groq routes and omits retired models", () => {
     const catalog = buildProviderModelCatalog(defaultConfig());
 
     expect(catalog.groq).toEqual([
-      "llama-3.3-70b-versatile",
-      "llama-3.1-8b-instant",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3.8-27b",
+      "minimaxai/minimax-m2.7",
     ]);
-    expect(
-      resolveModelDisambiguated("llama-3.1-8b-instant", catalog),
-    ).toEqual({
+    expect(resolveModelDisambiguated("groq:openai/gpt-oss-120b", catalog)).toEqual({
       provider: "groq",
-      model: "llama-3.1-8b-instant",
+      model: "openai/gpt-oss-120b",
     });
+    expect(catalog.groq).not.toContain("llama-3.1-8b-instant");
+    expect(catalog.groq).not.toContain("llama-3.3-70b-versatile");
     expect(() =>
       resolveModelDisambiguated("mixtral-8x7b-32768", catalog)
     ).toThrow(/unknown model/u);
@@ -911,6 +913,22 @@ describe("schema: closed config block validators (CF-13)", () => {
       expect(() =>
         validateProviderConfig({ [provider]: { zero_data_retention: true } }),
       ).toThrow(/supported only under providers\.openrouter/u);
+    }
+  });
+
+  test("validateProviderConfig accepts auth only for the providers with an account sign-in", () => {
+    expect(validateProviderConfig({ openai: { auth: "oauth" }, grok: { auth: "api-key" } })).toEqual({
+      openai: { auth: "oauth" },
+      grok: { auth: "api-key" },
+    });
+    expect(validateProviderConfig({ grok: { auth: "auto" } })).toEqual({ grok: { auth: "auto" } });
+    expect(() => validateProviderConfig({ openai: { auth: "token" } })).toThrow(
+      /must be auto, oauth, or api-key/u,
+    );
+    for (const provider of ["anthropic", "deepseek", "openrouter"]) {
+      expect(() => validateProviderConfig({ [provider]: { auth: "oauth" } })).toThrow(
+        /only under providers\.openai and providers\.grok/u,
+      );
     }
   });
 

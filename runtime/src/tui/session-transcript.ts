@@ -5,8 +5,6 @@ import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
 import {
   DEFAULT_MODEL_COSTS,
   computeUsdCostWithResolution,
-  formatTokenCount,
-  formatUsdCost,
   type ModelUsage,
 } from "../session/cost.js";
 import type { Event } from "../session/event-log.js";
@@ -17,6 +15,7 @@ import type {
   RuntimeTranscriptMessage,
 } from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
+import { clampMarkerLine, looksLikeRawToolError, summarizeToolError } from "./tool-error-text.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 import {
@@ -301,6 +300,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "user_prompt_submit_hook_stopped",
   "user_prompt_submit_hook_threw",
   "pre_hook_denied",
+  "sandbox_policy_unexpressible",
   // Turn-outcome explanation
   "mid_turn_compact_failed",
   "pre_sampling_compact_failed",
@@ -338,6 +338,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "schema_validation_failed",
   "malformed_tool_call",
   "daemon_connection_state",
+  "stream_idle_warning",
 ]);
 
 /**
@@ -588,7 +589,9 @@ export function makeSystemMessage(
   return {
     type: "system",
     subtype: "informational",
-    content,
+    // A tool error that surfaces as a transcript line reads as its reason,
+    // never as protocol tags and exec trailers.
+    content: looksLikeRawToolError(content) ? summarizeToolError(content) : content,
     isMeta: false,
     timestamp: timestamp(),
     uuid,
@@ -1056,44 +1059,6 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
   };
 }
 
-function formatTokenCountUpdate(payload: Record<string, unknown>): string {
-  const usage = usageFromTokenCountPayload(payload);
-  const cost = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
-  const modelLabel =
-    usage.model === "unknown"
-      ? null
-      : usage.provider
-        ? `${usage.provider}/${usage.model}`
-        : usage.model;
-  const details = [
-    `${formatTokenCount(usage.inputTokens)} in`,
-    `${formatTokenCount(usage.outputTokens)} out`,
-    `${formatTokenCount(usage.totalTokens)} total`,
-  ];
-  if (usage.cachedInputTokens > 0) {
-    details.push(`${formatTokenCount(usage.cachedInputTokens)} cache read`);
-  }
-  if (usage.cacheCreationInputTokens > 0) {
-    details.push(`${formatTokenCount(usage.cacheCreationInputTokens)} cache write`);
-  }
-  if (usage.reasoningOutputTokens > 0) {
-    details.push(`${formatTokenCount(usage.reasoningOutputTokens)} reasoning`);
-  }
-  if (usage.webSearchRequests > 0) {
-    details.push(`${formatTokenCount(usage.webSearchRequests)} web search`);
-  }
-  details.push(
-    cost.known
-      ? formatUsdCost(cost.costUsd)
-      : `${formatUsdCost(cost.costUsd)} est.`,
-  );
-  if (modelLabel !== null) {
-    details.push(modelLabel);
-  }
-
-  return `Token ledger update: ${details.join(" · ")}`;
-}
-
 function tokenCountCostUsd(event: SessionTranscriptEvent): number {
   const unwrapped = unwrap(event);
   if (unwrapped.type !== "token_count") return 0;
@@ -1474,7 +1439,7 @@ export function formatStructuredToolResult(
       return [
         {
           type: "text",
-          text: `Loaded skill ${name} (${raw.length} chars of instructions — hidden from chat)`,
+          text: `Loaded skill ${name} (${raw.length} chars of instructions, hidden from chat)`,
         },
       ];
     }
@@ -1766,18 +1731,39 @@ export function formatStructuredToolResult(
 const GENERIC_RESULT_MAX_CHARS = 200;
 const GENERIC_RESULT_HEAD_LINES = 1;
 
+// The `[exec exit_code=…]` trailer a shell result ends with.
+const EXEC_TRAILER_AT_END_RE = /\n*(\[exec exit_code=-?\d+[^\]]*\])\s*$/u;
+
 export function clampGenericToolResult(text: string): string {
   if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
+  // A shell result keeps its exit trailer and its last output line. The
+  // trailer routes it to the shell view, and the last line is where a failing
+  // command says why ("zsh:1: === not found"); cutting both left a failed row
+  // with only the output's first line.
+  const trailer = EXEC_TRAILER_AT_END_RE.exec(text);
+  if (trailer !== null) {
+    const body = text.slice(0, trailer.index).replace(/\s+$/u, "");
+    return `${clampResultBody(body, true)}\n\n${trailer[1]}`;
+  }
+  return clampResultBody(text, false);
+}
+
+function clampResultBody(text: string, keepLastLine: boolean): string {
   const lines = text.split("\n");
   if (lines.length <= GENERIC_RESULT_HEAD_LINES) {
-    return `${text.slice(0, GENERIC_RESULT_MAX_CHARS)}\n… +${
-      text.length - GENERIC_RESULT_MAX_CHARS
-    } more characters (ctrl+o for the full result)`;
+    if (text.length <= GENERIC_RESULT_MAX_CHARS) return text;
+    return `${text.slice(0, GENERIC_RESULT_MAX_CHARS)}\n${clampMarkerLine(
+      text.length - GENERIC_RESULT_MAX_CHARS,
+      "characters",
+    )}`;
   }
   const head = lines.slice(0, GENERIC_RESULT_HEAD_LINES).join("\n");
-  return `${head}\n… +${
-    lines.length - GENERIC_RESULT_HEAD_LINES
-  } more lines (ctrl+o for the full result)`;
+  const tail = keepLastLine ? lines.at(-1) ?? "" : "";
+  if (keepLastLine && lines.length <= GENERIC_RESULT_HEAD_LINES + 1) return text;
+  const hidden = lines.length - GENERIC_RESULT_HEAD_LINES - (keepLastLine ? 1 : 0);
+  return keepLastLine
+    ? `${head}\n${clampMarkerLine(hidden, "lines")}\n${tail}`
+    : `${head}\n${clampMarkerLine(hidden, "lines")}`;
 }
 
 /**
@@ -1826,6 +1812,40 @@ function stopThinkingBlock(
   return { ...current, isStreaming: false, streamingEndedAt: Date.now() };
 }
 
+/**
+ * The same notice several times in a row (a retried tool failing the same
+ * way) reads as one line with a count: "… was provided (×5)". The first row
+ * keeps its key so the line does not jump while the count grows.
+ */
+function collapseRepeatedSystemLines(messages: any[]): any[] {
+  const collapsed: any[] = [];
+  let repeatedContent: string | null = null;
+  let count = 0;
+  for (const message of messages) {
+    const isNotice =
+      message?.type === "system" &&
+      message.subtype === "informational" &&
+      typeof message.content === "string";
+    const previous = collapsed[collapsed.length - 1];
+    if (
+      isNotice &&
+      repeatedContent === message.content &&
+      previous?.level === message.level
+    ) {
+      count += 1;
+      collapsed[collapsed.length - 1] = {
+        ...previous,
+        content: `${repeatedContent} (×${count})`,
+      };
+      continue;
+    }
+    collapsed.push(message);
+    repeatedContent = isNotice ? message.content : null;
+    count = 1;
+  }
+  return collapsed;
+}
+
 export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
@@ -1858,6 +1878,9 @@ export function adaptTranscriptEvents(
   let lastThinkingText = "";
   let currentTurnId: string | null = null;
   let currentTurnTimestamp: string | undefined;
+  // Model calls dispatched since the current turn started, for the quiet
+  // "done in 5.5s · 3 model calls" line under each finished turn.
+  let currentTurnModelCalls = 0;
   let currentTurnAssistantMessageIndexes: number[] = [];
   let lastAssistantText = "";
   let lastAssistantTextForActiveTurn = "";
@@ -2010,6 +2033,7 @@ export function adaptTranscriptEvents(
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
         currentTurnAssistantMessageIndexes = [];
+        currentTurnModelCalls = 0;
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -2073,6 +2097,18 @@ export function adaptTranscriptEvents(
             }
           }
         }
+        if (typeof payload.durationMs === "number" && payload.durationMs >= 0) {
+          out.push({
+            type: "system",
+            subtype: "turn_duration",
+            durationMs: payload.durationMs,
+            ...(currentTurnModelCalls > 0 ? { modelCalls: currentTurnModelCalls } : {}),
+            timestamp: completionTimestamp,
+            uuid: nextUuid(),
+            isMeta: false,
+          });
+        }
+        currentTurnModelCalls = 0;
         currentTurnTimestamp = undefined;
         currentTurnAssistantMessageIndexes = [];
         streamingText = "";
@@ -2132,6 +2168,9 @@ export function adaptTranscriptEvents(
           : makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
       case "execution_admission":
+        if (payload.event === "dispatched" && payload.kind === "model_turn") {
+          currentTurnModelCalls += 1;
+        }
         // A denied model turn is the ONLY admission outcome a person must see:
         // the turn then "completes" in a few hundred ms with an empty
         // lastAgentMessage, and without this line the chat shows nothing at
@@ -2616,7 +2655,8 @@ export function adaptTranscriptEvents(
           ),
           cache_read_input_tokens: nonNegativeInteger(payload.cachedInputTokens),
         };
-        out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info", nextUuid()));
+        // Usage feeds the status line spend and /cost; it is not a
+        // transcript row.
         break;
       case "protocol_claim":
       case "protocol_settle":
@@ -2955,7 +2995,7 @@ export function adaptTranscriptEvents(
   }
 
   return {
-    messages: out,
+    messages: collapseRepeatedSystemLines(out),
     streamingText:
       streamingText.length > 0
         ? streamingText
@@ -2978,6 +3018,12 @@ export function adaptTranscriptEvents(
 interface TranscriptState {
   readonly events: readonly SessionTranscriptEvent[];
   readonly keys: ReadonlySet<string>;
+  /**
+   * Dedup keys of stream deltas folded into the delta after them, oldest
+   * first. They stay in `keys` while listed here, so a replayed delta is
+   * recognized; the list keeps the newest `MAX_FOLDED_DELTA_KEYS`.
+   */
+  readonly foldedKeys: readonly string[];
   readonly maxSeq: number | null;
   readonly sessionCostUsd: number;
   readonly sessionUsage: AdmissionUsageSummary | null;
@@ -3069,11 +3115,150 @@ function clampEventForStorage(
 }
 
 /**
+ * Per-token stream deltas that fold into the stored delta right before them.
+ * The adapter only ever concatenates their `delta` text, so one stored event
+ * per run of deltas projects exactly like the run itself. Without folding, a
+ * max-effort turn (tens of thousands of reasoning deltas) pushed the whole
+ * conversation out of the `MAX_TRANSCRIPT_EVENTS` window: the transcript
+ * collapsed to its last few rows and the screen went blank above the working
+ * line.
+ */
+const FOLDABLE_DELTA_TYPES: ReadonlySet<string> = new Set([
+  "agent_message_delta",
+  "assistant_thinking_delta",
+]);
+
+/**
+ * How many folded delta keys stay recognizable. Replays come from the
+ * daemon's recent-event buffer (1000 events), well inside this window, so a
+ * replayed delta is still seen as known. Together with one key per stored
+ * event this bounds `keys` at twice `MAX_TRANSCRIPT_EVENTS`, however long a
+ * stream runs: the set is cloned on every append, so it must stay small.
+ */
+const MAX_FOLDED_DELTA_KEYS = MAX_TRANSCRIPT_EVENTS;
+/** Trim in steps, not on every fold. */
+const FOLDED_DELTA_KEYS_SLACK = 256;
+
+function hasStableEventKey(event: SessionTranscriptEvent): boolean {
+  return (
+    ("seq" in event && typeof event.seq === "number") ||
+    ("id" in event && typeof event.id === "string")
+  );
+}
+
+/** The payload object a delta's text lives in, for either event shape. */
+function deltaPayload(
+  event: SessionTranscriptEvent,
+): Record<string, unknown> | null {
+  const record = event as Record<string, unknown>;
+  const msg = record.msg;
+  const payload =
+    msg && typeof msg === "object" && !Array.isArray(msg)
+      ? (msg as Record<string, unknown>).payload
+      : record.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const result = payload as Record<string, unknown>;
+  return typeof result.delta === "string" ? result : null;
+}
+
+/** True when two delta payloads differ only in their text. */
+function sameDeltaStream(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const fields = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const field of fields) {
+    if (field === "delta" || left[field] === right[field]) continue;
+    if (
+      typeof left[field] !== "object" ||
+      typeof right[field] !== "object" ||
+      JSON.stringify(left[field]) !== JSON.stringify(right[field])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Fold `next` into `previous` when both are deltas of the same stream: the
+ * result is `next` (keeping its `seq`/`id`, so ordering and dedup hold) with
+ * the two texts joined. Returns null when they do not fold. Keyless events
+ * never fold, because their dedup key is their content. Sequenced deltas fold
+ * only across consecutive sequence numbers: a late event that sorts into a
+ * gap must land between its neighbours, and nothing can sort inside a fold.
+ */
+function foldStreamDelta(
+  previous: SessionTranscriptEvent | undefined,
+  next: SessionTranscriptEvent,
+): SessionTranscriptEvent | null {
+  if (previous === undefined) return null;
+  const type = unwrap(next).type;
+  if (!FOLDABLE_DELTA_TYPES.has(type) || unwrap(previous).type !== type) {
+    return null;
+  }
+  if (!hasStableEventKey(previous) || !hasStableEventKey(next)) return null;
+  if (("msg" in previous) !== ("msg" in next)) return null;
+  const previousSeq = eventSeq(previous);
+  const nextSeq = eventSeq(next);
+  if ((previousSeq === null) !== (nextSeq === null)) return null;
+  if (previousSeq !== null && nextSeq !== previousSeq + 1) return null;
+  const before = deltaPayload(previous);
+  const after = deltaPayload(next);
+  if (before === null || after === null || !sameDeltaStream(before, after)) {
+    return null;
+  }
+  const payload = {
+    ...after,
+    delta: `${before.delta as string}${after.delta as string}`,
+  };
+  const record = next as Record<string, unknown>;
+  const folded = (
+    "msg" in next
+      ? { ...record, msg: { ...(record.msg as Record<string, unknown>), payload } }
+      : { ...record, payload }
+  ) as SessionTranscriptEvent;
+  return folded;
+}
+
+/**
+ * Append one event to the store, folding a stream delta into the one before
+ * it. The folded-away delta's key moves to `foldedKeys`; keys that age out of
+ * that window leave `keys` too.
+ */
+function pushStoredEvent(
+  events: SessionTranscriptEvent[],
+  event: SessionTranscriptEvent,
+  keys: Set<string>,
+  foldedKeys: string[],
+): void {
+  const previous = events.at(-1);
+  const folded = foldStreamDelta(previous, event);
+  if (folded === null || previous === undefined) {
+    events.push(event);
+    return;
+  }
+  events[events.length - 1] = folded;
+  foldedKeys.push(eventKey(previous));
+  trimFoldedKeys(keys, foldedKeys);
+}
+
+/** Drop the oldest folded delta keys past the window, from both lists. */
+function trimFoldedKeys(keys: Set<string>, foldedKeys: string[]): void {
+  if (foldedKeys.length <= MAX_FOLDED_DELTA_KEYS + FOLDED_DELTA_KEYS_SLACK) return;
+  const aged = foldedKeys.splice(0, foldedKeys.length - MAX_FOLDED_DELTA_KEYS);
+  for (const key of aged) keys.delete(key);
+}
+
+/**
  * Ring-buffer the events array in place: if it grew past
  * `MAX_TRANSCRIPT_EVENTS`, drop the oldest events and remove their dedup keys
- * from `keys`. Visually safe — the renderer is virtualized to ~300 rows, so the
- * dropped events are off-screen, and their full content remains in scrollback
- * and the on-disk transcript. Bounds both event count and total retained bytes.
+ * from `keys`. Stream deltas fold into one event per run, so the window holds
+ * structural events: tool calls, results and turn boundaries. Bounds both
+ * event count and total retained bytes. Keys of deltas folded into a dropped
+ * event age out of `foldedKeys` on their own.
  */
 function evictOldestEvents(
   events: SessionTranscriptEvent[],
@@ -3089,8 +3274,11 @@ function evictOldestEvents(
 
 function buildTranscriptState(
   unorderedEvents: readonly SessionTranscriptEvent[],
+  /** Folded delta keys to keep recognizing when rebuilding a live store. */
+  carriedFoldedKeys: readonly string[] = [],
 ): TranscriptState {
   const keys = new Set<string>();
+  const foldedKeys: string[] = [];
   const events: SessionTranscriptEvent[] = [];
   let maxSeq: number | null = null;
   let sessionCostUsd = 0;
@@ -3100,6 +3288,7 @@ function buildTranscriptState(
     const key = eventKey(event);
     if (isTranscriptResetEvent(event)) {
       keys.clear();
+      foldedKeys.length = 0;
       events.length = 0;
       maxSeq = null;
       keys.add(key);
@@ -3111,13 +3300,24 @@ function buildTranscriptState(
     keys.add(key);
     sessionCostUsd += tokenCountCostUsd(event);
     sessionUsage = latestSessionUsage(sessionUsage, event);
-    events.push(clampEventForStorage(event));
+    pushStoredEvent(events, clampEventForStorage(event), keys, foldedKeys);
     maxSeq = maxEventSeq(maxSeq, event);
+  }
+
+  // Carried keys join after the loop: a reset event kept at the head of the
+  // store re-runs on every rebuild and would drop them. Nothing in the input
+  // repeats them, because stored events keep only their own keys and the
+  // caller already checked new events against the live store. They are
+  // older than the folds above, so they go first in the window.
+  if (carriedFoldedKeys.length > 0) {
+    for (const key of carriedFoldedKeys) keys.add(key);
+    foldedKeys.unshift(...carriedFoldedKeys);
+    trimFoldedKeys(keys, foldedKeys);
   }
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
+  return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -3133,7 +3333,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         isTranscriptResetEvent(action.event) ||
         (seq !== null && state.maxSeq !== null && seq < state.maxSeq)
       ) {
-        const rebuilt = buildTranscriptState([...state.events, action.event]);
+        const rebuilt = buildTranscriptState(
+          [...state.events, action.event],
+          isTranscriptResetEvent(action.event) ? [] : state.foldedKeys,
+        );
         return {
           ...rebuilt,
           sessionCostUsd:
@@ -3148,14 +3351,17 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       // first invoke made the second invoke see the key as already-present and
       // drop the event from the committed render. The clone is O(n) in the Set
       // size, but ring-buffer eviction bounds that Set alongside the events array.
-      const events = [...state.events, clampEventForStorage(action.event)];
+      const events = [...state.events];
       const keys = new Set(state.keys);
+      const foldedKeys = [...state.foldedKeys];
       keys.add(key);
+      pushStoredEvent(events, clampEventForStorage(action.event), keys, foldedKeys);
       evictOldestEvents(events, keys);
 
       return {
         events,
         keys,
+        foldedKeys,
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
         sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
         sessionUsage: latestSessionUsage(state.sessionUsage, action.event),
@@ -3182,14 +3388,21 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         const knownKeys = new Set(state.keys);
         let addedCostUsd = 0;
         let sessionUsage = state.sessionUsage;
+        const fresh: SessionTranscriptEvent[] = [];
         for (const event of action.events) {
           const key = eventKey(event);
           if (knownKeys.has(key)) continue;
           knownKeys.add(key);
+          fresh.push(event);
           addedCostUsd += tokenCountCostUsd(event);
           sessionUsage = latestSessionUsage(sessionUsage, event);
         }
-        const rebuilt = buildTranscriptState([...state.events, ...action.events]);
+        // Known events stay out of the rebuild: a replayed delta sorts ahead
+        // of the stored event it was folded into, and would be added twice.
+        const rebuilt = buildTranscriptState(
+          [...state.events, ...fresh],
+          fresh.some(isTranscriptResetEvent) ? [] : state.foldedKeys,
+        );
         return {
           ...rebuilt,
           sessionCostUsd: state.sessionCostUsd + addedCostUsd,
@@ -3212,9 +3425,11 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
       if (pending.length === 0) return state;
-      const events = [...state.events, ...pending];
+      const events = [...state.events];
+      const foldedKeys = [...state.foldedKeys];
+      for (const event of pending) pushStoredEvent(events, event, keys, foldedKeys);
       evictOldestEvents(events, keys);
-      return { events, keys, maxSeq, sessionCostUsd, sessionUsage };
+      return { events, keys, foldedKeys, maxSeq, sessionCostUsd, sessionUsage };
     }
   }
 }
@@ -3223,7 +3438,14 @@ export function createSessionTranscriptStateForTesting(
   events: readonly SessionTranscriptEvent[],
 ): TranscriptState {
   return reducer(
-    { events: [], keys: new Set(), maxSeq: null, sessionCostUsd: 0, sessionUsage: null },
+    {
+      events: [],
+      keys: new Set(),
+      foldedKeys: [],
+      maxSeq: null,
+      sessionCostUsd: 0,
+      sessionUsage: null,
+    },
     { kind: "reset", events },
   );
 }
@@ -3287,6 +3509,7 @@ export function useSessionTranscript(
   const [state, dispatch] = useReducer(reducer, {
     events: [],
     keys: new Set<string>(),
+    foldedKeys: [],
     maxSeq: null,
     sessionCostUsd: 0,
     sessionUsage: null,

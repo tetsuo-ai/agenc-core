@@ -228,7 +228,8 @@ describe("cost helpers", () => {
         1.5 * inputUsdPer1K + 0.5 * cachedInputUsdPer1K + outputUsdPer1K,
         10,
       );
-      for (const alias of [model, `openai/${model}`, `openrouter:openai/${model}`]) {
+      // OpenRouter has its own published tariff, tested in openrouter-catalog.test.ts.
+      for (const alias of [model, `openai/${model}`]) {
         expect(DEFAULT_MODEL_COSTS[alias]).toBe(DEFAULT_MODEL_COSTS[`openai:${model}`]);
       }
     },
@@ -281,7 +282,7 @@ describe("cost helpers", () => {
     for (const [provider, model] of Object.entries(
       BUILT_IN_PROVIDER_DEFAULT_MODELS,
     )) {
-      if (["qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
+      if (["openrouter", "qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
       const sidecar = new CostSidecar({
         defaultProvider: provider,
         defaultModel: model,
@@ -349,7 +350,7 @@ describe("cost helpers", () => {
 
   test.each(
     (["qwen", "qwen-token-plan"] as const).flatMap((provider) =>
-      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || model !== "qwen3.8-max").map((model) => [
+      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || DEFAULT_MODEL_COSTS[`qwen:${model}`] === undefined).map((model) => [
         provider,
         model,
       ] as const)
@@ -375,6 +376,16 @@ describe("cost helpers", () => {
         .toMatchObject({ known: false });
     },
   );
+
+  test.each([
+    ["qwen3.8-27b", 0.0005, 0.003, 0.0001],
+    ["qwen3.8-2.4t-a95b", 0.002, 0.006, 0.00025],
+    ["qwen3.8-omni-flash", 0.00015, 0.00047, 0.000016],
+  ] as const)("prices Qwen PAYG %s without assigning rates to Token Plan", (model, input, output, cached) => {
+    expect(resolveModelCostEntry({ provider: "qwen", model }, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: input, outputUsdPer1K: output, cachedInputUsdPer1K: cached });
+    expect(resolveModelCostEntry({ provider: "qwen-token-plan", model }, DEFAULT_MODEL_COSTS)).toBeNull();
+  });
 
   test("uses the current official Cerebras token rates", () => {
     expect(DEFAULT_MODEL_COSTS["cerebras:gpt-oss-120b"]).toMatchObject({

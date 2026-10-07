@@ -501,7 +501,7 @@ export function normalizePtyOutput(raw, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function frameLooksBusy(frame) {
+export function frameLooksBusy(frame) {
   return (
     /\bSynchronizing\b/u.test(frame) || /\besc to interrupt\b/iu.test(frame)
   );
@@ -517,6 +517,7 @@ export class TuiSession {
     gateState,
     useTempHome = false,
     sandboxMode,
+    preTrust = true,
   } = {}) {
     this.args = args;
     this.cols = cols;
@@ -526,6 +527,8 @@ export class TuiSession {
     this.gateState = gateState ?? null;
     this.useTempHome = useTempHome;
     this.sandboxMode = sandboxMode;
+    // Trust scenarios start in a folder that is NOT trusted in advance.
+    this.preTrust = preTrust;
     this.tempHome = null;
     this.ownsTempHome = false;
     this.runtimeEnv = null;
@@ -591,7 +594,7 @@ export class TuiSession {
       this.ownsTempHome = true;
       env = tuiGateEnvironment(home, env, this.envOverrides);
     }
-    await ensureProjectTrusted(this.cwd, env);
+    if (this.preTrust) await ensureProjectTrusted(this.cwd, env);
     this.throwIfAborted();
     this.runtimeEnv = env;
     return env;
@@ -733,6 +736,18 @@ export class TuiSession {
     }
     await stopTuiGateDaemon(this.gateState);
     return startTuiGateDaemon(this.gateState, BIN_AGENC);
+  }
+
+  /**
+   * Captured stderr of the gate daemon with this pid (bounded). Scenarios use
+   * it to wait for a daemon log line, such as the startup restore summary.
+   */
+  gateDaemonStderr(pid) {
+    const record = this.gateState?.daemonProcesses.get(pid);
+    if (record === undefined) {
+      throw new Error(`no private TUI gate daemon with pid ${pid}`);
+    }
+    return record.stderr;
   }
 
   async abort(reason = new Error("TUI scenario aborted")) {

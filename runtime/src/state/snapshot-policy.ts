@@ -1,3 +1,4 @@
+import { withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { updateAgentRunStatus } from "./agent-runs.js";
@@ -620,7 +621,7 @@ export class AgenCSessionSnapshotPolicy {
         // violation must not vanish. It is persisted into the session
         // snapshot alongside the in-flight entry. Pre-dispatch refusal is
         // the admission kernel's job (M3), via checkUnknownOutcomeMutationGate.
-        const startOutcome = recordInFlightToolCallStart(this.#driver, {
+        const startOutcome = this.#writeToolIndex(state, () => recordInFlightToolCallStart(this.#driver, {
           sessionId,
           agentId,
           toolCallId: requestId,
@@ -631,7 +632,7 @@ export class AgenCSessionSnapshotPolicy {
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
           unknownOutcomeGate: "flag",
-        });
+        }));
         if (startOutcome.gateViolation !== undefined) {
           state.toolState.inFlight[requestId] = {
             ...state.toolState.inFlight[requestId],
@@ -753,7 +754,7 @@ export class AgenCSessionSnapshotPolicy {
           stringField(previous ?? {}, "toolName") ??
           stringField(metadata, "toolName") ??
           stringField(payload, "toolName");
-        recordInFlightToolCallCompletion(this.#driver, {
+        this.#writeToolIndex(state, () => recordInFlightToolCallCompletion(this.#driver, {
           sessionId,
           agentId,
           toolCallId: callId,
@@ -767,7 +768,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        });
+        }));
         delete state.toolState.inFlight[callId];
         state.toolState.completed[callId] = {
           ...(previous ?? {}),
@@ -852,7 +853,7 @@ export class AgenCSessionSnapshotPolicy {
           stringField(previous ?? {}, "toolName") ??
           stringField(payload, "toolName");
         const observedAt = this.#now();
-        recordInFlightToolCallProgress(this.#driver, {
+        this.#writeToolIndex(state, () => recordInFlightToolCallProgress(this.#driver, {
           sessionId,
           agentId,
           toolCallId: callId,
@@ -865,7 +866,7 @@ export class AgenCSessionSnapshotPolicy {
           ),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
-        });
+        }));
         state.toolState.inFlight[callId] = {
           ...(previous ?? {}),
           requestId: callId,
@@ -969,6 +970,26 @@ export class AgenCSessionSnapshotPolicy {
       state.coalesceTimer = undefined;
     }
     this.#sessions.delete(state.sessionId);
+  }
+
+  /**
+   * Publish each observer index update before attempting its snapshot. The
+   * active print writer already refuses unsealed recovery and checkpoints
+   * this project WAL at close/promotion. Do not batch across tool events or
+   * skip the unknown-outcome checks: live readers need these rows now.
+   */
+  #writeToolIndex<T>(state: SessionSnapshotState, write: () => T): T {
+    const runId = state.agentId;
+    if (runId === undefined || this.#driver.state.inTransaction ||
+        !this.#driver.isRelaxedOneShotRun(runId) ||
+        this.#driver.prepareState<[string], { agent_id: string }>(
+          "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+        ).get(state.sessionId)?.agent_id !== runId) {
+      return write();
+    }
+    return withOneShotWriteScope(this.#driver.projectDir, runId, () =>
+      this.#driver.transaction(write),
+    );
   }
 
   #rememberSessionAgent(sessionId: string, agentId: string): void {
@@ -1086,6 +1107,7 @@ export class AgenCSessionSnapshotPolicy {
         timed("session_snapshot_write", () =>
           writeSessionSnapshotAtomically(this.#driver, pending.record, {
             updateRunLastSnapshotAt: true, replayOnStartup: true, verifyExisting: true,
+            oneShotRunId: state.agentId,
           }),
         );
         state.pendingWrite = undefined;

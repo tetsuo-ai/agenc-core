@@ -243,7 +243,7 @@ function mkStubMcpManager(
       }
       if (behavior.kind === "required-failure") {
         throw new Error(
-          `MCP aggregate startup failure — required server(s) not ready: ${(
+          `MCP aggregate startup failure: required server(s) not ready: ${(
             opts.requiredServers ?? []
           ).join(", ")} (test-failure)`,
         );
@@ -258,6 +258,37 @@ function mkStubMcpManager(
 // ─────────────────────────────────────────────────────────────────────
 
 describe("bootstrapSession happy path", () => {
+  it("retains selected session setup while deferring the skill observer to the response barrier", async () => {
+    const setup: Array<() => Promise<void>> = [];
+    const skillsWatcher = { start: vi.fn(async () => {}) };
+    const configured = vi.fn(async () => { expect(skillsWatcher.start).not.toHaveBeenCalled(); });
+    const session = await bootstrapSession(mkBootstrapOpts({
+      services: mkServices({ skillsWatcher }),
+      onAfterSessionConfigured: configured,
+      deferSkillsWatcherUntilRequest: callback => { setup.push(callback); },
+    }));
+    expect(configured).toHaveBeenCalledOnce();
+    expect(collectSessionEvents(session).filter(event => event.msg.type === "session_configured")).toHaveLength(1);
+    expect(skillsWatcher.start).not.toHaveBeenCalled();
+    expect(setup).toHaveLength(1);
+    await setup[0]!();
+    expect(skillsWatcher.start).toHaveBeenCalledOnce();
+  });
+
+  it("refuses deferred skill observer startup after cancellation", async () => {
+    const abort = new AbortController();
+    const setup: Array<() => Promise<void>> = [];
+    const skillsWatcher = { start: vi.fn(async () => {}) };
+    await bootstrapSession(mkBootstrapOpts({
+      signal: abort.signal,
+      services: mkServices({ skillsWatcher }),
+      deferSkillsWatcherUntilRequest: callback => { setup.push(callback); },
+    }));
+    abort.abort("cancelled before response");
+    await expect(setup[0]!()).rejects.toThrow("cancelled before response");
+    expect(skillsWatcher.start).not.toHaveBeenCalled();
+  });
+
   it("preserves the boundary-owned shell, leaves the active turn clean, and emits session_configured once", async () => {
     const opts = mkBootstrapOpts();
     const session = await bootstrapSession(opts);

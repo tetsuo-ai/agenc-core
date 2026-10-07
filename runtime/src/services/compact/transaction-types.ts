@@ -18,8 +18,13 @@ export const COMPACTION_SUMMARY_VERSION = 1 as const;
 export const COMPACTION_SUMMARY_KIND = "compaction_summary" as const;
 export const COMPACTION_BOUNDARY_MARKER_V1 =
   "agenc_compaction_boundary_v1:" as const;
-export const COMPACTION_CONTEXT_KIND_V1 =
-  "agenc_compaction_context_v1" as const;
+/**
+ * Kind of the model-visible summary message. Its v1 predecessor also carried
+ * the summary digest and every pinned tool pair; readers identify a summary
+ * by its compactionHistory marker, so v1 messages in older rollouts stay valid.
+ */
+export const COMPACTION_CONTEXT_KIND_V2 =
+  "agenc_compaction_context_v2" as const;
 export const COMPACTION_SUMMARY_DIGEST_DOMAIN =
   "agenc.compaction-summary.v1\0" as const;
 export const COMPACTION_SOURCE_DIGEST_DOMAIN =

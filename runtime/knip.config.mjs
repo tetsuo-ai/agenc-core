@@ -32,6 +32,7 @@ const intentionalEntryPointIssueIgnores = {
 const serviceTestContractExportFiles = [
   // Contract tests and service-level harnesses import these directly; the
   // production Knip graph intentionally excludes test-only callers.
+  "src/packaging/windows-winsw-service.ts",
   "src/services/AgentSummary/agentSummary.ts",
   "src/services/MagicDocs/magicDocs.ts",
   "src/services/MagicDocs/prompts.ts",
@@ -170,6 +171,7 @@ const sessionContractExportFiles = [
   "src/session/rollout-reconstruction.ts",
   "src/session/rollout-trace.ts",
   "src/session/run-turn.ts",
+  "src/session/session-reasoning-effort.ts",
   "src/session/session-store.ts",
   "src/session/session.ts",
   "src/session/current-session.ts",
@@ -223,6 +225,7 @@ const sandboxContractExportFiles = [
   // execpolicy exports are security/runtime surfaces with direct test coverage.
   "src/sandbox/engine/bwrap.ts",
   "src/sandbox/engine/index.ts",
+  "src/sandbox/engine/policy.ts",
   "src/sandbox/engine/landlock.ts",
   "src/sandbox/engine/policy-transforms.ts",
   "src/sandbox/engine/seatbelt.ts",
@@ -279,6 +282,7 @@ const permissionContractExportFiles = [
   "src/permissions/guardian/reviewer.ts",
   "src/permissions/mode-display.ts",
   "src/permissions/network-approval.ts",
+  "src/permissions/path-case.ts",
   "src/permissions/path-validation.ts",
   "src/permissions/permission-audit-log.ts",
   "src/permissions/permission-cli.ts",

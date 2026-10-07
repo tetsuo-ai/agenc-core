@@ -3,34 +3,23 @@ import React, { useCallback } from "react";
 
 import { TrustDialog } from "../permissions/trust/TrustDialog.js";
 import { render as renderInk } from "../tui/ink.js";
+import type { ProjectTrustPromptOptions } from "./project-trust-preflight.js";
 import { CURSOR_HOME, ERASE_SCREEN } from "../tui/ink/termio/csi.js";
 
-export interface RenderProjectTrustPromptOptions {
-  readonly workspaceRoot: string;
-  readonly riskSources?: readonly string[];
-  readonly bypassPermissionsRequested?: boolean;
-  readonly stdin?: NodeJS.ReadStream;
-  readonly stdout?: NodeJS.WriteStream;
-  readonly stderr?: NodeJS.WriteStream;
-}
+export type RenderProjectTrustPromptOptions = ProjectTrustPromptOptions;
 
-function ProjectTrustPromptApp(props: {
-  readonly workspaceRoot: string;
-  readonly riskSources?: readonly string[];
-  readonly bypassPermissionsRequested?: boolean;
+type ProjectTrustDialogProps = Omit<
+  ProjectTrustPromptOptions,
+  "stdin" | "stdout" | "stderr"
+>;
+
+function ProjectTrustPromptApp(props: ProjectTrustDialogProps & {
   readonly finish: (accepted: boolean) => void;
 }): React.ReactElement {
-  const accept = useCallback(() => props.finish(true), [props]);
-  const reject = useCallback(() => props.finish(false), [props]);
-  return (
-    <TrustDialog
-      workspaceRoot={props.workspaceRoot}
-      riskSources={props.riskSources}
-      bypassPermissionsRequested={props.bypassPermissionsRequested}
-      onAccept={accept}
-      onReject={reject}
-    />
-  );
+  const { finish, ...dialog } = props;
+  const accept = useCallback(() => finish(true), [finish]);
+  const reject = useCallback(() => finish(false), [finish]);
+  return <TrustDialog {...dialog} onAccept={accept} onReject={reject} />;
 }
 
 export async function renderProjectTrustPrompt(
@@ -40,19 +29,18 @@ export async function renderProjectTrustPrompt(
   const accepted = new Promise<boolean>((resolve) => {
     settle = resolve;
   });
+  const { stdin, stdout, stderr, ...dialog } = options;
   const instance = await renderInk(
     <ProjectTrustPromptApp
-      workspaceRoot={options.workspaceRoot}
-      riskSources={options.riskSources}
-      bypassPermissionsRequested={options.bypassPermissionsRequested}
+      {...dialog}
       finish={(value) => {
         settle?.(value);
       }}
     />,
     {
-      stdin: options.stdin ?? process.stdin,
-      stdout: options.stdout ?? process.stdout,
-      stderr: options.stderr ?? process.stderr,
+      stdin: stdin ?? process.stdin,
+      stdout: stdout ?? process.stdout,
+      stderr: stderr ?? process.stderr,
       patchConsole: true,
       exitOnCtrlC: true,
     },

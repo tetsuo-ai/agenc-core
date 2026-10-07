@@ -34,6 +34,7 @@ import {
 
 interface ProtocolSchema {
   readonly $id: string;
+  readonly "x-agenc-protocol-version": string;
   readonly definitions: {
     readonly AgenCDaemonRequest: object;
     readonly [name: string]: object;
@@ -76,6 +77,10 @@ const expectedMethods = [
   "telegram.agents.pair.cancel",
   "initialize",
   "request.cancel",
+  "print.invoke",
+  "print.admit",
+  "print.ack",
+  "print.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -86,6 +91,8 @@ const expectedMethods = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -96,6 +103,7 @@ const expectedMethods = [
   "routine.run",
   "routine.runs",
   "routine.cancel",
+  "routine.session.prepare.respond",
   "csvJob.review.list",
   "csvJob.review.show",
   "csvJob.review.resolve",
@@ -108,12 +116,17 @@ const expectedMethods = [
   "session.snapshot",
   "session.processes.list",
   "session.processes.stop",
+  "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
   "session.mcp.addServer",
+  "plugin.settings.get",
+  "plugin.settings.set",
+  "plugin.settings.reset",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -144,7 +157,10 @@ const expectedMethods = [
 ] as const;
 
 const expectedNotifications = [
+  "print.admission",
+  "print.output",
   "routine.updated",
+  "routine.session.prepare",
   "commandExec.outputDelta",
   "event.message_chunk",
   "event.tool_request",
@@ -169,24 +185,6 @@ const expectedInternalMethods = [
   "audio.whisper.status",
   "audio.whisper.install",
   "audio.whisper.transcribe",
-  "workspace.editor.acquire",
-  "workspace.editor.sync",
-  "workspace.editor.staleAuthority.refresh",
-  "workspace.editor.heartbeat",
-  "workspace.editor.release",
-  "workspace.editor.topology.reserve",
-  "workspace.editor.topology.complete",
-  "workspace.editor.topology.release",
-  "workspace.editor.topology.recovered.list",
-  "workspace.editor.topology.recovered.resolve",
-  "workspace.editor.proposal.get",
-  "workspace.editor.proposal.status",
-  "workspace.editor.proposal.apply",
-  "workspace.editor.proposal.discard",
-  "workspace.editor.changes.list",
-  "workspace.editor.predict",
-  "workspace.editor.cancelPrediction",
-  "workspace.editor.predictionFeedback",
   "session.partialCompactFromMessage",
   "session.rollbackCompaction",
   "session.extendCompactionRollbackRetention",
@@ -244,7 +242,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.24.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.31.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -343,17 +341,6 @@ describe("AgenC daemon protocol surface", () => {
         code: "MESSAGE_NOT_FOUND",
         message: "missing",
       };
-    const proposalStatus: AgenCDaemonInternalResultByMethod["workspace.editor.proposal.status"] =
-      {
-        status: "committed",
-        proposalId: "proposal-contract",
-        path: "/workspace/main.ts",
-        source: "file_edit",
-        baseContentSha256: "a".repeat(64),
-        afterContentSha256: "b".repeat(64),
-        baseChangedtick: 4,
-        bufferHandle: 7,
-      };
     const permissionRuleMutation: AgenCDaemonInternalResultByMethod["session.permissions.mutateRule"] =
       {
         sessionId: "session_contract",
@@ -380,7 +367,6 @@ describe("AgenC daemon protocol surface", () => {
 
     expect(partial.ok).toBe(true);
     expect(rewind.message).toBe("missing");
-    expect(proposalStatus.status).toBe("committed");
     expect(permissionRuleMutation.sessionRules.allow).toEqual([
       "system.bash(ls)",
     ]);
@@ -391,6 +377,7 @@ describe("AgenC daemon protocol surface", () => {
     const schema = readProtocolSchema();
 
     expect(schema.$id).toBe(AGENC_DAEMON_PROTOCOL_SCHEMA_ID);
+    expect(schema["x-agenc-protocol-version"]).toBe(AGENC_DAEMON_PROTOCOL_VERSION);
     expect(schema["x-agenc-package"]).toEqual({
       name: AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
       export: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
@@ -752,9 +739,52 @@ describe("AgenC daemon protocol surface", () => {
     }
   });
 
+  it("requires bounded pause identity and exact resume identity without accepting budget resets", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const request = (method: string, params: unknown) => ({ jsonrpc: JSON_RPC_VERSION, id: "control", method, params });
+    expect(validate(request("run.pause", { runId: "run-1" }))).toBe(false);
+    expect(validate(request("run.pause", { runId: "run-1", requestId: "x".repeat(129) }))).toBe(false);
+    expect(validate(request("run.pause", { runId: "run-1", requestId: "pause-1", maxCostUsd: 20 }))).toBe(false);
+    expect(validate(request("run.resume", { runId: "run-1" }))).toBe(false);
+    expect(validate(request("run.resume", { runId: "run-1", suspensionId: "../pause" }))).toBe(false);
+    expect(validate(request("run.resume", { runId: "run-1", suspensionId: "pause:1", deadline: "later" }))).toBe(false);
+  });
+
+  it("matches every advertised request to exactly one schema envelope", () => {
+    const schema = readProtocolSchema();
+    const union = schema.definitions.AgenCDaemonRequest as { oneOf: { $ref: string }[] };
+    const methods = union.oneOf.map(({ $ref }) => {
+      const definition = schema.definitions[$ref.split("/").at(-1)!] as { properties: { method: { const: string } } };
+      return definition.properties.method.const;
+    });
+    expect(methods.slice().sort()).toEqual([...expectedMethods].sort());
+    expect(new Set(methods).size).toBe(methods.length);
+  });
+
+  it("publishes existing session process and session goal request contracts", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const request = (method: string, params: unknown) => ({ jsonrpc: JSON_RPC_VERSION, id: "session", method, params });
+    expect(validate(request("session.processes.list", { sessionId: "s1" }))).toBe(true);
+    expect(validate(request("session.processes.stop", { sessionId: "s1", taskId: "task-1" }))).toBe(true);
+    expect(validate(request("session.processes.stop", { sessionId: "s1" }))).toBe(false);
+    expect(validate(request("session.processes.stop", { sessionId: "s1", taskId: "x".repeat(129) }))).toBe(false);
+    for (const action of ["get", "clear", "pause", "resume"]) {
+      expect(validate(request("session.goal", { sessionId: "s1", action }))).toBe(true);
+      expect(validate(request("session.goal", { sessionId: "s1", action, request: {} }))).toBe(false);
+    }
+    const goal = { objective: "Fix the test", verify: [{ label: "unit", script: "npm test" }], noVerify: false, maxRounds: 3, maxCostUsd: 1 };
+    expect(validate(request("session.goal", { sessionId: "s1", action: "set", request: goal }))).toBe(true);
+    expect(validate(request("session.goal", { sessionId: "s1", action: "set" }))).toBe(false);
+    for (const invalid of [{ objective: " " }, { verify: Array(9).fill({ label: "unit", script: "npm test" }) }, { maxRounds: 0 }, { maxCostUsd: 0 }]) {
+      expect(validate(request("session.goal", { sessionId: "s1", action: "set", request: { ...goal, ...invalid } }))).toBe(false);
+    }
+  });
+
   it("validates all request-bearing methods through the published schema", () => {
     const validate = compileRequestValidator(readProtocolSchema());
     const samples: readonly AgenCDaemonRequest[] = [
+      { jsonrpc: JSON_RPC_VERSION, id: "pause", method: "run.pause", params: { runId: "run-1", requestId: "pause-1" } },
+      { jsonrpc: JSON_RPC_VERSION, id: "resume", method: "run.resume", params: { runId: "run-1", suspensionId: "pause:1", envOverrides: { DEEPSEEK_API_KEY: "test-only" } } },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 1,

@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 import { resolveHomeContext } from "../../config/home.js";
+import {
+  SHELL_FILE_WRITE_TOOL_NAMES,
+  type ShellFileWriteTools,
+} from "../../llm/shell-write-policy.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 
 import {
   readToolRuntimeContext,
@@ -32,6 +37,8 @@ export interface ShellWorkspaceMutationPermission {
   readonly additionalRoots: readonly string[];
   /** Approvals bypassed and no sandbox: see ShellWorkspaceWritePolicyInput. */
   readonly bypassesApprovalsAndSandbox: boolean;
+  /** The editing tools a refusal may name, read only when one is written. */
+  readonly fileWriteTools: () => ShellFileWriteTools | undefined;
 }
 
 type SessionLike = {
@@ -39,6 +46,11 @@ type SessionLike = {
   readonly services?: {
     readonly permissionModeRegistry?: { readonly current?: () => unknown };
     readonly configStore?: { readonly homeContext?: { readonly path?: unknown } };
+    readonly registry?: {
+      readonly tools?: unknown;
+      readonly toLLMTools?: () => unknown;
+      readonly getUnavailableToolNames?: () => ReadonlySet<string>;
+    };
   };
 };
 
@@ -133,6 +145,56 @@ export function shellWorkspaceDeletionsAllowed(
   return mode !== undefined && PROMPT_FREE_PERMISSION_MODES.has(mode);
 }
 
+/** The string `name` fields of a tool list, or of an LLM tool list's functions. */
+function namesOf(list: unknown, pick: (entry: Record<string, unknown>) => unknown): Set<string> {
+  const names = new Set<string>();
+  if (!Array.isArray(list)) return names;
+  for (const entry of list) {
+    const name = typeof entry === "object" && entry !== null
+      ? pick(entry as Record<string, unknown>)
+      : undefined;
+    if (typeof name === "string") names.add(name);
+  }
+  return names;
+}
+
+/**
+ * The editing tools of SHELL_FILE_WRITE_TOOL_NAMES this session has, read
+ * from the session's own registry: a subagent's registry already lacks what
+ * its role denies (the read-only roles have none of them). Split by whether
+ * the model's tool list carries them: an OpenAI Light session lists
+ * apply_patch and keeps Edit and Write behind system.searchTools. A refused
+ * shell write names only these, so the model is never sent to a tool it
+ * cannot reach. Undefined when there is no session registry to read.
+ */
+export function shellFileWriteTools(
+  context: ToolRuntimeAttemptContext | undefined,
+): ShellFileWriteTools | undefined {
+  const registry = sessionOf(context)?.services?.registry;
+  if (registry === undefined || registry === null) return undefined;
+  try {
+    const tools = registry.tools;
+    if (!Array.isArray(tools)) return undefined;
+    const unavailable = registry.getUnavailableToolNames?.() ?? new Set<string>();
+    const present = namesOf(tools, (tool) => tool.name);
+    const listed = namesOf(
+      registry.toLLMTools?.(),
+      (tool) => (tool.function as { readonly name?: unknown } | undefined)?.name,
+    );
+    const usable = SHELL_FILE_WRITE_TOOL_NAMES.filter(
+      (name) => present.has(name) && !unavailable.has(name),
+    );
+    return {
+      listed: usable.filter((name) => listed.has(name)),
+      unlisted: usable.filter((name) => !listed.has(name)),
+      ...(listed.has(SYSTEM_SEARCH_TOOLS_NAME) ? { loadWith: SYSTEM_SEARCH_TOOLS_NAME } : {}),
+    };
+  } catch {
+    // A registry that cannot list its tools right now names the defaults.
+    return undefined;
+  }
+}
+
 /** The AgenC home directories a shell command may never remove. */
 export function shellDeletionProtectedRoots(
   context: ToolRuntimeAttemptContext | undefined,
@@ -178,5 +240,7 @@ export function shellWorkspaceMutationPermission(
     protectedRoots: shellDeletionProtectedRoots(context),
     additionalRoots: shellAdditionalWriteRoots(context),
     bypassesApprovalsAndSandbox: shellBypassesApprovalsAndSandbox(context),
+    // Lazy: an allowed command never lists the session's tools.
+    fileWriteTools: () => shellFileWriteTools(context),
   };
 }

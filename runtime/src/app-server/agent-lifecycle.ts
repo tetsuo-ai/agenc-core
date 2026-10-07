@@ -1,3 +1,4 @@
+import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
@@ -41,7 +42,10 @@ import {
 } from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
-import { captureRecoverableCommandEnvironment } from "./client-env-snapshot.js";
+import {
+  captureRecoverableCommandEnvironment,
+  captureRecoverableSessionEnvironment,
+} from "./client-env-snapshot.js";
 import { withTimeout } from "../utils/sleep.js";
 import {
   DaemonOperationScope,
@@ -1035,6 +1039,14 @@ export class AgenCDaemonAgentManager {
           (requestedRuntimeOptions.lightMode !== undefined ? false : undefined);
       const runtimeOptions = Object.freeze({
         ...requestedRuntimeOptions,
+        ...(requestedRuntimeOptions.relaxedOneShot !== undefined ? { relaxedOneShot: selectRelaxedOneShot({
+          requested: requestedRuntimeOptions.relaxedOneShot,
+          nonInteractive: requestedRuntimeOptions.nonInteractive,
+          source: params.metadata?.source, mode: params.metadata?.mode,
+          resumed: resumeSessionId !== undefined,
+          routine: requestedRuntimeOptions.routineRun === true || params.metadata?.routineRunId !== undefined,
+          goal: params.metadata?.goalRun === true,
+        }) } : {}),
         // A cold resume restores its presentation profile. A new caller's
         // default must not silently turn a Light conversation into Normal.
         ...(retainedLightMode !== undefined
@@ -1069,6 +1081,10 @@ export class AgenCDaemonAgentManager {
         unattendedAllow,
         unattendedDeny,
         commandEnvironment: captureRecoverableCommandEnvironment(params.envOverrides),
+        // The rest of the client snapshot a restart must reproduce: endpoint
+        // and setting values, plus only the names of credentials, which are
+        // never written to disk.
+        sessionEnvironment: recordedSessionEnvironment(params.envOverrides),
         // Session operator inputs are part of the durable run identity. A
         // daemon restart must restore the exact values captured at create
         // time, never reinterpret the daemon's current process environment.
@@ -1778,6 +1794,12 @@ export class AgenCDaemonAgentManager {
         "INVALID_ARGUMENT",
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
       );
+    }
+    if (params.oneShotOutput !== true) {
+      promoteOneShotRun(target.agentId);
+      if (runtimeOptions.relaxedOneShot !== undefined) {
+        runtimeOptions = Object.freeze({ ...runtimeOptions, relaxedOneShot: false });
+      }
     }
     // A daemon restart restores the records of a run whose runtime it could
     // not bring back, for example a provider whose credential only the client
@@ -4159,6 +4181,7 @@ export class AgenCDaemonAgentManager {
     const result = await this.#runner.applyAgentConfig(agentId, {
       sessionId: params.sessionId,
       ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
+      ...(params.modelVerbosity !== undefined ? { modelVerbosity: params.modelVerbosity } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
       ...(params.reload !== undefined ? { reload: params.reload } : {}),
     });
@@ -4170,11 +4193,13 @@ export class AgenCDaemonAgentManager {
       ...(result.runtimeSettingsEventId === undefined
         ? {}
         : { runtimeSettingsEventId: result.runtimeSettingsEventId }),
+      ...(result.modelVerbosity !== undefined ? { modelVerbosity: result.modelVerbosity } : {}),
       summary: result.summary,
     };
   }
 
   async streamAgentMessage(params: {
+    readonly exactOutput?: boolean;
     readonly sessionId: string;
     readonly content: MessageContent;
     readonly messageId: string;
@@ -4247,6 +4272,7 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
@@ -5840,7 +5866,7 @@ function inactiveAgentMessage(
   }
   return (
     `AgenC daemon agent ${agentId} is no longer running (status: ${agent.status}). ` +
-    `Its run has ended and cannot accept new input — start a new session to continue. ` +
+    `Its run has ended and cannot accept new input. Start a new session to continue. ` +
     `Run \`agenc run status ${agentId}\` for why it ended.`
   );
 }
@@ -5851,6 +5877,13 @@ export function inactiveAgentMessageForTest(
   agent: { readonly status: string } | undefined,
 ): string {
   return inactiveAgentMessage(agentId, agent as MutableAgent | undefined);
+}
+
+function recordedSessionEnvironment(
+  overrides: Readonly<Record<string, string>> | undefined,
+): JsonObject {
+  const { values, withheldKeys } = captureRecoverableSessionEnvironment(overrides);
+  return { values: { ...values }, withheldKeys: [...withheldKeys] };
 }
 
 function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {

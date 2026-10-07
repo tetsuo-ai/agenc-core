@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Tool } from '../../tools/Tool.js'
 import type { AgenCToolUseBlockParam } from '../../types/message.js'
-import { renderToString } from '../../utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../utils/staticRender.js'
 import { Text } from '../ink.js'
-import { toolStaticGlyph } from '../components/ToolStateGlyph.js'
+import { Tool as ToolRow, type ToolState } from '../components/v2/primitives.js'
 import {
   AssistantToolUseMessage,
   getAssistantToolUsePendingText,
@@ -103,8 +103,12 @@ async function renderToolUse(options: {
   readonly inProgress?: boolean
   readonly resolved?: boolean
   readonly errored?: boolean
+  readonly color?: boolean
 }): Promise<string> {
-  return renderToString(
+  const render = options.color === true
+    ? (node: React.ReactNode) => renderToAnsiString(node, { columns: 96, color: true })
+    : (node: React.ReactNode) => renderToString(node, 96)
+  return render(
     <AssistantToolUseMessage
       param={options.param}
       addMargin={options.addMargin ?? false}
@@ -122,7 +126,22 @@ async function renderToolUse(options: {
         errored: options.errored ? [options.param.id] : [],
       })}
     />,
-    96,
+  )
+}
+
+// The step state shows only in the static dot's color (no ✶/✕/· glyphs), so
+// a row's state is read from the SGR right before its ●.
+function dotSgr(ansi: string): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  return /(\x1b\[[0-9;]*m)●/u.exec(ansi)?.[1]
+}
+
+async function referenceDotSgr(state: ToolState): Promise<string | undefined> {
+  return dotSgr(
+    await renderToAnsiString(<ToolRow kind="read" state={state} args="ref" />, {
+      columns: 40,
+      color: true,
+    }),
   )
 }
 
@@ -164,6 +183,8 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
       ['PlainRead', 'Plain Read', { value: 42 }, 'value=42'],
     ] as const
 
+    const doneDot = await referenceDotSgr('done')
+    expect(doneDot).toBeDefined()
     for (const [name, label, input, expectedArg] of cases) {
       const param = toolUseParam(`toolu_${name}`, name, input)
       const output = await renderToolUse({
@@ -172,9 +193,18 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
         resolved: true,
       })
 
-      expect(output).toContain(label)
+      // A finished step: static dot, the label, then the args (no parens).
+      expect(output).toContain(`● ${label} `)
       expect(output).toContain(expectedArg)
-      expect(output).toContain(toolStaticGlyph('done', false))
+      expect(output).not.toContain(`${label} (`)
+      expect(output).not.toMatch(/[✶✕◐]/u)
+      const colored = await renderToolUse({
+        param,
+        tool: makeTool({ name, label }),
+        resolved: true,
+        color: true,
+      })
+      expect(dotSgr(colored)).toBe(doneDot)
     }
   })
 
@@ -210,9 +240,23 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
       errored: true,
     })
 
-    expect(output).toContain('✕')
-    expect(output).toContain('Claim Submit')
-    expect(output).toContain('claim payload')
+    // A failed step keeps the static ● (no ✕ glyph); its color says it failed.
+    expect(output).toContain('● Claim Submit claim payload')
+    expect(output).not.toContain('✕')
+    const colored = await renderToolUse({
+      param,
+      tool: makeTool({
+        name: 'ClaimTool',
+        label: 'Claim Submit',
+        renderToolUseMessage: () => <Text>expanded claim detail</Text>,
+        renderToolUseTag: () => <Text>tag detail</Text>,
+      }),
+      resolved: true,
+      errored: true,
+      color: true,
+    })
+    expect(dotSgr(colored)).toBe(await referenceDotSgr('failed'))
+    expect(dotSgr(colored)).not.toBe(await referenceDotSgr('done'))
     expect(output).toContain('expanded claim detail')
     expect(output).toContain('tag detail')
   })
@@ -244,10 +288,8 @@ describe('AssistantToolUseMessage swarm 032 coverage', () => {
 
     expect(parseCount).toBe(2)
     expect(renderToolUseMessage).not.toHaveBeenCalled()
-    expect(output).toContain('Search Tool')
-    expect(output).toContain('queued/path.ts')
+    expect(output).toContain('● Search Tool queued/path.ts')
     expect(output).toContain('queued as node')
-    expect(output).toContain(toolStaticGlyph('queued', false))
   })
 
   it('falls back to empty non-object summaries and default progress detail', async () => {

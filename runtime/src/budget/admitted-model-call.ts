@@ -26,6 +26,7 @@ import {
   computeUsdCostWithResolution,
   DEFAULT_MODEL_COSTS,
   conservativeModelCost,
+  hasManagedRoutePrice,
   resolveModelCostEntry,
   selectCallRates,
   type ModelCostEntry,
@@ -289,6 +290,8 @@ function reservationRates(
   const fast =
     requestsAnthropicFastMode(model, provider, options) ||
     requestsOpenAiFastMode(provider, options) ||
+    (provider.trim().toLowerCase() === "minimax" &&
+      model.trim().toLowerCase() === "minimax-m3" && options.serviceTier === "priority") ||
     requestsXaiPriorityProcessing(model, provider, options, factoryOptions);
   const selected = selectCallRates(standardEntry, {
     ...(fast ? { speed: "fast" as const } : {}),
@@ -579,6 +582,17 @@ export async function runAdmittedModelCall(
     usesConcreteExecutionIdentity && profile?.model?.trim()
       ? providerLocalModelSlug(profile.model.trim(), effectiveProvider)
       : requestedModel;
+  // A managed AgenC call is charged in AgenC credits at the gateway's price
+  // for the route it was admitted on, not at the concrete provider's public
+  // price. A route with its own `agenc:` price is reserved and settled at it.
+  // The gateway refuses a response whose model is not a reviewed id of the
+  // route, so a reported generation id never changes that price. Any other
+  // managed route keeps the concrete provider's price.
+  const managedRoutePriced =
+    requestedProvider === "agenc" &&
+    usesConcreteExecutionIdentity &&
+    hasManagedRoutePrice(effectiveModel);
+  const pricingProvider = managedRoutePriced ? "agenc" : effectiveProvider;
   const configuredMaxOutputTokens =
     positiveInteger(params.options.maxOutputTokens) ??
     positiveInteger(profile?.maxOutputTokens);
@@ -730,7 +744,7 @@ export async function runAdmittedModelCall(
     hasHardCostCap && hasUnboundedPaidServerTool(accountingOptions);
   const reservedRates = reservationRates(
     effectiveModel,
-    effectiveProvider,
+    pricingProvider,
     maxInputTokens,
     admittedMaxOutputTokens,
     accountingOptions,
@@ -931,8 +945,8 @@ export async function runAdmittedModelCall(
     }
     const actualModel = response.model || effectiveModel;
     const actualPrice = usageCostUsd(
-      actualModel,
-      effectiveProvider,
+      managedRoutePriced ? effectiveModel : actualModel,
+      pricingProvider,
       usage,
       params.options,
     );

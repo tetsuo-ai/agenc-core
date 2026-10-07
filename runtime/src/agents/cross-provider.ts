@@ -140,6 +140,10 @@ function policyRevision(session: Session): string {
     ...(Object.keys(limits).length > 0 ? { limits } : {}) })}`;
 }
 
+export function isChildExecutionPolicyCurrent(session: Session, plan: ChildExecutionPlan): boolean {
+  return plan.policyRevision === policyRevision(session);
+}
+
 function catalogRevision(session: Session): string {
   return `catalog-v1:${fingerprint(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true }))}`;
 }
@@ -294,7 +298,8 @@ export function buildCrossProviderDisclosure(
   const scopeKey = fingerprint({ destination: plan.destination, data: plan.scope.data,
     cwd: plan.scope.cwd, tools, network, search, sandboxMode: plan.scope.sandboxMode,
     fileReadAllowlist: plan.scope.fileReadAllowlist, fileReadDenylist: plan.scope.fileReadDenylist,
-    attachments, budget: plan.budgetAllocation });
+    attachments, budget: plan.budgetAllocation,
+    reasoningEffort: plan.reasoningEffort ?? null, serviceTier: plan.serviceTier ?? null });
   const payloadKey = fingerprint({ scopeKey, taskId: plan.task.id, taskText, attachments });
   const parentTurnId = sessionTurnIdForPlan(plan);
   const denialKey = crossProviderDenialKey({ scopeKey, taskText, attachments }, parentTurnId);
@@ -371,9 +376,18 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
   if (!plan.crossProvider) return { kind: "granted", plan };
   const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
   if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
+  const requestingPolicyRevision = policyRevision(session);
   const outcome = await service.request(session, buildCrossProviderDisclosure(plan),
     { ...options, routeProvider: plan.route.provider });
   if (outcome.kind !== "granted") return outcome;
+  // Message and assignment callers do not prepare another provider binding.
+  // Their approval must therefore revalidate authority here too.
+  if (requestingPolicyRevision !== policyRevision(session)) {
+    return { kind: "consent_unavailable", reason: "Child execution policy changed while consent was pending. Request a new child plan." };
+  }
+  if (session.services.crossProviderConsent !== service) {
+    return { kind: "consent_unavailable", reason: "The consent owner is no longer active. Request consent again." };
+  }
   const granted = withChildConsentGrant(plan, outcome.grant);
   if (!consentGrantCoversPlan(granted, service.ownerSessionId, plan.task.text,
       plan.task.attachments, service.sessionEpoch)) {

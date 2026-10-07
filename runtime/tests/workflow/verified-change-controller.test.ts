@@ -1,6 +1,6 @@
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
 import type { LLMProvider } from "../../src/llm/types.js";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ import {
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
 import { inspectWorkflowChildTerminal, recordWorkflowChildTerminal } from "../../src/app-server/workflow/child-terminals.js";
+import { PLAN_BLOCKED_KIND } from "../../src/app-server/workflow/plan-blocked.js";
 import { AdmissionDeniedError, type ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import { M5WorkflowFailpointError } from "../../src/durability/failpoints.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
@@ -106,6 +107,9 @@ class TestJournal implements WorkflowRunJournal {
     for (const effect of this.repo.listEffects(runId)) {
       max = Math.max(max, effect.intentSequence, effect.resultSequence ?? 0);
     }
+    for (const suspension of this.repo.listSuspensions(runId)) {
+      max = Math.max(max, suspension.suspensionSequence, suspension.resumeSequence ?? 0);
+    }
     this.#seq = max;
   }
 
@@ -176,6 +180,20 @@ class TestJournal implements WorkflowRunJournal {
 
   appendTerminal() {
     return this.#next();
+  }
+
+  appendSuspended(input: { readonly suspendedAt: string }) {
+    const ref = this.#next();
+    this.repo.recordRunSuspended({ runId: this.runId, epoch: this.epoch,
+      eventId: ref.eventId, eventSequence: ref.sequence, reason: "workflow_user_pause", suspendedAt: input.suspendedAt });
+    return ref;
+  }
+
+  resume(suspensionId: string) {
+    const ref = this.#next();
+    this.repo.recordRunResumed({ runId: this.runId, epoch: this.epoch,
+      suspensionEventId: suspensionId, eventId: ref.eventId, eventSequence: ref.sequence,
+      reason: "workflow_user_resume", resumedAt: new Date().toISOString() });
   }
 
   async close(): Promise<void> {}
@@ -313,6 +331,7 @@ const BASE_COMMIT = "c".repeat(40);
 const HEAD_COMMIT = "d".repeat(40);
 
 class FakeWorktrees implements WorkflowWorktreeBroker {
+  async validateContinuation(): Promise<void> {}
   dirty = false;
   movement: BaseMovementCheck = { kind: "unmoved" };
   patchText = "diff --git a/f b/f\n--- a/f\n+++ b/f\n+x\n";
@@ -542,8 +561,17 @@ interface Harness {
     failJournalOpenWith?: Error;
     failTerminalWith?: Error;
     failEvidenceLedgerWith?: Error;
+    failAdmissionWith?: Error;
+    failPauseResultWith?: Error;
+    failCheckpointResultWith?: Error;
+    failSuspendWith?: Error;
+    beforeJournalOpen?: () => Promise<void>;
+    afterJournalResume?: () => Promise<void>;
+    beforeJournalClose?: () => Promise<void>;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
+    opened: string[];
+    closed: string[];
   };
   cleanup(): void;
 }
@@ -570,25 +598,51 @@ function makeHarness(
   worktrees.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
-  const hooks: Harness["hooks"] = {};
+  const hooks: Harness["hooks"] = { opened: [], closed: [] };
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
     journal: {
-      open: async (runId) => {
+      open: async (runId, context) => {
+        hooks.opened.push(runId);
+        if (hooks.beforeJournalOpen !== undefined) await hooks.beforeJournalOpen();
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
         const journal = new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        if (context?.resumeSuspensionId !== undefined) {
+          journal.resume(context.resumeSuspensionId);
+          if (hooks.afterJournalResume !== undefined) await hooks.afterJournalResume();
+        }
+        const appendResult = journal.appendResult.bind(journal);
+        journal.appendResult = (input) => {
+          if (input.stepId.startsWith("workflow.control.pause.") && hooks.failPauseResultWith !== undefined) {
+            throw hooks.failPauseResultWith;
+          }
+          if (input.stepId.startsWith("workflow.control.checkpoint.") && hooks.failCheckpointResultWith !== undefined) {
+            throw hooks.failCheckpointResultWith;
+          }
+          return appendResult(input);
+        };
+        const appendSuspended = journal.appendSuspended.bind(journal);
+        journal.appendSuspended = input => {
+          if (hooks.failSuspendWith !== undefined) throw hooks.failSuspendWith;
+          return appendSuspended(input);
+        };
         const appendTerminal = journal.appendTerminal.bind(journal);
         journal.appendTerminal = () => {
           if (hooks.failTerminalWith !== undefined) throw hooks.failTerminalWith;
           return appendTerminal();
+        };
+        journal.close = async () => {
+          if (hooks.beforeJournalClose !== undefined) await hooks.beforeJournalClose();
+          hooks.closed.push(runId);
         };
         return journal;
       },
       currentPermissionMode: () => hooks.currentPermissionMode,
     },
     admission: ({ runId }) => {
+      if (hooks.failAdmissionWith !== undefined) throw hooks.failAdmissionWith;
       if (options.admission !== undefined) return options.admission();
       admission.scope.runId = runId;
       return admission;
@@ -669,6 +723,583 @@ function cancelAt(stepPrefix: string): void {
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("durable Goal pause and resume", () => {
+  it("parks between stages, survives recovery, and resumes the same bounds and run", async () => {
+    const bounds = { maxCostUsd: 2, maxTokens: 10000, deadlineAt: "2099-01-01T00:00:00.000Z" };
+    await harness.controller.start(startParams(harness, { budget: bounds }));
+    const requested = await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-one" });
+    expect(requested.state).toBe("pause_requested");
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    expect(paused.state).toBe("paused");
+    expect(paused.suspensionId).toBeTypeOf("string");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.cleanups).toEqual([]);
+    expect(harness.spawner.spawns).toEqual([]);
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    await expect(harness.controller.start(startParams(harness, { runId: "duplicate" }))).rejects.toThrow("already active");
+    await expect(harness.controller.resumePaused({ runId: RUN_ID, suspensionId: "stale" })).rejects.toThrow("stale");
+    const resume = { runId: RUN_ID, suspensionId: paused.suspensionId! };
+    await Promise.all([harness.controller.resumePaused(resume), harness.controller.resumePaused(resume)]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.hooks.opened).toHaveLength(opened + 1);
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan", "implement", "verify_agent"]);
+    expect((harness.repo.getEffect(RUN_ID, "workflow.intake")?.evidence as { spec: WorkflowSpec }).spec.budget).toEqual(bounds);
+    expect(harness.repo.listSuspensions(RUN_ID)[0]?.resumeReason).toBe("workflow_user_resume");
+    expect((await harness.controller.resumePaused(resume)).state).toBe("terminal");
+  });
+
+  it("settles an active child before pausing and never dispatches the next child", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = harness.spawner.spawn.bind(harness.spawner);
+    vi.spyOn(harness.spawner, "spawn").mockImplementationOnce(async input => {
+      entered.resolve(); await release.promise; return original(input);
+    });
+    await harness.controller.start(startParams(harness));
+    await entered.promise;
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-plan" });
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-plan" });
+    expect(harness.controller.controlState(RUN_ID).state).toBe("pause_requested");
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    release.resolve(); await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID)).toMatchObject({ state: "paused", afterStage: "workflow.plan" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.pause")).toHaveLength(1);
+  });
+
+  it("can cancel a paused run without reopening a session or losing its worktree", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-cancel" });
+    await harness.controller.awaitRun(RUN_ID);
+    const opened = harness.hooks.opened.length;
+    expect(harness.controller.cancelDetached(RUN_ID, "user cancelled paused Goal")).toBe("cancelled");
+    expect(harness.controller.controlState(RUN_ID).state).toBe("terminal");
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("waits for the paused writer to close before opening its replacement", async () => {
+    const closing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await harness.controller.start(startParams(harness));
+    harness.hooks.beforeJournalClose = async () => { closing.resolve(); await release.promise; };
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "close-gate" });
+    await closing.promise;
+    const paused = harness.controller.controlState(RUN_ID);
+    expect(paused.state).toBe("paused");
+    const opened = harness.hooks.opened.length;
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.controller.activeRunIds()).toContain(RUN_ID);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.hooks.closed).toEqual([]);
+    delete harness.hooks.beforeJournalClose;
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.hooks.opened).toHaveLength(opened + 1);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it("routes cancellation through admission while a resumed writer is opening", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "cancel-opening" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.beforeJournalOpen = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    expect(harness.controller.cancelDetached(RUN_ID, "cancel while resuming")).toBe("live");
+    cancelAt("workflow.plan");
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("skips startup recovery while explicit resume has consumed the suspension", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "opening-startup" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.afterJournalResume = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it("does not dispatch work if a terminal arrives while the resumed writer opens", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "terminal-opening" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.afterJournalResume = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    harness.repo.recordTerminalResult({
+      epoch: harness.repo.currentEpoch(RUN_ID)!.epoch,
+      eventId: "cancel-during-resume-open",
+      result: { runId: RUN_ID, status: "cancelled", exitCode: 1, stopReason: null,
+        finalMessage: "cancelled while opening", usage: null, lastSequence: null,
+        finishedAt: new Date().toISOString() },
+    });
+    const acquired = [...harness.admission.acquired];
+    release.resolve();
+    expect((await resume).state).toBe("terminal");
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.admission.acquired).toEqual(acquired);
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toBe("cancelled while opening");
+  });
+
+  it("preserves a paused checkpoint when resume fails before consuming it", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "open-failure" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const params = { runId: RUN_ID, suspensionId: paused.suspensionId! };
+    harness.hooks.failJournalOpenWith = new Error("writer unavailable");
+    await expect(harness.controller.resumePaused(params)).rejects.toThrow("writer unavailable");
+    expect(harness.controller.controlState(RUN_ID)).toEqual(paused);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    delete harness.hooks.failJournalOpenWith;
+    await harness.controller.resumePaused(params);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it.each(["admission", "ledger"] as const)("terminalizes %s failure after consuming an explicit resume", async failure => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: `resume-${failure}-failure` });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const failureMessage = `${failure} unavailable after resume`;
+    if (failure === "admission") harness.hooks.failAdmissionWith = new Error(failureMessage);
+    else harness.hooks.failEvidenceLedgerWith = new Error(failureMessage);
+    const released = harness.admission.release.mock.calls.length;
+    await expect(harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! })).rejects.toThrow(failureMessage);
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(harness.controller.controlState(RUN_ID).state).toBe("terminal");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", finalMessage: expect.stringContaining(failureMessage),
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toContain(`/wt/${RUN_ID}`);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.admission.release.mock.calls.length).toBe(released + (failure === "ledger" ? 1 : 0));
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it.each(["committed", "intent_only"])("recovers a %s pause request without dispatching another stage", async requestState => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const provision = harness.worktrees.provision.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "provision").mockImplementationOnce(async spec => {
+      entered.resolve(); await release.promise; return provision(spec);
+    });
+    armFailpoint("after_worktree_provision");
+    await harness.controller.start(startParams(harness));
+    await entered.promise;
+    if (requestState === "intent_only") harness.hooks.failPauseResultWith = new Error("pause acknowledgement lost");
+    const request = harness.controller.requestPause({ runId: RUN_ID, requestId: `recover-${requestState}` });
+    if (requestState === "intent_only") await expect(request).rejects.toThrow("pause acknowledgement lost");
+    else expect((await request).state).toBe("pause_requested");
+    delete harness.hooks.failPauseResultWith;
+    release.resolve();
+    await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/u);
+    disarmFailpoint();
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID)).toMatchObject({ state: "paused", afterStage: "workflow.worktree" });
+    const requests = harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.pause");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.outcome).toBe("committed");
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+  });
+
+  it.each(["before_checkpoint_commit", "before_suspension"])("recovers %s and keeps canonical cost when cancelled while paused", async crashBoundary => {
+    const usage = { inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true };
+    Object.assign(harness.admission, { getUsageSummary: (): ReturnType<NonNullable<ExecutionAdmissionClient["getUsageSummary"]>> => ({
+      ...usage, runId: RUN_ID, sequence: 1, modelCalls: 1, hasUnknownCost: false,
+      heldCostUsd: 0, models: [], agents: [],
+    }) });
+    const crash = new M5WorkflowFailpointError("after_worktree_provision");
+    if (crashBoundary === "before_checkpoint_commit") harness.hooks.failCheckpointResultWith = crash;
+    else harness.hooks.failSuspendWith = crash;
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: crashBoundary });
+    await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/u);
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    const checkpoint = harness.repo.listEffects(RUN_ID).find(effect => effect.toolName === "workflow.control.checkpoint");
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.outcome).toBe(crashBoundary === "before_checkpoint_commit" ? undefined : "committed");
+    delete harness.hooks.failCheckpointResultWith;
+    delete harness.hooks.failSuspendWith;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID).state).toBe("paused");
+    expect(harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.checkpoint"))
+      .toHaveLength(1);
+    expect(harness.controller.cancelDetached(RUN_ID, "user cancelled")).toBe("cancelled");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled", usage });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toContain(`/wt/${RUN_ID}`);
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+});
+
+describe("workflow repository ownership and intake cleanup", () => {
+  it("reserves the repository before asynchronous intake and releases it after completion", async () => {
+    const captured = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const original = harness.worktrees.captureBaseState.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "captureBaseState").mockImplementationOnce(async () => {
+      captured.resolve();
+      await proceed.promise;
+      return original();
+    });
+    const first = harness.controller.start(startParams(harness));
+    await captured.promise;
+    await expect(harness.controller.start(startParams(harness, { runId: "second" })))
+      .rejects.toThrow(`A Goal is already active for this repository (${RUN_ID})`);
+    expect(harness.hooks.opened).toEqual([RUN_ID]);
+    proceed.resolve();
+    await first;
+    await harness.controller.awaitRun(RUN_ID);
+    await runToTerminal(harness, { runId: "after-completion" });
+    expect(harness.repo.getCurrentTerminalResult("after-completion")?.status).toBe("completed");
+  });
+
+  it("treats symlink paths as the same repository while allowing another repository", async () => {
+    const proceed = Promise.withResolvers<void>();
+    const captured = Promise.withResolvers<void>();
+    const original = harness.worktrees.captureBaseState.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "captureBaseState").mockImplementationOnce(async () => {
+      captured.resolve();
+      await proceed.promise;
+      return original();
+    });
+    const alias = join(harness.home, "repo-alias");
+    symlinkSync(harness.cwd, alias, "junction");
+    const first = harness.controller.start(startParams(harness));
+    await captured.promise;
+    await expect(harness.controller.start(startParams(harness, { repoPath: alias, runId: "alias" })))
+      .rejects.toThrow("already active");
+    await runToTerminal(harness, { repoPath: harness.home, runId: "other-repo" });
+    proceed.resolve();
+    await first;
+    await harness.controller.awaitRun(RUN_ID);
+  });
+
+  it.each(["base", "reviewer", "admission"] as const)("closes the journal after a pre-intake %s failure and allows a retry", async (failure) => {
+    const params = startParams(harness);
+    if (failure === "base") {
+      vi.spyOn(harness.worktrees, "captureBaseState").mockRejectedValueOnce(new Error("git HEAD unavailable"));
+    } else if (failure === "reviewer") {
+      Object.assign(params, { model: undefined, reviewerModel: undefined });
+    } else {
+      harness.cleanup();
+      let first = true;
+      harness = makeHarness({ admission: () => {
+        if (first) { first = false; throw new Error("admission database unavailable"); }
+        return new FakeAdmission();
+      } });
+      Object.assign(params, startParams(harness));
+    }
+    await expect(harness.controller.start(params)).rejects.toBeInstanceOf(WorkflowIntakeError);
+    expect(harness.hooks.closed).toEqual([RUN_ID]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
+    expect(harness.spawner.spawns).toHaveLength(0);
+    await runToTerminal(harness, { runId: "retry" });
+    expect(harness.repo.getCurrentTerminalResult("retry")?.status).toBe("completed");
+  });
+
+  it("releases the pending owner when journal bootstrap fails", async () => {
+    harness.hooks.failJournalOpenWith = new Error("bootstrap failed");
+    await expect(harness.controller.start(startParams(harness))).rejects.toThrow("bootstrap failed");
+    delete harness.hooks.failJournalOpenWith;
+    await runToTerminal(harness, { runId: "retry" });
+    expect(harness.hooks.closed).toEqual(["retry"]);
+  });
+});
+
+describe("workflow terminal persistence failures", () => {
+  it("records stopped status through SQLite if the terminal journal append fails and keeps the result", async () => {
+    harness.hooks.failTerminalWith = new Error("ENOSPC: journal disk full");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid", lastSequence: null,
+      finalMessage: expect.stringContaining(`Work is preserved in /wt/${RUN_ID}`),
+    });
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    delete harness.hooks.failTerminalWith;
+    await runToTerminal(harness, { runId: "after-storage-repair" });
+  });
+
+  it("retries the exact terminal projection after its journal append succeeds", async () => {
+    const original = harness.repo.recordTerminalResult.bind(harness.repo);
+    const writes: Parameters<typeof original>[0][] = [];
+    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation((input) => {
+      if (input.result.runId === RUN_ID) {
+        writes.push(input);
+        if (writes.length === 1) throw new Error("temporary SQLite write failure");
+      }
+      return original(input);
+    });
+    await runToTerminal(harness);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.worktrees.cleanups).toHaveLength(1);
+  });
+
+  it.each(["journal_and_database", "database_projection"])("reports stopped execution and keeps work when %s cannot save the terminal", async failure => {
+    if (failure === "journal_and_database") harness.hooks.failTerminalWith = new Error("journal disk full");
+    const usage = { inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true };
+    Object.assign(harness.admission, { getUsageSummary: (): ReturnType<NonNullable<ExecutionAdmissionClient["getUsageSummary"]>> => ({
+      ...usage, runId: RUN_ID, sequence: 1, modelCalls: 1, hasUnknownCost: false,
+      heldCostUsd: 0, models: [], agents: [],
+    }) });
+    const terminalWrite = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => {
+      throw new Error("SQLite disk full");
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    const observation = harness.controller.currentRuntimeFailure(RUN_ID);
+    expect(observation).toMatchObject({ state: "stopped", reason: "terminal_persistence_failed",
+      worktree: { path: `/wt/${RUN_ID}`, branch: "agenc/m5" }, usage });
+    expect(observation?.message).toContain("Goal stopped, but its final status could not be saved.");
+    expect(harness.controller.status(RUN_ID)).toMatchObject({ runtimeFailure: observation });
+    expect(harness.controller.status(RUN_ID)).not.toHaveProperty("terminal");
+    const status = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [{ stateDbPath: harness.driver.stateDbPath,
+        logsDbPath: harness.driver.logsDbPath, projectDir: harness.driver.projectDir }],
+      agencHome: harness.home,
+      runtimeFailure: runId => harness.controller.currentRuntimeFailure(runId),
+      effectivePermissionMode: () => { throw new Error("closed writer permission state"); },
+    }).status({ runId: RUN_ID });
+    expect(status).toMatchObject({ status: "stopped", terminal: false, statusSource: "runtime_observation",
+      workflow: { runtimeFailure: observation } });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    await expect(harness.controller.start(startParams(harness, { runId: "second" })))
+      .rejects.toThrow("already active");
+    terminalWrite.mockRestore();
+    delete harness.hooks.failTerminalWith;
+    // Recovery can project the terminal after storage is repaired. Its
+    // durable result must release the old in-process reservation too.
+    harness.repo.recordTerminalResult({ epoch: harness.repo.currentEpoch(RUN_ID)!.epoch,
+      eventId: "recovered-terminal", result: { runId: RUN_ID, status: "failed", exitCode: 1,
+        stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
+        lastSequence: null, finishedAt: new Date().toISOString() } });
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toBeUndefined();
+    expect(harness.controller.status(RUN_ID)).not.toHaveProperty("runtimeFailure");
+    delete (harness.admission as Partial<ExecutionAdmissionClient>).getUsageSummary;
+    await runToTerminal(harness, { runId: "after-recovery" });
+  });
+
+  it("keeps the observed stop when status storage reads also fail", async () => {
+    harness.hooks.failTerminalWith = new Error("journal disk full");
+    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => { throw new Error("SQLite disk full"); });
+    await runToTerminal(harness);
+    const observation = harness.controller.currentRuntimeFailure(RUN_ID);
+    const read = vi.spyOn(harness.repo, "getCurrentTerminalResult").mockImplementation(() => { throw new Error("database unavailable"); });
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toEqual(observation);
+    read.mockRestore();
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toEqual(observation);
+  });
+
+  it("clears an old stop observation when recovery actually restarts the same run", async () => {
+    harness.hooks.failTerminalWith = new Error("journal disk full");
+    const write = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => { throw new Error("SQLite disk full"); });
+    await runToTerminal(harness);
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)?.state).toBe("stopped");
+    delete harness.hooks.failTerminalWith;
+    write.mockRestore();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const provision = harness.worktrees.provision.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "provision").mockImplementationOnce(async spec => {
+      entered.resolve(); await release.promise; return provision(spec);
+    });
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await entered.promise;
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toBeUndefined();
+    release.resolve();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeDefined();
+  });
+});
+
+describe("completed Goal continuation", () => {
+  function request(overrides: Partial<WorkflowStartParams> = {}): WorkflowStartParams {
+    const { runId: _runId, ...params } = startParams(harness);
+    return { ...params, goal: "Add the next feature", budget: { maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+      continuation: { sourceRunId: RUN_ID, requestId: "next-feature" }, ...overrides };
+  }
+
+  it("shares one budget for concurrent and durable retries while keeping the source immutable", async () => {
+    await runToTerminal(harness);
+    const source = harness.repo.getCurrentTerminalResult(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.beforeJournalOpen = async () => { opening.resolve(); await release.promise; };
+    const first = harness.controller.start(request());
+    await opening.promise;
+    const duplicate = harness.controller.start(request());
+    await expect(harness.controller.start(request({ goal: "Different goal" }))).rejects.toThrow("different instructions");
+    release.resolve();
+    const [started, replay] = await Promise.all([first, duplicate]);
+    expect(started.runId).toMatch(/^wf-[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(replay).toMatchObject({ runId: started.runId, replayed: true });
+    await harness.controller.awaitRun(started.runId);
+    expect(harness.repo.getCurrentTerminalResult(started.runId)?.status).toBe("completed");
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.start(request())).toMatchObject({ runId: started.runId, replayed: true });
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toEqual(source);
+    const spec = (harness.repo.getEffect(started.runId, "workflow.intake")?.evidence as { spec: WorkflowSpec }).spec;
+    expect(spec).toMatchObject({ runId: started.runId, goal: "Add the next feature", budget: request().budget,
+      baseCommit: BASE_COMMIT, continuationOf: { sourceRunId: RUN_ID, sourceHeadCommit: HEAD_COMMIT,
+        sourceBaseCommit: BASE_COMMIT, seriesRootRunId: RUN_ID, previousCostUsd: null } });
+    expect(harness.controller.status(started.runId)?.continuationOf).toEqual(spec.continuationOf);
+    expect(harness.controller.status(RUN_ID)?.completedResult).toMatchObject({ headCommit: HEAD_COMMIT, cumulativeCostUsd: null });
+    await expect(harness.controller.start(request({ budget: { maxCostUsd: 2, deadlineAt: request().budget!.deadlineAt } })))
+      .rejects.toThrow("different instructions");
+  });
+
+  it("records previous canonical spend once across a linked series", async () => {
+    Object.assign(harness.admission, { getUsageSummary: () => ({ runId: harness.admission.scope.runId,
+      inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true, sequence: 1,
+      modelCalls: 1, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [] }) });
+    await runToTerminal(harness);
+    const next = await harness.controller.start(request());
+    await harness.controller.awaitRun(next.runId);
+    expect(next.continuationOf?.previousCostUsd).toBe(0.14);
+    expect(next.continuationOf?.previousCostEstimated).toBe(true);
+    expect(harness.controller.status(next.runId)?.completedResult?.cumulativeCostUsd).toBe(0.28);
+    expect(harness.controller.status(next.runId)?.completedResult?.cumulativeCostEstimated).toBe(true);
+    const third = await harness.controller.start(request({ continuation: { sourceRunId: next.runId, requestId: "third" } }));
+    await harness.controller.awaitRun(third.runId);
+    expect(third.continuationOf).toMatchObject({ seriesRootRunId: RUN_ID, previousCostUsd: 0.28 });
+  });
+
+  it.each([{ budget: {} }, { budget: { maxCostUsd: 1 } }, { budget: { maxCostUsd: 1, deadlineAt: "yesterday" } },
+    { budget: { maxCostUsd: 1, deadlineAt: "2000-01-01T00:00:00.000Z" } }])("refuses missing or expired explicit bounds before opening a writer: %j", async invalid => {
+    await runToTerminal(harness);
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request(invalid))).rejects.toThrow(/Continue requires|future/u);
+    expect(harness.hooks.opened).toHaveLength(opened);
+  });
+
+  it("rejects incomplete intake on retry without allocating a second run", async () => {
+    await runToTerminal(harness);
+    armFailpoint("before_intake_commit");
+    await expect(harness.controller.start(request())).rejects.toThrow(/failpoint/u);
+    disarmFailpoint();
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request())).rejects.toThrow("already recorded");
+    expect(harness.hooks.opened).toHaveLength(opened);
+  });
+
+  it("rejects a source whose frozen spec no longer matches its digest", async () => {
+    await runToTerminal(harness);
+    const getEffect = harness.repo.getEffect.bind(harness.repo);
+    const read = vi.spyOn(harness.repo, "getEffect").mockImplementation((runId, stepId) => {
+      const effect = getEffect(runId, stepId);
+      return runId === RUN_ID && stepId === "workflow.intake" && effect !== undefined
+        ? { ...effect, evidence: { ...(effect.evidence as Record<string, unknown>), specDigest: `sha256:${"0".repeat(64)}` } } : effect;
+    });
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request())).rejects.toThrow("source Goal spec");
+    expect(harness.hooks.opened).toHaveLength(opened);
+    read.mockRestore();
+  });
+
+  it("does not continue a failed or cancelled source", async () => {
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
+    await expect(harness.controller.start(request())).rejects.toThrow("completed verified Goal");
+  });
+});
+
+describe("workflow verified snapshot integrity", () => {
+  it.each(["command", "verifier", "reviewer"] as const)("does not deliver files changed by the %s after the verification snapshot", async (mutator) => {
+    const mutate = () => { harness.worktrees.patchText += "+unverified change\n"; };
+    if (mutator === "command") {
+      const original = harness.commands.run.bind(harness.commands);
+      vi.spyOn(harness.commands, "run").mockImplementation(async (input) => {
+        const result = await original(input);
+        mutate();
+        return result;
+      });
+    } else if (mutator === "verifier") {
+      harness.spawner.beforeReturn = ({ kind }) => { if (kind === "verify_agent") mutate(); };
+    } else {
+      harness.reviewer.onInvoke = mutate;
+    }
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid",
+      finalMessage: expect.stringContaining("checks and review cover a different snapshot"),
+    });
+    expect(harness.ledgers.get(RUN_ID)?.sealed).toBe(false);
+    expect(harness.worktrees.cleanups).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("refuses stale passing checks after a restart finds changed worktree content", async () => {
+    armFailpoint("after_verify_commit");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    const callsBefore = harness.spawner.spawns.length;
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.outcome).toBe("committed");
+    harness.worktrees.patchText += "+edit made while the daemon was stopped\n";
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid",
+      finalMessage: expect.stringContaining("changed since its verification was recorded"),
+    });
+    expect(harness.commands.executed).toEqual(["run-tests"]);
+    expect(harness.spawner.spawns).toHaveLength(callsBefore);
+    expect(harness.reviewer.invocations).toEqual([]);
+    expect(harness.worktrees.cleanups).toEqual([]);
+  });
 });
 
 describe("workflow provider waits", () => {
@@ -908,6 +1539,26 @@ describe("planner-selected verification", () => {
   const plan = "Build a small CLI with tests.\n```agenc-verification\n" + JSON.stringify(scripts) + "\n```";
   const outcome = { status: "completed" as const, finalMessage: plan, usage: DEFAULT_USAGE };
 
+  it("returns durable check-construction feedback to the bounded planner retry", async () => {
+    const broken = 'node -e "if(!/```js/.test(require(\'fs\').readFileSync(\'README.md\',\'utf8\')))process.exit(1)"';
+    harness.spawner.queue("plan", { ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([broken]) + "\n```" });
+    harness.spawner.queue("plan", outcome);
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    const plans = harness.spawner.spawns.filter(spawn => spawn.kind === "plan");
+    expect(plans).toHaveLength(2);
+    expect(plans[1]!.prompt).toContain("shell backtick substitution");
+    expect(plans[1]!.prompt).toContain("without weakening the goal");
+    expect(harness.commands.executed).toEqual(scripts);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")?.outcome).toBe("failed");
+  });
+
+  it("does not rewrite client checks containing shell backticks", async () => {
+    const script = 'test -s `pwd`/README.md';
+    await runToTerminal(harness, { requiredVerification: [{ label: "client check", script }] });
+    expect(harness.commands.executed).toEqual([script]);
+  });
+
   it("freezes trailing checks from a full long plan while bounding retained prose", async () => {
     harness.spawner.queue("plan", { ...outcome, finalMessage: "Detailed plan. ".repeat(2000) + plan });
     await runToTerminal(harness, { requiredVerification: [] });
@@ -958,13 +1609,14 @@ describe("planner-selected verification", () => {
     });
   });
 
-  it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'"])("rejects a planned placeholder: %s", async script => {
+  it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'", 'node -e "const fence=\'```\'"'])("rejects an invalid planned check: %s", async script => {
     harness.spawner.respond = ({ kind }) => kind === "plan" ? {
       ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([script]) + "\n```",
     } : undefined;
     await runToTerminal(harness, { requiredVerification: [] });
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
     expect(harness.spawner.spawns.every(spawn => spawn.kind === "plan")).toBe(true);
+    expect(harness.spawner.spawns).toHaveLength(2);
     expect(harness.commands.executed).toEqual([]);
   });
 
@@ -1022,6 +1674,10 @@ describe("a Goal whose check is npm test", () => {
     }
     expect(planner.prompt).toContain("Do NOT modify any files");
     expect(implementer.prompt).toContain("correct that plan and implement the goal");
+    expect(implementer.prompt).toContain("This worktree is owned by Goal. Leave changed and new files here.");
+    expect(implementer.prompt).toContain("The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.");
+    expect(implementer.prompt).toContain("Do not run git add, git commit, git merge, or git push, or edit Git metadata.");
+    expect(implementer.prompt).toContain("report changed files and test results. A child commit is not required for this stage.");
     expect(implementer.prompt).toContain(plan);
     expect(verifier.prompt).toContain(plan);
     expect(verifier.prompt).toContain("assess independently against the goal");
@@ -1080,6 +1736,10 @@ describe("retry prompts", () => {
     expect(verifySpawns[0].prompt).not.toContain("Previous verification attempt");
     // The retry names the failures to fix.
     expect(implementSpawns[1].prompt).toContain("Agent verdict: FAIL");
+    expect(implementSpawns[1].prompt).toContain("This worktree is owned by Goal. Leave changed and new files here.");
+    expect(implementSpawns[1].prompt).toContain("The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.");
+    expect(implementSpawns[1].prompt).toContain("Do not run git add, git commit, git merge, or git push, or edit Git metadata.");
+    expect(implementSpawns[1].prompt).toContain("report changed files and test results. A child commit is not required for this stage.");
     expect(implementSpawns[1].prompt).toContain("undo restored one of two rows");
     expect(implementSpawns[1].prompt).toContain(
       "Fix every failure reported above, then stop.",
@@ -1452,6 +2112,50 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     });
   });
 
+  it("ends cancelled when Stop wins just before plan admission", async () => {
+    harness.cleanup();
+    let client: ExecutionAdmissionClient;
+    harness = makeHarness({ admission: () => client });
+    const kernel = new ExecutionAdmissionKernel({ agencHome: harness.home });
+    try {
+      client = kernel.bindClient({
+        cwd: harness.cwd,
+        scope: { runId: RUN_ID, sessionId: RUN_ID, autonomous: true },
+      });
+      const acquire = client.acquire.bind(client);
+      const deniedSteps: string[] = [];
+      vi.spyOn(client, "acquire").mockImplementation(async (input, signal) => {
+        if (input.stepId.startsWith("workflow.plan")) {
+          // Force Stop to commit before the next stage asks for admission.
+          client.cancelRun("operator_cancel");
+          try {
+            return await acquire(input, signal);
+          } catch (error) {
+            expect(error).toMatchObject({ reason: "parent_cancel_locked" });
+            deniedSteps.push(input.stepId);
+            throw error;
+          }
+        }
+        return acquire(input, signal);
+      });
+
+      await runToTerminal(harness);
+
+      expect(deniedSteps).toHaveLength(1);
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+        status: "cancelled",
+        stopReason: null,
+        finalMessage: expect.stringContaining("parent_cancel_locked"),
+      });
+      expect(harness.spawner.spawns).toHaveLength(0);
+      // Main keeps a cancelled Goal's worktree (interrupted work is retained).
+      expect(harness.worktrees.provisions).toBe(1);
+      expect(harness.worktrees.discards).toHaveLength(0);
+    } finally {
+      kernel.close();
+    }
+  });
+
   it("policy_denied at intake terminates before any pipeline step", async () => {
     harness.admission.denials.push({
       match: (stepId) => stepId === "workflow.intake",
@@ -1481,6 +2185,38 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
       status: "failed",
       stopReason: "approval_required",
     });
+  });
+
+  it("reports an expired deadline at admission as a run limit, not user cancellation", async () => {
+    harness.admission.denials.push({ match: (stepId) => stepId === "workflow.implement",
+      error: new AdmissionDeniedError("deadline_expired", "cancelled") });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached"),
+    });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.worktrees.discards).toHaveLength(0);
+  });
+
+  it("reports deadline expiry between admission and dispatch without starting another child", async () => {
+    const acquire = harness.admission.acquire.bind(harness.admission);
+    vi.spyOn(harness.admission, "acquire").mockImplementation(async input => {
+      const lease = await acquire(input);
+      if (input.stepId === "workflow.implement") {
+        harness.admission.abort.abort(new AdmissionDeniedError("deadline_expired", "cancelled"));
+      }
+      return lease;
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached"),
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.implement")).toMatchObject({
+      outcome: "failed", evidence: { failure: { reason: "deadline_exceeded" } },
+    });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.admission.heldUnknown).toHaveLength(0);
+    expect(harness.admission.voided).toHaveLength(1);
   });
 
   it("completes a Goal with an unpriced provider fixture and persists estimated spend", async () => {
@@ -1524,9 +2260,9 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     await runToTerminal(harness);
     expect(harness.commands.run).toHaveBeenCalledOnce();
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason,
-      finalMessage: stopReason === "approval_required"
+      finalMessage: expect.stringContaining(stopReason === "approval_required"
         ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
-        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
+        : "The Goal stopped because a required action was denied. Review the permissions before trying again."),
     });
     expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.evidence.failure?.message).toContain(source);
   });
@@ -1559,27 +2295,21 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
       status: "failed",
       stopReason: "step_retries_exhausted",
+      finalMessage: expect.stringContaining("planner crashed again"),
     });
     const stepIds = harness.repo.listEffects(RUN_ID).map((e) => e.stepId);
     expect(stepIds).toContain("workflow.plan");
     expect(stepIds).toContain("workflow.plan#2");
   });
 
-  it("cancellation observed mid-pipeline terminalizes cancelled, then discards the worktree", async () => {
+  it("cancellation observed mid-pipeline terminalizes cancelled and preserves partial work", async () => {
     cancelAt("workflow.implement");
     await runToTerminal(harness);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("cancelled");
     expect(terminal.exitCode).toBe(1);
-    // Discarded only once the cancelled terminal was durable, and nothing
-    // was journaled after it: the run's evidence stays as it was.
-    expect(harness.worktrees.discards).toEqual([
-      {
-        path: `/wt/${RUN_ID}`,
-        terminal: "cancelled",
-        effects: harness.repo.listEffects(RUN_ID).length,
-      },
-    ]);
+    expect(terminal.finalMessage).toContain(`Work is preserved in /wt/${RUN_ID} (branch agenc/m5).`);
+    expect(harness.worktrees.discards).toEqual([]);
     expect(harness.worktrees.cleanups).toHaveLength(0);
   });
 
@@ -1591,31 +2321,31 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(harness.worktrees.discards).toEqual([]);
   });
 
-  it("keeps the worktree while the cancelled terminal is not durable, so a resume still has it", async () => {
+  it("keeps the worktree and records cancellation if the terminal journal is unavailable", async () => {
     cancelAt("workflow.implement");
     harness.hooks.failTerminalWith = new Error("rollout append refused");
     await runToTerminal(harness);
-    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled", lastSequence: null });
     expect(harness.worktrees.discards).toEqual([]);
     expect(harness.warnings).toContainEqual(
       expect.stringContaining("failed to record its terminal result: rollout append refused"),
     );
   });
 
-  it("a discard that fails is a warning and the run stays cancelled", async () => {
-    cancelAt("workflow.implement");
-    harness.worktrees.discardError = new Error("git worktree remove failed: busy");
+  it("preserves unexported changes when the implementation is interrupted", async () => {
+    harness.spawner.queue("implement", { status: "cancelled", finalMessage: "Interrupted after editing files", usage: DEFAULT_USAGE });
     await runToTerminal(harness);
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
-    expect(harness.worktrees.discards).toHaveLength(1);
-    expect(harness.warnings).toContainEqual(
-      `workflow ${RUN_ID} worktree cleanup failed after cancellation: git worktree remove failed: busy`,
-    );
+    expect(harness.ledgers.get(RUN_ID)?.recordedRoles).not.toContain("patch");
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
   });
 
-  it.each(["reject", "resolve"] as const)(
-    "cancels dispatched verification when the runner settles by %s",
-    async (settlement) => {
+  it.each([
+    ["reject", false], ["resolve", false], ["reject", true], ["resolve", true],
+  ] as const)(
+    "settles dispatched verification by %s with deadline=%s",
+    async (settlement, deadline) => {
       harness.cleanup();
       let client: ExecutionAdmissionClient;
       harness = makeHarness({ admission: () => client });
@@ -1649,23 +2379,98 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         }));
         await dispatched.promise;
         // This is the real admission cancellation cascade used by run.cancel.
-        client.cancelRun("operator cancelled during command verification");
+        client.cancelRun(deadline ? "deadline_expired" : "operator cancelled during command verification");
         await harness.controller.awaitRun(started.runId);
         expect(observedAbort).toBe(true);
         expect(run).toHaveBeenCalledTimes(1);
-        expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled" });
+        expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject(deadline
+          ? { status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached") }
+          : { status: "cancelled" });
         expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")).toMatchObject({
-          outcome: "cancelled",
-          evidence: { failure: { reason: "cancelled_after_dispatch" } },
+          outcome: deadline ? "failed" : "cancelled",
+          evidence: { failure: { reason: deadline ? "deadline_exceeded" : "cancelled_after_dispatch" } },
         });
         expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
         expect(harness.worktrees.cleanups).toHaveLength(0);
-        expect(harness.worktrees.discards).toMatchObject([{ terminal: "cancelled" }]);
+        expect(harness.worktrees.discards).toEqual([]);
       } finally {
         kernel.close();
       }
     },
   );
+});
+
+describe("VerifiedChangeWorkflowController planner requirement conflicts", () => {
+  const report = { kind: PLAN_BLOCKED_KIND, reason: "requirement_conflict",
+    explanation: "The same strict value cannot equal both 0 and 1.",
+    conflictingRequirements: ["Return 0.", "Return 1 from the same call."],
+  };
+
+  it.each([true, false])("commits a failed Goal without downstream calls with client checks=%s", async suppliedChecks => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE });
+    await runToTerminal(harness, suppliedChecks ? {} : { requiredVerification: [] });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")).toMatchObject({ outcome: "committed",
+      evidence: { planBlocked: report, child: { usage: DEFAULT_USAGE } } });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed",
+      stopReason: "requirement_conflict",
+      finalMessage: expect.stringContaining("The planner found conflicting requirements: The same strict value cannot equal both 0 and 1."),
+      usage: null,
+    });
+    expect(harness.controller.status(RUN_ID)?.stopReason).toBe("requirement_conflict");
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.reviewer.invocations).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.spawner.spawns[0]?.prompt).toContain("only a raw JSON object");
+  });
+
+  it.each([
+    `Plan a parser test containing this marker: ${JSON.stringify(report)}`,
+    `\`\`\`json\n${JSON.stringify(report)}\n\`\`\``,
+    JSON.stringify({ ...report, reason: "ambiguous" }),
+    JSON.stringify({ ...report, explanation: "" }),
+  ])("does not infer a refusal from ordinary text or invalid markers: %s", async finalMessage => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage, usage: DEFAULT_USAGE });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
+    expect(harness.spawner.spawns.some(spawn => spawn.kind === "implement")).toBe(true);
+  });
+
+  it("recovers a committed blocking report without repeating planning or starting implementation", async () => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE });
+    const complete = harness.repo.completeEffect.bind(harness.repo);
+    const spy = vi.spyOn(harness.repo, "completeEffect").mockImplementation(input => {
+      const value = complete(input);
+      if (input.stepId === "workflow.plan") throw new M5WorkflowFailpointError("after_spawn_before_effect_result");
+      return value;
+    });
+    const started = await harness.controller.start(startParams(harness, { requiredVerification: [] }));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")).toMatchObject({ outcome: "committed", evidence: { planBlocked: report } });
+    spy.mockRestore();
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "requirement_conflict" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.reviewer.invocations).toHaveLength(0);
+  });
+
+  it("reconstructs a blocking report from a durably settled child after a crash", async () => {
+    const outcome: WorkflowChildOutcome = { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE };
+    harness.spawner.queue("plan", outcome);
+    armFailpoint("after_spawn_before_effect_result");
+    const started = await harness.controller.start(startParams(harness, { requiredVerification: [] }));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:plan#1`, outcome);
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "requirement_conflict" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+  });
 });
 
 describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
@@ -1695,6 +2500,40 @@ describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
     expect(harness.commands.executed).toHaveLength(0);
   });
 
+  it.each([
+    ["token_budget_exhausted", "remaining token budget"],
+    ["cost_budget_exhausted", "remaining cost budget"],
+    ["deadline_exceeded", "deadline was reached"],
+    ["budget_exhausted", "remaining budget"],
+  ] as const)("does not retry implement after %s and preserves its partial work", async (reason, message) => {
+    harness.spawner.queue("implement", { status: "failed", stopReason: reason,
+      finalMessage: "misleading child cost cap", usage: DEFAULT_USAGE });
+    await runToTerminal(harness);
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+    expect(terminal).toMatchObject({ status: "failed", stopReason: "budget_exhausted",
+      finalMessage: expect.stringContaining(message) });
+    expect(terminal.finalMessage).toContain(`Work is preserved in /wt/${RUN_ID} (branch agenc/m5).`);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.implement")).toMatchObject({
+      outcome: "failed", evidence: { child: { stopReason: reason } },
+    });
+    expect(harness.spawner.spawns.filter((spawn) => spawn.kind === "implement")).toHaveLength(1);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+  });
+
+  it("does not retry independent review after an admission budget failure", async () => {
+    harness.reviewer.errors.push(new ReviewInvocationError("review failed", {
+      cause: new AdmissionDeniedError("budget_exceeded"),
+    }));
+    await runToTerminal(harness);
+    expect(harness.reviewer.invocations).toHaveLength(1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("remaining budget"),
+    });
+    expect(inspectWorkflowChildTerminal(harness.repo, `${RUN_ID}:review#1`)).toMatchObject({ stopReason: "budget_exhausted" });
+  });
+
   it("verify never starts when implement failed terminally", async () => {
     harness.spawner.queue("implement", {
       status: "failed",
@@ -1721,6 +2560,30 @@ describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
 });
 
 describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
+  it.each(["token_budget_exhausted", "cost_budget_exhausted", "deadline_exceeded"] as const)(
+    "adopts %s after a crash without another implementation attempt", async (stopReason) => {
+      const outcome: WorkflowChildOutcome = { status: "failed", stopReason, finalMessage: "bounded stop", usage: DEFAULT_USAGE };
+      harness.spawner.queue("implement", outcome);
+      // Plan has already committed before the implement child settles.
+      const original = harness.spawner.spawn.bind(harness.spawner);
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        const result = await original(input);
+        if (input.kind === "implement") armFailpoint("after_spawn_before_effect_result");
+        return result;
+      });
+      const started = await harness.controller.start(startParams(harness));
+      await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+      disarmFailpoint();
+      recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:implement#1`, outcome);
+      harness.spawner.inspections.clear();
+      await harness.controller.resumeOpenWorkflows();
+      await harness.controller.awaitRun(RUN_ID);
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "budget_exhausted" });
+      expect(harness.spawner.spawns.filter((spawn) => spawn.kind === "implement")).toHaveLength(1);
+      expect(harness.commands.executed).toHaveLength(0);
+    },
+  );
+
   it("adopts a permanent child failure after a crash without spawning its stage again", async () => {
     const outcome: WorkflowChildOutcome = {
       status: "failed", stopReason: "policy_denied", finalMessage: "operator denied", usage: DEFAULT_USAGE,
@@ -1882,7 +2745,7 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(resumed).toEqual([RUN_ID]);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("failed");
-    expect(terminal.finalMessage).toContain("re-submit");
+    expect(terminal.finalMessage).toContain("Start it again.");
     expect(harness.repo.getEffect(RUN_ID, "workflow.intake")?.outcome).toBe(
       "failed",
     );
@@ -2294,6 +3157,24 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
   }
 
+  it("closes the reopened writer when admission setup fails during recovery", async () => {
+    harness.cleanup();
+    let failAdmission = false;
+    harness = makeHarness({ admission: () => {
+      if (failAdmission) throw new Error("admission storage unavailable");
+      return harness.admission;
+    } });
+    await interruptBeforeWorktree();
+    const closed = harness.hooks.closed.length;
+    failAdmission = true;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(closed + 1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", finalMessage: expect.stringContaining("admission storage unavailable"),
+    });
+    expect(harness.spawner.spawns).toEqual([]);
+  });
+
   it("terminalizes recovery without credentials instead of hanging", async () => {
     await interruptBeforeWorktree();
     harness.hooks.failJournalOpenWith = new Error("deepseek authentication failed (HTTP 401): deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");
@@ -2342,8 +3223,7 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
       exitCode: 1,
       stopReason: null,
     });
-    expect(terminal?.finalMessage).toContain("run.cancel (operator)");
-    expect(terminal?.finalMessage).toContain("no live pipeline");
+    expect(terminal?.finalMessage).toBe("Goal cancelled (operator).");
     expect(harness.controller.cancelDetached(RUN_ID, "operator")).toBe(
       "already_terminal",
     );

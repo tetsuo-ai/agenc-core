@@ -1,3 +1,5 @@
+import { AgenCDaemonRunInspectionError } from "./run-inspection-error.js";
+export { AgenCDaemonRunInspectionError, type AgenCDaemonRunInspectionErrorCode } from "./run-inspection-error.js";
 import { ALL_PERMISSION_MODES, type InternalPermissionMode } from "../types/permissions.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -20,6 +22,7 @@ import type {
   RunStatusResult,
   RunWorkflowArtifactPointer,
   RunWorkflowStatus,
+  RunWorkflowRuntimeFailure,
 } from "./protocol/index.js";
 import type {
   RunArtifactPointer,
@@ -29,6 +32,7 @@ import { isTerminalAgentRunStatus } from "../state/run-cancellation.js";
 import type {
   DurableRunEffect,
   DurableRunTerminalRecord,
+  DurableRunSuspension,
 } from "../state/run-durability.js";
 import type { EffectOutcome } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
@@ -44,27 +48,13 @@ import { projectWorkflowStatus } from "./workflow/status-projection.js";
 export const DEFAULT_RUN_REPLAY_LIMIT = 100;
 export const MAX_RUN_REPLAY_LIMIT = 200;
 
-export type AgenCDaemonRunInspectionErrorCode =
-  | "INVALID_ARGUMENT"
-  | "RUN_ID_AMBIGUOUS"
-  | "RUN_NOT_FOUND"
-  | "RUN_NOT_TERMINAL";
-
-export class AgenCDaemonRunInspectionError extends Error {
-  readonly code: AgenCDaemonRunInspectionErrorCode;
-
-  constructor(code: AgenCDaemonRunInspectionErrorCode, message: string) {
-    super(message);
-    this.name = "AgenCDaemonRunInspectionError";
-    this.code = code;
-  }
-}
-
 export interface AgenCDaemonRunInspectionOptions {
   /** Read only from an already-owned live workflow session; never open or resume it. */
   readonly providerWait?: (runId: string, stepId: string) => import("../recovery/provider-wait.js").ProviderWait | undefined;
   readonly effectivePermissionMode?: (runId: string) => InternalPermissionMode | undefined;
   readonly pendingApprovals?: (runId: string) => readonly import("./protocol/index.js").PendingToolApproval[];
+  /** Live stop observation only. Never used as a durable result or evidence source. */
+  readonly runtimeFailure?: (runId: string) => RunWorkflowRuntimeFailure | undefined;
   /**
    * Fresh discovery on every request keeps projects created after daemon
    * startup visible. Callers should return only state DBs owned by this
@@ -183,6 +173,7 @@ export class AgenCDaemonRunInspectionService {
   readonly #providerWait: AgenCDaemonRunInspectionOptions["providerWait"];
   readonly #effectivePermissionMode: AgenCDaemonRunInspectionOptions["effectivePermissionMode"];
   readonly #pendingApprovals: AgenCDaemonRunInspectionOptions["pendingApprovals"];
+  readonly #runtimeFailure: AgenCDaemonRunInspectionOptions["runtimeFailure"];
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
   readonly #agencHome: string | undefined;
 
@@ -190,29 +181,35 @@ export class AgenCDaemonRunInspectionService {
     this.#providerWait = options.providerWait;
     this.#effectivePermissionMode = options.effectivePermissionMode;
     this.#pendingApprovals = options.pendingApprovals;
+    this.#runtimeFailure = options.runtimeFailure;
     this.#stateDatabasePaths = options.stateDatabasePaths;
     this.#agencHome = options.agencHome;
   }
 
   status(params: RunStatusParams): RunStatusResult {
     const runId = normalizeRunId(params.runId, "run.status");
-    const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
+    const observedStop = this.#runtimeFailure?.(runId) !== undefined;
+    const located = this.#locate(runId, observedStop);
+    this.#refreshStatusProjection(located.paths, runId, observedStop);
     const result = withReadonlyStateDatabase(located.paths, (db) =>
       buildRunStatus(db, located, runId),
     );
-    const mode = result.workflow !== undefined && !result.terminal
+    const runtimeFailure = result.workflow !== undefined && !result.terminal
+      ? this.#runtimeFailure?.(runId) : undefined;
+    const mode = result.workflow !== undefined && !result.terminal && runtimeFailure === undefined
       ? this.#effectivePermissionMode?.(runId)
       : undefined;
     return {
       ...result,
+      ...(runtimeFailure !== undefined ? { status: "stopped", statusSource: "runtime_observation" as const } : {}),
       ...(result.workflow !== undefined ? {
         workflow: {
           ...result.workflow,
+          ...(runtimeFailure !== undefined ? { runtimeFailure } : {}),
           ...(mode !== undefined && (ALL_PERMISSION_MODES as readonly string[]).includes(mode)
             ? { effectivePermissionMode: mode } : {}),
           steps: result.workflow.steps.map((step) => {
-            const providerWait = !result.terminal && step.status === "running"
+            const providerWait = !result.terminal && runtimeFailure === undefined && step.status === "running"
               ? this.#providerWait?.(runId, step.stepId)
               : undefined;
             return { ...step, ...(providerWait !== undefined ? { providerWait: { ...providerWait } } : {}) };
@@ -220,7 +217,7 @@ export class AgenCDaemonRunInspectionService {
         },
       } : {}),
       ...(this.#pendingApprovals !== undefined
-        ? { pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId) }
+        ? { pendingRequests: result.terminal || runtimeFailure !== undefined ? [] : this.#pendingApprovals(runId) }
         : {}),
     };
   }
@@ -390,7 +387,16 @@ export class AgenCDaemonRunInspectionService {
     });
   }
 
-  #locate(runId: string): LocatedRun {
+  #refreshStatusProjection(paths: StateDatabasePaths, runId: string, observedStop: boolean): void {
+    try { refreshRunJournalProjection(paths, runId); }
+    catch (error) {
+      // A known storage failure may prevent rebuilding the durable projection.
+      // Serve its last readable state plus the explicit live stop observation.
+      if (!observedStop) throw error;
+    }
+  }
+
+  #locate(runId: string, observedStop = false): LocatedRun {
     const matches: (LocatedRun & { readonly canonical: boolean; readonly hasAdmission: boolean })[] = [];
     const discovered: StateDatabasePaths[] = [];
     const seen = new Set<string>();
@@ -419,7 +425,7 @@ export class AgenCDaemonRunInspectionService {
     if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
     if (canonicalMatches.length !== 1) throw ambiguousRunOwner(runId);
     const canonical = canonicalMatches[0]!;
-    refreshRunJournalProjection(canonical.paths, runId);
+    this.#refreshStatusProjection(canonical.paths, runId, observedStop);
     const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
     if (matches.length === 1 && authority.owner === undefined) return canonical;
     const admissionMatches = matches.filter((match) => match.hasAdmission);
@@ -574,11 +580,15 @@ function buildRunStatus(
   const workflow = workflowStatusProjection(db, runId, durableTerminal);
   const reopenedWithoutTerminal =
     currentLifecycleEpoch !== undefined && durableTerminal === undefined;
+  const staleLegacyStatus = reopenedWithoutTerminal && run !== undefined && (
+    isTerminalAgentRunStatus(run.status) ||
+    (run.status === "suspended" && latestSuspensionResumed(db, runId, currentLifecycleEpoch))
+  );
   return {
     runId,
     status:
       durableTerminal?.status ??
-      (reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
+      (workflow?.control?.state === "paused" ? "paused" : staleLegacyStatus
         ? "running"
         : run?.status ?? "admission_only"),
     terminal:
@@ -732,11 +742,22 @@ function workflowStatusProjection(
   const projected = projectWorkflowStatus({
     runId,
     effects,
+    suspensions: tableExists(db, "run_suspensions") ? db.prepare<[string], DurableRunSuspension>(`
+      SELECT run_id AS runId, epoch, suspension_event_id AS eventId,
+        suspension_sequence AS suspensionSequence, reason, suspended_at AS suspendedAt,
+        resume_event_id AS resumeEventId, resume_sequence AS resumeSequence,
+        resume_reason AS resumeReason, resumed_at AS resumedAt
+      FROM run_suspensions WHERE run_id = ? ORDER BY suspension_sequence ASC
+    `).all(runId).map(row => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null)) as unknown as DurableRunSuspension) : [],
     ...(terminal !== undefined
       ? { terminal: durableTerminalRecordFromRow(terminal) }
       : {}),
   });
   return {
+    control: projected.control,
+    ...(projected.completedResult !== undefined ? { completedResult: projected.completedResult } : {}),
+    ...(projected.continuationOf !== undefined ? { continuationOf: { ...projected.continuationOf,
+      sourceUsage: projected.continuationOf.sourceUsage === null ? null : { ...projected.continuationOf.sourceUsage } } } : {}),
     steps: projected.steps.map((step) => ({
       stepId: step.stepId,
       stage: step.stage,
@@ -1161,6 +1182,21 @@ function readCurrentLifecycleEpoch(
        LIMIT 1`,
     )
     .get(runId)?.epoch;
+}
+
+/** A same-epoch resume supersedes the legacy rail's suspended snapshot. */
+function latestSuspensionResumed(
+  db: BetterSqlite3.Database,
+  runId: string,
+  epoch: number,
+): boolean {
+  if (!tableExists(db, "run_suspensions")) return false;
+  const latest = db.prepare<[string, number], { readonly resume_event_id: string | null }>(`
+    SELECT resume_event_id FROM run_suspensions
+    WHERE run_id = ? AND epoch = ?
+    ORDER BY suspension_sequence DESC LIMIT 1
+  `).get(runId, epoch);
+  return latest !== undefined && latest.resume_event_id !== null;
 }
 
 function parseRunUsage(

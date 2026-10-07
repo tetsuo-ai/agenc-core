@@ -9,6 +9,8 @@ Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
 [`#session-rollout-retention`](#session-rollout-retention). Hard-kill
 autostart and the TUI 10 s lost-turn probe:
 [`#recovery-after-a-disappeared-daemon`](#recovery-after-a-disappeared-daemon).
+Max-output-tokens escalate, continuation, and exhaustion:
+[`#max-output-tokens-recovery`](#max-output-tokens-recovery).
 
 ## Connection and session ownership
 
@@ -170,10 +172,11 @@ AGENC_DAEMON_MAX_OLD_SPACE_MB=4096   # default 4096
 ```bash
 agenc daemon status
 agenc daemon start                 # detached
-agenc daemon start --foreground    # current process (systemd/launchd/docker)
+agenc daemon start --foreground    # current process (systemd/launchd/docker/WinSW)
 agenc daemon reload                # in-place config reload
 agenc daemon restart
 agenc daemon stop
+agenc daemon install-service       # write WinSW XML; does not install the service
 ```
 
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
@@ -195,13 +198,25 @@ that request is its only clean stop. Ending the process there (Task Manager,
 start logs `the previous daemon (pid N) exited without recording a reason`.
 
 Packaging units under `packaging/` (systemd, launchd, Windows service) run
-`agenc daemon start --foreground`.
+`agenc daemon start --foreground`. On Windows the one-line installer places
+the CLI and writes the generated service definition (`agenc-daemon.xml` in the
+install prefix); it does not install the service. `agenc daemon install-service`
+regenerates that XML. WinSW install/start/stop
+is a separate elevated step and must use that generated file, not the
+example template unchanged. The definition is pinned to WinSW 2.12.0
+(`<domain>` and `<user>`, no password). Name the v2.12.0 binary to match the
+XML basename, run `install` with no `/p`, set the account password in the
+Services Log On tab, and confirm `SERVICE_START_NAME` with
+`sc.exe qc agenc-daemon` before `start`. `start` fails with error 1069 until
+that password is set. The service account is the installing user, and the
+XML sets `AGENC_HOME` to the path the installer resolved (the user-profile
+known folder plus `.agenc`, `%USERPROFILE%\.agenc` unless `AGENC_HOME` is set).
 
 ## Files under `AGENC_HOME` (default `~/.agenc`)
 
 | File                   | Mode / notes                                                                                  |
 | ---------------------- | --------------------------------------------------------------------------------------------- |
-| `daemon.sock`          | Unix domain socket path clients connect to; Windows uses a stable per-home named pipe instead |
+| `daemon.sock`          | Unix socket for short home paths; long paths use the private fallback described below. Windows uses a stable per-home named pipe instead |
 | `daemon.cookie`        | Shared secret; cookie auth for local clients                                                  |
 | `daemon.pid`           | Detached process id                                                                           |
 | `daemon.log`           | Size-capped log sink                                                                          |
@@ -216,7 +231,18 @@ export AGENC_HOME=/var/lib/agenc
 
 ## Transports & auth
 
-- **Default local transport:** Unix socket at `$AGENC_HOME/daemon.sock`, or a
+Unix socket paths are limited by UTF-8 byte length: 107 usable bytes on Linux,
+103 on macOS (and the conservative default for other Unix platforms). Longer
+home paths use `/tmp/agenc-<uid>/<sha256-of-canonical-home>.sock`. This fixed
+location lets services and interactive clients agree even when their temporary
+or XDG runtime directories differ. The directory is created with mode `0700`;
+existing symlinks, other owners, and non-private permissions are refused. Socket
+mode remains `0600`, with the existing peer-credential and cookie checks. The
+bound endpoint is published as `socketPath` in `daemon-runtime.json`; older
+sidecars may omit it. Cleanup uses the same resolver as startup and discovery.
+
+- **Default local transport:** Unix socket at `$AGENC_HOME/daemon.sock` (or the
+  private fallback above for long paths), or a
   stable pipe derived from `AGENC_HOME` on Windows.
 - **Auth:** cookie file `$AGENC_HOME/daemon.cookie` (ensured on start; private
   socket owner identity + peer UID checks on supported platforms).
@@ -248,11 +274,18 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 
 ## Protocol
 
-The daemon's local socket and the MCP stdio server accept at most 16 MiB of
-UTF-8 payload per JSON line, excluding the LF, CRLF, or CR delimiter. A line
-exactly at the limit is valid. An oversized line closes the input before JSON
-parsing or dispatch, including when the terminating newline arrives in the
-chunk that crosses the limit. Multiple bounded lines can share a chunk.
+The daemon's local socket, the MCP stdio server, and the embedding SDK's
+socket and subprocess transports accept at most 16 MiB per JSON line
+(`AGENC_SDK_MAX_FRAME_BYTES`). A line exactly at the limit is valid. An
+oversized line closes the input before JSON parsing or dispatch, including
+when the delimiter arrives in the chunk that crosses the limit. Multiple
+bounded lines can share a chunk. The limit is the frame, not the read chunk:
+an exact-limit frame split across chunks is accepted.
+
+Those paths measure payload bytes excluding the delimiter. LF, CRLF, and a
+lone CR are delimiters. A CR that ends a frame does not count, and a following
+LF is the same delimiter rather than an empty extra frame. The SDK socket and
+subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
 - Protocol version constant: **`1.16.0`**
@@ -301,12 +334,20 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
+Resident print (protocol 1.30, local Unix only): `print.invoke`, `print.admit`,
+`print.ack`, `print.cancel`. Negotiate `print.invoke.v1`; the second identity proof
+and one-use admission challenge precede session creation. `print.output` frames
+are acknowledged after client stdout/stderr writes complete. Disconnect cancels
+and joins this invocation. A `fallback` response guarantees no output or session.
+Never retry after admission may have arrived.
+
 | Method                                                                                                      | Purpose                                                                                                            |
 | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `initialize`                                                                                                | Handshake + capability advertisement                                                                               |
 | `request.cancel`                                                                                            | Cancel an in-flight request                                                                                        |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs`                                | Background agents                                                                                                  |
 | `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel`                    | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
+| `run.pause` / `run.resume`                                                                               | Pause a verified-change workflow at a safe checkpoint and resume the same run with its original limits (protocol 1.25) |
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
@@ -346,6 +387,65 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Goal Light mode
+
+`run.start` accepts optional `lightMode: boolean`. When `true`, the Goal and
+its child sessions use Light mode; when omitted, they use standard mode. The
+frozen value appears at `run.status.workflow.lightMode` and survives recovery.
+Continuations inherit their source Goal's mode unless the new `run.start`
+request explicitly sets it. `initialize.result.capabilities["run.start.lightMode"]`
+advertises support when `run.start` is available.
+
+#### Workflow pause and resume (protocol 1.25)
+
+`run.pause` takes `runId` and a client-generated `requestId`. Retry the same
+request ID after a lost response. The response is a workflow control state,
+not a terminal result. `pause_requested` means the active stage is still
+finishing. Only `paused` confirms a durable safe checkpoint. Inspect
+`run.status.workflow.control` for the current state and `suspensionId`.
+
+`run.resume` takes `runId` and the exact `suspensionId` returned for that pause.
+A stale suspension cannot resume a later pause. Resume keeps the original run,
+worktree, evidence, cumulative cost and token usage, cost and token caps, and
+absolute deadline. Time spent paused does not extend the deadline. Resume may
+accept the same ephemeral provider `envOverrides` as `run.start`; it does not
+accept a replacement goal, model, budget, or deadline.
+
+Controls are advertised in `daemon.methods` only when their backend is wired.
+Clients should hide unavailable controls and distinguish a pending pause from a
+durable pause. `run.pause` is admitted as a stop control when ordinary requests
+are over the connection limit; `run.resume` remains subject to normal limits.
+Pause does not cancel active verification or interrupt a filesystem operation.
+Cancellation remains available through `run.cancel`.
+
+The CLI exposes `agenc run pause <run-id> [--request-id <id>]` and
+`agenc run resume <run-id> [--suspension <id>]`. Without `--suspension`, the CLI
+reads the current paused token from status before resuming. `run start --follow`
+stops when the run is terminal or durably paused.
+
+#### Planner requirement conflicts (protocol 1.28)
+
+A workflow may stop after planning with terminal status `failed` and
+`stopReason: "requirement_conflict"`. Its final message begins
+`The planner found conflicting requirements: ` and contains the planner's
+bounded explanation. This is a reasoned refusal. It is not successful
+completion or independent proof that the goal is impossible.
+
+The planner must emit a complete raw JSON response with kind
+`agenc.goal.plan-blocked.v1`, reason `requirement_conflict`, a nonempty
+`explanation` of at most 2,000 characters, and `conflictingRequirements`
+containing two to eight distinct nonempty strings of at most 1,000 characters
+each. Extra fields, markdown fences, quoted examples, ordinary prose and
+ambiguous requirements do not trigger this control result.
+
+The validated report is committed as `planBlocked` evidence on the planning
+step before the failed terminal is written. A restarted daemon uses the same
+report without another planner or downstream model call. No implementation,
+verification, independent review or finalization runs after that checkpoint.
+Required checks are unchanged and a verifier's PASS label cannot override a
+failing required command. Correcting the requirements requires an explicit
+new Goal; the frozen specification is not modified.
 
 #### Remote and Telegram methods
 
@@ -458,6 +558,7 @@ the TUI. Source:
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
 | Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule`, `session.shell.execute` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
+| Whisper | `audio.whisper.status`, `audio.whisper.install`, `audio.whisper.transcribe`. Host/Desktop only; a remote connection gets JSON-RPC `-32601`. Download idle clock: [whisper-local.md](../whisper-local.md#download-idle-clock) |
 
 `session.partialCompactFromMessage` is the daemon path behind TUI `/compact`
 (`messageOrdinal: 0`, `direction: "from"`). A successful transactional
@@ -979,7 +1080,11 @@ durable session id, and by its daemon session id, wherever the id appears in
 the params. A request that waits moves a restore that has not started to the
 front of the queue, so it waits for about one restore plus the ones already
 running. `agent.create` with the `resumeSessionId` of a session still
-restoring waits the same way and never rebuilds it a second time.
+restoring waits the same way and never rebuilds it a second time. When that
+session comes back with a live runtime, the create fails with the error data
+code `CANONICAL_SESSION_ALREADY_ACTIVE`, and the client attaches to the
+restored agent instead. `agenc --continue` and `agenc --resume`, headless or
+in the TUI, do this, so they work right after a daemon restart.
 
 These answer at once: `health.*`, `daemon.*`, `request.cancel`,
 `session.list`, `agent.list`, and every request that names no session still
@@ -992,6 +1097,18 @@ restoring. When they are all settled the daemon logs
 `daemon restored N session(s) open at its last shutdown` with how many came
 back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the startup phase
 `startup session restore complete`.
+
+A restored session gets the session environment its client supplied at
+creation (`envOverrides`), not the daemon's values. The daemon records the non-secret
+values with the run: provider endpoints, model and tool settings, proxies,
+and `PATH`. It never writes a credential value to disk, only the credential's
+name. When the client supplied a credential the session's model provider
+needs (its API key, a custom auth header or token, the mTLS key, or an
+endpoint or proxy URL that embeds a credential), the daemon cannot rebuild
+the same runtime. It publishes the session without one, and the next client
+resume supplies the credential again. A credential the provider does not read,
+such as a web search key, is left out of the rebuilt runtime. A run recorded
+before the daemon kept this record is published without a runtime once.
 
 A session whose runtime cannot be rebuilt is still published without one, as
 before. A session whose publication fails is rolled back and stays
@@ -1126,6 +1243,55 @@ mapping above. A summarizer that ignores abort for 5 s becomes
 `recovery_interrupted`. There is no env or `config.toml` override.
 Operator contract:
 [CP-0006 wall budget](../design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget).
+
+### Max-output-tokens recovery
+
+When the last assistant message is withheld with
+`apiError: "max_output_tokens"`, the I-10 recovery ladder (priority 3)
+runs `runMaxOutputTokensRecovery` from `phases/post-sample-recovery.ts`.
+Two recovery paths apply; if both are spent the turn fails:
+
+| Path | When | What happens |
+| --- | --- | --- |
+| Escalate | No escalated override is active (`maxOutputTokensOverride` unset), the effective budget is a **capped default** (`capped_default_max_output_tokens` / catalog `maxOutputTokensCappedDefault`), and there is no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). Skipped when every truncated tool is `spawn_agent` and the root human turn has usable text. | Sets `maxOutputTokensOverride` to `escalatedMaxOutputTokensForModel`, which is `min(64000, model upper limit)` (`ESCALATED_MAX_OUTPUT_TOKENS`). Transition `max_output_tokens_escalate`. Truncates durable `state.messages` to `messagesAtSampleStart` (the length when this sample was prepared). Does **not** copy `messagesForQuery`. Escalation is not a counted retry. Commit clears the override after each completed iteration, so a later cap in the same turn can escalate again. |
+| Continuation | Escalation is not allowed or its override is still active, and `maxOutputTokensRecoveryCount` plus `reasoningOnlyRecoveryCount` is under 3 (`MAX_OUTPUT_TOKENS_RECOVERY_LIMIT`). | Appends a user meta message, transition `max_output_tokens_recovery`. A reasoning-only retry on native DeepSeek increments `reasoningOnlyRecoveryCount`. Any other retry increments `maxOutputTokensRecoveryCount`. Incomplete streamed tools are not executed. |
+| Exhausted | The counted retries reached 3. | Emits `error` cause `max_output_tokens_exhausted` (`max_output_tokens_recovery_limit (3)`), then the turn ends as `model_error`: `The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete.` `run-agent` maps that to `stopReason: "error"`. |
+
+The escalate retry drops the truncated assistant batch. `messagesAtSampleStart`
+is recorded by `prepareAgenCTurnContext` on every sampling request. Copying
+the query projection used to put per-request attachments into the durable
+prefix; the next compaction then failed with
+`caller history is not an ordered projection of canonical active history`.
+Without a mark (a state not prepared through that boundary) the retry keeps
+the projection minus attachments, except agent-invocation channels.
+
+Continuation text depends on what was truncated:
+
+- Truncated tool-call arguments: ask for complete JSON, not a string
+  continuation. `spawn_agent` plus a non-empty root human prompt also
+  mentions `message_ref`.
+- Reasoning-only (the capped sample has no text and no tool calls, and the
+  last response reports `reasoningOutputTokens > 0`): ask for one short
+  complete tool call or a concise final answer. The same instruction is
+  added on the escalate retry. The generic "continue from where you left
+  off" line is not used. There is nothing visible to continue.
+
+  On native DeepSeek, the call after a reasoning-only cap is sent with
+  thinking disabled. If it returns a tool call or a final answer,
+  `reasoningOnlyRecoveryCount` resets to 0, so only unproductive
+  reasoning-only retries count. Empty DeepSeek tool-call reasoning is kept
+  and sent back, so the next thinking-on call is accepted.
+- Otherwise: `Continue generating directly from where you left off…`
+
+There is no env or `config.toml` override for the 3-retry limit or the
+64_000 escalate target. Escalation runs only with no explicit budget
+(`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or
+`providers.<provider>.max_output_tokens`). Distinct from
+`compact_failed`, `prompt_too_long_exhausted`, and streaming-fallback
+retries. Both recovery paths discard the in-flight
+`StreamingToolExecutor` (`executor_discarded` / `max_output_tokens`).
+
+See the [recovery ladder](../ARCHITECTURE.md#max-output-tokens-recovery).
 
 ### Telemetry errors stay session-only
 
@@ -1278,6 +1444,7 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | `no longer running (status: error)` right after a hook denial, stop-hook throw, or stream reconnect | Unexpected after the `session_only` projection. Look for a real `event.agent_status`, `run_error`, or failed `run_terminal`. Session `error` events stay visible as `event.session_event` and do not latch the run. See [telemetry errors](#telemetry-errors-stay-session-only). |
 | `no longer running (status: error)` after a compact skip or compact throw | Unexpected on a keep-alive session. Current writers emit a compact warning and canonical `turn_failed` with code `compact_failed`; legacy diagnostic `error` events carry `statusProjection: "session_only"`. The daemon-backed one-shot CLI exits 1, and the compatibility `runAgent` path fails. Autonomous keepalive ticks stop after `compact_failed` by design. |
 | Compact runs ~15 min then `compaction_failed` / `wall_time_exceeded` | The whole-transaction 900 s wall budget fired. History should be unchanged. Manual `/compact` retries; two durable auto failures for the same digest suppress later autos. Distinct from `provider_timeout` and `mid_turn_compact_skipped`. See [compaction transaction wall budget](#compaction-transaction-wall-budget). |
+| `Output recovery is exhausted` / `max_output_tokens_exhausted` | The turn used its three counted retries. Escalation does not count. History should still be an ordered projection of the canonical rollout. The escalate retry truncates to `messagesAtSampleStart`, not `messagesForQuery`. Reasoning-only replies ask for a next step instead of "continue from where you left off". Distinct from `compact_failed` and `prompt_too_long_exhausted`. See [max-output-tokens recovery](#max-output-tokens-recovery). |
 | Follow-up `message.send` after `mid_turn_compact_skipped` | Expected to start a new turn on a keep-alive session. The prior turn closed with `stopReason: "compact_failed"`. |
 | `AdmissionStepConflictError` | The same `(runId, stepId)` was acquired with different normalized admission data. Compare the `stepId`, provider, model, token bounds, and budget identity in `agenc run evidence`. |
 | A crash-resumed nudge or empty-response retry conflicts | Verify the latest turn checkpoint contains the expected sample ordinal and resume-prompt kind. |
@@ -1481,6 +1648,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Telemetry `error` projection      | `projectTelemetryErrorAsSessionOnly` in `background-agent-runner.ts`; TUI marker in `tui/daemon-terminal-error.ts` / `transcriptEventFromAgentStatus` |
 | Prompt-hook block emit            | `hooks/user-prompt-ingress.ts` (live refusals are `warning`; legacy `error` uses the telemetry projection) |
 | Compact-skip session survival     | `emitCompactFailureWarning` / `compactFailedTurnComplete` in `session/run-turn.ts`; `phaseEventToProgressEvent` in `background-agent-runner.ts` |
+| Max-output-tokens recovery        | `runMaxOutputTokensRecovery` in `runtime/src/recovery/max-output-tokens.ts`; `onMaxOutputTokens` in `phases/post-sample-recovery.ts`; `messagesAtSampleStart` in `session/run-turn-query-messages.ts` |
 | Diagnostic errors and terminals   | `projectTelemetryErrorAsSessionOnly`, `messageTerminalFromDaemonEvent`, `messageTerminalFromEvent`, and `sessionTranscriptV2FromRollout` in `background-agent-runner.ts`; `transcriptEventFromAgentStatus` and `isTerminalDaemonErrorPayload` in `tui/` |
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |

@@ -1,5 +1,6 @@
 /**
- * /effort — show or set the reasoning effort level for the current model.
+ * /effort: choose the reasoning effort level for the current model. With
+ * no argument it opens a picker of the levels the model supports.
  *
  * Levels are validated against the current model's catalog capabilities
  * (including the exact Meta Muse and Grok model enums); `default`
@@ -10,9 +11,12 @@
 import {
   convertEffortValueToLevel,
   getAvailableEffortLevelsForContext,
-  getDefaultEffortForModelForContext,
   getDisplayedEffortLevelForContext,
+  getEffortLevelLabel,
+  getModelDefaultReasoningEffortForContext,
   isAvailableEffortLevel,
+  isEffortOffByDefaultForContext,
+  nativeEffortLabel,
   modelSupportsEffortForContext,
   effortValueToReasoningEffort,
   reasoningEffortToEffortLevel,
@@ -25,6 +29,9 @@ import {
   updateSettingsForSource,
 } from "../utils/settings/settings.js";
 import { effortLevelToSymbol } from "../tui/components/EffortIndicator.js";
+import { asRecord } from "../utils/record.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import type { EffortMenuRow, EffortMenuSnapshot } from "./effort-menu.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -38,9 +45,139 @@ function currentEffortValue(ctx: SlashCommandContext): unknown {
   return state?.effortValue;
 }
 
+type ProviderAuthContext = Parameters<typeof getAvailableEffortLevelsForContext>[1];
+
+/** JSON-RPC invalid params: how a daemon that cannot clear an effort refuses null. */
+const INVALID_PARAMS = -32602;
+
+
+/**
+ * Save the choice as the default for new sessions, mirror it in app state,
+ * and apply it to the running daemon session so the next turn already runs
+ * at the chosen level.
+ */
+async function applyEffortChoice(
+  ctx: SlashCommandContext,
+  model: string,
+  providerAuthContext: ProviderAuthContext,
+  choice: AvailableEffortLevel | "default",
+): Promise<{ readonly ok: boolean; readonly message: string }> {
+  const available = getAvailableEffortLevelsForContext(model, providerAuthContext);
+  const saved = await updateSettingsForSource("userSettings", {
+    reasoning_effort:
+      choice === "default"
+        ? undefined
+        : effortValueToReasoningEffort(choice, available),
+  });
+  if (saved.error !== null) {
+    return { ok: false, message: `Could not save effort: ${saved.error.message}` };
+  }
+  // App state is what this session runs at (the status line reads it), so it
+  // moves only once the session takes the change.
+  const mirrorInAppState = (): void => {
+    ctx.appState?.setAppState?.((prev: unknown) => ({
+      ...(prev as Record<string, unknown>),
+      effortValue: choice === "default" ? undefined : choice,
+    }));
+  };
+  // Apply only the effort to the live session. A full config reload would
+  // also re-read model and provider and undo a session-only /model switch.
+  // "default" clears the session's effort (null), so each model runs at its
+  // own default, now and after a model switch. A daemon from before that
+  // refuses null; it gets the level the model runs at when none is set.
+  const defaultEffort = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
+  const liveEffort = choice === "default"
+    ? null
+    : effortValueToReasoningEffort(choice, available);
+  const applyDaemonConfig = asRecord(ctx.session)?.applyDaemonConfig;
+  const keepsCurrentEffort = {
+    ok: true,
+    message: `Saved: new sessions use the ${model} default. This session keeps its current effort.`,
+  };
+  if (typeof applyDaemonConfig === "function" && liveEffort === undefined) {
+    // Nothing to send: do not claim the running session follows a default.
+    return keepsCurrentEffort;
+  }
+  if (typeof applyDaemonConfig === "function" && liveEffort !== undefined) {
+    const apply = async (reasoningEffort: string | null) =>
+      (await applyDaemonConfig.call(ctx.session, { reasoningEffort })) as {
+        readonly sessionId?: string;
+        readonly applied?: boolean;
+        readonly summary?: string;
+      };
+    try {
+      let result;
+      try {
+        result = await apply(liveEffort);
+      } catch (error) {
+        if (liveEffort !== null || asRecord(error)?.code !== INVALID_PARAMS) throw error;
+        if (defaultEffort === undefined) return keepsCurrentEffort;
+        result = await apply(defaultEffort);
+      }
+      // Before the first turn there is no live session yet; the saved
+      // setting is what the first conversation starts with.
+      if (result?.applied === false && result.sessionId !== "pending" && result.summary) {
+        return {
+          ok: false,
+          message: `Saved for new sessions. This session did not take it: ${result.summary}`,
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Saved for new sessions. This session did not take it: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  mirrorInAppState();
+  if (choice === "default") {
+    return {
+      ok: true,
+      message: `Effort follows the ${model} default${defaultEffort !== undefined ? ` (${nativeEffortLabel(defaultEffort)})` : ""}.`,
+    };
+  }
+  return {
+    ok: true,
+    message: `${effortLevelToSymbol(choice)} ${convertEffortValueToLevel(choice)} effort for ${model}.`,
+  };
+}
+
+function effortMenuSnapshot(
+  ctx: SlashCommandContext,
+  model: string,
+  providerAuthContext: ProviderAuthContext,
+): EffortMenuSnapshot {
+  const levels = getAvailableEffortLevelsForContext(model, providerAuthContext);
+  const explicit = currentEffortValue(ctx) ??
+    reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort);
+  const current =
+    typeof explicit === "string" && (levels as readonly string[]).includes(explicit)
+      ? explicit
+      : "default";
+  const modelDefault = getModelDefaultReasoningEffortForContext(model, providerAuthContext);
+  const rows: EffortMenuRow[] = [
+    {
+      choice: "default",
+      label: "Default",
+      detail: modelDefault !== undefined
+        ? `follows the model (${nativeEffortLabel(modelDefault)})`
+        : "follows the model",
+      current: current === "default",
+    },
+    ...levels.map((level): EffortMenuRow => ({
+      choice: level,
+      label: getEffortLevelLabel(level),
+      detail: level === modelDefault ? "model default" : "",
+      current: current === level,
+    })),
+  ];
+  const activeIndex = Math.max(0, rows.findIndex(row => row.current));
+  return { model, rows, activeIndex };
+}
+
 export const effortCommand: SlashCommand = {
   name: "effort",
-  description: "Show or set reasoning effort for the current model",
+  description: "Choose the reasoning effort for the current model",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) =>
@@ -70,60 +207,63 @@ export const effortCommand: SlashCommand = {
       });
       const arg = ctx.argsRaw.trim().toLowerCase();
 
+      if (!modelSupportsEffortForContext(model, providerAuthContext)) {
+        return arg === ""
+          ? { kind: "text", text: `${model} does not support effort levels.` }
+          : { kind: "error", message: `${model} does not support effort levels.` };
+      }
+
       if (arg === "") {
-        if (!modelSupportsEffortForContext(model, providerAuthContext)) {
-          return {
-            kind: "text",
-            text: `${model} does not support effort levels.`,
-          };
+        const snapshot = effortMenuSnapshot(ctx, model, providerAuthContext);
+        if (
+          typeof ctx.appState?.setToolJSX === "function" &&
+          (await import("./effort-menu.js")).openEffortMenu(ctx, snapshot, async (choice) => {
+            // The picker applies from a key press, after the dispatcher's
+            // settings scope ended; bind this invocation's store again.
+            const apply = () =>
+              applyEffortChoice(
+                ctx,
+                model,
+                providerAuthContext,
+                choice as AvailableEffortLevel | "default",
+              );
+            const outcome = ctx.configStore === undefined
+              ? await apply()
+              : await runWithCanonicalSettingsAuthority(ctx.configStore, apply);
+            return { message: outcome.message, shouldClose: outcome.ok };
+          })
+        ) {
+          return { kind: "skip" };
         }
+        const off = isEffortOffByDefaultForContext(
+          model,
+          currentEffortValue(ctx) as never,
+          providerAuthContext,
+        );
         const displayed = getDisplayedEffortLevelForContext(
           model,
           currentEffortValue(ctx) as never,
           providerAuthContext,
         );
-        const persisted = reasoningEffortToEffortLevel(
-          getSettingsForSource("userSettings")?.reasoning_effort,
-        );
         const levels = getAvailableEffortLevelsForContext(
           model,
           providerAuthContext,
-        ).join("/");
-        const source =
-          persisted !== undefined
-            ? "saved"
-            : currentEffortValue(ctx) !== undefined
-              ? "session"
-              : "model default";
+        ).join(", ");
         return {
           kind: "text",
           text: [
-            `${effortLevelToSymbol(displayed)} ${displayed} effort (${source})`,
+            off ? "effort off" : `${effortLevelToSymbol(displayed)} ${displayed} effort`,
             `Available for ${model}: ${levels}`,
-            `Use /effort <level> to change it, /effort default to follow the model default.`,
+            `Use /effort <level> to change it, or /effort default to follow the model.`,
           ].join("\n"),
         };
       }
 
-      if (!modelSupportsEffortForContext(model, providerAuthContext)) {
-        return {
-          kind: "error",
-          message: `${model} does not support effort levels.`,
-        };
-      }
-
       if (arg === "default" || arg === "auto" || arg === "unset") {
-        await updateSettingsForSource("userSettings", {
-          reasoning_effort: undefined,
-        });
-        ctx.appState?.setAppState?.((prev: unknown) => ({
-          ...(prev as Record<string, unknown>),
-          effortValue: undefined,
-        }));
-        return {
-          kind: "text",
-          text: `Effort reset — ${model} now uses its default (${getDefaultEffortForModelForContext(model, providerAuthContext)}).`,
-        };
+        const outcome = await applyEffortChoice(ctx, model, providerAuthContext, "default");
+        return outcome.ok
+          ? { kind: "text", text: outcome.message }
+          : { kind: "error", message: outcome.message };
       }
 
       const available = getAvailableEffortLevelsForContext(
@@ -131,10 +271,9 @@ export const effortCommand: SlashCommand = {
         providerAuthContext,
       );
       if (!isAvailableEffortLevel(arg)) {
-        const levels = available.join(", ");
         return {
           kind: "error",
-          message: `Usage: /effort <${levels}> — or /effort default.`,
+          message: `Usage: /effort <${available.join(", ")}>, or /effort default.`,
         };
       }
       const level: AvailableEffortLevel = arg;
@@ -144,17 +283,9 @@ export const effortCommand: SlashCommand = {
           message: `${model} does not support '${level}' effort. Available: ${available.join(", ")}.`,
         };
       }
-
-      await updateSettingsForSource("userSettings", {
-        reasoning_effort: effortValueToReasoningEffort(level, available),
-      });
-      ctx.appState?.setAppState?.((prev: unknown) => ({
-        ...(prev as Record<string, unknown>),
-        effortValue: level,
-      }));
-      return {
-        kind: "text",
-        text: `${effortLevelToSymbol(level)} ${convertEffortValueToLevel(level)} effort set for ${model}.`,
-      };
+      const outcome = await applyEffortChoice(ctx, model, providerAuthContext, level);
+      return outcome.ok
+        ? { kind: "text", text: outcome.message }
+        : { kind: "error", message: outcome.message };
     }),
 };

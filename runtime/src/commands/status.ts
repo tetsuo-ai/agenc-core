@@ -20,11 +20,8 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import {
-  createStatusDashboardSnapshot,
-  openStatusDashboard,
-} from "./status-menu.js";
 import { readSessionSelection } from "../session/provider-model-selection.js";
+import { createStatusDashboardSnapshot } from "./status-menu-snapshot.js";
 
 export interface StatusLine {
   key: string;
@@ -173,7 +170,7 @@ export function collectStatus(
   } else {
     lines.push({
       key: "Session ID",
-      value: "(idle — assigned when you send your first message)",
+      value: "(idle; assigned when you send your first message)",
     });
   }
   lines.push({ key: "CWD", value: cwd });
@@ -325,7 +322,10 @@ export const statusCommand: SlashCommand = {
         git: await collectGitStatus(ctx.cwd),
         appState: ctx.appState?.getAppState?.(),
       });
-      if (openStatusDashboard(ctx, dashboard)) return { kind: "skip" };
+      if (
+        typeof ctx.appState?.setToolJSX === "function" &&
+        (await import("./status-menu.js")).openStatusDashboard(ctx, dashboard)
+      ) return { kind: "skip" };
       return { kind: "text", text: formatStatus(lines) };
     }),
 };

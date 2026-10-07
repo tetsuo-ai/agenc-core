@@ -589,7 +589,8 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({
-      required: ["message", "task_name"],
+      required: ["task_name"],
+      properties: { message_ref: { properties: { source: { enum: ["current_user_message"] } } } },
       additionalProperties: false,
     });
     expect(
@@ -5168,6 +5169,7 @@ describe("model-facing tools", () => {
         turn_id: "assigned-turn-1",
       });
       expect(assignTask).toHaveBeenCalledWith("agent-1", {
+        exactOutput: false,
         author: "/root",
         recipient: "/root/task_1",
         content: "report now",

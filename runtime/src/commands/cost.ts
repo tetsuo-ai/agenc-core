@@ -20,8 +20,6 @@
  * @module
  */
 
-import React from "react";
-
 import {
   estimateAgentCostUsd,
   formatTokenCount,
@@ -268,7 +266,7 @@ export function formatCostReport(report: CostReport): string {
       `Session cost: ${formatUsdCost(report.totalCostUsd)}${est}${unknown}`,
     );
   } else {
-    lines.push("Session cost: — (cost tracking unavailable)");
+    lines.push("Session cost: unknown (cost tracking unavailable)");
   }
   const input = report.inputTokens;
   const output = report.outputTokens;
@@ -294,13 +292,13 @@ export function formatCostReport(report: CostReport): string {
     lines.push("Agents:");
     for (const a of report.agents) {
       const tokens =
-        a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "—";
+        a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "tokens unknown";
       const spend =
         a.costUsd !== undefined
           ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? " est." : ""}`
           : a.estimatedCostUsd !== undefined
           ? `${formatUsdCost(a.estimatedCostUsd)} est.`
-          : "—";
+          : "cost unknown";
       lines.push(`  ${a.status} ${a.label}: ${tokens} · ${spend}`);
     }
   } else {
@@ -318,7 +316,8 @@ async function openCostModal(
     const { CostUsageModal } = await import(
       "../tui/components/v2/CostUsageModal.js"
     );
-    return React.createElement(CostUsageModal, { report, onDone: close });
+    const { createElement } = await import("react");
+    return createElement(CostUsageModal, { report, onDone: close });
   });
 }
 

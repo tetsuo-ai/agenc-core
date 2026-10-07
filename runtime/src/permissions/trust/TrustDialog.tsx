@@ -1,9 +1,15 @@
+import { basename } from "node:path";
 import React, { useCallback, useContext, useRef, useState } from "react";
 import useInput from "../../tui/ink/hooks/use-input.js";
 import { TerminalSizeContext } from "../../tui/ink/components/TerminalSizeContext.js";
 import { Box } from "../../tui/ink.js";
+import { applyTextStyles } from "../../tui/ink/colorize.js";
+import type { Color } from "../../tui/ink/styles.js";
+import { useTheme } from "../../tui/components/design-system/ThemeProvider.js";
 import ThemedBox from "../../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../../tui/components/design-system/ThemedText.js";
+import { getTheme } from "../../utils/theme.js";
+import type { ProjectTrustItem, ProjectTrustReview } from "./trust-sources.js";
 
 /** Floor for the path width budget so a tiny/unknown terminal still truncates. */
 const MIN_TRUST_PATH_WIDTH = 24;
@@ -52,59 +58,109 @@ export function formatTrustPath(path: string, maxWidth: number): string {
   return `${last.slice(0, headLen)}${ELLIPSIS}${tailLen > 0 ? last.slice(last.length - tailLen) : ""}`;
 }
 
+/** A folder that holds far more than one project. */
+export type TrustLocation = "home" | "root";
+
 export interface TrustDialogProps {
   readonly workspaceRoot: string;
-  readonly riskSources?: readonly string[];
+  /** What trusting the root turns on. Empty or absent means nothing listed. */
+  readonly review?: ProjectTrustReview;
+  readonly location?: TrustLocation;
   readonly bypassPermissionsRequested?: boolean;
+  readonly bypassSandboxRequested?: boolean;
   readonly onAccept: () => void | Promise<void>;
   readonly onReject: () => void | Promise<void>;
 }
 
 type TrustChoice = "trust" | "exit";
 
-export const YOLO_TRUST_COPY =
-  "--dangerously-bypass-approvals-and-sandbox skips tool approval prompts and uses danger-full-access sandbox mode after trust; project trust still requires confirmation.";
+/** Card width bounds: wide enough for the buttons, narrow enough to scan. */
+const MIN_CARD_WIDTH = 44;
+const MAX_CARD_WIDTH = 76;
+/** Border (2 columns) plus paddingX 2 on each side. */
+const CARD_CHROME_WIDTH = 6;
+/** Values shown per row before the rest collapse into "+N more". */
+const MAX_VALUES_PER_ITEM = 4;
+const MIN_LABEL_WIDTH = 12;
 
 export function trustDialogOptionLabel(
   id: TrustChoice,
   choice: TrustChoice | null,
   pending: boolean,
 ): string {
-  if (!pending) {
-    return id === "trust" ? "Yes, I trust this project" : "No, exit";
+  if (pending && choice === id) {
+    return id === "trust" ? "Trusting..." : "Exiting...";
   }
-  if (choice === "trust") {
-    return id === "trust" ? "Accepting..." : "No, exit";
+  return id === "trust" ? "Trust" : "Exit";
+}
+
+export function trustLocationWarning(
+  location: TrustLocation | undefined,
+): string | undefined {
+  if (location === "home") {
+    return "This is your home folder. AgenC can work on every file in it.";
   }
-  if (choice === "exit") {
-    return id === "exit" ? "Exiting..." : "Yes, I trust this project";
+  if (location === "root") {
+    return "This is the root of the disk. AgenC can work on every file on it.";
   }
-  return id === "trust" ? "Yes, I trust this project" : "No, exit";
+  return undefined;
+}
+
+export function trustReviewLead(
+  review: ProjectTrustReview | undefined,
+): string | undefined {
+  const repo = (review?.repoItems.length ?? 0) > 0;
+  const user = (review?.userItems.length ?? 0) > 0;
+  if (repo && user) return "Trusting turns these on in this folder:";
+  if (repo) return "Trusting turns on the AgenC settings this repo ships:";
+  if (user) return "Trusting lets your own setup run in this folder:";
+  return undefined;
+}
+
+export function trustSafetyNote(
+  bypassPermissionsRequested: boolean,
+  bypassSandboxRequested: boolean,
+): string {
+  if (bypassSandboxRequested) {
+    return "Approvals and the sandbox are off for this run.";
+  }
+  if (bypassPermissionsRequested) {
+    return "Approvals are off for this run. The sandbox still applies.";
+  }
+  return "Approvals and the sandbox still apply.";
+}
+
+/** Rows for the card table, with long value lists collapsed. */
+export function trustItemRows(
+  items: readonly ProjectTrustItem[],
+): Array<{ readonly label: string; readonly value: string; readonly more: boolean }> {
+  const rows: Array<{ label: string; value: string; more: boolean }> = [];
+  for (const item of items) {
+    const shown = item.values.slice(0, MAX_VALUES_PER_ITEM);
+    shown.forEach((value, index) => {
+      rows.push({ label: index === 0 ? item.label : "", value, more: false });
+    });
+    const hidden = item.values.length - shown.length;
+    if (hidden > 0) rows.push({ label: "", value: `+${hidden} more`, more: true });
+  }
+  return rows;
 }
 
 export function TrustDialog(props: TrustDialogProps): React.ReactElement {
-  // No pre-selected option. The user must explicitly pick one with
-  // arrow / tab / explicit y / n before Enter is meaningful. Pressing
-  // Enter on launch (the most common reflex) should not commit a
-  // destructive action; it just sits waiting for an actual choice.
+  // No pre-selected option. The user must explicitly pick one with y / n,
+  // the arrows or Tab before Enter means anything: Enter on launch (the most
+  // common reflex) must not commit either choice.
   const terminalSize = useContext(TerminalSizeContext);
-  // Width budget for the framed path: terminal columns minus the dialog's
-  // paddingX (1 each side), the path frame border (1 each side) and the frame's
-  // own paddingX (1 each side). Falls back to a sane default off-terminal.
+  const [themeName] = useTheme();
   const columns =
     terminalSize && Number.isFinite(terminalSize.columns)
       ? terminalSize.columns
       : DEFAULT_TRUST_PATH_WIDTH;
-  // The dialog is a single card that never stretches the whole terminal on a
-  // wide window. Width is capped so the copy wraps into a readable column; the
-  // path budget is the card's inner width (card - round border - paddingX 2).
   const cardWidth = Math.max(
-    MIN_TRUST_PATH_WIDTH + 8,
-    Math.min(64, columns - 2),
+    MIN_CARD_WIDTH,
+    Math.min(MAX_CARD_WIDTH, columns - 2),
   );
-  // Inner width (card - round border - paddingX 2) minus the 2-col accent bar
-  // prefix ("▎ ") that leads the path row.
-  const pathBudget = cardWidth - 8;
+  const innerWidth = cardWidth - CARD_CHROME_WIDTH;
   const [choice, setChoice] = useState<TrustChoice | null>(null);
   const [pending, setPending] = useState(false);
   const choiceRef = useRef<TrustChoice | null>(null);
@@ -137,70 +193,86 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
 
   useInput((input, key) => {
     if (pending) return;
-    if (key.upArrow || key.downArrow || key.tab) {
-      const current = choiceRef.current;
-      setSelectedChoice(
-        current === null ? "trust" : current === "trust" ? "exit" : "trust",
-      );
-      return;
-    }
-    // Single-letter shortcuts so the user can pick directly without
-    // first navigating: `y` selects trust, `n` selects exit. The
-    // user still has to press Enter afterwards to commit.
+    // y and n answer at once; the button they name is shown as pressed.
     if (input === "y" || input === "Y") {
       setSelectedChoice("trust");
+      void submit("trust");
       return;
     }
     if (input === "n" || input === "N") {
       setSelectedChoice("exit");
+      void submit("exit");
+      return;
+    }
+    // The buttons sit in a row: Exit on the left, Trust on the right.
+    if (key.leftArrow) {
+      setSelectedChoice("exit");
+      return;
+    }
+    if (key.rightArrow) {
+      setSelectedChoice("trust");
+      return;
+    }
+    if (key.upArrow || key.downArrow || key.tab) {
+      const current = choiceRef.current;
+      setSelectedChoice(current === "trust" ? "exit" : "trust");
       return;
     }
     if (key.return) {
-      // Enter is a no-op until the user has made a choice. Without
-      // this guard, a stray Enter from the launching shell or any
-      // reflexive keystroke would commit "exit" and bounce the
-      // user out of the tool they just launched.
+      // A no-op until a button is selected, so a stray Enter from the
+      // launching shell neither trusts the folder nor bounces the user out.
       void submit();
       return;
     }
     if (key.escape) {
+      setSelectedChoice("exit");
       void submit("exit");
     }
   });
 
-  // Terminals can't change font SIZE, so hierarchy has to come from weight,
-  // colour intensity, background FILLS and grouping. The card is three tiers:
-  //   1. a loud purple heading + a bright accent-barred path (the subject),
-  //   2. a dim one-line explanation, split off by a whisper divider,
-  //   3. the two choices as real FILLED-PILL buttons — the selected one is a
-  //      solid bar with knockout text (primary = purple, exit = neutral) and a
-  //      ✓ / ✗ marker, so it reads as a pressed button, not another text line.
-  const trustLabel = trustDialogOptionLabel("trust", choice, pending);
-  const exitLabel = trustDialogOptionLabel("exit", choice, pending);
-  const optionTextWidth = Math.max(trustLabel.length, exitLabel.length);
-  const dividerWidth = Math.max(1, cardWidth - 6);
+  // Terminals can't change font SIZE, so the card builds hierarchy from
+  // weight and ink intensity: the title sits in the border in bold, the
+  // folder name is bold, copy is full ink, labels are bold, values are a
+  // step down, and the path, note and idle buttons are muted.
+  const theme = getTheme(themeName);
+  const title = applyTextStyles(" Trust this project? ", {
+    bold: true,
+    color: theme.text as Color,
+  });
+  const name = basename(props.workspaceRoot) || props.workspaceRoot;
+  const path = formatTrustPath(props.workspaceRoot, innerWidth);
+  const warning = trustLocationWarning(props.location);
+  const lead = trustReviewLead(props.review);
+  const items = [
+    ...(props.review?.repoItems ?? []),
+    ...(props.review?.userItems ?? []),
+  ];
+  const rows = trustItemRows(items);
+  const labelWidth = Math.max(
+    MIN_LABEL_WIDTH,
+    ...items.map((item) => item.label.length + 2),
+  );
+  const valueWidth = Math.max(8, innerWidth - labelWidth);
+  const bypass = props.bypassPermissionsRequested === true;
+  const note = trustSafetyNote(bypass, props.bypassSandboxRequested === true);
 
-  const option = (id: TrustChoice, label: string): React.ReactElement => {
-    const selected = choice === id;
-    const isTrust = id === "trust";
-    // "  ✓  <label padded to a common width>  " — the padding makes every
-    // pill the same width so the selected fill reads as an even bar.
-    const content = `  ${isTrust ? "✓" : "✗"}  ${label.padEnd(optionTextWidth)}  `;
-    if (selected) {
+  const button = (id: TrustChoice, shortcut: string): React.ReactElement => {
+    const text = `${trustDialogOptionLabel(id, choice, pending)}  ${shortcut}`;
+    if (choice === id) {
       return (
         <ThemedText
           key={id}
-          backgroundColor={isTrust ? "agenc" : "text2"}
+          backgroundColor="text"
           color="inverseText"
           bold
         >
-          {content}
+          {`  ${text}  `}
         </ThemedText>
       );
     }
     return (
-      <ThemedText key={id} color="text2">
-        {content}
+      <ThemedText key={id} color="inactive">
+        {`[ ${text} ]`}
       </ThemedText>
     );
   };
@@ -210,64 +282,64 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       flexDirection="column"
       width={cardWidth}
       borderStyle="round"
-      borderColor="agenc"
+      borderColor="subtle"
+      borderText={{ content: title, position: "top", align: "start", offset: 1 }}
       paddingX={2}
-      paddingY={1}
+      paddingTop={1}
     >
-      <ThemedText color="agenc" bold>
-        Trust this project?
+      <ThemedText color="text" bold wrap="truncate-end">
+        {name}
       </ThemedText>
-      {/* The path is the subject of the question — a bright accent bar +
-          bold path, elided in the middle (meaningful tail kept) rather than
-          hard-wrapping a segment across two lines. */}
-      <Box flexDirection="row">
-        <ThemedText color="agenc" bold>
-          ▎{" "}
+      {path !== name ? (
+        <ThemedText color="inactive" wrap="truncate-middle">
+          {path}
         </ThemedText>
-        <ThemedText color="text" bold wrap="truncate-middle">
-          {formatTrustPath(props.workspaceRoot, pathBudget)}
-        </ThemedText>
-      </Box>
-
-      <Box height={1} />
-
-      <ThemedText color="inactive">
-        AgenC can read files, edit files, and run commands in trusted projects.
-      </ThemedText>
-      {props.bypassPermissionsRequested ? (
-        <ThemedText color="warning">{YOLO_TRUST_COPY}</ThemedText>
       ) : null}
-      {props.riskSources && props.riskSources.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          <ThemedText color="warning" bold>
-            Project-local signals:
+
+      {warning !== undefined ? (
+        <Box marginTop={1}>
+          <ThemedText color="text" bold>
+            {warning}
           </ThemedText>
-          {props.riskSources.map((source) => (
-            <ThemedText key={source} color="text2">
-              {`  · ${source}`}
-            </ThemedText>
-          ))}
         </Box>
       ) : null}
 
-      {/* Whisper divider (near-invisible) that still splits question from
-          answer, so the buttons read as their own zone. */}
+      {lead !== undefined ? (
+        <Box flexDirection="column" marginTop={1}>
+          <ThemedText color="text">{lead}</ThemedText>
+          <Box flexDirection="column" marginTop={1}>
+            {rows.map((row, index) => (
+              <Box key={`${row.label}-${index}`} flexDirection="row">
+                <Box width={labelWidth} flexShrink={0}>
+                  <ThemedText color="text" bold>
+                    {row.label}
+                  </ThemedText>
+                </Box>
+                <Box width={valueWidth}>
+                  <ThemedText
+                    color={row.more ? "inactive" : "text2"}
+                    wrap="truncate-end"
+                  >
+                    {row.value}
+                  </ThemedText>
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        </Box>
+      ) : null}
+
       <Box marginTop={1}>
-        <ThemedText color="lineSoft">{"─".repeat(dividerWidth)}</ThemedText>
+        <ThemedText color={bypass ? "text" : "inactive"} bold={bypass}>
+          {note}
+        </ThemedText>
       </Box>
 
-      <Box flexDirection="column" marginTop={1}>
-        {option("trust", trustLabel)}
-        {option("exit", exitLabel)}
+      <Box marginTop={1} flexDirection="row" justifyContent="flex-end">
+        {button("exit", "n")}
+        <ThemedText>{"  "}</ThemedText>
+        {button("trust", "y")}
       </Box>
-
-      <Box height={1} />
-
-      <ThemedText color="inactive">
-        {choice === null
-          ? "↑ ↓ or y / n to choose  ·  Enter to confirm"
-          : "Enter to confirm  ·  ↑ ↓ to switch"}
-      </ThemedText>
     </ThemedBox>
   );
 }

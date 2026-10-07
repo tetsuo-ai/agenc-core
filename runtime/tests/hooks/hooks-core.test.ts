@@ -1832,3 +1832,8 @@ test.skipIf(process.platform === "win32")(
   },
   30_000,
 );
+
+test("shares the InstructionsLoaded predicate with the lightweight module", async () => {
+  const leaf = await import("../../src/utils/hooks/instructionsLoaded.js");
+  expect(leaf.hasInstructionsLoadedHook).toBe(hasInstructionsLoadedHook);
+});

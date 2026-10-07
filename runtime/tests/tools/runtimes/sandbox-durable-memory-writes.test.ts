@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getProjectRoot, setProjectRoot } from "../../../src/bootstrap/state.js";
 import { ConfigStore } from "../../../src/config/store.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
 import { getAutoMemPath, getGlobalMemoryPath } from "../../../src/memory/paths.js";
 import { createFileWriteTool } from "../../../src/tools/system/file-write.js";
 import { enforceRuntimeSandboxAttempt } from "../../../src/tools/runtimes/sandboxing.js";
@@ -38,7 +39,12 @@ beforeEach(() => {
   previousProjectRoot = getProjectRoot();
   setProjectRoot(cwd);
   const configStore = new ConfigStore({ home, env: { AGENC_HOME: home }, cwd });
-  session = mkSession({ cwd, services: { configStore } }).session;
+  // Exercise an ambient writable temp ancestor that also contains AgenC home.
+  // Home protection must survive this grant while the narrow memory exception
+  // continues to honor the operator's explicit denies.
+  session = mkSession({ cwd, services: { configStore,
+    runtimeOptions: resolveAgentRuntimeOptions({ AGENC_HOME: home }, { sessionTempRoot: root }),
+  } }).session;
 });
 
 afterEach(async () => {

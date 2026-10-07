@@ -100,7 +100,7 @@ function sourceLabel(source: AgentDefinition["source"]): string {
   return AGENT_SOURCE_GROUPS.find(group => group.source === source)?.label ?? source;
 }
 
-function compactText(value: string | undefined, fallback = "—", limit = 92): string {
+function compactText(value: string | undefined, fallback = "none", limit = 92): string {
   const normalized = (value ?? "").replace(/\s+/gu, " ").trim();
   const text = normalized.length > 0 ? normalized : fallback;
   if (text.length <= limit) return text;
@@ -115,7 +115,7 @@ function toolSummary(agent: AgentDefinition): string {
 
 function skillSummary(agent: AgentDefinition): string {
   if (agent.skills?.length) return `${agent.skills.length} skills`;
-  return "—";
+  return "none";
 }
 
 function promptText(agent: AgentDefinition): string {
@@ -421,7 +421,7 @@ function FieldValue({
   readonly field: FormField;
   readonly active: boolean;
 }): React.ReactNode {
-  const shown = field.value.length > 0 ? field.value : "—";
+  const shown = field.value.length > 0 ? field.value : "not set";
   const suffix = active && field.editable ? "█" : "";
   return (
     <ThemedText color={active ? "text" : "subtle"} wrap="truncate-middle">

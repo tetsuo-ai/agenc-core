@@ -4,7 +4,7 @@ import {
   getAutoCompactThresholdForEnvironment,
   getEffectiveContextWindowSizeForEnvironment,
   isAutoCompactEnabledForEnvironment,
-} from "../services/compact/autoCompact.js";
+} from "../services/compact/thresholds.js";
 
 export type ResidentContextBreakdown = NonNullable<SessionSnapshotResult["contextBreakdown"]>;
 

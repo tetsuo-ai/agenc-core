@@ -137,6 +137,9 @@ describe("process entries are order-proof NODE_ENV wrappers", () => {
   // ordering, but it covers source-run paths (tsx/vitest) and direct imports.
   const staticEntries: ReadonlyArray<readonly [string, string]> = [
     ["src/index.ts", "./bootstrap/node-env.js"],
+    ["src/bin/agenc-main.ts", "../bootstrap/node-env.js"],
+    ["src/mcp/server/start.ts", "../../bootstrap/node-env.js"],
+    ["src/mcp/server/configured-start.ts", "../../bootstrap/node-env.js"],
     ["src/bin/tui-trust-prompt.tsx", "../bootstrap/node-env.js"],
     ["src/tui/main.tsx", "../bootstrap/node-env.js"],
   ];

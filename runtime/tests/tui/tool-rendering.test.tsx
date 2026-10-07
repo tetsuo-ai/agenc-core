@@ -10,6 +10,7 @@ vi.mock("./ink.js", () => {
   return { Box, Text };
 });
 
+import { ResultLine } from "./components/v2/primitives.js";
 import {
   BashOutputView,
   createTuiTool,
@@ -31,6 +32,12 @@ interface ChildProps {
 
 interface ChildElement {
   readonly props: ChildProps;
+  readonly type?: unknown;
+}
+
+interface ResultLineElement {
+  readonly type: unknown;
+  readonly props: { readonly children?: unknown; readonly failed?: boolean };
 }
 
 function flatten(node: unknown): ChildElement[] {
@@ -161,7 +168,7 @@ describe("TUI tool rendering helpers", () => {
     expect(tool.renderToolUseMessage("raw")).toBe('{"value":"raw"}');
   });
 
-  test("BUG 3: TodoWrite header is a readable count + active item, NOT raw {\"todos\"} JSON", () => {
+  test("BUG 3: TodoWrite header is a readable step count + active item, NOT raw {\"todos\"} JSON", () => {
     const tool = createTuiTool("TodoWrite");
     const summary = tool.renderToolUseMessage({
       todos: [
@@ -171,8 +178,11 @@ describe("TUI tool rendering helpers", () => {
       ],
     });
 
-    // Human-readable: the total count + the in-progress item's name.
-    expect(summary).toContain("3 todos");
+    // Human-readable: the total step count + the in-progress item's name.
+    // The step is named "Plan", so the count reads in steps, not todos.
+    expect(tool.userFacingName(undefined)).toBe("Plan");
+    expect(summary).toContain("3 steps");
+    expect(summary).not.toContain("todos");
     expect(summary).toContain("Wire the config validator");
     // None of the garbled raw-JSON / truncation artifacts from the old generic
     // branch (`{"todos":[{"activeForm":…__.py","status":"completed"},{…).`).
@@ -188,7 +198,7 @@ describe("TUI tool rendering helpers", () => {
     // Singular.
     expect(
       tool.renderToolUseMessage({ todos: [{ content: "Lone task", status: "pending" }] }),
-    ).toBe("1 todo · Lone task");
+    ).toBe("1 step · Lone task");
     // No in-progress item → highlight the first todo.
     expect(
       tool.renderToolUseMessage({
@@ -197,9 +207,9 @@ describe("TUI tool rendering helpers", () => {
           { content: "Second", status: "completed" },
         ],
       }),
-    ).toBe("2 todos · First");
+    ).toBe("2 steps · First");
     // Empty list → just the count, no trailing separator.
-    expect(tool.renderToolUseMessage({ todos: [] })).toBe("0 todos");
+    expect(tool.renderToolUseMessage({ todos: [] })).toBe("0 steps");
   });
 
   test("EditDiffView renders a capped (+a -r) stat line plus green/red changes", () => {
@@ -222,18 +232,21 @@ describe("TUI tool rendering helpers", () => {
     expect(children.find((child) => child.props.color === "green")).toBeDefined();
   });
 
-  test("BashOutputView marks silent (zero-exit) output as (No output)", () => {
-    // Capped preview: silent success collapses to a single dim "(No output)"
-    // line; the raw [duration_ms=...] metadata block is no longer surfaced.
-    // The line now nests behind the `⎿` continuation gutter (matching the
-    // non-empty branch), so the dim "(No output)" <Text> lives a couple Box
-    // levels deep rather than as the root node's direct child.
-    const node = BashOutputView({
-      content: "<bash-stdout></bash-stdout>[duration_ms=42]",
-    });
+  test("BashOutputView marks silent (zero-exit) output as no output", () => {
+    // Transcript form: silent success is one "└ no output" result line; the
+    // raw [duration_ms=...] metadata block is never surfaced.
+    const content = "<bash-stdout></bash-stdout>[duration_ms=42]";
+    const node = BashOutputView({ content }) as unknown as ResultLineElement;
+    expect(node.type).toBe(ResultLine);
+    expect(node.props.children).toBe("no output");
+    expect(node.props.failed).toBeUndefined();
 
+    // Verbose (ctrl+o) keeps the full view: the dim "(No output)" line nests
+    // behind the `└` continuation gutter (matching the non-empty branch), so
+    // it lives a couple Box levels deep rather than as the root's child.
+    const verboseNode = BashOutputView({ content, verbose: true });
     const noOutput = findDeep(
-      node,
+      verboseNode,
       (el) => el.props.children === "(No output)",
     );
     expect(noOutput).toBeDefined();
@@ -241,29 +254,24 @@ describe("TUI tool rendering helpers", () => {
   });
 
   test("ToolErrorView falls back to raw content when no error envelope exists", () => {
-    const children = flatten(ToolErrorView({ content: "raw failure" }));
+    // One failed result line carrying the raw text when there is no
+    // <tool-error> envelope, with no separate "Tool error" header.
+    const node = ToolErrorView({ content: "raw failure" }) as unknown as ResultLineElement;
 
-    expect(
-      children.find(
-        (child) =>
-          child.props.children === "Tool error" &&
-          child.props.bold === true &&
-          child.props.color === "red",
-      ),
-    ).toBeDefined();
-    expect(
-      children.find((child) => child.props.children === "raw failure"),
-    ).toBeDefined();
+    expect(node.type).toBe(ResultLine);
+    expect(node.props.failed).toBe(true);
+    expect(node.props.children).toBe("raw failure");
+    expect(findDeep(node, (el) => el.props.children === "Tool error")).toBeUndefined();
   });
 
   test("file, grep, and glob views keep visible fallbacks for missing content", () => {
     // FileReadView: an unterminated <read-content> yields no body, so the
-    // capped preview falls back to a single dim "(empty file)" Text.
+    // capped preview falls back to a single "└ empty file" result line.
     const readNode = FileReadView({
       content: "<read-file>x.ts</read-file><read-content>unterminated",
-    }) as { readonly props: ChildProps };
-    expect(readNode.props.children).toBe("(empty file)");
-    expect(readNode.props.dimColor).toBe(true);
+    }) as unknown as ResultLineElement;
+    expect(readNode.type).toBe(ResultLine);
+    expect(readNode.props.children).toBe("empty file");
 
     // FileWriteView: empty envelope still surfaces the green default summary.
     const writeNode = FileWriteView({ content: "" }) as {
@@ -272,18 +280,23 @@ describe("TUI tool rendering helpers", () => {
     expect(writeNode.props.children).toBe("Wrote file");
     expect(writeNode.props.color).toBe("green");
 
-    // GrepMatchesView: empty match block collapses to a dim "No matches".
+    // GrepMatchesView: empty match block collapses to "└ no matches".
     const grepNode = GrepMatchesView({
       content: "<grep-matches></grep-matches>",
-    }) as { readonly props: ChildProps };
-    expect(grepNode.props.children).toBe("No matches");
-    expect(grepNode.props.dimColor).toBe(true);
+    }) as unknown as ResultLineElement;
+    expect(grepNode.type).toBe(ResultLine);
+    expect(grepNode.props.children).toBe("no matches");
 
+    // GlobPathsView, transcript form: one "└ no paths" result line.
+    const globContent =
+      "<glob-paths></glob-paths><glob-truncated>true</glob-truncated>";
+    const globNode = GlobPathsView({ content: globContent }) as unknown as ResultLineElement;
+    expect(globNode.type).toBe(ResultLine);
+    expect(globNode.props.children).toBe("no paths");
+
+    // Verbose (ctrl+o) keeps the full view with its dim fallbacks.
     const globChildren = flatten(
-      GlobPathsView({
-        content:
-          "<glob-paths></glob-paths><glob-truncated>true</glob-truncated>",
-      }),
+      GlobPathsView({ content: globContent, verbose: true }),
     );
     expect(globChildren.find((child) => child.props.bold === true)).toBeUndefined();
     expect(

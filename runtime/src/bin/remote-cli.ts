@@ -19,7 +19,6 @@ import {
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import QRCode from "qrcode";
 import WebSocket from "ws";
 
 import {
@@ -99,7 +98,7 @@ export function remoteFullControlRefusal(surface: "cli" | "tui"): string {
 
 export function formatAgenCRemoteCliHelpText(): string {
   return [
-    "agenc remote — control this computer from the AgenC phone app, from anywhere.",
+    "agenc remote: control this computer from the AgenC phone app, from anywhere.",
     "",
     "Usage:",
     "  agenc remote on --full-control",
@@ -251,6 +250,7 @@ async function renderCodeBox(
 
   let qr = "";
   try {
+    const { default: QRCode } = await import("qrcode");
     qr = await QRCode.toString(deepLink, { type: opts.qrType, small: true });
   } catch {
     /* QR is optional — the code still links the computer */
@@ -353,7 +353,7 @@ export async function runAgenCRemoteCli(
     }, authToken);
     if (status === 410) {
       rmSync(pairPath(context), { force: true });
-      process.stdout.write("This computer was unlinked from the phone — re-pairing.\n");
+      process.stdout.write("This computer was unlinked from the phone. Re-pairing.\n");
       pair = null;
     } else if (status === 200 && typeof json.hostTicket === "string") {
       pairingId = pair.pairingId;
@@ -361,7 +361,7 @@ export async function runAgenCRemoteCli(
       relayUrl = (json.relayUrl as string) ?? pair.relayUrl;
       machineName = pair.machineName;
       hostTicket = json.hostTicket;
-      process.stdout.write(`Remote access: linked to “${machineName}” — connecting…\n`);
+      process.stdout.write(`Remote access: linked to “${machineName}”. Connecting…\n`);
     } else {
       process.stderr.write(`Could not reach pairing backend (${status}). Check your connection.\n`);
       return 1;
@@ -457,7 +457,7 @@ function startBridge(args: ConnectorArgs): void {
   const dbg = (msg: string) => { if (!args.quiet && args.context.environment.AGENC_REMOTE_DEBUG) process.stderr.write(msg); };
   const cookie = readCookie(args.context);
   if (!cookie) {
-    out("Warning: no daemon cookie found — is the daemon running? Start it with `agenc daemon`.\n");
+    out("Warning: no daemon cookie found. Is the daemon running? Start it with `agenc daemon`.\n");
   }
   const peers = new Map<string, WebSocket>();
   let relay: WebSocket | null = null;
@@ -590,7 +590,7 @@ function startBridge(args: ConnectorArgs): void {
     relay.on("open", () => {
       opened = true;
       if (stopped) { relay?.terminate(); return; }
-      out(`● Remote access ON — “${machineName}” reachable from your phone (pairing ${pairingId}).\n`);
+      out(`● Remote access ON: “${machineName}” reachable from your phone (pairing ${pairingId}).\n`);
       if (keepalive) clearInterval(keepalive);
       keepalive = setInterval(() => {
         try {
@@ -760,7 +760,7 @@ export async function runRemoteSlash(
   // "on" — delegate to the shared starter.
   const started = await startRemoteOn(context, { fullControl });
   if ("message" in started) return started.message;
-  return `${started.box}\n  This computer is now reachable for this session — pair, then talk to this agent from your phone.`;
+  return `${started.box}\n  This computer is now reachable for this session. Pair, then talk to this agent from your phone.`;
 }
 
 export interface RemoteOnStarted {

@@ -1,9 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import chalk from 'chalk';
 import React, { useContext } from 'react';
 import { Text } from '../ink.js';
-import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import { InVirtualListContext } from './messageActions.js';
@@ -45,7 +43,4 @@ export function CtrlOToExpand() {
   }
   return t0;
 }
-export function ctrlOToExpand(): string {
-  const shortcut = getShortcutDisplay('app:toggleTranscript', 'Global', 'ctrl+o');
-  return chalk.dim(`(${shortcut} to expand)`);
-}
+export { ctrlOToExpand } from '../../utils/terminalHints.js';

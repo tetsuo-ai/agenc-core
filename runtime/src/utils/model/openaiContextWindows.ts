@@ -119,7 +119,9 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'mixtral-8x7b-32768':        32_768,
 
   // Mistral
-  'mistral-large-latest':     256_000,
+  // Large 3's hosted card publishes only rounded 256k, and the account's
+  // models endpoint omits it. Keep exact metadata unknown; runtime fallback
+  // budgets are explicitly marked as estimates by ModelMetadataResolver.
   'mistral-small-latest':     256_000,
   'ministral-3b-latest':      256_000,
 
@@ -346,11 +348,11 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'o4-mini':                  100_000,
 
   // DeepSeek V4 coding-agent models. See context-window note above.
-  'deepseek-flash':           384_000,
-  'deepseek-v4.1-flash':       384_000,
-  'deepseek-v4-flash-vision-exp': 384_000,
-  'deepseek-v4-flash':        384_000,
-  'deepseek-v4-pro':          384_000,
+  'deepseek-flash':           393_216,
+  'deepseek-v4.1-flash':       393_216,
+  'deepseek-v4-flash-vision-exp': 393_216,
+  'deepseek-v4-flash':        393_216,
+  'deepseek-v4-pro':          393_216,
   // Compatibility DeepSeek API aliases documented in the public pricing/model pages.
 
   // Groq
@@ -359,7 +361,7 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'mixtral-8x7b-32768':       32_768,
 
   // Mistral
-  'mistral-large-latest':     32_768,
+  // Large 3 has no independently documented exact output maximum.
   'mistral-small-latest':     32_768,
 
   // MiniMax (M3 and all M2.x variants share 131,072 max output)

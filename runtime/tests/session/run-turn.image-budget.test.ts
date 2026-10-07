@@ -41,8 +41,9 @@ describe("context image budget in the turn loop", () => {
         .map((part) => (part.type === "image_url" ? "IMG" : part.text === OMITTED_IMAGE_TEXT ? "OMITTED" : part.text))
         .join("|"),
     );
-    // More than 6000 bytes over a 5000 budget: retain the newest two images.
-    expect(kinds).toEqual(["first|OMITTED", "second|IMG", "third|IMG"]);
+    // 6066 bytes over a 5000 budget: the oldest images go in one batch,
+    // down to half the budget, which leaves the newest.
+    expect(kinds).toEqual(["first|OMITTED", "second|OMITTED", "third|IMG"]);
     // Durable history is untouched.
     const stored = state.history.filter((message) => Array.isArray(message.content));
     expect(
@@ -52,7 +53,26 @@ describe("context image budget in the turn loop", () => {
       (event) => event.msg.type === "warning" && (event.msg.payload as { cause?: string }).cause === "context_images_omitted",
     );
     expect(warnings).toHaveLength(1);
-    expect((warnings[0]!.msg.payload as { message: string }).message).toContain("1 inline image(s)");
+    expect((warnings[0]!.msg.payload as { message: string }).message).toContain("2 inline image(s)");
+  });
+
+  test("each screenshot turn repeats the previous request byte for byte until a batch", async () => {
+    // Six 1022-byte screenshots fit a 6500-byte budget. The seventh drops
+    // the oldest four, down to half the budget, and the eleventh the next four.
+    vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "6500");
+    const seen: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "seen" }, { onChatStream: (messages) => seen.push(messages) });
+    const { session } = mkSession({ provider });
+    for (let turn = 0; turn < 12; turn += 1) {
+      await drain(runTurn(session, mkCtx(), shot(`screen ${turn}`, 1000).content as LLMContentPart[]));
+    }
+
+    const imagesSent = seen.map((messages) => messages.flatMap((message) =>
+      Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url") : []).length);
+    expect(imagesSent).toEqual([1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+    const repeated = seen.slice(1).map((messages, index) =>
+      JSON.stringify(messages.slice(0, seen[index]!.length)) === JSON.stringify(seen[index]));
+    expect(repeated).toEqual([true, true, true, true, true, false, true, true, true, false, true]);
   });
 
   test("under the budget nothing changes", async () => {

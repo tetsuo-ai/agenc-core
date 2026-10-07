@@ -19,7 +19,6 @@ import { extractTag } from '../../../utils/messages.js'
 import { unescapeXml } from '../../../utils/xml.js'
 import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 import { Box } from '../../ink.js'
-import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
 import { Markdown } from '../markdown/Markdown.js'
@@ -358,16 +357,9 @@ export function ThinkingMessage({
   const glyphs = selectAgenCTuiGlyphs()
   const shouldShowFullThinking = isTranscriptMode || verbose
   if (!shouldShowFullThinking) {
-    // Collapsed streaming hint: the activity spinner below already says
-    // "thinking", so the row is just the expand affordance — no "Thinking"
-    // word, no glyph (UX request).
-    return (
-      <Box marginTop={addMargin ? 1 : 0}>
-        <ThemedText color="subtle" italic>
-          <CtrlOToExpand />
-        </ThemedText>
-      </Box>
-    )
+    // Collapsed reasoning takes no row: the working line already says the
+    // model is thinking, and ctrl+o opens the full transcript.
+    return null
   }
 
   const label = active

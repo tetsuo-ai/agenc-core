@@ -218,7 +218,7 @@ export class HooksServer {
         this.#log("hooks: rejected request carrying a query-string credential");
         this.#json(res, 401, {
           error:
-            "credentials must be sent via 'Authorization: Bearer <token>' only — never in the query string",
+            "credentials must be sent via 'Authorization: Bearer <token>' only, never in the query string",
         });
         return;
       }

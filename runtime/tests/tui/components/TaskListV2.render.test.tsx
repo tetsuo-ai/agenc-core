@@ -227,7 +227,9 @@ describe("TaskListV2 rendering", () => {
     try {
       const output = rendered.output();
       expect(output).toContain("Blocked teammate work");
-      expect(output).toContain("blocked by #1");
+      // Blockers read as a count of steps; internal task ids stay hidden.
+      expect(output).toContain("waiting on 1 step");
+      expect(output).not.toContain("#1");
       expect(output).toContain("@alice");
       expect(output).not.toContain("Scanning");
     } finally {
@@ -290,7 +292,8 @@ describe("TaskListV2 rendering", () => {
       expect(output).toContain("Running two");
       expect(output).toContain("Open three");
       expect(output).toContain("Open five");
-      expect(output).toContain("blocked by #2");
+      expect(output).toContain("Open five › waiting on 1 step");
+      expect(output).not.toContain("#2");
       expect(output).not.toContain("Completed one");
       expect(output).not.toContain("Completed four");
       expect(output).toContain("… +2 completed");

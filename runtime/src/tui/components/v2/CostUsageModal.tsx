@@ -55,14 +55,14 @@ export function CostUsageModal({
   const totalCost =
     report.totalCostUsd !== undefined
       ? `${formatUsdCost(report.totalCostUsd)}${report.totalIsEstimated ? ' est.' : ''}${report.hasUnknownCost ? ' *' : ''}`
-      : '—'
+      : 'unknown'
   const tokenDetail =
     report.inputTokens !== undefined || report.outputTokens !== undefined
       ? `${formatTokenCount(report.inputTokens ?? 0)} in · ${formatTokenCount(report.outputTokens ?? 0)} out` +
         (report.turns !== undefined ? ` · ${report.turns} turns` : '')
       : report.totalTokens !== undefined
         ? `${formatTokenCount(report.totalTokens)} total${report.totalIsEstimated ? ' est.' : ''}`
-        : '—'
+        : 'unknown'
 
   return (
     <Popup
@@ -82,7 +82,7 @@ export function CostUsageModal({
         </Box>
         <Row label="tokens" value={tokenDetail} labelColor="inactive" />
         {report.hasUnknownCost ? (
-          <ThemedText color="muted3">* some model pricing unknown — cost approximate</ThemedText>
+          <ThemedText color="muted3">* some model pricing unknown, so cost is approximate</ThemedText>
         ) : null}
       </Box>
 
@@ -116,9 +116,9 @@ export function CostUsageModal({
                   ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? ' est.' : ''}`
                   : a.estimatedCostUsd !== undefined
                   ? `${formatUsdCost(a.estimatedCostUsd)} est.`
-                  : '—'
+                  : 'unknown'
               }
-              detail={`${a.status} · ${a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : '—'}`}
+              detail={a.tokenCount !== undefined ? `${a.status} · ${formatTokenCount(a.tokenCount)} tokens` : a.status}
             />
           ))
         )}

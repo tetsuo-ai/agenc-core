@@ -27,10 +27,8 @@ describe("onboarding theme tip", () => {
     themeState.detected = false;
     themeState.name = "dark"; // the defaulted guess
     const tip = themeTip();
-    expect(tip).toContain("couldn't detect");
     // Mentions BOTH directions rather than asserting the guessed dark.
-    expect(tip).toContain('"light"');
-    expect(tip).toContain('"dark"');
+    expect(tip).toBe('Tip: pick "light" on a light terminal and "dark" on a dark one.');
     expect(tip).not.toContain("looks dark");
   });
 
@@ -38,7 +36,7 @@ describe("onboarding theme tip", () => {
     themeState.detected = true;
     themeState.name = "light";
     const tip = themeTip();
-    expect(tip).toContain("looks light");
+    expect(tip).toContain("your terminal looks light");
     expect(tip).toContain('"light" or "auto"');
   });
 });

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import {
   STATE_DATABASE_FILENAME,
   openStateDatabases,
   openStateDatabasePaths,
+  resolveStateDatabasePaths,
 } from "../../src/state/sqlite-driver.js";
 
 vi.mock("../../src/state/sqlite-driver.js", async (importOriginal) => {
@@ -161,6 +162,40 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
     );
   });
 }
+
+describe("state-only admission storage", () => {
+  it("keeps FULL state recovery/admission without opening independent logs", async () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    const value = kernel("state-only-admission");
+    const client = bind(value, "state-only-run");
+    const opened = vi.mocked(openStateDatabasePaths).mock.results
+      .filter((result) => result.type === "return")
+      .map((result) => result.value)
+      .find((driver) => driver.stateDbPath === paths.stateDbPath);
+    expect(opened).toBeDefined();
+    expect(opened!.state.pragma("synchronous", { simple: true })).toBe(2);
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, { inputTokens: 1, outputTokens: 1, costUsd: 0 });
+    client.release?.();
+    value.close();
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+
+    // A corrupt, unused logs file cannot hide state or change its authority.
+    writeFileSync(paths.logsDbPath, "invalid unused logs");
+    const restarted = kernel("state-only-restart");
+    expect(restarted.initializeExistingState().failures).toEqual([]);
+    expect(restarted.sumReconciledUsageByRunId("state-only-run").totalTokens).toBe(2);
+  });
+
+  it("still refuses a corrupt state database before binding a client", () => {
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    mkdirSync(paths.projectDir, { recursive: true });
+    writeFileSync(paths.stateDbPath, "invalid state");
+    expect(() => bind(kernel("invalid-state"), "refused-run")).toThrow();
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+  });
+});
 
 describe("idle admission bindings", () => {
   it("opens only the child's bound project when 20 idle projects are known", () => {
@@ -857,6 +892,83 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
       outputTokens: 0,
       costUsd: 0,
     });
+  });
+
+  it.each([false, true])("preserves cancellation when a cancelled step is acquired again (dispatched=%s)", async (dispatched) => {
+    const value = kernel("cancelled-retry");
+    const client = bind(value, "cancelled-run");
+    const lease = await acquire(client);
+    if (dispatched) {
+      client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    }
+    client.cancelRun("operator_cancel");
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+
+    await expect(acquire(client)).rejects.toMatchObject({
+      reason: `cancelled_${dispatched ? "after" : "before"}_dispatch:operator_cancel`,
+      decision: "cancelled",
+    });
+    await expect(acquire(client, "next-stage")).rejects.toMatchObject({
+      reason: "parent_cancel_locked",
+      decision: "cancelled",
+    });
+  });
+
+  it.each([
+    { status: "cancelled", reason: undefined, decision: "cancelled" },
+    { status: "unknown_outcome", reason: undefined, decision: "deny" },
+    { status: "provider_overrun", reason: undefined, decision: "deny" },
+    { status: "running", reason: "operator_cancel", decision: "cancelled" },
+    { status: "running", reason: "unknown_outcome", decision: "deny" },
+    { status: "cancelled", reason: "provider_overrun", decision: "deny" },
+  ])("classifies an ancestor lock by its cause (status=$status, reason=$reason)", async ({ status, reason, decision }) => {
+    const setup = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const at = new Date().toISOString();
+      upsertAgentRun(setup, {
+        id: "locked-parent",
+        objective: "ancestor lock classification",
+        status,
+        startedAt: at,
+        lastActiveAt: at,
+      });
+      if (reason !== undefined) {
+        new ExecutionAdmissionRepository(setup).cancel("locked-parent", { reason });
+      }
+    } finally {
+      setup.close();
+    }
+    const value = kernel("ancestor-lock-cause");
+    const parent = bind(value, "locked-parent");
+    const child = parent.forSession({ runId: "child-run", sessionId: "child-run" });
+
+    // Both the initial denial and a replay of its durable record retain the cause.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(acquire(child)).rejects.toMatchObject({
+        reason: "parent_cancel_locked",
+        decision,
+      });
+    }
+  });
+
+  it("preserves cancellation when it wins between enqueue and claim", async () => {
+    const value = kernel("cancel-before-claim");
+    const client = bind(value, "cancelled-run");
+    const claim = ExecutionAdmissionRepository.prototype.claim;
+    const spy = vi.spyOn(ExecutionAdmissionRepository.prototype, "claim")
+      .mockImplementationOnce(function (options) {
+        this.cancel("cancelled-run", { reason: "operator_cancel" });
+        return claim.call(this, options);
+      });
+    try {
+      await expect(acquire(client)).rejects.toMatchObject({
+        decision: "cancelled",
+      });
+      expect(spy).toHaveBeenCalledOnce();
+      expect(value.activeCount).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("cancels a dispatched child when its parent is cancelled", async () => {
@@ -1644,5 +1756,23 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
         .filter((event) => event.event === "allowed")
         .map((event) => event.stepId),
     ).toEqual(["month-one", "month-two"]);
+  });
+});
+
+
+it("exposes durable admission dimensions for Goal without relabeling other callers", async () => {
+  const value = kernel("goal-stop-dimensions");
+  const parent = value.bindClient({ cwd, scope: { runId: "goal", sessionId: "goal", autonomous: true },
+    budget: { runMaxTokens: 1, runMaxCostUsd: 1 } });
+  const child = parent.forSession({ runId: "goal-child", sessionId: "goal-child" });
+  await expect(acquire(child)).rejects.toMatchObject({ reason: "budget_exceeded" });
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", reason: "budget_exceeded", details: { budgetDimension: "tokens" },
+  });
+  expect(value.getLatestJournalEventByRunId("absent")).toBeUndefined();
+  child.release?.();
+  parent.release?.();
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", details: { budgetDimension: "tokens" },
   });
 });

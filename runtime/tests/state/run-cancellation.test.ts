@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ADMISSION_CANCELLATION_GRAPH,
+  inspectCancellationAncestors,
   CancellationSetLimitError,
   CancellationRepairDeferredError,
   MAX_ANCESTOR_WALK,
@@ -823,5 +825,72 @@ describe("state import over a cancel-locked run", () => {
     ).toThrow(/review-locked/);
     // The refusal rolled the whole transaction back: run row untouched.
     expect(statusOf("locked_run")).toBe("cancelled");
+  });
+});
+
+
+describe("fresh root admission ancestry proof", () => {
+  const inspect = (id: string, allowUnpersistedStartRoot = false, explicitParentRunId?: string) =>
+    inspectCancellationAncestors(driver, {
+      startRunId: id, graphKind: ADMISSION_CANCELLATION_GRAPH,
+      allowUnpersistedStartRoot,
+      ...(explicitParentRunId === undefined ? {} : { explicitParentRunId }),
+    });
+
+  it("retains root identity and cancel-locked status rules", () => {
+    expect(inspect("missing")).toMatchObject({reason: "ancestor_unresolved"});
+    expect(inspect("new-root", true)).toBeUndefined();
+    for (const status of ["running", "completed", "errored", "stopped"])
+      { run(status, status); expect(inspect(status)).toBeUndefined(); }
+    for (const status of ["cancelled", "unknown_outcome", "provider_overrun"])
+      { run(status, status); expect(inspect(status)).toMatchObject({reason: "parent_cancel_locked"}); }
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({runId:"canonical-root",openedAt:T0});
+    expect(inspect("canonical-root")).toBeUndefined();
+    // A declared parent is itself a permitted unpersisted root in the existing contract.
+    expect(inspect("child", true, "missing-parent")).toBeUndefined();
+    run("declared-locked", "cancelled");
+    expect(inspect("child", true, "declared-locked")).toMatchObject({reason:"parent_cancel_locked"});
+  });
+
+  it("observes cancellation committed on another connection after a successful check", () => {
+    run("live-root", "running");
+    expect(inspect("live-root")).toBeUndefined();
+    const writer = openStateDatabases({cwd,agencHome:home});
+    try {
+      writer.prepareState("INSERT INTO execution_admission_cancellations(run_id,reason,cancelled_at) VALUES (?,?,?)")
+        .run("live-root","external cancellation",T1);
+      expect(inspect("live-root")).toMatchObject({reason:"parent_cancel_locked",parentRunId:"live-root"});
+    } finally {writer.close();}
+  });
+
+  it("rechecks added closed ancestry and uses the existing walk for cycles", () => {
+    run("child", "running");run("parent", "cancelled");
+    expect(inspect("child")).toBeUndefined();
+    const writer = openStateDatabases({cwd,agencHome:home});
+    try {
+      const edges = new ThreadSpawnEdgeRepository(writer);
+      edge(edges,"child","parent","/root",{admissionGate:"import"});
+      edges.setStatus("child","closed");
+      expect(inspect("child")).toMatchObject({reason:"parent_cancel_locked",parentRunId:"parent"});
+    } finally {writer.close();}
+    run("cycle1","running");run("cycle2","running");
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    edge(edges,"cycle1","cycle2","/root",{admissionGate:"import"});
+    edge(edges,"cycle2","cycle1","/root",{admissionGate:"import"});
+    expect(inspect("cycle1")).toMatchObject({reason:"ancestor_cycle"});
+  });
+
+  it("does not mistake admission-only ancestry for a root", () => {
+    run("parent","running");run("child","running");
+    expect(inspect("child")).toBeUndefined();
+    admissions.enqueue({
+      step:{runId:"child",stepId:"linked",parentRunId:"parent"},kind:"tool_exec",
+      estimate:{maxInputTokens:0,maxOutputTokens:0,maxCostUsd:0},
+      workspaceId:"workspace",sessionId:"child",autonomous:false,
+    });
+    driver.prepareState("INSERT INTO execution_admission_cancellations(run_id,reason,cancelled_at) VALUES (?,?,?)")
+      .run("parent","cancellation",T1);
+    expect(inspect("child")).toMatchObject({reason:"parent_cancel_locked",parentRunId:"parent"});
+    expect(inspect("child",true,"different-parent")).toBeDefined();
   });
 });

@@ -1,3 +1,4 @@
+import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
  * guarantees, flock acquisition, atomic write-then-rename, and the
@@ -813,7 +814,7 @@ export class SessionLockedError extends Error {
     public readonly lockPath: string,
   ) {
     super(
-      `session locked by pid ${holderPid} (${lockPath}) — another AgenC process owns this session`,
+      `session locked by pid ${holderPid} (${lockPath}); another AgenC process owns this session`,
     );
     this.name = "SessionLockedError";
   }
@@ -1204,6 +1205,8 @@ function truncateCorruptTailFd(
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SessionStoreOpts {
+  readonly relaxedOneShot?: boolean;
+  readonly checkpointOneShot?: () => void;
   readonly cwd: string;
   readonly sessionId: string;
   readonly agencVersion: string;
@@ -1495,6 +1498,9 @@ export class SessionStore {
   /** Exact pre-append boundary whose rollback could not be durably proven. */
   private uncertainAppendStart: number | undefined;
   private readonly trajectoryExport: TrajectoryExportSink;
+  private readonly relaxedOneShotRequested: boolean;
+  private readonly checkpointOneShot: (() => void) | undefined;
+  private oneShotWriter: OneShotWriterAuthority | undefined;
   private readonly explicitResumeRolloutPath: boolean;
   private readonly resumeRolloutLease: ResumeRolloutDescriptorLease | undefined;
   private resumeSourceIdentity: ResumeSourceIdentity | undefined;
@@ -1530,6 +1536,11 @@ export class SessionStore {
       throw new Error(
         "resume rollout descriptor lease does not match its path",
       );
+    }
+    this.relaxedOneShotRequested = opts.relaxedOneShot === true && supportsRelaxedOneShot();
+    this.checkpointOneShot = opts.checkpointOneShot;
+    if (this.relaxedOneShotRequested && (opts.resume || opts.resumeRolloutPath !== undefined || this.checkpointOneShot === undefined)) {
+      throw new Error("relaxed one-shot requires a fresh run and a final SQLite checkpoint");
     }
     this.cwd = opts.cwd;
     this.sessionId = opts.sessionId;
@@ -1669,6 +1680,8 @@ export class SessionStore {
               )
           : undefined;
         resumeFdToClose = resumeHandle?.fd;
+        assertOneShotRecoverable(this.rolloutPath, resumeHandle?.fd);
+        if (this.relaxedOneShotRequested) throw new Error("relaxed one-shot cannot reuse an existing rollout");
         if (resumeHandle !== undefined) {
           this.resumeSourceIdentity = resumeHandle.identity;
         }
@@ -1685,6 +1698,7 @@ export class SessionStore {
             "resume rollout source does not match the requested session id and cwd",
           );
         }
+        consumeOneShotSeal(this.rolloutPath, resumeHandle?.fd);
         this.lastSessionMeta = existingMeta;
         const truncResult =
           resumeHandle === undefined
@@ -1804,6 +1818,17 @@ export class SessionStore {
         this.fileSize = Buffer.byteLength(line, "utf8");
         this.trajectoryExport.writeItems([item]);
         this.lastSessionMeta = sessionMeta;
+      }
+      if (this.relaxedOneShotRequested) {
+        if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0) throw new Error("one-shot metadata is not durably committed");
+        this.oneShotWriter = beginOneShotWriter({
+          rolloutPath: this.rolloutPath, runId: this.sessionId,
+          checkpoint: this.checkpointOneShot!,
+          flushAndSync: () => {
+            if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0) throw new Error("one-shot has unresolved persistence failures");
+            this.syncCanonicalTail();
+          },
+        });
       }
       this.degraded.start();
       this.opened = true;
@@ -2157,7 +2182,9 @@ export class SessionStore {
 
       let committed = true;
       try {
-        if (durable) {
+        if (durable && this.oneShotWriter?.relaxed === true) {
+          this.writeBytesAppendOnly(lines);
+        } else if (durable) {
           // I-38: async retry on fsync failure routes to degraded via
           // the callback. The bytes were already writeSync'd by this
           // point, so we MUST NOT re-queue them (#11) — only enter
@@ -2171,7 +2198,8 @@ export class SessionStore {
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
         try {
-          this.onRolloutCommitted?.(this.rolloutPath);
+          withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+            () => this.onRolloutCommitted?.(this.rolloutPath));
         } catch {
           // The rollout is already appended. A mirror callback cannot make this
           // canonical flush fail or cause its items to be re-queued.
@@ -3383,6 +3411,39 @@ export class SessionStore {
     };
   }
 
+  /** Bounded synchronous read under this store's existing lifetime writer lease.
+   * Receipts are fsynced before publication; pending non-durable events need
+   * not be flushed to read that committed prefix. Never takes a second lease. */
+  scanCanonicalChunks(maxBytes: number, consume: (chunk: Uint8Array) => void): void {
+    if (!this.opened || this.closed) throw new Error("cannot read a closed canonical store");
+    const identity = this.canonicalSourceIdentity();
+    const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+    const fd = this.openCanonicalFile(fsConstants.O_RDONLY | noFollow, 0o600);
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      if (before.dev.toString() !== identity.dev || before.ino.toString() !== identity.ino ||
+          before.size > BigInt(maxBytes)) throw new Error("Canonical result source changed or exceeds byte limit");
+      const chunk = Buffer.allocUnsafe(64 * 1_024);
+      const size = Number(before.size);
+      for (let offset = 0; offset < size;) {
+        const requested = Math.min(chunk.length, size - offset);
+        const read = readSync(fd, chunk, 0, requested, offset);
+        if (read !== requested) throw new Error("Canonical result source changed during read");
+        consume(chunk.subarray(0, read));
+        offset += read;
+      }
+      this.assertCanonicalFileStillBound(fd);
+      const after = fstatSync(fd, { bigint: true });
+      const current = this.canonicalSourceIdentity();
+      if (current.dev !== identity.dev || current.ino !== identity.ino ||
+          before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+        throw new Error("Canonical result source changed during read");
+      }
+    } finally {
+      this.closeCanonicalOperationFd(fd);
+    }
+  }
+
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
     if (this.resumeSourceFaulted) {
@@ -3480,7 +3541,6 @@ export class SessionStore {
 
   close(): void {
     if (this.closed) return;
-    this.closed = true;
     const errors: unknown[] = [];
     const capture = (operation: () => void): void => {
       try {
@@ -3489,6 +3549,8 @@ export class SessionStore {
         errors.push(error);
       }
     };
+    capture(() => this.oneShotWriter?.seal());
+    this.closed = true;
     capture(() => {
       if (this.pending.length > 0) this.flushBatch(true);
     });
@@ -3533,6 +3595,7 @@ export class SessionStore {
       this.resumeSourceIdentity = undefined;
       closeSync(resumeFd);
     });
+    capture(() => this.oneShotWriter?.release());
     capture(() => this.lock.release());
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) {

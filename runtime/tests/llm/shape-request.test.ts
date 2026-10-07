@@ -10,7 +10,7 @@ import {
 import type { ProviderModelCapabilities } from "./capabilities.js";
 
 describe("analyzeSessionHistoryRequirements", () => {
-  it("detects image, audio, thinking, and reasoning-effort requirements recursively", () => {
+  it("detects image, audio, and thinking requirements recursively, and no effort requirement", () => {
     const requirements = analyzeSessionHistoryRequirements({
       history: [
         {
@@ -46,12 +46,12 @@ describe("analyzeSessionHistoryRequirements", () => {
       },
     });
 
+    // A switch keeps or drops the session's effort instead of refusing over it
+    // (session/reasoning-effort-for-model.ts), so it is not a requirement.
     expect(requirements).toEqual({
       hasImageHistory: true,
       hasAudioHistory: true,
       hasThinkingHistory: true,
-      reasoningEffortRequested: true,
-      reasoningEffort: "high",
     });
   });
 });
@@ -71,7 +71,6 @@ describe("validateHistoryCompatibility", () => {
       hasImageHistory: true,
       hasAudioHistory: false,
       hasThinkingHistory: true,
-      reasoningEffortRequested: true,
     });
 
     expect(result.compatible).toBe(false);
@@ -97,7 +96,6 @@ describe("validateHistoryCompatibility", () => {
         hasImageHistory: true,
         hasAudioHistory: false,
         hasThinkingHistory: false,
-        reasoningEffortRequested: true,
       }),
     ).toEqual({
       compatible: true,
@@ -105,7 +103,7 @@ describe("validateHistoryCompatibility", () => {
     });
   });
 
-  it("surfaces reasoning effort as a user-facing compatibility requirement", () => {
+  it("does not refuse a model that takes no reasoning effort", () => {
     const caps: ProviderModelCapabilities = {
       provider: "openrouter",
       model: "openai/gpt-4.1",
@@ -120,14 +118,8 @@ describe("validateHistoryCompatibility", () => {
         hasImageHistory: false,
         hasAudioHistory: false,
         hasThinkingHistory: false,
-        reasoningEffortRequested: true,
       }),
-    ).toEqual({
-      compatible: false,
-      missingCapabilities: ["reasoning effort"],
-      reason:
-        "openrouter / openai/gpt-4.1 cannot satisfy this session's reasoning effort requirements",
-    });
+    ).toEqual({ compatible: true, missingCapabilities: [] });
   });
 });
 

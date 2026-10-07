@@ -1543,6 +1543,15 @@ describe("AgenC daemon CLI", () => {
       kind: "error",
       message: "unknown daemon command: bogus",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "install-service"])).toEqual({
+      kind: "install-service",
+    });
+    expect(
+      parseAgenCDaemonCliArgs(["daemon", "install-service", "--winsw"]),
+    ).toEqual({
+      kind: "error",
+      message: "unknown daemon install-service option: --winsw",
+    });
   });
 
   it("documents foreground daemon mode and ships supervisor templates", async () => {
@@ -1574,9 +1583,16 @@ describe("AgenC daemon CLI", () => {
     expect(launchd).toContain("<string>agenc</string>");
     expect(launchd).toContain("<string>--foreground</string>");
     expect(windows).toContain("<id>agenc-daemon</id>");
-    expect(windows).toContain(
-      "<arguments>daemon start --foreground</arguments>",
-    );
+    expect(windows).toContain("daemon start --foreground");
+    expect(windows).toContain("__AGENC_CMD_EXE__");
+    expect(windows).toContain("__AGENC_LAUNCHER__");
+    expect(windows).toContain("__AGENC_HOME__");
+    expect(windows).toContain("__AGENC_DOMAIN__");
+    expect(windows).toContain("__AGENC_USER__");
+    expect(windows).not.toContain("<username>");
+    expect(windows).not.toContain("<password>");
+    expect(windows).not.toContain("<executable>agenc</executable>");
+    expect(helpText).toContain("agenc daemon install-service");
   });
 
   it("starts once, writes daemon.pid, and reports running status", async () => {
@@ -3158,6 +3174,40 @@ describe("AgenC daemon CLI", () => {
     },
   );
 
+  it("notifies the parent only after identity publication and lifecycle lock release", async () => {
+    const agencHome = await tempAgencHome();
+    const baseHost = createHost(agencHome);
+    const signalProcess = createSignalProcess();
+    let beforeReadyFinished = false;
+    const notifyReady = vi.fn(async () => {
+      expect(beforeReadyFinished).toBe(true);
+      expect(await readAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).toBe(host.pid);
+      expect(readDaemonRuntimeInfo(resolveAgenCDaemonRuntimeInfoPath(agencHome))?.pid).toBe(host.pid);
+      // This acquire would block if notification preceded the publication
+      // transaction's release. The parent uses the same barrier before proof.
+      const release = await acquireAgenCDaemonLifecycleLock(host);
+      await release();
+      signalProcess.emit("SIGTERM");
+    });
+    const host: AgenCDaemonCliHost = {
+      ...baseHost,
+      startupGuardReceiver: {
+        requested: new Promise<void>(() => {}), wasRequested: () => false,
+        notifyReady, acknowledgeAfterCleanup: async () => {}, close: () => {},
+      },
+    };
+    try {
+      await expect(runAgenCDaemonCli({ kind: "command", action: "run" }, {
+        host, io: createIo(), signalProcess,
+        beforeDaemonReady: () => {
+          expect(notifyReady).not.toHaveBeenCalled();
+          beforeReadyFinished = true;
+        },
+      })).resolves.toBe(0);
+      expect(notifyReady).toHaveBeenCalledOnce();
+    } finally { await rm(agencHome, { recursive: true, force: true }); }
+  });
+
   it("honors startup cancellation immediately after a blocked lifecycle lock", async () => {
     const agencHome = await tempAgencHome();
     const baseHost = createHost(agencHome);
@@ -3165,11 +3215,13 @@ describe("AgenC daemon CLI", () => {
     const releaseBlocker = await acquireAgenCDaemonLifecycleLock(baseHost);
     const acknowledgeAfterCleanup = vi.fn(async () => {});
     const beforeDaemonReady = vi.fn();
+    const notifyReady = vi.fn(async () => {});
     const host: AgenCDaemonCliHost = {
       ...baseHost,
       startupGuardReceiver: {
         requested: Promise.resolve(),
         wasRequested: () => true,
+        notifyReady,
         acknowledgeAfterCleanup,
         close: () => {},
       },
@@ -3190,6 +3242,7 @@ describe("AgenC daemon CLI", () => {
       await releaseBlocker();
       await expect(running).resolves.toBe(1);
       expect(beforeDaemonReady).not.toHaveBeenCalled();
+      expect(notifyReady).not.toHaveBeenCalled();
       expect(acknowledgeAfterCleanup).toHaveBeenCalledExactlyOnceWith(true);
       await expect(
         readAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome)),
@@ -3223,6 +3276,7 @@ describe("AgenC daemon CLI", () => {
       startupGuardReceiver: {
         requested: requestedPromise,
         wasRequested: () => requested,
+        notifyReady: async () => {},
         acknowledgeAfterCleanup,
         close: () => {},
       },
@@ -4584,6 +4638,37 @@ workspace = ${JSON.stringify(process.cwd())}
       expect(host.runningPids.has(daemonPid)).toBe(true);
     } finally {
       await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("serves health and publishes the resolved endpoint for a long daemon home", async () => {
+    const root = await tempAgencHome();
+    const agencHome = join(root, "long-home-".repeat(14));
+    const host = createHost(agencHome);
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    expect(Buffer.byteLength(join(agencHome, "daemon.sock"))).toBeGreaterThanOrEqual(110);
+    expect(socketPath).not.toBe(join(agencHome, "daemon.sock"));
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io: createIo(), signalProcess },
+    );
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(host.pid);
+      const info = readDaemonRuntimeInfo(resolveAgenCDaemonRuntimeInfoPath(agencHome));
+      expect(info?.socketPath).toBe(socketPath);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: 2_000,
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await expect(running).resolves.toBe(0);
+      expect(existsSync(socketPath)).toBe(false);
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -8231,6 +8316,9 @@ snapshot_max_bytes = 64
 
   it("retains a failed snapshot policy and its driver for a later close retry", async () => {
     const agencHome = await tempAgencHome();
+    // This fault injection needs an existing default-project policy. Fresh,
+    // unused projects intentionally no longer manufacture one at startup.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const host = createHost(agencHome);
     const io = createIo();
     const signalProcess = createSignalProcess();
@@ -8280,6 +8368,8 @@ snapshot_max_bytes = 64
 
   it("periodic snapshot failure in one project does not starve another project", async () => {
     const agencHome = await tempAgencHome();
+    // Exercise two real project policies, including the failing default one.
+    openStateDatabases({ cwd: process.cwd(), agencHome }).close();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-periodic-other-"));
     await mkdir(join(otherCwd, ".git"));
     const host = createHost(agencHome);
@@ -8376,6 +8466,7 @@ function seedRecoverableDaemonState(
           ...(params.includeCommandEnvironment === false
             ? {}
             : { commandEnvironment: { PATH: "/usr/bin:/bin" } }),
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver
@@ -8595,6 +8686,7 @@ function seedRecoverableCompletedToolState(
           agentPath: `/root/${params.runId}`,
           runtimeOptions: TEST_RUNTIME_OPTIONS,
           commandEnvironment: { PATH: "/usr/bin:/bin" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
         }),
       );
     driver

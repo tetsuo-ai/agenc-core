@@ -124,6 +124,8 @@ function inferServiceTiers(
         // multiple, at 2x every token rate (providers/grok/priority-processing.ts).
         description: entry.provider === "grok"
           ? "Higher scheduling priority at 2x price"
+          : entry.provider === "minimax"
+          ? "Higher scheduling priority at 1.5x price"
           : "1.5x speed, increased usage",
       });
     } else if (tier === "flex") {
@@ -240,6 +242,10 @@ export class ModelRegistry {
     this.catalog = buildProviderModelCatalog(options.config, {
       includeConfiguredSelection: true,
     });
+  }
+
+  metadataRevision(params: { readonly provider: string; readonly model: string }): number {
+    return this.metadataResolver.cacheRevision({ ...params, config: this.config });
   }
 
   listEntriesSync(): readonly ModelRegistryEntry[] {

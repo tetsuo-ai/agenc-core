@@ -1,3 +1,4 @@
+import { promoteOneShotRun, selectRelaxedOneShot } from "../durability/one-shot-durability.js";
 /**
  * Starts daemon-owned background agents through the existing delegate runtime.
  *
@@ -20,7 +21,7 @@ import {
 } from "./background-agent-runner/completed-event-cache.js";
 import { roughTokenCountEstimation } from "../llm/token-estimation.js";
 import { modelContextWindow } from "../session/turn-context.js";
-import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/autoCompact.js";
+import { getEffectiveContextWindowSizeForEnvironment } from "../services/compact/thresholds.js";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -92,6 +93,10 @@ import {
 } from "../permissions/permission-updates.js";
 import { applyModelSwitch } from "../commands/model.js";
 import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
+import {
+  droppedReasoningEffortNotice,
+  withSessionReasoningEffort,
+} from "../session/reasoning-effort-for-model.js";
 import type {
   ProviderModelSelectionOutcome,
 } from "../contracts/provider-model-selection.js";
@@ -149,7 +154,7 @@ import type {
   SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
-import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
+import type { AgenCRealtimeCallClientLike } from "./realtime-transport.js";
 import type {
   RealtimeTransportConnection,
 } from "../conversation/realtime/conversation.js";
@@ -314,6 +319,8 @@ import {
   prepareMcpAuthorityRefresh,
   captureRuntimeSettings,
   normalizeRuntimeSetting,
+  reasoningEffortForStagedModel,
+  liveRuntimeReasoningEffort,
   installRuntimeSettingsPreCommit,
   withRuntimeSettingsMutation,
   ensureInitialRuntimeSettings,
@@ -436,7 +443,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     CsvAgentJobsRepositoryProvider | undefined;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
-  #realtimeCallClient: AgenCRealtimeCallClient | undefined;
+  #realtimeCallClient: AgenCRealtimeCallClientLike | undefined;
   #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #quiescing = new WeakMap<ActiveBackgroundAgent, Promise<void>>();
@@ -522,8 +529,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // A routine run is marked in its immutable runtime options, so the shell
     // sandbox, the dispatch path and MCP questions can tell it apart without
     // reading permission state that changes or is fenced mid-run.
-    const runtimeOptions = routineRun
-      ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+    const runtimeOptions = routineRun || params.runtimeOptions?.relaxedOneShot !== undefined
+      ? Object.freeze({
+          ...params.runtimeOptions,
+          ...(routineRun ? { routineRun: true } : {}),
+          ...(params.runtimeOptions?.relaxedOneShot !== undefined ? {
+            relaxedOneShot: selectRelaxedOneShot({ requested: params.runtimeOptions.relaxedOneShot,
+              nonInteractive: params.runtimeOptions.nonInteractive, source: params.metadata?.source,
+              mode: params.metadata?.mode, routine: routineRun || params.runtimeOptions.routineRun === true,
+              goal: params.metadata?.goalRun === true }),
+          } : {}),
+        })
       : params.runtimeOptions;
     // Bootstrap runs helper code that resolves the runtime-options
     // authority ambiently. With a second live session in this process the
@@ -545,6 +561,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
+      // Scratch ceiling: only fresh one-shot Light sessions in the daemon.
+      deferAuxiliarySetupUntilRequest:
+        runtimeOptions?.lightMode === true && runtimeOptions.nonInteractive === true,
       // One process hosts every session: no exit hook per session and no cost
       // summary on the daemon's stdout.
       costSummaryOnExit: false,
@@ -1049,8 +1068,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           params.envOverrides,
         );
         // A restored routine run stays marked as one (see startAgent).
-        const restoreRuntimeOptions = isRoutineRun(params.metadata)
-          ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+        const restoreRuntimeOptions = isRoutineRun(params.metadata) || params.runtimeOptions?.relaxedOneShot !== undefined
+          ? Object.freeze({
+              ...params.runtimeOptions,
+              ...(params.runtimeOptions?.relaxedOneShot !== undefined ? { relaxedOneShot: false } : {}),
+              ...(isRoutineRun(params.metadata) ? { routineRun: true } : {}),
+            })
           : params.runtimeOptions;
         // Same ambient-authority scope as first start: restores also run
         // bootstrap helpers outside any session context.
@@ -1339,6 +1362,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             const overrideEventId = active.runtimeSettingsEventId!;
             try {
               await applyRestoredRuntimeSettings(bootstrap, restoreOverrides);
+              const resumeDroppedEffort = previousSettings.reasoningEffort;
+              if (
+                resumeDroppedEffort !== null &&
+                restoreOverrides.reasoningEffort === null
+              ) {
+                // The journal names what the next turn runs on the resumed
+                // model. The level stays live until that switch applies,
+                // which drops it and says so.
+                await bootstrap.session.state.with((state) => {
+                  state.sessionConfiguration = withSessionReasoningEffort(
+                    state.sessionConfiguration,
+                    resumeDroppedEffort,
+                  );
+                });
+              }
             } catch (error) {
               const cleanupErrors: unknown[] = [];
               try {
@@ -2125,6 +2163,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    // The fresh print turn is submitted by startAgent. Any later message is a
+    // continuation, including -c attaching to a still-live one-shot runtime.
+    promoteOneShotRun(agentId);
     const contentFingerprint = messageContentFingerprint(
       params.originalContent,
     );
@@ -2752,6 +2793,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     const submitOptions: DaemonHumanSessionSubmitOptions = {
+      ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       [DAEMON_USER_PROMPT_PREPARED]: true as const,
@@ -3649,6 +3691,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       let preparedSettings: RunRuntimeSettingsSnapshot | undefined;
       let preparedProviderSwitch: PreparedSessionProviderSwitch | undefined;
       let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
+      let droppedReasoningEffort: string | undefined;
       const stage = async (selection: {
         readonly provider: string;
         readonly model: string;
@@ -3666,10 +3709,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               () => session.prepareProviderSwitch(selection),
             ),
         );
+        // The journal names what the next turn runs: the live level when the
+        // new model accepts it, otherwise none. The live level itself changes
+        // only when the switch applies, so a switch that never applies keeps
+        // the user's level.
+        const effort = reasoningEffortForStagedModel(
+          active.bootstrap.configStore.current(),
+          selection,
+          liveRuntimeReasoningEffort(session),
+        );
+        droppedReasoningEffort = effort.dropped;
         const nextSettings: RunRuntimeSettingsSnapshot = {
           ...captureRuntimeSettings(active),
           provider: selection.provider,
           model: selection.model,
+          reasoningEffort: effort.reasoningEffort,
         };
         preparedSettings = nextSettings;
         preparedSettingsChange = prepareDurableRuntimeSettingsChange(
@@ -3784,7 +3838,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         provider: settings.provider,
         model: settings.model,
         runtimeSettingsEventId: settingsEventId,
-        summary: outcome.summary,
+        summary:
+          droppedReasoningEffort === undefined
+            ? outcome.summary
+            : `${outcome.summary} ${droppedReasoningEffortNotice(settings.model, droppedReasoningEffort)}`,
       };
     });
   }
@@ -4193,43 +4250,86 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const session = active.bootstrap.session;
-    if (params.reasoningEffort !== undefined) {
+    if (params.reasoningEffort !== undefined || params.modelVerbosity !== undefined) {
       if (params.reload !== undefined || params.profile !== undefined) {
-        throw new Error("An effort-only update cannot reload other configuration");
+        throw new Error("An effort or response detail update cannot reload other configuration");
       }
       return withRuntimeSettingsMutation(active, async () => {
         if (!isRunnableActiveAgent(active) || session.activeTurn?.unsafePeek() != null) {
-          throw new Error("Reasoning effort can only change between turns");
+          throw new Error("Reasoning effort and response detail can only change between turns");
         }
         const previousSettings = ensureInitialRuntimeSettings(active, agentId);
-        const level = normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
-        const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
-        if (level === null || !effort.levels.includes(level)) {
-          throw new Error("The selected model does not support this reasoning effort");
+        // Null clears the session's effort: the model runs at its own default.
+        const level = params.reasoningEffort === undefined
+          ? previousSettings.reasoningEffort
+          : normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
+        if (params.reasoningEffort !== undefined && level !== null) {
+          const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
+          if (!effort.levels.includes(level)) {
+            throw new Error("The selected model does not support this reasoning effort");
+          }
         }
+        const effortSummary = level === null
+          ? "Reasoning effort follows the model default"
+          : `Reasoning effort set to ${level}`;
+        const modelVerbosity = params.modelVerbosity === undefined
+          ? previousSettings.modelVerbosity
+          : normalizeRuntimeSetting(params.modelVerbosity, RUN_RUNTIME_MODEL_VERBOSITIES, "model verbosity");
         const identity = { provider: previousSettings.provider, model: previousSettings.model };
-        if (previousSettings.reasoningEffort === level) {
-          return { applied: true, ...identity, summary: `Reasoning effort is ${level}` };
-        }
+        const acceptedVerbosity = params.modelVerbosity === undefined ? {} : { modelVerbosity };
         const previousConfiguration = session.sessionConfiguration;
-        const prepared = prepareDurableRuntimeSettingsChange(active, agentId,
-          { ...previousSettings, reasoningEffort: level }, "config_applied");
+        const settingsChanged =
+          previousSettings.reasoningEffort !== level || previousSettings.modelVerbosity !== modelVerbosity;
+        // The journal can name a level the live session does not run yet: a
+        // staged switch that drops the level journals none while the old model
+        // keeps it, and a session that never set a level journals none while
+        // the configured one still applies.
+        const liveEffortChanged = params.reasoningEffort !== undefined &&
+          (previousConfiguration.collaborationMode.reasoningEffort !== (level ?? undefined) ||
+            (level === null && previousConfiguration.reasoningEffortCleared !== true));
+        if (!settingsChanged && !liveEffortChanged) {
+          return { applied: true, ...identity, ...acceptedVerbosity,
+            ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
+            summary: params.modelVerbosity === undefined
+              ? (level === null ? effortSummary : `Reasoning effort is ${level}`)
+              : `Response detail is ${modelVerbosity ?? "inherited"}` };
+        }
+        const inheritedModelVerbosity = previousConfiguration.modelVerbosityOverride === undefined
+          ? previousConfiguration.modelVerbosity
+          : previousConfiguration.inheritedModelVerbosity;
+        const prepared = settingsChanged
+          ? prepareDurableRuntimeSettingsChange(active, agentId,
+            { ...previousSettings, reasoningEffort: level, modelVerbosity }, "config_applied")
+          : undefined;
         try {
           await session.state.with(state => {
             state.sessionConfiguration = {
-              ...state.sessionConfiguration,
-              collaborationMode: { ...state.sessionConfiguration.collaborationMode, reasoningEffort: level },
+              ...(params.reasoningEffort !== undefined
+                ? withSessionReasoningEffort(state.sessionConfiguration, level)
+                : state.sessionConfiguration),
+              ...(params.modelVerbosity !== undefined
+                ? {
+                    modelVerbosityOverride: modelVerbosity,
+                    inheritedModelVerbosity,
+                    modelVerbosity: modelVerbosity ?? inheritedModelVerbosity,
+                  }
+                : {}),
             };
           });
         } catch (error) {
           await session.state.with(state => { state.sessionConfiguration = previousConfiguration; });
-          compensatePreparedRuntimeSettingsChange(active, agentId, previousSettings, prepared);
+          if (prepared !== undefined) {
+            compensatePreparedRuntimeSettingsChange(active, agentId, previousSettings, prepared);
+          }
           throw error;
         }
-        prepared.finalize();
-        return { applied: true, ...identity,
+        prepared?.finalize();
+        return { applied: true, ...identity, ...acceptedVerbosity,
           ...(active.runtimeSettingsEventId ? { runtimeSettingsEventId: active.runtimeSettingsEventId } : {}),
-          summary: `Reasoning effort set to ${level}` };
+          summary: [
+            ...(params.reasoningEffort !== undefined ? [effortSummary] : []),
+            ...(params.modelVerbosity !== undefined ? [`Response detail set to ${modelVerbosity ?? "inherited"}`] : []),
+          ].join("; ") };
       });
     }
     const configStore = session.services.configStore;
@@ -4448,20 +4548,49 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         RUN_RUNTIME_MODEL_VERBOSITIES,
         "model verbosity",
       );
+      const currentInheritedVerbosity = session.sessionConfiguration.modelVerbosityOverride === undefined
+        ? session.sessionConfiguration.modelVerbosity
+        : session.sessionConfiguration.inheritedModelVerbosity;
+      const inheritedVerbosityChanged = currentInheritedVerbosity !== (nextVerbosity ?? undefined);
       const nextServiceTier = normalizeRuntimeSetting(
         resolved.service_tier,
         RUN_RUNTIME_SERVICE_TIERS,
         "service tier",
       );
-      const nextSettings: RunRuntimeSettingsSnapshot = {
+      const configuredSettings: RunRuntimeSettingsSnapshot = {
         ...captureRuntimeSettings(active),
         ...(targetModel !== undefined && stageProvider !== undefined
           ? { model: targetModel, provider: stageProvider }
           : {}),
         ...(params.profile !== undefined ? { profile: params.profile } : {}),
-        ...(nextReasoning !== null ? { reasoningEffort: nextReasoning } : {}),
-        ...(nextVerbosity !== null ? { modelVerbosity: nextVerbosity } : {}),
+        // A config reload updates the inherited default, not a live session override.
+        modelVerbosity: previousSettings.modelVerbosity,
         ...(nextServiceTier !== null ? { serviceTier: nextServiceTier } : {}),
+      };
+      // The journal names what the next turn runs: the configured or live
+      // level, judged against the model a staged switch brings. The live
+      // level changes only when that switch applies.
+      const liveSelection = readSessionSelection(session);
+      const sessionEffort = nextReasoning ?? liveRuntimeReasoningEffort(session);
+      const stagedEffort: ReturnType<typeof reasoningEffortForStagedModel> =
+        configuredSettings.provider !== liveSelection.provider ||
+        configuredSettings.model !== liveSelection.model
+          ? reasoningEffortForStagedModel(
+              canonicalConfig,
+              configuredSettings,
+              sessionEffort,
+            )
+          : { reasoningEffort: sessionEffort };
+      // Report a drop for a switch this reload makes; a staged one already did.
+      const droppedReasoningEffort =
+        pendingSelection !== undefined &&
+        (pendingSelection.provider !== previousSettings.provider ||
+          pendingSelection.model !== previousSettings.model)
+          ? stagedEffort.dropped
+          : undefined;
+      const nextSettings: RunRuntimeSettingsSnapshot = {
+        ...configuredSettings,
+        reasoningEffort: stagedEffort.reasoningEffort,
       };
       const settingsChanged =
         !runtimeSettingsEqual(nextSettings, previousSettings);
@@ -4478,32 +4607,27 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       try {
         if (
           nextReasoning !== null ||
-          nextVerbosity !== null ||
+          inheritedVerbosityChanged ||
           nextServiceTier !== null
         ) {
           await session.state.with((state) => {
             const configuration = state.sessionConfiguration;
             state.sessionConfiguration = {
-              ...configuration,
-              collaborationMode: {
-                ...configuration.collaborationMode,
-                ...(nextReasoning !== null
-                  ? { reasoningEffort: nextReasoning }
-                  : {}),
-              } as typeof configuration.collaborationMode,
-              ...(nextVerbosity !== null
-                ? { modelVerbosity: nextVerbosity }
-                : {}),
+              ...(nextReasoning !== null
+                ? withSessionReasoningEffort(configuration, nextReasoning)
+                : configuration),
+              inheritedModelVerbosity: nextVerbosity ?? undefined,
+              modelVerbosity: previousSettings.modelVerbosity ?? nextVerbosity ?? undefined,
               ...(nextServiceTier !== null
                 ? { serviceTier: nextServiceTier }
                 : {}),
             };
           });
-          if (nextReasoning !== null) {
+          if (nextReasoning !== null && droppedReasoningEffort === undefined) {
             changes.push(`reasoning effort ->${nextReasoning}`);
           }
-          if (nextVerbosity !== null)
-            changes.push(`verbosity ->${nextVerbosity}`);
+          if (inheritedVerbosityChanged)
+            changes.push(`inherited verbosity ->${nextVerbosity ?? "default"}`);
           if (nextServiceTier !== null) {
             changes.push(`service tier ->${nextServiceTier}`);
           }
@@ -4584,9 +4708,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               runtimeSettingsEventId,
             }),
         summary:
-          changes.length > 0
+          (changes.length > 0
             ? `${label} applied: ${changes.join(", ")}`
-            : `${label}: no changes to apply`,
+            : `${label}: no changes to apply`) +
+          (droppedReasoningEffort !== undefined
+            ? `. ${droppedReasoningEffortNotice(runtimeSettings.model, droppedReasoningEffort)}`
+            : ""),
       };
     });
   }
@@ -5845,6 +5972,7 @@ function installDaemonTurnDriverHooks(
           // main-thread source; subagents use their own sessions and autonomous ticks are still
           // excluded by rootHumanTurnText below.
           querySource: "sdk",
+          exactOutput: opts?.exactOutput,
           displayUserMessage: null,
           ...(opts?.[DAEMON_USER_STOP_GENERATION] !== undefined
             ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }

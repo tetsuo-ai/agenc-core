@@ -377,17 +377,27 @@ durable, shutdown or a forced kill can still lose that unpersisted state.
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `completion_gate` defaults to `mode = "auto"` with
 `max_rounds = 3`: in a non-interactive session (`agenc -p`, a routine, an
-evaluation harness) the first tool-free final answer of a turn that used
-tools is not accepted; the runtime injects a durable `<completion_gate>`
-user message that quotes the task and asks for a checklist backed by
-executed checks. Acceptance requires each nonempty checked `- [x]` item
+evaluation harness) acceptance requires each nonempty checked `- [x]` item
 outside code fences to have an associated successful tool result after the
-latest request. Association is token overlap between the item text and the
-tool name, arguments, or content — a successful unrelated FileRead does
-not verify a numerical claim. Unchecked `- [ ]` or malformed items prevent
-verification. Explicit `- [-]` unavailable claims get an investigation
+last workspace change (the last file edit or a command the checklist does
+not name). The first tool-free final answer of a turn that used tools is
+accepted without a request when it already meets this and cites a command
+that ran successfully after the last change; otherwise the runtime injects
+a durable `<completion_gate>` user message that quotes the task and asks
+for a checklist backed by executed checks. Association is token overlap
+between the item text and the tool name, arguments, or content — a
+successful unrelated FileRead does not verify a numerical claim.
+Sentence punctuation is not part of a token:
+`array.` matches `array`, `./x.js` matches `/abs/x.js`, and a lone `.` or
+`/` matches nothing. Unchecked `- [ ]` or malformed items prevent
+verification. The re-request quotes unlinked items (checked, but no
+successful result since the last workspace change names them and no
+associated check failed) apart from the other unmet items, and asks for
+the command run or file inspected on each unlinked item's line.
+Explicit `- [-]` unavailable claims get an investigation
 request every round and settle as `partial` with `unavailable_checks` only
-at the round cap. The gate does not accept a probe as proof of a missing
+through the round-cap fallback below. The gate does not accept a probe as
+proof of a missing
 capability, because a probe and the check itself are both runnable results
 associated with the same item and cannot be told apart structurally. A `- [-]` mark is not itself evidence: if the
 named check actually ran (numeric `exitCode`), the item is unmet, not
@@ -398,7 +408,10 @@ The gate checks this structure, not whether the evidence proves every task
 requirement or whether the delivered work is correct, and a `verified`
 event is not a benchmark pass. A turn that never called a tool (a plain
 question) is not gated. At `max_rounds` an unmet answer is recorded as
-`exhausted`; an unavailable leftover is `partial`. Warnings
+`exhausted`; an unavailable leftover is `partial`. An answer that ran no
+tool since the last request and draws that request's verdict again (the
+same reason and items) is recorded the same way before `max_rounds`: the
+same request again cannot change it. Warnings
 `completion_gate_exhausted` and `completion_gate_partial` state that the
 final answer was not fully verified. The turn still completes with its
 existing stop reason and exit code; text-mode `agenc -p` prints the
@@ -509,8 +522,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `project_doc_max_bytes` | Positive instruction-document byte ceiling. |
 | `experimental_realtime_start_instructions` | Realtime start instruction override. |
 | `experimental_realtime_ws_backend_prompt` | Realtime websocket backend prompt override. |
-| `max_output_tokens` | Positive global model-output limit. |
-| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. |
+| `max_output_tokens` | Positive global model-output limit. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). |
+| `capped_default_max_output_tokens` | Boolean capped-default/retry behavior. When true (or the catalog marks the model capped) and there is no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`), a withheld `max_output_tokens` sample may escalate to `min(64000, model upper limit)` when no escalated override is active. Escalation does not count toward the 3 retries. See [daemon.md](daemon.md#max-output-tokens-recovery). |
 | `max_turns` | Positive loop backstop. |
 | `max_budget_usd` | Positive shared cost cap for the session and its child agents. |
 | `autonomous_mode` | Boolean autonomous runtime mode. |
@@ -604,7 +617,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox` | Sandbox detail block. |
 | `sandbox.network_access` | Explicit network boolean. |
 | `sandbox.allow_gpu` | macOS Metal GPU opt-in. |
-| `sandbox.autoAllowBashIfSandboxed` | Bash auto-approval policy inside the sandbox. |
+| `sandbox.autoAllowBashIfSandboxed` | On unless set to `false`. Bash and `exec_command` calls that will run inside the OS sandbox proceed without a prompt in the `default`, `acceptEdits`, `auto` and `dontAsk` modes. Escalation requests, detached services, TTY sessions, flagged commands and deny or ask rules still ask. Set `false` to be asked for every command. |
 | `sandbox.allowUnsandboxedCommands` | Explicit unsandboxed-command escape policy. |
 | `sandbox.enableWeakerNestedSandbox` | Weaker nested-isolation opt-in. |
 | `sandbox.enableWeakerNetworkIsolation` | Weaker network-isolation opt-in. |
@@ -642,7 +655,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.base_url` | Provider API base URL. |
 | `providers.<provider>.default_model` | Provider fallback model. |
 | `providers.<provider>.context_window_tokens` | Positive context window. On `ollama` / `lmstudio` this explicit value wins; on `openai-compatible` a live `/v1/models` window overrides it. See [providers.md](providers.md#local-context-windows). |
-| `providers.<provider>.max_output_tokens` | Positive provider output cap. |
+| `providers.<provider>.max_output_tokens` | Positive provider output cap. Max-output-tokens escalation runs only with no explicit budget (`max_output_tokens`, `AGENC_MAX_OUTPUT_TOKENS` or `providers.<provider>.max_output_tokens`). See [daemon.md](daemon.md#max-output-tokens-recovery). |
 | `providers.<provider>.timeout_ms` | Non-negative provider request/stream idle timeout; `0` disables. |
 | `providers.<provider>.capability_overrides` | Capability override block. |
 | `providers.<provider>.capability_overrides.supportsToolUse`, `providers.<provider>.capability_overrides.supportsPromptCaching`, `providers.<provider>.capability_overrides.supportsContextEdits` | Boolean tool/cache/context capabilities. |
@@ -652,6 +665,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `providers.<provider>.web_search`, `providers.<provider>.x_search`, `providers.<provider>.code_execution` | Grok-only native web, X, and code capabilities; rejected on every other provider. |
 | `providers.<provider>.enable_image_search`, `providers.<provider>.enable_image_understanding`, `providers.<provider>.enable_video_understanding` | Grok-only native media capabilities; rejected on every other provider. |
 | `providers.<provider>.incremental_continuation` | Grok-only boolean (`AGENC_XAI_INCREMENTAL`) for Responses `previous_response_id` continuation on streaming turns; on for Grok unless set to `false`. |
+| `providers.<provider>.auth` | OpenAI and Grok only: `auto` (default), `oauth`, or `api-key`. Which credential to use when both an account sign-in and an API key are present; `auto` prefers the sign-in. `OPENAI_AUTH_MODE` / `GROK_AUTH_MODE` in the environment win over it. Applies to new sessions; `/providers` writes it. Rejected under every other provider table. |
 | `providers.<provider>.zero_data_retention` | OpenRouter-only boolean. Every request carries `provider.zdr = true`, so OpenRouter routes only to endpoints with a zero-data-retention policy and refuses a model that has none instead of serving it elsewhere. Rejected under every other provider table: those providers control retention per account, project or team on their own console (see [providers.md](providers.md#zero-data-retention)). |
 | `providers.<provider>.collections` | Grok-only native collection-search block. |
 | `providers.<provider>.collections.enabled`, `providers.<provider>.collections.max_num_results`, `providers.<provider>.collections.vector_store_ids` | Collection enablement, positive result cap, and vector-store ID list. |

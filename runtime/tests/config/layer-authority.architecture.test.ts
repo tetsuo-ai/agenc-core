@@ -65,7 +65,7 @@ describe("config layer authority architecture", () => {
     expect(source("session/provider-model-selection.ts")).toContain(
       "isModelAllowed",
     );
-    expect(source("commands/model-menu.tsx")).toContain("isModelAllowed");
+    expect(source("commands/model-menu-snapshot.ts")).toContain("isModelAllowed");
   });
 
   test("every generic user-config write boundary checks source authority", () => {

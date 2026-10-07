@@ -400,7 +400,7 @@ function parseTokenResponse(
   if (options.requireRefreshToken && refreshToken === undefined) {
     throw new XaiOauthError(
       'malformed_response',
-      'xAI token response had no refresh_token — the offline_access scope was ' +
+      'xAI token response had no refresh_token: the offline_access scope was ' +
         'rejected; sign in again and approve all requested permissions',
     )
   }

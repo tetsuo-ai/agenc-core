@@ -17,7 +17,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgenCBootstrapFunction } from "../../src/app-server/background-agent-runner.js";
 import {
@@ -28,11 +28,14 @@ import {
   type WorkflowSessionSeams,
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
+import { workflowSessionPolicyFromSpec } from "../../src/app-server/workflow/daemon-wiring.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
+  type WorkflowSpec,
 } from "../../src/contracts/run-contracts.js";
+import { sha256Digest } from "../../src/eval-contract/canonical-json.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
@@ -52,6 +55,11 @@ interface FakeBootstrapCall {
   readonly conversationId: string | undefined;
   readonly resumeConversation: boolean | undefined;
   readonly runtimeOptions: AgentRuntimeOptions | undefined;
+  readonly resumeSuspendedConversation?: boolean;
+  readonly suspendedResumeReason?: string;
+  readonly deferAgentStartupSideEffects?: boolean;
+  readonly deferDurableTurnResume?: boolean;
+  readonly executionAdmissionBudgetIdentity?: string;
 }
 
 let home: string;
@@ -64,6 +72,7 @@ let resolvedPolicies: (WorkflowRunSessionPolicy | undefined)[];
 let actualBootstrapMode: ToolPermissionContext["mode"] | undefined;
 let bootstrapShuttingDown: boolean;
 let bootstrapBarrier: Promise<void> | undefined;
+let suspensionPreflightError: Error | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-m5-policy-home-"));
@@ -77,6 +86,7 @@ beforeEach(() => {
   actualBootstrapMode = undefined;
   bootstrapShuttingDown = false;
   bootstrapBarrier = undefined;
+  suspensionPreflightError = undefined;
 });
 
 afterEach(() => {
@@ -122,6 +132,11 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     conversationId: options.conversationId,
     resumeConversation: options.resumeConversation,
     runtimeOptions: options.runtimeOptions,
+    resumeSuspendedConversation: options.resumeSuspendedConversation,
+    suspendedResumeReason: options.suspendedResumeReason,
+    deferAgentStartupSideEffects: options.deferAgentStartupSideEffects,
+    deferDurableTurnResume: options.deferDurableTurnResume,
+    executionAdmissionBudgetIdentity: options.executionAdmissionBudgetIdentity,
   });
   return {
     session: {
@@ -129,9 +144,11 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
       permissionModeRegistry: registry,
       get isShuttingDown() { return bootstrapShuttingDown; },
       emit: (event: Event) => eventLog.emit(event),
-      services: {},
+      services: { runtimeOptions: options.runtimeOptions },
     },
-    rolloutStore: { runEpoch: 1 },
+    rolloutStore: { runEpoch: 1, assertRunSuspendable: () => {
+      if (suspensionPreflightError !== undefined) throw suspensionPreflightError;
+    } },
     shutdown: async () => {},
   } as never;
 };
@@ -160,6 +177,48 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
+  it("passes the Goal's Light option to the parent session on start and recovery", async () => {
+    const seams = makeSeams();
+    const started = await seams.journal.open(RUN_ID, { repoPath: cwd,
+      policy: { permissionMode: "default", lightMode: true } });
+    expect(bootstrapCalls[0]?.runtimeOptions?.lightMode).toBe(true);
+    await started.close();
+    await seams.close();
+
+    // The restarted daemon reads the frozen intake spec, then rebuilds the
+    // parent session from that policy before any child can be spawned.
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: new Date().toISOString() });
+    const intentDigest = sha256Digest("light-mode-intake");
+    repo.beginEffect({ runId: RUN_ID, epoch: 1, stepId: "workflow.intake",
+      sessionId: RUN_ID, callId: "workflow.intake", toolName: "workflow.intake",
+      recoveryCategory: "idempotent", idempotencyKey: intentDigest,
+      intentDigest, eventId: "intake-intent",
+      eventSequence: 1, intentAt: new Date().toISOString() });
+    repo.completeEffect({ runId: RUN_ID, stepId: "workflow.intake", outcome: "committed",
+      effectBoundary: "crossed", eventId: "intake-result", eventSequence: 2,
+      evidence: { spec: { permissionMode: "default", lightMode: true } },
+      completedAt: new Date().toISOString() });
+    driver.close();
+    driver = openStateDatabases({ cwd, agencHome: home });
+    repo = new StateRunDurabilityRepository(driver);
+    const recoveredSeams = makeSeams(() => {
+      const intake = repo.getEffect(RUN_ID, "workflow.intake");
+      const spec = (intake?.evidence as { spec: WorkflowSpec }).spec;
+      return workflowSessionPolicyFromSpec(spec);
+    });
+    const recovered = await recoveredSeams.journal.open(RUN_ID);
+    expect(recovered).toBeDefined();
+    expect(bootstrapCalls[1]?.resumeConversation).toBe(true);
+    expect(bootstrapCalls[1]?.runtimeOptions?.lightMode).toBe(true);
+    await recoveredSeams.close();
+  });
+
+  it("leaves an omitted Goal Light option in standard mode", async () => {
+    const seams = makeSeams();
+    await seams.journal.open(RUN_ID, { repoPath: cwd, policy: { permissionMode: "default" } });
+    expect(bootstrapCalls[0]?.runtimeOptions?.lightMode).toBeUndefined();
+    await seams.close();
+  });
   it("reports actual default after bootstrap demotes requested bypass without overriding trust", async () => {
     actualBootstrapMode = "default";
     const seams = makeSeams();
@@ -317,6 +376,73 @@ describe("A2 — spec permission policy on the run session", () => {
     await seams.close();
   });
 
+});
+
+describe("workflow pause journal and resume bootstrap", () => {
+  const at = "2026-09-29T00:00:00.000Z";
+
+  it("appends the pause boundary before projecting the same-epoch suspension", async () => {
+    const seams = makeSeams();
+    try {
+      const journal = await seams.journal.open(RUN_ID, { repoPath: cwd });
+      repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+      const original = repo.recordRunSuspended.bind(repo);
+      const project = vi.spyOn(repo, "recordRunSuspended").mockImplementation((input) => {
+        expect(bootstrapEvents.at(-1)?.msg).toMatchObject({
+          type: "run_suspended", payload: { runId: RUN_ID, reason: "workflow_user_pause", epoch: 1 },
+        });
+        return original(input);
+      });
+      const boundary = journal.appendSuspended!({ suspendedAt: at });
+      expect(project).toHaveBeenCalledOnce();
+      expect(repo.getActiveSuspension(RUN_ID)).toMatchObject({
+        eventId: boundary.eventId, suspensionSequence: boundary.sequence,
+        epoch: 1, reason: "workflow_user_pause", suspendedAt: at,
+      });
+      expect(repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    } finally { await seams.close(); }
+  });
+
+  it("refuses a nonquiescent pause before writing a boundary", async () => {
+    const seams = makeSeams();
+    try {
+      const journal = await seams.journal.open(RUN_ID, { repoPath: cwd });
+      repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+      suspensionPreflightError = new Error("an effect is still in flight");
+      expect(() => journal.appendSuspended!({ suspendedAt: at })).toThrow("an effect is still in flight");
+      expect(bootstrapEvents.filter((event) => event.msg.type === "run_suspended")).toEqual([]);
+      expect(repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    } finally { await seams.close(); }
+  });
+
+  it("resumes the exact paused run and budget while deferring startup hooks and old turns", async () => {
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+    repo.recordRunSuspended({ runId: RUN_ID, epoch: 1, eventId: "pause-checkpoint", eventSequence: 1,
+      reason: "workflow_user_pause", suspendedAt: at });
+    const seams = makeSeams(() => ({ permissionMode: "acceptEdits", model: "test-model", provider: "deepseek" }));
+    try {
+      await seams.journal.open(RUN_ID, { resumeSuspensionId: "pause-checkpoint" });
+      expect(bootstrapCalls).toHaveLength(1);
+      expect(bootstrapCalls[0]).toMatchObject({
+        conversationId: RUN_ID, resumeConversation: true, resumeSuspendedConversation: true,
+        suspendedResumeReason: "workflow_user_resume", deferAgentStartupSideEffects: true,
+        deferDurableTurnResume: true, executionAdmissionBudgetIdentity: RUN_ID,
+      });
+      expect(bootstrapCalls[0].argv).toEqual(expect.arrayContaining(["test-model", "deepseek", "acceptEdits"]));
+    } finally { await seams.close(); }
+  });
+
+  it("rejects a stale pause identity before creating a runtime session", async () => {
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+    repo.recordRunSuspended({ runId: RUN_ID, epoch: 1, eventId: "current-pause", eventSequence: 1,
+      reason: "workflow_user_pause", suspendedAt: at });
+    const seams = makeSeams();
+    try {
+      await expect(seams.journal.open(RUN_ID, { resumeSuspensionId: "old-pause" })).rejects.toThrow("checkpoint changed");
+      expect(bootstrapCalls).toEqual([]);
+      expect(repo.getActiveSuspension(RUN_ID)?.eventId).toBe("current-pause");
+    } finally { await seams.close(); }
+  });
 });
 
 describe("A1 — effect evidence format", () => {

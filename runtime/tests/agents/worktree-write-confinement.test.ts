@@ -73,6 +73,24 @@ describe("worktreeWriteRefusal", () => {
     expect(worktreeWriteRefusal("exec_command", { cmd: "touch ../x" }, worktree)).toBeUndefined();
     expect(worktreeWriteRefusal("Write", { file_path: join(checkout, "src/slug.js") }, undefined)).toBeUndefined();
   });
+
+  it("refuses compatibility filesystem writes into the checkout", () => {
+    const checkoutFile = join(checkout, "src/slug.js");
+    const worktreeFile = join(worktree, "src/slug.js");
+    expect(worktreeWriteRefusal("system.mkdir", { path: join(checkout, "src/out") }, worktree)).toBeDefined();
+    expect(worktreeWriteRefusal("system.delete", { path: checkoutFile }, worktree)).toBeDefined();
+    expect(worktreeWriteRefusal("system.move", { source: worktreeFile, destination: checkoutFile }, worktree)).toBeDefined();
+    expect(worktreeWriteRefusal("system.move", { source: checkoutFile, destination: worktreeFile }, worktree)).toBeDefined();
+  });
+
+  it("allows compatibility filesystem writes inside the worktree", () => {
+    expect(worktreeWriteRefusal("system.mkdir", { path: join(worktree, "src/out") }, worktree)).toBeUndefined();
+    expect(worktreeWriteRefusal("system.delete", { path: join(worktree, "src/slug.js") }, worktree)).toBeUndefined();
+    expect(worktreeWriteRefusal("system.move", {
+      source: join(worktree, "src/a.js"),
+      destination: join(worktree, "src/b.js"),
+    }, worktree)).toBeUndefined();
+  });
 });
 
 describe("a worktree child's Write through the child registry", () => {
@@ -131,5 +149,59 @@ describe("a worktree child's Write through the child registry", () => {
     expect(decision.behavior).not.toBe("deny");
     await write.execute({ file_path: "src/slug.js", content: "x" });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("a worktree child's system.move through the child registry", () => {
+  function childMoveRegistry(seen: Record<string, unknown>[]): Tool {
+    const move = {
+      name: "system.move",
+      description: "test move",
+      inputSchema: { type: "object", properties: {} },
+      checkPermissions: async (input: Record<string, unknown>) => ({ behavior: "allow" as const, updatedInput: input }),
+      async execute(args: Record<string, unknown>) {
+        seen.push(args);
+        return { content: "moved" };
+      },
+    } as unknown as Tool;
+    const base = {
+      tools: [move],
+      toLLMTools: () => [{ type: "function", function: { name: "system.move", description: "test move", parameters: {} } }],
+    } as unknown as ToolRegistry;
+    const session = {
+      conversationId: "child-1",
+      sessionConfiguration: { cwd: worktree, sandboxPolicy: { value: "workspace_write" } },
+      permissionModeRegistry: { current: () => ({ mode: "acceptEdits", additionalWorkingDirectories: new Map() }) },
+      services: {},
+    } as unknown as Session;
+    const registry = buildFilteredRegistry(base, {
+      childConversationId: "child-1",
+      worktree: { path: worktree, branch: "worktree-m5-wf97c581d76f", gitRoot: checkout } as never,
+      getSession: () => session,
+    });
+    return registry.tools.find((tool) => tool.name === "system.move")!;
+  }
+
+  it("refuses a checkout destination and never reaches the tool", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const move = childMoveRegistry(seen);
+    const result = await move.execute({
+      source: join(worktree, "src/slug.js"),
+      destination: join(checkout, "src/slug.js"),
+    });
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("is outside it");
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses moving a checkout file into the worktree", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const move = childMoveRegistry(seen);
+    const result = await move.execute({
+      source: join(checkout, "src/slug.js"),
+      destination: join(worktree, "src/slug.js"),
+    });
+    expect(result.isError).toBe(true);
+    expect(seen).toEqual([]);
   });
 });

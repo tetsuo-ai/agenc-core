@@ -30,7 +30,6 @@ export const XAI_ENCRYPTED_REASONING_INCLUDE =
 
 export interface XaiResponsesInputBuildResult {
   readonly input: Record<string, unknown>[];
-  readonly hasImages: boolean;
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -167,9 +166,6 @@ export function buildXaiResponsesInputItems(
 
   return {
     input: mapped.flatMap((message) => toXaiResponseInputItems(message)),
-    hasImages: mapped.some((message) =>
-      hasXaiImageContent(message.content)
-    ),
   };
 }
 
@@ -250,15 +246,6 @@ export function buildXaiResponsesRequest(input: {
     };
   }
   return params;
-}
-
-function hasXaiImageContent(content: unknown): boolean {
-  if (!Array.isArray(content)) return false;
-  return content.some((part) => {
-    if (!part || typeof part !== "object") return false;
-    const record = part as Record<string, unknown>;
-    return record.type === "image_url";
-  });
 }
 
 function toXaiOpenAIMessage(message: LLMMessage): Record<string, unknown> {

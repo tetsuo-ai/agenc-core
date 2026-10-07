@@ -1,3 +1,4 @@
+import { pluginIntentForPath } from "../config/plugin-transaction-ledger.js";
 /**
  * `agenc config` show/get/set/unset/validate/edit/path.
  */
@@ -499,7 +500,7 @@ async function runConfigValidate(
   }
   if (warnings.length > 0) {
     io.stderr.write(
-      `agenc: config validation produced ${warnings.length} warning(s) — see above. Treating as failure.\n`,
+      `agenc: config validation produced ${warnings.length} warning(s). See above. Treating as failure.\n`,
     );
     return 1;
   }
@@ -540,7 +541,7 @@ async function runConfigSet(
   const path = getConfigFilePath(agencHome);
   mutateCanonicalUserConfigSync(path, (raw) => {
     setNestedValue(raw, segments, value);
-  });
+  }, pluginIntentForPath(segments));
   io.stdout.write(`Set ${key} in ${path}\n`);
   return 0;
 }
@@ -556,7 +557,7 @@ async function runConfigUnset(
   let removed = false;
   mutateCanonicalUserConfigSync(path, (raw) => {
     removed = deleteNestedValue(raw, segments);
-  });
+  }, pluginIntentForPath(segments));
   if (!removed) {
     io.stdout.write(`not set: ${key}\n`);
     return 0;

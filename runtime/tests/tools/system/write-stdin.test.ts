@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { createWriteStdinTool as createUnboundWriteStdinTool } from "../../../src/tools/system/write-stdin.js";
+import { RESIDUAL_PROCESSES_NOTE } from "../../../src/tools/system/exec-result-format.js";
 import {
   UnifiedExecError,
   type ExecCommandToolOutput,
@@ -107,6 +108,49 @@ describe("write_stdin failures after the write started", () => {
     expect(result.isError).toBe(true);
     expect(parsed(result).code).toBe("stdin_write_failed");
     expect(result.effectDisposition).toBeUndefined();
+  });
+});
+
+function completedWrite(overrides: Partial<ExecCommandToolOutput> = {}): ExecCommandToolOutput {
+  return {
+    output: "hello",
+    stdout: "hello",
+    stderr: "",
+    exitCode: 0,
+    exit_code: 0,
+    durationMs: 12,
+    wall_time_seconds: 0.012,
+    timedOut: false,
+    truncated: false,
+    original_token_count: 1,
+    ...overrides,
+  };
+}
+
+describe("write_stdin leftover-process receipts", () => {
+  test("an observed leftover process is a note, not a termination claim", async () => {
+    const tool = toolWhoseManager(async () =>
+      completedWrite({ residual_processes_observed: true }),
+    );
+    const result = await tool.execute({ session_id: 4, chars: "" });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain(RESIDUAL_PROCESSES_NOTE);
+    expect(result.metadata).toMatchObject({ residualProcessesObserved: true });
+    expect(result.metadata).not.toHaveProperty("residualProcessesTerminated");
+    expect(result.codeModeResult).toMatchObject({ residual_processes_observed: true });
+    expect(result.codeModeResult).not.toHaveProperty("residual_processes_terminated");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
+  });
+
+  test("an ordinary exit does not invent leftover-process metadata", async () => {
+    const tool = toolWhoseManager(async () => completedWrite());
+    const result = await tool.execute({ session_id: 4, chars: "" });
+
+    expect(result.content).not.toContain("[note:");
+    expect(result.metadata).not.toHaveProperty("residualProcessesObserved");
+    expect(result.metadata).not.toHaveProperty("commandOutcome");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_committed");
   });
 });
 

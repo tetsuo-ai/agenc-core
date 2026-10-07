@@ -1,6 +1,7 @@
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { STREAM_QUIET_WARNING_MS } from "../../../../src/llm/stream-watchdog.js";
 import {
   SpinnerAnimationRow,
   formatRate,
@@ -92,8 +93,7 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      // Turn started ~13 minutes ago and nothing has streamed yet.
-      loadingStartTimeRef: makeRef(NOW - 13 * 60_000),
+      loadingStartTimeRef: makeRef(NOW - 30_000),
       responseLengthRef: makeRef(0),
       mode: "responding",
     });
@@ -101,6 +101,7 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(output).toContain("waiting for model");
     expect(output).toContain("no output yet");
     expect(output).not.toContain("slow model");
+    expect(output).not.toContain("no output from the model");
   });
 
   // Operator bug 2026-07-20: "Running tools… (1m 33s · ↓ 208 tokens ·
@@ -161,13 +162,28 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      loadingStartTimeRef: makeRef(NOW - 13 * 60_000),
+      loadingStartTimeRef: makeRef(NOW - 60_000),
       responseLengthRef: makeRef(0),
       thinkingStatus: "thinking",
     });
 
     expect(output).not.toContain("slow model");
+    expect(output).not.toContain("no output from the model");
     expect(output).toContain("thinking");
+  });
+
+  test("shows a quiet-stream warning during long thinking", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+
+    const output = await renderRow({
+      loadingStartTimeRef: makeRef(NOW - STREAM_QUIET_WARNING_MS),
+      responseLengthRef: makeRef(0),
+      thinkingStatus: "thinking",
+    });
+
+    expect(output).toContain("no output from the model for 5 minutes");
+    expect(output).toContain("thinking");
+    expect(output).toContain("esc to interrupt");
   });
 
   // The heartbeat must NOT appear for a fresh, fast turn (no false alarm).
@@ -259,21 +275,23 @@ describe("SpinnerAnimationRow liveness + token grammar", () => {
     expect(formatRate(2.4)).toBe("~2.4 tok/s");
   });
 
-  // The verb (e.g. "Working…") and the status group's opening "(" must be
-  // separated by exactly one space; without it they run together as
-  // "Working…(7m 57s …)". This guards the spacing the liveness-heartbeat
-  // change introduced.
-  test("separates the verb from the status group with a single space", async () => {
+  // The verb (e.g. "Working") and the byline must be separated by exactly two
+  // spaces, with no parentheses around the byline; without the gap they run
+  // together as "Working7m 57s …". This guards the spacing the liveness
+  // heartbeat change introduced.
+  test("separates the verb from the status group with two spaces and no parentheses", async () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
 
     const output = await renderRow({
-      message: "Working…",
+      message: "Working",
       verbose: true,
     });
 
-    // One space, exactly: not zero ("Working…("), not two ("Working…  (").
-    expect(output).toContain("Working… (");
-    expect(output).not.toContain("Working…(");
-    expect(output).not.toContain("Working…  (");
+    // Two spaces, exactly: not one ("Working 31s"), not three.
+    expect(output).toContain("Working  31s");
+    expect(output).not.toContain("Working 31s");
+    expect(output).not.toContain("Working   31s");
+    expect(output).not.toContain("(");
+    expect(output).not.toContain(")");
   });
 });

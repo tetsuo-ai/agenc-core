@@ -19,8 +19,8 @@ import * as memoryPrompt from "../../src/memory/memdir.js";
 import { VERSION } from "../../src/version.js";
 import { appendFile, lstat, mkdtemp, readFile, rm, writeFile, mkdir, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalTmpdir } from "../helpers/canonical-temp-dir.js";
 
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
@@ -135,7 +135,7 @@ function withRunSingleTurnRuntime<T>(operation: () => T): T {
     {},
     {
       pluginStorageRoot: join(
-        tmpdir(),
+        canonicalTmpdir(),
         "agenc-run-single-turn-test-plugins",
       ),
     },
@@ -1162,7 +1162,7 @@ afterEach(async () => {
 
 describe("validateAgencHome", () => {
   it("prefers a non-empty AGENC_HOME and creates the directory", async () => {
-    const base = await mkdtemp(join(tmpdir(), "agenc-home-explicit-"));
+    const base = await mkdtemp(join(canonicalTmpdir(), "agenc-home-explicit-"));
     const explicitHome = join(base, "custom-home");
     try {
       expect(
@@ -1178,7 +1178,7 @@ describe("validateAgencHome", () => {
   });
 
   it("falls back to $HOME/.agenc when AGENC_HOME is unset or empty", async () => {
-    const homeRoot = await mkdtemp(join(tmpdir(), "agenc-home-fallback-"));
+    const homeRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-home-fallback-"));
     const expectedHome = join(homeRoot, ".agenc");
     try {
       expect(validateAgencHome({ HOME: homeRoot } as NodeJS.ProcessEnv)).toBe(
@@ -1433,7 +1433,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
 
 describe("ConfigStore integration shape", () => {
   it("constructs from empty env + defaults and current() is frozen", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-config-empty-"));
+    const home = await mkdtemp(join(canonicalTmpdir(), "agenc-config-empty-"));
     try {
       const store = new ConfigStore({ home, env: {} });
       await store.reload();
@@ -1447,7 +1447,7 @@ describe("ConfigStore integration shape", () => {
   });
 
   it("applyEnvOverrides promotes AGENC_MODEL over TOML", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-config-env-"));
+    const home = await mkdtemp(join(canonicalTmpdir(), "agenc-config-env-"));
     try {
       const store = new ConfigStore({
         home,
@@ -1463,7 +1463,7 @@ describe("ConfigStore integration shape", () => {
 
 describe("prepareTurnRuntimeInputs", () => {
   it("reloads MCP instructions while leaving workspace instructions to Session.runTurn", async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), "agenc-turn-inputs-"));
+    const repoRoot = await mkdtemp(join(canonicalTmpdir(), "agenc-turn-inputs-"));
     const nested = join(repoRoot, "pkg");
     const memoryDir = join(repoRoot, ".agenc-memory");
     const memoryMdPath = join(memoryDir, "MEMORY.md");
@@ -1510,7 +1510,12 @@ describe("prepareTurnRuntimeInputs", () => {
     expect(first.memoryInstructionsText).toContain("# auto memory");
     expect(first.memoryPromptText).toContain("# Memory directories");
     expect(first.memoryPromptText).toContain(join(home, "memory"));
-    expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: nested, configStore: store }));
+    // Presentation identity is separate from the shell environment for paths.
+    // This fixture has no captured provider environment, so it uses the default.
+    expect(load).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cwd: nested, configStore: store }),
+      undefined,
+    );
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -1756,8 +1761,8 @@ async function withOneShotTestEnvironment<T>(
     readonly stderr: () => string;
   }) => Promise<T>,
 ): Promise<T> {
-  const tmpHome = await mkdtemp(join(tmpdir(), `${prefix}home-`));
-  const tmpCwd = await mkdtemp(join(tmpdir(), `${prefix}cwd-`));
+  const tmpHome = await mkdtemp(join(canonicalTmpdir(), `${prefix}home-`));
+  const tmpCwd = await mkdtemp(join(canonicalTmpdir(), `${prefix}cwd-`));
   const prevEnv = { ...process.env };
   Object.assign(process.env, {
     AGENC_HOME: tmpHome,
@@ -1927,8 +1932,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI starts a daemon prompt agent for slash-looking input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -2043,6 +2048,17 @@ describe("main() smoke", () => {
     });
   });
 
+  it.each([false, true])("print durability default and explicit full opt-out=%s", async (fullDurability) => {
+    await withOneShotTestEnvironment("agenc-one-shot-durability-", async ({ cwd, run }) => {
+      const daemon = installDaemonCliDepsForTest({ cwd });
+      expect(await run(() => oneShotCLI("work", [], { fullDurability }), 4000)).toBe(0);
+      expect(daemon.requests.find(request => request.method === "agent.create")?.params)
+        .toMatchObject({ runtimeOptions: { nonInteractive: true, relaxedOneShot: !fullDurability } });
+      expect(daemon.requests.find(request => request.method === "agent.attach")?.params)
+        .toMatchObject({ oneShotOutput: true });
+    });
+  });
+
   it("oneShotCLI writes the answer once when the daemon streams deltas and then the complete message", async () => {
     // The daemon path emits every assistant message twice: as streamed
     // deltas (event.message_chunk / agent_message_delta) and then as one
@@ -2134,7 +2150,7 @@ describe("main() smoke", () => {
         });
         expect(await run(() => oneShotCLI('/goal add clear() --verify "tests=npm test"'), 4000)).toBe(0);
         const create = daemon.requests.find((request) => request.method === "agent.create")?.params as Record<string, unknown>;
-        expect(create).toMatchObject({ deferInitialTurn: true });
+        expect(create).toMatchObject({ deferInitialTurn: true, runtimeOptions: { relaxedOneShot: false } });
         expect(create).not.toHaveProperty("initialContent");
         const methods = daemon.requests.map((request) => request.method);
         expect(methods.indexOf("session.goal")).toBeLessThan(methods.indexOf("message.stream"));
@@ -2591,8 +2607,8 @@ describe("main() smoke", () => {
     ["turn_complete", "agent_status"],
     ["turn_failed", "agent_status"],
   ])("oneShotCLI ignores diagnostics and settles on %s after stale %s", async (terminalType, staleStartType) => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-terminal-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-terminal-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-terminal-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-terminal-cwd-"));
     const previousEnv = { ...process.env };
     Object.assign(process.env, {
       AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_PROVIDER: "openai",
@@ -2765,7 +2781,7 @@ describe("main() smoke", () => {
         expect(daemon.requests.find((request) => request.method === "agent.create")).toBeUndefined();
         expect(daemon.startPromptAgent).not.toHaveBeenCalled();
         expect(daemon.resumePromptAgent).toHaveBeenCalledWith(
-          expect.objectContaining({ sessionId, rolloutPath, cwd }),
+          expect.objectContaining({ sessionId, rolloutPath, cwd, runtimeOptions: expect.objectContaining({ relaxedOneShot: false }) }),
         );
         expect(daemon.requests.find((request) => request.method === "agent.attach")?.params).toMatchObject({
           agentId: "agent_continue",
@@ -2943,8 +2959,8 @@ describe("main() smoke", () => {
     // human attached the run used to hang in `running` forever until SIGTERM.
     // The one-shot client must answer with tool.deny (never tool.approve) so
     // the agent continues and produces a terminal status.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-deny-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-deny-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-deny-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-deny-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3053,8 +3069,8 @@ describe("main() smoke", () => {
     // produced a real answer, so callers could not tell a giveup from a real
     // answer. A run that auto-denied a permission request and then completed
     // must exit NON-ZERO and emit a clear stderr marker.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-giveup-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-giveup-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-giveup-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-giveup-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3143,8 +3159,8 @@ describe("main() smoke", () => {
   it("oneShotCLI still exits 0 when no permission request was denied", async () => {
     // PART B guard: a normal run that never auto-denied a tool must keep its
     // success exit code. Only a denied-then-gave-up run signals failure.
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-nodeny-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-nodeny-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-nodeny-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-nodeny-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3217,8 +3233,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI cancels an attached daemon run when no terminal event arrives", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-signal-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-signal-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-signal-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-signal-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3315,8 +3331,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI cancels an attached daemon run when stdout closes", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-epipe-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-epipe-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-epipe-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-epipe-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3433,8 +3449,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI writes a single final JSON object for --output-format json", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-json-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-json-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-json-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-json-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3454,7 +3470,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_json";
     const sessionId = "session_json";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3488,6 +3504,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const stdoutText = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("");
@@ -3529,8 +3550,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI writes daemon events and final result as JSONL for --output-format stream-json", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-jsonl-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-jsonl-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-jsonl-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-jsonl-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3549,7 +3570,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_jsonl";
     const sessionId = "session_jsonl";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3592,6 +3613,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const lines = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("")
@@ -3652,8 +3678,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI rejects invalid structured I/O format values before daemon startup", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-format-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-format-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-format-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-format-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3719,8 +3745,8 @@ describe("main() smoke", () => {
     // validated mode must reach agent.create so the daemon honors it (the
     // unattended policy preserves acceptEdits/plan rather than forcing
     // unattended — see applyUnattendedPermissionPolicyToContext).
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-permmode-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-permmode-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-permmode-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-permmode-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3780,8 +3806,8 @@ describe("main() smoke", () => {
     // --dangerously-bypass-approvals-and-sandbox must still win: when both --dangerously-bypass-approvals-and-sandbox and --permission-mode acceptEdits
     // are present, the forwarded mode is bypassPermissions (no posture
     // weakening of the existing yolo path).
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-yolo-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-yolo-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-yolo-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3838,8 +3864,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI never forwards a permission bypass token from prompt text", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-prompt-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-prompt-yolo-cwd-"));
     const prevEnv = { ...process.env };
     const prevArgv = [...process.argv];
 
@@ -3892,8 +3918,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry streams startup prompt and images as one daemon message", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-image-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-image-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-image-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-image-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -3962,8 +3988,8 @@ describe("main() smoke", () => {
   it.each(["shutdown append", "rewritten prefix", "replaced file", "late append"])(
     "resumeTUIEntry preserves source authorization across daemon readiness: %s",
     async (change) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-ready-home-"));
-      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-resume-ready-cwd-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-ready-home-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-ready-cwd-"));
       const previousEnv = { ...process.env };
       const conversationId = "conv-readyflush1";
       Object.assign(process.env, { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, AGENC_CLI_ENTRY_DISABLE: "1" });
@@ -4020,8 +4046,8 @@ describe("main() smoke", () => {
   );
 
   it("resumeTUIEntry cold-restores a retained rollout with no live daemon agent", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-cold-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cold-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-cold-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cold-resume-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
     const conversationId = "conv-coldresume1";
@@ -4128,8 +4154,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry attaches an exactly-bound live recovered runtime", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-live-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-live-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-live-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-live-resume-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-liverecovered1";
     process.env.AGENC_HOME = tmpHome;
@@ -4184,8 +4210,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry attaches a matching live agent that wins the cold-resume race", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-raced-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-raced-resume-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-raced-resume-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-racedresume1";
     process.env.AGENC_HOME = tmpHome;
@@ -4272,8 +4298,8 @@ describe("main() smoke", () => {
   ])(
     "resumeTUIEntry does not mask $label when a live agent appears",
     async ({ error }) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-race-deny-home-"));
-      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-race-deny-cwd-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-race-deny-home-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-race-deny-cwd-"));
       const prevEnv = { ...process.env };
       const conversationId = "conv-racedenied1";
       process.env.AGENC_HOME = tmpHome;
@@ -4339,8 +4365,8 @@ describe("main() smoke", () => {
   );
 
   it("fails transcript restoration before allocating local TUI resources", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-transcript-failure-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-transcript-failure-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-transcript-failure-cwd-"));
     const daemon = installDaemonCliDepsForTest({
       agentId: "agent_transcript_failure",
       sessionId: "session_transcript_failure",
@@ -4367,8 +4393,8 @@ describe("main() smoke", () => {
   });
 
   it("resolves a 400,000-byte answer before the CLI attach validates its snapshot", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-artifact-attach-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-artifact-attach-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-artifact-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-artifact-attach-cwd-"));
     const daemon = installDaemonCliDepsForTest({ agentId: "agent_artifact_attach", sessionId: "session_artifact_attach", cwd: tmpCwd });
     const answer = "A".repeat(400_000);
     const id = createHash("sha256").update(answer).digest("hex");
@@ -4406,8 +4432,8 @@ describe("main() smoke", () => {
   });
 
   it("attach binds local TUI work to the daemon session runtime options", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-bare-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-bare-attach-cwd-"));
     const prevEnv = { ...process.env };
     const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true });
     const daemon = installDaemonCliDepsForTest({
@@ -4499,9 +4525,9 @@ describe("main() smoke", () => {
   });
 
   it("main --resume trusts only the resolved target workspace", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-trust-home-"));
-    const currentCwd = await mkdtemp(join(tmpdir(), "agenc-resume-current-"));
-    const targetCwd = await mkdtemp(join(tmpdir(), "agenc-resume-target-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-trust-home-"));
+    const currentCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-current-"));
+    const targetCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-resume-target-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
     const prevStdinIsTTY = Object.getOwnPropertyDescriptor(
@@ -4606,8 +4632,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry refuses a same-id live agent bound to another rollout", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-live-mismatch-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-live-mismatch-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-live-mismatch-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-live-mismatch-cwd-"));
     const prevEnv = { ...process.env };
     const conversationId = "conv-livemismatch1";
     process.env.AGENC_HOME = tmpHome;
@@ -4659,8 +4685,8 @@ describe("main() smoke", () => {
   });
 
   it("resumeTUIEntry detects a workspace swap after trust before daemon create", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-cwd-swap-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cwd-swap-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-swap-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-swap-cwd-"));
     const parkedCwd = `${tmpCwd}.parked`;
     const prevEnv = { ...process.env };
     const conversationId = "conv-cwdswap1";
@@ -4705,8 +4731,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI treats slash-prefixed filesystem paths as normal prompt input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-path-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-path-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-path-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-slash-path-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4754,8 +4780,8 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI streams startup prompt and images to the daemon session", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-image-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-image-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-image-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-image-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4811,10 +4837,10 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-idle-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-idle-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-idle-cwd-"));
     const sessionTempRoot = await mkdtemp(
-      join(tmpdir(), "agenc-tui-idle-session-temp-"),
+      join(canonicalTmpdir(), "agenc-tui-idle-session-temp-"),
     );
     const prevEnv = { ...process.env };
 
@@ -4869,11 +4895,11 @@ describe("main() smoke", () => {
   });
 
   it("attaches a worktree child with separate execution and role workspaces", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-role-home-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-role-home-"));
     const authority = await mkdtemp(
-      join(tmpdir(), "agenc-tui-role-authority-"),
+      join(canonicalTmpdir(), "agenc-tui-role-authority-"),
     );
-    const worktree = await mkdtemp(join(tmpdir(), "agenc-tui-role-worktree-"));
+    const worktree = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-role-worktree-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -4916,8 +4942,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry starts a daemon prompt agent on first ordinary TUI input", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-slash-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-slash-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -4997,8 +5023,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry forwards deferred session cancel to the live daemon session", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cancel-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-cancel-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-cancel-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -5083,8 +5109,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry reopens deferred TUI sessions after daemon session loss", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-stale-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-stale-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-stale-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-stale-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -5180,8 +5206,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry never serializes MCP configuration into daemon env", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mcp-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-mcp-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -5260,8 +5286,8 @@ describe("main() smoke", () => {
   });
 
   it("bootTUIEntry publishes deferred local transcript events before daemon startup", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-local-emit-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-local-emit-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-local-emit-cwd-"));
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
@@ -5347,9 +5373,9 @@ describe("main() smoke", () => {
   it.each(["/help", "/permissions"])(
     "bootTUIEntry does not send first %s input as a daemon prompt",
     async (slashInput) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-permissions-"));
       const tmpCwd = await mkdtemp(
-        join(tmpdir(), "agenc-tui-permissions-cwd-"),
+        join(canonicalTmpdir(), "agenc-tui-permissions-cwd-"),
       );
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
@@ -5431,8 +5457,8 @@ describe("main() smoke", () => {
   );
 
   it("stops the daemon agent when deferred TUI client connection fails", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-connect-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-connect-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-connect-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-connect-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -5492,8 +5518,8 @@ describe("main() smoke", () => {
   });
 
   it("stops the daemon agent when eager TUI attach fails", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-attach-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-attach-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-attach-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -5528,8 +5554,8 @@ describe("main() smoke", () => {
   });
 
   it("stops the daemon agent when eager TUI boot fails after attach", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-boot-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-boot-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-boot-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-tui-boot-cwd-"));
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
@@ -5569,8 +5595,8 @@ describe("main() smoke", () => {
   });
 
   it("runs the full main() path through daemon-backed one-shot and exits 0", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-main-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cwd-"));
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-main-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-cwd-"));
 
     const prevArgv = process.argv;
     const prevEnv = { ...process.env };
@@ -5691,8 +5717,8 @@ describe("main() smoke", () => {
   ])(
     "main keeps startup-looking tokens literal $label",
     async ({ argv, expectedPrompt }) => {
-      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-boundary-main-"));
-      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-boundary-cwd-"));
+      const tmpHome = await mkdtemp(join(canonicalTmpdir(), "agenc-boundary-main-"));
+      const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "agenc-boundary-cwd-"));
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
       const prevStdinIsTTY = Object.getOwnPropertyDescriptor(

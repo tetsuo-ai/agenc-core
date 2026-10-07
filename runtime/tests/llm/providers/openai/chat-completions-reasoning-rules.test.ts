@@ -55,6 +55,8 @@ async function chatCompletionsCall(model: string, options: LLMChatOptions) {
 
 describe("OpenAI Chat Completions temperature rule", () => {
   test.each([
+    ["gpt-6.1-sol", "low"],
+    ["gpt-6.1-sol", undefined],
     ["gpt-6-luna", "low"],
     ["gpt-6-sol", undefined],
     ["gpt-5.5", "medium"],
@@ -83,6 +85,9 @@ describe("OpenAI Chat Completions temperature rule", () => {
 
 describe("OpenAI function tools that Chat Completions rejects go through Responses", () => {
   test.each([
+    ["gpt-6.1-sol", "low"],
+    ["gpt-6.1-sol", undefined],
+    ["gpt-6.1-sol", "none"],
     ["gpt-6-sol", "low"],
     ["gpt-6-luna", undefined],
     ["gpt-6-astra", "none"],
@@ -98,6 +103,7 @@ describe("OpenAI function tools that Chat Completions rejects go through Respons
   });
 
   test.each([
+    ["gpt-6.1-sol", "low", []],
     ["gpt-6-sol", "none", [TOOL]],
     ["gpt-6-sol", "low", []],
     ["gpt-5.4", "low", [TOOL]],
@@ -106,12 +112,12 @@ describe("OpenAI function tools that Chat Completions rejects go through Respons
     expect(call.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
-  test("routes a streamed Sol tool call with effort to /responses", async () => {
+  test.each(["gpt-6-sol", "gpt-6.1-sol"])("routes a streamed %s tool call with effort to /responses", async (model) => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
       jsonResponse(String(input)));
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
-      model: "gpt-6-sol",
+      model,
       useResponsesApi: false,
       fetchImpl,
     });

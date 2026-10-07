@@ -1,5 +1,5 @@
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import type { ReasoningEffort } from "../../src/session/turn-context.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
 import type { LLMChatOptions } from "../../src/llm/types.js";
@@ -32,16 +32,16 @@ describe("provider-scoped effort contract", () => {
     }
   });
   it("does not borrow hosted capabilities across providers", () => {
-    expect(resolveReasoningEffort({provider: "openrouter", model: "openai/gpt-oss-120b"}).levels).toEqual([]);
+    expect(resolveReasoningEffort({provider: "openrouter", model: "unreviewed/gpt-oss-120b"}).levels).toEqual([]);
     expect(resolveReasoningEffort({provider: "nvidia-nim", model: "unknown"}).levels).toEqual([]);
   });
 
-  it("accepts unregistered NIM family snapshots Desktop can offer", () => {
+  it("accepts registered NIM models and verified family snapshots", () => {
     expect(resolveReasoningEffort({
       provider: "nvidia-nim",
       model: "openai/gpt-oss-20b",
     })).toMatchObject({
-      registered: false,
+      registered: true,
       levels: ["low", "medium", "high"],
       acceptsChatEffort: true,
     });
@@ -114,7 +114,8 @@ it.each(catalog.filter(row => row.provider === "anthropic"))(
   "serializes all five Desktop Claude tiers for $model", row => {
     expect(resolveReasoningEffort(row).levels).toEqual(["low", "medium", "high", "xhigh", "max"]);
     for (const effort of row.levels) {
-      const normalized = resolveSessionReasoningEffort(effort as ReasoningEffort, [], row);
+      const normalized = resolveSessionReasoningEffort(effort as ReasoningEffort,
+        resolveReasoningEffort(row).levels as readonly ReasoningEffort[], row);
       const body = buildAnthropicMessagesRequest({ model: row.model, messages: [], tools: [],
         maxTokens: 4096, options: { reasoningEffort: normalized } });
       expect(body.output_config).toEqual({ effort });
@@ -170,10 +171,9 @@ it("reads Bedrock effort from the registered contract that session and spawn val
   });
   // A configured max reaches the adapter unclamped, as stream-model passes it.
   expect(resolveSessionReasoningEffort("max", modelInfo.supportedReasoningLevels, row)).toBe("max");
-  // A Claude model without a registered Bedrock contract gets no levels, so
-  // the adapter sends it no effort field either.
+  // Existing Fable metadata now has a registered contract as well.
   expect(resolveReasoningEffort({ provider: "amazon-bedrock", model: "global.anthropic.claude-fable-5-1" }))
-    .toMatchObject({ registered: false, levels: [] });
+    .toMatchObject({ registered: true, levels: ["low", "medium", "high", "xhigh", "max"] });
 });
 
 it("seeds and sends a configured max for a Bedrock profile an override maps to Opus 5.5", async () => {

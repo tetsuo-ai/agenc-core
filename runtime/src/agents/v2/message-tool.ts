@@ -6,7 +6,7 @@ import {
 } from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
-import { authorizeChildExecutionPlan, type ChildExecutionPlan } from "../cross-provider.js";
+import { authorizeChildExecutionPlan, isChildExecutionPolicyCurrent, type ChildExecutionPlan } from "../cross-provider.js";
 import { liveAgentSession } from "../live-session.js";
 import {
   agentValidationError,
@@ -51,6 +51,9 @@ export async function handleMessageStringTool(
   opts: MultiAgentV2Options,
   mode: MessageDeliveryMode,
 ): Promise<ToolResult> {
+  if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+    return agentValidationError("exact_output must be a boolean");
+  }
   const target = stringValue(args.target);
   const message = typeof args.message === "string" ? args.message : undefined;
   if (!target || !message) {
@@ -80,7 +83,11 @@ export async function handleMessageStringTool(
     ? undefined : control.getLive(current.threadId);
   const callerSession = current.threadId === sessionOrError.conversationId
     ? sessionOrError : caller === undefined ? undefined : liveAgentSession(caller);
+  const callerTurnId = callerSession?.activeTurn?.unsafePeek()?.turnId;
+  const abortSignal = (args as { readonly __abortSignal?: AbortSignal }).__abortSignal;
   const callerIsCurrent = (): boolean => callerSession !== undefined &&
+    abortSignal?.aborted !== true &&
+    callerSession.activeTurn?.unsafePeek()?.turnId === callerTurnId &&
     opts.getSession() === sessionOrError && !sessionOrError.isShuttingDown &&
     !callerSession.isShuttingDown && (caller === undefined
       ? callerSession === sessionOrError
@@ -124,6 +131,9 @@ export async function handleMessageStringTool(
   if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
       targetPlan?.crossProvider !== true) {
     return agentValidationError("consent_unavailable: destination has no consent provenance");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
   }
   let assignedPlan: ChildExecutionPlan | undefined;
   if (mode === "queue_only" && targetPlan?.crossProvider) {
@@ -175,6 +185,14 @@ export async function handleMessageStringTool(
       prompt: message,
     },
   });
+  // Event publication can synchronously run subscribers. Check again at the
+  // delivery boundary, including policy changes after consent returned.
+  if (!callerIsCurrent() || !targetIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling or target agent session is no longer live");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
+  }
   let deliveryError: unknown;
   let acceptedTask:
     { readonly taskId: string; readonly turnId: string } | undefined;
@@ -183,6 +201,7 @@ export async function handleMessageStringTool(
   try {
     if (mode === "trigger_turn") {
       acceptedTask = control.assignTask(agentId, {
+        exactOutput: args.exact_output === true,
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,

@@ -1,7 +1,14 @@
+import { preparePluginConfigTransaction, publishPluginConfigTransaction } from "../plugin-config-transaction.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { withPluginInstallDirectoryLock } from "./plugin-install-directory-lock.js";
+import {
+  canonicalPluginInstallRoot,
+  runPluginInstallTransaction,
+  type PluginInstallTransactionHooks,
+} from "./plugin-install-transaction.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
@@ -74,7 +81,14 @@ export interface PluginOperationOptions {
   readonly now?: () => Date;
   readonly publishersPath?: string;
   readonly onWarn?: (message: string) => void;
+  readonly installTransactionHooks?: PluginInstallTransactionHooks;
 }
+
+export {
+  PluginInstallTransactionSimulatedCrash,
+  recoverPluginInstallTransactions,
+} from "./plugin-install-transaction.js";
+export type { PluginInstallTransactionHooks };
 
 export interface PluginComponentRow {
   readonly name: string;
@@ -311,6 +325,7 @@ export async function listInstalledPlugins(
     pluginStorageRoot: options.pluginStorageRoot,
     workspaceRoot,
     config,
+    userConfigPath: pluginConfigPath(options),
   });
   let settingsStorePromise: Promise<ConfigStore> | undefined;
   const getSettingsStore = (): Promise<ConfigStore> => {
@@ -571,12 +586,12 @@ export async function installPluginOp(
         `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
       );
     }
-    const validatedPlugin = loaded.plugin;
+    const sourcePlugin = loaded.plugin;
     const pluginId = resolveInstallPluginId(
       input.name,
       (typeof input.source === "string"
         ? pluginDependencyIdentityFromSource(input.source)
-        : undefined) ?? loaded.plugin.id,
+        : undefined) ?? sourcePlugin.id,
     );
     const safeName = sanitizeInstallName(pluginId);
     const otherScope: PluginScope = scope === "user" ? "project" : "user";
@@ -592,6 +607,7 @@ export async function installPluginOp(
     }
     const installRoot = pluginScopeRoot(scope, input);
     await mkdir(installRoot, { recursive: true, mode: 0o700 });
+    const canonicalRoot = await realpath(installRoot);
     const existingRoots = await resolvePluginRootsForRemoval(
       pluginId,
       scope,
@@ -602,41 +618,75 @@ export async function installPluginOp(
         `plugin resolves to multiple install roots in ${scope} scope: ${pluginId}`,
       );
     }
-    const destination = existingRoots[0] ?? join(installRoot, safeName);
-    await copyDirectoryAtomically(source, destination, {
+    const destination = existingRoots[0] ?? join(canonicalRoot, safeName);
+    await assertInstallSourceOutsideDestination(source, destination);
+    await runPluginInstallTransaction({
+      pluginId,
+      source,
+      destination,
       force: input.force === true,
+      ...(input.now === undefined ? {} : { now: input.now }),
+      ...(input.installTransactionHooks === undefined
+        ? {}
+        : { hooks: input.installTransactionHooks }),
+      copyDirectory: copyPluginInstallDirectory,
+      writeStageMetadata: async (stagePath) => {
+        await writeInstallMetadata(stagePath, {
+          provenanceVersion: 1,
+          name: sourcePlugin.name,
+          dependencyIdentity: pluginId,
+          source: resolutionKind === "local"
+            ? source
+            : redactPluginInstallSource(input.source),
+          ...(resolutionKind !== "local" &&
+            pluginInstallSourceNeedsRedaction(input.source)
+            ? { sourceRedacted: true }
+            : {}),
+          sourceRoot: source,
+          ...(input.marketplace !== undefined ? { marketplace: input.marketplace } : {}),
+          scope,
+          resolutionKind,
+          signatureRequired,
+          signatureVerified,
+          installedAt: (input.now ?? (() => new Date()))().toISOString(),
+        });
+      },
+      validateStage: async (stagePath) => {
+        const plugin = await createPluginFromPath(stagePath, {
+          source: scope,
+          enabled: true,
+        });
+        if (plugin.plugin === null || plugin.errors.length > 0) {
+          throw new Error(
+            `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
+          );
+        }
+        if (plugin.plugin.name !== sourcePlugin.name) {
+          throw new Error(
+            `installed plugin identity changed during staging: ${plugin.plugin.name}`,
+          );
+        }
+      },
+      configTargetPath: pluginConfigPath(input),
+      publishConfig: async context => {
+        publishPluginConfigTransaction(context.configTargetPath!, pluginId, context.operationId);
+      },
+      readPluginConfig: context => Promise.resolve(preparePluginConfigTransaction(context.configTargetPath!, pluginId, context.operationId)),
     });
-    await writeInstallMetadata(destination, {
-      provenanceVersion: 1,
-      name: validatedPlugin.name,
-      dependencyIdentity: pluginId,
-      source: resolutionKind === "local"
-        ? source
-        : redactPluginInstallSource(input.source),
-      ...(resolutionKind !== "local" &&
-        pluginInstallSourceNeedsRedaction(input.source)
-        ? { sourceRedacted: true }
-        : {}),
-      sourceRoot: source,
-      ...(input.marketplace !== undefined ? { marketplace: input.marketplace } : {}),
-      scope,
-      resolutionKind,
-      signatureRequired,
-      signatureVerified,
-      installedAt: (input.now ?? (() => new Date()))().toISOString(),
-    });
-    const plugin = await createPluginFromPath(destination, {
+    const installed = await createPluginFromPath(destination, {
       source: scope,
       enabled: true,
     });
-    if (plugin.plugin === null || plugin.errors.length > 0) {
+    if (installed.plugin === null || installed.errors.length > 0) {
       throw new Error(
-        `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
+        `installed plugin failed validation: ${installed.errors.map((issue) => issue.message).join("; ")}`,
       );
     }
-    await writePluginConfigEntry(pluginId, { enabled: true }, input);
     const result = {
-      plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
+      plugin: summarizeLoadedPlugin({
+        ...installed.plugin,
+        id: pluginId,
+      }),
       destination,
       scope,
       resolutionKind,
@@ -685,7 +735,11 @@ export async function uninstallPluginOp(
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
-  for (const root of targetRoots) await rm(root, { recursive: true, force: true });
+  for (const root of targetRoots) {
+    // Only this directory removal is locked. Config, plugin data, and catalog
+    // cleanup below run after the lock is released.
+    await withPluginInstallDirectoryLock(root, () => rm(root, { recursive: true, force: true }));
+  }
   const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
   const removedConfig = remainsInstalled
     ? false
@@ -773,8 +827,10 @@ export async function updatePluginOp(
   } else if (requireSignature === undefined && input.source === undefined) {
     requireSignature = false;
   }
+  const pluginStorageRoot = await canonicalPluginInstallRoot(input.pluginStorageRoot);
   const installed = await installPluginOp({
     ...input,
+    pluginStorageRoot,
     source,
     ...(input.source === undefined && recordedSource.marketplace !== undefined
       ? { marketplace: recordedSource.marketplace } : {}),
@@ -1035,45 +1091,16 @@ async function hasComponentOnlyPluginShape(path: string): Promise<boolean> {
   return false;
 }
 
-async function copyDirectoryAtomically(
+async function copyPluginInstallDirectory(
   source: string,
   destination: string,
-  options: { readonly force: boolean },
 ): Promise<void> {
-  let existing = false;
-  try {
-    await stat(destination);
-    existing = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (existing) {
-    const sourceReal = await realpath(source);
-    const destinationReal = await realpath(destination);
-    if (isPathInside(sourceReal, destinationReal)) {
-      throw new Error(
-        `plugin source cannot be the installed plugin root or its descendant: ${source}`,
-      );
-    }
-  }
-  if (existing && !options.force) {
-    throw new Error(`plugin destination already exists: ${destination}`);
-  }
-  const parent = dirname(destination);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  const tempDir = await mkdtemp(join(parent, `.${basename(destination)}-`));
-  const staging = join(tempDir, "root");
-  try {
-    await cp(source, staging, {
-      recursive: true,
-      dereference: false,
-      filter: (sourcePath) => shouldCopyPluginPayloadPath(source, sourcePath),
-    });
-    await rm(destination, { recursive: true, force: true });
-    await rename(staging, destination);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  await cp(source, destination, {
+    recursive: true,
+    dereference: false,
+    filter: (sourcePath) => shouldCopyPluginPayloadPath(source, sourcePath),
+  });
 }
 
 async function writeInstallMetadata(
@@ -1271,6 +1298,19 @@ export function __isPathInsideForTesting(
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
+async function assertInstallSourceOutsideDestination(
+  source: string,
+  destination: string,
+): Promise<void> {
+  if (!(await pathExists(destination))) return;
+  const sourceReal = await realpath(source);
+  const destinationReal = await realpath(destination);
+  if (!isPathInside(sourceReal, destinationReal)) return;
+  throw new Error(
+    `plugin source cannot be the installed plugin root or its descendant: ${source}`,
+  );
+}
+
 async function writePluginConfigEntry(
   pluginId: string,
   entry: PluginEntryConfig,
@@ -1295,7 +1335,7 @@ async function writePluginConfigEntry(
       writable: true,
     });
     if (entry.enabled !== false) plugins.enabled = true;
-  });
+  }, { global: entry.enabled !== false, entries: [pluginId] });
   return path;
 }
 
@@ -1313,6 +1353,6 @@ async function removePluginConfigEntry(
     if (Object.keys(raw.plugins.plugins).length === 0) {
       delete raw.plugins.plugins;
     }
-  });
+  }, { entries: [pluginId] });
   return removed;
 }

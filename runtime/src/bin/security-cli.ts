@@ -124,7 +124,7 @@ const checkHomeDirPerms: SecurityCheck = (ctx) => {
         id: "home-dir-perms",
         title: "AgenC home does not exist yet",
         severity: "ok",
-        detail: `${ctx.agencHome} is absent — it is created owner-only (0700) on first use.`,
+        detail: `${ctx.agencHome} is absent. It is created owner-only (0700) on first use.`,
         fixable: false,
       },
     ];
@@ -502,10 +502,10 @@ export function formatSecurityAuditSummaryLine(
   report: SecurityAuditReport,
 ): string {
   if (report.criticalCount > 0) {
-    return `security audit: ${report.criticalCount} CRITICAL finding(s) — run 'agenc security audit' for details`;
+    return `security audit: ${report.criticalCount} CRITICAL finding(s). Run 'agenc security audit' for details`;
   }
   if (report.warnCount > 0) {
-    return `security audit: ok (${report.warnCount} warning(s) — 'agenc security audit')`;
+    return `security audit: ok (${report.warnCount} warning(s), see 'agenc security audit')`;
   }
   return "security audit: all checks passed";
 }
@@ -517,7 +517,7 @@ export type AgenCSecurityCliCommand =
 
 export function formatAgenCSecurityCliHelpText(): string {
   return [
-    "agenc security — audit local exposure and blast radius",
+    "agenc security: audit local exposure and blast radius",
     "",
     "Usage:",
     "  agenc security audit          Check daemon exposure, file permissions,",

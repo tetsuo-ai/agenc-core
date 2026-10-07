@@ -924,6 +924,17 @@ export function assistantTextFromContentBlocks(
   return pieces.join("");
 }
 
+/** Mistral's documented ThinkChunk contains an array of text chunks. */
+export function thinkingTextFromContentBlocks(content: readonly unknown[]): string {
+  return content.flatMap((block) => {
+    if (!block || typeof block !== "object") return [];
+    const record = block as Record<string, unknown>;
+    return record.type === "thinking" && Array.isArray(record.thinking)
+      ? [assistantTextFromContentBlocks(record.thinking)]
+      : [];
+  }).join("");
+}
+
 function toOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
