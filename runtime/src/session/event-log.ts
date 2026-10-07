@@ -907,6 +907,7 @@ export interface CollabAgentSpawnBeginEvent {
   readonly model: string;
   readonly provider?: string;
   readonly reasoningEffort?: string;
+  readonly routingReason?: string;
 }
 
 export interface CollabAgentSpawnEndEvent {
@@ -926,6 +927,7 @@ export interface CollabAgentSpawnEndEvent {
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;
   readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
+  readonly routingReason?: string;
 }
 
 /**
@@ -971,6 +973,7 @@ export interface CollabAgentStatusEvent {
   readonly tokenCount?: number;
   readonly error?: string;
   readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
+  readonly routingReason?: string;
 }
 
 export interface CollabAgentInteractionBeginEvent {

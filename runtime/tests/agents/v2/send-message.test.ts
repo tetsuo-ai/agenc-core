@@ -83,6 +83,38 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
 }
 
 describe("send_message delivery report", () => {
+  it.each([false, true])("clears spawn routing metadata for a new assignment without changing destination, crossProvider=%s", async crossProvider => {
+    const f = fixture({ status: "idle", turnId: "previous", endedAtMs: 1 } as AgentStatus, undefined, true);
+    const plan = { version: 1, crossProvider, modelInfo: destinationModelInfo,
+      route: { provider: "deepseek", model: "deepseek-v4-pro" },
+      destination: { provider: "deepseek", model: "deepseek-v4-pro",
+        endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
+      task: { id: "first", name: "child", text: "Extract names", attachments: [] },
+      parent: { sessionId: "root-session", agentPath: "/root" },
+      scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
+      budgetAllocation: { maxModelCalls: 2, maxCostUsd: 0.5 },
+      routing: { taskKind: "extraction", complexity: "simple", reason: "Initial automatic choice" },
+      // The plan must carry the session's current delegation policy revision, as real plans do.
+      policyRevision: (await approvedChildPlan(f.session)).policyRevision };
+    Object.assign(f.live.metadata, { executionPlan: plan });
+    Object.assign(f.session.services, { crossProviderConsent: { ownerSessionId: "root-session", sessionEpoch: "epoch",
+      request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+        kind: "granted", grant: { kind: "once", ownerSessionId: "root-session", sessionEpoch: "epoch",
+          taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+      }),
+    } });
+    const result = await f.assign();
+    expect(result.isError).not.toBe(true);
+    expect(f.assignTask).toHaveBeenCalledOnce();
+    const assigned = f.assignTask.mock.calls[0] as unknown as [string, { executionPlan: typeof plan }];
+    expect(assigned[1].executionPlan.routing).toBeUndefined();
+    expect(assigned[1].executionPlan.route).toEqual(plan.route);
+    expect(assigned[1].executionPlan.destination).toEqual(plan.destination);
+    expect(assigned[1].executionPlan.budgetAllocation).toEqual(plan.budgetAllocation);
+    expect(assigned[1].executionPlan.task.text).toBe("new task");
+    expect(plan.routing).toBeDefined();
+  });
+
   it("validates and forwards the explicit output contract for each assignment", async () => {
     const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 });
     const tool = createAssignTaskTool(f.opts);

@@ -51,10 +51,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.28 adds requirement_conflict for a failed structured planner report.
  * 1.29 adds the model_loop child terminal reason.
  * 1.30 adds authenticated local resident print invocations.
+ * 1.31 adds optional child routing explanations.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.30.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.31.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",

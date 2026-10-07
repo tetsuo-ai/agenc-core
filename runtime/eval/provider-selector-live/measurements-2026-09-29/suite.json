@@ -1,0 +1,221 @@
+{
+  "suiteVersion": "xprov-deepseek-known-answer-v1",
+  "splitPolicy": "Fixed before any provider call: one task per kind and complexity in calibration, and one in holdout. Never tune with holdout answers or outcomes.",
+  "systemPrompt": "Solve the supplied task. Return exactly the requested JSON object as your final answer. Do not include an explanation, markdown or additional keys. You have no tools. Work only from the supplied information.",
+  "tasks": [
+    {
+      "id": "cal-simple-extraction",
+      "split": "calibration",
+      "kind": "extraction",
+      "complexity": "simple",
+      "prompt": "Extract IDs from these records where status is paid and amount is at least 20. Keep input order. Records: [{\"id\":\"A17\",\"status\":\"paid\",\"amount\":20},{\"id\":\"A18\",\"status\":\"pending\",\"amount\":50},{\"id\":\"A19\",\"status\":\"paid\",\"amount\":19},{\"id\":\"A21\",\"status\":\"paid\",\"amount\":24}]. Return {\"ids\":[string,...]}.",
+      "expected": {
+        "ids": [
+          "A17",
+          "A21"
+        ]
+      },
+      "proof": "Only A17 and A21 satisfy both predicates; A17 precedes A21."
+    },
+    {
+      "id": "cal-simple-coding",
+      "split": "calibration",
+      "kind": "coding",
+      "complexity": "simple",
+      "prompt": "Give the output of this Python 3 code as JSON, without executing it: xs=[1,2,3,4]; out=[]; then for each (i,x) from enumerate(xs), append x*i when x is even, otherwise append -x. Return {\"out\":[integer,...],\"sum\":integer}, where sum is sum(out).",
+      "expected": {
+        "out": [
+          -1,
+          2,
+          -3,
+          12
+        ],
+        "sum": 10
+      },
+      "proof": "Indices are 0,1,2,3. Terms are -1,2,-3,12, summing to 10."
+    },
+    {
+      "id": "cal-simple-reasoning",
+      "split": "calibration",
+      "kind": "reasoning",
+      "complexity": "simple",
+      "prompt": "A bag contains 2 red and 3 blue balls. Two balls are drawn uniformly without replacement. What is the probability of exactly one red ball? Return the reduced fraction as {\"numerator\":integer,\"denominator\":integer}.",
+      "expected": {
+        "numerator": 3,
+        "denominator": 5
+      },
+      "proof": "There are C(5,2)=10 unordered pairs and 2*3=6 mixed pairs, hence 3/5."
+    },
+    {
+      "id": "cal-hard-extraction",
+      "split": "calibration",
+      "kind": "extraction",
+      "complexity": "hard",
+      "prompt": "Reconcile this budget event log. All amounts are integer units. A scope starts capped at 12 with zero spent or held. A reservation succeeds only if spent+held+requested <= cap; rejection leaves no reservation. Settling replaces that reservation with its actual spent amount. A timeout keeps the reservation held. A confirmed cancellation releases it without spending. Rebinding can only lower the cap. Events in order: reserve a=5; reserve b=4; settle a actual=3; timeout b; rebind cap=15; reserve c:first=6; settle b actual=2; reserve c:second=6; settle c:second actual=1; reserve d=7; rebind cap=8; reserve e=2; confirmed cancel e; reserve f=2; timeout f. Return {\"cap\":integer,\"spent\":integer,\"held\":integer,\"remaining\":integer,\"rejected\":[reservation IDs in rejection order]}.",
+      "expected": {
+        "cap": 8,
+        "spent": 6,
+        "held": 2,
+        "remaining": 0,
+        "rejected": [
+          "c:first",
+          "d"
+        ]
+      },
+      "proof": "Spent becomes 3,5,6. c:first would use 13 of 12; d would use 13 of 12. Final cap8, f holds2 and spent6."
+    },
+    {
+      "id": "cal-hard-coding",
+      "split": "calibration",
+      "kind": "coding",
+      "complexity": "hard",
+      "prompt": "Reason about this snapshot-isolation transaction code. Initially A=10 and B=10, each key at version0. begin captures values and key versions. Reads use that snapshot. Commit checks only keys in the transaction's write set: if any current key version differs from its snapshot version, abort all its writes; otherwise apply all writes and increment each written key's version. T1 and T2 begin at version0. Each reads A+B=20. T1 stages A=0; T2 stages B=0. T1 commits. T3 now begins, reads A=0,B=10, and stages B=9. T2 commits, then T3 commits. The invariant is A>=10 OR B>=10. Return {\"committed\":[transaction IDs in order],\"aborted\":[transaction IDs in order],\"A\":integer,\"B\":integer,\"invariant\":boolean}.",
+      "expected": {
+        "committed": [
+          "T1",
+          "T2"
+        ],
+        "aborted": [
+          "T3"
+        ],
+        "A": 0,
+        "B": 0,
+        "invariant": false
+      },
+      "proof": "T1 and T2 write disjoint version0 keys. T3 sees B version0 but T2 advances it to1, so T3 aborts. Both balances end0."
+    },
+    {
+      "id": "cal-hard-reasoning",
+      "split": "calibration",
+      "kind": "reasoning",
+      "complexity": "hard",
+      "prompt": "A fair coin is tossed until the first occurrence of either consecutive pattern HHT or HTH. Starting with no previous tosses, find the probability HHT occurs first and the expected number of tosses until stopping. Return reduced fractions as {\"winNumerator\":integer,\"winDenominator\":integer,\"tossNumerator\":integer,\"tossDenominator\":integer}.",
+      "expected": {
+        "winNumerator": 2,
+        "winDenominator": 3,
+        "tossNumerator": 6,
+        "tossDenominator": 1
+      },
+      "proof": "Prefix states empty,H,HH,HT. P(empty)=P(H), P(HH)=1, P(HT)=P(empty)/2, giving P=2/3. E(empty)=2+E(H), E(HH)=2, E(HT)=1+E(empty)/2, giving E(empty)=6."
+    },
+    {
+      "id": "hold-simple-extraction",
+      "split": "holdout",
+      "kind": "extraction",
+      "complexity": "simple",
+      "prompt": "Extract IDs whose email field is empty or absent. The literal string NA is not empty. Keep input order. Records: [{\"id\":\"u1\",\"email\":\"a@example.test\"},{\"id\":\"u2\",\"email\":\"\"},{\"id\":\"u3\",\"email\":\"NA\"},{\"id\":\"u4\",\"email\":\"b@example.test\"},{\"id\":\"u5\"}]. Return {\"ids\":[string,...]}.",
+      "expected": {
+        "ids": [
+          "u2",
+          "u5"
+        ]
+      },
+      "proof": "u2 is empty, u5 absent. u3 has a literal nonempty string."
+    },
+    {
+      "id": "hold-simple-coding",
+      "split": "holdout",
+      "kind": "coding",
+      "complexity": "simple",
+      "prompt": "Give the output values of this JavaScript code: const xs=[3,1,3,2,1]; const unique=[...new Set(xs)].sort((a,b)=>a-b); const squares=unique.map(x=>x*x); const sum=squares.reduce((a,b)=>a+b,0); Return {\"unique\":[integer,...],\"squares\":[integer,...],\"sum\":integer}.",
+      "expected": {
+        "unique": [
+          1,
+          2,
+          3
+        ],
+        "squares": [
+          1,
+          4,
+          9
+        ],
+        "sum": 14
+      },
+      "proof": "Sorted distinct inputs are1,2,3; their squares total14."
+    },
+    {
+      "id": "hold-simple-reasoning",
+      "split": "holdout",
+      "kind": "reasoning",
+      "complexity": "simple",
+      "prompt": "For integer minutes t in the inclusive interval [0,180], bus A departs when t modulo12 is5, and bus B departs when t modulo18 is11. Find every simultaneous departure minute in increasing order. Return {\"minutes\":[integer,...]}.",
+      "expected": {
+        "minutes": [
+          29,
+          65,
+          101,
+          137,
+          173
+        ]
+      },
+      "proof": "29 solves both congruences. Solutions repeat every lcm(12,18)=36; five fit the interval."
+    },
+    {
+      "id": "hold-hard-extraction",
+      "split": "holdout",
+      "kind": "extraction",
+      "complexity": "hard",
+      "prompt": "Reconcile revisioned records. For each ID keep only its highest revision, regardless of arrival order. Equal revisions here are identical duplicates. A tombstone at the highest revision deletes that ID; a later higher active revision revives it. Records in arrival order as (ID, revision, active value or DELETE): (alpha,2,9), (beta,1,5), (alpha,1,100), (gamma,3,4), (beta,2,DELETE), (delta,1,7), (alpha,3,6), (gamma,3,4), (beta,1,5), (delta,2,DELETE), (gamma,2,9), (beta,3,8). Return {\"active\":{ID:value,...},\"deleted\":[IDs in alphabetical order],\"revisions\":{ID:highest revision,...},\"total\":sum of active values}.",
+      "expected": {
+        "active": {
+          "alpha": 6,
+          "beta": 8,
+          "gamma": 4
+        },
+        "deleted": [
+          "delta"
+        ],
+        "revisions": {
+          "alpha": 3,
+          "beta": 3,
+          "gamma": 3,
+          "delta": 2
+        },
+        "total": 18
+      },
+      "proof": "Highest revisions are alpha3,beta3,gamma3,delta2. Only delta2 is a tombstone; active values6+8+4=18."
+    },
+    {
+      "id": "hold-hard-coding",
+      "split": "holdout",
+      "kind": "coding",
+      "complexity": "hard",
+      "prompt": "Reason about the exact log order for this complete JavaScript ES module on Node26. No other code runs.\nconst log=[];\nasync function f(){log.push('f0');await Promise.resolve();log.push('f1');queueMicrotask(()=>log.push('f2'));await 0;log.push('f3');}\nlog.push('s');const p=f();\nPromise.resolve().then(()=>{log.push('p1');return Promise.resolve();}).then(()=>log.push('p2'));\nqueueMicrotask(()=>log.push('q'));p.then(()=>log.push('done'));log.push('e');\nsetTimeout(()=>console.log(JSON.stringify({log})),0);\nReturn the exact printed JSON object, {\"log\":[string,...]}.",
+      "expected": {
+        "log": [
+          "s",
+          "f0",
+          "e",
+          "f1",
+          "p1",
+          "q",
+          "f2",
+          "f3",
+          "done",
+          "p2"
+        ]
+      },
+      "proof": "Synchronous s,f0,e precede queued f continuation,p1,q. f continuation queues f2 then second continuation. Promise assimilation delays p2 until after done. Independently checked with authored code on Node26.8.1 before calls."
+    },
+    {
+      "id": "hold-hard-reasoning",
+      "split": "holdout",
+      "kind": "reasoning",
+      "complexity": "hard",
+      "prompt": "Schedule seven nonpreemptive jobs on two identical workers. Each job uses one worker; workers may idle. Starts are nonnegative integer times; a job may start exactly when its predecessors finish. Jobs (duration; predecessors): A(3;none), B(4;none), C(4;A), D(3;A), E(5;B), F(2;C,D), G(3;E,F). Minimize the time all jobs finish. Among all optimal schedules choose the lexicographically smallest start-time vector ordered A,B,C,D,E,F,G. Return {\"makespan\":integer,\"starts\":[integer,integer,integer,integer,integer,integer,integer]}.",
+      "expected": {
+        "makespan": 14,
+        "starts": [
+          0,
+          0,
+          4,
+          3,
+          6,
+          8,
+          11
+        ]
+      },
+      "proof": "A13-unit finish would require E and F done by10, hence C,D done by8 and E started by5. By8 the required A3+B4+C4+D3+at least3 of E would need17 worker-units, but capacity is16. A14-unit witness starts A0,B0,D3,C4,E6,F8,G11. The exhaustive event-time oracle also checks lexicographic minimality."
+    }
+  ]
+}

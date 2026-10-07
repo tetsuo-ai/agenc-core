@@ -519,14 +519,23 @@ export class ExecutionAdmissionRepository {
     ownerRunId: string,
     scope: AdmissionBudgetScope,
   ): number | undefined {
-    requireNonEmpty(ownerRunId, "bindRunCostLimit.ownerRunId");
-    const key = requireNonEmpty(scope.key, "bindRunCostLimit.scope.key");
+    return this.bindRunBudgetLimits(ownerRunId, scope).maxCostUsd;
+  }
+
+  /** Bind durable caps without resetting charges. Rebinding can only tighten. */
+  bindRunBudgetLimits(
+    ownerRunId: string,
+    scope: AdmissionBudgetScope,
+  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens"> {
+    requireNonEmpty(ownerRunId, "bindRunBudgetLimits.ownerRunId");
+    const key = requireNonEmpty(scope.key, "bindRunBudgetLimits.scope.key");
     const proposed =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
+    const proposedTokens = scope.maxTokens === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
     const now = this.#timestamp();
     return this.#driver.transactionImmediate(() => {
       const existing = this.#allocationLocked(key);
-      if (existing === undefined && proposed === undefined) return undefined;
       if (
         existing !== undefined &&
         proposed !== undefined &&
@@ -539,7 +548,15 @@ export class ExecutionAdmissionRepository {
           )
           .run(proposed, now, key);
       }
+      if (existing !== undefined && proposedTokens !== undefined &&
+          (existing.max_tokens === null || proposedTokens < existing.max_tokens)) {
+        this.#driver.prepareState(
+          `UPDATE execution_admission_allocations
+           SET max_tokens = ?, updated_at = ? WHERE scope_key = ?`,
+        ).run(proposedTokens, now, key);
+      }
       const persisted = this.#allocationLocked(key)?.max_cost_nanos ?? proposed;
+      const persistedTokens = this.#allocationLocked(key)?.max_tokens ?? proposedTokens;
       const allocation = this.#ensureAllocationLocked(
         ownerRunId,
         {
@@ -547,12 +564,14 @@ export class ExecutionAdmissionRepository {
           ...(persisted !== undefined
             ? { maxCostUsd: nanosToUsd(persisted) }
             : {}),
+          ...(persistedTokens !== undefined ? { maxTokens: persistedTokens } : {}),
         },
         now,
       );
-      return allocation.max_cost_nanos === null
-        ? undefined
-        : nanosToUsd(allocation.max_cost_nanos);
+      return {
+        ...(allocation.max_cost_nanos !== null ? { maxCostUsd: nanosToUsd(allocation.max_cost_nanos) } : {}),
+        ...(allocation.max_tokens !== null ? { maxTokens: allocation.max_tokens } : {}),
+      };
     });
   }
 
@@ -1561,7 +1580,7 @@ export class ExecutionAdmissionRepository {
     };
   }
 
-  getUsageSummary(runId: string, allocationKey: string): AdmissionUsageSummary {
+  getUsageSummary(runId: string, allocationKey: string, directOnly = false): AdmissionUsageSummary {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
     return this.#driver.transaction(() => {
@@ -1571,7 +1590,7 @@ export class ExecutionAdmissionRepository {
         )
         .get()?.sequence ?? 0;
       const rows = this.#driver
-        .prepareState<[string], UsageAggregateRow>(
+        .prepareState<string[], UsageAggregateRow>(
           `SELECT reservation.run_id, reservation.kind, reservation.model, reservation.provider,
              COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
                THEN COALESCE(reservation.actual_input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
@@ -1595,10 +1614,11 @@ export class ExecutionAdmissionRepository {
            JOIN execution_admission_reservation_allocations AS allocation
              ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
            WHERE reservation.status != 'voided'
+             ${directOnly ? "AND reservation.run_id = ?" : ""}
            GROUP BY reservation.run_id, reservation.kind, reservation.model, reservation.provider
            ORDER BY reservation.run_id, reservation.kind, reservation.model, reservation.provider`,
         )
-        .all(allocationKey);
+        .all(...(directOnly ? [allocationKey, runId] : [allocationKey]));
       const modelRows = new Map<string, UsageAggregateRow[]>();
       const agentRows = new Map<string, UsageAggregateRow[]>();
       for (const row of rows) {
@@ -1628,6 +1648,41 @@ export class ExecutionAdmissionRepository {
           ...sumUsageRows(group),
         })),
       };
+    });
+  }
+
+  /** Read a consistent budget snapshot without creating or reserving a scope. */
+  getRemainingCostUsd(scopes: readonly AdmissionBudgetScope[]): number | undefined {
+    return this.#driver.transaction(() => {
+      const proposed = new Map(scopes.map(scope => [scope.key, scope]));
+      const queue = scopes.map(scope => scope.key);
+      const seen = new Set<string>();
+      let remainingNanos: number | undefined;
+      for (let hops = 0; queue.length > 0; hops += 1) {
+        if (hops >= MAX_ALLOCATION_ANCESTOR_WALK * Math.max(1, scopes.length)) {
+          throw new ExecutionAdmissionStateError("admission allocation hierarchy exceeds cycle/depth bound");
+        }
+        const key = queue.shift()!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const row = this.#allocationLocked(key);
+        const scope = proposed.get(key);
+        if (row === undefined && scope === undefined) {
+          throw new ExecutionAdmissionStateError(`admission allocation parent does not exist: ${key}`);
+        }
+        if (row?.blocked_by_provider_overrun === 1) return 0;
+        const configuredCap = scope?.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
+        const durableCap = row?.max_cost_nanos ?? undefined;
+        const cap = configuredCap === undefined ? durableCap : durableCap === undefined
+          ? configuredCap : Math.min(configuredCap, durableCap);
+        if (cap !== undefined) {
+          const consumed = checkedNanoSum(row?.used_cost_nanos ?? 0, row?.held_cost_nanos ?? 0);
+          const available = Math.max(0, cap - consumed);
+          remainingNanos = remainingNanos === undefined ? available : Math.min(remainingNanos, available);
+        }
+        if (row?.parent_scope_key !== undefined && row.parent_scope_key !== null) queue.push(row.parent_scope_key);
+      }
+      return remainingNanos === undefined ? undefined : nanosToUsd(remainingNanos);
     });
   }
 
@@ -1991,7 +2046,7 @@ export class ExecutionAdmissionRepository {
     if (parentKey !== undefined && existing.parent_scope_key !== parentKey) {
       throw new AdmissionAllocationConflictError(key, "parentKey");
     }
-    if (maxTokens !== undefined && existing.max_tokens !== maxTokens) {
+    if (maxTokens !== undefined && (existing.max_tokens === null || maxTokens < existing.max_tokens)) {
       throw new AdmissionAllocationConflictError(key, "maxTokens");
     }
     if (

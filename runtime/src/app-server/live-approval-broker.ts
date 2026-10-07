@@ -228,6 +228,13 @@ export class LiveApprovalBroker {
       ownerSessionId: owner.session.conversationId,
       sessionEpoch: owner.sessionEpoch,
       request: (requestingSession, disclosure, options) => this.#requestCrossProviderConsent(owner, requestingSession, disclosure, options),
+      // The same no-question path as #requestCrossProviderConsent: settings
+      // consent while no child has stopped for funds. A pending settings
+      // refresh may change the answer, so it counts as asking.
+      grantsWithoutAsking: (provider) => this.#owners.get(owner.session.conversationId) === owner &&
+        owner.isActive() && owner.policyRefresh === undefined &&
+        providerRefusal(owner.session, provider, undefined) === undefined &&
+        crossProviderConsentFromSettings(owner.session) && !fundsStopped(owner),
     };
     services.crossProviderConsent = consentService;
     const subscriptions = new Set<() => void>();

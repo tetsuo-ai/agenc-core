@@ -47,6 +47,34 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("router readiness checks only the selected local credential without vending or network", async () => {
+    const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "child-secret" : undefined);
+    const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
+    const fetchSpy = vi.fn();
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-secret" }),
+      environment: {}, readSavedApiKey, authBackend,
+      resolvePreparationRequest: ({ model }) => ({ requested: { model, fetch: fetchSpy } }),
+    });
+    expect(await service.isChildProviderConnected({ provider: "deepseek", model: "deepseek-flash" })).toBe(true);
+    expect(await service.isChildProviderConnected({ provider: "anthropic", model: "claude-sonnet-4-5" })).toBe(false);
+    expect(await service.isChildProviderConnected({ provider: "agenc", model: "auto" })).toBe(false);
+    expect(readSavedApiKey).toHaveBeenCalledWith("deepseek");
+    expect(readSavedApiKey).toHaveBeenCalledWith("anthropic");
+    expect(authBackend.vendKey).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("router readiness excludes noncanonical endpoints and unsupported authorities", async () => {
+    const service = new SessionProviderService({
+      initialProvider: initialProvider("parent"),
+      environment: {}, readSavedApiKey: async () => "child-secret",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model, baseURL: "https://other.example/v1" } }),
+    });
+    expect(await service.isChildProviderConnected({ provider: "deepseek", model: "deepseek-flash" })).toBe(false);
+    expect(await service.isChildProviderConnected({ provider: "unknown", model: "model" })).toBe(false);
+  });
+
   test("preview selects saved BYOK over eligible managed billing", async () => {
     const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "saved-deepseek-key" : undefined);
     const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
