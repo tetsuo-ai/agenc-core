@@ -64,6 +64,12 @@ function validHealth(value: unknown): value is ChildProviderHealth {
     (item.blockedReason === undefined || item.blockedReason === "insufficient_funds" || item.blockedReason === "auth_required");
 }
 
+function usableAbility(value: unknown): value is ModelAbility {
+  if (value === null || typeof value !== "object") return false;
+  const item = value as ModelAbility;
+  return validAbility(item) && identity(item.provider) && identity(item.model);
+}
+
 function parseHistory(text: string): StoredHistory | undefined {
   try {
     const value = JSON.parse(text) as StoredHistory;
@@ -73,12 +79,14 @@ function parseHistory(text: string): StoredHistory | undefined {
         !Array.isArray(value.receipts) || value.receipts.length > MAX_RECEIPTS ||
         !value.receipts.every(item => item !== null && identity(item.id) && finite(item.atMs)) ||
         !finite(value.receiptFloorMs) || (value.abilities !== undefined && (!Array.isArray(value.abilities) ||
-        value.abilities.length > MAX_AGGREGATES || !value.abilities.every(item => validAbility(item) && identity(item.provider) && identity(item.model))))) return undefined;
+        value.abilities.length > MAX_AGGREGATES))) return undefined;
     // Rebuild the allowed fields. Extra fields from disk must never survive a write.
     return {
       version: 1,
-      abilities: value.abilities?.map(item => ({ provider: item.provider, model: item.model, skill: item.skill,
-        revision: item.revision, mean: item.mean, variance: item.variance, observations: item.observations })) ?? [],
+      // An ability from another IRT revision, or a damaged one, is dropped on
+      // its own. It must never take health blocks and receipts with it.
+      abilities: (value.abilities ?? []).filter(usableAbility).map(item => ({ provider: item.provider, model: item.model,
+        skill: item.skill, revision: item.revision, mean: item.mean, variance: item.variance, observations: item.observations })),
       aggregates: value.aggregates.map(item => ({
         provider: item.provider, model: item.model, taskKind: item.taskKind, complexity: item.complexity,
         profileRevision: item.profileRevision, attempts: item.attempts, successes: item.successes,

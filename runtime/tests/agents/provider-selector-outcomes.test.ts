@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ChildRoutingOutcomeStore } from "../../src/agents/provider-selector-outcomes.js";
 import type { ChildRoutingOutcome } from "../../src/agents/provider-selector-outcomes.js";
+import { IRT_REVISION, abilityPrior } from "../../src/agents/provider-selector-irt.js";
 
 const folders: string[] = [];
 async function fixture() {
@@ -88,6 +89,32 @@ describe("local child routing outcomes", () => {
       expect(store.loadWarning).toBe("invalid_local_routing_history");
       expect(store.snapshot()).toEqual({ aggregates: [], health: [] });
     }
+  });
+
+  it("drops only a stale or damaged ability and keeps a funds block, receipts and aggregates", async () => {
+    const { path, store } = await fixture();
+    await store.record({ ...sample, terminalReason: "insufficient_funds", success: false });
+    await store.recordVerification({ receiptId: "verified-1", provider: "openai", model: "gpt-6-luna",
+      features: { skill: "coding", difficulty: -1, discrimination: 1 }, passed: true, atMs: 10_500 });
+    const current = store.snapshot().abilities![0]!;
+    expect(current.revision).toBe(IRT_REVISION);
+    const disk = JSON.parse(await readFile(path, "utf8")) as { abilities: unknown[] };
+    // An earlier IRT revision, and a row nobody could have written, beside the current one.
+    disk.abilities = [{ ...abilityPrior("deepseek", "deepseek-flash", "reasoning"), revision: "child-irt-v2-2026-09-29",
+      observations: 4 }, null, { ...current, mean: Number.NaN }, current];
+    await writeFile(path, JSON.stringify(disk));
+    const restored = await ChildRoutingOutcomeStore.open(path);
+    expect(restored.loadWarning).toBeUndefined();
+    expect(restored.snapshot().health[0]).toMatchObject({ provider: "deepseek", blockedReason: "insufficient_funds" });
+    expect(restored.snapshot().aggregates[0]).toMatchObject({ attempts: 1, infrastructureFailures: 1 });
+    expect(restored.snapshot().abilities).toEqual([current]);
+    // The next write keeps the block and both receipts, and leaves the stale row behind.
+    expect(await restored.record({ ...sample, receiptId: "receipt-2", provider: "openai", model: "gpt-6-luna", atMs: 11_000 })).toBe(true);
+    expect(await restored.record(sample)).toBe(false);
+    const rewritten = JSON.parse(await readFile(path, "utf8")) as { health: unknown[]; receipts: { id: string }[]; abilities: unknown[] };
+    expect(rewritten.health).toContainEqual(expect.objectContaining({ provider: "deepseek", blockedReason: "insufficient_funds" }));
+    expect(rewritten.receipts.map(item => item.id).sort()).toEqual(["receipt-1", "receipt-2", "verified:verified-1"]);
+    expect(rewritten.abilities).toEqual([current]);
   });
 
   it("merges outcomes from two processes that share one home instead of overwriting", async () => {
