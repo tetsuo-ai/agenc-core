@@ -1,6 +1,6 @@
-import { estimateChildCandidateCost } from "./provider-selector.js";
+import { CHILD_QUALITY_FLOOR, childTierQuality, estimateChildCandidateCost } from "./provider-selector.js";
 import { childModelProfile } from "./provider-selector-profiles.js";
-import { abilityPrior, predictSuccess, sigmoid, validAbility, validFeatures,
+import { REFERENCE_DIFFICULTY, abilityPrior, predictSuccess, sigmoid, validAbility, validFeatures,
   type ModelAbility, type TaskFeatures } from "./provider-selector-irt.js";
 import type { ChildProviderCandidate, ChildRoutingSnapshot, ChildSelectionTask, RankedChildCandidate } from "./provider-selector-types.js";
 
@@ -28,6 +28,14 @@ export interface RoutingVerification {
 }
 export interface V2Candidate extends RankedChildCandidate {
   readonly ability: ModelAbility;
+  /**
+   * How well this model fits the task's kind: its maintained tier, or for an
+   * unprofiled model its verified local level. Undefined for a parent or
+   * override of unknown quality.
+   */
+  readonly adequacy?: number;
+  /** The ability posterior rests on verified local outcomes, not only on the tier prior. */
+  readonly verified: boolean;
   readonly lowerQuality: number;
   readonly upperQuality: number;
   readonly handoffCostUsd: number;
@@ -46,10 +54,17 @@ export interface V2Selection {
 }
 export const pairKey = (pair: { readonly provider: string; readonly model: string }): string => `${pair.provider}/${pair.model}`;
 const finite = (x: number | undefined): x is number => x !== undefined && Number.isFinite(x) && x >= 0;
-/** Utility units per dollar and per second. A hard cap is separate from this preference. */
+/**
+ * Utility units per dollar and per second. The dollar weight is the share of
+ * the cap the user would trade for one unit of success. Without a cap there
+ * is no such share, so price weighs nothing: it never moves a child off the
+ * parent's model and an uncapped session is never more price averse than a
+ * capped one.
+ */
 export function utilityWeights(preferences: RoutingPreferences = {}, budgetUsd?: number): { lambda: number; mu: number } {
   const willingness = preferences.cost === "quality" ? 0 : preferences.cost === "economy" ? 0.25 : 0.025;
-  return { lambda: willingness / Math.max(0.001, budgetUsd ?? 0.05), mu: preferences.speed === "fast" ? 0.01 : 0.0002 };
+  return { lambda: budgetUsd === undefined ? 0 : willingness / Math.max(0.001, budgetUsd),
+    mu: preferences.speed === "fast" ? 0.01 : 0.0002 };
 }
 /** Bayesian shrinkage of P(second succeeds | first failed), never an independence assumption. */
 export function conditionalRecovery(first: string, second: string, evidence: readonly ConditionalSuccess[] = []): number {
@@ -125,8 +140,17 @@ export function selectChildProviderV2(input: {
     // Unknown destinations need either verified local evidence or an explicit request. The active parent is connected evidence.
     const saved = (input.abilities ?? input.outcomes?.abilities)?.find(item => item.provider === candidate.provider &&
       item.model === candidate.model && item.skill === features.skill && validAbility(item));
-    if (!parent && !input.override && !saved && !childModelProfile(candidate.provider, candidate.model)) { reject("model_profile_unknown"); continue; }
+    const verified = saved !== undefined && saved.observations > 0;
+    if (!parent && !input.override && !verified && !childModelProfile(candidate.provider, candidate.model)) { reject("model_profile_unknown"); continue; }
     const ability = saved ?? abilityPrior(candidate.provider, candidate.model, features.skill);
+    // A handoff needs evidence that the model is adequate for this task: the
+    // maintained tier for its kind must meet the complexity floor. The floor
+    // binds the parent too; a parent of unknown quality stays eligible.
+    const adequacy = childTierQuality(candidate, task, input.outcomes, now) ??
+      (verified ? sigmoid(ability.mean - REFERENCE_DIFFICULTY) : undefined);
+    if (!input.override && adequacy !== undefined && !(adequacy >= CHILD_QUALITY_FLOOR[task.complexity])) {
+      reject("quality_below_task_floor"); continue;
+    }
     const predicted = predictSuccess(ability, features);
     // Infrastructure reliability is separate from the ability posterior.
     const availabilityRows = input.outcomes?.aggregates.filter(item => item.provider === candidate.provider && item.model === candidate.model &&
@@ -145,15 +169,23 @@ export function selectChildProviderV2(input: {
     const samples = rows.reduce((sum, row) => sum + row.latencySamples, 0);
     const latency = rows.reduce((sum, row) => sum + row.latencyTotalMs, 0);
     const estimatedLatencyMs = samples >= 3 ? latency / samples : (childModelProfile(candidate.provider, candidate.model)?.latencyMs ?? 30_000) * (task.expectedModelCalls ?? 1);
-    ranked.push({ provider: candidate.provider, model: candidate.model, ability, quality: quality.mean,
+    ranked.push({ provider: candidate.provider, model: candidate.model, ability, verified,
+      ...(adequacy !== undefined ? { adequacy } : {}), quality: quality.mean,
       lowerQuality: quality.lower, upperQuality: quality.upper, ...(cost !== undefined ? { estimatedCostUsd: cost } : {}),
       estimatedLatencyMs, handoffCostUsd, handoffLatencyMs: parent ? 0 : handoffLatencyMs,
       // Unknown subscription dollars cannot be used to claim a cost advantage.
       score: quality.mean - lambda * (cost ?? 0) - mu * estimatedLatencyMs / 1000,
       reason: "" });
   }
-  ranked.sort((a, b) => b.score - a.score || pairKey(a).localeCompare(pairKey(b)));
-  if (!ranked.length) return finish(undefined, "unavailable", "No connected and allowed model fits the task and spend cap.");
+  const cheaper = (a: V2Candidate, b: V2Candidate): number =>
+    (a.estimatedCostUsd ?? Number.POSITIVE_INFINITY) - (b.estimatedCostUsd ?? Number.POSITIVE_INFINITY);
+  // Under a cap, utility orders the candidates. Without one, price never
+  // moves a child off an adequate parent, so when the parent cannot take the
+  // task the least expensive adequate model comes first; verified outcomes
+  // can still favor a better one below.
+  ranked.sort((a, b) => (task.maxCostUsd === undefined ? cheaper(a, b) || b.score - a.score
+    : b.score - a.score || cheaper(a, b)) || pairKey(a).localeCompare(pairKey(b)));
+  if (!ranked.length) return finish(undefined, "unavailable", "No connected and allowed model meets this task's requirements.");
   if (input.override) return finish(ranked[0], "override", `${pairKey(ranked[0]!)} is your override; capability and spend checks passed.`);
   const parent = ranked.find(item => pairKey(item) === pairKey(input.parent));
   let selected = parent ?? ranked[0]!;
@@ -161,11 +193,17 @@ export function selectChildProviderV2(input: {
   const handoffPenalty = (item: V2Candidate) => lambda * item.handoffCostUsd + mu * item.handoffLatencyMs / 1000 + 0.01;
   for (const item of ranked) {
     if (pairKey(item) === pairKey(selected)) continue;
+    if (downgradesHardTask(task, item, selected)) continue;
     // Use a modest uncertainty penalty in addition to actual context and latency overhead.
     const risk = 0.1 * ((item.upperQuality - item.lowerQuality) + (selected.upperQuality - selected.lowerQuality));
+    // Maintained tiers establish adequacy, not superiority: a higher predicted
+    // quality is a reason to move only when verified local outcomes support it.
+    const qualityDelta = item.quality - selected.quality;
+    const qualityGain = qualityDelta > 0 && !item.verified ? 0 : qualityDelta;
     // Comparing unknown dollars may not move a subscription parent for an imagined saving.
-    const costComparable = item.estimatedCostUsd !== undefined && selected.estimatedCostUsd !== undefined;
-    const gain = costComparable ? item.score - selected.score : item.quality - selected.quality - mu * (item.estimatedLatencyMs - selected.estimatedLatencyMs) / 1000;
+    const priceGain = item.estimatedCostUsd !== undefined && selected.estimatedCostUsd !== undefined
+      ? lambda * (selected.estimatedCostUsd - item.estimatedCostUsd) : 0;
+    const gain = qualityGain + priceGain + mu * (selected.estimatedLatencyMs - item.estimatedLatencyMs) / 1000;
     if (gain > handoffPenalty(item) + risk) { selected = item; mode = "utility"; }
   }
   const verifier = input.verification;
@@ -177,6 +215,7 @@ export function selectChildProviderV2(input: {
       // send a failed task wandering through unrelated providers.
       if (parent !== undefined && pairKey(second) !== pairKey(parent)) continue;
       if (pairKey(first) === pairKey(second) || first.estimatedCostUsd === undefined || second.estimatedCostUsd === undefined) continue;
+      if (downgradesHardTask(task, first, second)) continue;
       const recovered = conditionalRecovery(pairKey(first), pairKey(second), verifier.conditional);
       const quality = first.quality + (1 - first.quality) * recovered;
       const c1 = first.estimatedCostUsd + first.handoffCostUsd + verifier.costUsd;
@@ -201,6 +240,7 @@ export function selectChildProviderV2(input: {
     let explored = selected;
     for (const candidate of ranked) {
       if (candidate.ability.observations < 3 || candidate.estimatedCostUsd === undefined || selected.estimatedCostUsd === undefined) continue;
+      if (pairKey(candidate) !== pairKey(selected) && downgradesHardTask(task, candidate, selected)) continue;
       const conservativeLoss = selected.upperQuality - candidate.lowerQuality +
         lambda * Math.max(0, candidate.estimatedCostUsd + candidate.handoffCostUsd - selected.estimatedCostUsd) +
         mu * Math.max(0, candidate.estimatedLatencyMs + candidate.handoffLatencyMs - selected.estimatedLatencyMs) / 1000;
@@ -212,8 +252,22 @@ export function selectChildProviderV2(input: {
     }
     if (pairKey(explored) !== pairKey(selected)) { selected = explored; mode = "explore"; }
   }
+  const estimate = selected.estimatedCostUsd === undefined ? "subscription dollars unknown" : `$${selected.estimatedCostUsd.toFixed(4)}`;
+  const parentBelowFloor = rejected.some(item => pairKey(item) === pairKey(input.parent) && item.reason === "quality_below_task_floor");
   const reason = mode === "parent" ? `Keep ${pairKey(selected)}; expected delegation gain does not cover handoff and uncertainty.`
     : mode === "explore" ? `${pairKey(selected)} is a bounded local exploration within your spend cap.`
-    : `${pairKey(selected)} has the highest supported task utility after handoff cost (estimated ${selected.estimatedCostUsd === undefined ? "subscription dollars unknown" : `$${selected.estimatedCostUsd.toFixed(4)}`}).`;
+    : parentBelowFloor ? `${pairKey(selected)} meets the quality this ${task.complexity} ${task.kind} task needs and your model does not (estimated ${estimate}).`
+    : parent === undefined && task.maxCostUsd === undefined && !selected.verified
+      ? `${pairKey(selected)} is the least expensive model that meets this task's requirements (estimated ${estimate}).`
+      : `${pairKey(selected)} has the highest supported task utility after handoff cost (estimated ${estimate}).`;
   return finish(selected, mode, reason);
+}
+
+/**
+ * A hard task never moves to a model rated below the current choice, nor away
+ * from one whose rating is unknown.
+ */
+function downgradesHardTask(task: ChildSelectionTask, destination: V2Candidate, current: V2Candidate): boolean {
+  return task.complexity === "hard" && (destination.adequacy === undefined || current.adequacy === undefined ||
+    destination.adequacy < current.adequacy);
 }

@@ -1,5 +1,8 @@
+import { childModelProfile } from "./provider-selector-profiles.js";
+import type { ChildTaskKind } from "./provider-selector-types.js";
+
 /** Local, bounded Gaussian (online Laplace) item-response posterior. No I/O. */
-export const IRT_REVISION = "child-irt-v2-2026-09-29";
+export const IRT_REVISION = "child-irt-v3-2026-10-07";
 export const ROUTING_SKILLS = ["coding", "reasoning", "tool_use", "long_context", "extraction"] as const;
 export type RoutingSkill = (typeof ROUTING_SKILLS)[number];
 export interface TaskFeatures {
@@ -16,35 +19,15 @@ export interface ModelAbility {
   readonly variance: number;
   readonly observations: number;
 }
-export interface PublicAbilitySource {
-  readonly url: string;
-  readonly published: string;
-  readonly retrieved: string;
-  readonly metric: string;
-  readonly score: number;
-}
-const deepseekSource = (score: number, metric: string, published: string): PublicAbilitySource => ({
-  url: "https://api-docs.deepseek.com/updates/", published, retrieved: "2026-09-29", metric, score,
+/**
+ * The task difficulty at which a maintained tier quality applies. The local
+ * features place a typical short tool-using task near -1.
+ */
+export const REFERENCE_DIFFICULTY = -1;
+/** The maintained tier quality that anchors each skill's prior. */
+export const SKILL_TIER_KIND: Readonly<Record<RoutingSkill, ChildTaskKind>> = Object.freeze({
+  coding: "coding", reasoning: "reasoning", tool_use: "general", long_context: "research", extraction: "extraction",
 });
-/** Vendor results at different effort/harness settings are weak priors, not comparable task probabilities. */
-export function abilitySource(provider: string, model: string, skill: RoutingSkill): PublicAbilitySource | undefined {
-  if (provider === "deepseek" && ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"].includes(model)) {
-    if (skill === "coding") return deepseekSource(0.742, "DeepSWE v1.1", "2026-09-10");
-    if (skill === "reasoning") return deepseekSource(0.909, "GPQA Diamond", "2026-09-10");
-    if (skill === "tool_use") return deepseekSource(0.548, "Automation-Bench", "2026-09-10");
-  }
-  if (provider === "deepseek" && model === "deepseek-v4-pro") {
-    if (skill === "coding") return deepseekSource(0.627, "DeepSWE", "2026-08-13");
-    if (skill === "reasoning") return deepseekSource(0.427, "HLE without tools", "2026-08-13");
-    if (skill === "tool_use") return deepseekSource(0.741, "Toolathlon-Verified", "2026-08-13");
-  }
-  if (provider === "meta" && ["muse-spark-1.3", "muse-spark-1.3-contributor"].includes(model) && skill === "coding") {
-    return { url: "https://dev.meta.ai/models/muse-spark", published: "undated; retrieved 2026-09-29",
-      retrieved: "2026-09-29", metric: "DeepSWE v1.1 (max); contributor shares version, not separately measured", score: 0.754 };
-  }
-  // No invented scores, version substring matching, or transfer from older Kimi/OpenAI models.
-  return undefined;
-}
 export const sigmoid = (x: number): number => x >= 0 ? 1 / (1 + Math.exp(-x)) : Math.exp(x) / (1 + Math.exp(x));
 export function validFeatures(value: TaskFeatures): boolean {
   return ROUTING_SKILLS.includes(value.skill) && Number.isFinite(value.difficulty) && Math.abs(value.difficulty) <= 6 &&
@@ -55,10 +38,15 @@ export function validAbility(value: ModelAbility): boolean {
     Number.isFinite(value.mean) && Math.abs(value.mean) <= 8 && Number.isFinite(value.variance) &&
     value.variance >= 0.01 && value.variance <= 4 && Number.isSafeInteger(value.observations) && value.observations >= 0;
 }
+/**
+ * The maintained tier sets the prior at the reference difficulty, so every
+ * model starts on one comparable scale. An unprofiled model starts neutral.
+ * Vendor benchmark scores do not enter: their tasks, versions and effort
+ * settings differ between models, so they do not compare.
+ */
 export function abilityPrior(provider: string, model: string, skill: RoutingSkill): ModelAbility {
-  const source = abilitySource(provider, model, skill);
-  // Shrink heterogeneous vendor benchmarks halfway toward neutral log-odds.
-  const mean = source === undefined ? 0 : 0.5 * Math.log(source.score / (1 - source.score));
+  const tier = childModelProfile(provider, model)?.quality[SKILL_TIER_KIND[skill]];
+  const mean = REFERENCE_DIFFICULTY + (tier === undefined ? 0 : Math.log(tier / (1 - tier)));
   return { provider, model, skill, revision: IRT_REVISION, mean, variance: 1.5, observations: 0 };
 }
 /** Task content only. No labels, IDs, expected answers, remote embeddings or secret reads. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { abilityPrior, abilitySource, extractTaskFeatures, predictSuccess, sigmoid, updateAbility } from "../../src/agents/provider-selector-irt.js";
+import { REFERENCE_DIFFICULTY, abilityPrior, extractTaskFeatures, predictSuccess, sigmoid, updateAbility } from "../../src/agents/provider-selector-irt.js";
 import { cascadeThreshold, conditionalRecovery, pairKey, selectChildProviderV2, utilityWeights } from "../../src/agents/provider-selector-v2.js";
 import type { ChildProviderCandidate } from "../../src/agents/provider-selector-types.js";
 const parent: ChildProviderCandidate = { provider: "deepseek", model: "deepseek-flash", allowed: true, connected: true,
@@ -14,12 +14,22 @@ const evidence = [{ first: pairKey(cheap), second: pairKey(parent), failures: 8,
 const verification = { available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1, targetQuality: 0.75, conditional: evidence };
 
 describe("local item response model", () => {
-  it("has stable probability math and honest benchmark provenance", () => {
+  it("has stable probability math and anchors every prior on the maintained tier", () => {
     expect(sigmoid(1000)).toBe(1); expect(sigmoid(-1000)).toBe(0);
-    expect(abilitySource("deepseek", "deepseek-flash", "coding")).toMatchObject({ published: "2026-09-10", score: 0.742 });
-    expect(abilitySource("kimi", "kimi-k3", "coding")).toBeUndefined();
-    expect(abilityPrior("fake", "premium-ultra", "coding").mean).toBe(0);
-    expect(abilityPrior("deepseek", "deepseek-flash-unknown", "coding").mean).toBe(0);
+    // At the reference difficulty a prior reproduces its tier quality.
+    const level = (provider: string, model: string, skill: "coding" | "reasoning" | "tool_use") =>
+      sigmoid(abilityPrior(provider, model, skill).mean - REFERENCE_DIFFICULTY);
+    expect(level("deepseek", "deepseek-v4-pro", "reasoning")).toBeCloseTo(0.96);
+    expect(level("deepseek", "deepseek-flash", "reasoning")).toBeCloseTo(0.84);
+    expect(level("openai", "gpt-6-luna", "reasoning")).toBeCloseTo(0.72);
+    expect(level("openai", "gpt-6-astra", "tool_use")).toBeCloseTo(0.95);
+    // The same scale for every vendor: no benchmark that only one model reports.
+    for (const skill of ["coding", "reasoning", "tool_use"] as const) {
+      expect(abilityPrior("deepseek", "deepseek-v4-pro", skill).mean).toBeGreaterThan(abilityPrior("deepseek", "deepseek-flash", skill).mean);
+      expect(abilityPrior("deepseek", "deepseek-flash", skill).mean).toBe(abilityPrior("meta", "muse-spark-1.3-contributor", skill).mean);
+    }
+    expect(abilityPrior("fake", "premium-ultra", "coding").mean).toBe(REFERENCE_DIFFICULTY);
+    expect(abilityPrior("deepseek", "deepseek-flash-unknown", "coding").mean).toBe(REFERENCE_DIFFICULTY);
   });
   it("updates from pass/fail with uncertainty, and harder items imply lower success", () => {
     const prior = abilityPrior(parent.provider, parent.model, features.skill);
@@ -50,6 +60,15 @@ describe("parent-first constrained utility", () => {
     expect(utilityWeights({ cost: "quality" }, 0.05).lambda).toBe(0);
     expect(utilityWeights({ cost: "economy" }, 0.01).lambda).toBeGreaterThan(utilityWeights({}, 0.05).lambda);
     expect(utilityWeights({ speed: "fast" }).mu).toBeGreaterThan(utilityWeights().mu);
+  });
+  it("weighs price only under a cap, so an uncapped session is never the most price averse", () => {
+    for (const cost of ["quality", "balanced", "economy"] as const) {
+      expect(utilityWeights({ cost }).lambda).toBe(0);
+      for (const cap of [0.001, 0.05, 1, 20, 1_000]) {
+        expect(utilityWeights({ cost }).lambda).toBeLessThanOrEqual(utilityWeights({ cost }, cap).lambda);
+      }
+    }
+    expect(utilityWeights({}, 20).lambda).toBeLessThan(utilityWeights({}, 0.05).lambda);
   });
   it.each([
     [{ connected: false }, {}, "provider_not_connected"],
@@ -90,6 +109,73 @@ describe("parent-first constrained utility", () => {
     expect(selectChildProviderV2({ ...base, abilities, handoffTokens: 1_000_000 }).selected?.model).toBe(parent.model);
   });
 });
+describe("maintained adequacy and parent-first price handling", () => {
+  const model = (provider: string, name: string, inputUsdPer1K: number, outputUsdPer1K: number): ChildProviderCandidate =>
+    ({ ...parent, provider, model: name, cost: { inputUsdPer1K, outputUsdPer1K } });
+  const astra = model("openai", "gpt-6-astra", 0.01, 0.05);
+  const luna = model("openai", "gpt-6-luna", 0.0001, 0.0005);
+  const flash = model("deepseek", "deepseek-flash", 0.0003, 0.0012);
+  const pro = model("deepseek", "deepseek-v4-pro", 0.00132, 0.00396);
+  const reasoning = (complexity: "simple" | "standard" | "hard", maxCostUsd?: number) => ({
+    // The call and output estimates routeChildTask uses for each complexity.
+    task: { kind: "reasoning" as const, complexity, requiresTools: true, requiresReasoning: true, inputTokens: 20_000,
+      outputTokens: complexity === "hard" ? 8_192 : 4_096, expectedModelCalls: complexity === "simple" ? 2 : complexity === "hard" ? 8 : 4,
+      ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) },
+    features: { skill: "reasoning" as const, difficulty: -1, discrimination: 1 }, nowMs: 1000 });
+
+  it("keeps an uncapped strong parent for simple and hard reasoning", () => {
+    for (const complexity of ["simple", "standard", "hard"] as const) {
+      const r = selectChildProviderV2({ ...reasoning(complexity), parent: astra, candidates: [luna, flash, pro, astra] });
+      expect(r.lambda).toBe(0);
+      expect(r).toMatchObject({ mode: "parent", selected: { provider: "openai", model: "gpt-6-astra" } });
+    }
+  });
+  it("never lets price alone move an adequate parent without a cap", () => {
+    // Same tier, a fraction of the price: still no reason to leave.
+    const r = selectChildProviderV2({ ...reasoning("standard"), parent: astra, candidates: [astra, pro] });
+    expect(r.mode).toBe("parent");
+    expect(r.selected?.estimatedCostUsd).toBeGreaterThan(5 * r.ranked.find(item => item.model === pro.model)!.estimatedCostUsd!);
+    // A cap of the user's own makes the same saving count.
+    expect(selectChildProviderV2({ ...reasoning("standard", 2), parent: astra, candidates: [astra, pro],
+      preferences: { cost: "economy" } }).selected?.model).toBe(pro.model);
+  });
+  it("requires the maintained tier to meet the task's complexity floor", () => {
+    const r = selectChildProviderV2({ ...reasoning("standard", 2), parent: astra, candidates: [astra, luna],
+      preferences: { cost: "economy" } });
+    expect(r.rejected).toContainEqual(expect.objectContaining({ model: luna.model, reason: "quality_below_task_floor" }));
+    expect(r.selected?.model).toBe(astra.model);
+    // An explicit override is the user's choice and skips the floor.
+    expect(selectChildProviderV2({ ...reasoning("hard"), parent: astra, candidates: [luna], override: luna }).selected?.model).toBe(luna.model);
+  });
+  it("sends a hard task from a parent below the floor to the least expensive adequate model", () => {
+    const r = selectChildProviderV2({ ...reasoning("hard"), parent: flash, candidates: [flash, luna, astra, pro] });
+    expect(r).toMatchObject({ mode: "utility", selected: { model: pro.model } });
+    expect(r.reason).toContain("meets the quality this hard reasoning task needs and your model does not");
+    expect(r.rejected.map(item => item.model).sort()).toEqual([flash.model, luna.model].sort());
+    const none = selectChildProviderV2({ ...reasoning("hard"), parent: flash, candidates: [flash, luna] });
+    expect(none.selected).toBeUndefined();
+    expect(none.reason).toBe("No connected and allowed model meets this task's requirements.");
+  });
+  it("does not move a hard task below the parent's rating, nor away from an unrated parent", () => {
+    // Equal tier under a generous cap may still save money; a lower tier may not.
+    const capped = selectChildProviderV2({ ...reasoning("hard", 5), parent: astra, candidates: [astra, pro],
+      preferences: { cost: "economy" } });
+    expect(capped.selected?.model).toBe(pro.model);
+    const unrated = { ...astra, model: "gpt-unlisted" };
+    const r = selectChildProviderV2({ ...reasoning("hard", 5), parent: unrated, candidates: [unrated, pro],
+      preferences: { cost: "economy" } });
+    expect(r).toMatchObject({ mode: "parent", selected: { model: "gpt-unlisted" } });
+  });
+  it("treats a higher tier as adequacy, not as a reason to leave the parent, until verified outcomes support it", () => {
+    const cold = selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro] });
+    expect(cold.mode).toBe("parent");
+    const verified = [{ ...abilityPrior(pro.provider, pro.model, "reasoning"), mean: 6, variance: 0.05, observations: 60 },
+      { ...abilityPrior(flash.provider, flash.model, "reasoning"), mean: -3, variance: 0.05, observations: 60 }];
+    expect(selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], abilities: verified })
+      .selected?.model).toBe(pro.model);
+  });
+});
+
 describe("verified cost cascade", () => {
   it("uses conditional failure evidence and solves the cost threshold", () => {
     expect(conditionalRecovery("a", "b")).toBe(0);

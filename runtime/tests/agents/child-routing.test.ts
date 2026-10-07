@@ -21,6 +21,19 @@ function fixture(connected: readonly string[], allowed = ["deepseek", "openai"])
   return { session, readiness };
 }
 
+/** A parent on a real catalog model, with every allowed provider connected. */
+async function catalogSession(provider: string, model: string, allowed: readonly string[],
+  services: Record<string, unknown> = {}): Promise<Session> {
+  const config = { ...defaultConfig(), model_provider: provider, model,
+    agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: [...allowed] } };
+  const modelsManager = new StaticModelsManager({ config, fallbackProvider: provider, metadata: { env: {} } });
+  return { modelInfo: await modelsManager.getModelInfo(model), config: {},
+    providerService: { current: () => ({ provider, model }), environment: () => ({}),
+      childProviderRoutingInfo: async () => ({ connected: true, billingSource: "byok" }) },
+    services: { modelsManager, configStore: { current: () => config }, ...services },
+  } as unknown as Session;
+}
+
 const completed = { provider: "deepseek", model: "deepseek-flash", reason: "completed" as const,
   retryable: false, dispatch: "sent" as const, completedWork: "Names", unfinishedWork: "" };
 
@@ -149,9 +162,74 @@ describe("child routing integration", () => {
     expect(childRoutingBudget(session)).toBeUndefined();
     expect(childRoutingBudget(session, 0.5)).toBe(0.5);
   });
-  it("difficulty labels do not force an expensive model over current ability evidence", async () => {
+  it("explicit task difficulty selects a strong model for hard reasoning", async () => {
     const { session } = fixture(["deepseek"]);
     const routed = await routeChildTask(session, { prompt: "Prove the invariant", taskKind: "reasoning", complexity: "hard" });
-    expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
+    expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(routed.result.rejected).toContainEqual(expect.objectContaining({ model: "deepseek-flash", reason: "quality_below_task_floor" }));
+  });
+});
+
+describe("parent-first routing with the real model catalog", () => {
+  const allowed = ["openai", "anthropic", "deepseek"];
+  it.each([["openai", "gpt-6-astra"], ["anthropic", "claude-opus-5"]] as const)(
+    "keeps an uncapped %s/%s parent on simple and hard reasoning", async (provider, model) => {
+      const session = await catalogSession(provider, model, allowed);
+      for (const complexity of ["simple", "standard", "hard"] as const) {
+        const routed = await routeChildTask(session, { prompt: "Prove the invariant", taskKind: "reasoning", complexity });
+        expect(routed.result.lambda).toBe(0);
+        expect(routed.result).toMatchObject({ mode: "parent", selected: { provider, model } });
+      }
+      const coding = await routeChildTask(session, { prompt: "Implement the parser refactor", complexity: "hard" });
+      expect(coding.result.selected).toMatchObject({ provider, model });
+    });
+  it("lets a hard task leave only toward a stronger model", async () => {
+    const strong = await catalogSession("anthropic", "claude-opus-5", ["anthropic"]);
+    const hard = await routeChildTask(strong, { prompt: "Prove the invariant", taskKind: "reasoning", complexity: "hard" });
+    expect(hard.result.selected?.model).toBe("claude-opus-5");
+    expect(hard.result.rejected).toContainEqual(expect.objectContaining({ model: "claude-sonnet-5", reason: "quality_below_task_floor" }));
+    const weaker = await catalogSession("anthropic", "claude-sonnet-5", ["anthropic"]);
+    const raised = await routeChildTask(weaker, { prompt: "Prove the invariant", taskKind: "reasoning", complexity: "hard" });
+    expect(raised.result.selected?.model).not.toBe("claude-sonnet-5");
+    expect(raised.result.selected?.adequacy).toBeGreaterThanOrEqual(0.92);
+  });
+  it("does not downgrade a deepseek-v4-pro parent on reasoning, even under a generous cap", async () => {
+    const session = await catalogSession("deepseek", "deepseek-v4-pro", ["deepseek"]);
+    for (const prompt of ["Prove the invariant", "Find the probability that the graph has a cycle"]) {
+      // Standard complexity, so the cheaper flash model is adequate and ranked.
+      const routed = await routeChildTask(session, { prompt, taskKind: "reasoning", complexity: "standard", maxCostUsd: 20 });
+      expect(routed.features.skill).toBe("reasoning");
+      expect(routed.result).toMatchObject({ mode: "parent", selected: { model: "deepseek-v4-pro" } });
+      // Both priors come from the same maintained scale.
+      const flash = routed.result.ranked.find(item => item.model === "deepseek-flash")!;
+      expect(flash.ability.mean).toBeLessThan(routed.result.selected!.ability.mean);
+    }
+  });
+  describe("a cheap deepseek-flash parent with the evaluation's providers and $0.05 cap", () => {
+    const providers = ["deepseek", "meta", "kimi", "minimax"];
+    const prompts = ["Extract the invoice numbers from these lines as a JSON array.",
+      "Write a Python function that merges overlapping intervals.",
+      "How many paths of length 4 exist in this graph? Return the integer."];
+    it("keeps the parent on a cold start", async () => {
+      const session = await catalogSession("deepseek", "deepseek-flash", providers);
+      for (const prompt of prompts) {
+        const routed = await routeChildTask(session, { prompt, maxCostUsd: 0.05, requiresTools: false });
+        expect(routed.result).toMatchObject({ mode: "parent", selected: { model: "deepseek-flash" } });
+      }
+    });
+    it("tries an adequate cheaper model first only behind a host verifier, with the parent as the anchor", async () => {
+      const cheap = ["meta/muse-spark-1.3-contributor", "meta/muse-spark-1.2-contributor"];
+      const verifier = { prepare: vi.fn(async () => ({ available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1,
+        targetQuality: 0.75, conditional: cheap.map(first => ({ first, second: "deepseek/deepseek-flash", failures: 6, recovered: 5 })),
+        check: async () => "pass" as const })) };
+      const session = await catalogSession("deepseek", "deepseek-flash", providers, { childRoutingVerifier: verifier });
+      for (const prompt of prompts) {
+        const routed = await routeChildTask(session, { prompt, maxCostUsd: 0.05, requiresTools: false });
+        expect(routed.result.mode).toBe("cascade");
+        expect(routed.result.cascade!.candidates.map(item => `${item.provider}/${item.model}`)).toEqual([
+          expect.stringMatching(/^meta\/muse-spark-1\.[23]-contributor$/u), "deepseek/deepseek-flash"]);
+        expect(routed.result.cascade!.worstCaseCostUsd).toBeLessThanOrEqual(0.05);
+      }
+    });
   });
 });
