@@ -15,6 +15,14 @@ interface RunLifecycleCursor {
   activeEpoch: number;
   terminal: boolean;
   sealedBy?: { readonly event: Event; readonly source: RunLifecycleSource };
+  /**
+   * How the active epoch was opened, and where the terminal it cleared was
+   * seen. Absent for epoch 1. A degraded source is not a durable open.
+   */
+  openedBy?: {
+    readonly source: RunLifecycleSource;
+    readonly seal: RunLifecycleSource;
+  };
 }
 
 /**
@@ -36,6 +44,19 @@ const APPEND: RunLifecycleAppendDecision = { kind: "append" };
  * window that still contains the terminal (`reopenTerminalEpoch` appends the
  * reopen, via this check, after the terminal line is already durable).
  *
+ * A reopen is accepted when its terminal is already a complete line in the
+ * file, or is ahead of the reopen in the unflushed batch. That batch is one
+ * ordered write: the store serializes `pending` in array order into a single
+ * buffer and fsyncs that buffer, so a committed reopen has its terminal at a
+ * lower byte offset in the same durable write. A terminal that is only in
+ * the degraded ring is not part of that write. The reopen is refused and
+ * the file is left untouched.
+ *
+ * A terminal for a later epoch is accepted only when the reopen that opened
+ * the epoch, and the terminal that reopen cleared, are each already in the
+ * file or in that same unflushed batch. Either record still sitting in the
+ * degraded ring is not a durable order, so the append is refused.
+ *
  * An epoch has one terminal. Once a terminal for the active epoch is in the
  * file, queued in the degraded buffer, or in the unflushed batch, a different
  * `run_terminal` for that epoch is refused. The same terminal again is a
@@ -47,8 +68,9 @@ const APPEND: RunLifecycleAppendDecision = { kind: "append" };
  * Items are scanned in the order they reach disk: file bytes, then the
  * degraded queue, then the unflushed batch. The prior-byte scan matches the
  * startup tail reader: a trailing segment with no newline is not a record,
- * and a complete line that mentions a lifecycle type but does not parse
- * refuses the append.
+ * and a complete line that looks like a lifecycle record (`"type":"run_terminal"`
+ * or `"type":"run_reopened"`) but does not parse refuses the append. A corrupt
+ * ordinary line that only quotes those words is not a lifecycle record.
  */
 export function assertRunLifecycleAppendOrder(
   priorBytes: Buffer,
@@ -80,6 +102,11 @@ export function assertRunLifecycleAppendOrder(
           `refusing to append run_terminal for ${incoming.runId}: epoch ${incoming.epoch} is not active epoch ${cursor.activeEpoch}`,
         );
       }
+      if (cursor.openedBy !== undefined && !epochOpenIsDurable(cursor.openedBy)) {
+        throw new Error(
+          `refusing to append run_terminal for ${incoming.runId}: epoch ${incoming.epoch} is not active until its clearing reopen is a complete line in the journal (seal ${cursor.openedBy.seal}, reopen ${cursor.openedBy.source})`,
+        );
+      }
       const sealed = cursor.sealedBy;
       if (sealed === undefined) return APPEND;
       if (terminalIdentity(sealed.event) === terminalIdentity(event)) {
@@ -97,6 +124,14 @@ export function assertRunLifecycleAppendOrder(
       ) {
         throw new Error(
           `refusing to append run_reopened for ${incoming.runId}: it does not follow terminal epoch ${cursor.activeEpoch}`,
+        );
+      }
+      if (
+        cursor.sealedBy?.source !== "journal" &&
+        cursor.sealedBy?.source !== "pending"
+      ) {
+        throw new Error(
+          `refusing to append run_reopened for ${incoming.runId}: terminal epoch ${cursor.activeEpoch} is not yet a complete line in the journal (${cursor.sealedBy?.source ?? "missing"})`,
         );
       }
       return APPEND;
@@ -117,6 +152,17 @@ function terminalIdentity(event: Event): string {
     seq: event.seq,
     msg: event.msg,
   });
+}
+
+/** File or the same unflushed batch. The degraded ring is neither. */
+function epochOpenIsDurable(openedBy: {
+  readonly source: RunLifecycleSource;
+  readonly seal: RunLifecycleSource;
+}): boolean {
+  return (
+    (openedBy.seal === "journal" || openedBy.seal === "pending") &&
+    (openedBy.source === "journal" || openedBy.source === "pending")
+  );
 }
 
 function describeTerminal(event: Event): string {
@@ -166,8 +212,8 @@ function noteCompleteLifecycleLine(
   appendedType: "run_terminal" | "run_reopened",
 ): void {
   if (
-    !line.includes('"run_terminal"') &&
-    !line.includes('"run_reopened"')
+    !line.includes('"type":"run_terminal"') &&
+    !line.includes('"type":"run_reopened"')
   ) {
     return;
   }
@@ -201,9 +247,11 @@ function noteLifecycleFact(
     case "reopened":
       if (
         cursor.terminal &&
+        cursor.sealedBy !== undefined &&
         fact.previousEpoch === cursor.activeEpoch &&
         fact.epoch === cursor.activeEpoch + 1
       ) {
+        cursor.openedBy = { source, seal: cursor.sealedBy.source };
         cursor.activeEpoch = fact.epoch;
         cursor.terminal = false;
         cursor.sealedBy = undefined;

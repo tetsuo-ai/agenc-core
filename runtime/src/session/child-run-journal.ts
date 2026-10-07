@@ -1,10 +1,12 @@
 /** Canonical rollout construction shared by every in-process child Session. */
 
+import { readFileSync } from "node:fs";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import { readProviderIdentity } from "../llm/provider.js";
+import { canonicalRunTerminalFromItems, canonicalRunTerminalFromText } from "./canonical-run-terminal.js";
 import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
 import type { SubagentTurnOutcomeEvent } from "./event-log.js";
-import { RolloutStore } from "./rollout-store.js";
+import { RolloutStore, TerminalRunEpochOpenError } from "./rollout-store.js";
 import type { Session } from "./session.js";
 
 export interface MountChildRunJournalOptions {
@@ -34,6 +36,25 @@ export interface RecordUnconstructedChildRunTerminalOptions {
    * When present, it is fsync-committed immediately before run_terminal.
    */
   readonly taskOutcome?: SubagentTurnOutcomeEvent;
+}
+
+/**
+ * Path of a rollout whose epoch is already sealed by a complete terminal
+ * line. A retry reads that line and writes nothing.
+ */
+function sealedChildTerminalPath(
+  rolloutPath: string,
+  runId: string,
+  epoch: number,
+): string | undefined {
+  try {
+    const text = readFileSync(rolloutPath, "utf8");
+    return canonicalRunTerminalFromText(text, runId, epoch) === undefined
+      ? undefined
+      : rolloutPath;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -75,24 +96,42 @@ export function recordUnconstructedChildRunTerminal(
       : {}),
   });
   try {
-    store.open({
-      sessionId: options.childRunId,
-      timestamp: new Date().toISOString(),
-      cwd: options.cwd,
-      originator: options.originator,
-      agencVersion: parentRollout.store.agencVersion,
-      model: options.model,
-      modelProvider: options.modelProvider,
-      ...(services?.executionAdmission !== undefined
-        ? {
-            admissionOwner: {
-              workspaceId: services.executionAdmission.scope.workspaceId,
-              runId: options.childRunId,
-              parentRunId: services.executionAdmission.scope.runId,
-            },
-          }
-        : {}),
-    });
+    try {
+      store.open({
+        sessionId: options.childRunId,
+        timestamp: new Date().toISOString(),
+        cwd: options.cwd,
+        originator: options.originator,
+        agencVersion: parentRollout.store.agencVersion,
+        model: options.model,
+        modelProvider: options.modelProvider,
+        ...(services?.executionAdmission !== undefined
+          ? {
+              admissionOwner: {
+                workspaceId: services.executionAdmission.scope.workspaceId,
+                runId: options.childRunId,
+                parentRunId: services.executionAdmission.scope.runId,
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof TerminalRunEpochOpenError) {
+        const sealed = sealedChildTerminalPath(
+          store.rolloutPath,
+          options.childRunId,
+          error.epoch,
+        );
+        if (sealed !== undefined) return sealed;
+      }
+      throw error;
+    }
+    const alreadySealed = canonicalRunTerminalFromItems(
+      store.readAll(),
+      options.childRunId,
+      store.runEpoch,
+    );
+    if (alreadySealed !== undefined) return store.rolloutPath;
     let lastSequenceBeforeTerminal = store
       .readAll()
       .filter((item) => item.type === "event_msg")
@@ -241,6 +280,12 @@ export function mountChildRunJournal(
       const result = options.terminalResult();
       const epoch = store.runEpoch;
       const runId = child.conversationId;
+      if (
+        canonicalRunTerminalFromItems(store.readAll(), runId, epoch) !==
+        undefined
+      ) {
+        return;
+      }
       const lastSequenceBeforeTerminal =
         Number.isSafeInteger(child.eventLog.lastSeq) &&
         child.eventLog.lastSeq > 0

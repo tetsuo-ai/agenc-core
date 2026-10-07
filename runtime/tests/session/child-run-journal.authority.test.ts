@@ -105,4 +105,93 @@ describe("child journal admission-owner metadata", () => {
     const { admissionOwner: omittedOwner, ...legacyMetadata } = metadata;
     expect(isCanonicalRolloutPayload("session_meta", legacyMetadata)).toBe(true);
   });
+
+  it("keeps the original child terminal when recording is retried", () => {
+    const cwd = join(root, "retry-child");
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    const path = recordUnconstructedChildRunTerminal({
+      parent,
+      childRunId: "retry-child",
+      cwd,
+      model: "test-model",
+      modelProvider: "test-provider",
+      originator: "agenc-subagent",
+      result: {
+        status: "failed",
+        stopReason: "construction_failed",
+        finalMessage: "first",
+      },
+    })!;
+    const before = readFileSync(path);
+    const again = recordUnconstructedChildRunTerminal({
+      parent,
+      childRunId: "retry-child",
+      cwd,
+      model: "test-model",
+      modelProvider: "test-provider",
+      originator: "agenc-subagent",
+      result: {
+        status: "failed",
+        stopReason: "construction_failed",
+        finalMessage: "second",
+      },
+    });
+    expect(again).toBe(path);
+    expect(readFileSync(path)).toEqual(before);
+    const terminals = before
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => line.includes('"type":"run_terminal"'));
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toContain('"finalMessage":"first"');
+  });
+
+  it("does not mint a second terminal when the close callback runs again", () => {
+    const cwd = join(root, "close-retry-child");
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    const eventLog = new EventLog();
+    let mounted: RolloutStore | null = null;
+    const closeCallbacks: Array<() => void> = [];
+    const child = {
+      conversationId: "close-retry-child",
+      eventLog,
+      sessionConfiguration: {
+        cwd,
+        collaborationMode: { model: "test-model" },
+      },
+      services: { admissionRequired: false, provider: { name: "test-provider" } },
+      mountRolloutStore: (store: RolloutStore | null) => {
+        mounted = store;
+      },
+      emit: (input: Event) => {
+        const event = eventLog.emit(input);
+        mounted?.append(event, { durable: true });
+        return event;
+      },
+      onBeforeDurableClose: (callback: () => void) => {
+        closeCallbacks.push(callback);
+      },
+    } as unknown as Session;
+    const store = mountChildRunJournal({
+      parent,
+      child,
+      originator: "agenc-subagent",
+      terminalResult: () => ({
+        status: "failed",
+        stopReason: "daemon_shutdown",
+        finalMessage: "original",
+      }),
+    })!;
+    children.push(store);
+    closeCallbacks.at(-1)!();
+    const before = readFileSync(store.rolloutPath);
+    closeCallbacks.at(-1)!();
+    expect(readFileSync(store.rolloutPath)).toEqual(before);
+    const terminals = before
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => line.includes('"type":"run_terminal"'));
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toContain('"finalMessage":"original"');
+  });
 });

@@ -53,6 +53,10 @@ import {
   EFFECT_EVIDENCE_FORMAT_VERSION,
   EFFECT_EVIDENCE_MINIMUM_READER_RUNTIME,
 } from "../../contracts/run-contracts.js";
+import {
+  canonicalRunTerminalFromItems,
+  type CanonicalRunTerminal,
+} from "../../session/canonical-run-terminal.js";
 import type {
   EffectIntentEvent,
   EffectResultEvent,
@@ -623,11 +627,35 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
     return { eventId, sequence };
   }
 
+  canonicalTerminal(): CanonicalRunTerminal | undefined {
+    return this.#canonicalTerminal();
+  }
+
+  #canonicalTerminal(): CanonicalRunTerminal | undefined {
+    const store = this.#entry.bootstrap.rolloutStore as {
+      readAll?: () => Parameters<typeof canonicalRunTerminalFromItems>[0];
+    };
+    if (typeof store.readAll !== "function") return undefined;
+    return canonicalRunTerminalFromItems(
+      store.readAll(),
+      this.runId,
+      this.epoch,
+    );
+  }
+
   appendTerminal(intent?: WorkflowTerminalJournalIntent) {
     if (intent === undefined) {
       throw new WorkflowSessionSeamError(
         "the daemon workflow journal requires the terminal intent to journal run_terminal",
       );
+    }
+    const existing = this.#canonicalTerminal();
+    if (existing !== undefined) {
+      return {
+        eventId: existing.eventId,
+        sequence: existing.sequence,
+        adoptedTerminal: existing.result,
+      };
     }
     const payload: RunTerminalEvent = {
       runId: this.runId,
@@ -641,14 +669,30 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
         this.#lastSequence > 0 ? this.#lastSequence : null,
       finishedAt: intent.finishedAt,
     };
-    const event = this.#emitDurable(
-      { type: "run_terminal", payload },
-      "run_terminal",
-    );
-    return {
-      eventId: canonicalEventId(event),
-      sequence: requireSequence(event, "run_terminal"),
-    };
+    try {
+      const event = this.#emitDurable(
+        { type: "run_terminal", payload },
+        "run_terminal",
+      );
+      return {
+        eventId: canonicalEventId(event),
+        sequence: requireSequence(event, "run_terminal"),
+      };
+    } catch (error) {
+      const sealed = this.#canonicalTerminal();
+      if (
+        sealed !== undefined &&
+        error instanceof Error &&
+        error.message.includes("already sealed")
+      ) {
+        return {
+          eventId: sealed.eventId,
+          sequence: sealed.sequence,
+          adoptedTerminal: sealed.result,
+        };
+      }
+      throw error;
+    }
   }
 
   appendSuspended(input: { readonly suspendedAt: string }) {

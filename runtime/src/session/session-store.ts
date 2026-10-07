@@ -2286,8 +2286,9 @@ export class SessionStore {
     if (!this.opened || this.closed) return false;
     this.lastBoundReadProof = undefined;
     // A clearing run_reopened is appended after the terminal it supersedes.
-    // The opposite order is the only one that could hide that reopen outside
-    // a tail window which still contains the terminal.
+    // The terminal must already be a complete journal line, or ahead of the
+    // reopen in this unflushed batch. A terminal that is only queued after a
+    // failed write is not that order, and the reopen is refused.
     if (
       event.msg.type === "run_terminal" ||
       event.msg.type === "run_reopened"

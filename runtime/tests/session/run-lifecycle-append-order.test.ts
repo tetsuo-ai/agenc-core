@@ -308,15 +308,27 @@ describe("run lifecycle append order", () => {
         ),
       ).toEqual({ kind: "retry", sealedIn: source });
     }
-    // A queued reopen after the queued terminal opens the next epoch.
+    // Pending is one ordered flush: the seal and its reopen are already in
+    // that batch, so the next epoch's terminal is written behind them.
     expect(
+      assertRunLifecycleAppendOrder(
+        Buffer.alloc(0),
+        [eventItem(first), eventItem(reopenEvent(sessionId, 2))],
+        terminalEvent(sessionId, 2, 3),
+      ),
+    ).toEqual({ kind: "append" });
+    // A degraded seal is not in that batch. Queuing the reopen ahead of it
+    // must not open the next epoch.
+    expect(() =>
       assertRunLifecycleAppendOrder(
         Buffer.alloc(0),
         [eventItem(reopenEvent(sessionId, 2))],
         terminalEvent(sessionId, 2, 3),
         [eventItem(first)],
       ),
-    ).toEqual({ kind: "append" });
+    ).toThrow(
+      /epoch 2 is not active until its clearing reopen is a complete line in the journal \(seal degraded, reopen pending\)/,
+    );
   });
 
   it("accepts a same-terminal retry without writing a second copy", () => {
@@ -356,6 +368,203 @@ describe("run lifecycle append order", () => {
       expect(readFileSync(store.rolloutPath)).toEqual(before);
       expect(countTerminals(before)).toBe(1);
     } finally {
+      store.close();
+    }
+  });
+
+  it("does not brick the session when a corrupt ordinary line quotes a lifecycle token", () => {
+    const cwd = freshCwd();
+    const sessionId = "quoted-corrupt-ordinary-line";
+    const store = openStore({ cwd, sessionId });
+    try {
+      // Invalid JSON, and the token is only quoted text. It is not a
+      // lifecycle record, so a later terminal must still append.
+      const corrupt = [
+        '{"type":"response_item","payload":{"content":"please explain "',
+        '"run_terminal"',
+        " and ",
+        '"run_reopened"',
+        '"}}',
+      ].join("") + "\n";
+      expect(corrupt.endsWith("\n")).toBe(true);
+      expect(corrupt).toContain('"run_terminal"');
+      expect(corrupt).toContain('"run_reopened"');
+      expect(corrupt).not.toContain('"type":"run_terminal"');
+      expect(corrupt).not.toContain('"type":"run_reopened"');
+      expect(() => JSON.parse(corrupt.trim())).toThrow();
+      appendFileSync(store.rolloutPath, corrupt);
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(true);
+      expect(readFileSync(store.rolloutPath, "utf8")).toContain(
+        '"type":"run_terminal"',
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses a reopen while the sealing terminal is only in the degraded queue", () => {
+    const sessionId = "degraded-terminal-reopen";
+    const terminal = terminalEvent(sessionId, 1, 1);
+    expect(() =>
+      assertRunLifecycleAppendOrder(
+        Buffer.alloc(0),
+        [],
+        reopenEvent(sessionId, 2),
+        [eventItem(terminal)],
+      ),
+    ).toThrow(
+      /refusing to append run_reopened for degraded-terminal-reopen: terminal epoch 1 is not yet a complete line in the journal \(degraded\)/,
+    );
+  });
+
+  it("does not append a reopen ahead of a terminal that is only queued after ENOSPC", () => {
+    const cwd = freshCwd();
+    const sessionId = "enospc-reopen-after-terminal";
+    const store = openStore({ cwd, sessionId });
+    try {
+      store.store.setWriteImplForTest(() => {
+        throw Object.assign(new Error("no space left on device"), {
+          code: "ENOSPC",
+        });
+      });
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(false);
+      expect(store.store.isDegraded).toBe(true);
+      expect(countTerminals(readFileSync(store.rolloutPath))).toBe(0);
+
+      store.store.setWriteImplForTest(writeSync);
+      const before = readFileSync(store.rolloutPath);
+      const beforeHash = sha256(before);
+      expect(() =>
+        store.append(reopenEvent(sessionId, 2), { durable: true }),
+      ).toThrow(
+        /refusing to append run_reopened for enospc-reopen-after-terminal: terminal epoch 1 is not yet a complete line in the journal \(degraded\)/,
+      );
+      const after = readFileSync(store.rolloutPath);
+      expect(after).toEqual(before);
+      expect(sha256(after)).toBe(beforeHash);
+    } finally {
+      store.close();
+    }
+    const drained = readFileSync(store.rolloutPath);
+    const drainedHash = sha256(drained);
+    const drainedText = drained.toString("utf8");
+    const drainedTerminalAt = drainedText.indexOf('"type":"run_terminal"');
+    expect(drainedTerminalAt).toBeGreaterThanOrEqual(0);
+    expect(drainedText.indexOf('"type":"run_reopened"')).toBe(-1);
+    expect(drainedText.endsWith("\n")).toBe(true);
+    const terminalLine = drainedText
+      .split("\n")
+      .find((line) => line.includes('"type":"run_terminal"'));
+    expect(terminalLine).toBeDefined();
+    expect(JSON.parse(terminalLine!).payload.msg.type).toBe("run_terminal");
+
+    // The queued terminal is durable only after the store drains it. The
+    // real reopen path then commits run_reopened after that line.
+    const resumed = openStore({
+      cwd,
+      sessionId,
+      resume: true,
+      reopenTerminalRun: true,
+    });
+    try {
+      const committed = readFileSync(resumed.rolloutPath);
+      const text = committed.toString("utf8");
+      const terminalAt = text.indexOf('"type":"run_terminal"');
+      const reopenAt = text.indexOf('"type":"run_reopened"');
+      expect(terminalAt).toBeGreaterThanOrEqual(0);
+      expect(reopenAt).toBeGreaterThan(terminalAt);
+      expect(committed.subarray(0, drained.length)).toEqual(drained);
+      expect(sha256(committed.subarray(0, drained.length))).toBe(drainedHash);
+      const reopenLine = text
+        .split("\n")
+        .find((line) => line.includes('"type":"run_reopened"'));
+      expect(reopenLine).toBeDefined();
+      expect(text.endsWith("\n")).toBe(true);
+    } finally {
+      resumed.close();
+    }
+  });
+
+  it("does not append an epoch-2 terminal ahead of a queued epoch-1 terminal and reopen", () => {
+    const cwd = freshCwd();
+    const sessionId = "queued-epoch-chain";
+    const store = openStore({ cwd, sessionId });
+    try {
+      const queue = degradedQueue(store);
+      queue.enterDegraded("test");
+      queue.append(eventItem(terminalEvent(sessionId, 1, 1)));
+      queue.append(eventItem(reopenEvent(sessionId, 2)));
+      const before = readFileSync(store.rolloutPath);
+      const beforeHash = sha256(before);
+      expect(() =>
+        store.append(terminalEvent(sessionId, 2, 3), { durable: true }),
+      ).toThrow(
+        /refusing to append run_terminal for queued-epoch-chain: epoch 2 is not active until its clearing reopen is a complete line in the journal \(seal degraded, reopen degraded\)/,
+      );
+      const after = readFileSync(store.rolloutPath);
+      expect(after).toEqual(before);
+      expect(sha256(after)).toBe(beforeHash);
+    } finally {
+      store.close();
+    }
+    const drained = readFileSync(store.rolloutPath, "utf8");
+    const terminalAt = drained.indexOf('"type":"run_terminal"');
+    const reopenAt = drained.indexOf('"type":"run_reopened"');
+    expect(terminalAt).toBeGreaterThanOrEqual(0);
+    expect(reopenAt).toBeGreaterThan(terminalAt);
+    expect(drained.indexOf('"type":"run_terminal"', reopenAt)).toBe(-1);
+    expect(countTerminals(Buffer.from(drained))).toBe(1);
+  });
+
+  it("refuses a distinct terminal while the first is in the degraded in-flight slice", async () => {
+    const cwd = freshCwd();
+    const sessionId = "inflight-distinct-terminal";
+    const store = openStore({ cwd, sessionId });
+    try {
+      store.store.setWriteImplForTest(() => {
+        throw Object.assign(new Error("no space left on device"), {
+          code: "ENOSPC",
+        });
+      });
+      const first = terminalEvent(sessionId, 1, 1);
+      expect(store.append(first, { durable: true })).toBe(false);
+      expect(store.store.isDegraded).toBe(true);
+      const before = readFileSync(store.rolloutPath);
+      const beforeHash = sha256(before);
+      let refusal: unknown;
+      let entered = false;
+      store.store.setWriteImplForTest((fd, buffer, offset, length) => {
+        if (!entered) {
+          entered = true;
+          expect(readFileSync(store.rolloutPath)).toEqual(before);
+          try {
+            store.append(
+              withFinalMessage(terminalEvent(sessionId, 1, 2), "a second outcome"),
+              { durable: true },
+            );
+          } catch (error) {
+            refusal = error;
+          }
+          expect(readFileSync(store.rolloutPath)).toEqual(before);
+        }
+        return writeSync(fd, buffer, offset, length);
+      });
+      await degradedQueue(store).tryFlush();
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).toMatch(
+        /already sealed by a different terminal \(eventId run-terminal:inflight-distinct-terminal:1, seq 1, degraded\)/,
+      );
+      const after = readFileSync(store.rolloutPath);
+      expect(sha256(before)).toBe(beforeHash);
+      expect(countTerminals(after)).toBe(1);
+      expect(after.toString("utf8")).toContain('"finalMessage":"done"');
+      expect(after.toString("utf8")).not.toContain("a second outcome");
+    } finally {
+      store.store.setWriteImplForTest(writeSync);
       store.close();
     }
   });
@@ -477,6 +686,22 @@ function countTerminals(bytes: Buffer): number {
 
 function eventItem(event: Event): RolloutItem {
   return { type: "event_msg", payload: event };
+}
+
+function degradedQueue(store: RolloutStore): {
+  enterDegraded(reason: string): void;
+  append(item: RolloutItem): void;
+  tryFlush(): Promise<boolean>;
+} {
+  return (
+    store.store as unknown as {
+      degraded: {
+        enterDegraded(reason: string): void;
+        append(item: RolloutItem): void;
+        tryFlush(): Promise<boolean>;
+      };
+    }
+  ).degraded;
 }
 
 function journalLine(event: Event): string {

@@ -12,6 +12,7 @@ import type { ManagedThread } from "../../agents/thread-manager.js";
 import type { LLMContentPart } from "../../llm/types.js";
 import type { ToolDispatchResult } from "../../tool-registry.js";
 import type { AgentStatus as ThreadAgentStatus } from "../../agents/status.js";
+import { canonicalRunTerminalFromItems } from "../../session/canonical-run-terminal.js";
 import type { Event } from "../../session/event-log.js";
 import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type {
@@ -508,6 +509,22 @@ function commitDurableRunTerminal(
   result: RunTerminalResult,
 ): AgenCBackgroundAgentTerminalSnapshot {
   if (active.terminal !== undefined) return active.terminal;
+  const existing = canonicalRunTerminalFromItems(
+    active.bootstrap.rolloutStore.readAll(),
+    runId,
+    active.runEpoch,
+  );
+  if (existing !== undefined) {
+    const terminal: AgenCBackgroundAgentTerminalSnapshot = {
+      openedAt: active.startedAt,
+      epoch: active.runEpoch,
+      eventId: existing.eventId,
+      rolloutPath: active.bootstrap.rolloutStore.rolloutPath,
+      result: existing.result,
+    };
+    active.terminal = terminal;
+    return terminal;
+  }
   closeFailedRunTurn(active, result);
   const epoch = active.runEpoch;
   const session = active.bootstrap.session;
