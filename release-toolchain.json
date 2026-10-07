@@ -341,6 +341,19 @@
       "runnerArch": "X64",
       "imageProfiles": [
         {
+          "imageVersion": "20260925.250.1",
+          "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/1c7b9f1e082099ad9e2cfa02f257a2e352e753ee/images/windows/Windows2025-VS2026-Readme.md",
+          "inventorySha256": "c57a6a0546031a57173c560502131ebb456d1c7b7f1bfd8d9c1b6494b4e33e63",
+          "inventoryBytes": 34809,
+          "visualStudioVersion": "18.10.12217.157",
+          "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+          "msvcToolsVersion": "14.51.36231",
+          "msvcCompilerVersion": "19.51.36260",
+          "msvcCompilerSha256": "b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57",
+          "msvcLinkerSha256": "a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d",
+          "windowsSdkVersion": "10.0.26100.0"
+        },
+        {
           "imageVersion": "20260818.207.1",
           "inventoryUrl": "https://raw.githubusercontent.com/actions/runner-images/0900c002193dc2d3fade0cd9133ae70e7088eb05/images/windows/Windows2025-VS2026-Readme.md",
           "inventorySha256": "4cd6067bec8e0eb5ac04e1134fb71f23b99ca296caeab1cc5d30ca4838e218ba",

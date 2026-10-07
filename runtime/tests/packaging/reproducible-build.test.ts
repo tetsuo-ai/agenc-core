@@ -1002,6 +1002,17 @@ describe("reproducible install and release contract", () => {
         runnerArch: "X64",
         imageProfiles: [
           {
+            imageVersion: "20260925.250.1",
+            visualStudioVersion: "18.10.12217.157",
+            msvcToolsVersion: "14.51.36231",
+            msvcCompilerVersion: "19.51.36260",
+            msvcCompilerSha256:
+              "b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57",
+            msvcLinkerSha256:
+              "a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d",
+            windowsSdkVersion: "10.0.26100.0",
+          },
+          {
             imageVersion: "20260818.207.1",
             visualStudioVersion: "18.9.12112.369",
             msvcToolsVersion: "14.51.36231",
