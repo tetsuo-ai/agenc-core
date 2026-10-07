@@ -52,9 +52,12 @@ its current-user ACL, and the published file inode; directory sync that the
 platform refuses is not treated as a lost write. A linked `.agenc` directory
 or a symlink/hardlink task file is refused. Existing current-user-owned 755
 directories and 644 files remain supported on macOS and Linux when other users
-cannot write them. New task files use 600. On Windows, `.agenc` and the task
-file are tightened to a current-user-only ACL instead of uid and mode bits.
-The project workspace keeps its existing ACL.
+cannot write them. New task files use 600. On Windows, `.agenc` receives a
+current-user-only ACL only when this operation creates that directory. An
+existing `.agenc` is validated and left unchanged; an unsafe ACL is rejected.
+After that directory check passes, an unsafe task file is replaced atomically
+with a newly created private file, and a read of an unsafe task file is
+rejected. The project workspace keeps its existing ACL.
 Concurrent edits may cause a transaction to fail; failure after publication
 does not imply that the original task file is unchanged.
 

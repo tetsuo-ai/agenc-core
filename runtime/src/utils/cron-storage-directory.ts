@@ -106,11 +106,12 @@ const OWNERSHIP_ERROR = "Cron storage must be owned by the current user and not 
 
 /**
  * Windows has no traversable directory descriptor. `.agenc` is the private
- * root: its ACL is initialized by the workflow handoff helper, then reads
- * and writes stay inside `windows-private-path`. The project workspace keeps
- * its inherited DACL. Publication rechecks the workspace device and inode,
- * and both the lexical and canonical `.agenc` directories must stay the
- * ACL-checked inode so a junction or swapped path cannot redirect the root.
+ * root. This operation initializes that ACL only when it created the
+ * directory; an existing directory is validated and left unchanged. Reads
+ * and writes then stay inside `windows-private-path`. The project workspace
+ * keeps its inherited DACL. Publication rechecks the workspace device and
+ * inode, and both the lexical and canonical `.agenc` directories must stay
+ * the ACL-checked inode so a junction or swapped path cannot redirect the root.
  */
 async function withWindowsCronStorageDirectory<Result>(
   workspacePathResolved: string,
@@ -125,26 +126,11 @@ async function withWindowsCronStorageDirectory<Result>(
     throw new Error("Cron workspace identity changed during a delivery claim");
   }
   const directory = join(workspacePathResolved, ".agenc");
-  let createdInfo: BigIntStats | undefined;
-  try {
-    createdInfo = await lstat(directory, { bigint: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (!create) return undefined;
-  }
-  if (createdInfo === undefined) {
-    try { await mkdir(directory, { mode: 0o700 }); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    createdInfo = await lstat(directory, { bigint: true });
-  }
-  if (createdInfo === undefined || !createdInfo.isDirectory() || createdInfo.isSymbolicLink()) {
-    throw new Error(OWNERSHIP_ERROR);
-  }
-  const directoryInfo = createdInfo;
+  const opened = await openWindowsAgencDirectory(directory, create);
+  if (opened === undefined) return undefined;
+  const directoryInfo = opened.info;
   await assertRealDirectory(workspacePathResolved, workspaceInfo);
-  ensureWindowsPrivateDirectory(directory);
+  ensureWindowsPrivateDirectory(directory, opened.created);
   try {
     return await withConfinedDirectory(directory, WINDOWS_STORAGE_POLICY, async (bound) => {
       await bound.verify();
@@ -180,14 +166,52 @@ async function assertRealDirectory(path: string, expected?: BigIntStats): Promis
   return info;
 }
 
-function ensureWindowsPrivateDirectory(path: string): void {
+async function openWindowsAgencDirectory(
+  directory: string,
+  create: boolean,
+): Promise<{ readonly info: BigIntStats; readonly created: boolean } | undefined> {
+  let info: BigIntStats | undefined;
+  try {
+    info = await lstat(directory, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!create) return undefined;
+  }
+  // An existing directory is never proof that this call may change its ACL.
+  // `create: true` only allows the missing-directory path below.
+  let created = false;
+  if (info === undefined) {
+    created = await createWindowsAgencDirectory(directory);
+    info = await lstat(directory, { bigint: true });
+  }
+  if (info === undefined || !info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error(OWNERSHIP_ERROR);
+  }
+  return { info, created };
+}
+
+async function createWindowsAgencDirectory(directory: string): Promise<boolean> {
+  // Non-recursive mkdir resolves with `undefined` on success, so that return
+  // value is not proof of creation. `EEXIST` means another caller created
+  // `.agenc` and this caller must only validate it. Recursive mkdir is not
+  // used: it returns the first created path, or `undefined` when the
+  // directory already existed.
+  try {
+    await mkdir(directory, { mode: 0o700 });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return false;
+  }
+}
+
+function ensureWindowsPrivateDirectory(path: string, created: boolean): void {
+  if (created) {
+    assertWindowsPrivatePathSecurity(path, "directory", true);
+  }
   try {
     assertWindowsPrivatePathSecurity(path, "directory", false);
-    return;
-  } catch {
-    // Project metadata commonly inherits the profile ACL. Tighten that
-    // directory in place, then require the verifier to accept it.
+  } catch (cause) {
+    throw new Error(OWNERSHIP_ERROR, { cause });
   }
-  assertWindowsPrivatePathSecurity(path, "directory", true);
-  assertWindowsPrivatePathSecurity(path, "directory", false);
 }
