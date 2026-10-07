@@ -683,7 +683,11 @@ describe("model-facing tools", () => {
     await writeFile(join(cwd, "pwsh"), "");
     const exec = vi.spyOn(manager, "execCommand").mockImplementation(async request => {
       manager.assertOwnerAdmission(request.ownerId, request.ownerBinding);
-      return { stdout: "scoped-powershell", stderr: "", exitCode: 0, durationMs: 0 } as never;
+      return {
+        output: "scoped-powershell", stdout: "scoped-powershell", stderr: "",
+        exitCode: 0, exit_code: 0, durationMs: 0, wall_time_seconds: 0,
+        timedOut: false, truncated: false, original_token_count: 1,
+      };
     });
     try {
       const tool = createModelFacingTools({ workspaceRoot: cwd, getSession: () => null,
