@@ -14,7 +14,12 @@ import { MAX_CRON_FILE_BYTES } from "./cron-delivery-state.js";
 import { isUnsupportedDirectorySync, writeDurableAtomicFile } from "./durable-atomic-file.js";
 import { acquireLocalSqliteLock, assertLocalPrivateDirectory, type LocalSqliteLockOptions } from "./sqlite-lock.js";
 
-import { assertOwned, CRON_STORAGE_NAME, withCronStorageDirectory } from "./cron-storage-directory.js";
+import {
+  assertOwned,
+  CRON_STORAGE_NAME,
+  windowsCronAclError,
+  withCronStorageDirectory,
+} from "./cron-storage-directory.js";
 export { CRON_STORAGE_NAME } from "./cron-storage-directory.js";
 
 export interface CronStorage {
@@ -40,10 +45,14 @@ export async function withCronStorage<Result>(
       workspaceIdentity,
       lockDirectory,
       async read() {
-        return withRegularChild(bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
-          assertCronRecordOwned(file.snapshot, file.path);
-          return (await readConfinedFile(file)).toString("utf8");
-        });
+        try {
+          return await withRegularChild(bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
+            assertCronRecordOwned(file.snapshot, file.path);
+            return (await readConfinedFile(file)).toString("utf8");
+          });
+        } catch (error) {
+          throw windowsUnsafeRecordError(error, bound.operationPath);
+        }
       },
       async write(data) {
         if (!create) throw new Error("Cron storage was opened for reading");
@@ -121,6 +130,14 @@ function assertCronRecordOwned(info: BigIntStats, path: string): void {
     return;
   }
   assertOwned(info);
+}
+
+/** Name the path and the repair when Windows rejects an existing task file's ACL. */
+function windowsUnsafeRecordError(error: unknown, directory: string): unknown {
+  if (process.platform !== "win32") return error;
+  const failure = error as { code?: unknown; name?: unknown } | null;
+  const unsafe = failure?.code === "CHILD_UNSAFE" || failure?.name === "WindowsPrivatePathSecurityError";
+  return unsafe ? windowsCronAclError(directory, error, "record") : error;
 }
 
 function initializeWindowsCronFile(path: string): void {

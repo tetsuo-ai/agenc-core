@@ -58,6 +58,26 @@ existing `.agenc` is validated and left unchanged; an unsafe ACL is rejected.
 After that directory check passes, an unsafe task file is replaced atomically
 with a newly created private file, and a read of an unsafe task file is
 rejected. The project workspace keeps its existing ACL.
+
+On Windows this means a normal project `.agenc` is rejected until it is
+repaired. `agenc init`, skills, MCP config, worktrees, imagine output, agent
+memory, and Explorer or `mkdir` all create `.agenc` with the ACL inherited
+from the project folder, and durable cron does not change it. The error names
+the directory and prints this PowerShell command for it (shown here for
+`C:\src\my project\.agenc`):
+
+```powershell
+$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; icacls 'C:\src\my project\.agenc' /setowner "*$u" /T /Q; icacls 'C:\src\my project\.agenc' /reset /T /Q; icacls 'C:\src\my project\.agenc' /inheritance:r /grant:r "*${u}:(OI)(CI)F" /Q; icacls 'C:\src\my project\.agenc' /inheritance:d /T /Q
+```
+
+It gives the current user ownership and sole full control of `.agenc` and
+everything in it, and does not write the project folder's ACL. Other accounts,
+including sandbox groups, lose access to `.agenc`. The same message is used
+when a newly created `.agenc` could not be made private; removing that empty
+directory also works. Durable cron on Windows requires a local NTFS volume; a
+ReFS Dev Drive or network path is rejected without a repair command. Session
+startup warns about a rejected `.agenc` only when the task file exists or its
+existence cannot be checked.
 Concurrent edits may cause a transaction to fail; failure after publication
 does not imply that the original task file is unchanged.
 

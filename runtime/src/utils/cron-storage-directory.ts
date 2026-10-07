@@ -104,6 +104,119 @@ export async function withCronStorageDirectory<Result>(
 
 const OWNERSHIP_ERROR = "Cron storage must be owned by the current user and not writable by other users";
 
+/** Windows `.agenc` (or its task file) failed the private-ACL check and was left unchanged. */
+export class CronStorageAclError extends Error {
+  readonly code = "CRON_STORAGE_UNSAFE_ACL";
+  constructor(message: string, readonly directory: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "CronStorageAclError";
+  }
+}
+
+// Reasons thrown by the PowerShell verifier in `workflow-private-path.ts`.
+const WINDOWS_ACL_REASONS = [
+  "inherited ACL is unsupported",
+  "path owner is not the current user",
+  "inherited ACE is unsupported",
+  "deny ACE is unsupported",
+  "foreign ACE is unsupported",
+  "current-user full-control ACE is missing",
+] as const;
+const WINDOWS_UNSUPPORTED_VOLUME_REASONS = [
+  "NTFS is required",
+  "network and device paths are unsupported",
+] as const;
+
+/** First verifier reason found in a cause chain, from a message or PowerShell stderr. */
+function windowsPrivatePathReason(error: unknown): string | undefined {
+  const known = [...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS];
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
+    const texts = [candidate.message, candidate.stderr].map((value) =>
+      Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "");
+    for (const text of texts) {
+      const reason = known.find((entry) => text.includes(entry));
+      if (reason !== undefined) return reason;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
+/**
+ * PowerShell repair for one `.agenc` directory, tested on Windows 11 NTFS.
+ * Every icacls call targets that directory: take ownership, drop explicit
+ * and inherited entries, grant only the current user's SID full control on
+ * the directory, then turn the contents' inherited entry into a protected
+ * explicit one. The parent ACL is never written. The path is a PowerShell
+ * single-quoted literal; PowerShell also treats U+2018-U+201B as single
+ * quotes, so those are doubled too.
+ */
+export function windowsCronRepairCommand(directory: string): string {
+  const literal = `'${directory.replace(/['\u2018\u2019\u201A\u201B]/gu, (quote) => quote + quote)}'`;
+  return "$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " +
+    `icacls ${literal} /setowner "*$u" /T /Q; ` +
+    `icacls ${literal} /reset /T /Q; ` +
+    `icacls ${literal} /inheritance:r /grant:r "*\${u}:(OI)(CI)F" /Q; ` +
+    `icacls ${literal} /inheritance:d /T /Q`;
+}
+
+function windowsRepairAdvice(directory: string, extra = ""): string {
+  return `To give only the current user full control of ${directory} and everything in it ` +
+    `(its parent is not changed), run this in PowerShell${extra}, then retry: ` +
+    windowsCronRepairCommand(directory);
+}
+
+/** A rejected Windows cron directory, with the path and a repair users can run. */
+export function windowsCronAclError(
+  directory: string,
+  cause: unknown,
+  state: "existing" | "created" | "inaccessible" | "record" = "existing",
+): CronStorageAclError {
+  const reason = windowsPrivatePathReason(cause);
+  if (reason !== undefined && (WINDOWS_UNSUPPORTED_VOLUME_REASONS as readonly string[]).includes(reason)) {
+    return new CronStorageAclError(
+      `${OWNERSHIP_ERROR}: ${directory} is on a volume that Windows durable cron storage does not support ` +
+        `(${reason}). Its permissions were left unchanged. Keep the project on a local NTFS volume, ` +
+        "or schedule the task with durable:false.",
+      directory,
+      { cause },
+    );
+  }
+  const detail = reason === undefined ? "" : ` (${reason})`;
+  if (state === "created") {
+    return new CronStorageAclError(
+      `${OWNERSHIP_ERROR}: ${directory} was created, but its private Windows ACL could not be set${detail}. ` +
+        `Remove that empty directory, or repair it. ${windowsRepairAdvice(directory)}`,
+      directory,
+      { cause },
+    );
+  }
+  if (state === "record") {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return new CronStorageAclError(
+      `${message}${detail}. The task file was left unchanged. ${windowsRepairAdvice(directory)}`,
+      directory,
+      { cause },
+    );
+  }
+  if (state === "inaccessible") {
+    const code = (cause as NodeJS.ErrnoException | null)?.code;
+    return new CronStorageAclError(
+      `${OWNERSHIP_ERROR}: ${directory} could not be inspected${code === undefined ? "" : ` (${code})`}, ` +
+        `and it was left unchanged. ${windowsRepairAdvice(directory, " (elevated if access is denied)")}`,
+      directory,
+      { cause },
+    );
+  }
+  return new CronStorageAclError(
+    `${OWNERSHIP_ERROR}: ${directory} has a Windows ACL that is not private to the current user${detail}, ` +
+      `and it was left unchanged. ${windowsRepairAdvice(directory)}`,
+    directory,
+    { cause },
+  );
+}
+
 /**
  * Windows has no traversable directory descriptor. `.agenc` is the private
  * root. This operation initializes that ACL only when it created the
@@ -130,6 +243,8 @@ async function withWindowsCronStorageDirectory<Result>(
   if (opened === undefined) return undefined;
   const directoryInfo = opened.info;
   await assertRealDirectory(workspacePathResolved, workspaceInfo);
+  // No await between this identity check and the ACL write or check.
+  await assertRealDirectory(directory, directoryInfo);
   ensureWindowsPrivateDirectory(directory, opened.created);
   try {
     return await withConfinedDirectory(directory, WINDOWS_STORAGE_POLICY, async (bound) => {
@@ -174,7 +289,9 @@ async function openWindowsAgencDirectory(
   try {
     info = await lstat(directory, { bigint: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw windowsCronAclError(directory, error, "inaccessible");
+    if (code !== "ENOENT") throw error;
     if (!create) return undefined;
   }
   // An existing directory is never proof that this call may change its ACL.
@@ -207,11 +324,17 @@ async function createWindowsAgencDirectory(directory: string): Promise<boolean> 
 
 function ensureWindowsPrivateDirectory(path: string, created: boolean): void {
   if (created) {
-    assertWindowsPrivatePathSecurity(path, "directory", true);
+    // A failed first initialization leaves `.agenc` behind. Later calls see
+    // it as existing and only validate, so this error names the repair.
+    try {
+      assertWindowsPrivatePathSecurity(path, "directory", true);
+    } catch (cause) {
+      throw windowsCronAclError(path, cause, "created");
+    }
   }
   try {
     assertWindowsPrivatePathSecurity(path, "directory", false);
   } catch (cause) {
-    throw new Error(OWNERSHIP_ERROR, { cause });
+    throw windowsCronAclError(path, cause, created ? "created" : "existing");
   }
 }
