@@ -41,12 +41,12 @@
     "successfulFixtureReadEvents": 3,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-cal-tool-co-4a7116223d52aaceb2ea1b45fcc5359e6fcbade868391190af2d5c32e8ce69dd/sessions/805baaf3-a5f5-4d75-b5c6-23a66e5819f6/rollout-2026-09-29T10-12-00-060Z-805baaf3-a5f5-4d75-b5c6-23a66e5819f6.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-cal-tool-co-4a7116223d52aaceb2ea1b45fcc5359e6fcbade868391190af2d5c32e8ce69dd/sessions/805baaf3-a5f5-4d75-b5c6-23a66e5819f6/rollout-2026-09-29T10-12-00-060Z-805baaf3-a5f5-4d75-b5c6-23a66e5819f6.jsonl",
         "sha256": "27bcb17e5741655573b03216e1011c84fae7f307280d66f172f3d10be644930e",
         "rows": 102
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-cal-tool-co-4a7116223d52aaceb2ea1b45fcc5359e6fcbade868391190af2d5c32e8ce69dd/sessions/conv-mumiol6x/rollout-2026-09-29T10-11-57-204Z-conv-mumiol6x.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-cal-tool-co-4a7116223d52aaceb2ea1b45fcc5359e6fcbade868391190af2d5c32e8ce69dd/sessions/conv-mumiol6x/rollout-2026-09-29T10-11-57-204Z-conv-mumiol6x.jsonl",
         "sha256": "803134eefca297d50be6dbedff98e3814f1f868e9764935bb159e26fb7cdf18d",
         "rows": 1648
       }
@@ -107,12 +107,12 @@
     "successfulFixtureReadEvents": 0,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-hold-simple-46e855f3c96aea6b396fcc61375ffaaab92278e8a2201c09933f6f162b29bf01/sessions/conv-mumipxp8/rollout-2026-09-29T10-13-00-175Z-conv-mumipxp8.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-hold-simple-46e855f3c96aea6b396fcc61375ffaaab92278e8a2201c09933f6f162b29bf01/sessions/conv-mumipxp8/rollout-2026-09-29T10-13-00-175Z-conv-mumipxp8.jsonl",
         "sha256": "1681e06b280e3f513d7b75c85e4720b419ccfdffa2a21ec39aaeefcbd0939ca1",
         "rows": 900
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-hold-simple-46e855f3c96aea6b396fcc61375ffaaab92278e8a2201c09933f6f162b29bf01/sessions/b0698e59-35fc-4028-8a35-d377aaf56e0a/rollout-2026-09-29T10-13-03-476Z-b0698e59-35fc-4028-8a35-d377aaf56e0a.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-hold-simple-46e855f3c96aea6b396fcc61375ffaaab92278e8a2201c09933f6f162b29bf01/sessions/b0698e59-35fc-4028-8a35-d377aaf56e0a/rollout-2026-09-29T10-13-03-476Z-b0698e59-35fc-4028-8a35-d377aaf56e0a.jsonl",
         "sha256": "b037c065325e1fa597d4a95ab22ffe39aef4dae6185d4d025846e4963fdcd3ba",
         "rows": 107
       }
@@ -181,12 +181,12 @@
     "successfulFixtureReadEvents": 0,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-cal-simple--bab0a84884c447627a6a45eddd1ace133c13e84998283307f2c582d6d66feaf3/sessions/conv-mumim889/rollout-2026-09-29T10-10-07-338Z-conv-mumim889.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-cal-simple--bab0a84884c447627a6a45eddd1ace133c13e84998283307f2c582d6d66feaf3/sessions/conv-mumim889/rollout-2026-09-29T10-10-07-338Z-conv-mumim889.jsonl",
         "sha256": "791cbaa766ab648586a9e1d3b3931fac686db275cd4162f6d045fb27b7c6b89f",
         "rows": 3491
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-cal-simple--bab0a84884c447627a6a45eddd1ace133c13e84998283307f2c582d6d66feaf3/sessions/a931a542-f2b6-4147-8330-1ce7e45fa737/rollout-2026-09-29T10-10-12-574Z-a931a542-f2b6-4147-8330-1ce7e45fa737.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-cal-simple--bab0a84884c447627a6a45eddd1ace133c13e84998283307f2c582d6d66feaf3/sessions/a931a542-f2b6-4147-8330-1ce7e45fa737/rollout-2026-09-29T10-10-12-574Z-a931a542-f2b6-4147-8330-1ce7e45fa737.jsonl",
         "sha256": "0b310b091c19fd412d4ea664c150a9bf7054a3f453255b47e2de955f454b9478",
         "rows": 79
       }
@@ -247,12 +247,12 @@
     "successfulFixtureReadEvents": 3,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-hold-tool-a-adc5eae17b135a03cbda75fa313d6c928e276d23a7db37f953fd0e172410c221/sessions/conv-mumip8im/rollout-2026-09-29T10-12-27-431Z-conv-mumip8im.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-hold-tool-a-adc5eae17b135a03cbda75fa313d6c928e276d23a7db37f953fd0e172410c221/sessions/conv-mumip8im/rollout-2026-09-29T10-12-27-431Z-conv-mumip8im.jsonl",
         "sha256": "6ef6eef4cb86144c5a60a9f6c10bf0213b0aca9742429994430eeb396d475f80",
         "rows": 821
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-selector-v2-e2e-v2-cold-hold-tool-a-adc5eae17b135a03cbda75fa313d6c928e276d23a7db37f953fd0e172410c221/sessions/433f825e-f3d6-427f-94d4-c574c63f3577/rollout-2026-09-29T10-12-32-299Z-433f825e-f3d6-427f-94d4-c574c63f3577.jsonl",
+        "path": "home/projects/v2--pc-task-root-selector-v2-e2e-v2-cold-hold-tool-a-adc5eae17b135a03cbda75fa313d6c928e276d23a7db37f953fd0e172410c221/sessions/433f825e-f3d6-427f-94d4-c574c63f3577/rollout-2026-09-29T10-12-32-299Z-433f825e-f3d6-427f-94d4-c574c63f3577.jsonl",
         "sha256": "68723d66e48120bdbfc14345277d5fe215bf8f408c49c6d3f8f8825d755ec373",
         "rows": 147
       }

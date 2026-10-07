@@ -7,7 +7,6 @@
     "roles": {
       "parent": 24,
       "child": 7
-    },
-    "minimumBalanceUsd": 43.05
+    }
   }
 }

@@ -42,12 +42,12 @@
     "successfulFixtureReadEvents": 0,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/27ccfbd9-3013-40e9-bfd0-8d03b30b80da/rollout-2026-09-29T09-43-02-421Z-27ccfbd9-3013-40e9-bfd0-8d03b30b80da.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/27ccfbd9-3013-40e9-bfd0-8d03b30b80da/rollout-2026-09-29T09-43-02-421Z-27ccfbd9-3013-40e9-bfd0-8d03b30b80da.jsonl",
         "sha256": "a1d5739fbf502317f88169dd24f6c84dd0fc88265fdb49c49295a300eba3334b",
         "rows": 22
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/conv-mumhncaw/rollout-2026-09-29T09-42-59-360Z-conv-mumhncaw.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/conv-mumhncaw/rollout-2026-09-29T09-42-59-360Z-conv-mumhncaw.jsonl",
         "sha256": "3c509fa48fdb1766fde348fff1eb6bda25f9a491fe645eb78cbf3105a4a39144",
         "rows": 1404
       }
@@ -117,12 +117,12 @@
     "successfulFixtureReadEvents": 0,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/f37e3204-f1d9-4a1c-be85-8548194119ef/rollout-2026-09-29T09-47-22-275Z-f37e3204-f1d9-4a1c-be85-8548194119ef.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/f37e3204-f1d9-4a1c-be85-8548194119ef/rollout-2026-09-29T09-47-22-275Z-f37e3204-f1d9-4a1c-be85-8548194119ef.jsonl",
         "sha256": "dc2c6562b1c9bccd529ea34f151147b173bc5059edc87d63d3d3477ec269ec68",
         "rows": 23
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/conv-mumhswtr/rollout-2026-09-29T09-47-19-208Z-conv-mumhswtr.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/conv-mumhswtr/rollout-2026-09-29T09-47-19-208Z-conv-mumhswtr.jsonl",
         "sha256": "39c67637523e48207387e05458a9b6d7ebfe7964df2b44920718b0b58175c71f",
         "rows": 1464
       }
@@ -192,12 +192,12 @@
     "successfulFixtureReadEvents": 3,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/conv-mumi73a3/rollout-2026-09-29T09-58-20-828Z-conv-mumi73a3.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/conv-mumi73a3/rollout-2026-09-29T09-58-20-828Z-conv-mumi73a3.jsonl",
         "sha256": "e3df98479f6cbe0ce00f6b1f619ab45ddf3c6f07d3df9771d64c94661f08395e",
         "rows": 2273
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/0cddec50-0dce-48bc-9980-ea075ad4cdfa/rollout-2026-09-29T09-58-23-862Z-0cddec50-0dce-48bc-9980-ea075ad4cdfa.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/0cddec50-0dce-48bc-9980-ea075ad4cdfa/rollout-2026-09-29T09-58-23-862Z-0cddec50-0dce-48bc-9980-ea075ad4cdfa.jsonl",
         "sha256": "165cfedc14e13524d89663c8a98611966b8c90b75374f358494244a3ec967249",
         "rows": 73
       }
@@ -267,12 +267,12 @@
     "successfulFixtureReadEvents": 2,
     "rolloutProvenance": [
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4/rollout-2026-09-29T09-58-14-389Z-a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4/rollout-2026-09-29T09-58-14-389Z-a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4.jsonl",
         "sha256": "4d88dc5ef4af4080b9f7e3e499de0af04622ebb7b7396ce64d1fab1eb9306132",
         "rows": 64
       },
       {
-        "path": "home/projects/v2--home-paul-claude-agenc-work-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/conv-mumi6w8d/rollout-2026-09-29T09-58-11-436Z-conv-mumi6w8d.jsonl",
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/conv-mumi6w8d/rollout-2026-09-29T09-58-11-436Z-conv-mumi6w8d.jsonl",
         "sha256": "6f2fb36e0e9abd8d34635e9958d498cdd5c8e89398f77b3fb5010be95dba29f7",
         "rows": 2522
       }

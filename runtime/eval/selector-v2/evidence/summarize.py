@@ -1,16 +1,22 @@
-"""Read-only statistics and exportable Pareto chart for the locked direct replay."""
-import json,math,statistics,pathlib
+"""Read-only statistics and exportable Pareto chart for a locked direct replay.
+
+Usage: python3 summarize.py EVALUATION_JSON OUTPUT_DIR. The replay output lives in
+the evaluation archive, not in this repository (see ../README.md).
+"""
+import json,math,statistics,pathlib,sys
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-ROOT=pathlib.Path(__file__).resolve().parent
-doc=json.loads((ROOT/'evaluation.json').read_text())
+if len(sys.argv)!=3: raise SystemExit('usage: summarize.py EVALUATION_JSON OUTPUT_DIR')
+doc=json.loads(pathlib.Path(sys.argv[1]).read_text())
+ROOT=pathlib.Path(sys.argv[2]);ROOT.mkdir(parents=True,exist_ok=True)
 def wilson(k,n):
  z=1.95996398454;d=1+z*z/n;p=k/n
  center=(p+z*z/(2*n))/d;h=z*math.sqrt(p*(1-p)/n+z*z/(4*n*n))/d
  return center-h,center+h
-names={'selector_v2':'Selector v2 (verified)','current_selector':'Current selector','fixed_parent':'Fixed parent','always_strongest':'Always strongest','always_cheapest':'Always cheapest','openrouter_restricted':'OpenRouter Auto restricted','openrouter_unrestricted':'OpenRouter Auto unrestricted','v2_cold':'V2 parent-first cold','v2_irt':'V2 IRT without verifier'}
-arms=list(names)
+names={'selector_v2':'Selector v2 (verified)','current_selector':'Current selector','fixed_parent':'Fixed parent','always_strongest':'Always strongest','always_cheapest':'Always cheapest','openrouter_restricted':'OpenRouter Auto restricted','openrouter_unrestricted':'OpenRouter Auto unrestricted','v2_cold':'V2 parent-first cold','v2_irt':'V2 IRT without verifier',
+ 'v2_cold_premium_uncapped':'V2 cold, premium uncapped parent','v2_irt_premium_uncapped':'V2 IRT, premium uncapped parent','selector_v2_premium_uncapped':'Selector v2 (verified), premium uncapped parent'}
+arms=[arm for arm in names if any(r['arm']==arm for r in doc['rows'])]
 def quantile(xs,q):
  xs=sorted(xs);v=(len(xs)-1)*q;lo=int(v);return xs[lo]+(xs[min(lo+1,len(xs)-1)]-xs[lo])*(v-lo)
 summaries=[];md=[]
@@ -18,6 +24,7 @@ for split in ('calibration','holdout'):
  md+=['## '+split,'','| Arm | Pass / tasks | Wilson 95% | Total USD | USD / task | p50 / p95 seconds | Covered |','|---|---:|---|---:|---:|---:|---:|']
  for arm in arms:
   rows=[r for r in doc['rows'] if r['split']==split and r['arm']==arm]
+  if not rows: continue
   n=len(rows);k=sum(r['passed'] for r in rows);lo,hi=wilson(k,n)
   cost=sum(r['costUsd'] or 0 for r in rows);lat=[(r['latencyMs']+r.get('verificationMs',0))/1000 for r in rows]
   s=dict(split=split,arm=arm,n=n,passes=k,quality=k/n,wilson=[lo,hi],costUsd=cost,costPerTask=cost/n,p50=statistics.median(lat),p95=quantile(lat,.95),covered=sum(r['covered'] for r in rows),reconciledTasks=sum(r['costReconciled'] for r in rows))
@@ -40,7 +47,7 @@ for ax,split in zip(axs,('calibration','holdout')):
  ax.set_xscale('log');ax.set_ylim(.4,1.035);ax.set_xlim(min(s['costPerTask'] for s in ss)*.65,max(s['costPerTask'] for s in ss)*1.6)
  ax.set_title(('Calibration, 28 tasks (v2 leave-one-task-out)' if split=='calibration' else 'Held out, 14 tasks (policy frozen)'))
  ax.set_xlabel('Mean recorded USD per task, log scale');ax.set_ylabel('Fraction passing all frozen checks');ax.grid(alpha=.15)
-fig.suptitle('Selector v2 meets the OpenRouter point target; always-cheapest dominates v2 on held-out tasks',fontsize=12)
+fig.suptitle('Selector v2 replay: quality against recorded cost',fontsize=12)
 fig.savefig(ROOT/'pareto.png',dpi=180)
 (ROOT/'tables.md').write_text('\n'.join(md))
 (ROOT/'metrics.json').write_text(json.dumps(summaries,indent=2)+'\n')

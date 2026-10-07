@@ -1,7 +1,7 @@
 {
   "suiteVersion": "router-bench-v1-42",
   "frozenAtUtc": "2026-09-29T09:06:34.062715+00:00",
-  "source": "/private/tmp/xprov-ultra/live-eval-tasks.json",
+  "source": "live-eval-tasks.json in the earlier router-bench job's task root",
   "sourceSha256": "5ead6e531662613d49a12929e3b6ff203510506c492caf671b5c7236fc00639a",
   "counts": {
     "tasks": 42,

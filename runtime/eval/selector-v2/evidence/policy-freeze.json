@@ -1,18 +1,21 @@
 {
   "frozenAt": "2026-09-29T10:04:11.248361+00:00",
   "files": {
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-irt.ts": "6fe978c5e3fd663dcf79c6cb0ce824fbc4c04924488329a5d36fedc8257632c4",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-outcomes.ts": "517d58eb061b75b45b5767a623467462afb72f062069700ad7ba0ea6cfdccd89",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-types.ts": "6716a8df9d29644a29cf2506aa703e216634b10ae320ce70fd6ee1c49131dca6",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-v2.ts": "442c087846063d1997576ec9225343bf425d17f911232c2518b89fb11f9fb763",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-evaluation.ts": "8b81ffd7b7b22d4c4f1109540f16bd36a68ba0c7c150b96cafb72bd5c5792a5b",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector-profiles.ts": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
-    "/private/tmp/selector-v2/core/runtime/src/agents/provider-selector.ts": "922251ae2d4d227d9696292741b9d158e590be19d5969720c4945402adba9d74",
-    "/private/tmp/selector-v2/core/runtime/eval/selector-v2/calibrate.mts": "5283969dfd10ddf2a8adadac2e4f9f83942c0996ea6a3ebca1b3bf50c1e2cf7b",
-    "/private/tmp/selector-v2/evidence/calibration.json": "6a323ca67eacc8c21e00c695b5c4a7d219a2ee68fbedc3e2f9e20563bdebdebc",
-    "/private/tmp/selector-v2/evidence/calibration-input.json": "2b68752adc3bb288b51e2fea8997a00a70b75f98b08a84cf7b4cfce61ac81166"
+    "core/runtime/src/agents/provider-selector-irt.ts": "6fe978c5e3fd663dcf79c6cb0ce824fbc4c04924488329a5d36fedc8257632c4",
+    "core/runtime/src/agents/provider-selector-outcomes.ts": "517d58eb061b75b45b5767a623467462afb72f062069700ad7ba0ea6cfdccd89",
+    "core/runtime/src/agents/provider-selector-types.ts": "6716a8df9d29644a29cf2506aa703e216634b10ae320ce70fd6ee1c49131dca6",
+    "core/runtime/src/agents/provider-selector-v2.ts": "442c087846063d1997576ec9225343bf425d17f911232c2518b89fb11f9fb763",
+    "core/runtime/src/agents/provider-selector-evaluation.ts": "8b81ffd7b7b22d4c4f1109540f16bd36a68ba0c7c150b96cafb72bd5c5792a5b",
+    "core/runtime/src/agents/provider-selector-profiles.ts": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
+    "core/runtime/src/agents/provider-selector.ts": "922251ae2d4d227d9696292741b9d158e590be19d5969720c4945402adba9d74",
+    "core/runtime/eval/selector-v2/calibrate.mts": "5283969dfd10ddf2a8adadac2e4f9f83942c0996ea6a3ebca1b3bf50c1e2cf7b",
+    "evidence/calibration.json": "6a323ca67eacc8c21e00c695b5c4a7d219a2ee68fbedc3e2f9e20563bdebdebc",
+    "evidence/calibration-input.json": "2b68752adc3bb288b51e2fea8997a00a70b75f98b08a84cf7b4cfce61ac81166"
   },
   "calibrationOnly": true,
   "heldoutScored": false,
-  "note": "Source and fitted policy locked before task-level held-out scoring. Published aggregate summaries read as requested."
+  "note": "Source and fitted policy locked before task-level held-out scoring. Published aggregate summaries read as requested.",
+  "pathsRelativeTo": "the evaluation's task root; the machine-specific prefix is removed",
+  "originalSha256": "e930a4bc939031af70528e8ceb059de88a6165ef76ddda0eb75cb4992808eef4",
+  "originalNote": "originalSha256 is the policyFreezeSha256 recorded in the archived evaluation.json. The unmodified manifest is in the evaluation archive."
 }

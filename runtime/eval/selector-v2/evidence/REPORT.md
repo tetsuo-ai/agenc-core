@@ -109,9 +109,7 @@ Dollar totals include all attempts, including failed cascade attempts. All arms 
 
 ## Quality/cost frontier
 
-![Calibration and held-out quality/cost Pareto frontier](pareto.png)
-
-The PNG uses a logarithmic cost axis and Wilson bars. At calibration, the current selector is the cheapest arm at the highest observed quality. On held-out tasks, current selector and always-cheapest form the observed frontier; v2 is dominated by always-cheapest. Uncertainty bars do not turn these point frontiers into population guarantees.
+The archived chart `pareto.png` (SHA-256 `a7d7a91ebe749b36486dc38f6ddbe74161c1787ba20bd4dfd3d6b7db2c762fef`) uses a logarithmic cost axis and Wilson bars. At calibration, the current selector is the cheapest arm at the highest observed quality. On held-out tasks, current selector and always-cheapest form the observed frontier; v2 is dominated by always-cheapest. Uncertainty bars do not turn these point frontiers into population guarantees.
 
 ## Fresh versus reused held-out tasks
 
@@ -153,7 +151,7 @@ Only new calls from this job are counted here. Reused router-bench inference was
 
 | Provider | New calls | New estimated USD | Conservative guard charge | Authorization |
 |---|---:|---:|---:|---|
-| DeepSeek | 31 (24 parent, 7 child) | $0.019817808 | $0.147338400 | Below $3; observed balance never below $43.05, above $10 floor |
+| DeepSeek | 31 (24 parent, 7 child) | $0.019817808 | $0.147338400 | Below $3; the account stayed above its $10 floor |
 | Kimi | 0 | $0 | $0 | Below $3 |
 | MiniMax | 0 | $0 | $0 | Below $3 |
 | Meta | 0 | $0 | $0 | Below $3 |
@@ -174,4 +172,4 @@ Final known-key scans cover all regular files in this job's Mac task root, isola
 - [RouteLLM](https://arxiv.org/abs/2406.18665), 2024. Context for task-dependent routing and held-out evaluation; no claimed reproduction.
 - [OpenRouter Auto documentation](https://openrouter.ai/docs/guides/routing/routers/auto-router), retrieved 2026-09-29, for router restrictions and the comparison arm semantics.
 
-The repository's `runtime/eval/selector-v2/README.md` gives portable replay instructions. The committed evidence contains the frozen tasks and grader, stripped real request records, compressed calibration inputs/results, original and portable source hashes, all 378 evaluation rows, Wilson tables, paired counts, PNG and plot script. Headers, balances, credentials and provider reasoning traces are excluded from the public records. Replay calls no inference endpoints. It checks the pinned source and fitted-policy hashes before grading. The local `/private/tmp/selector-v2/evidence` directory additionally holds detailed runner logs and daemon evidence; isolated PC task homes hold raw receipt artifacts.
+The repository's `runtime/eval/selector-v2/README.md` gives replay instructions. The repository keeps the grader and task specification, original and portable source hashes, Wilson tables, paired counts and the plot script. The frozen tasks, stripped real request records, compressed calibration inputs/results, all 378 evaluation rows and the PNG are in the evaluation archive, named with their SHA-256 in the README. Headers, balances, credentials and provider reasoning traces are excluded from the public records. Replay calls no inference endpoints. It checks the pinned source and fitted-policy hashes before grading. The original task directories also held detailed runner logs and daemon evidence; isolated PC task homes held raw receipt artifacts.
