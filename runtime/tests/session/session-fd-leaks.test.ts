@@ -1,8 +1,9 @@
-import { readdirSync } from "node:fs";
+import { once } from "node:events";
+import { readdirSync, watch } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { bootstrapLocalRuntimeSession } from "../../src/bin/bootstrap.js";
 import { Session } from "../../src/session/session.js";
@@ -91,6 +92,23 @@ async function sharedDaemonServices(home: string) {
 }
 
 describe.skipIf(process.platform === "win32")("session descriptor ownership", () => {
+  beforeAll(async () => {
+    if (process.platform !== "linux") return;
+    // libuv lazily opens one loop-owned inotify descriptor on the first watch
+    // and retains it after all watches close. Initialize only that backend
+    // before taking baselines, so even the first session must release every
+    // descriptor it owns. Warming up a session could hide a one-time leak.
+    const directory = await mkdtemp(join(tmpdir(), "agenc-fd-watch-"));
+    try {
+      const watcher = watch(directory, () => {});
+      const closed = once(watcher, "close");
+      watcher.close();
+      await closed;
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("returns to baseline as daemon discovery visits ended projects", async () => {
