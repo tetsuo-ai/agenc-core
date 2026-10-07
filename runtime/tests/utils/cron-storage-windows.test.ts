@@ -93,6 +93,17 @@ let root: string;
 let workspace: string;
 let outside: string;
 
+/** The repair advice every ACL-repair message ends with. */
+function repairAdvice(directory: string, extra = ""): string {
+  return `To make ${directory} itself and its scheduled_tasks.json private to the current user, ` +
+    `run this in PowerShell${extra}, then retry. This replaces the ACL of that directory and task file with one ` +
+    "full-control entry for the current user, so every other account loses access to them: SYSTEM, Administrators, " +
+    "Users, Authenticated Users, Everyone, sandbox or AppContainer groups such as CodexSandboxUsers, and any other " +
+    "explicit entries (for example, backup or antivirus software running as SYSTEM can no longer list the directory " +
+    "or read the task file). Other entries in the directory keep their current ACLs, links are refused, nothing " +
+    `outside it is changed, and the script stops at the first error. Command: ${windowsCronRepairCommand(directory)}`;
+}
+
 /** What `assertWindowsPrivatePathSecurity` throws: a CLIXML reason on the PowerShell cause. */
 function verifierFailure(path: string, reason = "inherited ACL is unsupported"): Error {
   return Object.assign(new Error(`Windows private-path validation failed for ${path}`), {
@@ -359,7 +370,7 @@ describe("Windows cron storage uses private-path persistence", () => {
       cause: expect.objectContaining({ name: "ConfinedIoError" }),
     });
     await expect(readCronTasks(workspace)).rejects.toThrow(
-      `(inherited ACL is unsupported). The task file was left unchanged. To make ${directory} and everything in it private`,
+      `(inherited ACL is unsupported). The task file was left unchanged. ${repairAdvice(directory)}`,
     );
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe("unsafe");
@@ -404,10 +415,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
     expect(error.message).toBe(
       `${PERMISSIONS_ERROR}: ${directory} has a Windows ACL that is not private to the current user ` +
-      "(inherited ACL is unsupported), and it was left unchanged. " +
-      `To make ${directory} and everything in it private to the current user (junctions, symbolic links and ` +
-      "hard-linked files inside it are skipped, its parent is not changed, and the script stops at the first " +
-      `error), run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`,
+      `(inherited ACL is unsupported), and it was left unchanged. ${repairAdvice(directory)}`,
     );
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe(body);
@@ -422,36 +430,53 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(command.split("Users").length - 1).toBe(1);
   });
 
-  test("repairs with one stop-on-error script that never follows links", () => {
+  test("repairs only .agenc and its task file, through handles, stopping at the first error", () => {
     const command = windowsCronRepairCommand("C:\\p\\.agenc");
     // One script block that stops at the first error; no native tool whose exit code could be missed.
     expect(command.startsWith("& { $ErrorActionPreference = 'Stop'; ")).toBe(true);
     expect(command.endsWith(" }")).toBe(true);
     expect(command).not.toMatch(/icacls|takeown|cacls|\/T\b/iu);
-    // No API that rewrites the inherited entries of existing children (SetNamedSecurityInfo).
-    expect(command).not.toMatch(/Set-Acl|SetAccessControl\(/u);
-    expect(command).toContain("[AgencCronRepair.Native]::SetFileSecurityW($path, 0x80000005, $acl.GetSecurityDescriptorBinaryForm())");
-    expect(command).toContain("throw (New-Object ComponentModel.Win32Exception(");
-    // .agenc itself must be a real directory.
-    const refuseRoot = command.indexOf("if (($a -band $link) -ne 0 -or ($a -band $folder) -eq 0) { throw ");
-    const lockRoot = command.indexOf("& $private $root $true");
-    expect(refuseRoot).toBeGreaterThan(0);
-    expect(lockRoot).toBeGreaterThan(refuseRoot);
-    expect(command.indexOf("$todo.Push($root)")).toBeGreaterThan(lockRoot);
-    // Explicit stack: a reparse point is skipped before any write or descent;
-    // a directory is made private before it is pushed and listed.
-    const loop = command.slice(command.indexOf("while ($todo.Count -gt 0)"));
-    const skipLink = loop.indexOf("if (($a -band $link) -ne 0) { Write-Warning");
-    expect(skipLink).toBeGreaterThan(0);
-    expect(loop.indexOf("& $private $path $true; $todo.Push($path)")).toBeGreaterThan(skipLink);
-    expect(loop.indexOf("LinkType -eq 'HardLink') { Write-Warning")).toBeGreaterThan(skipLink);
-    expect(loop.indexOf("else { & $private $path $false }")).toBeGreaterThan(loop.indexOf("'HardLink'"));
-    expect(command).not.toMatch(/-Recurse|GetDirectories|EnumerateFileSystemEntries\([^)]*AllDirectories/u);
+    // No tree walk and no API that propagates to existing children (SetNamedSecurityInfo).
+    expect(command).not.toMatch(/Set-Acl|SetAccessControl|SetFileSecurity|SetNamedSecurityInfo|SetSecurityInfo/u);
+    expect(command).not.toMatch(/GetFileSystemEntries|GetDirectories|EnumerateFile|Get-ChildItem|-Recurse|while \(/u);
+    // Exactly two writes, both through an open handle.
+    expect(command.match(/\[AgencCronRepair\]::Protect\(/gu)).toHaveLength(2);
+    expect(command).toContain("SetKernelObjectSecurity(handle, 0x80000005, descriptor)");
+    // .agenc is opened without following a link, and its type comes from that handle.
+    expect(command).toContain("CreateFileW(path, 0x1E00A0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
+    const open = command.indexOf("$dir = [AgencCronRepair]::OpenFolder($root)");
+    const describe = command.indexOf("$id = [AgencCronRepair]::Describe($dir, $root)");
+    const refuse = command.indexOf("if (($id.Attributes -band $link) -ne 0 -or ($id.Attributes -band $folder) -eq 0) { throw ");
+    const protectDir = command.indexOf("[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root)");
+    expect(open).toBeGreaterThan(0);
+    expect(describe).toBeGreaterThan(open);
+    expect(refuse).toBeGreaterThan(describe);
+    expect(protectDir).toBeGreaterThan(refuse);
+    // The task file is opened relative to that handle and written only as a
+    // regular, non-reparse file with one link.
+    expect(command).toContain("target.Root = folder.DangerousGetHandle()");
+    expect(command).toContain("NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0)");
+    const openFile = command.indexOf("$file = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task)");
+    const refuseFile = command.indexOf("if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw ");
+    const protectFile = command.indexOf("[AgencCronRepair]::Protect($file, (& $descriptor $false), $task)");
+    expect(openFile).toBeGreaterThan(protectDir);
+    expect(refuseFile).toBeGreaterThan(openFile);
+    expect(protectFile).toBeGreaterThan(refuseFile);
+    // .agenc must still be the same object at the end.
+    const recheck = command.indexOf("$again = [AgencCronRepair]::OpenFolder($root)");
+    expect(recheck).toBeGreaterThan(protectFile);
+    expect(command).toContain("if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw ");
+    expect(command.indexOf("\"Repaired $root")).toBeGreaterThan(recheck);
+    // Failures throw, with the Windows reason.
+    expect(command).toContain("throw Fail(Marshal.GetLastWin32Error(), path)");
     // The descriptor workflow-private-path.ts writes.
     expect(command).toContain("$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false)");
     expect(command).toContain("$inherit = 'ContainerInherit, ObjectInherit'");
     expect(command).toContain("$inherit = 'None'");
     expect(command).toContain("FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')");
+    // The C# source sits in one single-quoted PowerShell literal.
+    const helper = command.slice(command.indexOf("Add-Type -TypeDefinition '") + 26, command.indexOf("'; $sid = "));
+    expect(helper).not.toContain("'");
   });
 
   test("documents the same repair script the error prints", async () => {
@@ -511,7 +536,7 @@ describe("Windows cron storage uses private-path persistence", () => {
       const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
       expect(error).toMatchObject({ name: "CronStorageAclError", code: "CRON_STORAGE_UNSAFE_ACL", cause: { code } });
       expect(error.message).toContain(`${PERMISSIONS_ERROR}: ${record} could not be inspected (${code}), and it was left unchanged.`);
-      expect(error.message).toContain(`run this in PowerShell (elevated if access is denied), then retry: ${windowsCronRepairCommand(directory)}`);
+      expect(error.message).toContain(repairAdvice(directory, " (elevated if access is denied)"));
     }
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe(body);
@@ -527,13 +552,13 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(error.message).toContain(
       `${PERMISSIONS_ERROR}: ${directory} was created, but it could not be made private to the current user ` +
       "(current-user full-control ACE is missing). Remove that directory, or repair it, then retry. " +
-      `To make ${directory} and everything in it private`,
+      repairAdvice(directory),
     );
     expect(error.message).not.toContain("empty");
     expect(await readdir(directory)).toEqual([]);
     expect(aclMutations()).toHaveLength(1);
     // The next call sees an existing directory: it validates only and still names the repair.
-    await expect(writeRecord()).rejects.toThrow(`run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`);
+    await expect(writeRecord()).rejects.toThrow(repairAdvice(directory));
     expect(aclMutations()).toHaveLength(1);
   });
 
@@ -544,17 +569,26 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(aclMutations()).toHaveLength(0);
   });
 
-  test("does not offer an ACL repair for an unsupported volume", async () => {
-    acl.assertWindowsPrivatePathSecurity.mockImplementation(() => {
-      throw Object.assign(new Error("Windows private-path validation failed"), {
-        cause: { stderr: Buffer.from('<S S="Error">NTFS is required_x000D__x000A_</S>') },
-      });
-    });
+  test("explains an unsupported volume as a platform limit without a repair", async () => {
     const directory = metadataDirectory();
     await mkdir(directory, { mode: 0o700 });
-    const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
-    expect(error.message).toContain(`${directory} is on a volume that Windows durable cron storage does not support (NTFS is required)`);
-    expect(error.message).not.toContain("PowerShell");
+    for (const [reason, where] of [
+      ["NTFS is required", `${directory} is on a volume that is not NTFS (for example a ReFS Dev Drive, FAT32 or exFAT)`],
+      ["network and device paths are unsupported", `${directory} is a network or device path`],
+    ]) {
+      acl.assertWindowsPrivatePathSecurity.mockImplementation((path: string) => {
+        throw verifierFailure(path, reason);
+      });
+      const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+      expect(error.message).toBe(
+        `Durable cron storage on Windows requires a local NTFS volume, and ${where}. ` +
+        "This is a platform limitation that no permission change can fix; its permissions were left unchanged. " +
+        "Move the project to a local NTFS volume, or schedule the task with durable:false.",
+      );
+      expect(error.message).not.toMatch(/PowerShell|Command:/u);
+    }
+    expect(aclMutations()).toHaveLength(0);
   });
 
   test("startup restore stays quiet only when the task file is proven absent", async () => {
