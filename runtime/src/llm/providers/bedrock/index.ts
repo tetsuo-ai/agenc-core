@@ -1141,8 +1141,8 @@ export class BedrockProvider implements LLMProvider {
       baseURL: this.baseURL,
     };
     this.tokenCountCapability = Object.freeze({
-      capabilityVersion: "amazon-bedrock-count-tokens-converse-v1",
-      adapterRevision: "amazon-bedrock-converse-wire-v1",
+      capabilityVersion: "amazon-bedrock-count-tokens-v2",
+      adapterRevision: "amazon-bedrock-converse-and-messages-wire-v2",
       configurationRevision: createTokenAccountingConfigurationRevision({
         region: this.region,
         systemPrompt: config.systemPrompt ?? "",
