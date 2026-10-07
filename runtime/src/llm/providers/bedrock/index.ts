@@ -42,6 +42,8 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
+  isLLMPreGenerationRejection,
+  markLLMPreGenerationRejection,
   markLLMInitialHttpRejection,
 } from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
@@ -1192,6 +1194,22 @@ export class BedrockProvider implements LLMProvider {
     });
   }
 
+  private async messagesResponse(
+    provider: AnthropicProvider,
+    response: Promise<LLMResponse>,
+  ): Promise<LLMResponse> {
+    try {
+      return await response;
+    } catch (error) {
+      // Preserve only the inner transport's proof of an initial single-wire
+      // rejection. Status codes and errors after HTTP acceptance are not proof.
+      if (error instanceof Error && isLLMPreGenerationRejection(error, provider.name)) {
+        markLLMPreGenerationRejection(error, this.name);
+      }
+      throw error;
+    }
+  }
+
   private async countRequestTokens(
     accountingRequest: TokenAccountingRequest,
     signal: AbortSignal,
@@ -1294,7 +1312,8 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const messagesProvider = this.messagesProvider(model);
-    if (messagesProvider) return messagesProvider.chat(messages, { ...options, model: undefined });
+    if (messagesProvider) return this.messagesResponse(messagesProvider,
+      messagesProvider.chat(messages, { ...options, model: undefined }));
     const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
@@ -1350,7 +1369,8 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
     const messagesProvider = this.messagesProvider(model);
-    if (messagesProvider) return messagesProvider.chatStream(messages, onChunk, { ...options, model: undefined });
+    if (messagesProvider) return this.messagesResponse(messagesProvider,
+      messagesProvider.chatStream(messages, onChunk, { ...options, model: undefined }));
     const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
