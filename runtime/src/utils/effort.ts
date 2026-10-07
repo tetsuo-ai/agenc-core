@@ -679,22 +679,6 @@ export function getModelDefaultReasoningEffortForContext(
 }
 
 /**
- * True while a session runs the model's native "no reasoning" default: no
- * level is chosen and Core's default for the model is "none". Every effort
- * surface then reads "off" instead of a guessed tier.
- */
-export function isEffortOffByDefaultForContext(
-  model: string,
-  effortValue: EffortValue | undefined,
-  context?: ProviderAuthReadContext,
-): boolean {
-  return (
-    effortValue === undefined &&
-    getNativeDefaultReasoningEffortForContext(model, context) === 'none'
-  )
-}
-
-/**
  * The session's effort for the status line ("high effort", "effort off"):
  * the chosen level, else the model's default as the daemon would run it.
  * Null when no level is chosen and no truthful default is known, so the

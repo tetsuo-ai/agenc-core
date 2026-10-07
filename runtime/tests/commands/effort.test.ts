@@ -463,3 +463,67 @@ describe("/effort default sends only a truthful default", () => {
     expect(problems).toEqual([]);
   });
 });
+
+describe("effort surfaces follow what the session runs", () => {
+  beforeEach(() => settings.update.mockClear());
+
+  test("a refused explicit change leaves app state where the session is", async () => {
+    const { context, getAppState } = commandContext("mistral-medium-latest", "high", {
+      provider: "mistral",
+    });
+    // Saving reloads the config store; its app-state subscription mirrors the
+    // saved level before the session has answered.
+    settings.update.mockImplementationOnce(async () => {
+      (context as { appState: { setAppState: (u: (p: unknown) => unknown) => void } })
+        .appState.setAppState((prev) => ({ ...(prev as object), effortValue: "high" }));
+      return { error: null };
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = vi.fn(async () => {
+      throw new Error("Reasoning effort and response detail can only change between turns");
+    });
+
+    expect(await effortCommand.execute(context)).toMatchObject({ kind: "error" });
+    // The session still runs at its native none, so nothing reads high.
+    expect(getAppState().effortValue).toBeUndefined();
+    expect(getSessionEffortLabelForContext("mistral-medium-latest", undefined, {
+      ...TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      provider: "mistral",
+    })).toBe("effort off");
+  });
+
+  test("an older daemon that refuses a cleared effort keeps the session's effort in app state", async () => {
+    const { context, getAppState } = commandContext("moonshotai/kimi-k3", "default", {
+      provider: "nvidia-nim",
+      effortValue: "low",
+    });
+    // Whatever the save mirrored into app state, the session kept low.
+    settings.update.mockImplementationOnce(async () => {
+      (context as { appState: { setAppState: (u: (p: unknown) => unknown) => void } })
+        .appState.setAppState((prev) => ({ ...(prev as object), effortValue: undefined }));
+      return { error: null };
+    });
+    const applyDaemonConfig = vi.fn(async () => {
+      throw Object.assign(new Error("invalid params"), { code: -32602 });
+    });
+    (context as { session: Record<string, unknown> }).session.applyDaemonConfig = applyDaemonConfig;
+
+    const result = await effortCommand.execute(context);
+
+    expect(applyDaemonConfig).toHaveBeenCalledExactlyOnceWith({ reasoningEffort: null });
+    expect(result).toMatchObject({ kind: "text" });
+    expect(getAppState().effortValue).toBe("low");
+  });
+
+  test.each([
+    ["nvidia-nim", "moonshotai/kimi-k3"],
+    ["openai", "gpt-6-sol"],
+  ])("%s/%s at its unknown default reads model default, never a guessed tier", async (provider, model) => {
+    const auth = { ...TEST_REMOTE_AUTH_SESSION_CONTEXT, provider };
+    expect(getEffortNotificationText(undefined, model, auth)).toBe("model default · /effort");
+    const { context } = commandContext(model, "", { provider });
+    const result = await effortCommand.execute(context);
+    expect(result.kind === "text" ? result.text.split("\n")[0] : result).toBe(
+      "Effort follows the model default.",
+    );
+  });
+});
