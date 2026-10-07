@@ -671,7 +671,10 @@ export class ExecutionAdmissionKernel {
       const runScope = {
         ...(previousRun ?? {}),
         key: runAllocationKey,
-        ...(createsChildRun ? { parentKey: binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey } : {}),
+        // The durable parent is the spawning run, never its current task. A
+        // restart rebinds the child while that run is idle or on another
+        // task. The task cap still applies: the scopes above include it.
+        ...(createsChildRun ? { parentKey: binding.budget.runAllocationKey } : {}),
         ...(taskId === undefined && options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
         ...(taskId === undefined && options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
       };
