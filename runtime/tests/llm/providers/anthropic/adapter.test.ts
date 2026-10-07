@@ -1031,10 +1031,11 @@ describe("AnthropicProvider", () => {
       { id: "toolu_1", name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.finishReason).toBe("tool_calls");
+    // Cache reads and writes sit outside input_tokens (#2772).
     expect(response.usage).toEqual({
       promptTokens: 11,
       completionTokens: 3,
-      totalTokens: 14,
+      totalTokens: 24,
       availability: "reported",
       provenance: "provider",
       cachedInputTokens: 4,

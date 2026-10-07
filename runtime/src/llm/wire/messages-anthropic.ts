@@ -600,6 +600,23 @@ export function markAnthropicReasoningIncludedInCompletion(
   return { ...usage, reasoningIncludedInCompletion: true };
 }
 
+/**
+ * Anthropic reports cache reads and cache writes separately from
+ * `input_tokens`. Processed tokens are ordinary input plus those cache
+ * tokens plus output.
+ *
+ * https://platform.claude.com/docs/en/build-with-claude/prompt-caching#tracking-cache-performance
+ */
+export function withAnthropicProcessedTokenTotal(usage: LLMUsage): LLMUsage {
+  const totalTokens =
+    usage.promptTokens +
+    usage.completionTokens +
+    (usage.cachedInputTokens ?? 0) +
+    (usage.cacheCreationInputTokens ?? 0);
+  if (totalTokens === usage.totalTokens) return usage;
+  return { ...usage, totalTokens };
+}
+
 export function parseAnthropicMessagesResponse(
   model: string,
   response: Record<string, unknown>,
@@ -700,16 +717,18 @@ export function parseAnthropicMessagesResponse(
       ? usageRecord.speed
       : undefined;
 
-  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
-    coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: undefined,
-      cachedInputTokens: usageRecord.cache_read_input_tokens,
-      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
-      webSearchRequests: serverToolUse.web_search_requests,
-    }),
+  const normalizedUsage = withAnthropicProcessedTokenTotal(
+    markAnthropicReasoningIncludedInCompletion(
+      coerceUsage({
+        promptTokens: usageRecord.input_tokens,
+        completionTokens: usageRecord.output_tokens,
+        totalTokens: undefined,
+        cachedInputTokens: usageRecord.cache_read_input_tokens,
+        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+        reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
+        webSearchRequests: serverToolUse.web_search_requests,
+      }),
+    ),
   );
 
   return {
