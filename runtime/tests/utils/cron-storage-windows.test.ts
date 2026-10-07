@@ -1,5 +1,5 @@
 import "../helpers/cron-os-home.js";
-import { symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
@@ -16,6 +16,7 @@ const fsHooks = vi.hoisted(() => ({
   directorySyncError: undefined as NodeJS.ErrnoException | undefined,
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
   agencCanonical: undefined as string | undefined,
+  agencCreate: undefined as "eexist" | "eexist-private" | undefined,
   realpaths: [] as string[],
   opens: [] as string[],
 }));
@@ -38,6 +39,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         return fsHooks.agencCanonical;
       }
       return original.realpath(...args);
+    },
+    mkdir: async (path: string, options?: { mode?: number; recursive?: boolean }) => {
+      if (fsHooks.agencCreate !== undefined && path.endsWith(`${sep}.agenc`)) {
+        await original.mkdir(path, options);
+        if (fsHooks.agencCreate === "eexist-private") {
+          privatePaths.add(`directory\0${path}`);
+        }
+        throw Object.assign(new Error("exists"), { code: "EEXIST" });
+      }
+      return original.mkdir(path, options);
     },
     rename: async (...args: Parameters<typeof original.rename>) => {
       fsHooks.beforeRename?.(String(args[0]), String(args[1]));
@@ -62,6 +73,7 @@ const taskRecord = {
   tasks: [{ id: "kept", cron: "* * * * *", prompt: "survive restart", createdAt: 1_000 }],
 };
 const body = `${JSON.stringify(taskRecord, null, 2)}\n`;
+const PERMISSIONS_ERROR = "Cron storage must be owned by the current user and not writable by other users";
 let root: string;
 let workspace: string;
 let outside: string;
@@ -85,6 +97,14 @@ function installAclMock(): void {
   });
 }
 
+function aclMutations(): ReadonlyArray<readonly unknown[]> {
+  return acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true);
+}
+
+function metadataDirectory(): string {
+  return join(realpathSync(workspace), ".agenc");
+}
+
 function usedDescriptorAlias(): boolean {
   return [...fsHooks.realpaths, ...fsHooks.opens]
     .some((path) => /^\/(?:proc\/self\/fd|dev\/fd)\//u.test(path));
@@ -102,6 +122,7 @@ beforeEach(async () => {
   fsHooks.directorySyncError = undefined;
   fsHooks.beforeRename = undefined;
   fsHooks.agencCanonical = undefined;
+  fsHooks.agencCreate = undefined;
   fsHooks.realpaths = [];
   fsHooks.opens = [];
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
@@ -231,6 +252,106 @@ describe("Windows cron storage uses private-path persistence", () => {
     );
     expect(await readFile(planted, "utf8")).toBe("outside");
     expect(acl.assertWindowsPrivatePathSecurity).not.toHaveBeenCalled();
+  });
+
+  test("rejects an existing metadata directory with an unsafe ACL without tightening it", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const record = join(directory, "scheduled_tasks.json");
+    writeFileSync(record, body);
+    const permissions = { message: PERMISSIONS_ERROR, cause: expect.objectContaining({
+      message: expect.stringContaining("private ACL missing"),
+    }) };
+    await expect(withCronStorage(workspace, false, (storage) => storage.read())).rejects.toMatchObject(permissions);
+    await expect(withCronStorage(workspace, true, async (storage) => {
+      await storage.write(body);
+    })).rejects.toMatchObject(permissions);
+    await expect(readCronTasks(workspace)).rejects.toThrow(PERMISSIONS_ERROR);
+    await expect(readStartupCronTasks(workspace, () => {})).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), "directory", false,
+    );
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(record, "utf8")).toBe(body);
+  });
+
+  test("validates an EEXIST metadata directory instead of initializing it", async () => {
+    fsHooks.agencCreate = "eexist";
+    await expect(writeRecord()).rejects.toMatchObject({
+      message: PERMISSIONS_ERROR,
+      cause: expect.objectContaining({
+        message: expect.stringContaining("private ACL missing"),
+      }),
+    });
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), "directory", false,
+    );
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readdir(metadataDirectory())).not.toContain("scheduled_tasks.json");
+  });
+
+  test("does not initialize a private directory reported as EEXIST", async () => {
+    fsHooks.agencCreate = "eexist-private";
+    await writeRecord();
+    const directoryInits = aclMutations().filter((call) => call[1] === "directory");
+    expect(directoryInits).toHaveLength(0);
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), "directory", false,
+    );
+    expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
+  });
+
+  test("initializes a metadata directory once when this call creates it", async () => {
+    await writeRecord();
+    const directoryCalls = acl.assertWindowsPrivatePathSecurity.mock.calls.filter(
+      ([path, role]) => role === "directory" && String(path).endsWith(`${sep}.agenc`),
+    );
+    expect(directoryCalls.filter((call) => call[2] === true)).toHaveLength(1);
+    expect(directoryCalls[0]?.[2]).toBe(true);
+    expect(directoryCalls.slice(1).every((call) => call[2] === false)).toBe(true);
+    expect(directoryCalls.length).toBeGreaterThan(1);
+
+    acl.assertWindowsPrivatePathSecurity.mockClear();
+    expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
+    const reopened = acl.assertWindowsPrivatePathSecurity.mock.calls.filter(
+      ([path, role]) => role === "directory" && String(path).endsWith(`${sep}.agenc`),
+    );
+    expect(reopened.length).toBeGreaterThan(0);
+    expect(reopened.every((call) => call[2] === false)).toBe(true);
+  });
+
+  test("replaces an unsafe task file only after the metadata directory is valid", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const record = join(directory, "scheduled_tasks.json");
+    writeFileSync(record, "unsafe");
+    privatePaths.add(`directory\0${directory}`);
+    await expect(withCronStorage(workspace, false, (storage) => storage.read())).rejects.toMatchObject({
+      name: "ConfinedIoError",
+      message: expect.stringContaining("child does not have the required private ACL"),
+    });
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(record, "utf8")).toBe("unsafe");
+
+    acl.assertWindowsPrivatePathSecurity.mockClear();
+    const renames: Array<[string, string]> = [];
+    fsHooks.beforeRename = (from, to) => {
+      renames.push([from, to]);
+      if (to === record) {
+        expect(readFileSync(to, "utf8")).toBe("unsafe");
+        expect(readFileSync(from, "utf8")).toBe(body);
+      }
+    };
+    await withCronStorage(workspace, true, async (storage) => {
+      await storage.write(body);
+    });
+    expect(renames.some(([from, to]) => to === record && /scheduled_tasks\.json\.[^/\\]+\.tmp$/u.test(from))).toBe(true);
+    expect(await readFile(record, "utf8")).toBe(body);
+    expect(aclMutations().filter((call) => call[1] === "directory")).toHaveLength(0);
+    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
+      expect.stringMatching(/scheduled_tasks\.json\.[^/\\]+\.tmp$/u), "file", true,
+    );
+    expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
   });
 
   test("rejects a temporary file replaced before publication", async () => {
