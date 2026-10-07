@@ -82,7 +82,7 @@ describe("backfillRolloutFile incremental append", () => {
     // Spy on the two index code paths so we can prove only the appended tail
     // is INSERTed after the first full index.
     const replaceSpy = vi.spyOn(threads, "replaceRolloutItems");
-    const appendSpy = vi.spyOn(threads, "appendRolloutItems");
+    const appendSpy = vi.spyOn(threads, "appendRolloutProjection");
 
     // Initial file: session_meta + 1 item => 2 rows, full reconcile.
     writeFileSync(rolloutPath, META + itemLine(0));
@@ -135,7 +135,7 @@ describe("backfillRolloutFile incremental append", () => {
     backfillRolloutFile({ rolloutPath, threads });
 
     const replaceSpy = vi.spyOn(threads, "replaceRolloutItems");
-    const appendSpy = vi.spyOn(threads, "appendRolloutItems");
+    const appendSpy = vi.spyOn(threads, "appendRolloutProjection");
 
     // Re-indexing an untouched file must be a no-op: neither path runs.
     expect(backfillRolloutFile({ rolloutPath, threads })).toEqual({
