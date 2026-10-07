@@ -24,6 +24,7 @@ import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { MAX_RECOVERY_CANONICAL_LINE_BYTES } from "../../src/state/recovery-contract.js";
 import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import {
   openStateDatabases,
@@ -151,6 +152,8 @@ function seedCanonicalTerminalRollout(fileName: string, eventId: string): string
 }
 
 const INITIAL_JOURNAL_TAIL_BYTES = 64 * 1024;
+/** Same bound as `readCommittedJournalTail`: two maximum canonical lines. */
+const CAPPED_JOURNAL_TAIL_BYTES = MAX_RECOVERY_CANONICAL_LINE_BYTES * 2;
 
 function liveRolloutLock(rolloutPath: string): void {
   writeFileSync(
@@ -1013,12 +1016,69 @@ describe("durable run inspection", () => {
       3,
     );
     const padding = completePadding(INITIAL_JOURNAL_TAIL_BYTES + 1);
-    // The reopen is earlier than the terminal, with more than 64 KiB of
-    // complete lines between them, so the initial suffix sees the terminal
-    // and misses the reopen that must clear it.
+    // Not a writer order: append refuses a reopen that precedes its terminal.
+    // Inside the cap, the look-back still clears that hand-built terminal.
     seedLiveRollout(
       "rollout-reopen-outside-tail.jsonl",
       `${reopenLine()}${padding}${terminal}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toBeUndefined();
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("projects a live terminal inside the capped tail of a larger journal", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-inside-cap",
+      "Recovered from the journal",
+      1,
+    );
+    const padding = completePadding(CAPPED_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(CAPPED_JOURNAL_TAIL_BYTES);
+    seedLiveRollout(
+      "rollout-terminal-inside-cap.jsonl",
+      `${padding}${terminal}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({
+      eventId: "terminal-inside-cap",
+      status: "completed",
+    });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("does not adopt a live terminal when its superseding reopen is in the capped suffix", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-before-capped-reopen",
+      "stale after reopen",
+      1,
+    );
+    const padding = completePadding(CAPPED_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(CAPPED_JOURNAL_TAIL_BYTES);
+    // Writer order: the terminal is already durable, then run_reopened.
+    // The omitted prefix is larger than the cap. Both facts are in the suffix,
+    // so the reopen still clears the terminal.
+    seedLiveRollout(
+      "rollout-reopen-past-cap.jsonl",
+      `${padding}${terminal}${reopenLine()}`,
     );
 
     expect(service.status({ runId: "run-complete" })).toMatchObject({
