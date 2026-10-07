@@ -1,3 +1,4 @@
+import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import { admitReasoningCapSample } from "./reasoning-cap-policy.js";
 /**
  * run-turn — orchestration for one user turn.
@@ -1267,7 +1268,7 @@ async function runSamplingRequest(
         details: { policy: "streak2", provider: session.services.provider.name,
           model: session.config?.model ?? samplingContext.modelInfo.slug,
           sampleId: reasoningCapSample.id, remainingExtension: 1,
-          configuredEffort: samplingContext.reasoningEffort ?? "default" },
+          configuredEffort: resolveMainLoopReasoningEffort(session, samplingContext) ?? "default" },
       } } });
     }
   }
@@ -3211,9 +3212,9 @@ async function* runTurnKernelInner(
       ) {
         await sessionOwner.consumePendingProviderSwitch();
       }
-      if (state.transition?.reason !== "max_output_tokens_escalate" &&
-          state.transition?.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
-        state.transition = undefined;
+      if (state.transition.reason !== "max_output_tokens_escalate" &&
+          state.transition.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+      state.transition = undefined;
       continue;
     }
 

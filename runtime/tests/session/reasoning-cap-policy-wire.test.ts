@@ -1,3 +1,6 @@
+import type { Session } from "../../src/session/session.js";
+import type { TurnCheckpointSlice } from "../../src/session/turn-state.js";
+import { readTurnCheckpoint } from "../../src/session/durable-checkpoint-reader.js";
 import { expect, test, vi } from "vitest";
 import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
 import { runTurn } from "../../src/session/run-turn.js";
@@ -5,7 +8,7 @@ import { drain, mkCtx, mkSession } from "../fixtures.js";
 import { bodyAt, sseResponse } from "../llm/providers/openai-compatible-test-helpers.js";
 
 type Sample = "reason-cap" | "visible-cap" | "tool-cap" | "tool" | "final";
-async function scenario(samples: Sample[], policy: "off" | "streak2" | "absent" = "streak2") {
+async function scenario(samples: Sample[], policy: "off" | "streak2" | "absent" = "streak2", restoreSlice?: TurnCheckpointSlice) {
   const execute = vi.fn(async () => ({ content: "observed fixture" }));
   const tool = { name: "read_fixture", description: "Read fixture", inputSchema: { type: "object", properties: {} },
     isReadOnly: true, recoveryCategory: "idempotent" as const, execute };
@@ -31,15 +34,27 @@ async function scenario(samples: Sample[], policy: "off" | "streak2" | "absent" 
   const provider = new DeepSeekProvider({ apiKey: "test", model: "deepseek-flash", fetchImpl });
   const { session, events } = mkSession({ provider, model: "deepseek-flash", registry });
   Object.assign(session.config!, { reasoningCapPolicy: policy === "absent" ? undefined : policy });
+  session.rolloutStore = {
+    assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout: vi.fn(),
+    rolloutPath: "/tmp/reasoning-cap-policy-fixture.jsonl",
+  } as unknown as Session["rolloutStore"];
   const ctx = mkCtx({ reasoningEffort: "high" });
   await drain(runTurn(session, { ...ctx,
     config: { ...ctx.config, model: "deepseek-flash", model_provider: "deepseek", max_output_tokens: 8192 },
     modelInfo: { ...ctx.modelInfo, maxOutputTokens: 8192, maxOutputTokensExplicit: true, supportedReasoningLevels: ["low", "high", "max"] },
-  }, "Read fixtures and finish."));
+  }, restoreSlice ? "" : "Read fixtures and finish.", restoreSlice ? {
+    history: [{ role: "user", content: "Read fixtures and finish." }],
+    resume: { turnId: ctx.subId, fromIteration: 1, fromCheckpointSeq: 1, persistedMessageCount: 1, restoreSlice },
+  } : {}));
   for (let i = 0; i < fetchImpl.mock.calls.length; i++) {
     expect(bodyAt(fetchImpl, i)).toMatchObject({ max_tokens: 8192, reasoning_effort: "high" });
   }
-  return { fetchImpl, execute, events };
+  const checkpoints = events.flatMap(event => {
+    if (event.msg.type !== "turn_checkpoint") return [];
+    const parsed = readTurnCheckpoint(JSON.parse(JSON.stringify(event.msg.payload)));
+    return [parsed.checkpoint.resumableState as TurnCheckpointSlice];
+  });
+  return { fetchImpl, execute, events, checkpoints };
 }
 
 
@@ -78,4 +93,32 @@ test("policy cap does not qualify its native recovery for another streak and sti
   expect(fetchImpl).toHaveBeenCalledTimes(8);
   expect(events.some(e => e.msg.type === "turn_complete")).toBe(false);
   expect(events.find(e => e.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("Output recovery is exhausted") } });
+});
+
+test("real dispatch checkpoints restore armed, consumed, and completed policy samples without duplication", async () => {
+  const original = await scenario(["reason-cap", "tool", "reason-cap", "tool", "tool", "final"]);
+  const armed = original.checkpoints.find(s => s.reasoningCapPolicy?.extraPending)!;
+  const consumed = original.checkpoints.find(s => s.reasoningCapPolicy?.sample?.kind === "extra" && !s.reasoningCapPolicy.sample.completed)!;
+  const completed = original.checkpoints.find(s => s.reasoningCapPolicy?.sample?.kind === "extra" && s.reasoningCapPolicy.sample.completed)!;
+  expect(armed).toBeDefined(); expect(consumed).toBeDefined(); expect(completed).toBeDefined();
+  for (const slice of [armed, consumed]) {
+    const resumed = await scenario(["tool", "final"], "streak2", slice);
+    expect(modes(resumed.fetchImpl)).toEqual(["disabled", "enabled"]);
+    if (slice === consumed) expect(resumed.checkpoints.some(s =>
+      s.reasoningCapPolicy?.sample?.id === consumed.reasoningCapPolicy!.sample!.id)).toBe(true);
+  }
+  const after = await scenario(["tool", "final"], "streak2", completed);
+  expect(modes(after.fetchImpl)).toEqual(["enabled", "enabled"]);
+  const disabled = await scenario(["tool", "final"], "off", consumed);
+  expect(modes(disabled.fetchImpl)).toEqual(["enabled", "enabled"]);
+});
+
+test("pre-response native recovery checkpoint advances the second streak exactly once after restart", async () => {
+  const original = await scenario(["reason-cap", "tool", "reason-cap", "tool", "tool", "final"]);
+  const recovering = original.checkpoints.find(s => s.reasoningCapPolicy?.streak === 1 &&
+    s.reasoningCapPolicy.sample?.kind === "recovery" && !s.reasoningCapPolicy.sample.completed)!;
+  expect(recovering).toBeDefined();
+  const resumed = await scenario(["tool", "tool", "final"], "streak2", recovering);
+  expect(modes(resumed.fetchImpl)).toEqual(["disabled", "disabled", "enabled"]);
+  expect(resumed.events.filter(e => e.msg.type === "warning" && e.msg.payload.cause === "reasoning_cap_policy")).toHaveLength(1);
 });

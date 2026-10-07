@@ -119,3 +119,33 @@ test("strict bounded checkpoint parser rejects malformed provenance and legacy s
   const cloned = readReasoningCapPolicy(good)!; cloned.streak = 1;
   expect(good.streak).toBe(0);
 });
+
+test.each(["reactive_compact_retry", "model_fallback", "continuation_nudge", "token_budget_continuation"] as const)("checkpointed semantic reentry %s clears a pending policy extension", reason => {
+  const state = fresh(); cap(state); recover(state); cap(state); recover(state);
+  expect(state.reasoningCapPolicy?.extraPending).toBe(true);
+  state.transition = { reason } as typeof state.transition;
+  expect(admitReasoningCapSample(state, target)?.kind).toBe("enabled");
+  expect(state.reasoningCapPolicy?.extraPending).toBeUndefined();
+});
+
+test("policy request override stays immutable across retries and cannot cross target or flag boundaries", async () => {
+  const { buildProviderOptions } = await import("../../src/phases/stream-model.js");
+  const { buildSamplingRequestContract, snapshotSamplingRequestContract } = await import("../../src/session/run-turn-sampling-request.js");
+  const { mkSession, mkProvider } = await import("../fixtures.js");
+  const state = fresh(); cap(state); recover(state); cap(state); recover(state);
+  const extra = admitReasoningCapSample(state, target)!;
+  const ctx = mkCtx({ reasoningEffort: "high" });
+  const { session } = mkSession({ model: "deepseek-flash", provider: { ...mkProvider(), name: "deepseek" } });
+  Object.assign(session.config!, { reasoningCapPolicy: "streak2" });
+  const request = snapshotSamplingRequestContract({ ...buildSamplingRequestContract(state, session, ctx),
+    reasoningCapSample: extra, reasoningCapTarget: target, maxOutputTokens: 8192 });
+  completeReasoningCapSample(state, extra, true, false);
+  admitReasoningCapSample(state, target);
+  const options = () => buildProviderOptions(request, ctx, new AbortController().signal, session);
+  expect(options()).toMatchObject({ disableThinkingForRecovery: true, maxOutputTokens: 8192, reasoningEffort: "high" });
+  expect(options().disableThinkingForRecovery).toBe(true);
+  Object.assign(session.config!, { model: "deepseek-v4-pro" });
+  expect(options().disableThinkingForRecovery).toBeUndefined();
+  Object.assign(session.config!, { model: "deepseek-flash", reasoningCapPolicy: "off" });
+  expect(options().disableThinkingForRecovery).toBeUndefined();
+});

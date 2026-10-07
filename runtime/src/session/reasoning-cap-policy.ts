@@ -69,6 +69,9 @@ export function reasoningCapPolicyEligible(target: ReasoningCapTarget): boolean 
 /** Called only at the real dispatch boundary, never by prompt/token inspection. */
 export function admitReasoningCapSample(state: TurnState, target: ReasoningCapTarget): ReasoningCapSample | undefined {
   if (!reasoningCapPolicyEligible(target)) { state.reasoningCapPolicy = undefined; return undefined; }
+  if (state.pendingAdmissionFallback || state.modelSampleResumePrompt || state.pendingBudgetDecision ||
+      (state.transition && state.transition.reason !== "max_output_tokens_escalate" &&
+        state.transition.reason !== "max_output_tokens_recovery")) state.reasoningCapPolicy = undefined;
   let policy = state.reasoningCapPolicy;
   if (!policy || policy.provider !== target.provider || policy.model !== target.model) {
     policy = state.reasoningCapPolicy = { provider: target.provider, model: target.model, streak: 0 };
