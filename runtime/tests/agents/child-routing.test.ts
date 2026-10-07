@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildExecutionPlan } from "../../src/agents/cross-provider.js";
@@ -42,6 +42,39 @@ describe("child routing outcome file", () => {
       await recordChildRoutingOutcome(session, plan, { receiptId: "planned", terminal: completed, latencyMs: 2 });
       await recordChildRoutingOutcome(session, undefined, { receiptId: "inherited", terminal: completed, latencyMs: 2 });
       await expect(stat(join(home, "state"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("does not cool down a provider for the child's own role timeout", async () => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home } });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "role-timeout", latencyMs: 2,
+        terminal: { ...completed, reason: "timeout", retryable: false, dispatch: "unknown" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected?.provider).toBe("deepseek");
+      await recordChildRoutingOutcome(session, plan, { receiptId: "provider-timeout", latencyMs: 2,
+        terminal: { ...completed, reason: "timeout", retryable: true, dispatch: "unknown" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.rejected)
+        .toContainEqual(expect.objectContaining({ provider: "deepseek", reason: "provider_cooldown" }));
+    });
+  });
+
+  it("clears a provider's failure when a child without a routing plan completes on it", async () => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home } });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "throttled", latencyMs: 2,
+        terminal: { ...completed, reason: "rate_limited", retryable: true, retryAfterMs: 600_000, dispatch: "sent" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected).toBeUndefined();
+      await recordChildRoutingOutcome(session, undefined, { receiptId: "explicit-child", terminal: completed, latencyMs: 2 });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected?.provider).toBe("deepseek");
+      const history = JSON.parse(await readFile(join(home, "state", "child-routing-outcomes.json"), "utf8")) as {
+        aggregates: unknown[]; health: { provider: string; consecutiveFailures: number }[] };
+      // The unplanned child changed provider health only.
+      expect(history.aggregates).toHaveLength(1);
+      expect(history.health).toContainEqual(expect.objectContaining({ provider: "deepseek", consecutiveFailures: 0 }));
     });
   });
 });

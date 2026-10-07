@@ -90,6 +90,39 @@ describe("local child routing outcomes", () => {
     }
   });
 
+  it("merges outcomes from two processes that share one home instead of overwriting", async () => {
+    const { path } = await fixture();
+    // The TUI and the daemon each hold their own store for the same file.
+    const daemon = await ChildRoutingOutcomeStore.open(path);
+    const tui = await ChildRoutingOutcomeStore.open(path);
+    expect(await daemon.record({ ...sample, receiptId: "daemon-child" })).toBe(true);
+    expect(await tui.record({ ...sample, receiptId: "tui-child", atMs: 11_000 })).toBe(true);
+    await Promise.all(Array.from({ length: 10 }, (_, index) =>
+      (index % 2 === 0 ? daemon : tui).record({ ...sample, receiptId: `parallel-${index}`, atMs: 12_000 + index })));
+    const restored = await ChildRoutingOutcomeStore.open(path);
+    expect(restored.snapshot().aggregates[0]?.attempts).toBe(12);
+    // A receipt the other process already recorded is not counted twice.
+    expect(await daemon.record({ ...sample, receiptId: "tui-child", atMs: 11_000 })).toBe(false);
+    await daemon.refresh();
+    expect(daemon.snapshot().aggregates[0]?.attempts).toBe(12);
+  });
+
+  it("writes nothing to clear a provider that has no recorded failure", async () => {
+    const { path, store } = await fixture();
+    await store.clearProviderFailure("deepseek", 15_000);
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await store.record({ ...sample, terminalReason: "rate_limited", success: false });
+    await store.clearProviderFailure("deepseek", 15_000);
+    expect(store.snapshot().health[0]).toMatchObject({ provider: "deepseek", cooldownUntilMs: 0, consecutiveFailures: 0 });
+  });
+
+  it("does not cool down a provider for a timeout that was not a provider failure", async () => {
+    const { store } = await fixture();
+    await store.record({ ...sample, terminalReason: "timeout", success: false, retryable: false });
+    expect(store.snapshot().health).toEqual([]);
+    expect(store.snapshot().aggregates[0]).toMatchObject({ attempts: 1, infrastructureFailures: 1 });
+  });
+
   it("refuses invalid observations and can record a later valid one", async () => {
     const { store } = await fixture();
     await expect(store.record({ ...sample, costUsd: Number.NaN })).rejects.toThrow("Invalid child routing outcome");

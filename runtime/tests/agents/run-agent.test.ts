@@ -5230,6 +5230,42 @@ describe("runAgent", () => {
     expect(bindings[0]!.release).not.toHaveBeenCalled();
   });
 
+  describe("automatic routing and provider retries", () => {
+    async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>) {
+      const configStore = new ConfigStore({ cwd: "/tmp", base: {
+        agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: ["deepseek"] },
+      } });
+      const queue = [...script];
+      const chatStream = vi.fn(async (): Promise<LLMResponse> => {
+        const next = queue.shift() ?? { content: "unexpected extra call" };
+        if (next instanceof Error) throw next;
+        return { content: "", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop", ...next };
+      });
+      const session = makeStubSession({ services: { provider: { ...makeProvider([]), chatStream }, configStore } });
+      const { live } = await spawnLive(session);
+      const plan = await createChildExecutionPlan({ session, selection: session.providerService.current(),
+        modelInfo: mkModelInfo(), parentPath: "/root", taskId: "routed-task", taskName: "worker", taskText: "go",
+        toolFree: false, forkedHistory: false,
+        routing: { taskKind: "general", complexity: "standard", reason: "Chosen by automatic selection." } });
+      const run = () => collectRun(runAgent({ live, parent: session, plan, taskId: plan.task.id,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+      return { live, chatStream, run };
+    }
+
+    it("publishes the child's receipt without waiting for routing telemetry", async () => {
+      const { live, run } = await routedChild([{ content: "done" }]);
+      // A shared home can hold the outcome file's lock for a while.
+      const telemetry = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(() => new Promise(() => {}));
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(telemetry).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt).toMatchObject({ outcome: "completed", terminal: { reason: "completed" } });
+      } finally { telemetry.mockRestore(); }
+    });
+  });
+
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {
     const provider = makeProvider([
       { content: "first result" },

@@ -4043,7 +4043,8 @@ export async function* runAgent(
       ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
     };
     if (receiptToCommit.terminal !== undefined) {
-      await recordChildRoutingOutcome(parent, live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan, {
+      // Best-effort telemetry. The receipt never waits for this file.
+      void recordChildRoutingOutcome(parent, live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan, {
         receiptId: `${live.agentId}:${receiptToCommit.turnId}`, terminal: receiptToCommit.terminal,
         latencyMs: Math.max(0, Date.now() - taskStartedAt),
       });
@@ -5308,7 +5309,8 @@ export async function* runAgent(
             ...(committedReceipt.terminal !== undefined ? { terminal: committedReceipt.terminal } : {}),
           };
           if (committedReceipt.terminal !== undefined) {
-            await recordChildRoutingOutcome(parent, live.metadata.executionPlan ?? params.plan, {
+            // Best-effort telemetry. The receipt never waits for this file.
+            void recordChildRoutingOutcome(parent, live.metadata.executionPlan ?? params.plan, {
               receiptId: `${live.agentId}:${committedReceipt.turnId}`, terminal: committedReceipt.terminal,
               latencyMs: Math.max(0, Date.now() - taskStartedAt),
             });

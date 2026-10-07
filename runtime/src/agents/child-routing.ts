@@ -32,22 +32,36 @@ export function automaticChildSelectionEnabled(session: Session): boolean {
   return policy.cross_provider_enabled === true && policy.cross_provider_auto === true;
 }
 
-/** Routing telemetry for one committed child receipt. Nothing is written while automatic selection is off. */
+// The provider answered the child's requests, whatever became of the task.
+const PROVIDER_SERVED = new Set<ChildTerminalOutcome["reason"]>(["completed", "step_limit", "no_progress", "model_loop", "model_refused"]);
+
+/**
+ * Best-effort routing telemetry for one committed child receipt. Writes
+ * nothing while automatic selection is off. Callers do not await it, so the
+ * receipt never waits for this file.
+ */
 export async function recordChildRoutingOutcome(session: Session, plan: ChildExecutionPlan | undefined,
   outcome: { readonly receiptId: string; readonly terminal: ChildTerminalOutcome; readonly latencyMs: number }): Promise<void> {
-  if (plan === undefined || !automaticChildSelectionEnabled(session)) return;
-  // A successful explicit override can restore a provider after credits or
-  // credentials are repaired. Only verified quality labels train accuracy.
-  const classification = plan.routing ?? classifyChildTask(plan.task.text);
   try {
+    if (!automaticChildSelectionEnabled(session)) return;
     const store = await outcomeStore(session);
-    await store?.record({ receiptId: outcome.receiptId, provider: outcome.terminal.provider,
-      model: outcome.terminal.model, taskKind: "taskKind" in classification ? classification.taskKind : classification.kind, complexity: classification.complexity,
-      terminalReason: outcome.terminal.reason, success: outcome.terminal.reason === "completed",
-      latencyMs: outcome.latencyMs, atMs: Date.now(),
-      ...(outcome.terminal.costUsd !== undefined ? { costUsd: outcome.terminal.costUsd } : {}),
-      ...(outcome.terminal.retryAfterMs !== undefined ? { retryAfterMs: outcome.terminal.retryAfterMs } : {}),
-    });
+    if (store === undefined) return;
+    if (plan !== undefined) {
+      // Only verified quality labels train accuracy.
+      const classification = plan.routing ?? classifyChildTask(plan.task.text);
+      await store.record({ receiptId: outcome.receiptId, provider: outcome.terminal.provider,
+        model: outcome.terminal.model, taskKind: "taskKind" in classification ? classification.taskKind : classification.kind, complexity: classification.complexity,
+        terminalReason: outcome.terminal.reason, success: outcome.terminal.reason === "completed",
+        retryable: outcome.terminal.retryable, latencyMs: outcome.latencyMs, atMs: Date.now(),
+        ...(outcome.terminal.costUsd !== undefined ? { costUsd: outcome.terminal.costUsd } : {}),
+        ...(outcome.terminal.retryAfterMs !== undefined ? { retryAfterMs: outcome.terminal.retryAfterMs } : {}),
+      });
+    }
+    // Any child the provider served, explicit or inherited, shows that its
+    // credits, credentials and availability work again.
+    if (outcome.terminal.dispatch === "sent" && PROVIDER_SERVED.has(outcome.terminal.reason)) {
+      await store.clearProviderFailure(outcome.terminal.provider);
+    }
   } catch { /* Routing telemetry cannot invalidate a durable child receipt. */ }
 }
 
@@ -82,7 +96,9 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   readonly task: ChildSelectionTask;
   readonly result: ChildSelectionResult;
 }> {
-  const outcomes = request.outcomes ?? (await outcomeStore(session))?.snapshot();
+  const store = request.outcomes === undefined ? await outcomeStore(session) : undefined;
+  await store?.refresh();
+  const outcomes = request.outcomes ?? store?.snapshot();
   const inferred = classifyChildTask(request.prompt, request.role);
   const kind = request.taskKind ?? inferred.kind;
   const complexity = request.complexity ?? inferred.complexity;
