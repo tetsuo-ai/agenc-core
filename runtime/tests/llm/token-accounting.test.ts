@@ -729,6 +729,60 @@ describe("native count selection, identity, and caching", () => {
     expect(countTokens).toHaveBeenCalledTimes(1);
   });
 
+  test("keeps reused private snapshots equivalent to fresh caller values", async () => {
+    let snapshot: TokenAccountingRequest | undefined;
+    const service = new TokenAccountingService();
+    const countCapability = capability(async (request) => {
+      snapshot = request;
+      return completeCount(20);
+    });
+    const request = accountingRequest("unicode \u03bb", {
+      options: { tools: [structuredClone(TOOL)], toolChoice: "auto" },
+    });
+    await service.count(request, { capability: countCapability });
+    expect(snapshot).toBeDefined();
+    expect(estimateTokenAccountingRequest(snapshot!)).toEqual(
+      estimateTokenAccountingRequest(request),
+    );
+    await expect(service.count(snapshot!, { capability: countCapability }))
+      .resolves.toMatchObject({ cacheStatus: "hit" });
+    // Reusing immutable nodes is safe even inside a new, mutable outer request.
+    // Fresh outer fields must still change admission accounting/cache identity.
+    const changed = { ...snapshot!, reservedOutputTokens: 65 };
+    await expect(service.count(changed, { capability: countCapability }))
+      .resolves.toMatchObject({ cacheStatus: "miss", reservedOutputTokens: 65 });
+  });
+
+  test("does not trust caller freezes or freeze their mutable descendants", () => {
+    let description = "short";
+    const parameters = { type: "object", properties: { key: { type: "string" } } };
+    const tool = Object.freeze({
+      type: "function" as const,
+      function: Object.freeze({
+        name: "lookup",
+        get description() { return description; },
+        parameters,
+      }),
+    });
+    const request = accountingRequest("hello", { options: { tools: [tool] } });
+    const before = estimateTokenAccountingRequest(request);
+    description = "changed ".repeat(100);
+    const after = estimateTokenAccountingRequest(request);
+    expect(after.inputTokens).toBeGreaterThan(before.inputTokens);
+    expect(Object.isFrozen(parameters)).toBe(false);
+    parameters.properties.key.type = "number";
+    expect(estimateTokenAccountingRequest(request)).toEqual(
+      estimateTokenAccountingRequest(accountingRequest("hello", {
+        options: { tools: [structuredClone(tool)] },
+      })),
+    );
+    (parameters as Record<string, unknown>).invalid = Infinity;
+    expect(() => estimateTokenAccountingRequest(request)).toThrow(TokenAccountingError);
+    delete (parameters as Record<string, unknown>).invalid;
+    (parameters as Record<string, unknown>).self = parameters;
+    expect(() => estimateTokenAccountingRequest(request)).toThrow(TokenAccountingError);
+  });
+
   test("binds the provider call and cache entry to an immutable request snapshot", async () => {
     let observedRequest: TokenAccountingRequest | undefined;
     const countTokens = vi.fn(async (request: TokenAccountingRequest) => {
