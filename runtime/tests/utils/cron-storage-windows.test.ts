@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
+import { windowsCronRepairCommand } from "../../src/utils/cron-storage-directory.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
-import { readCronTasks } from "../../src/utils/cronTasks.js";
+import { cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/cronTasks.js";
 
 const acl = vi.hoisted(() => ({
   assertWindowsPrivatePathSecurity: vi.fn(),
@@ -19,6 +20,8 @@ const fsHooks = vi.hoisted(() => ({
   agencCreate: undefined as "eexist" | "eexist-private" | undefined,
   realpaths: [] as string[],
   opens: [] as string[],
+  lstat: undefined as ((path: string, calls: number) => NodeJS.ErrnoException | "swap" | undefined) | undefined,
+  lstatCalls: new Map<string, number>(),
 }));
 const privatePaths = vi.hoisted(() => new Set<string>());
 
@@ -49,6 +52,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         throw Object.assign(new Error("exists"), { code: "EEXIST" });
       }
       return original.mkdir(path, options);
+    },
+    lstat: async (...args: Parameters<typeof original.lstat>) => {
+      const path = String(args[0]);
+      const calls = (fsHooks.lstatCalls.get(path) ?? 0) + 1;
+      fsHooks.lstatCalls.set(path, calls);
+      const hooked = fsHooks.lstat?.(path, calls);
+      if (hooked === "swap") {
+        const info = await original.lstat(...args) as import("node:fs").BigIntStats;
+        return Object.assign(Object.create(Object.getPrototypeOf(info)), info, { ino: info.ino + 1n });
+      }
+      if (hooked !== undefined) throw hooked;
+      return original.lstat(...args);
     },
     rename: async (...args: Parameters<typeof original.rename>) => {
       fsHooks.beforeRename?.(String(args[0]), String(args[1]));
@@ -125,6 +140,8 @@ beforeEach(async () => {
   fsHooks.agencCreate = undefined;
   fsHooks.realpaths = [];
   fsHooks.opens = [];
+  fsHooks.lstat = undefined;
+  fsHooks.lstatCalls = new Map();
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
   workspace = join(root, "workspace");
   outside = join(root, "outside");
@@ -221,7 +238,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     acl.assertWindowsPrivatePathSecurity.mockImplementation(() => {
       throw new Error("inherited ACL is unsupported");
     });
-    await expect(writeRecord()).rejects.toThrow("inherited ACL is unsupported");
+    await expect(writeRecord()).rejects.toThrow("(inherited ACL is unsupported)");
     expect(await readdir(join(workspace, ".agenc")).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
       throw error;
@@ -259,9 +276,11 @@ describe("Windows cron storage uses private-path persistence", () => {
     await mkdir(directory, { mode: 0o700 });
     const record = join(directory, "scheduled_tasks.json");
     writeFileSync(record, body);
-    const permissions = { message: PERMISSIONS_ERROR, cause: expect.objectContaining({
-      message: expect.stringContaining("private ACL missing"),
-    }) };
+    const permissions = {
+      code: "CRON_STORAGE_UNSAFE_ACL",
+      message: expect.stringContaining(PERMISSIONS_ERROR),
+      cause: expect.objectContaining({ message: expect.stringContaining("private ACL missing") }),
+    };
     await expect(withCronStorage(workspace, false, (storage) => storage.read())).rejects.toMatchObject(permissions);
     await expect(withCronStorage(workspace, true, async (storage) => {
       await storage.write(body);
@@ -278,7 +297,8 @@ describe("Windows cron storage uses private-path persistence", () => {
   test("validates an EEXIST metadata directory instead of initializing it", async () => {
     fsHooks.agencCreate = "eexist";
     await expect(writeRecord()).rejects.toMatchObject({
-      message: PERMISSIONS_ERROR,
+      code: "CRON_STORAGE_UNSAFE_ACL",
+      message: expect.stringContaining(PERMISSIONS_ERROR),
       cause: expect.objectContaining({
         message: expect.stringContaining("private ACL missing"),
       }),
@@ -327,9 +347,14 @@ describe("Windows cron storage uses private-path persistence", () => {
     writeFileSync(record, "unsafe");
     privatePaths.add(`directory\0${directory}`);
     await expect(withCronStorage(workspace, false, (storage) => storage.read())).rejects.toMatchObject({
-      name: "ConfinedIoError",
+      name: "CronStorageAclError",
+      code: "CRON_STORAGE_UNSAFE_ACL",
       message: expect.stringContaining("child does not have the required private ACL"),
+      cause: expect.objectContaining({ name: "ConfinedIoError" }),
     });
+    await expect(readCronTasks(workspace)).rejects.toThrow(
+      `The task file was left unchanged. To give only the current user full control of ${directory}`,
+    );
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe("unsafe");
 
@@ -364,5 +389,112 @@ describe("Windows cron storage uses private-path persistence", () => {
     };
     await expect(writeRecord()).rejects.toThrow("Cron temporary publication file was replaced or linked");
     expect(await readFile(planted, "utf8")).toBe("outside");
+  });
+  test("names the rejected directory and the PowerShell repair in the top-level message", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const record = join(directory, "scheduled_tasks.json");
+    writeFileSync(record, body);
+    const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+    expect(error.message).toBe(
+      `${PERMISSIONS_ERROR}: ${directory} has a Windows ACL that is not private to the current user, and it was left unchanged. ` +
+      `To give only the current user full control of ${directory} and everything in it (its parent is not ` +
+      `changed), run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`,
+    );
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(record, "utf8")).toBe(body);
+  });
+
+  test("quotes the repair path as one PowerShell literal", () => {
+    const directory = "C:\\Users\\Ty L\\it's $x & y (1) ;`b %PATH% [z] \u2019q\u2018\\.agenc";
+    const literal = "'C:\\Users\\Ty L\\it''s $x & y (1) ;`b %PATH% [z] \u2019\u2019q\u2018\u2018\\.agenc'";
+    expect(windowsCronRepairCommand(directory)).toBe(
+      "$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " +
+      `icacls ${literal} /setowner "*$u" /T /Q; ` +
+      `icacls ${literal} /reset /T /Q; ` +
+      `icacls ${literal} /inheritance:r /grant:r "*\${u}:(OI)(CI)F" /Q; ` +
+      `icacls ${literal} /inheritance:d /T /Q`,
+    );
+  });
+
+  test("names the repair when a created metadata directory cannot be made private", async () => {
+    acl.assertWindowsPrivatePathSecurity.mockImplementation((path: string, role: string, initialize: boolean) => {
+      if (initialize) throw new Error("SetAccessControl failed");
+      throw new Error(`private ACL missing for ${path} as ${role}`);
+    });
+    const directory = metadataDirectory();
+    await expect(writeRecord()).rejects.toMatchObject({
+      code: "CRON_STORAGE_UNSAFE_ACL",
+      message: expect.stringContaining(
+        `${PERMISSIONS_ERROR}: ${directory} was created, but its private Windows ACL could not be set. ` +
+        `Remove that empty directory, or repair it. To give only the current user full control of ${directory}`,
+      ),
+    });
+    expect(await readdir(directory)).toEqual([]);
+    expect(aclMutations()).toHaveLength(1);
+    // The next call sees an existing directory: it validates only and still names the repair.
+    await expect(writeRecord()).rejects.toThrow(`run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`);
+    expect(aclMutations()).toHaveLength(1);
+  });
+
+  test("rechecks the metadata directory identity immediately before initializing it", async () => {
+    const directory = metadataDirectory();
+    fsHooks.lstat = (path, calls) => path === directory && calls === 3 ? "swap" : undefined;
+    await expect(writeRecord()).rejects.toThrow(PERMISSIONS_ERROR);
+    expect(aclMutations()).toHaveLength(0);
+  });
+
+  test("does not offer an ACL repair for an unsupported volume", async () => {
+    acl.assertWindowsPrivatePathSecurity.mockImplementation(() => {
+      throw Object.assign(new Error("Windows private-path validation failed"), {
+        cause: { stderr: Buffer.from('<S S="Error">NTFS is required_x000D__x000A_</S>') },
+      });
+    });
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+    expect(error.message).toContain(`${directory} is on a volume that Windows durable cron storage does not support (NTFS is required)`);
+    expect(error.message).not.toContain("icacls");
+  });
+
+  test("startup restore stays quiet only when the task file is proven absent", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const absent = await readCronTasks(workspace).catch((caught: unknown) => caught);
+    expect(absent).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    await expect(readStartupCronTasks(workspace, () => {})).rejects.toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(await cronRestoreFailureNeedsWarning(absent, workspace)).toBe(false);
+  });
+
+  test("startup restore warns with the path and repair when an unsafe directory holds a task file", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    writeFileSync(join(directory, "scheduled_tasks.json"), body);
+    const present = await readStartupCronTasks(workspace, () => {}).catch((caught: unknown) => caught) as Error;
+    expect(await cronRestoreFailureNeedsWarning(present, workspace)).toBe(true);
+    expect(present.message).toContain(directory);
+    expect(present.message).toContain(windowsCronRepairCommand(directory));
+    expect(await readFile(join(directory, "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  test("startup restore warns with the path and repair when the task file cannot be checked", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const denied = (path: string) => Object.assign(new Error(`EACCES: permission denied, lstat '${path}'`), {
+      code: "EACCES", path,
+    });
+    fsHooks.lstat = (path) => path.endsWith(`${sep}scheduled_tasks.json`) ? denied(path) : undefined;
+    const unknown = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+    expect(await cronRestoreFailureNeedsWarning(unknown, workspace)).toBe(true);
+    expect(unknown.message).toContain(windowsCronRepairCommand(directory));
+
+    fsHooks.lstat = (path) => path === directory || path.endsWith(`${sep}scheduled_tasks.json`)
+      ? Object.assign(denied(path), { code: "EPERM" }) : undefined;
+    const inaccessible = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+    expect(inaccessible).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(inaccessible.message).toContain(`${directory} could not be inspected (EPERM)`);
+    expect(inaccessible.message).toContain(windowsCronRepairCommand(directory));
+    expect(await cronRestoreFailureNeedsWarning(inaccessible, workspace)).toBe(true);
+    expect(aclMutations()).toHaveLength(0);
   });
 });
