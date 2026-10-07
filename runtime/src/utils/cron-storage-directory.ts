@@ -438,7 +438,12 @@ async function openWindowsAgencDirectory(
     info = await lstat(directory, { bigint: true });
   }
   if (info === undefined || !info.isDirectory() || info.isSymbolicLink()) {
-    throw new Error(OWNERSHIP_ERROR);
+    // No ACL repair applies to a link: it is to be removed or replaced.
+    throw new CronStorageAclError(
+      `${OWNERSHIP_ERROR}: ${directory} is a symbolic link, a junction or not a directory, and it was left ` +
+        "unchanged. Remove it, or replace it with a regular directory, then retry.",
+      directory,
+    );
   }
   return { info, created };
 }
