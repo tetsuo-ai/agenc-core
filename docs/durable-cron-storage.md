@@ -1,12 +1,16 @@
 # Durable cron storage
 
-Durable cron storage now requires Linux with traversable directory descriptors
-(`/proc/self/fd`). macOS, Windows, and Linux installations without this facility
-fail closed with `descriptor-confined I/O is unsupported`; durable creation,
-mutation, and gateway delivery are unavailable there. This is a compatibility
-change. Session-only in-memory jobs do not require durable storage. There is no
-pathname fallback: checks before and after an ordinary pathname write cannot
-undo an overwrite redirected during the write.
+Durable cron storage on macOS, and on Linux without traversable directory
+descriptors (`/proc/self/fd`), fails closed with `descriptor-confined I/O is
+unsupported`. Durable creation, mutation, and gateway delivery are unavailable
+there. Windows persists scheduled tasks through the same private-path policy
+as workflow handoff storage: `.agenc` and `scheduled_tasks.json` must pass the
+current-user ACL check, identity comes from a stat of that verified path, and
+publication uses a path temporary whose inode is checked again after the
+write. This is a compatibility change. Session-only in-memory jobs do not
+require durable storage. There is no pathname fallback on macOS or Linux:
+checks before and after an ordinary pathname write cannot undo an overwrite
+redirected during the write.
 
 The OS account home must already exist on a local filesystem accepted by the
 SQLite lock security checks, even when `AGENC_HOME` is elsewhere. Unavailable
@@ -40,11 +44,17 @@ JSON format is unchanged. Old project lock files are left untouched and are no
 longer opened by the new scheduler.
 
 The durable task and delivery-outbox records remain in
-`<workspace>/.agenc/scheduled_tasks.json`. Reads and atomic replacement retain
-opened workspace and `.agenc` directory descriptors through publication,
-directory sync, and cleanup. A linked `.agenc` directory or a symlink/hardlink
-task file is refused. Existing current-user-owned 755 directories and 644 files
-remain supported when other users cannot write them. New task files use 600.
+`<workspace>/.agenc/scheduled_tasks.json`. On macOS and Linux, reads and atomic
+replacement retain opened workspace and `.agenc` directory descriptors through
+publication, directory sync, and cleanup. On Windows, those directory
+descriptors do not exist, so the same steps retain the verified `.agenc` path,
+its current-user ACL, and the published file inode; directory sync that the
+platform refuses is not treated as a lost write. A linked `.agenc` directory
+or a symlink/hardlink task file is refused. Existing current-user-owned 755
+directories and 644 files remain supported on macOS and Linux when other users
+cannot write them. New task files use 600. On Windows, `.agenc` and the task
+file are tightened to a current-user-only ACL instead of uid and mode bits.
+The project workspace keeps its existing ACL.
 Concurrent edits may cause a transaction to fail; failure after publication
 does not imply that the original task file is unchanged.
 
