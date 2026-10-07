@@ -66,6 +66,12 @@ export function reasoningCapPolicyEligible(target: ReasoningCapTarget): boolean 
   return target.policy === "streak2" && supportsThinkingOffRecovery(target.provider, target.model);
 }
 
+/** Phase calls may mutate transition after the caller has narrowed it. */
+export function clearReasoningCapPolicyForTransition(state: TurnState): void {
+  if (state.transition && state.transition.reason !== "max_output_tokens_escalate" &&
+      state.transition.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+}
+
 /** Called only at the real dispatch boundary, never by prompt/token inspection. */
 export function admitReasoningCapSample(state: TurnState, target: ReasoningCapTarget): ReasoningCapSample | undefined {
   if (!reasoningCapPolicyEligible(target)) { state.reasoningCapPolicy = undefined; return undefined; }

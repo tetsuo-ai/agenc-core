@@ -1,5 +1,5 @@
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
-import { admitReasoningCapSample } from "./reasoning-cap-policy.js";
+import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
 /**
  * run-turn — orchestration for one user turn.
  *
@@ -3129,8 +3129,7 @@ async function* runTurnKernelInner(
         };
         return result.terminal;
       }
-      if (state.transition && state.transition.reason !== "max_output_tokens_escalate" &&
-          state.transition.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+      clearReasoningCapPolicyForTransition(state);
       state.modelSampleResumePrompt = undefined;
       advanceModelSampleOrdinal(state);
       if (state.transition?.reason === "continuation_nudge") {
@@ -3212,8 +3211,7 @@ async function* runTurnKernelInner(
       ) {
         await sessionOwner.consumePendingProviderSwitch();
       }
-      if (state.transition.reason !== "max_output_tokens_escalate" &&
-          state.transition.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+      clearReasoningCapPolicyForTransition(state);
       state.transition = undefined;
       continue;
     }
@@ -3452,8 +3450,7 @@ async function* runTurnKernelInner(
       await syncSessionState();
       // commit may set a stop-hook transition (I-17). If so, re-enter.
       if (state.transition !== undefined) {
-        if (state.transition?.reason !== "max_output_tokens_escalate" &&
-          state.transition?.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
@@ -3652,8 +3649,7 @@ async function* runTurnKernelInner(
       }
       await syncSessionState();
       if (state.transition !== undefined) {
-        if (state.transition?.reason !== "max_output_tokens_escalate" &&
-          state.transition?.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
@@ -3770,8 +3766,7 @@ async function* runTurnKernelInner(
     if (state.pendingBudgetDecision?.kind === "stop") {
       await applyPendingBudgetContinuation(state, ctx, session, signal);
       if (state.transition !== undefined) {
-        if (state.transition?.reason !== "max_output_tokens_escalate" &&
-          state.transition?.reason !== "max_output_tokens_recovery") state.reasoningCapPolicy = undefined;
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
