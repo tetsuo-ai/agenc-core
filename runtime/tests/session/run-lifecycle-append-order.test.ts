@@ -1,4 +1,11 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -203,6 +210,156 @@ describe("run lifecycle append order", () => {
     }
   });
 
+  it("refuses a distinct second terminal for a flushed sealed epoch and leaves the bytes unchanged", () => {
+    const cwd = freshCwd();
+    const sessionId = "duplicate-terminal-flushed";
+    const store = openStore({ cwd, sessionId });
+    try {
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(true);
+      const before = readFileSync(store.rolloutPath);
+      const beforeHash = sha256(before);
+      const distinct: readonly Event[] = [
+        // Different content under the canonical eventId every producer uses.
+        withFinalMessage(terminalEvent(sessionId, 1, 2), "a second outcome"),
+        // Same content re-emitted under a new sequence.
+        terminalEvent(sessionId, 1, 3),
+        // A different eventId.
+        terminalEvent(sessionId, 1, 4, "other-terminal-id"),
+      ];
+      for (const event of distinct) {
+        expect(() => store.append(event, { durable: true })).toThrow(
+          /refusing to append run_terminal for duplicate-terminal-flushed: epoch 1 is already sealed by a different terminal \(eventId run-terminal:duplicate-terminal-flushed:1, seq 1, journal\)/,
+        );
+      }
+      const after = readFileSync(store.rolloutPath);
+      expect(after).toEqual(before);
+      expect(sha256(after)).toBe(beforeHash);
+      expect(countTerminals(after)).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses a distinct terminal while the first is queued in the degraded buffer, and a retry does not queue a second copy", () => {
+    const cwd = freshCwd();
+    const sessionId = "duplicate-terminal-queued";
+    const store = openStore({ cwd, sessionId });
+    try {
+      store.store.setWriteImplForTest(() => {
+        throw Object.assign(new Error("no space left on device"), {
+          code: "ENOSPC",
+        });
+      });
+      const first = terminalEvent(sessionId, 1, 1);
+      expect(store.append(first, { durable: true })).toBe(false);
+      expect(store.store.isDegraded).toBe(true);
+      const before = readFileSync(store.rolloutPath);
+      const beforeHash = sha256(before);
+      expect(countTerminals(before)).toBe(0);
+
+      expect(() =>
+        store.append(
+          withFinalMessage(terminalEvent(sessionId, 1, 2), "a second outcome"),
+          { durable: true },
+        ),
+      ).toThrow(
+        /epoch 1 is already sealed by a different terminal \(eventId run-terminal:duplicate-terminal-queued:1, seq 1, degraded\)/,
+      );
+      // The same terminal again is a retry. It is still queued, so it is
+      // still not committed, and nothing else is queued or written.
+      expect(store.append({ ...first }, { durable: true })).toBe(false);
+      const after = readFileSync(store.rolloutPath);
+      expect(after).toEqual(before);
+      expect(sha256(after)).toBe(beforeHash);
+
+      // The disk recovers; close drains the queue.
+      store.store.setWriteImplForTest(writeSync);
+    } finally {
+      store.close();
+    }
+    const drained = readFileSync(store.rolloutPath);
+    expect(countTerminals(drained)).toBe(1);
+    expect(drained.toString("utf8")).toContain('"finalMessage":"done"');
+    expect(drained.toString("utf8")).not.toContain("a second outcome");
+  });
+
+  it("refuses a distinct terminal while the first is in the unflushed batch or the degraded queue", () => {
+    const sessionId = "duplicate-terminal-pending";
+    const first = terminalEvent(sessionId, 1, 1);
+    const second = withFinalMessage(
+      terminalEvent(sessionId, 1, 2),
+      "a second outcome",
+    );
+    for (const [pending, degraded, source] of [
+      [[eventItem(first)], [], "pending"],
+      [[], [eventItem(first)], "degraded"],
+    ] as const) {
+      expect(() =>
+        assertRunLifecycleAppendOrder(Buffer.alloc(0), pending, second, degraded),
+      ).toThrow(new RegExp(`already sealed by a different terminal .*, ${source}\\)`));
+      expect(
+        assertRunLifecycleAppendOrder(
+          Buffer.alloc(0),
+          pending,
+          { ...first },
+          degraded,
+        ),
+      ).toEqual({ kind: "retry", sealedIn: source });
+    }
+    // A queued reopen after the queued terminal opens the next epoch.
+    expect(
+      assertRunLifecycleAppendOrder(
+        Buffer.alloc(0),
+        [eventItem(reopenEvent(sessionId, 2))],
+        terminalEvent(sessionId, 2, 3),
+        [eventItem(first)],
+      ),
+    ).toEqual({ kind: "append" });
+  });
+
+  it("accepts a same-terminal retry without writing a second copy", () => {
+    const cwd = freshCwd();
+    const sessionId = "same-terminal-retry";
+    const store = openStore({ cwd, sessionId });
+    try {
+      const first = terminalEvent(sessionId, 1, 1);
+      expect(store.append(first, { durable: true })).toBe(true);
+      const before = readFileSync(store.rolloutPath);
+      // A freshly built copy, as a retrying producer would send it.
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(true);
+      const after = readFileSync(store.rolloutPath);
+      expect(after).toEqual(before);
+      expect(sha256(after)).toBe(sha256(before));
+      expect(countTerminals(after)).toBe(1);
+      // The epoch can still be reopened after the retry.
+      expect(
+        store.append(reopenEvent(sessionId, 2), { durable: true }),
+      ).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("still dedups an unsequenced same-terminal retry by id", () => {
+    const cwd = freshCwd();
+    const sessionId = "unsequenced-terminal-retry";
+    const store = openStore({ cwd, sessionId });
+    try {
+      const { seq: _seq, ...first } = terminalEvent(sessionId, 1, 1);
+      expect(store.append(first, { durable: true })).toBe(true);
+      const before = readFileSync(store.rolloutPath);
+      expect(store.append({ ...first }, { durable: true })).toBe(true);
+      expect(readFileSync(store.rolloutPath)).toEqual(before);
+      expect(countTerminals(before)).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects a journal whose clearing reopen precedes the terminal", () => {
     const sessionId = "validator-order";
     const terminal = journalLine(terminalEvent(sessionId, 1, 1));
@@ -300,6 +457,22 @@ function reopenEvent(sessionId: string, seq: number): Event {
       },
     },
   };
+}
+
+function withFinalMessage(event: Event, finalMessage: string): Event {
+  if (event.msg.type !== "run_terminal") throw new Error("not a terminal");
+  return {
+    ...event,
+    msg: { ...event.msg, payload: { ...event.msg.payload, finalMessage } },
+  };
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function countTerminals(bytes: Buffer): number {
+  return bytes.toString("utf8").split('"type":"run_terminal"').length - 1;
 }
 
 function eventItem(event: Event): RolloutItem {
