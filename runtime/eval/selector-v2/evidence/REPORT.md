@@ -2,28 +2,28 @@
 
 PR: [tetsuo-ai/agenc-core#2808](https://github.com/tetsuo-ai/agenc-core/pull/2808), base `xprov/automatic-selection`.
 
-Built on `xprov/automatic-selection` at `02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7`, in the independent `xprov/selector-v2` checkout. Runtime implementation and compatibility commits: `94f6b0b9abed`, `4e962317b520`, `6225ea0e919e`. No release, deployment or merge.
+Built on `xprov/automatic-selection` at `02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7`, in the independent `xprov/selector-v2` checkout. Runtime implementation and compatibility commits: `94f6b0b9abed`, `4e962317b520`, `6225ea0e919e`. No release, deployment or merge. These commit IDs name the PR branch before its squash merge; the evaluation archive's `frozen-source.tar.gz` holds the evaluated source, named by SHA-256 in the README.
 
 Everything below the post-review section describes the policy frozen on 2026-09-29, before the code review. The review changed the policy, so its verdict does not carry over.
 
 ## Post-review policy
 
-The review found that the frozen policy treated a missing cap as a $0.05 cap, which made uncapped sessions the most price averse and sent strong parents' hard work to weaker, cheaper models. It also found that the vendor benchmark priors compared different benchmarks between models. The fixed policy weighs price only under a cap, requires the maintained tier quality floor for the task's complexity (the parent included), counts a higher tier as a reason to leave the parent only with verified local outcomes, never moves a hard task below the parent's rating, and anchors every prior on the maintained tiers. `calibrate.mts` then refit it on calibration data only; the grid chose a 0.80 target with economy cost preference.
+The review found that the frozen policy treated a missing cap as a $0.05 cap, which made uncapped sessions the most price averse and sent strong parents' hard work to weaker, cheaper models. It also found that the vendor benchmark priors compared different benchmarks between models. The fixed policy weighs price only under a cap, requires the maintained tier quality floor for the task's complexity (the parent included), and anchors every prior on the maintained tiers. A higher tier is a reason to leave the parent only when at least three verified outcomes put the destination's lower bound above the current choice, and a hard task never moves below the parent's rating. When the parent cannot take a task, the least expensive adequate model does, with or without a cap. A cascade needs paired recovery outcomes or that verified evidence. `calibrate.mts` then refit it on calibration data only; the grid chose a 0.80 target with balanced cost preference.
 
 This is a replay on held-out tasks whose results were already public, not a blind result. Full tables are in `post-review-tables.md`.
 
 | Arm | Calibration | Held out |
 |---|---:|---:|
 | V2 parent-first cold, $0.05 cap | 26/28, $0.036869 | 11/14, $0.022005 |
-| V2 IRT without verifier, $0.05 cap | 26/28, $0.057761 | 12/14, $0.036939 |
-| Selector v2 (verified), $0.05 cap | 26/28, $0.013231 | 11/14, $0.016051 |
+| V2 IRT without verifier, $0.05 cap | 26/28, $0.036869 | 11/14, $0.022005 |
+| Selector v2 (verified), $0.05 cap | 26/28, $0.013210 | 11/14, $0.016059 |
 | V2 parent-first cold, uncapped `kimi/kimi-k3` parent | 25/28, $0.379328 | 11/14, $0.293116 |
-| V2 IRT without verifier, uncapped `kimi/kimi-k3` parent | not scored | 11/14, $0.256937 |
-| Selector v2 (verified), uncapped `kimi/kimi-k3` parent | not scored | 12/14, $0.139200 |
+| V2 IRT without verifier, uncapped `kimi/kimi-k3` parent | not scored | 11/14, $0.293116 |
+| Selector v2 (verified), uncapped `kimi/kimi-k3` parent | not scored | 12/14, $0.126677 |
 | OpenRouter Auto restricted | 26/28, $0.038639 | 11/14, $0.022757 |
 | OpenRouter Auto unrestricted | 25/28, $0.019927 | 11/14, $0.016186 |
 
-The cold arms keep the parent on every task in both settings: the cheap capped parent as before, and the premium parent without a cap, where price alone no longer moves it. The verified capped policy now cascades on every task and passes 11/14 held-out tasks for $0.016051. That ties both Auto arms on passes, costs 29.5% less than restricted Auto and about the same as unrestricted Auto. The frozen verdict's extra held-out pass (`hold-hard-coding`) is lost. Without a verifier, verified calibration outcomes moved 4 held-out tasks off the parent; that added one pass and cost more. With the uncapped premium parent, verified cascades move 13 of 14 held-out tasks to cheaper first models because paired recovery evidence supports their quality, not their price. The calibration rows of the premium IRT and verified arms are not scored, because calibration has no leave-one-task-out fit for that setting.
+The cold and IRT arms keep the parent on every task in both settings: the cheap capped parent as before, and the premium parent without a cap, where price alone no longer moves it. With 28 calibration tasks, no model's verified lower bound clears the parent's expected quality, so the fitted abilities move nothing without a verifier. The verified capped policy cascades on every task and passes 11/14 held-out tasks for $0.016059. That ties both Auto arms on passes, costs 29.4% less than restricted Auto and about the same as unrestricted Auto. The frozen verdict's extra held-out pass (`hold-hard-coding`) is lost. With the uncapped premium parent, verified cascades move 13 of 14 held-out tasks to cheaper first models because paired recovery outcomes support their quality, not their price. The calibration rows of the premium IRT and verified arms are not scored, because calibration has no leave-one-task-out fit for that setting.
 
 ## Verdict (frozen policy)
 
