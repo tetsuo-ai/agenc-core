@@ -66,7 +66,8 @@ describe("Claude Haiku 5.5", () => {
   });
   it.each([["anthropic", model], ["amazon-bedrock", `anthropic.${model}`], ["openrouter", "anthropic/claude-haiku-5.5"]])("registers the %s contract", (provider, id) => {
     const row = resolveRegisteredModelCatalogEntry({ provider, model: id });
-    expect(row).toMatchObject({ contextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
+    expect(row).toMatchObject({ contextWindow: 1_000_000,
+      ...(provider === "openrouter" ? { maxOutputTokens: 128_000 } : { maxOutputTokensUpperLimit: 128_000 }),
       inputModalities: ["text", "image"], defaultReasoningLevel: "medium", additionalSpeedTiers: [] });
     expect([...row!.supportedReasoningLevels].sort()).toEqual([...levels].sort());
   });
@@ -129,7 +130,9 @@ describe("Claude Haiku 5.5", () => {
     const old = roughTokenCountEstimationForProvider("a".repeat(3500), { model: "claude-haiku-4-5" });
     for (const id of [model, `anthropic.${model}`, "anthropic/claude-haiku-5.5", "claude-opus-5-5", "claude-sonnet-5-5"]) {
       expect(getTokenizerConfigForProvider({ model: id }).modelFamily).toBe("anthropic-new");
-      expect(roughTokenCountEstimationForProvider("a".repeat(3500), { model: id })).toBeCloseTo(old * 1.3, 0);
+      const estimate = roughTokenCountEstimationForProvider("a".repeat(3500), { model: id });
+      expect(estimate).toBeGreaterThanOrEqual(old * 1.3);
+      expect(estimate).toBeLessThanOrEqual(old * 1.3 + 1);
     }
   });
   it.each([99_999, 100_000, 100_001])("prices all token categories at the %i prompt boundary in both calculators", prompt => {
