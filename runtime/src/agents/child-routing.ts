@@ -95,6 +95,45 @@ export function childRoutingBudget(session: Session, requested?: number): number
   return requested === undefined ? remaining : remaining === undefined ? requested : Math.min(requested, remaining);
 }
 
+/** A host verifier that has not prepared its check by then blocks the spawn. */
+export const CHILD_VERIFIER_PREPARE_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the host's verifier for this task's check. Undefined means the host
+ * does not check this task. A verifier that throws, does not answer in time
+ * or returns no usable check stops the spawn: the caller reports that no
+ * child started.
+ */
+async function prepareChildVerification(session: Session,
+  request: { readonly prompt: string; readonly features: TaskFeatures }): Promise<TrustedChildVerification | undefined> {
+  const verifier = session.services.childRoutingVerifier;
+  if (verifier === undefined) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let prepared: TrustedChildVerification | undefined;
+  try {
+    prepared = await Promise.race([
+      Promise.resolve().then(() => verifier.prepare(request)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `The host task verifier did not prepare a check within ${CHILD_VERIFIER_PREPARE_TIMEOUT_MS / 1_000} seconds.`)),
+        CHILD_VERIFIER_PREPARE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message.startsWith("The host task verifier") ? message : `The host task verifier failed: ${message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (prepared === undefined) return undefined;
+  const usable = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (prepared === null || typeof prepared !== "object" || prepared.available !== true || typeof prepared.check !== "function" ||
+      typeof prepared.retrySafe !== "boolean" || !usable(prepared.costUsd) || !usable(prepared.latencyMs)) {
+    throw new Error("The host task verifier returned no usable check.");
+  }
+  return prepared;
+}
+
 /** No provider discovery, credential refresh or remote router call is performed. */
 export async function routeChildTask(session: Session, request: ChildRoutingRequest): Promise<{
   readonly task: ChildSelectionTask;
@@ -107,7 +146,7 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   const outcomes = request.outcomes ?? store?.snapshot();
   const inferred = classifyChildTask(request.prompt, request.role);
   const features = extractTaskFeatures(request.prompt, request.requiresTools ?? true);
-  const verification = await session.services.childRoutingVerifier?.prepare({ prompt: request.prompt, features });
+  const verification = await prepareChildVerification(session, { prompt: request.prompt, features });
   const kind = request.taskKind ?? inferred.kind;
   const complexity = request.complexity ?? inferred.complexity;
   const maxCostUsd = childRoutingBudget(session, request.maxCostUsd);

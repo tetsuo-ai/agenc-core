@@ -35,7 +35,8 @@ import type { ProviderSelection } from "../../session/provider-service.js";
 import { automaticChildSelectionEnabled, routeChildTask, childRoutingBudget, recordChildRoutingVerification } from "../child-routing.js";
 import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, type RankedChildCandidate } from "../provider-selector.js";
 import type { ChildExecutionPlan } from "../cross-provider.js";
-import { runChildRoutingFallback, type ChildRoutingAttemptContext, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
+import { CHECKABLE_CHILD_TERMINALS, runChildRoutingFallback, type ChildRoutingAttempt, type ChildRoutingAttemptContext,
+  type ChildRoutingAttemptResult, type ChildRoutingFallbackResult, type ChildRoutingVerdict } from "../child-routing-fallback.js";
 import { observeChildRoutingAttempt } from "../child-routing-supervisor.js";
 import { superviseChildRoutingRetries } from "../child-routing-retries.js";
 import { requestParentFollowupTurn } from "../run-agent.js";
@@ -236,6 +237,37 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
 }
 
 const SPAWN_VALIDATION_EVIDENCE_REF = "tool:agents.spawn-agent:validation";
+
+const pairKeyOf = (pair: { readonly provider: string; readonly model: string }): string => `${pair.provider}/${pair.model}`;
+
+/**
+ * The final routing message for a verified child. It claims a verdict only
+ * for a check that ran, and says why no check ran otherwise.
+ */
+function verificationNotice(result: ChildRoutingFallbackResult<AgentThread>, firstPath: string): string {
+  const last = result.attempts.at(-1);
+  const path = last?.value.live.agentPath ?? firstPath;
+  const earlier = result.attempts.slice(0, -1).filter(attempt => attempt.verdict === "fail")
+    .map(attempt => attempt.value.live.agentPath);
+  const earlierFailed = earlier.length === 0 ? "" : ` Independent verification failed for ${earlier.join(" and ")}.`;
+  const status = `Routing status: ${result.stopReason}.`;
+  if (last?.verdict === "pass") return `Independent verification passed for ${path}.${earlierFailed} Use that child's durable result.`;
+  if (last?.verdict === "fail") {
+    return `Independent verification failed for ${path}.${earlierFailed} ${status} Do not accept its result as verified.`;
+  }
+  if (last?.verdict === "unavailable") {
+    return `The independent check was unavailable for ${path}, so its result is unverified.${earlierFailed} ${status}`;
+  }
+  const why = last === undefined ? "no attempt could be observed"
+    : !CHECKABLE_CHILD_TERMINALS.has(last.terminal.reason) ? `it ended with ${last.terminal.reason} and left no answer to check`
+    : result.stopReason === "verification_over_budget" ? "the check's charge would exceed the spend cap"
+    : result.stopReason === "usage_unknown" ? "its spend is unknown and the spend cap needs it"
+    : result.stopReason === "cost_budget_exhausted" ? "it used up the spend cap"
+    : result.stopReason === "model_call_budget_exhausted" ? "it used up the model-call budget"
+    : result.stopReason === "cancelled" ? "routing was cancelled first"
+    : `routing stopped first (${result.stopReason})`;
+  return `Independent verification did not run for ${path}: ${why}. Its result is unverified.${earlierFailed} ${status} Use the child's durable result and terminal reason.`;
+}
 
 /**
  * Return a rejected spawn preflight without poisoning the admitted mutation
@@ -862,16 +894,22 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     // feature is off, so this branch runs only with automatic selection on.
     if (automaticSelectionOn(session) && args.routing !== "inherit" && requestedProvider === undefined &&
         effectiveModel === undefined && forkMode === undefined) {
-      const routed = await routeChildTask(session, {
-        requiresTools: args.tool_free !== true,
-        ...(args.routing_preference !== undefined ? { preferences: args.routing_preference === "fast" ? { speed: "fast" as const } : { cost: args.routing_preference as "balanced" | "economy" | "quality" } } : {}),
-        prompt, ...(role !== undefined ? { role } : {}),
-        ...(args.task_kind !== undefined ? { taskKind: args.task_kind as ChildSelectionTask["kind"] } : {}),
-        ...(args.complexity !== undefined ? { complexity: args.complexity as ChildSelectionTask["complexity"] } : {}),
-        ...(args.requires_vision === true ? { requiresVision: true } : {}),
-        ...(args.context_tokens !== undefined ? { contextTokens: args.context_tokens as number } : {}),
-        ...(taskCap !== undefined ? { maxCostUsd: taskCap } : {}),
-      });
+      let routed: Awaited<ReturnType<typeof routeChildTask>>;
+      try {
+        routed = await routeChildTask(session, {
+          requiresTools: args.tool_free !== true,
+          ...(args.routing_preference !== undefined ? { preferences: args.routing_preference === "fast" ? { speed: "fast" as const } : { cost: args.routing_preference as "balanced" | "economy" | "quality" } } : {}),
+          prompt, ...(role !== undefined ? { role } : {}),
+          ...(args.task_kind !== undefined ? { taskKind: args.task_kind as ChildSelectionTask["kind"] } : {}),
+          ...(args.complexity !== undefined ? { complexity: args.complexity as ChildSelectionTask["complexity"] } : {}),
+          ...(args.requires_vision === true ? { requiresVision: true } : {}),
+          ...(args.context_tokens !== undefined ? { contextTokens: args.context_tokens as number } : {}),
+          ...(taskCap !== undefined ? { maxCostUsd: taskCap } : {}),
+        });
+      } catch (error) {
+        // Selection runs before any child exists, so nothing was spawned.
+        return failSpawn(`${error instanceof Error ? error.message : String(error)} No child was started.`);
+      }
       const selected = routed.result.selected;
       const currentPolicy = childProviderPolicy(session);
       if (!callerIsCurrent() || session.isShuttingDown || !automaticSelectionOn(session) ||
@@ -892,7 +930,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           reason: routed.result.reason,
           ...(selected.estimatedCostUsd !== undefined ? { estimatedCostUsd: selected.estimatedCostUsd } : {}) };
         routingReason = routingDecision.reason;
-        routingCandidates = routed.result.cascade?.candidates ?? (routed.verification !== undefined ? [selected] : routed.result.ranked);
+        // A verified child keeps the ranked provider-failure fallbacks. Only a
+        // planned cascade also retries after a failed check.
+        routingCandidates = routed.result.cascade?.candidates ?? routed.result.ranked;
         if (routed.verification !== undefined) verifiedRouting = routed;
         routingBudget = routed.task.maxCostUsd;
       }
@@ -1350,6 +1390,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         void observation.then(release, release);
       };
       let retryAnnounced = false;
+      const verification = verifiedRouting?.verification;
+      const cascadeAnchor = verifiedRouting?.result.cascade?.candidates[1];
+      // Each independent verdict, by attempt, so a stopped chain can still report them.
+      const verdicts = new Map<string, ChildRoutingVerdict>();
+      const failedChecks = (): string => {
+        const failed = [...verdicts].filter(([, verdict]) => verdict === "fail").map(([path]) => path);
+        return failed.length === 0 ? "" : ` Independent verification failed for ${failed.join(" and ")}.`;
+      };
+      const retryCause = (context: ChildRoutingAttemptContext<AgentThread>): string =>
+        context.previousAttempts.at(-1)?.verdict === "fail" ? "an independent check failed" : "a provider failure";
       const notice = (message: string): void => {
         if (session.isShuttingDown) return;
         try {
@@ -1366,10 +1416,15 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
         ...(routingBudget !== undefined ? { maxCostUsd: routingBudget } : {}),
         signal: session.abortController.signal,
-        ...(verifiedRouting?.verification !== undefined ? { verification: {
-          retrySafe: verifiedRouting.verification.retrySafe, costUsd: verifiedRouting.verification.costUsd,
-          check: async (attempt: import("../child-routing-fallback.js").ChildRoutingAttempt<AgentThread>) => {
-            const verdict = await verifiedRouting!.verification!.check(attempt.terminal);
+        // The first child is already running: observe it whatever its estimate.
+        firstAttemptStarted: true,
+        ...(verification !== undefined ? { verification: {
+          retrySafe: verification.retrySafe, costUsd: verification.costUsd, escalate: cascadeAnchor !== undefined,
+          check: async (attempt: ChildRoutingAttempt<AgentThread>) => {
+            let verdict: ChildRoutingVerdict;
+            try { verdict = await verification.check(attempt.terminal); }
+            catch { verdict = "unavailable"; }
+            verdicts.set(attempt.value.live.agentPath, verdict === "pass" || verdict === "fail" ? verdict : "unavailable");
             if (verdict === "pass" || verdict === "fail") await recordChildRoutingVerification(session,
               `${attempt.value.live.agentId}:${attempt.value.live.lastTaskReceipt?.turnId ?? callId}`,
               attempt.terminal, verifiedRouting!.features, verdict === "pass");
@@ -1385,7 +1440,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           if (blocker !== undefined) throw new Error(blocker);
           const nextName = `${taskName.slice(0, 42)}_retry${context.attempt}`;
           retryAnnounced = true;
-          notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after ${verifiedRouting ? "an independent check failed" : "a provider failure"}. Wait for this attempt before concluding the task.`);
+          notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after ${retryCause(context)}. Wait for this attempt before concluding the task.`);
           let nextObservation: Promise<ChildRoutingAttemptResult<AgentThread>> | undefined;
           const retryArgs = { ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
             provider: context.candidate.provider, model: context.candidate.model,
@@ -1401,7 +1456,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             Object.defineProperty(retryArgs, "__abortSignal", { value: originatingSignal });
           }
           const retry = await execute(retryArgs, {
-            routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible model after ${verifiedRouting ? "an independent check failed" : "a provider failure"}.`,
+            routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible model after ${retryCause(context)}.`,
               ...(context.candidate.estimatedCostUsd !== undefined ? { estimatedCostUsd: context.candidate.estimatedCostUsd } : {}) },
             maxModelCalls: context.remainingModelCalls,
             onStarted: (started, observation) => {
@@ -1415,27 +1470,36 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           return nextObservation;
         },
       }).then(result => {
-        if (verifiedRouting !== undefined) {
-          notice(result.stopReason === "completed"
-            ? `Independent verification passed for ${result.value?.live.agentPath}. Use that child's durable result.`
-            : `Independent verification did not pass. Routing status: ${result.stopReason}. Do not accept the failed attempts as a verified answer.`);
+        if (verification !== undefined) {
+          notice(verificationNotice(result, live.agentPath));
         } else if (result.attempts.length > 1) {
           // One attempt's receipt already tells the parent how it ended. After
           // a retry, say that the chain is over.
           notice(`Finished after ${result.attempts.length} attempts. Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
         }
       }, (error: unknown) => {
-        // Before any retry was announced, the first receipt is the whole
-        // story. After one, say why no further attempt runs.
-        if (!retryAnnounced) return;
         const reason = error instanceof Error ? error.message : String(error);
-        notice(`Stopped automatic fallback: ${reason.charAt(0).toLowerCase()}${reason.slice(1)} Use the existing child results.`);
+        // A verified child's parent waits for a verdict message, so it always
+        // gets one. Otherwise, before any retry was announced, the first
+        // receipt is the whole story; after one, say why no further attempt runs.
+        if (verification !== undefined && !retryAnnounced) {
+          notice(verdicts.size === 0
+            ? `Independent verification did not run for ${live.agentPath}: its attempt could not be observed. Its result is unverified. Use the child's durable result and terminal reason.`
+            : `Stopped automatic routing: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}${failedChecks()} Use the existing child results.`);
+          return;
+        }
+        if (!retryAnnounced) return;
+        notice(`Stopped automatic fallback: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}${failedChecks()} Use the existing child results.`);
       });
     }
     return json({
       task_name: live.agentPath,
       ...(routingReason !== undefined ? { routing_reason: routingReason } : {}),
-      ...(routingCandidates !== undefined ? { automatic_fallback: verifiedRouting ? "Independent checks may trigger the reserved second attempt. Wait for routing updates and both receipts." : "If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts. A routing message names each one. Without such a message, this child's own result is final." } : {}),
+      ...(routingCandidates !== undefined ? { automatic_fallback: verifiedRouting === undefined
+        ? "If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts. A routing message names each one. Without such a message, this child's own result is final."
+        : verifiedRouting.result.cascade !== undefined
+          ? `An independent check examines this child's answer. If the check fails, or the child fails on a provider error before it runs a tool, one more attempt may start on ${pairKeyOf(verifiedRouting.result.cascade.candidates[1]!)} while this turn lasts, and a routing message names it. A routing message reports the final verdict. Wait for it before you rely on the result.`
+          : "An independent check examines this child's answer, and a routing message reports the verdict. Wait for it before you rely on the result. If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts, and a routing message names each one." } : {}),
       ...(crossProviderRequested ? {
         provider: reportedProvider,
         model: reportedModel,

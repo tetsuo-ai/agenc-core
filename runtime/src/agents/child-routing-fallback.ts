@@ -14,9 +14,14 @@ export interface ChildRoutingAttemptResult<T> {
   readonly heldUnknownCostUsd?: number;
 }
 
+/** An independent check's answer. "unavailable" includes a check that threw. */
+export type ChildRoutingVerdict = "pass" | "fail" | "unavailable";
+
 export interface ChildRoutingAttempt<T> extends ChildRoutingAttemptResult<T> {
   readonly candidate: RankedChildCandidate;
   readonly attempt: number;
+  /** Present only when an independent check ran for this attempt. */
+  readonly verdict?: ChildRoutingVerdict;
 }
 
 export interface ChildRoutingAttemptContext<T> {
@@ -35,7 +40,14 @@ export interface ChildRoutingAttemptContext<T> {
 
 export type ChildRoutingStopReason = "completed" | "terminal_outcome" | "tools_already_run"
   | "cancelled" | "attempt_limit" | "no_candidate" | "model_call_budget_exhausted"
-  | "cost_budget_exhausted" | "usage_unknown" | "invalid_usage" | "verification_unavailable";
+  | "cost_budget_exhausted" | "usage_unknown" | "invalid_usage" | "verification_unavailable"
+  /** A check failed and the plan allows no further attempt for a failed check. */
+  | "verification_failed"
+  /** The attempt finished within the cap, but the check's own charge would not fit, so no check ran. */
+  | "verification_over_budget";
+
+/** Terminals whose answer an independent check can examine. */
+export const CHECKABLE_CHILD_TERMINALS: ReadonlySet<ChildTerminalOutcome["reason"]> = new Set(["completed", "step_limit", "no_progress"]);
 
 export interface ChildRoutingFallbackResult<T> {
   readonly value?: T;
@@ -72,10 +84,17 @@ export async function runChildRoutingFallback<T>(options: {
   readonly maxCostUsd?: number;
   readonly maxAttempts?: number;
   readonly signal?: AbortSignal;
+  /**
+   * The caller already started the first candidate. Its attempt is observed
+   * to the end whatever its estimate; budgets only admit later attempts.
+   */
+  readonly firstAttemptStarted?: boolean;
   readonly verification?: {
     readonly retrySafe: boolean;
     readonly costUsd: number;
-    readonly check: (result: ChildRoutingAttempt<T>) => Promise<"pass" | "fail" | "unavailable">;
+    /** A failed check may start the next candidate. Only a planned cascade sets this. */
+    readonly escalate: boolean;
+    readonly check: (result: ChildRoutingAttempt<T>) => Promise<ChildRoutingVerdict>;
   };
   readonly runAttempt: (context: ChildRoutingAttemptContext<T>) => Promise<ChildRoutingAttemptResult<T>>;
 }): Promise<ChildRoutingFallbackResult<T>> {
@@ -104,14 +123,16 @@ export async function runChildRoutingFallback<T>(options: {
       : Math.max(0, options.maxCostUsd - accountedCostUsd!);
     const eligible = options.candidates.filter((candidate) => !attemptedProviders.has(candidate.provider) &&
       !attemptedPairs.has(`${candidate.provider}/${candidate.model}`));
-    const candidate = eligible.find((item) => remainingCostUsd === undefined ||
-      (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd + (options.verification?.costUsd ?? 0) <= remainingCostUsd));
+    // A new attempt must leave room for its own check.
+    const admits = (item: RankedChildCandidate): boolean => remainingCostUsd === undefined ||
+      (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd + (options.verification?.costUsd ?? 0) <= remainingCostUsd);
+    const started = attempts.length === 0 && options.firstAttemptStarted === true;
+    const candidate = started ? options.candidates[0] : eligible.find(admits);
     if (candidate === undefined) {
       return finish(eligible.length === 0 ? "no_candidate" : "cost_budget_exhausted");
     }
     const fallbackCandidates = attempts.length + 1 >= maxAttempts ? [] : eligible.filter((item) =>
-      item.provider !== candidate.provider && (remainingCostUsd === undefined ||
-        (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd <= remainingCostUsd)));
+      item.provider !== candidate.provider && admits(item));
     const outcome = await options.runAttempt({ candidate, attempt: attempts.length + 1,
       remainingModelCalls: options.maxModelCalls - modelCalls,
       ...(remainingCostUsd !== undefined ? { remainingCostUsd } : {}),
@@ -147,18 +168,25 @@ export async function runChildRoutingFallback<T>(options: {
       if (accountedCostUsd! > options.maxCostUsd) return finish("cost_budget_exhausted");
     }
     if (options.signal?.aborted) return finish("cancelled");
-    if (options.verification !== undefined && ["completed", "step_limit", "no_progress"].includes(outcome.terminal.reason)) {
-      if (!usageKnown || (held ?? 0) > 0) return finish("usage_unknown");
-      if (options.maxCostUsd !== undefined && accountedCostUsd! + options.verification.costUsd > options.maxCostUsd) return finish("cost_budget_exhausted");
+    if (options.verification !== undefined && CHECKABLE_CHILD_TERMINALS.has(outcome.terminal.reason)) {
+      // Unknown or held usage matters only to a cap that must admit the
+      // check's charge; under a cap the reconciled spend is known here.
+      if (options.maxCostUsd !== undefined && accountedCostUsd! + options.verification.costUsd > options.maxCostUsd) {
+        return finish("verification_over_budget");
+      }
       // Retain the declared verifier charge even if its result becomes unavailable.
-      accountedCostUsd = accountedCostUsd! + options.verification.costUsd;
-      let verdict: "pass" | "fail" | "unavailable";
+      if (accountedCostUsd !== undefined) accountedCostUsd += options.verification.costUsd;
+      let verdict: ChildRoutingVerdict;
       try { verdict = await options.verification.check(attempts.at(-1)!); }
-      catch { return finish("verification_unavailable"); }
+      catch { verdict = "unavailable"; }
+      if (verdict !== "pass" && verdict !== "fail") verdict = "unavailable";
+      attempts[attempts.length - 1] = { ...attempts.at(-1)!, verdict };
       if (options.signal?.aborted) return finish("cancelled");
       if (verdict === "pass") return finish("completed");
-      if (verdict !== "fail") return finish("verification_unavailable");
+      if (verdict === "unavailable") return finish("verification_unavailable");
+      if (!options.verification.escalate) return finish("verification_failed");
       if (outcome.toolCalls > 0 && !options.verification.retrySafe) return finish("tools_already_run");
+      if (!usageKnown) return finish("usage_unknown");
       continue;
     }
     if (outcome.terminal.reason === "completed") return finish("completed");
