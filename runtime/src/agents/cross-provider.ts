@@ -57,6 +57,12 @@ export interface CrossProviderConsentService {
   readonly ownerSessionId: string;
   readonly sessionEpoch: string;
   /**
+   * Whether a spawn on this provider would be granted now without asking
+   * anyone: settings consent applies and no child in this conversation has
+   * stopped for funds. A grant for one exact scope does not count here.
+   */
+  grantsWithoutAsking?(provider: string): boolean;
+  /**
    * `routeProvider` is the provider of the plan's route. It differs from the
    * disclosed destination only for a managed child, which routes via agenc.
    */

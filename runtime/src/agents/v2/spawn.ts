@@ -1326,6 +1326,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         provider === activeProvider && inheritedConsentPlan?.crossProvider !== true;
       const providerAllowed = (provider: string): boolean => provider === activeProvider ||
         (childProviderPolicy(session).allowed_providers ?? []).includes(provider);
+      // A retry that would need someone to approve it now cannot start
+      // unattended, and a person may refuse it.
+      const startsWithoutAsking = (provider: string): boolean => onParentProvider(provider) ||
+        session.services.crossProviderConsent?.grantsWithoutAsking?.(provider) === true;
       // While this holds, the child ends its task on a provider failure
       // instead of retrying that provider, so this supervisor can retry it on
       // another one. Otherwise the child keeps its own provider retries. The
@@ -1335,7 +1339,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         const next = context.fallbackCandidates[0];
         if (next === undefined) return;
         const release = superviseChildRoutingRetries(child, () => child.toolCallCount === 0 && mayStartAttempt() &&
-          providerAllowed(next.provider));
+          providerAllowed(next.provider) && startsWithoutAsking(next.provider));
         void observation.then(release, release);
       };
       let retryAnnounced = false;

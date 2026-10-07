@@ -123,6 +123,26 @@ describe("automatic fallback through spawn_agent", () => {
     await vi.waitFor(() => expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false));
   });
 
+  it("keeps the child's retries when the next provider would need a new consent", async () => {
+    const value = await fixture();
+    await value.tool.execute(args);
+    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("openai");
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);
+    // The next candidate is deepseek, which would now need a person to approve it.
+    value.consentAsks();
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false);
+  });
+
+  it("hands retries to the supervisor when the next attempt stays on the parent's provider", async () => {
+    const value = await fixture();
+    value.config.agents.allowed_providers = ["deepseek"];
+    value.consentAsks();
+    await value.tool.execute(args);
+    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("deepseek");
+    // The next candidate is the parent's own grok model: no consent at all.
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);
+  });
+
   it("gives a routed child on the parent's model no call cap, as routing=inherit has none", async () => {
     const value = await fixture();
     value.config.agents.allowed_providers = [];
