@@ -99,7 +99,10 @@ import {
   serializeRolloutItem,
   type RolloutItem,
 } from "./rollout-item.js";
-import { assertRunLifecycleAppendOrder } from "./run-lifecycle-append-order.js";
+import {
+  assertRunLifecycleAppendOrder,
+  type RunLifecycleSource,
+} from "./run-lifecycle-append-order.js";
 import type {
   CompactionActiveHistoryEntryV1,
   CompactionPayloadChunkV1,
@@ -2289,12 +2292,18 @@ export class SessionStore {
       event.msg.type === "run_terminal" ||
       event.msg.type === "run_reopened"
     ) {
-      assertRunLifecycleAppendOrder(
+      const lifecycle = assertRunLifecycleAppendOrder(
         this.readCurrentRolloutBytes(),
         this.pending,
         event,
+        this.degraded.queued(),
       );
       this.lastBoundReadProof = undefined;
+      // The same terminal again writes nothing; it reports the state of the
+      // copy that already seals the epoch.
+      if (lifecycle.kind === "retry") {
+        return this.lifecycleRetryCommitted(lifecycle.sealedIn);
+      }
     }
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
@@ -2401,6 +2410,26 @@ export class SessionStore {
     this.pending.push(item);
     if (durable && !this.flushBatch(true)) {
       throw new Error("durable rollout item was not fsync-committed");
+    }
+  }
+
+  /**
+   * Committed state of a lifecycle event that is already held by this store.
+   * In the file: committed unless a persistence failure is unresolved. In the
+   * unflushed batch: flush it now. In the degraded queue: not committed yet.
+   */
+  private lifecycleRetryCommitted(sealedIn: RunLifecycleSource): boolean {
+    switch (sealedIn) {
+      case "journal":
+        return !this.degraded.isDegraded && this.pendingFsyncRetries.size === 0;
+      case "pending":
+        return this.flushBatch(/*durable*/ true);
+      case "degraded":
+        return false;
+      default: {
+        const unreachable: never = sealedIn;
+        throw new Error(`unexpected lifecycle source ${String(unreachable)}`);
+      }
     }
   }
 

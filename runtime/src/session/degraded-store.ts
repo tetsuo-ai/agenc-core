@@ -61,6 +61,8 @@ export class DegradedStore<T> {
   private readonly flushFn: (events: ReadonlyArray<T>) => Promise<boolean>;
   private readonly onStatusChange?: (c: DegradedStatusChange) => void;
   private buffer: T[] = [];
+  /** Items taken from `buffer` by an unsettled `tryFlush()`. */
+  private inFlight: readonly T[] = [];
   private degraded = false;
   private enteredAtMs: number | null = null;
   private totalEvicted = 0;
@@ -149,6 +151,15 @@ export class DegradedStore<T> {
     return [...this.buffer];
   }
 
+  /**
+   * Every item not yet settled by this store, oldest first: the slice an
+   * unsettled `tryFlush()` is writing, then the buffer. A failed flush puts
+   * that slice back at the front, so this order is the order they reach disk.
+   */
+  queued(): ReadonlyArray<T> {
+    return [...this.inFlight, ...this.buffer];
+  }
+
   /** Remove and return all buffered events. */
   drain(): T[] {
     const out = this.buffer;
@@ -177,6 +188,7 @@ export class DegradedStore<T> {
     // points at the flushed prefix.
     const toFlush = this.buffer;
     this.buffer = [];
+    this.inFlight = toFlush;
     try {
       const ok = await this.flushFn(toFlush);
       if (ok) {
@@ -196,6 +208,7 @@ export class DegradedStore<T> {
       this.requeueFront(toFlush);
       return false;
     } finally {
+      this.inFlight = [];
       this.flushing = false;
     }
   }
