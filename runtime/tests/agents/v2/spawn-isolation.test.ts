@@ -193,14 +193,40 @@ describe("spawn_agent isolation", () => {
     });
   });
 
-  it("refuses automatic selection when allowed providers are disconnected", async () => {
+  it("counts the parent's own model as a candidate without listing its provider", async () => {
     const { session, tool } = await crossProviderFixture(["deepseek"]);
     Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await tool.execute({ message: "Extract names", task_name: "extractor" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content).routing_reason).toContain("grok/grok-4.6");
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, routing: { taskKind: "extraction" } });
+  });
+
+  it("keeps the parent model when no connected allowed model qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    // A hard reasoning task is above the parent model's quality prior.
+    const result = await tool.execute({ message: "Extract names", task_name: "extractor",
+      task_kind: "reasoning", complexity: "hard" });
+    expect(result.isError).not.toBe(true);
+    const content = JSON.parse(result.content) as { routing_reason: string; automatic_fallback?: string };
+    expect(content.routing_reason).toBe("No connected and allowed model meets this task's requirements. The child keeps your current model.");
+    expect(content.automatic_fallback).toBeUndefined();
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toBeUndefined();
+    expect(mockDelegate.mock.calls[0]?.[0].model).toBeUndefined();
+  });
+
+  it("still enforces a hard requirement when nothing qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    const result = await tool.execute({ message: "Summarize these records", task_name: "reader", context_tokens: 50_000_000 });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("No connected and allowed model");
+    expect(result.content).toContain("cannot fit the required context");
     expect(mockDelegate).not.toHaveBeenCalled();
-    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   it("keeps an explicit model override and permits explicit parent inheritance", async () => {

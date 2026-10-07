@@ -99,11 +99,17 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
     ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
   };
   const active = currentChildProvider(session);
+  const isParentModel = (pair: { readonly provider: string; readonly model: string }): boolean =>
+    pair.provider === active.provider && pair.model === active.model;
   const candidates: ChildProviderCandidate[] = [];
   // Read authority once per provider, then revalidate the exact model and
   // credentials during ordinary plan preparation after consent.
   const connected = new Map<string, Promise<{ readonly connected: boolean; readonly billingSource?: string }>>();
-  const pairs = allowedChildPairs(session).filter(pair => childModelProfile(pair.provider, pair.model) !== undefined);
+  // The parent's own model is always a candidate. It needs no entry in
+  // allowed_providers, because a child on it stays on the parent's provider.
+  const allowedPairs = allowedChildPairs(session);
+  const pairs = [...allowedPairs, ...(allowedPairs.some(isParentModel) ? [] : [{ provider: active.provider, model: active.model }])]
+    .filter(pair => childModelProfile(pair.provider, pair.model) !== undefined);
   for (const pair of pairs) {
     if (!connected.has(pair.provider)) {
       connected.set(pair.provider, typeof session.providerService?.childProviderRoutingInfo === "function"
@@ -115,7 +121,12 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
     }
   }
   for (const pair of pairs) {
-    const authority = await connected.get(pair.provider);
+    const reported = await connected.get(pair.provider);
+    // The parent is running on its own model now. Keep only the billing
+    // source when the cross-provider readiness check excludes its provider.
+    const authority = isParentModel(pair)
+      ? { connected: true, ...(reported?.connected === true && reported.billingSource !== undefined ? { billingSource: reported.billingSource } : {}) }
+      : reported;
     if (!authority?.connected) continue;
     try {
       const info = await childModelInfo(session, pair, pair.provider !== active.provider);

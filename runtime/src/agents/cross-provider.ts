@@ -182,10 +182,9 @@ export async function createChildExecutionPlan(params: {
   };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
-  if (params.routing !== undefined) {
-    assertCrossProviderAllowed(session, selection.provider);
-    if (childProviderPolicy(session).cross_provider_auto !== true) throw new Error("Automatic child selection was disabled.");
-  }
+  // Automatic selection may keep the parent's own provider, which needs no
+  // allowed_providers entry. Another provider is checked below.
+  if (params.routing !== undefined) assertAutomaticSelectionEnabled(session);
   const plannedPolicyRevision = policyRevision(session);
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
@@ -398,8 +397,8 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
 
 export async function assertChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<void> {
   if (plan.routing !== undefined) {
-    assertCrossProviderAllowed(session, plan.route.provider);
-    if (childProviderPolicy(session).cross_provider_auto !== true) throw new Error("Automatic child selection was disabled.");
+    assertAutomaticSelectionEnabled(session);
+    if (plan.route.provider !== currentChildProvider(session).provider) assertCrossProviderAllowed(session, plan.route.provider);
   }
   const taskCap = plan.budgetAllocation?.maxCostUsd;
   if (taskCap !== undefined && (!Number.isFinite(taskCap) || taskCap < 0)) {
@@ -542,6 +541,13 @@ export function currentChildProvider(session: Session): ProviderSelection {
     provider: session.services?.configStore?.current().model_provider ?? "grok",
     model: session.modelInfo.slug,
   };
+}
+
+function assertAutomaticSelectionEnabled(session: Session): void {
+  const policy = childProviderPolicy(session);
+  if (policy.cross_provider_enabled !== true || policy.cross_provider_auto !== true) {
+    throw new Error("Automatic child selection was disabled.");
+  }
 }
 
 export function assertCrossProviderAllowed(session: Session, provider: string): void {

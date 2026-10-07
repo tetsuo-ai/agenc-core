@@ -5,6 +5,7 @@ import type { ChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
 import { routeChildTask, childRoutingBudget, recordChildRoutingOutcome } from "../../src/agents/child-routing.js";
+import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
 function fixture(connected: readonly string[], allowed = ["deepseek", "openai"]) {
@@ -70,11 +71,21 @@ describe("child routing integration", () => {
     expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
     expect(routed.task.inputTokens).toBeGreaterThan(16_384);
     expect(readiness.mock.calls.filter(([pair]) => pair.provider === "deepseek")).toHaveLength(1);
-    expect(routed.result.ranked.every(pair => pair.provider === "deepseek")).toBe(true);
+    expect(routed.result.ranked.every(pair => pair.provider === "deepseek" || pair.provider === "grok")).toBe(true);
   });
-  it("does not inherit a disallowed parent when all allowed providers are disconnected", async () => {
+  it("finds nothing when allowed providers are disconnected and the parent model does not fit", async () => {
+    // This stub parent model has no context window, so it cannot qualify.
     const { session } = fixture([]);
     expect((await routeChildTask(session, { prompt: "Review a small function" })).result.selected).toBeUndefined();
+  });
+  it("counts the parent's own model as a candidate when its provider is not allowed", async () => {
+    const { session } = fixture([]);
+    const config = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6" };
+    Object.assign(session, { modelInfo: await new StaticModelsManager({ config, fallbackProvider: "grok", metadata: { env: {} } })
+      .getModelInfo("grok-4.6") });
+    const routed = await routeChildTask(session, { prompt: "Review a small function" });
+    expect(routed.result.selected).toMatchObject({ provider: "grok", model: "grok-4.6" });
+    expect(routed.result.ranked.map(pair => pair.provider)).toEqual(["grok"]);
   });
   it("uses catalog vision capabilities and refuses undersized context", async () => {
     const { session } = fixture(["deepseek"]);

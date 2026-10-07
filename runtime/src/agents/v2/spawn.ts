@@ -194,7 +194,7 @@ ${AGENT_MESSAGE_REFERENCE_GUIDANCE}`;
     : ` Allowed provider/model pairs: ${pairList}.`;
   const routingClause = policy?.cross_provider_enabled !== true ? ""
     : auto
-      ? " Omit provider and model for local automatic selection using connected allowed providers, task requirements, cost and observed outcomes. Set provider and model to override the choice, or routing=inherit to keep the parent model. Full-history forks keep their parent model."
+      ? " Omit provider and model for local automatic selection among your own model and the connected allowed providers, using task requirements, cost and observed outcomes. When no model qualifies, the child keeps your model. Set provider and model to override the choice, or routing=inherit to keep the parent model. Full-history forks keep their parent model."
       : " Use another provider only when the user's message for this turn names it or one of its models; otherwise you get not_requested.";
   const limitsClause = policy === undefined ? "" : ` ${describeSubagentLimits(policy)}`;
   const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause}${routingClause} If consent_denied, consent_unavailable or not_requested is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${allowedPairs}${limitsClause}`;
@@ -779,6 +779,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const callId = callIdFromArgs(args, "agent");
     const activeProvider = currentChildProvider(session).provider;
     let routingDecision: ChildExecutionPlan["routing"] = automaticAttempt?.routing;
+    // Shown to the parent and clients. Set for a routed child, and when
+    // automatic selection found nothing and the child keeps the parent model.
+    let routingReason: string | undefined = routingDecision?.reason;
     let routingCandidates: readonly RankedChildCandidate[] | undefined;
     let routingBudget: number | undefined;
     const requestedTaskCap = args.max_cost_usd as number | undefined;
@@ -798,7 +801,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           agentType: role, model: reportedModel,
           ...(crossProviderRequested ? { provider: reportedProvider } : {}),
           reasoningEffort: reportedEffort,
-          ...(routingDecision !== undefined ? { routingReason: routingDecision.reason } : {}),
+          ...(routingReason !== undefined ? { routingReason } : {}),
         },
       });
     };
@@ -816,7 +819,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           model: reportedModel,
           ...(crossProviderRequested ? { provider: reportedProvider } : {}),
           reasoningEffort: reportedEffort,
-          ...(routingDecision !== undefined ? { routingReason: routingDecision.reason } : {}),
+          ...(routingReason !== undefined ? { routingReason } : {}),
           status: {
             status: "errored",
             turnId: callId,
@@ -862,21 +865,29 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(args.context_tokens !== undefined ? { contextTokens: args.context_tokens as number } : {}),
         ...(taskCap !== undefined ? { maxCostUsd: taskCap } : {}),
       });
-      if (routed.result.selected === undefined) return failSpawn(routed.result.reason);
+      const selected = routed.result.selected;
       const currentPolicy = childProviderPolicy(session);
       if (!callerIsCurrent() || session.isShuttingDown || !automaticSelectionOn(session) ||
-          !(currentPolicy.allowed_providers ?? []).includes(routed.result.selected.provider)) {
+          (selected !== undefined && selected.provider !== activeProvider &&
+            !(currentPolicy.allowed_providers ?? []).includes(selected.provider))) {
         return failSpawn("Child routing policy or caller changed during selection.");
       }
-      requestedProvider = routed.result.selected.provider;
-      effectiveModel = routed.result.selected.model;
-      reportedProvider = requestedProvider;
-      reportedModel = effectiveModel;
-      routingDecision = { taskKind: routed.task.kind, complexity: routed.task.complexity,
-        reason: routed.result.reason,
-        ...(routed.result.selected.estimatedCostUsd !== undefined ? { estimatedCostUsd: routed.result.selected.estimatedCostUsd } : {}) };
-      routingCandidates = routed.result.ranked;
-      routingBudget = routed.task.maxCostUsd;
+      if (selected === undefined) {
+        // Nothing qualified. Keep the parent model, as without the feature.
+        // Hard requirements such as requires_vision are still checked below.
+        routingReason = `${routed.result.reason} The child keeps your current model.`;
+      } else {
+        requestedProvider = selected.provider;
+        effectiveModel = selected.model;
+        reportedProvider = requestedProvider;
+        reportedModel = effectiveModel;
+        routingDecision = { taskKind: routed.task.kind, complexity: routed.task.complexity,
+          reason: routed.result.reason,
+          ...(selected.estimatedCostUsd !== undefined ? { estimatedCostUsd: selected.estimatedCostUsd } : {}) };
+        routingReason = routingDecision.reason;
+        routingCandidates = routed.result.ranked;
+        routingBudget = routed.task.maxCostUsd;
+      }
     }
     if (!crossProviderRequested) crossProviderRequested = requestsOtherProvider(session, requestedProvider, effectiveModel);
     const provenancedDescendant = !crossProviderRequested && inheritedConsentPlan?.crossProvider === true;
@@ -1194,7 +1205,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             model: reportedModel,
             ...(crossProviderRequested ? { provider: reportedProvider } : {}),
             reasoningEffort: reportedEffort,
-          ...(routingDecision !== undefined ? { routingReason: routingDecision.reason } : {}),
+          ...(routingReason !== undefined ? { routingReason } : {}),
             status: snapshot.status,
             // Forward the live per-agent tool-use + token counts so the fan-out
             // rail / fleet panel show real activity for collab-spawned agents
@@ -1288,7 +1299,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           model: reportedModel,
           ...(crossProviderRequested ? { provider: reportedProvider } : {}),
           reasoningEffort: reportedEffort,
-          ...(routingDecision !== undefined ? { routingReason: routingDecision.reason } : {}),
+          ...(routingReason !== undefined ? { routingReason } : {}),
           status: live.status.value,
         },
       });
@@ -1350,7 +1361,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     return json({
       task_name: live.agentPath,
-      ...(routingDecision !== undefined ? { routing_reason: routingDecision.reason } : {}),
+      ...(routingReason !== undefined ? { routing_reason: routingReason } : {}),
       ...(routingCandidates !== undefined ? { automatic_fallback: "Provider failures before any child tool call may start up to two named retry workers. Wait for routing updates and all attempt receipts." } : {}),
       ...(crossProviderRequested ? {
         provider: reportedProvider,
