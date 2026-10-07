@@ -125,6 +125,41 @@ describe("automatic fallback through spawn_agent", () => {
     await vi.waitFor(() => expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false));
   });
 
+  it("keeps the child's retries when the next provider would need a new consent", async () => {
+    const value = await fixture();
+    await value.tool.execute(args);
+    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("grok");
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);
+    // The next candidate is on another provider, which would now need a person to approve it.
+    value.consentAsks();
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false);
+  });
+
+  it("hands retries to the supervisor when the next attempt stays on the parent's provider", async () => {
+    const value = await fixture();
+    value.config.agents.allowed_providers = ["deepseek"];
+    value.consentAsks();
+    // Economy under a small cap moves the child to deepseek's cheaper model.
+    await value.tool.execute({ ...args, max_cost_usd: 0.2, routing_preference: "economy" });
+    expect(mockDelegate.mock.calls[0]![0].plan!.destination.provider).toBe("deepseek");
+    // The next candidate is the parent's own grok model: no consent at all.
+    expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(true);
+  });
+
+  it("gives a routed child on the parent's model no call cap, as routing=inherit has none", async () => {
+    const value = await fixture();
+    value.config.agents.allowed_providers = [];
+    const { max_cost_usd: _cap, ...uncapped } = args;
+    await value.tool.execute({ ...uncapped, __callId: "routed" });
+    expect(mockDelegate.mock.calls[0]![0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, budgetAllocation: null, routing: { taskKind: "extraction" } });
+    await value.tool.execute({ ...uncapped, __callId: "inherited", task_name: "inherited", routing: "inherit" });
+    expect(mockDelegate.mock.calls[1]![0].plan).toBeUndefined();
+    // A dollar cap stays when the spawn set one, without a call cap.
+    await value.tool.execute({ ...args, __callId: "capped", task_name: "capped" });
+    expect(mockDelegate.mock.calls[2]![0].plan?.budgetAllocation).toEqual({ maxCostUsd: 0.5 });
+  });
+
   it("leaves provider retries with a routed child that has no other candidate", async () => {
     const value = await fixture();
     value.config.agents.allowed_providers = [];

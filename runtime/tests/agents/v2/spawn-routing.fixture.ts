@@ -29,6 +29,8 @@ export async function fixture(options: { deferRetry?: boolean } = {}) {
   const submitChildFollowup = vi.fn(async () => { queuedMessages.length = 0; return true; });
   let activeTurnId: string | undefined = "human-turn-a";
   let denyNextConsent = false;
+  // Settings consent that grants without a question, until a test asks for it.
+  let consentAsks = false;
   let resolveFirst!: (outcome: ChildRoutingAttemptResult<AgentThread>) => void;
   const firstObservation = new Promise<ChildRoutingAttemptResult<AgentThread>>(resolve => { resolveFirst = resolve; });
   let resolveRetry!: (outcome: ChildRoutingAttemptResult<AgentThread>) => void;
@@ -52,6 +54,7 @@ export async function fixture(options: { deferRetry?: boolean } = {}) {
       childProviderRoutingInfo: async () => ({ connected: true, billingSource: "byok" }) },
     services: { modelsManager, configStore: { current: () => config }, crossProviderConsent: {
       ownerSessionId: "routing-parent", sessionEpoch: "epoch", request: requestConsent,
+      grantsWithoutAsking: () => !consentAsks,
     } },
   } as unknown as Session;
   const threads: AgentThread[] = [];
@@ -86,6 +89,8 @@ export async function fixture(options: { deferRetry?: boolean } = {}) {
     replaceSession: () => { currentSession = { ...session } as Session; },
     changeTurn: (id?: string) => { activeTurnId = id; },
     denyConsent: () => { denyNextConsent = true; },
+    /** As with ask_each_spawn, or after a funds stop: another provider needs a question. */
+    consentAsks: () => { consentAsks = true; },
     finishFirst: (reason: ChildTerminalReason, options?: Parameters<typeof observation>[2]) => resolveFirst(observation(threads[0]!, reason, options)),
     finishRetry: () => resolveRetry(observation(threads[1]!, "completed")),
   };

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -105,6 +105,19 @@ describe("local child routing outcomes", () => {
     expect(await daemon.record({ ...sample, receiptId: "tui-child", atMs: 11_000 })).toBe(false);
     await daemon.refresh();
     expect(daemon.snapshot().aggregates[0]?.attempts).toBe(12);
+  });
+
+  it("removes a temporary that a crash left between write and rename", async () => {
+    const { path, store } = await fixture();
+    const stray = `${path}.123e4567-e89b-42d3-a456-426614174000.tmp`;
+    const unrelated = `${path}.notes.tmp`;
+    await writeFile(stray, "{");
+    await writeFile(unrelated, "kept");
+    expect(await store.record(sample)).toBe(true);
+    const names = await readdir(join(path, ".."));
+    expect(names).not.toContain("history.json.123e4567-e89b-42d3-a456-426614174000.tmp");
+    expect(names).toContain("history.json.notes.tmp");
+    expect(JSON.parse(await readFile(path, "utf8")).receipts).toHaveLength(1);
   });
 
   it("writes nothing to clear a provider that has no recorded failure", async () => {

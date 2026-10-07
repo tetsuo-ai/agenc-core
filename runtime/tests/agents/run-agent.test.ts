@@ -5232,6 +5232,65 @@ describe("runAgent", () => {
     expect(bindings[0]!.release).not.toHaveBeenCalled();
   });
 
+  it("keeps a reused worker's journal usage at run level across tasks", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-worker-usage-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-worker-usage-project-"));
+    mkdirSync(join(cwd, ".git"));
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home,
+      limits: { global: 20, workspace: 20, session: 20, parent: 20, provider: 20 } });
+    const rootAdmission = kernel.bindClient({ cwd, scope: { runId: "usage-parent", sessionId: "usage-parent", autonomous: false } });
+    const session = makeStubSession({ conversationId: "usage-parent",
+      services: { provider: makeProvider([]), executionAdmission: rootAdmission },
+      sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId, agencVersion: "0.2.0",
+      agencHome: home, sessionTempRoot: home });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd,
+      originator: "worker-usage-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const { control, live } = await spawnLive(session);
+    const costs = [0.2, 0.3];
+    let steps = 0;
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* (this: Session) {
+      // Each assignment spends through the child's own admission facade.
+      const admission = this.services.executionAdmission!;
+      const cost = costs[steps]!;
+      steps += 1;
+      const lease = await admission.acquire({ stepId: `usage-step-${steps}`, kind: "model_turn", model: "budget-model",
+        provider: "budget-provider", maxInputTokens: 1, maxOutputTokens: 0, maxCostUsd: cost });
+      admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+      admission.reconcile(lease.reservation.reservationId, { inputTokens: 1, outputTokens: 0, costUsd: cost });
+      admission.acknowledgeCompletion(lease.reservation.reservationId);
+      yield { type: "turn_complete", content: "done", stopReason: "completed",
+        usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 } };
+      return { reason: "completed" };
+    });
+    const iter = runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "first" }],
+      taskPrompt: "first", taskId: "first", keepAlive: true });
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const second = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath, content: "second", taskId: "second" });
+      await second;
+      expect(steps).toBe(2);
+      const child = liveAgentSession(live)!;
+      expect(child.services.executionAdmission!.getUsageSummary!().costUsd).toBeCloseTo(0.5);
+      const journaled = readFileSync(live.rolloutPath!, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { type?: string; payload?: { msg?: { type?: string; payload?: { costUsd?: number } } } })
+        .filter((item) => item.type === "event_msg" && item.payload?.msg?.type === "session_usage")
+        .map((item) => item.payload!.msg!.payload!.costUsd!);
+      // The journal follows the second task's spend instead of stopping at the first.
+      expect(journaled.at(-1)).toBeCloseTo(0.5);
+      expect(journaled.some((cost) => Math.abs(cost - 0.2) < 1e-9)).toBe(true);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      turnSpy.mockRestore();
+      store.close();
+      kernel.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   describe("automatic routing and provider retries", () => {
     async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>) {
       const configStore = new ConfigStore({ cwd: "/tmp", base: {
@@ -5282,6 +5341,18 @@ describe("runAgent", () => {
         expect(chatStream).toHaveBeenCalledOnce();
         expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "provider_unavailable", retryable: true });
       } finally { release(); }
+    });
+
+    it("runs a routed child on the parent's model past 32 model calls without a forced wrap-up", async () => {
+      const { live, chatStream, run } = await routedChild([
+        ...Array.from({ length: 40 }, (_, index) => ({ content: "", finishReason: "tool_calls" as const,
+          toolCalls: [{ id: `read-${index}`, name: "missing-tool", arguments: JSON.stringify({ page: index }) }] })),
+        { content: "done" },
+      ]);
+      const { result } = await run();
+      expect(result.outcome).toBe("completed");
+      expect(chatStream).toHaveBeenCalledTimes(41);
+      expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "completed" });
     });
 
     it("publishes the child's receipt without waiting for routing telemetry", async () => {

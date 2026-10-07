@@ -57,6 +57,12 @@ export interface CrossProviderConsentService {
   readonly ownerSessionId: string;
   readonly sessionEpoch: string;
   /**
+   * Whether a spawn on this provider would be granted now without asking
+   * anyone: settings consent applies and no child in this conversation has
+   * stopped for funds. A grant for one exact scope does not count here.
+   */
+  grantsWithoutAsking?(provider: string): boolean;
+  /**
    * `routeProvider` is the provider of the plan's route. It differs from the
    * disclosed destination only for a managed child, which routes via agenc.
    */
@@ -83,7 +89,8 @@ export interface ChildExecutionPlan {
     readonly fileReadDenylist?: readonly string[]; readonly networkEnabled?: boolean };
   readonly policyRevision: string;
   readonly consentGrant: CrossProviderConsentGrant | null;
-  readonly budgetAllocation: { readonly maxModelCalls: number; readonly maxCostUsd?: number } | null;
+  /** A cross-provider plan always bounds its model calls. Others carry only a dollar cap their spawn set. */
+  readonly budgetAllocation: { readonly maxModelCalls?: number; readonly maxCostUsd?: number } | null;
   readonly routing?: {
     readonly taskKind: import("./provider-selector-types.js").ChildTaskKind;
     readonly complexity: import("./provider-selector-types.js").ChildTaskComplexity;
@@ -272,10 +279,14 @@ export async function createChildExecutionPlan(params: {
       networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
     policyRevision: plannedPolicyRevision,
     consentGrant: null,
-    budgetAllocation: crossProvider || params.maxCostUsd !== undefined || params.routing !== undefined ? Object.freeze({
+    // Consent to another provider covers a bounded number of model calls. A
+    // child on the parent's provider, routed or not, runs as an inherited
+    // child would: no call cap and no forced wrap-up, only a dollar cap that
+    // its spawn set.
+    budgetAllocation: crossProvider ? Object.freeze({
       maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32), params.maxModelCalls ?? 32),
       ...(params.maxCostUsd !== undefined ? { maxCostUsd: params.maxCostUsd } : {}),
-    }) : null,
+    }) : params.maxCostUsd !== undefined ? Object.freeze({ maxCostUsd: params.maxCostUsd }) : null,
     ...(params.routing !== undefined ? { routing: Object.freeze({ ...params.routing }) } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(serviceTier !== undefined ? { serviceTier } : {}),
@@ -405,8 +416,8 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
     throw new Error("resume_blocked: child task has an invalid dollar allocation");
   }
   if (plan.crossProvider) {
-    if (plan.budgetAllocation === null || !Number.isSafeInteger(plan.budgetAllocation.maxModelCalls) ||
-        plan.budgetAllocation.maxModelCalls < 1 || plan.budgetAllocation.maxModelCalls > 32) {
+    const maxModelCalls = plan.budgetAllocation?.maxModelCalls;
+    if (maxModelCalls === undefined || !Number.isSafeInteger(maxModelCalls) || maxModelCalls < 1 || maxModelCalls > 32) {
       throw new Error("resume_blocked: cross-provider plan has no bounded model-call allocation");
     }
     const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;

@@ -1327,8 +1327,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             : !callerIsCurrent() || session.isShuttingDown ? "the calling agent was stopped or is no longer live."
               : undefined;
       const mayStartAttempt = (): boolean => attemptBlocker() === undefined;
+      // A child on the parent's provider needs no consent, unless consent
+      // provenance from a cross-provider caller makes it cross-provider too.
+      const onParentProvider = (provider: string): boolean =>
+        provider === activeProvider && inheritedConsentPlan?.crossProvider !== true;
       const providerAllowed = (provider: string): boolean => provider === activeProvider ||
         (childProviderPolicy(session).allowed_providers ?? []).includes(provider);
+      // A retry that would need someone to approve it now cannot start
+      // unattended, and a person may refuse it.
+      const startsWithoutAsking = (provider: string): boolean => onParentProvider(provider) ||
+        session.services.crossProviderConsent?.grantsWithoutAsking?.(provider) === true;
       // While this holds, the child ends its task on a provider failure
       // instead of retrying that provider, so this supervisor can retry it on
       // another one. Otherwise the child keeps its own provider retries. The
@@ -1338,7 +1346,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         const next = context.fallbackCandidates[0];
         if (next === undefined) return;
         const release = superviseChildRoutingRetries(child, () => child.toolCallCount === 0 && mayStartAttempt() &&
-          providerAllowed(next.provider));
+          providerAllowed(next.provider) && startsWithoutAsking(next.provider));
         void observation.then(release, release);
       };
       let retryAnnounced = false;
@@ -1381,7 +1389,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           let nextObservation: Promise<ChildRoutingAttemptResult<AgentThread>> | undefined;
           const retryArgs = { ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
             provider: context.candidate.provider, model: context.candidate.model,
-            ...(context.remainingCostUsd !== undefined ? { max_cost_usd: context.remainingCostUsd } : {}),
+            // The chain's dollar budget bounds a retry on another provider. On
+            // the parent's provider only a cap the spawn itself set applies.
+            ...(context.remainingCostUsd !== undefined &&
+              (!onParentProvider(context.candidate.provider) || args.max_cost_usd !== undefined)
+              ? { max_cost_usd: context.remainingCostUsd } : {}),
           };
           // Keep the runtime cancellation signal outside model-facing keys,
           // including after retry consent and delegate setup awaits.

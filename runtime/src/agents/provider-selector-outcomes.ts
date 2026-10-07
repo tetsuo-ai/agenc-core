@@ -1,7 +1,7 @@
 import { abilityPrior, updateAbility, validAbility, validFeatures, type TaskFeatures, type ModelAbility } from "./provider-selector-irt.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, open, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { lock } from "../utils/lockfile.js";
 import { CHILD_ROUTING_PROFILE_REVISION } from "./provider-selector-profiles.js";
 import { CHILD_TASK_COMPLEXITIES, CHILD_TASK_KINDS } from "./provider-selector-types.js";
@@ -199,6 +199,22 @@ async function readHistoryFile(filePath: string): Promise<{ readonly history: St
   } finally { await handle.close(); }
 }
 
+const TEMPORARY_SUFFIX = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+
+/**
+ * Remove temporaries a crashed writer left between its write and rename.
+ * Call only while holding the file's lock: no live writer has one open then.
+ */
+async function removeStrayTemporaries(filePath: string): Promise<void> {
+  const directory = dirname(filePath);
+  const name = basename(filePath);
+  let entries: string[];
+  try { entries = await readdir(directory); } catch { return; }
+  await Promise.all(entries
+    .filter(entry => entry.startsWith(name) && TEMPORARY_SUFFIX.test(entry.slice(name.length)))
+    .map(entry => unlink(join(directory, entry)).catch(() => {})));
+}
+
 /**
  * One instance per process and state path. The TUI and the daemon can share
  * an AgenC home, so every write rereads the file under a lock, merges into
@@ -295,6 +311,7 @@ export class ChildRoutingOutcomeStore {
       onCompromised: () => {},
     });
     try {
+      await removeStrayTemporaries(this.filePath);
       const current = (await readHistoryFile(this.filePath)).history;
       const next = change(current);
       if (next !== undefined) await this.#persist(next);

@@ -489,6 +489,28 @@ describe("consent from settings", () => {
     } finally { fixture.close(); }
   });
 
+  it("reports whether a spawn would be granted without asking anyone", async () => {
+    const settings = interactiveFixture({ agents: SETTINGS_CONSENT, answerable: false });
+    try {
+      const consent = settings.session.services.crossProviderConsent!;
+      expect(consent.grantsWithoutAsking?.("deepseek")).toBe(true);
+      expect(consent.grantsWithoutAsking?.("openai")).toBe(false);
+      // After a funds stop every later spawn asks.
+      settings.emit(fundsNotice("/root/worker"));
+      expect(consent.grantsWithoutAsking?.("deepseek")).toBe(false);
+    } finally { settings.close(); }
+    const asking = interactiveFixture({ agents: ASK_EACH_SPAWN });
+    try {
+      expect(asking.session.services.crossProviderConsent!.grantsWithoutAsking?.("deepseek")).toBe(false);
+    } finally { asking.close(); }
+    // A funds stop journaled before a restart counts as well.
+    const restored = interactiveFixture({ agents: SETTINGS_CONSENT,
+      journal: [{ type: "event_msg", payload: fundsNotice("/root/worker") }] });
+    try {
+      expect(restored.session.services.crossProviderConsent!.grantsWithoutAsking?.("deepseek")).toBe(false);
+    } finally { restored.close(); }
+  });
+
   it("asks at every spawn when the user opted into it", async () => {
     const fixture = interactiveFixture({ agents: ASK_EACH_SPAWN });
     try {
