@@ -5,7 +5,7 @@ import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
   LLMMissingCredentialsError,
   LLMContextWindowExceededError, LLMManagedUsagePendingError,
   LLMMessageValidationError, LLMManagedAdmissionError, LLMFundsError,
-  LLMModelUnavailableError } from "../llm/errors.js";
+  LLMModelUnavailableError, LLMStreamTruncatedError } from "../llm/errors.js";
 
 export type ChildTerminalReason =
   | "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable"
@@ -35,6 +35,21 @@ function statusOf(error: unknown): number | undefined {
   const item = error as { status?: unknown; statusCode?: unknown };
   const raw = item.status ?? item.statusCode;
   return typeof raw === "number" ? raw : undefined;
+}
+
+const TRANSIENT_TRANSPORT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN"]);
+
+/**
+ * A provider or transport failure that carries no HTTP status: a stream that
+ * ended before its terminal event, a dropped socket, or the stream idle
+ * watchdog. Other errors without a status are not provider failures.
+ */
+function statuslessProviderFailure(error: unknown): boolean {
+  if (error instanceof LLMStreamTruncatedError) return true;
+  if (error === null || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && TRANSIENT_TRANSPORT_CODES.has(code)) return true;
+  return error instanceof Error && error.message.startsWith("stream_idle");
 }
 
 /** Whether the failed sampling attempt crossed the provider wire boundary. */
@@ -111,8 +126,11 @@ export function classifyChildFailure(provider: string, error: unknown): {
     return { reason: "rate_limited", retryable: true,
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
   }
-  if (error instanceof LLMTimeoutError || /(?:^|\b)(?:timeout|timed out|deadline_reached|role_timeout)(?:\b|$)/.test(message))
-    return { reason: "timeout", retryable: true };
+  if (error instanceof LLMTimeoutError) return { reason: "timeout", retryable: true };
+  // A role timeout, a run deadline or a timeout no provider reported is the
+  // child's own limit. Only a provider status makes it a provider failure.
+  if (/(?:^|\b)(?:timeout|timed out|deadline_reached|role_timeout)(?:\b|$)/.test(message))
+    return { reason: "timeout", retryable: status === 408 || (status !== undefined && status >= 500) };
   if (/maxturns|max.turns/.test(message)) return { reason: "step_limit", retryable: false };
   if (/no.progress/.test(message)) return { reason: "no_progress", retryable: false };
   if (error instanceof LLMAuthenticationError || status === 401 || status === 403)
@@ -132,7 +150,8 @@ export function classifyChildFailure(provider: string, error: unknown): {
   if (/empty.response|no assistant output/.test(message)) return { reason: "model_refused", retryable: false };
   if (/cancel|interrupt|aborted|worker_teardown/.test(message)) return { reason: "parent_cancelled", retryable: false };
   if (status === 408 || status === 504) return { reason: "timeout", retryable: true };
-  return { reason: "provider_unavailable", retryable: status === undefined || status >= 500 };
+  return { reason: "provider_unavailable",
+    retryable: status === undefined ? statuslessProviderFailure(error) : status >= 500 };
 }
 
 export function childTerminalOutcome(args: {

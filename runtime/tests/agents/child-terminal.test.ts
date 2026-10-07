@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { LLMManagedAdmissionError, LLMMessageValidationError } from "../../src/llm/errors.js";
+import { LLMManagedAdmissionError, LLMMessageValidationError, LLMServerError, LLMStreamTruncatedError,
+  LLMTimeoutError } from "../../src/llm/errors.js";
+import { StreamModelError } from "../../src/phases/stream-model.js";
 import { AgentStatusTracker, formatSubagentNotification } from "../../src/agents/status.js";
 import { toListedAgentJson } from "../../src/agents/v2/common.js";
 import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema.js";
@@ -111,6 +113,22 @@ describe("child terminal failures", () => {
   ] as const)("maps existing %s failure path", async (reason, error) => {
     const { classifyChildFailure } = await import("../../src/agents/child-terminal.js");
     expect(classifyChildFailure("openai", error).reason).toBe(reason);
+  });
+
+  it.each([
+    ["the child's role timeout", new Error("role_timeout after 60000ms"), "timeout", false],
+    ["a run deadline", new Error("deadline_reached"), "timeout", false],
+    ["a timeout no provider reported", new Error("tool call timed out"), "timeout", false],
+    ["an unclassified failure", new Error("subagent turn failed"), "provider_unavailable", false],
+    ["a provider timeout", new LLMTimeoutError("openai", 120_000), "timeout", true],
+    ["a gateway timeout", new LLMServerError("openai", 504, "Gateway Timeout"), "timeout", true],
+    ["a wrapped 503", new StreamModelError(new LLMServerError("openai", 503, "overloaded")), "provider_unavailable", true],
+    ["a truncated stream", new LLMStreamTruncatedError("openai", "stream ended early"), "provider_unavailable", true],
+    ["a dropped socket", new StreamModelError(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })), "provider_unavailable", true],
+    ["the stream idle watchdog", new StreamModelError(new Error("stream_idle: no data for 600000ms")), "provider_unavailable", true],
+  ] as const)("counts only provider failures as retryable: %s", async (_name, error, reason, retryable) => {
+    const { classifyChildFailure } = await import("../../src/agents/child-terminal.js");
+    expect(classifyChildFailure("openai", error)).toMatchObject({ reason, retryable });
   });
 
   it("preserves progress and dispatch certainty in the one terminal contract", async () => {
