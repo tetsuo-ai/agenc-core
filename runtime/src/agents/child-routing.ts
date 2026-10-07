@@ -26,9 +26,16 @@ async function outcomeStore(session: Session): Promise<ChildRoutingOutcomeStore 
   catch { stores.delete(home); return undefined; }
 }
 
+/** Automatic child selection is on only when both settings are on. */
+export function automaticChildSelectionEnabled(session: Session): boolean {
+  const policy = childProviderPolicy(session);
+  return policy.cross_provider_enabled === true && policy.cross_provider_auto === true;
+}
+
+/** Routing telemetry for one committed child receipt. Nothing is written while automatic selection is off. */
 export async function recordChildRoutingOutcome(session: Session, plan: ChildExecutionPlan | undefined,
   outcome: { readonly receiptId: string; readonly terminal: ChildTerminalOutcome; readonly latencyMs: number }): Promise<void> {
-  if (plan === undefined) return;
+  if (plan === undefined || !automaticChildSelectionEnabled(session)) return;
   // A successful explicit override can restore a provider after credits or
   // credentials are repaired. Only verified quality labels train accuracy.
   const classification = plan.routing ?? classifyChildTask(plan.task.text);

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildExecutionPlan } from "../../src/agents/cross-provider.js";
@@ -19,6 +19,31 @@ function fixture(connected: readonly string[], allowed = ["deepseek", "openai"])
   } as unknown as Session;
   return { session, readiness };
 }
+
+const completed = { provider: "deepseek", model: "deepseek-flash", reason: "completed" as const,
+  retryable: false, dispatch: "sent" as const, completedWork: "Names", unfinishedWork: "" };
+
+async function withHome(run: (home: string) => Promise<void>): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), "child-routing-outcomes-"));
+  try { await run(home); } finally { await rm(home, { recursive: true, force: true }); }
+}
+
+describe("child routing outcome file", () => {
+  it.each([
+    ["off", { cross_provider_enabled: false, cross_provider_auto: false }],
+    ["cross-provider only", { cross_provider_enabled: true, cross_provider_auto: false }],
+    ["automatic choice only", { cross_provider_enabled: false, cross_provider_auto: true }],
+  ] as const)("writes nothing while automatic selection is %s", async (_name, agents) => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home }, current: () => ({ agents }) });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "planned", terminal: completed, latencyMs: 2 });
+      await recordChildRoutingOutcome(session, undefined, { receiptId: "inherited", terminal: completed, latencyMs: 2 });
+      await expect(stat(join(home, "state"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+});
 
 describe("child routing integration", () => {
   it("an explicit successful child restores a provider after its funds block", async () => {

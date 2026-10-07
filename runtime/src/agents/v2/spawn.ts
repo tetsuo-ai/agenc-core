@@ -32,7 +32,7 @@ import type { SubagentSpeed } from "../../config/schema.js";
 import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../session/cost.js";
 import type { ProviderSelection } from "../../session/provider-service.js";
-import { routeChildTask, childRoutingBudget } from "../child-routing.js";
+import { automaticChildSelectionEnabled, routeChildTask, childRoutingBudget } from "../child-routing.js";
 import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, type RankedChildCandidate } from "../provider-selector.js";
 import type { ChildExecutionPlan } from "../cross-provider.js";
 import { runChildRoutingFallback, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
@@ -90,7 +90,23 @@ import {
 } from "./common.js";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
-  "Spawned agents inherit your current model unless automatic selection is enabled. Set provider and model for an explicit override; use routing=inherit to keep the parent model.";
+  "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+const SPAWN_AGENT_AUTOMATIC_MODEL_GUIDANCE =
+  "Automatic selection chooses each spawned agent's model. Set provider and model for an explicit override, or routing=inherit to keep your current model.";
+
+/** Arguments spawn_agent accepts whether or not automatic selection is on. */
+const SPAWN_AGENT_ARGUMENTS: readonly string[] = [
+  "message", "message_ref", "task_name", "description", "agent_type", "model", "provider",
+  "reasoning_effort", "service_tier", "tool_free", "exact_output", "fork_turns", "fork_context", "isolation",
+];
+/** Present in the schema, and accepted, only while automatic selection is on. */
+const AUTOMATIC_SELECTION_ARGUMENTS: readonly string[] = [
+  "routing", "task_kind", "complexity", "requires_vision", "context_tokens", "max_cost_usd",
+];
+
+function automaticSelectionOn(session: Session | null | undefined): boolean {
+  return session != null && session.services != null && automaticChildSelectionEnabled(session);
+}
 
 /** Status projection belongs to the spawning Session, not the worker lifetime. */
 function ownTaskStatusProjection(session: Session): {
@@ -161,7 +177,7 @@ identifiers (the root agent is named "/root", its children are
 from the Environment section of this prompt — never assume "/root" or
 "/root/<x>" is a real directory.
 
-${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+${automaticSelectionOn(session) ? SPAWN_AGENT_AUTOMATIC_MODEL_GUIDANCE : SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
 ${AGENT_MESSAGE_REFERENCE_GUIDANCE}`;
@@ -555,12 +571,14 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
-      routing: { type: "string", enum: ["auto", "inherit"], description: "Optional routing override. Auto requires enabled automatic selection. Inherit keeps the parent model." },
-      task_kind: { type: "string", enum: [...CHILD_TASK_KINDS], description: "Optional task category for automatic selection." },
-      complexity: { type: "string", enum: [...CHILD_TASK_COMPLEXITIES], description: "Optional task difficulty for automatic selection." },
-      requires_vision: { type: "boolean", description: "Require a model with image input support." },
-      context_tokens: { type: "integer", minimum: 0, description: "Expected input context size, including documents and tool results." },
-      max_cost_usd: { type: "number", minimum: 0, description: "Hard dollar cap for this child assignment. Parent and workspace caps still apply." },
+      ...(automaticSelectionOn(session) ? {
+        routing: { type: "string", enum: ["auto", "inherit"], description: "Optional routing override. Auto requires enabled automatic selection. Inherit keeps the parent model." },
+        task_kind: { type: "string", enum: [...CHILD_TASK_KINDS], description: "Optional task category for automatic selection." },
+        complexity: { type: "string", enum: [...CHILD_TASK_COMPLEXITIES], description: "Optional task difficulty for automatic selection." },
+        requires_vision: { type: "boolean", description: "Require a model with image input support." },
+        context_tokens: { type: "integer", minimum: 0, description: "Expected input context size, including documents and tool results." },
+        max_cost_usd: { type: "number", minimum: 0, description: "Hard dollar cap for this child assignment. Parent and workspace caps still apply." },
+      } : {}),
       exact_output: { type: "boolean", description: "Set true when this task needs an exact machine-readable answer, such as verbatim JSON. Skips the child completion checklist; child results are always delivered unchanged to the parent." },
       tool_free: {
         type: "boolean",
@@ -615,32 +633,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return spawnValidationError(DEADLINE_RESERVE_SPAWN_REFUSAL);
     }
     const strict = strictArgs(args, {
-      allowed: new Set([
-        "message",
-        "message_ref",
-        "task_name",
-        "description",
-        "agent_type",
-        "model",
-        "provider",
-        "reasoning_effort",
-        "service_tier",
-        "tool_free",
-        "exact_output",
-        "fork_turns",
-        "fork_context",
-        "isolation",
-        "routing", "task_kind", "complexity", "requires_vision", "context_tokens", "max_cost_usd",
-      ]),
+      allowed: new Set([...SPAWN_AGENT_ARGUMENTS, ...AUTOMATIC_SELECTION_ARGUMENTS]),
       required: ["task_name"],
     });
     if (strict) return confirmedNoSpawn(strict);
-    if (args.routing !== undefined && args.routing !== "auto" && args.routing !== "inherit") return spawnValidationError("routing must be auto or inherit");
-    if (args.task_kind !== undefined && !CHILD_TASK_KINDS.includes(args.task_kind as ChildSelectionTask["kind"])) return spawnValidationError("invalid task_kind");
-    if (args.complexity !== undefined && !CHILD_TASK_COMPLEXITIES.includes(args.complexity as ChildSelectionTask["complexity"])) return spawnValidationError("invalid complexity");
-    if (args.requires_vision !== undefined && typeof args.requires_vision !== "boolean") return spawnValidationError("requires_vision must be a boolean");
-    if (args.context_tokens !== undefined && (typeof args.context_tokens !== "number" || !Number.isSafeInteger(args.context_tokens) || args.context_tokens < 0)) return spawnValidationError("context_tokens must be a nonnegative integer");
-    if (args.max_cost_usd !== undefined && (typeof args.max_cost_usd !== "number" || !Number.isFinite(args.max_cost_usd) || args.max_cost_usd < 0)) return spawnValidationError("max_cost_usd must be finite and nonnegative");
     for (const key of [
       "message",
       "task_name",
@@ -723,6 +719,18 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return spawnValidationError(error instanceof Error ? error.message : String(error));
     }
+    // The caller's schema lists the automatic selection arguments only while
+    // the feature is on. Off, they are unknown fields, as they were before it.
+    if (!automaticSelectionOn(session)) {
+      const unknown = strictArgs(args, { allowed: new Set(SPAWN_AGENT_ARGUMENTS), required: ["task_name"] });
+      if (unknown) return confirmedNoSpawn(unknown);
+    }
+    if (args.routing !== undefined && args.routing !== "auto" && args.routing !== "inherit") return spawnValidationError("routing must be auto or inherit");
+    if (args.task_kind !== undefined && !CHILD_TASK_KINDS.includes(args.task_kind as ChildSelectionTask["kind"])) return spawnValidationError("invalid task_kind");
+    if (args.complexity !== undefined && !CHILD_TASK_COMPLEXITIES.includes(args.complexity as ChildSelectionTask["complexity"])) return spawnValidationError("invalid complexity");
+    if (args.requires_vision !== undefined && typeof args.requires_vision !== "boolean") return spawnValidationError("requires_vision must be a boolean");
+    if (args.context_tokens !== undefined && (typeof args.context_tokens !== "number" || !Number.isSafeInteger(args.context_tokens) || args.context_tokens < 0)) return spawnValidationError("context_tokens must be a nonnegative integer");
+    if (args.max_cost_usd !== undefined && (typeof args.max_cost_usd !== "number" || !Number.isFinite(args.max_cost_usd) || args.max_cost_usd < 0)) return spawnValidationError("max_cost_usd must be finite and nonnegative");
     let prompt: string;
     try {
       prompt = resolveAgentMessage(args, session);
@@ -841,12 +849,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const roleConfiguredServiceTier = roleServiceTier(resolvedRole);
     let effectiveModel = roleConfiguredModel ?? model;
     const effectiveReasoningEffort = roleConfiguredReasoningEffort ?? reasoningEffort;
-    const autoPolicy = childProviderPolicy(session);
-    if (args.routing === "auto" && (autoPolicy.cross_provider_enabled !== true || autoPolicy.cross_provider_auto !== true)) {
-      return failSpawn("Automatic child selection is disabled in settings.");
-    }
-    if (autoPolicy.cross_provider_enabled === true && autoPolicy.cross_provider_auto === true &&
-        args.routing !== "inherit" && requestedProvider === undefined && effectiveModel === undefined && forkMode === undefined) {
+    // The arguments check above already refused routing=auto while the
+    // feature is off, so this branch runs only with automatic selection on.
+    if (automaticSelectionOn(session) && args.routing !== "inherit" && requestedProvider === undefined &&
+        effectiveModel === undefined && forkMode === undefined) {
       const routed = await routeChildTask(session, {
         requiresTools: args.tool_free !== true,
         prompt, ...(role !== undefined ? { role } : {}),
@@ -858,8 +864,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       });
       if (routed.result.selected === undefined) return failSpawn(routed.result.reason);
       const currentPolicy = childProviderPolicy(session);
-      if (!callerIsCurrent() || session.isShuttingDown || currentPolicy.cross_provider_enabled !== true ||
-          currentPolicy.cross_provider_auto !== true || !(currentPolicy.allowed_providers ?? []).includes(routed.result.selected.provider)) {
+      if (!callerIsCurrent() || session.isShuttingDown || !automaticSelectionOn(session) ||
+          !(currentPolicy.allowed_providers ?? []).includes(routed.result.selected.provider)) {
         return failSpawn("Child routing policy or caller changed during selection.");
       }
       requestedProvider = routed.result.selected.provider;
