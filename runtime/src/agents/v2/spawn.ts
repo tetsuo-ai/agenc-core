@@ -608,7 +608,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
       ...(automaticSelectionOn(session) ? {
-        routing_preference: { type: "string", enum: [...ROUTING_PREFERENCES], description: "How much a dollar saving counts against quality under a spend cap (max_cost_usd or a budget), or fast for quicker models. Without a cap price never moves the child off your model. Defaults to balanced." },
+        routing_preference: { type: "string", enum: [...ROUTING_PREFERENCES], description: "economy lets an adequate cheaper model take the task when it saves much of a spend cap (max_cost_usd or a budget). balanced, the default, and quality keep your model while it is adequate and treat a cap as a limit. fast prefers quicker models. Without a cap price never moves the child off your model." },
         routing: { type: "string", enum: ["auto", "inherit"], description: "Optional routing override. Auto requires enabled automatic selection. Inherit keeps the parent model." },
         task_kind: { type: "string", enum: [...CHILD_TASK_KINDS], description: "Optional task category for automatic selection." },
         complexity: { type: "string", enum: [...CHILD_TASK_COMPLEXITIES], description: "Optional task difficulty for automatic selection." },
@@ -909,7 +909,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         });
       } catch (error) {
         // Selection runs before any child exists, so nothing was spawned.
-        return failSpawn(`${error instanceof Error ? error.message : String(error)} No child was started.`);
+        const message = (error instanceof Error ? error.message : String(error)).trim();
+        return failSpawn(`${/[.!?]$/u.test(message) ? message : `${message}.`} No child was started.`);
       }
       const selected = routed.result.selected;
       const currentPolicy = childProviderPolicy(session);

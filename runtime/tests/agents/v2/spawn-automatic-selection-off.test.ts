@@ -99,6 +99,7 @@ describe("spawn_agent with automatic selection off", () => {
     const properties = surface(on.tool, on.session).inputSchema.properties as Record<string, { enum?: string[]; description?: string }>;
     expect(properties.routing_preference?.enum).toEqual(["balanced", "economy", "quality", "fast"]);
     expect(properties.routing_preference?.description).toContain("Without a cap price never moves the child off your model.");
+    expect(properties.routing_preference?.description).toContain("balanced, the default, and quality keep your model while it is adequate");
     const invalid = await on.tool.execute({ message: "Extract names", task_name: "worker", routing_preference: "cheapest" });
     expect(invalid.isError).toBe(true);
     expect(JSON.parse(invalid.content)).toEqual({ error: "Invalid routing preference" });

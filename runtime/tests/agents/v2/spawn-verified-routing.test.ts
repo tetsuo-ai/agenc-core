@@ -51,7 +51,7 @@ describe("host verification through spawn_agent", () => {
       "/root/extractor_retry2. Use that child's durable result. The check failed for /root/extractor.");
   });
   it.each([
-    ["rejects", () => Promise.reject(new Error("checker offline")), "The host task verifier failed: checker offline"],
+    ["rejects", () => Promise.reject(new Error("checker offline")), "The host task verifier failed: checker offline."],
     ["returns no usable check", async () => ({ available: true, retrySafe: true, costUsd: -1, latencyMs: 1, check: async () => "pass" }),
       "The host task verifier returned no usable check."],
   ] as const)("refuses the spawn with no child when the host verifier %s", async (_name, prepare, message) => {
