@@ -7,8 +7,6 @@
  * @module
  */
 
-import { AnthropicProvider } from "../anthropic/adapter.js";
-import { isHaiku55 } from "../../../utils/model/anthropicThinkingControl.js";
 import { createHash, createHmac } from "node:crypto";
 import type {
   LLMChatOptions,
@@ -42,8 +40,6 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
-  isLLMPreGenerationRejection,
-  markLLMPreGenerationRejection,
   markLLMInitialHttpRejection,
 } from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
@@ -227,11 +223,10 @@ function signingKey(
   secretAccessKey: string,
   dateStamp: string,
   region: string,
-  service: string = BEDROCK_SERVICE,
 ): Buffer {
   const dateKey = hmac(`AWS4${secretAccessKey}`, dateStamp);
   const regionKey = hmac(dateKey, region);
-  const serviceKey = hmac(regionKey, service);
+  const serviceKey = hmac(regionKey, BEDROCK_SERVICE);
   return hmac(serviceKey, "aws4_request");
 }
 
@@ -243,11 +238,9 @@ function signRequest(params: {
   readonly credentials: BedrockCredentials;
   readonly now: Date;
   readonly operation?: "converse" | "converse-stream" | "count-tokens";
-  readonly messagesPath?: string;
 }): SignedRequest {
   const operation = params.operation ?? "converse";
-  const path = params.messagesPath ?? `/model/${encodeURIComponent(params.model)}/${operation}`;
-  const service = params.messagesPath === undefined ? BEDROCK_SERVICE : "bedrock-mantle";
+  const path = `/model/${encodeURIComponent(params.model)}/${operation}`;
   const url = new URL(path, params.baseURL);
   const payloadHash = sha256Hex(params.body);
   const { dateStamp, amzDate } = formatAmzDate(params.now);
@@ -270,7 +263,7 @@ function signRequest(params: {
     signedHeaders,
     payloadHash,
   ].join("\n");
-  const credentialScope = `${dateStamp}/${params.region}/${service}/aws4_request`;
+  const credentialScope = `${dateStamp}/${params.region}/${BEDROCK_SERVICE}/aws4_request`;
   const stringToSign = [
     "AWS4-HMAC-SHA256",
     amzDate,
@@ -278,7 +271,7 @@ function signRequest(params: {
     sha256Hex(canonicalRequest),
   ].join("\n");
   const signature = hmacHex(
-    signingKey(params.credentials.secretAccessKey, dateStamp, params.region, service),
+    signingKey(params.credentials.secretAccessKey, dateStamp, params.region),
     stringToSign,
   );
 
@@ -1121,7 +1114,6 @@ export class BedrockProvider implements LLMProvider {
   readonly tokenCountCapability: ProviderTokenCountCapability;
   private readonly region: string;
   private readonly baseURL: string;
-  private readonly messagesBaseURL: string;
 
   constructor(config: BedrockProviderConfig) {
     const endpoint = resolveBuiltInProviderRegionalEndpoint(
@@ -1132,10 +1124,6 @@ export class BedrockProvider implements LLMProvider {
       throw new Error("amazon-bedrock registry metadata is missing a regional endpoint");
     }
     this.region = endpoint.region;
-    const configuredBaseURL = firstNonEmpty(config.baseURL);
-    this.messagesBaseURL = configuredBaseURL !== undefined && configuredBaseURL !== endpoint.baseURL
-      ? configuredBaseURL
-      : `https://bedrock-mantle.${this.region}.api.aws`;
     this.baseURL = firstNonEmpty(config.baseURL) ?? endpoint.baseURL;
     this.config = {
       ...config,
@@ -1143,8 +1131,8 @@ export class BedrockProvider implements LLMProvider {
       baseURL: this.baseURL,
     };
     this.tokenCountCapability = Object.freeze({
-      capabilityVersion: "amazon-bedrock-count-tokens-v2",
-      adapterRevision: "amazon-bedrock-converse-and-messages-wire-v2",
+      capabilityVersion: "amazon-bedrock-count-tokens-converse-v1",
+      adapterRevision: "amazon-bedrock-converse-wire-v1",
       configurationRevision: createTokenAccountingConfigurationRevision({
         region: this.region,
         systemPrompt: config.systemPrompt ?? "",
@@ -1153,61 +1141,6 @@ export class BedrockProvider implements LLMProvider {
       countTokens: (request: TokenAccountingRequest, signal: AbortSignal) =>
         this.countRequestTokens(request, signal),
     });
-  }
-
-  // Haiku 5.5 uses Bedrock Mantle's Messages API and standard SSE. Reuse
-  // the Anthropic body/response implementation, signing the final serialized
-  // request with AWS credentials at the transport boundary.
-  private messagesProvider(model: string): AnthropicProvider | undefined {
-    const identity = resolveBedrockModelIdentity(model, this.config.modelOverrides);
-    if (!isHaiku55(identity)) return undefined;
-    const wireModel = parseClaudeModelId(model) !== undefined
-      ? "anthropic.claude-haiku-5-5"
-      : model;
-    return new AnthropicProvider({
-      ...this.config,
-      model: "anthropic.claude-haiku-5-5",
-      // Internal transport marker only. The signing fetch replaces all auth
-      // headers, so this value is never sent and no Anthropic key is needed.
-      apiKey: "bedrock-sigv4",
-      baseURL: `${this.messagesBaseURL.replace(/\/$/, "")}/anthropic/v1`,
-      fetchImpl: async (input, init) => {
-        const url = new URL(String(input));
-        const requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        requestBody.model = wireModel;
-        const body = JSON.stringify(requestBody);
-        const signed = signRequest({
-          baseURL: this.messagesBaseURL,
-          region: this.region,
-          model: wireModel,
-          body,
-          credentials: resolveCredentials(this.config),
-          now: this.config.now?.() ?? new Date(),
-          messagesPath: url.pathname,
-        });
-        const headers = new Headers(init?.headers);
-        headers.delete("x-api-key");
-        headers.delete("authorization");
-        for (const [name, value] of Object.entries(signed.headers)) headers.set(name, value);
-        return fetchProviderRequest(signed.url, { ...init, headers, body }, this.config.fetchImpl ?? fetch);
-      },
-    });
-  }
-
-  private async messagesResponse(
-    provider: AnthropicProvider,
-    response: Promise<LLMResponse>,
-  ): Promise<LLMResponse> {
-    try {
-      return await response;
-    } catch (error) {
-      // Preserve only the inner transport's proof of an initial single-wire
-      // rejection. Status codes and errors after HTTP acceptance are not proof.
-      if (error instanceof Error && isLLMPreGenerationRejection(error, provider.name)) {
-        markLLMPreGenerationRejection(error, this.name);
-      }
-      throw error;
-    }
   }
 
   private async countRequestTokens(
@@ -1223,14 +1156,6 @@ export class BedrockProvider implements LLMProvider {
       throw new Error(
         "amazon-bedrock token counter requires a model identifier",
       );
-    }
-    const messagesProvider = this.messagesProvider(model);
-    if (messagesProvider) {
-      return messagesProvider.tokenCountCapability.countTokens({
-        ...accountingRequest,
-        model: "anthropic.claude-haiku-5-5",
-        options: { ...accountingRequest.options, model: "anthropic.claude-haiku-5-5" },
-      }, signal);
     }
     const inferenceRequest = buildRequest(
       this.config,
@@ -1311,9 +1236,6 @@ export class BedrockProvider implements LLMProvider {
     if (!model) {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
-    const messagesProvider = this.messagesProvider(model);
-    if (messagesProvider) return this.messagesResponse(messagesProvider,
-      messagesProvider.chat(messages, { ...options, model: undefined }));
     const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined
@@ -1368,9 +1290,6 @@ export class BedrockProvider implements LLMProvider {
     if (!model) {
       throw new Error("amazon-bedrock provider requires a model identifier");
     }
-    const messagesProvider = this.messagesProvider(model);
-    if (messagesProvider) return this.messagesResponse(messagesProvider,
-      messagesProvider.chatStream(messages, onChunk, { ...options, model: undefined }));
     const tools = requestTools(this.config, options);
     const request = buildRequest(this.config, model, messages, options);
     const advertisedToolNames = request.toolConfig === undefined

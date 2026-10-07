@@ -82,15 +82,6 @@ export const AGENC_HAIKU_4_5_CONFIG = {
   minimax: 'MiniMax-M2.5',
 } as const satisfies ModelConfig
 
-// Pinned, dateless platform IDs from the Haiku 5.5 overview (2026-10-07).
-export const AGENC_HAIKU_5_5_CONFIG = {
-  ...AGENC_HAIKU_4_5_CONFIG,
-  firstParty: 'claude-haiku-5-5',
-  bedrock: 'anthropic.claude-haiku-5-5',
-  vertex: 'claude-haiku-5-5',
-  foundry: 'claude-haiku-5-5',
-} as const satisfies ModelConfig
-
 export const AGENC_SONNET_4_CONFIG = {
   firstParty: 'claude-sonnet-4-20250514',
   bedrock: 'us.anthropic.agenc-sonnet-4-20250514-v1:0',
@@ -301,7 +292,6 @@ export const AGENC_SONNET_5_5_CONFIG = {
 
 // @[MODEL LAUNCH]: Register the new config here.
 export const ALL_MODEL_CONFIGS = {
-  haiku55: AGENC_HAIKU_5_5_CONFIG,
   haiku35: AGENC_3_5_HAIKU_CONFIG,
   haiku45: AGENC_HAIKU_4_5_CONFIG,
   sonnet35: AGENC_3_5_V2_SONNET_CONFIG,

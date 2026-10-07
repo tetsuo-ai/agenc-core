@@ -75,7 +75,7 @@ export function resolveSessionReasoningEffort(
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
   if (requested === "none") {
-    if (selection !== undefined && ((selection.provider === "anthropic" && anthropicSupportsBetweenToolsThinking(selection.model)) || (["anthropic", "amazon-bedrock", "bedrock"].includes(selection.provider) && isHaiku55(selection.model)))) {
+    if (selection?.provider === "anthropic" && (anthropicSupportsBetweenToolsThinking(selection.model) || isHaiku55(selection.model))) {
       return "none";
     }
     // OpenAI models that document `none` (GPT-6 Sol and Luna) run a

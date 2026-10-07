@@ -4,7 +4,6 @@ import { defaultConfig } from "../../src/config/schema.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema.js";
 import { parseClaudeModelId } from "../../src/utils/model/claudeModelId.js";
-import { AGENC_HAIKU_5_5_CONFIG } from "../../src/utils/model/configs.js";
 import { firstPartyNameToCanonical, getMarketingNameForModel } from "../../src/utils/model/model.js";
 import { anthropicThinkingControl, anthropicEffortLevels, anthropicAcceptsSamplingParameters } from "../../src/utils/model/anthropicThinkingControl.js";
 import { modelSupportsAdaptiveThinking } from "../../src/utils/thinking.js";
@@ -17,10 +16,7 @@ import { anthropicSupportsFastMode } from "../../src/llm/providers/anthropic/fas
 import { getTokenizerConfigForProvider, roughTokenCountEstimationForProvider } from "../../src/llm/token-estimation.js";
 import { calculateUSDCost, getModelCosts, getModelPricingString } from "../../src/utils/modelCost.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS } from "../../src/session/cost.js";
-import { BedrockProvider } from "../../src/llm/providers/bedrock/index.js";
 import { AnthropicProvider } from "../../src/llm/providers/anthropic/adapter.js";
-import { LLMAuthenticationError, LLMRateLimitError } from "../../src/llm/errors.js";
-import { createTokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../src/llm/types.js";
 
 const model = "claude-haiku-5-5";
@@ -54,7 +50,6 @@ describe("Claude Haiku 5.5", () => {
     expect(modelSupportsAdaptiveThinking(id)).toBe(true);
   });
   it("keeps IDs, defaults, legacy rows and selector priors distinct", () => {
-    expect(AGENC_HAIKU_5_5_CONFIG).toMatchObject({ firstParty: model, bedrock: `anthropic.${model}`, vertex: model });
     expect(parseClaudeModelId("claude-haiku-5")?.canonical).toBe("claude-haiku-5");
     expect(parseClaudeModelId("claude-haiku-5-50")?.canonical).toBe("claude-haiku-5-50");
     expect(getMarketingNameForModel(model)).toBe("Haiku 5.5");
@@ -65,12 +60,18 @@ describe("Claude Haiku 5.5", () => {
     expect(childModelProfile("anthropic", model)?.latencyMs).toBe(8000);
     expect(resolveRegisteredModelCatalogEntry({ provider: "anthropic", model: "claude-haiku-4-5" })).toMatchObject({ contextWindow: 200_000, supportedReasoningLevels: [] });
   });
-  it.each([["anthropic", model], ["amazon-bedrock", `anthropic.${model}`], ["openrouter", "anthropic/claude-haiku-5.5"]])("registers the %s contract", (provider, id) => {
+  it.each([["anthropic", model]])("registers the %s contract", (provider, id) => {
     const row = resolveRegisteredModelCatalogEntry({ provider, model: id });
     expect(row).toMatchObject({ contextWindow: 1_000_000,
-      ...(provider === "openrouter" ? { maxOutputTokens: 128_000 } : { maxOutputTokensUpperLimit: 128_000 }),
+      maxOutputTokensUpperLimit: 128_000,
       inputModalities: ["text", "image"], defaultReasoningLevel: "medium", additionalSpeedTiers: [] });
     expect([...row!.supportedReasoningLevels].sort()).toEqual([...levels].sort());
+  });
+  it("does not advertise deferred Bedrock or OpenRouter support", () => {
+    for (const id of [`anthropic.${model}`, `global.anthropic.${model}`, `us.anthropic.${model}`]) {
+      expect(resolveRegisteredModelCatalogEntry({ provider: "amazon-bedrock", model: id })).toBeUndefined();
+    }
+    expect(resolveRegisteredModelCatalogEntry({ provider: "openrouter", model: "anthropic/claude-haiku-5.5" })).toBeUndefined();
   });
   it("exposes the registered limits and efforts to the model picker", async () => {
     const manager = new StaticModelsManager({ config: defaultConfig(), fallbackProvider: "anthropic" });
@@ -84,8 +85,8 @@ describe("Claude Haiku 5.5", () => {
     expect(body.tool_choice).toEqual({ type: "any" });
     for (const field of ["temperature", "top_p", "top_k", "speed", "service_tier"]) expect(body).not.toHaveProperty(field);
   });
-  it.each(["anthropic", "amazon-bedrock"])("preserves thinking off for %s at the default medium effort", provider => {
-    const id = provider === "anthropic" ? model : `anthropic.${model}`;
+  it.each(["anthropic"])("preserves thinking off for %s at the default medium effort", provider => {
+    const id = model;
     const reasoningEffort = resolveSessionReasoningEffort("none", levels, { provider, model: id });
     expect(reasoningEffort).toBe("none");
     expect(build({ reasoningEffort }).thinking).toEqual({ type: "disabled" });
@@ -160,30 +161,5 @@ describe("Claude Haiku 5.5", () => {
     const provider = new AnthropicProvider({ model, apiKey: "test", fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(stream ? sse() : Response.json(responseBody)) });
     const response = stream ? await provider.chatStream(messages, () => {}, { singleWireAttempt: true }) : await provider.chat(messages, { singleWireAttempt: true });
     expect(response.usage.cacheCreation1hInputTokens).toBe(10_000);
-  });
-  it.each([403, 429])("retains Bedrock HTTP %s classification on the Messages route", async status => {
-    const provider = new BedrockProvider({ model: `anthropic.${model}`, accessKeyId: "test-id", secretAccessKey: "test-secret",
-      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: status === 403 ? "permission_error" : "rate_limit_error", message: "test rejection" } }, { status })) });
-    const request = provider.chat(messages, { singleWireAttempt: true });
-    await expect(request).rejects.toBeInstanceOf(status === 403 ? LLMAuthenticationError : LLMRateLimitError);
-    if (status === 403) await expect(request).rejects.toMatchObject({ statusCode: 403 });
-  });
-  it.each(["chat", "stream", "count"])("uses signed Bedrock Messages for %s", async method => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(method === "stream" ? sse() : Response.json(method === "count" ? { input_tokens: 100_000 } : responseBody));
-    const provider = new BedrockProvider({ model: `anthropic.${model}`, region: "us-east-1", accessKeyId: "test-id", secretAccessKey: "test-secret", sessionToken: "test-token", fetchImpl });
-    const options: LLMChatOptions = { reasoningEffort: "max", temperature: 0.1, tools, toolChoice: "required", serviceTier: "priority", singleWireAttempt: true };
-    if (method === "count") await provider.tokenCountCapability.countTokens(createTokenAccountingRequest({ provider: provider.name, model: `anthropic.${model}`, messages, options, reservedOutputTokens: 512 }), new AbortController().signal);
-    else if (method === "stream") await provider.chatStream(messages, () => {}, options);
-    else await provider.chat(messages, options);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(String(url)).toBe(`https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages${method === "count" ? "/count_tokens" : ""}`);
-    const headers = new Headers(init?.headers);
-    expect(headers.get("authorization")).toContain("/us-east-1/bedrock-mantle/aws4_request");
-    expect(headers.get("x-api-key")).toBeNull();
-    expect(headers.get("x-amz-security-token")).toBe("test-token");
-    const body = JSON.parse(String(init?.body));
-    expect(body).toMatchObject({ model: `anthropic.${model}`, output_config: { effort: "max" }, thinking: { type: "adaptive", display: "summarized" }, tool_choice: { type: "any" } });
-    for (const field of ["temperature", "speed", "service_tier", "inferenceConfig"]) expect(body).not.toHaveProperty(field);
   });
 });

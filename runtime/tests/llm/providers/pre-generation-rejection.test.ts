@@ -31,9 +31,6 @@ const providers: { name: string; create: (fetchImpl: typeof fetch) => LLMProvide
   { name: "bedrock", create: (fetchImpl) => new BedrockProvider({
     accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret", model: "amazon.nova-pro-v1:0", fetchImpl,
   }) },
-  { name: "bedrock-haiku-messages", create: (fetchImpl) => new BedrockProvider({
-    accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret", model: "anthropic.claude-haiku-5-5", fetchImpl,
-  }) },
   { name: "ollama", create: (fetchImpl) => new OllamaProvider({ model: "llama3.3", fetchImpl }) },
 ];
 

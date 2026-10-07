@@ -44,10 +44,11 @@ Check [Anthropic's model lifecycle](https://platform.claude.com/docs/en/about-cl
 before reusing an old configuration.
 
 Haiku 5.5 uses the pinned, dateless ID `claude-haiku-5-5`, with no separate
-alias. Bedrock uses `anthropic.claude-haiku-5-5` on the SigV4-signed
-`https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages` endpoint.
-Google Cloud uses `claude-haiku-5-5` without an `@date`. OpenRouter publishes
-`anthropic/claude-haiku-5.5`.
+alias. This release adds support on the direct Anthropic API. Bedrock routing
+for Haiku 5.5 is deferred to a separate change; Core does not register or route
+it as a supported Bedrock model yet. OpenRouter, Google Cloud and Foundry
+registration are also outside this direct-API release. Existing provider
+behavior and default models remain unchanged.
 
 Core requests adaptive thinking with `display: "summarized"`. All five effort
 levels reach `output_config.effort`; `reasoningEffort: "none"` sends disabled
@@ -79,4 +80,5 @@ Sources: [overview](https://platform.claude.com/docs/en/models/haiku-5-5/overvie
 [thinking](https://platform.claude.com/docs/en/build-with-claude/thinking),
 [pricing](https://platform.claude.com/docs/en/about-claude/pricing),
 [Bedrock](https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock),
-and [OpenRouter catalog](https://openrouter.ai/api/v1/models).
+[AWS Haiku launch](https://aws.amazon.com/blogs/machine-learning/introducing-claude-haiku-5-5-on-aws/),
+and [AWS Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html).

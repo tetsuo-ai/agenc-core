@@ -189,7 +189,6 @@ export function modelSupportsThinking(model: string): boolean {
   // 3P (Bedrock/Vertex): Opus 4+, Sonnet 4+, and the always-on-thinking
   // Fable 5 family (thinking cannot be turned off there at all).
   return (
-    isHaiku55(canonical) ||
     canonical.includes('sonnet-4') ||
     canonical.includes('opus-4') ||
     canonical.includes('fable-5')

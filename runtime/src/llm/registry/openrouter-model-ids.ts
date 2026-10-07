@@ -1,6 +1,5 @@
 /** Generated with openrouter-models.data.json; preserve provider order. */
 export const OPENROUTER_MODEL_IDS: readonly string[] = Object.freeze([
-  "anthropic/claude-haiku-5.5",
   "anthropic/claude-sonnet-5.5",
   "perceptron/perceptron-mk1.5",
   "fireworks/ember-1",

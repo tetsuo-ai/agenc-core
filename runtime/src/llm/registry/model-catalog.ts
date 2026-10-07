@@ -35,7 +35,7 @@ import {
 } from "./gemini-thinking-models.js";
 import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
-import { isHaiku55, anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
+import { anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -1918,6 +1918,8 @@ function resolveBedrockCatalogEntry(
 ): RegisteredModelCatalogEntry | undefined {
   const id = parseClaudeModelId(model);
   if (id === undefined || id.platform !== "bedrock") return undefined;
+  // Haiku 5.5 ships on the direct API first; Bedrock routing is a separate launch.
+  if (id.canonical === "claude-haiku-5-5") return undefined;
   const row = CLAUDE_CATALOG_ROWS.get(id.canonical);
   return row === undefined ? undefined : bedrockClaudeCatalogEntry(row, model);
 }
@@ -1937,15 +1939,15 @@ function bedrockClaudeCatalogEntry(
   model: string,
 ): RegisteredModelCatalogEntry {
   const { defaultReasoningLevel, ...contract } = row;
-  const levels = isHaiku55(row.model) || isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
+  const levels = isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
     ? row.supportedReasoningLevels
     : NO_REASONING_LEVELS;
   return Object.freeze({
     ...contract,
     provider: "amazon-bedrock",
     model,
-    inputModalities: isHaiku55(row.model) ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
-    supportsParallelToolCalls: isHaiku55(row.model),
+    inputModalities: TEXT_MODALITIES,
+    supportsParallelToolCalls: false,
     supportsStructuredOutput: false,
     supportsStructuredOutputWithTools: false,
     supportsSearchTool: false,

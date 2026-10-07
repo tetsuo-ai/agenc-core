@@ -955,8 +955,9 @@ not supported. Prices depend on total prompt length: $0.10/$0.50 per million
 input/output tokens through 100,000 prompt tokens, and $0.50/$2.50 above that.
 Haiku 4.5 remains selectable; no provider default changes.
 
-On Amazon Bedrock, use `anthropic.claude-haiku-5-5`; Core routes it through
-Bedrock Mantle's Messages API with AWS SigV4 authentication, including SSE
-streaming. OpenRouter lists `anthropic/claude-haiku-5.5`. See the
+Haiku 5.5 support in this release is limited to the direct Anthropic API.
+Bedrock routing and registration are deferred to a follow-up; its provider
+implementation remains unchanged. OpenRouter, Google Cloud and Foundry
+registration are also outside this release. See the
 [Anthropic model reference](anthropic-models.md) for cache prices, thinking,
 tokenizer and migration details.
