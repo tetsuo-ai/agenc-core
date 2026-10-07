@@ -118,6 +118,8 @@ private (removing that directory also works) and when `.agenc` or the task
 file cannot be inspected (`EACCES`/`EPERM`; run it elevated if access is
 denied). It is not offered for anything else:
 
+- A `.agenc` that is itself a symbolic link, a junction or not a directory:
+  remove it or replace it with a regular directory.
 - A task file that is a symbolic link, a junction, hard-linked, or not a
   regular file: remove it or replace it with a regular file.
 - A volume that is not NTFS (for example a ReFS Dev Drive, FAT32 or exFAT) or
