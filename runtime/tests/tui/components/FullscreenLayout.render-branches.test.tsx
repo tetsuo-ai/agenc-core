@@ -168,19 +168,16 @@ function StickyPromptWriter({
 describe("FullscreenLayout render branches", () => {
   test("normalizes non-finite and fractional row budgets before chrome gating", () => {
     expect(calculateFullscreenLayoutBudget(Number.POSITIVE_INFINITY)).toEqual({
-      showTopChrome: false,
       showScrollable: false,
       showBottomChrome: false,
       bottomMaxHeight: 1,
     });
     expect(calculateFullscreenLayoutBudget(-4)).toEqual({
-      showTopChrome: false,
       showScrollable: false,
       showBottomChrome: false,
       bottomMaxHeight: 1,
     });
     expect(calculateFullscreenLayoutBudget(7.9)).toEqual({
-      showTopChrome: false,
       showScrollable: true,
       showBottomChrome: true,
       bottomMaxHeight: 3,
@@ -220,16 +217,16 @@ describe("FullscreenLayout render branches", () => {
     {
       rows: 1,
       includes: ["budget bottom"],
-      excludes: ["budget scrollable", "agenc · orchestrator", "spend"],
+      excludes: ["budget scrollable", "agenc · orchestrator", "default mode"],
     },
     {
       rows: 4,
       includes: ["budget scrollable", "budget bottom"],
-      excludes: ["agenc · orchestrator", "spend"],
+      excludes: ["agenc · orchestrator", "default mode"],
     },
     {
       rows: 5,
-      includes: ["budget scrollable", "budget bottom", "spend"],
+      includes: ["budget scrollable", "budget bottom", "default mode"],
       excludes: ["agenc · orchestrator"],
     },
   ])(

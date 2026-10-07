@@ -157,7 +157,8 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   const selectedPrefix = `${glyphs.pointer} `
   const prefixWidth = stringWidth(selectedPrefix)
   const selectionPrefix = isSelected ? selectedPrefix : ' '.repeat(prefixWidth)
-  const rowBackgroundColor: keyof Theme = isSelected ? 'text' : 'surfaceBackground'
+  // Only the selected row is filled; the rest clear to the screen's background.
+  const rowBackgroundColor: keyof Theme | undefined = isSelected ? 'text' : undefined
   const textColor: keyof Theme | undefined = isSelected
     ? 'inverseText'
     : item.color
@@ -401,19 +402,17 @@ export function PromptInputFooterSuggestions({
       borderStyle="single"
       borderColor="text"
       paddingX={1}
-      backgroundColor="surfaceBackground"
       opaque={true}
     >
       <Box
         width="100%"
         opaque={true}
-        backgroundColor="surfaceBackground"
       >
         <Text color="inactive" bold>{titleRow.left}</Text>
         <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
       </Box>
       {showHiddenBefore ? (
-        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+        <Box width="100%" opaque={true}>
           <Text dimColor>{glyphs.arrowUp} {hiddenBefore} more above</Text>
         </Box>
       ) : null}
@@ -434,11 +433,11 @@ export function PromptInputFooterSuggestions({
         )
       })}
       {showHiddenAfter ? (
-        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+        <Box width="100%" opaque={true}>
           <Text dimColor>{glyphs.arrowDown} {hiddenAfter} more below</Text>
         </Box>
       ) : null}
-      <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+      <Box width="100%" opaque={true}>
         <Text color="inactive">{footerHintRow.left}</Text>
         <Text color="inactive">
           {footerHintRow.gap}

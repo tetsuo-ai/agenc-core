@@ -81,12 +81,9 @@ import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { getSelectedProviderEnvironment } from "../../utils/model/providers.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
-import {
-  bindWorkspaceFileReadCapability,
-  WorkspaceBoundReadFileTooLargeError,
-  type WorkspaceBoundFileReadCapability,
-  type WorkspaceBoundReadFile,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceBoundFileReadCapability, type WorkspaceBoundReadFile } from "../../workspace/file-mutation-transaction.js";
+import { WorkspaceBoundReadFileTooLargeError } from "../../workspace/file-mutation-evidence.js";
+import { bindWorkspaceFileReadCapability } from "../../workspace/lazy-file-mutation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -109,7 +106,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
-const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
+export const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
 
 /** Default output cap for image reads in bytes. */
 const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -127,7 +124,7 @@ const PDF_SUBPROCESS_TIMEOUT_MS = 120_000;
 const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 
 /** Default upper line count when no explicit `limit` is supplied. */
-const DEFAULT_LINE_LIMIT = 2000;
+export const DEFAULT_LINE_LIMIT = 2000;
 
 /** Image extensions the tool will accept and emit as multimodal output. */
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
@@ -319,6 +316,7 @@ Usage:
 
 /** Tool factory configuration. */
 export interface FileReadToolConfig {
+  readonly lightMode?: boolean;
   /**
    * Allowed path prefixes (required — no default). Same shape as the
    * filesystem-tool config so the parent can pass through the workspace
@@ -1505,6 +1503,7 @@ interface FileReadInput extends ToolExecutionInjectedArgs {
   readonly offset?: unknown;
   readonly limit?: unknown;
   readonly pages?: unknown;
+  readonly dense_line_numbers?: unknown;
   readonly cwd?: unknown;
   readonly __agencSessionId?: unknown;
 }
@@ -1516,7 +1515,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
   const maxNotebookBytes =
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
-  const sparseLineNumbers = config.sparseLineNumbers === true;
+  const sparseLineNumbers = config.lightMode === true || config.sparseLineNumbers === true;
 
   return {
     name: FILE_READ_TOOL_NAME,
@@ -1556,6 +1555,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           description:
             "Optional. Max number of lines to return. Numeric strings are accepted.",
         },
+        ...(config.lightMode === true ? { dense_line_numbers: {
+          type: "boolean", description: "Number every line in this read instead of sparse numbering.",
+        } } : {}),
         pages: {
           type: "string",
           description: "Optional. Page range for PDF files (e.g. '1-5').",
@@ -1693,7 +1695,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxPdfBytes,
               pages: args.pages,
               maxTokens,
-              sparseLineNumbers,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
             },
@@ -1708,7 +1710,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               {
                 maxTextBytes,
                 maxTokens,
-                sparseLineNumbers,
+                sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
                 offset,
                 limit,
                 displayPath: filePath,
@@ -1727,7 +1729,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             {
               maxTextBytes,
               maxTokens,
-              sparseLineNumbers,
+              sparseLineNumbers: sparseLineNumbers && !(config.lightMode === true && args.dense_line_numbers === true),
               offset,
               limit,
               displayPath: filePath,

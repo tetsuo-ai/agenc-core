@@ -1,4 +1,5 @@
 import { LLMProviderError } from "../../errors.js";
+import { externalAbortReasonToError } from "../../timeout.js";
 
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 10_000;
 /**
@@ -28,6 +29,22 @@ function isConnectionRefusedError(error: unknown): boolean {
   return /ECONNREFUSED|connection refused/i.test(message);
 }
 
+/**
+ * Caller cancellation before provider work starts. Normalize the abort
+ * reason the same way the in-flight path does: a bare `abort()` DOMException
+ * or a string reason such as `session_shutdown` must not reach `mapLLMError`
+ * AbortError-shaped, or it is relabeled as a retryable `LLMTimeoutError`.
+ */
+function throwCallerCancellation(
+  signal: AbortSignal,
+  providerLabel: string,
+): never {
+  throw externalAbortReasonToError(
+    signal,
+    `${providerLabel} request aborted by external signal`,
+  );
+}
+
 export async function runLocalProviderHealthSidecar<T>(params: {
   readonly providerLabel: string;
   readonly operation: (signal: AbortSignal) => Promise<T>;
@@ -49,56 +66,77 @@ export async function runLocalProviderHealthSidecar<T>(params: {
   );
   let sidecarError: Error | undefined;
   let consecutiveFailures = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
 
   const abortFromUpstream = (): void => {
     if (!controller.signal.aborted) {
       controller.abort(params.signal?.reason);
     }
   };
+  // Attach first so a concurrent abort is observed, then honor a signal
+  // that was already aborted. AbortSignal does not replay an earlier
+  // abort event to a later listener.
   params.signal?.addEventListener("abort", abortFromUpstream, { once: true });
+  if (params.signal?.aborted) {
+    abortFromUpstream();
+  }
 
-  // Increment the consecutive-failure counter; abort only after the
-  // threshold is reached. A successful probe resets the counter so
-  // intermittent failures don't accumulate indefinitely.
-  const recordFailure = (): void => {
-    if (sidecarError) return;
-    consecutiveFailures += 1;
-    if (consecutiveFailures < failureThreshold) return;
-    sidecarError = buildLocalProviderDownError(params.providerLabel);
-    if (!controller.signal.aborted) {
-      controller.abort(sidecarError);
+  const throwIfCancelledBeforeOperation = (): void => {
+    if (controller.signal.aborted) {
+      throwCallerCancellation(controller.signal, params.providerLabel);
     }
   };
 
-  const timer = setInterval(() => {
-    void params.healthCheck()
-      .then((healthy) => {
-        if (sidecarError) return;
-        if (healthy) {
-          consecutiveFailures = 0;
-          return;
-        }
-        recordFailure();
-      })
-      .catch((error) => {
-        if (sidecarError) return;
-        if (!isConnectionRefusedError(error)) return;
-        recordFailure();
-      });
-  }, intervalMs);
-  if (typeof (timer as { unref?: () => void }).unref === "function") {
-    (timer as { unref: () => void }).unref();
-  }
-
   try {
-    const result = await params.operation(controller.signal);
+    // Pre-aborted and setup-race cancels must not start the health
+    // timer or provider work.
+    throwIfCancelledBeforeOperation();
+
+    // Increment the consecutive-failure counter; abort only after the
+    // threshold is reached. A successful probe resets the counter so
+    // intermittent failures don't accumulate indefinitely.
+    const recordFailure = (): void => {
+      if (sidecarError) return;
+      consecutiveFailures += 1;
+      if (consecutiveFailures < failureThreshold) return;
+      sidecarError = buildLocalProviderDownError(params.providerLabel);
+      if (!controller.signal.aborted) {
+        controller.abort(sidecarError);
+      }
+    };
+
+    timer = setInterval(() => {
+      void params.healthCheck()
+        .then((healthy) => {
+          if (sidecarError) return;
+          if (healthy) {
+            consecutiveFailures = 0;
+            return;
+          }
+          recordFailure();
+        })
+        .catch((error) => {
+          if (sidecarError) return;
+          if (!isConnectionRefusedError(error)) return;
+          recordFailure();
+        });
+    }, intervalMs);
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+
+    const operation = params.operation;
+    throwIfCancelledBeforeOperation();
+    const result = await operation(controller.signal);
     if (sidecarError) throw sidecarError;
     return result;
   } catch (error) {
     if (sidecarError) throw sidecarError;
     throw error;
   } finally {
-    clearInterval(timer);
+    if (timer !== undefined) {
+      clearInterval(timer);
+    }
     params.signal?.removeEventListener("abort", abortFromUpstream);
   }
 }

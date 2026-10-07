@@ -71,6 +71,7 @@ export interface DaemonWorkflowStartServiceOptions {
 }
 
 export class DaemonWorkflowStartService {
+  readonly supportsContinuation = true as const;
   readonly #options: DaemonWorkflowStartServiceOptions;
   readonly #now: () => Date;
 
@@ -108,7 +109,9 @@ export class DaemonWorkflowStartService {
         : {}),
     };
     const startParams: WorkflowStartParams = {
+      ...(params.continuation !== undefined ? { continuation: params.continuation } : {}),
       goal: params.goal,
+      ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
       repoPath,
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined
@@ -165,7 +168,7 @@ export class DaemonWorkflowStartService {
       }
       throw error;
     }
-    if (this.#options.recordAgentRun !== undefined) {
+    if (this.#options.recordAgentRun !== undefined && started.replayed !== true) {
       const at = this.#now().toISOString();
       try {
         await this.#options.recordAgentRun({
@@ -175,7 +178,7 @@ export class DaemonWorkflowStartService {
           startedAt: at,
           lastActiveAt: at,
           currentSessionId: started.runId,
-          metadata: { kind: "verified-change-workflow" },
+          metadata: { kind: "verified-change-workflow", lightMode: started.lightMode === true },
           cwd: repoPath,
         });
       } catch (error) {
@@ -188,12 +191,16 @@ export class DaemonWorkflowStartService {
     }
     return {
       runId: started.runId,
+      lightMode: started.lightMode === true,
       specDigest: started.specDigest,
       requestedPermissionMode: started.requestedPermissionMode,
       ...(started.effectivePermissionMode !== undefined
         ? { effectivePermissionMode: started.effectivePermissionMode }
         : {}),
       baseCommit: started.baseCommit,
+      ...(started.replayed !== undefined ? { replayed: started.replayed } : {}),
+      ...(started.continuationOf !== undefined ? { continuationOf: { ...started.continuationOf,
+        sourceUsage: started.continuationOf.sourceUsage === null ? null : { ...started.continuationOf.sourceUsage } } } : {}),
       baseDirty: {
         dirty: started.baseDirty.dirty,
         fileCount: started.baseDirty.fileCount,

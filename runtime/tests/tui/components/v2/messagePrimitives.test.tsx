@@ -36,7 +36,8 @@ describe('v2 message primitives', () => {
       80,
     )
 
-    expect(output).toContain('COMMAND')
+    // User-side rows lead with the ❯ glyph and a lowercase label.
+    expect(output).toContain('❯ command')
     expect(output).toContain('/model gpt-5')
   })
 
@@ -54,7 +55,7 @@ describe('v2 message primitives', () => {
       80,
     )
 
-    expect(output).toContain('AGENT')
+    expect(output).toContain('● agent')
     expect(output).toContain('worker finished proof')
   })
 
@@ -70,7 +71,7 @@ describe('v2 message primitives', () => {
       100,
     )
 
-    expect(output).toContain('MCP')
+    expect(output).toContain('● mcp')
     expect(output).toContain('context.md')
     expect(output).toContain('changed')
   })
@@ -84,7 +85,7 @@ describe('v2 message primitives', () => {
       80,
     )
 
-    expect(output).toContain('MEMORY')
+    expect(output).toContain('● memory')
     expect(output).toContain('remember the local API port')
     expect(output).toContain('Noted.')
   })
@@ -101,7 +102,7 @@ describe('v2 message primitives', () => {
       100,
     )
 
-    expect(output).toContain('CHANNEL')
+    expect(output).toContain('● channel')
     expect(output).toContain('slack · tetsuo')
     expect(output).toContain('new deployment is ready')
   })

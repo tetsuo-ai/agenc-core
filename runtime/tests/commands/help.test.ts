@@ -207,8 +207,8 @@ describe("helpCommand", () => {
     expect(text).toContain("/logout - Sign out of your AgenC account");
     expect(text).toContain("/whoami, /account - Show the signed-in AgenC account");
     expect(text).toContain("/plan - Enter plan mode");
-    expect(text).toContain("/model - Switch the model");
-    expect(text).toContain("/provider - Switch the LLM provider");
+    expect(text).toContain("/model - Choose a model");
+    expect(text).toContain("/provider, /providers - Connect providers and pick a model");
     expect(text).toContain("/hooks - Inspect and test AgenC hook configuration");
     expect(text).toContain("/compact - Compact the current conversation");
     expect(text).toContain("/context, /ctx - Show current context usage");
@@ -270,7 +270,7 @@ describe("helpCommand", () => {
     const text = formatHelpCommands(commands);
 
     expect(text).toContain("Model / Provider:");
-    expect(text).toContain("/provider - Switch the LLM provider");
+    expect(text).toContain("/provider, /providers - Connect providers and pick a model");
     expect(text).not.toContain("/model-provider");
     expect(text).not.toContain("/permissions");
   });

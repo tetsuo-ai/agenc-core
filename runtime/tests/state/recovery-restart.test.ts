@@ -730,7 +730,10 @@ describe("recoverDaemonStateOnStartup", () => {
     expect(repository.currentEpoch("run-partial-reopen")?.epoch).toBe(2);
   });
 
-  it("projects suspension and resume crash windows in the same epoch", () => {
+  it.each([
+    ["daemon_shutdown_idle", "daemon_startup_restore"],
+    ["workflow_user_pause", "workflow_user_resume"],
+  ] as const)("projects %s/%s crash windows in the same epoch", (suspensionReason, resumeReason) => {
     insertAgentRun({
       id: "run-suspension-restart",
       objective: "resume after daemon restart",
@@ -746,7 +749,7 @@ describe("recoverDaemonStateOnStartup", () => {
         payload: {
           runId: "run-suspension-restart",
           epoch: 1,
-          reason: "daemon_shutdown_idle",
+          reason: suspensionReason,
           suspendedAt: "2026-05-01T00:06:00.000Z",
         },
       },
@@ -774,7 +777,7 @@ describe("recoverDaemonStateOnStartup", () => {
           runId: "run-suspension-restart",
           epoch: 1,
           suspensionEventId: "suspend-cycle-1",
-          reason: "daemon_startup_restore",
+          reason: resumeReason,
           resumedAt: "2026-05-01T00:07:00.000Z",
         },
       },

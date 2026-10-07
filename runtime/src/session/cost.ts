@@ -19,6 +19,8 @@
  * @module
  */
 
+import { MISTRAL_CHAT_MODELS } from "../llm/registry/mistral-models.js";
+import { QWEN_CURRENT_MODELS, QWEN_EXISTING_RATE_ROWS, type QwenCurrentRate } from "../llm/registry/qwen-current-models.js";
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
 import { monotonicMs } from "./_deps/utils.js";
@@ -27,6 +29,11 @@ import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
+import { OPENROUTER_PRICING } from "../llm/registry/openrouter-pricing.js";
+import {
+  AGENC_DEEPSEEK_V41_GENERATION,
+  AGENC_DEEPSEEK_V41_MODEL,
+} from "../llm/registry/agenc-deepseek.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -101,6 +108,23 @@ export interface CostSummaryProcessLike {
   off(event: "exit", listener: () => void): unknown;
 }
 
+/** Alibaba's pricing tiers use decimal K and bill the entire request. */
+function qwenCurrentRates(rows: readonly QwenCurrentRate[]): Readonly<ModelCostEntry> {
+  const [row, ...rest] = rows;
+  if (row === undefined) throw new Error("Qwen pricing requires a rate row");
+  return Object.freeze({
+    inputUsdPer1K: row.input / 1000,
+    outputUsdPer1K: row.output / 1000,
+    ...(row.cached === undefined ? {} : {
+      cachedInputUsdPer1K: row.cached / 1000,
+      cachedInputIncludedInInputTokens: true,
+    }),
+    ...(rest[0] === undefined ? {} : {
+      longContext: { aboveInputTokens: rest[0].aboveInputTokens, rates: qwenCurrentRates(rest) },
+    }),
+  });
+}
+
 export interface CostSummaryExitHookOptions {
   readonly processLike?: CostSummaryProcessLike;
   readonly shouldPrint?: () => boolean;
@@ -143,6 +167,29 @@ type OpenAiRateRow = readonly [
   cachedInput?: number,
   cacheWrite?: number,
 ];
+
+/** Copilot rates are independent of direct-provider fast/search charges.
+ * https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+ * Reviewed 2026-09-29. Published long-context billing threshold: 272K inputs.
+ */
+function copilotCostAliases(
+  model: string,
+  [input, output, cachedInput, cacheWrite]: readonly [number, number, number, number],
+  longContext?: readonly [number, number, number, number],
+): Readonly<Record<string, ModelCostEntry>> {
+  const rates = ([i, o, c, w]: readonly [number, number, number, number]): ModelCostEntry => ({
+    inputUsdPer1K: i / 1000, outputUsdPer1K: o / 1000,
+    cachedInputUsdPer1K: c / 1000, cacheCreationUsdPer1K: w / 1000,
+    cachedInputIncludedInInputTokens: true, cacheCreationIncludedInInputTokens: true,
+  });
+  const entry: ModelCostEntry = {
+    ...rates([input, output, cachedInput, cacheWrite]),
+    ...(longContext === undefined ? {} : { longContext: { aboveInputTokens: 272_000, rates: rates(longContext) } }),
+  };
+  return Object.fromEntries([
+    `github:${model}`, `github:copilot:${model}`, `github:github:copilot:${model}`,
+  ].map(key => [key, entry]));
+}
 
 /** OpenAI bills a request over this many input tokens at long-context rates. */
 const OPENAI_LONG_CONTEXT_ABOVE_INPUT_TOKENS = 272_000;
@@ -218,6 +265,13 @@ const COST_TIER_GPT_6_SOL = openAiTier({
   standard: [2, 10, 0.2, 2.5],
   fast: [4, 20, 0.4, 5],
   longContext: { standard: [4, 15, 0.4, 5], fast: [8, 30, 0.8, 10] },
+});
+// Independently verified against /api/docs/models/gpt-6.1-sol and
+// /api/docs/pricing on 2026-09-29. Cache reads are 5% of input, not 10%.
+const COST_TIER_GPT_6_1_SOL = openAiTier({
+  standard: [2, 10, 0.1, 2.5],
+  fast: [4, 20, 0.2, 5],
+  longContext: { standard: [4, 15, 0.2, 5], fast: [8, 30, 0.4, 10] },
 });
 const COST_TIER_GPT_6_LUNA = openAiTier({
   standard: [0.1, 0.5, 0.01, 0.125],
@@ -297,6 +351,8 @@ const COST_TIER_GPT_4_1_NANO = openAiTier({
   standard: [0.1, 0.4, 0.025],
   fast: [0.2, 0.8, 0.05],
 });
+const COST_TIER_GPT_4_TURBO = openAiTier({ standard: [10, 30] });
+const COST_TIER_CHAT_LATEST = openAiTier({ standard: [5, 30, 0.5] });
 const COST_TIER_GPT_4O = openAiTier({
   standard: [2.5, 10, 1.25],
   fast: [4.25, 17, 2.125],
@@ -414,6 +470,20 @@ const COST_TIER_DEEPSEEK_V4_PRO_NATIVE: Readonly<ModelCostEntry> = Object.freeze
   cachedInputIncludedInInputTokens: true,
 });
 
+// Managed AgenC route, at the rates the AgenC gateway reviewed for it on
+// 2026-09-11 (agenc-backend operations record). The gateway pins one
+// OpenRouter endpoint for this exact model, with fallback disabled, and
+// charges AgenC credits (1,000,000 microunits per USD) at that endpoint's
+// actual cost for each request. That charge can be lower than these rates, so
+// the figure is an upper estimate of a call's credits. The account's credit
+// usage is authoritative. Raise these rates if the gateway's review does.
+const COST_TIER_AGENC_DEEPSEEK_V41_FLASH: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
+});
+
 // Official Mistral API prices retrieved 2026-08-24:
 // https://docs.mistral.ai/inference/pricing
 const COST_TIER_MISTRAL_MEDIUM_3_5: Readonly<ModelCostEntry> = Object.freeze({
@@ -507,7 +577,37 @@ const COST_TIER_OPUS_LEGACY: Readonly<ModelCostEntry> = Object.freeze({
 // Current Opus tier ($5/$25 per Mtok) — Opus dropped to $5/$25 with 4.5, so 4.5
 // through 4.8 (and later) bill here. Mirrors utils/modelCost.ts COST_TIER_5_25
 // (the canonical AgenC pricing source of truth), expressed per-1K.
+// MiniMax defines 512K as 524288 tokens in the Chat Completions reference.
+// Its current rate card doubles the entire request above that input boundary.
+// https://platform.minimax.io/docs/guides/pricing-paygo (2026-09-29)
 const COST_TIER_MINIMAX_M3: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00006,
+  cachedInputIncludedInInputTokens: true,
+  fastMode: Object.freeze({
+    inputUsdPer1K: 0.00045,
+    outputUsdPer1K: 0.0018,
+    cachedInputUsdPer1K: 0.00009,
+    cachedInputIncludedInInputTokens: true,
+  }),
+  longContext: Object.freeze({
+    aboveInputTokens: 524_288,
+    rates: Object.freeze({
+      inputUsdPer1K: 0.0006,
+      outputUsdPer1K: 0.0024,
+      cachedInputUsdPer1K: 0.00012,
+      cachedInputIncludedInInputTokens: true,
+      fastMode: Object.freeze({
+        inputUsdPer1K: 0.0009,
+        outputUsdPer1K: 0.0036,
+        cachedInputUsdPer1K: 0.00018,
+        cachedInputIncludedInInputTokens: true,
+      }),
+    }),
+  }),
+});
+const COST_TIER_MINIMAX_M2_7: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00006,
@@ -600,6 +700,12 @@ const COST_TIER_FABLE_10_50: Readonly<ModelCostEntry> = Object.freeze({
   cacheCreationUsdPer1K: 0.0125,
   webSearchUsdPerRequest: 0.01,
 });
+// Fable 5.1 discounts cache reads to $0.25/MTok; Fable 5 stays $1/MTok.
+// Official per-model pricing pages checked 2026-09-29.
+const COST_TIER_FABLE_5_1: Readonly<ModelCostEntry> = Object.freeze({
+  ...COST_TIER_FABLE_10_50,
+  cachedInputUsdPer1K: 0.00025,
+});
 const COST_TIER_SONNET_2_10: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.002,
   outputUsdPer1K: 0.01,
@@ -673,6 +779,10 @@ function grokCostAliases(
  */
 export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
   Object.freeze({
+    ...Object.fromEntries(QWEN_CURRENT_MODELS.flatMap((entry) => entry.rates === undefined
+      ? [] : [[`qwen:${entry.model}`, qwenCurrentRates(entry.rates)]])),
+    ...Object.fromEntries(Object.entries(QWEN_EXISTING_RATE_ROWS).map(([model, rates]) =>
+      [`qwen:${model}`, qwenCurrentRates(rates)])),
     // Meta Model API USD/1M: standard 1.25 / 4.25 / 0.15 cached;
     // Contributor 0.10 / 0.20 / 0.002 cached. Verified 2026-09-27:
     // https://dev.meta.ai/docs/pricing-rate-limits
@@ -762,6 +872,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ),
     ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
+    ...openAiCostAliases("gpt-6.1-sol", COST_TIER_GPT_6_1_SOL),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
     ...openAiCostAliases("gpt-5.6-sol", COST_TIER_GPT_5_6_SOL),
     ...openAiCostAliases("gpt-5.6-terra", COST_TIER_GPT_5_6_TERRA),
@@ -783,6 +894,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("gpt-4.1", COST_TIER_GPT_4_1),
     ...openAiCostAliases("gpt-4.1-mini", COST_TIER_GPT_4_1_MINI),
     ...openAiCostAliases("gpt-4.1-nano", COST_TIER_GPT_4_1_NANO),
+    ...openAiCostAliases("gpt-4-turbo", COST_TIER_GPT_4_TURBO),
+    ...openAiCostAliases("chat-latest", COST_TIER_CHAT_LATEST),
     ...openAiCostAliases("gpt-4o", COST_TIER_GPT_4O),
     ...openAiCostAliases("gpt-4o-2024-05-13", COST_TIER_GPT_4O_2024_05_13),
     ...openAiCostAliases("gpt-4o-mini", COST_TIER_GPT_4O_MINI),
@@ -794,14 +907,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("o3-pro", COST_TIER_O3_PRO),
     ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
     ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
-    "anthropic:claude-fable-5-1": COST_TIER_FABLE_10_50,
-    "claude-fable-5-1": COST_TIER_FABLE_10_50,
+    "anthropic:claude-fable-5-1": COST_TIER_FABLE_5_1,
+    "claude-fable-5-1": COST_TIER_FABLE_5_1,
     "anthropic:claude-fable-5": COST_TIER_FABLE_10_50,
     "claude-fable-5": COST_TIER_FABLE_10_50,
     "anthropic:claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
     "claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
     "anthropic:claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
     "claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
+    "anthropic:claude-sonnet-5-5": COST_TIER_SONNET_2_10,
+    "claude-sonnet-5-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-5": COST_TIER_SONNET_2_10,
     "claude-sonnet-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
@@ -840,14 +955,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cacheCreationUsdPer1K: 0.00125,
       webSearchUsdPerRequest: 0.01,
     },
-    "groq:llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
-    "llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
+    ...copilotCostAliases("gpt-6-astra", [10, 50, 1, 12.5], [20, 75, 2, 25]),
+    ...copilotCostAliases("gpt-6-sol", [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]),
+    ...copilotCostAliases("gpt-6-luna", [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]),
+    ...copilotCostAliases("claude-opus-5.5", [4, 20, 0.2, 5]),
+    // Groq published per-token prices, checked 2026-09-29.
+    // https://console.groq.com/docs/models
+    // Retired shared Llama and enterprise-preview MiniMax prices are unknown.
+    "groq:openai/gpt-oss-120b": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
+    "groq:openai/gpt-oss-20b": { inputUsdPer1K: 0.000075, outputUsdPer1K: 0.0003 },
+    "groq:qwen/qwen3.8-27b": { inputUsdPer1K: 0.0008, outputUsdPer1K: 0.004 },
     "deepseek:deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
@@ -863,14 +980,72 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:gpt-oss-120b": COST_TIER_CEREBRAS_GPT_OSS_120B,
     "cerebras:qwen-3.8-27b": COST_TIER_CEREBRAS_QWEN_38_27B,
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
+    // https://docs.z.ai/guides/overview/pricing (2026-09-29).
+    // GLM-5-Turbo has no published rate; keep the unknown-price fallback.
+    "zai:glm-5.2": {
+      inputUsdPer1K: 0.0014, outputUsdPer1K: 0.0044,
+      cachedInputUsdPer1K: 0.00026, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-5.1": {
+      inputUsdPer1K: 0.0014, outputUsdPer1K: 0.0044,
+      cachedInputUsdPer1K: 0.00026, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-5": {
+      inputUsdPer1K: 0.001, outputUsdPer1K: 0.0032,
+      cachedInputUsdPer1K: 0.0002, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.7": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.6": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.5": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.5-air": {
+      inputUsdPer1K: 0.0002, outputUsdPer1K: 0.0011,
+      cachedInputUsdPer1K: 3e-05, cachedInputIncludedInInputTokens: true,
+    },
     "zai:glm-5.3": COST_TIER_ZAI_GLM_53,
     "zai:glm-5.3-flash": COST_TIER_ZAI_GLM_53_FLASH,
+    // https://docs.z.ai/guides/overview/pricing (2026-09-29)
+    "zai:glm-5.3-flashx": {
+      inputUsdPer1K: 0.00037,
+      outputUsdPer1K: 0.00125,
+      cachedInputUsdPer1K: 0.000075,
+      cachedInputIncludedInInputTokens: true,
+    },
+    // Singapore Pay-As-You-Go model pages, retrieved 2026-09-29.
+    "qwen:qwen3.8-27b": {
+      inputUsdPer1K: 0.0005, outputUsdPer1K: 0.003,
+      cachedInputUsdPer1K: 0.0001, cachedInputIncludedInInputTokens: true,
+    },
+    // https://www.alibabacloud.com/help/en/model-studio/model-pricing
+    "qwen:qwen3.8-omni-flash": {
+      inputUsdPer1K: 0.00015, outputUsdPer1K: 0.00047,
+      cachedInputUsdPer1K: 0.000016, cachedInputIncludedInInputTokens: true,
+    },
+    "qwen:qwen3.8-2.4t-a95b": {
+      inputUsdPer1K: 0.002, outputUsdPer1K: 0.006,
+      cachedInputUsdPer1K: 0.00025, cachedInputIncludedInInputTokens: true,
+    },
     "kimi:kimi-k3": COST_TIER_KIMI_K3,
     "kimi:kimi-k2.7-code": COST_TIER_KIMI_K27_CODE,
     "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
     // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
     ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
+    ...geminiCostAliases("gemini-3.1-pro-preview-customtools", COST_TIER_GEMINI_3_1_PRO),
+    // Gemma is free-only on the Gemini API pricing page (2026-09-29).
+    ...geminiCostAliases("gemma-4-31b-it", geminiTier([0, 0, 0])),
+    ...geminiCostAliases("gemma-4-26b-a4b-it", geminiTier([0, 0, 0])),
+    // Standard launch rates through 2026-12-31. The pricing page announces
+    // $2/$10/$0.20 from 2027-01-01; refresh before that date.
+    ...geminiCostAliases("gemini-robotics-er-2-preview", geminiTier([1, 5, 0.1])),
     ...geminiCostAliases("gemini-3.8-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.7-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.6-flash", COST_TIER_GEMINI_3_FLASH),
@@ -881,17 +1056,25 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...geminiCostAliases("gemini-2.5-pro", COST_TIER_GEMINI_2_5_PRO),
     ...geminiCostAliases("gemini-2.5-flash", COST_TIER_GEMINI_2_5_FLASH),
     ...geminiCostAliases("gemini-2.5-flash-lite", COST_TIER_GEMINI_2_5_FLASH_LITE),
-    "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
+    ...Object.fromEntries(MISTRAL_CHAT_MODELS.flatMap((entry) => {
+      const rates: ModelCostEntry = {
+        inputUsdPer1K: entry.rates[0] / 1000,
+        outputUsdPer1K: entry.rates[1] / 1000,
+        ...(entry.free ? { localZeroCost: true } : {}),
+        ...(entry.rates[2] === undefined ? {} : {cachedInputUsdPer1K: entry.rates[2] / 1000, cachedInputIncludedInInputTokens: true}),
+      };
+      return [entry.model, ...entry.aliases].map((model) => [`mistral:${model}`, rates]);
+    })),
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     // MiniMax pay-as-you-go (platform.minimax.io/docs/guides/pricing-paygo,
-    // 2026-09-11, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
+    // 2026-09-29, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
     // with $0.06 cache reads; M2.7 the same; the other M2 generations read
     // cache at $0.03; every highspeed variant doubles input and output.
-    // Cache writes are $0.375 per M across the line.
+    // M2 cache writes are $0.375 per M. M3 has no published write fee.
     ...minimaxCostAliases("MiniMax-M3", COST_TIER_MINIMAX_M3),
-    ...minimaxCostAliases("MiniMax-M2.7", COST_TIER_MINIMAX_M3),
+    ...minimaxCostAliases("MiniMax-M2.7", COST_TIER_MINIMAX_M2_7),
     ...minimaxCostAliases("MiniMax-M2.7-highspeed", COST_TIER_MINIMAX_M2_7_HIGHSPEED),
     ...minimaxCostAliases("MiniMax-M2.5", COST_TIER_MINIMAX_M2),
     ...minimaxCostAliases("MiniMax-M2.5-highspeed", COST_TIER_MINIMAX_M2_HIGHSPEED),
@@ -902,6 +1085,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "amazon.nova-pro-v1:0": DEFAULT_UNKNOWN_MODEL_COST,
     "agenc:agenc": DEFAULT_UNKNOWN_MODEL_COST,
     agenc: DEFAULT_UNKNOWN_MODEL_COST,
+    // Managed routes price under their own identity, never the public
+    // `openrouter:` row for the same id. The gateway passes the upstream
+    // response model through, which can be OpenRouter's dated generation id.
+    [`agenc:${AGENC_DEEPSEEK_V41_MODEL}`]: COST_TIER_AGENC_DEEPSEEK_V41_FLASH,
+    [`agenc:${AGENC_DEEPSEEK_V41_GENERATION}`]: COST_TIER_AGENC_DEEPSEEK_V41_FLASH,
     ollama: {
       inputUsdPer1K: 0,
       outputUsdPer1K: 0,
@@ -920,6 +1108,46 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       label: "local",
       localZeroCost: true,
     },
+    // OpenRouter catalog prices do not bound the endpoint selected by routing.
+    // Retain paid rates in the conservative registry ceiling, but never settle
+    // them as a known bill or use them directly for admission. Only explicit
+    // free routes with no additional charges are known zero. Response cost wins.
+    // https://openrouter.ai/docs/guides/routing/provider-selection
+    ...Object.fromEntries(OPENROUTER_PRICING.flatMap((model) => {
+      const input = Number(model.pricing.prompt);
+      const output = Number(model.pricing.completion);
+      if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0 ||
+        Number(model.pricing.request ?? 0) !== 0 || (model.priceOverrides?.length ?? 0) > 1 ||
+        model.priceOverrides?.some(rate => rate.min_prompt_tokens === undefined)) {
+        return [[`openrouter:${model.model}`, DEFAULT_UNKNOWN_MODEL_COST]];
+      }
+      const cacheRead = Number(model.pricing.input_cache_read);
+      const cacheWrite = Number(model.pricing.input_cache_write);
+      const long = model.priceOverrides?.[0];
+      return [[`openrouter:${model.model}`, {
+        inputUsdPer1K: input * 1000,
+        outputUsdPer1K: output * 1000,
+        ...(Number.isFinite(cacheRead) && cacheRead >= 0 ? { cachedInputUsdPer1K: cacheRead * 1000 } : {}),
+        ...(Number.isFinite(cacheWrite) && cacheWrite >= 0 ? { cacheCreationUsdPer1K: cacheWrite * 1000 } : {}),
+        cachedInputIncludedInInputTokens: Number.isFinite(cacheRead) && cacheRead >= 0,
+        cacheCreationIncludedInInputTokens: Number.isFinite(cacheWrite) && cacheWrite >= 0,
+        ...(long !== undefined ? { longContext: {
+          aboveInputTokens: long.min_prompt_tokens! - 1,
+          rates: {
+            inputUsdPer1K: Number(long.prompt) * 1000,
+            outputUsdPer1K: Number(long.completion) * 1000,
+            ...(long.input_cache_read !== undefined ? { cachedInputUsdPer1K: Number(long.input_cache_read) * 1000 } : {}),
+            ...(long.input_cache_write !== undefined ? { cacheCreationUsdPer1K: Number(long.input_cache_write) * 1000 } : {}),
+            cachedInputIncludedInInputTokens: true,
+            cacheCreationIncludedInInputTokens: true,
+          },
+        } } : {}),
+        ...(model.model.endsWith(":free") && input === 0 && output === 0 &&
+          long === undefined && Object.values(model.pricing).every(value => Number(value) === 0)
+          ? { localZeroCost: true }
+          : { costEstimated: true, label: "unverified routed price" }),
+      } satisfies ModelCostEntry]];
+    })),
   });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1157,12 +1385,14 @@ export function selectCallRates(
   entry: Readonly<ModelCostEntry>,
   call: CallPricing,
 ): { readonly rates: Readonly<ModelCostEntry>; readonly documented: boolean } {
-  const tier =
-    entry.longContext !== undefined &&
+  let tier = entry;
+  while (
+    tier.longContext !== undefined &&
     call.singleCallInputTokens !== undefined &&
-    call.singleCallInputTokens > entry.longContext.aboveInputTokens
-      ? entry.longContext.rates
-      : entry;
+    call.singleCallInputTokens > tier.longContext.aboveInputTokens
+  ) {
+    tier = tier.longContext.rates;
+  }
   if (call.speed !== "fast") return { rates: tier, documented: true };
   if (tier.fastMode !== undefined) {
     return { rates: tier.fastMode, documented: true };
@@ -1182,12 +1412,27 @@ export function resolveModelCostEntry(
 }
 
 /**
+ * True when a managed AgenC route has a price of its own. Only an
+ * `agenc:<model>` entry counts: the bare `agenc` entry is the unknown-price
+ * fallback that every other managed route resolves to.
+ */
+export function hasManagedRoutePrice(
+  model: string,
+  registry: Readonly<Record<string, ModelCostEntry>> = DEFAULT_MODEL_COSTS,
+): boolean {
+  const match = resolveModelCostEntry({ model, provider: "agenc" }, registry);
+  return match !== null && match.key.startsWith("agenc:") &&
+    match.entry.costEstimated !== true;
+}
+
+/**
  * OpenAI models priced by exact id: the id itself or one of its dated
  * snapshots (`<id>-YYYY-MM-DD`) share its price, but a sibling such as
  * gpt-5.4-pro or gpt-5.6-cyber does not. Every GPT-5 and GPT-6 model is here,
  * because a Pro sibling costs many times its base model.
  */
 const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
+  "gpt-6.1-sol",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",
@@ -1208,6 +1453,8 @@ const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
   "gpt-5-nano",
   "gpt-5-pro",
   "gpt-4o-2024-05-13",
+  "gpt-4-turbo",
+  "chat-latest",
   "o1-pro",
   "o3-pro",
 ]);

@@ -756,6 +756,10 @@ import { sendDirectMemberMessage } from "../../../utils/directMemberMessage.js";
 import { getImageFromClipboard } from "../../../utils/imagePaste.js";
 import { cacheImagePath, storeImage } from "../../../utils/imageStore.js";
 import { logError } from "../../../utils/log.js";
+import {
+  type ComposerSubmitHelpers,
+  submitViaElicitationPrompt,
+} from "../../elicitation-submit-routing.js";
 import PromptInput from "./PromptInput.js";
 
 function sleep(ms: number): Promise<void> {
@@ -910,6 +914,19 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
       await sleep(25);
     },
   };
+}
+
+function rerenderPromptInput(
+  rendered: Awaited<ReturnType<typeof renderPromptInput>>,
+  overrides: Record<string, unknown>,
+): void {
+  rendered.root.render(
+    <PromptInput
+      {...({ ...rendered.props, ...overrides } as unknown as React.ComponentProps<
+        typeof PromptInput
+      >)}
+    />,
+  );
 }
 
 describe("PromptInput render surface", () => {
@@ -1121,6 +1138,76 @@ describe("PromptInput render surface", () => {
       harness.keybindings["chat:newline"]?.();
 
       expect(onInputChange).toHaveBeenCalledWith("a\nbc");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("puts the cursor after a draft restored in the same commit as the submit clear", async () => {
+    const draft = "and again";
+    const onInputChange = vi.fn();
+    const onSubmit = vi.fn(
+      async (_value: string, helpers: { setCursorOffset(offset: number): void }) => {
+        helpers.setCursorOffset(0);
+      },
+    );
+    const rendered = await renderPromptInput({
+      input: draft,
+      onInputChange,
+      onSubmit,
+      draftRestoreRevision: 0,
+    });
+    const rerender = (draftRestoreRevision: number) =>
+      rerenderPromptInput(rendered, { draftRestoreRevision });
+
+    try {
+      await waitForPromptInputProps();
+      const submit = harness.keybindingRegistrations.find(
+        (item) => item.action === "chat:submit",
+      )?.handler as () => void;
+      submit();
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(0));
+      expect(onSubmit).toHaveBeenCalledWith(draft, expect.anything(), undefined, expect.anything());
+
+      // The owner cleared and restored the same text in one commit: the input
+      // prop never changes, only the restore revision does.
+      rerender(1);
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(draft.length));
+      harness.keybindings["chat:newline"]?.();
+      expect(onInputChange).toHaveBeenLastCalledWith(`${draft}\n`);
+
+      // A rerender without a new restore keeps a cursor the user moved.
+      (harness.baseProps?.onChangeCursorOffset as (offset: number) => void)(3);
+      rerender(1);
+      await sleep(25);
+      expect(harness.baseProps?.cursorOffset).toBe(3);
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("keeps the cursor through a submit until the owner clears the input", async () => {
+    const draft = "and again";
+    const submit = vi.fn(async () => {});
+    const onSubmit = vi.fn((value: string, helpers: ComposerSubmitHelpers) =>
+      submitViaElicitationPrompt({ submit: () => false }, submit, value, helpers),
+    );
+    const rendered = await renderPromptInput({ input: draft, onSubmit });
+
+    try {
+      await waitForPromptInputProps();
+      const submitKey = harness.keybindingRegistrations.find(
+        (item) => item.action === "chat:submit",
+      )?.handler as () => void;
+      submitKey();
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith(draft, undefined));
+      await sleep(25);
+      // The owner kept the text (a refused busy retry, an elicitation
+      // answer), so typing must still append to it.
+      expect(harness.baseProps?.cursorOffset).toBe(draft.length);
+
+      rerenderPromptInput(rendered, { input: "" });
+      await vi.waitFor(() => expect(harness.baseProps?.cursorOffset).toBe(0));
     } finally {
       await rendered.dispose();
     }

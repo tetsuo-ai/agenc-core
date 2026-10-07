@@ -107,7 +107,7 @@ export async function runAutonomyAct(
   io.say("");
   io.say("── Guardrails, then autonomy ────────────────────────────────");
   io.say("Order matters: the spend cap comes first. When a cap is hit,");
-  io.say("autonomy pauses and tells you — never silently spends or stops.");
+  io.say("autonomy pauses and tells you. It never silently spends or stops.");
 
   // ── 1. Budget ─────────────────────────────────────────────────────────
   const { config } = await loadCanonicalConfig({
@@ -119,7 +119,7 @@ export async function runAutonomyAct(
   let hasCap = budget.enabled;
   if (budget.enabled) {
     io.say("");
-    io.say("A budget envelope is already configured — keeping it.");
+    io.say("A budget envelope is already configured. Keeping it.");
     io.say("(See `agenc budget status`; edit [budget] in config.toml.)");
   } else {
     io.say("");
@@ -133,11 +133,11 @@ export async function runAutonomyAct(
         false,
       );
       if (!sure) return runAutonomyAct(options);
-      io.say("Proceeding WITHOUT a cap — you chose this explicitly.");
+      io.say("Proceeding WITHOUT a cap. You chose this explicitly.");
     } else {
       const cap = Number.parseFloat(capAnswer);
       if (!Number.isFinite(cap) || cap <= 0) {
-        io.say("That is not a positive number — try the act again.");
+        io.say("That is not a positive number. Try the act again.");
         return 1;
       }
       const wrote = setCanonicalConfigSectionIfAbsent(agencHome, "budget", {
@@ -150,7 +150,7 @@ export async function runAutonomyAct(
         hasCap = true;
       } else {
         io.say(
-          "config.toml already has a [budget] section this wizard will not rewrite — edit it directly.",
+          "config.toml already has a [budget] section this wizard will not rewrite. Edit it directly.",
         );
       }
     }
@@ -160,7 +160,7 @@ export async function runAutonomyAct(
   const heartbeat = resolveHeartbeatPolicy(config.heartbeat);
   io.say("");
   if (heartbeat.enabled) {
-    io.say("Heartbeat already enabled — keeping your configuration.");
+    io.say("Heartbeat already enabled. Keeping your configuration.");
   } else if (
     await io.confirm(
       "Enable the heartbeat? (periodic check-ins driven by a HEARTBEAT.md you control)",
@@ -193,7 +193,7 @@ export async function runAutonomyAct(
             "",
           ].join("\n"),
         );
-        io.say(`Wrote a starter ${heartbeatPath} — edit it to change the job.`);
+        io.say(`Wrote a starter ${heartbeatPath}. Edit it to change the job.`);
       }
       const envEntries = readGatewayCredentialEnvironment(home);
       const channelHint =
@@ -211,7 +211,7 @@ export async function runAutonomyAct(
       const conversation =
         channel.length > 0
           ? await io.ask(
-              "Conversation id on that channel (your chat id — check `agenc gateway pairing list` after pairing)",
+              "Conversation id on that channel (your chat id; check `agenc gateway pairing list` after pairing)",
               "",
             )
           : "";
@@ -231,7 +231,7 @@ export async function runAutonomyAct(
       io.say(
         wrote
           ? "Heartbeat configured (every 30 min while the gateway runs)."
-          : "config.toml already has a [heartbeat] section — edit it directly.",
+          : "config.toml already has a [heartbeat] section. Edit it directly.",
       );
       io.say("It ticks whenever `agenc gateway run` (or the service) is up.");
     }
@@ -256,7 +256,7 @@ export async function runAutonomyAct(
       );
       const schedule = await io.ask("Cron schedule", "0 9 * * *");
       if (nextCronRunMs(schedule, now()) === null) {
-        io.say("That cron expression never fires — try the act again.");
+        io.say("That cron expression never fires. Try the act again.");
         return 1;
       }
       const prompt = await io.ask(
@@ -285,7 +285,7 @@ export async function runAutonomyAct(
   io.say("");
   if (
     await io.confirm(
-      "Enable inbound webhooks? (POST /hooks/agent — trigger turns from CI, monitors, anything)",
+      "Enable inbound webhooks? (POST /hooks/agent triggers turns from CI, monitors, anything)",
       false,
     )
   ) {
@@ -309,6 +309,6 @@ export async function runAutonomyAct(
   markOnboardingActComplete(agencHome, "autonomy");
   io.say("");
   io.say("Autonomy configured. Everything above only acts while the gateway");
-  io.say("runs — keep it always-on with: agenc gateway install-service");
+  io.say("runs. Keep it always on with: agenc gateway install-service");
   return 0;
 }

@@ -1,3 +1,4 @@
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
@@ -109,6 +110,50 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("keeps the reservation unknown after interim Responses usage and a disconnect", async () => {
+    const state = harness({});
+    const frame = `event: response.in_progress\ndata: ${JSON.stringify({ type: "response.in_progress", response: {
+      status: "in_progress", usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+    } })}\n\n`;
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-4.1", useResponsesApi: true,
+      fetchImpl: async () => new Response(frame, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await expect(runAdmittedModelCall({ session: state.session, provider,
+      providerName: "openai", model: "gpt-4.1", messages, options: { maxOutputTokens: 200 }, stepId: "interim",
+      invoke: options => provider.chatStream(messages, () => {}, options),
+    })).rejects.toMatchObject({ name: "LLMStreamTruncatedError" });
+    expect(state.holdUnknown).toHaveBeenCalledOnce();
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each([false, true])("accounts for usage on a failed Responses stream without loosening retry guards (output=%s)", async hasOutput => {
+    const state = harness({});
+    const frame = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+    const frames = (hasOutput ? frame("response.output_text.delta", { delta: "partial" }) : "") +
+      frame("response.failed", { response: {
+        status: "failed", model: "gpt-4.1", output: [],
+        usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120,
+          output_tokens_details: { reasoning_tokens: 10 } },
+        error: { code: "server_is_overloaded", message: "overloaded", headers: { "X-Retry-Metadata": "NO_MORE_RETRY" } },
+      } });
+    const provider = new OpenAIProvider({ apiKey: "test", model: "gpt-4.1", useResponsesApi: true,
+      fetchImpl: async () => new Response(frames, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    const result = await runAdmittedModelCall({ session: state.session, provider,
+      providerName: "openai", model: "gpt-4.1", messages, options: { maxOutputTokens: 200 }, stepId: "response-failure",
+      invoke: options => provider.chatStream(messages, () => {}, options),
+    });
+    expect(result).toMatchObject({ partial: true, finishReason: "error", usage: { promptTokens: 100, completionTokens: 20, reasoningOutputTokens: 10 } });
+    expect(result.error).toMatchObject({ name: "LLMStreamRetryDeniedError" });
+    expect(state.reconcile).toHaveBeenCalledOnce();
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({ inputTokens: 100, outputTokens: 20 }));
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
   test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
     const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
     let chunks = 0;
@@ -939,6 +984,96 @@ describe("runAdmittedModelCall", () => {
       outputTokens: 50,
       costUsd: expect.closeTo(0.00047, 12),
     });
+  });
+
+  const managedDeepSeekUsage = {
+    promptTokens: 22_116,
+    completionTokens: 5,
+    totalTokens: 22_121,
+    availability: "reported",
+    provenance: "provider",
+  } as const;
+
+  function routedProvider(model: string): LLMProvider {
+    return {
+      name: "agenc",
+      getExecutionProfile: async () => ({
+        provider: "openrouter",
+        model,
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+  }
+
+  test("prices the managed AgenC DeepSeek route at its own rates, not the public OpenRouter row", async () => {
+    // Live run on 2026-10-01: this call settled at $3.3204, the registry
+    // ceiling, instead of the route's $0.30/M input and $1.20/M output.
+    const state = harness({ maxCostUsd: 1 });
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider: routedProvider("deepseek/deepseek-v4.1-flash"),
+      messages: [{ role: "user", content: "hello" }],
+      options: { model: "deepseek/deepseek-v4.1-flash", maxOutputTokens: 64_000 },
+      stepId: "model:managed-deepseek",
+      model: "deepseek/deepseek-v4.1-flash",
+      providerName: "agenc",
+      // The gateway passes through OpenRouter's dated generation id.
+      invoke: async () => response({
+        model: "deepseek/deepseek-v4.1-flash-20260910",
+        usage: managedDeepSeekUsage,
+      }),
+    });
+
+    const request = state.acquire.mock.calls[0]?.[0] as AdmissionAcquireInput;
+    // Routing attribution is unchanged; only the price follows the route.
+    expect(request).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+    expect(request.costEstimated).toBeUndefined();
+    expect(request.maxCostUsd).toBeCloseTo(
+      (request.maxInputTokens * 0.3 + request.maxOutputTokens * 1.2) / 1_000_000,
+      12,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 22_116,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.0066408, 12),
+    });
+  });
+
+  test.each([
+    { name: "a user's own OpenRouter key", providerName: "openrouter", model: "deepseek/deepseek-v4.1-flash" },
+    { name: "a managed route without its own price", providerName: "agenc", model: "deepseek/deepseek-v4-flash-0731" },
+  ])("keeps $name on the conservative price", async ({ providerName, model }) => {
+    const state = harness({ maxCostUsd: 1 });
+    const provider = providerName === "agenc"
+      ? routedProvider(model)
+      : {
+          name: "openrouter",
+          getExecutionProfile: async () => ({
+            usageReporting: "authoritative" as const,
+            supportsMaxOutputTokens: true,
+          }),
+        } as unknown as LLMProvider;
+
+    await runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { model, maxOutputTokens: 200 },
+      stepId: "model:conservative",
+      model,
+      providerName,
+      invoke: async () => response({ model, usage: managedDeepSeekUsage }),
+    });
+
+    expect(state.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openrouter", model, costEstimated: true }),
+      undefined,
+    );
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      costEstimated: true,
+    }));
   });
 
   test("voids and releases an acquired lease when routing evidence cannot be journaled", async () => {

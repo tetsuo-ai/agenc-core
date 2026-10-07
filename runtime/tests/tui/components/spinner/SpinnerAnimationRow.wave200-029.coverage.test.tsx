@@ -59,24 +59,29 @@ describe('SpinnerAnimationRow coverage', () => {
       120,
     )
 
-    expect(activeTools).toContain('⣟⣹')
+    // No activity glyph while tools run: no Braille matrix, no spinner frame.
+    // The verb itself shimmers instead.
+    expect(activeTools).not.toMatch(/[\u2800-\u28FF✶◐]/u)
     expect(activeTools).toContain('Working')
     expect(activeTools).toContain('indexing')
     expect(activeTools).toContain('31s')
     expect(activeTools).toContain('4.5k tokens')
     expect(activeTools).toContain('thinking deeply')
 
+    // Under one second the timer is still hidden, so the row is the
+    // thinking-only compact form. 21 columns leave room for the bare
+    // "thinking" label (verb + 2-cell inset + 2-cell gap) but not the effort.
     const compactThinking = await renderToString(
       <SpinnerAnimationRow
         {...props({
-          columns: 20,
+          columns: 21,
           effortSuffix: ' deeply',
-          loadingStartTimeRef: { current: NOW - 2_000 },
+          loadingStartTimeRef: { current: NOW - 500 },
           message: 'Ask',
           thinkingStatus: 'thinking',
         })}
       />,
-      20,
+      21,
     )
 
     expect(compactThinking).toContain('Ask')
@@ -97,7 +102,8 @@ describe('SpinnerAnimationRow coverage', () => {
       100,
     )
 
-    expect(thoughtSummary).toContain('↑')
+    // The requesting phase no longer gets an ↑ glyph; the byline is plain.
+    expect(thoughtSummary).not.toMatch(/[↑↓]/u)
     expect(thoughtSummary).toContain('1m 1s')
     expect(thoughtSummary).toContain('100 tokens')
     expect(thoughtSummary).toContain('thought for 1s')
@@ -124,7 +130,8 @@ describe('SpinnerAnimationRow coverage', () => {
       120,
     )
 
-    expect(foregroundedTeammate).toContain('⣟⣹')
+    expect(foregroundedTeammate).not.toMatch(/[\u2800-\u28FF✶◐]/u)
+    expect(foregroundedTeammate).toContain('Working')
     expect(foregroundedTeammate).toContain('(esc to interrupt Reviewer)')
     expect(foregroundedTeammate).not.toContain('9.1k tokens')
     expect(foregroundedTeammate).not.toContain('thinking')

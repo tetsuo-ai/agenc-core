@@ -66,7 +66,7 @@ describe("canonical MCP configuration authority", () => {
       .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"))
       .sort();
 
-    expect(references).toEqual(["config/env.ts"]);
+    expect(references).toEqual(["config/obsolete-environment.ts"]);
     expect(readFileSync(resolve(sourceRoot, "session/mcp-startup.ts"), "utf8"))
       .not.toMatch(/getMcpConfigFromEnv|createSessionMcpManagerFromEnv/u);
     expect(readFileSync(resolve(sourceRoot, "bin/agenc-main.ts"), "utf8"))

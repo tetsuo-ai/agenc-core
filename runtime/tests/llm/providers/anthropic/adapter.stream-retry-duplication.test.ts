@@ -1,3 +1,5 @@
+import { ProviderHttpError } from "../../../../src/llm/client-session.js";
+import { isLLMPreGenerationRejection } from "../../../../src/llm/errors.js";
 import { describe, expect, test, vi } from "vitest";
 import { AnthropicProvider } from "./adapter.js";
 import {
@@ -24,6 +26,21 @@ const TEXT_DELTA =
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';
 
 describe("AnthropicProvider stream retry duplication (audit #10)", () => {
+  test("preserves the authentication error path after accepted partial output without rejection proof", async () => {
+    const failure = new ProviderHttpError({ providerName: "anthropic", status: 401,
+      headers: new Headers(), url: "https://example.test", message: "body fault" });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponseThenError([TEXT_DELTA], failure));
+    const provider = createAnthropicFallbackProvider(fetchImpl);
+    const chunks: string[] = [];
+    const error = await provider.chatStream([{ role: "user", content: "hello" }],
+      chunk => { if (chunk.content) chunks.push(chunk.content); }, { singleWireAttempt: true },
+    ).then(() => undefined, (caught: unknown) => caught);
+    expect(chunks).toEqual(["partial"]);
+    expect(error).toMatchObject({ name: "LLMAuthenticationError" });
+    expect(isLLMPreGenerationRejection(error, "anthropic")).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   test(
     "does not replay already-emitted chunks when a wait/overload error is " +
       "thrown mid-stream after partial content",

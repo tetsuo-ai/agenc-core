@@ -35,6 +35,10 @@ import {
   type MessageContent,
   type RequestId,
   type RunCancelResult,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunEvidenceParams,
   type RunEvidenceResult,
   type RunReplayEvent,
@@ -1256,6 +1260,22 @@ export class AgencClient {
    */
   startRun(params: RunStartParams): Promise<RunStartResult> {
     return this.request("run.start", params);
+  }
+
+  /** Request a pause after the current stage. The returned state may still be pending. */
+  async pauseRun(params: RunPauseParams): Promise<RunPauseResult> {
+    if (!this.#supportsMethod("run.pause")) {
+      throw new AgencCapabilityUnavailableError("run.pause", this.serverProtocolVersion);
+    }
+    return this.request("run.pause", params);
+  }
+
+  /** Resume the exact suspension without replenishing the run's limits. */
+  async resumeRun(params: RunResumeParams): Promise<RunResumeResult> {
+    if (!this.#supportsMethod("run.resume")) {
+      throw new AgencCapabilityUnavailableError("run.resume", this.serverProtocolVersion);
+    }
+    return this.request("run.resume", params);
   }
 
   /** List a bounded page of CSV unknown-outcome reviews. */

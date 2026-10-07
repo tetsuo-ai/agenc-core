@@ -174,12 +174,12 @@ export class ChannelGateway {
         // either tells the user out-of-band or runs `pairing approve`.
         if (await this.#pairing.redeem(message.channelId, message.sender, message.text)) {
           await reply(
-            "Paired. This conversation now reaches your AgenC agent — send a message to begin.",
+            "Paired. This conversation now reaches your AgenC agent. Send a message to begin.",
           );
           return;
         }
         this.#log(
-          `gateway: pairing pending channel=${message.channelId} peer=${message.sender.peerId} code=${access.code} (host-only — not sent in-channel)`,
+          `gateway: pairing pending channel=${message.channelId} peer=${message.sender.peerId} code=${access.code} (host-only, not sent in-channel)`,
         );
         await reply(
           [

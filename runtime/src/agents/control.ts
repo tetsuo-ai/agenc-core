@@ -31,6 +31,7 @@
  * @module
  */
 
+import { CompletedTaskResults } from "./completed-task-results.js";
 import { emitError, emitWarning, type SubagentTaskAdmissionEvent } from "../session/event-log.js";
 import { childReadOnlyDelegation, normalizeReadOnlyDelegationConstraint } from "./readonly-delegation.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
@@ -236,6 +237,8 @@ export class AgentAssignmentRejectedError extends Error {
 
 export interface AgentAssignmentAdmission {
   readonly taskId: string;
+  readonly taskText: string;
+  readonly exactOutput?: boolean;
   readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   readonly turnId: string;
   readonly author: AgentPath;
@@ -352,6 +355,8 @@ export interface LiveAgent {
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
     readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   };
+  /** Byte-bounded front for exact answers stored in the child journal. */
+  completedTaskResults?: CompletedTaskResults;
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
   /** Local rollout path for the live child session once initialized. */
@@ -1254,6 +1259,7 @@ export class AgentControl {
       readonly recipient: AgentPath;
       readonly content: string;
       readonly taskId: string;
+      readonly exactOutput?: boolean;
       readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     },
   ): { readonly taskId: string; readonly turnId: string } {
@@ -1296,6 +1302,8 @@ export class AgentControl {
 
     const admission: AgentAssignmentAdmission = {
       taskId: assignment.taskId,
+      taskText: assignment.content,
+      exactOutput: assignment.exactOutput,
       turnId: crypto.randomUUID(),
       author: assignment.author,
       acceptedAtMs: Date.now(),
@@ -2219,7 +2227,7 @@ export class AgentControl {
         if (recovered === undefined) continue;
         const terminal = recovered.receipt.terminal;
         const destination = terminal ?? edge.metadata.executionPlan?.destination;
-        const taskText = recovered.admission?.taskText ?? edge.metadata.lastTaskMessage;
+        const taskText = recovered.taskText ?? recovered.admission?.taskText ?? edge.metadata.lastTaskMessage;
         const listed: ListedAgent = { agentName: recovered.receipt.agentPath,
           agentStatus: recoveredChildStatus(recovered.receipt),
           ...(destination === undefined ? {} : { provider: boundedRecoveredChildText(destination.provider, 512),
@@ -2241,6 +2249,44 @@ export class AgentControl {
       }
     }
     return result;
+  }
+
+  /** Read an exact result page, authorized by a direct parent-child edge and
+   * immutable turn ID. Durable reads retain the recovery reader's byte/time
+   * bounds; no caller-supplied path is ever opened and no worker is restarted. */
+  readChildResultPage(parentThreadId: ThreadId, childThreadId: ThreadId, turnId: string, offset = 0): {
+    readonly text: string; readonly total_chars: number; readonly next_offset: number | null; readonly complete: boolean;
+  } {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("result_ref.offset must be a nonnegative integer");
+    const live = this.live.get(childThreadId);
+    const edge = this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId)
+      .find(edge => edge.childThreadId === childThreadId);
+    if (this.parentOf.get(childThreadId) !== parentThreadId && edge === undefined) {
+      throw new Error("Result reference is not a child of the calling agent");
+    }
+    const completedMessage = live?.completedTaskResults?.get(turnId);
+    const receipt = completedMessage === undefined
+      ? this.session.rolloutStore?.readThreadSpawnTaskReceipts(childThreadId, Date.now() + 2_000, turnId,
+        live === undefined ? undefined : liveAgentSession(live)?.rolloutStore ?? undefined)
+        .find(item => item.admission === undefined && item.receipt.turnId === turnId)?.receipt
+      : { turnId, outcome: "completed" as const, message: completedMessage };
+    if (receipt?.turnId !== turnId || receipt.outcome !== "completed" || receipt.message === undefined) {
+      throw new Error("The referenced child turn has no completed final answer");
+    }
+    const text = receipt.message;
+    if (live !== undefined && completedMessage === undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(turnId, text);
+    }
+    if (offset > text.length) throw new Error("result_ref.offset exceeds the final answer length");
+    const splitsCharacter = (index: number): boolean => {
+      const previous = text.charCodeAt(index - 1), next = text.charCodeAt(index);
+      return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+    };
+    if (splitsCharacter(offset)) throw new Error("result_ref.offset splits a Unicode character; use next_offset from the previous page");
+    let end = Math.min(text.length, offset + 8_192);
+    if (splitsCharacter(end)) end -= 1;
+    return { text: text.slice(offset, end), total_chars: text.length,
+      next_offset: end < text.length ? end : null, complete: end === text.length };
   }
 
   /** Lost mailbox projections are replayable from child-owned durable receipts. */
@@ -2286,6 +2332,7 @@ export class AgentControl {
           const receipt = projectRecoveredChildReceipt(item.receipt);
           const admission = item.admission;
           return { edge: item.edge, sourcePath: item.sourcePath, sequence: item.sequence, receipt,
+            ...(item.taskText === undefined ? {} : { taskText: boundedRecoveredChildText(item.taskText) }),
             ...(item.eventId === undefined ? {} : { eventId: item.eventId }),
             ...(item.spawnEdgeId === undefined ? {} : { spawnEdgeId: item.spawnEdgeId }),
             ...(admission === undefined ? {} : { admission: { agentId: admission.agentId,

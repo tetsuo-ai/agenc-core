@@ -230,11 +230,14 @@ describe("strict canonical journal contract", () => {
     );
   });
 
-  it("validates an exact same-epoch suspend/resume lifecycle", () => {
+  it.each([
+    ["daemon_shutdown_idle", "explicit_continue"],
+    ["workflow_user_pause", "workflow_user_resume"],
+  ] as const)("validates an exact same-epoch %s/%s lifecycle", (suspensionReason, resumeReason) => {
     const suspended = validEvent(1, "run_suspended", {
       runId: "run-1",
       epoch: 1,
-      reason: "daemon_shutdown_idle",
+      reason: suspensionReason,
       suspendedAt: "2026-08-19T00:00:00.000Z",
     });
     expect(validateCanonicalJournalText(suspended)).toMatchObject({
@@ -247,7 +250,7 @@ describe("strict canonical journal contract", () => {
       runId: "run-1",
       epoch: 1,
       suspensionEventId: "event:1",
-      reason: "explicit_continue",
+      reason: resumeReason,
       resumedAt: "2026-08-19T00:01:00.000Z",
     });
     expect(

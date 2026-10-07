@@ -25,6 +25,10 @@ describe("verification plan placeholders", () => {
     "echo", "echo 'passed'", "printf 'ok\\n'", "/usr/bin/true", "'true'",
     "true && :; echo done", "true\necho done", "CI=1 command true",
     "bash -lc 'true'", "sh -c 'echo done'", "echo passed > result.txt",
+    "bash -ec true", "bash -c -e 'exit 0'", "sh -c -- true", "zsh -fc 'echo ok'", "dash -c :",
+    "bash +c true", "bash -c true extra", "/bin/BASH -c true",
+    "tcsh -c 'echo ok'", "fish --command=true", "fish -C true -c 'echo ok'",
+    "bash -ec \"sh -c true\"",
   ])("rejects a check that proves nothing: %j", (script) => {
     expect(isTrivialVerificationCommand(script)).toBe(true);
   });
@@ -34,6 +38,8 @@ describe("verification plan placeholders", () => {
     "test -s index.html", "echo starting && npm test", "echo starting\nnpm test",
     "npm test && echo done", "sh -c 'npm test'", "node -e 'require(\"node:assert\").ok(1)'",
     "exit 1", "echo actual | diff - expected.txt",
+    "bash -ec 'npm test'", "bash -c -e 'npm test'", "bash script.sh", "bash script.sh -c true",
+    "ksh run.ksh", "fish -C true -c 'npm test'", "bash -opipefail -c 'npm test'",
   ])("leaves meaningful command evaluation to the verifier: %j", (script) => {
     expect(isTrivialVerificationCommand(script)).toBe(false);
   });
@@ -268,6 +274,19 @@ describe("verification commands in model prompts", () => {
 
 describe("planned verification message contract", () => {
   const block = (value: unknown) => "Plan\n```agenc-verification\n" + JSON.stringify(value) + "\n```";
+  it.each([
+    'node -e "const s=require(\'fs\').readFileSync(\'README.md\',\'utf8\');if(!/```js[\\s\\S]*?```/.test(s))process.exit(1)"',
+    'test -s `pwd`/README.md',
+  ])("rejects shell backticks before freezing a generated check: %s", script => {
+    expect(() => plannedVerification(block([script]))).toThrow("shell backtick substitution");
+  });
+  it.each([
+    'node -e \'const fs=require("fs");if(!fs.readFileSync("README.md","utf8").includes("```js"))process.exit(1)\'',
+    'node -e "if(!require(\'fs\').readFileSync(\'README.md\',\'utf8\').includes(\'\\`\\`\\`js\'))process.exit(1)"',
+    'node --test test/readme.test.mjs',
+  ])("preserves literal backticks or a test-file invocation: %s", script => {
+    expect(plannedVerification(block([script]))[0]?.script).toBe(script);
+  });
   it("preserves exact commands and freezes the list and entries", () => {
     const checks = plannedVerification(block(["npm test", "cd cli && npm run build && node dist/cli.js --help"]));
     expect(checks.map(check => check.script)).toEqual(["npm test", "cd cli && npm run build && node dist/cli.js --help"]);

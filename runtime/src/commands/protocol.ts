@@ -100,7 +100,7 @@ function renderTransportError(
 
 function renderClaimableList(list: ClaimableTaskList): SlashCommandResult {
   const lines = [
-    "AgenC protocol · claim — claimable mainnet tasks (read-only)",
+    "AgenC protocol · claim: claimable mainnet tasks (read-only)",
     "",
   ];
   if (list.tasks.length === 0) {
@@ -130,7 +130,7 @@ function renderClaimableList(list: ClaimableTaskList): SlashCommandResult {
 
 function renderTaskDetail(detail: TaskDetail): SlashCommandResult {
   const lines = [
-    "AgenC protocol · claim — task detail (read-only)",
+    "AgenC protocol · claim: task detail (read-only)",
     "",
     `Task PDA: ${detail.taskPda}`,
   ];

@@ -2,8 +2,8 @@
  * Help open + dismiss scenario.
  *
  * Press `?` to open the inline help menu, then Esc to dismiss. Verifies
- * the help-menu shortcut works and exits cleanly. The footer shows
- * "? for shortcuts" by default — this exercises that path.
+ * the help-menu shortcut works and exits cleanly. The welcome lists
+ * "? shortcuts", and this exercises that path.
  */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

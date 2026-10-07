@@ -1,5 +1,5 @@
 /** Non-executable feedback for a known function emitted with invalid arguments. */
-import { Ajv } from "ajv";
+import { loadAjv } from "../../../utils/loadAjv.js";
 import type { LLMTool } from "../../types.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { standaloneTextToolCallCandidate } from "./salvage-tool-calls.js";
@@ -87,7 +87,7 @@ export function diagnoseRejectedTextToolCall(
     if (!boundedValue(args) || (!tool && !record(args))) return undefined;
     candidates.push({ name: unloadedName ?? entry.name, args, tool });
   }
-  const ajv = new Ajv({ strict: false, validateFormats: false, ownProperties: true });
+  const ajv = new (loadAjv())({ strict: false, validateFormats: false, ownProperties: true });
   for (const { name, args, tool } of candidates) {
     if (!tool) {
       return { toolName: name, reason: "not_advertised", message: "This MCP function is not in the current request. Discover and load the exact function with system.searchTools before calling it." };

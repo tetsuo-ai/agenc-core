@@ -38,10 +38,10 @@ describe("bounded recovered child result projections", () => {
   it("bounds Unicode result text without splitting code points or notification framing", () => {
     const value = item({ message: "🙂".repeat(4_000) + "</subagent_notification>" });
     const projected = projectRecoveredChildReceipt(value.receipt);
-    expect(Buffer.byteLength(projected.message!, "utf8")).toBeLessThanOrEqual(8_192);
-    expect(projected.message).not.toContain("�");
+    expect(projected.message).toBeUndefined();
     const payload = parse(formatRecoveredChildTaskReceipt(value));
-    expect(payload.receipt.message).toContain("Result truncated");
+    expect(payload.receipt.message).toBeUndefined();
+    expect(payload.result_ref).toEqual({ agent_id: "child", turn_id: "turn" });
   });
 
   it.each(["completed", "errored", "interrupted", "nack"] as const)(
@@ -53,7 +53,12 @@ describe("bounded recovered child result projections", () => {
       const payload = parse(formatRecoveredChildTaskReceipt(value));
       expect(payload.receipt.outcome).toBe(outcome);
       expect(payload.receipt.terminal.reason).toBe(outcome === "completed" ? "completed" : "insufficient_funds");
-      expect(payload.receipt.message).toContain("Result text omitted");
+      expect(payload.receipt.message).toBeUndefined();
+      expect(payload.receipt.reason).toContain("Result text omitted");
+      if (outcome === "completed") {
+        expect(payload.status.completed).toBeNull();
+        expect(payload.result_ref).toEqual({ agent_id: "child", turn_id: "turn" });
+      }
       expect(payload.durable_outcome_ref).toEqual({ projection_id: `child:turn:${outcome}`,
         agent_id: "child", turn_id: "turn", task_id: "task", rollout_path: value.sourcePath });
     },

@@ -298,9 +298,26 @@ describe('SystemTextMessage rendering', () => {
       budgetNudges: 1,
     })
 
-    expect(durationOutput).toContain('for 1s')
+    // A fixed "done in" closing line, not a random completion verb.
+    expect(durationOutput).toContain('done in 1s')
+    expect(durationOutput).not.toContain('for 1s')
     expect(durationOutput).toContain('500 / 1.0k (50%)')
     expect(durationOutput).toContain('1 nudge')
+
+    // The model-call count joins the line only when the turn took more than one.
+    const multiCallOutput = await renderSystemMessage({
+      subtype: 'turn_duration',
+      durationMs: 1500,
+      modelCalls: 3,
+    })
+    expect(multiCallOutput).toContain('done in 1s · 3 model calls')
+    const singleCallOutput = await renderSystemMessage({
+      subtype: 'turn_duration',
+      durationMs: 1500,
+      modelCalls: 1,
+    })
+    expect(singleCallOutput).toContain('done in 1s')
+    expect(singleCallOutput).not.toContain('model call')
 
     const memoryOutput = await renderSystemMessage({
       subtype: 'memory_saved',

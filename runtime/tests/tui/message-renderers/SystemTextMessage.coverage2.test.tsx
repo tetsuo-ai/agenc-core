@@ -60,7 +60,7 @@ describe('SystemTextMessage additional coverage', () => {
       budgetNudges: 2,
     })
 
-    expect(output).toContain('for 3s')
+    expect(output).toContain('done in 3s')
     expect(output).toContain('1.2k used (1.0k min')
     expect(output).toContain('2 nudges')
     expect(output).toContain('1 shell still running')

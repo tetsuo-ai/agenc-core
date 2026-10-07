@@ -33,7 +33,7 @@ interface ChildElement {
 
 function flatten(node: unknown): ChildElement[] {
   // Recurse through the element tree: BashOutputView nests its stdout/stderr
-  // lines inside the `⎿`-gutter content column, so a shallow walk misses them.
+  // lines inside the `└`-gutter content column, so a shallow walk misses them.
   const out: ChildElement[] = [];
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -108,13 +108,22 @@ describe("ihunt: BashOutputView unescapes the bash envelope (bug #1)", () => {
       `<bash-stdout>${escapeXml(stdout)}</bash-stdout>` +
       `<bash-stderr>${escapeXml(stderr)}</bash-stderr>[exit_code=2]`;
 
-    const node = BashOutputView({ content });
+    // The verbose (ctrl+o) view renders the full stderr body in red.
+    const node = BashOutputView({ content, verbose: true });
     const children = flatten(node);
     const redLine = children.find((child) => child.props.color === "red");
 
     expect(redLine).toBeDefined();
     expect(redLine?.props.children).toBe("syntax error near `&&`");
     expect(String(redLine?.props.children)).not.toContain("&amp;");
+
+    // The transcript's one-line failure ("exit N, reason") is decoded too.
+    const compactContent =
+      `<bash-stdout></bash-stdout>` +
+      `<bash-stderr>${escapeXml(stderr)}</bash-stderr>[exit_code=2]`;
+    const compactText = collectText(BashOutputView({ content: compactContent })).join("\n");
+    expect(compactText).toContain("exit 2, syntax error near `&&`");
+    expect(compactText).not.toContain("&amp;");
   });
 
   test("the PLAIN (raw exec trailer) branch is left untouched", () => {

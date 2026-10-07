@@ -53,3 +53,13 @@ export function memoryFreshnessNote(mtimeMs: number): string {
   if (!text) return ''
   return `<system-reminder>${text}</system-reminder>\n`
 }
+
+export function formatRelevantMemoryHeader(
+  path: string,
+  mtimeMs: number,
+): string {
+  const staleness = memoryFreshnessText(mtimeMs)
+  return staleness
+    ? `${staleness}\n\nMemory: ${path}:`
+    : `Memory (saved ${memoryAge(mtimeMs)}): ${path}:`
+}

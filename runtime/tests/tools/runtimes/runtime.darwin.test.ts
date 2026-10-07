@@ -24,6 +24,7 @@ test(
       {
         sandboxMode: "workspace_write",
         invocation: {
+          session: { services: { runtimeOptions: { sessionTempRoot } } },
           turn: {
             cwd,
             fileSystemSandboxPolicy: {

@@ -358,8 +358,20 @@ export interface SessionConfiguration {
    */
   readonly sandboxAllowGpu?: boolean;
   readonly collaborationMode: CollaborationMode;
+  /**
+   * True once the session's reasoning effort was cleared on purpose
+   * (`/effort default`, or a model switch that dropped a level the new model
+   * does not accept). Requests then carry no level, so each model runs at its
+   * own default, and the configured `reasoning_effort` does not refill it.
+   * Setting a level clears this.
+   */
+  readonly reasoningEffortCleared?: boolean;
   readonly personality?: Personality;
   readonly modelVerbosity?: "low" | "medium" | "high";
+  /** Session-only override; null means use inheritedModelVerbosity. */
+  readonly modelVerbosityOverride?: "low" | "medium" | "high" | null;
+  /** Config value retained while a session override is active. */
+  readonly inheritedModelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly approvalsReviewer?: string;
@@ -616,6 +628,9 @@ export interface TurnContext {
 
   /** Provider-facing output verbosity hint. */
   readonly modelVerbosity?: "low" | "medium" | "high";
+
+  /** Explicit session response-detail override; null keeps inherited requests unchanged. */
+  readonly responseDetailOverride?: "low" | "medium" | "high" | null;
 
   /** Provider-facing service-tier hint. */
   readonly serviceTier?: string;
@@ -1285,6 +1300,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     reasoningEffort,
     reasoningSummary,
     modelVerbosity: sc.modelVerbosity,
+    responseDetailOverride: sc.modelVerbosityOverride,
     serviceTier: sc.serviceTier,
     sessionSource: sc.sessionSource,
     environment: opts.environment,

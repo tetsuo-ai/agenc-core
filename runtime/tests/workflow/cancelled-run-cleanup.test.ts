@@ -1,10 +1,8 @@
 /**
- * A Goal run cancelled mid-stage leaves nothing behind in the user's project.
+ * A Goal cancelled mid-stage retains its partial work for inspection.
  *
- * Reproduces the Desktop 0.1.7 Goal end-to-end finding (Mac run wf-055a0a5f,
- * Linux run wf-70426afc): after run.cancel, the run's worktree under
- * `<repo>/.agenc-worktrees/m5-<run>` and its branch stayed in the project,
- * and `git status` there listed `.agenc-worktrees/` as untracked.
+ * The worktree is excluded from the source checkout's git status. Cancellation
+ * must preserve both its branch and edits made since the last exported patch.
  *
  * Real durable machinery through the M5 harness: a fixture repository, real
  * git worktrees, the real admission kernel (its cancelRun is the cascade
@@ -67,7 +65,7 @@ afterEach(() => {
 
 describe("a Goal run cancelled mid-stage", () => {
   it(
-    "leaves no worktree, no branch and a clean git status, and keeps its evidence and delivered commits",
+    "keeps partial work, evidence and delivered commits while leaving the source checkout clean",
     { timeout: 180_000 },
     async () => {
       const stateDir = makeStateDir("agenc-m5-cancel-");
@@ -114,6 +112,8 @@ describe("a Goal run cancelled mid-stage", () => {
           workflowWorktreeSlug(CANCELLED_RUN),
         );
         expect(existsSync(worktree)).toBe(true);
+        const partialFile = join(worktree, "lib", "unfinished.txt");
+        writeFileSync(partialFile, "Work that has not been exported yet.\n");
         harness.kernel.cancelRun(CANCELLED_RUN, "run.cancel");
         writeFileSync(checkRelease, "");
         await harness.controller.awaitRun(CANCELLED_RUN);
@@ -124,12 +124,12 @@ describe("a Goal run cancelled mid-stage", () => {
         expect(harness.repo.getEffect(CANCELLED_RUN, "workflow.verify.cmd.1")).toMatchObject({
           outcome: "cancelled",
         });
-        // The worktree and its branch are gone.
-        expect(existsSync(worktree)).toBe(false);
-        expect(git(repoPath, "branch", "--list", "worktree-*")).toBe("");
-        expect(git(repoPath, "worktree", "list", "--porcelain")).not.toContain(
-          ".agenc-worktrees",
-        );
+        expect(existsSync(worktree)).toBe(true);
+        expect(readFileSync(partialFile, "utf8")).toBe("Work that has not been exported yet.\n");
+        expect(readFileSync(join(worktree, "lib", "add.js"), "utf8")).toBe(FIX);
+        expect(git(repoPath, "branch", "--list", "worktree-*")).toContain(workflowWorktreeSlug(CANCELLED_RUN));
+        expect(git(repoPath, "worktree", "list", "--porcelain")).toContain(worktree);
+        expect(harness.repo.getCurrentTerminalResult(CANCELLED_RUN)?.finalMessage).toContain(`Work is preserved in ${worktree}`);
         // The user's checkout is as it was, and git has nothing to report.
         expect(git(repoPath, "rev-parse", "HEAD").trim()).toBe(seedHead);
         expect(git(repoPath, "status", "--porcelain")).toBe("");

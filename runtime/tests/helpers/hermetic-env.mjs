@@ -27,7 +27,7 @@
 //     that sets its own env inside the test body (the hermetic pattern, e.g.
 //     withProAuthSession in tests/commands/model.test.ts) is unaffected.
 
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
@@ -678,7 +678,15 @@ export function getOrCreateHermeticTestHome() {
   if (existing !== undefined) return existing.path
 
   const marker = lockedHermeticRuntimeMarker()
-  const runRoot = typeof marker?.runRoot === 'string' ? marker.runRoot : tmpdir()
+  // Without the prelauncher (plain `vitest`), the worker home and the TMPDIR
+  // derived from it live under the ambient temp directory. Resolve it first:
+  // on macOS that directory sits behind a symlink (`/var` -> `/private/var`),
+  // and runtime code resolves homes and cwds to their real path, so a test
+  // that builds a path from `tmpdir()` would otherwise compare two spellings
+  // of one directory. On Linux `/tmp` is already canonical.
+  const runRoot = typeof marker?.runRoot === 'string'
+    ? marker.runRoot
+    : realpathSync(tmpdir())
   const officialRun = typeof marker?.runRoot === 'string'
   const homePrefix = officialRun
     ? `h-${process.pid}-`

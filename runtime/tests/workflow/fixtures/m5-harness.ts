@@ -64,6 +64,7 @@ import {
   discardCancelledWorktree,
   exportPatchArtifacts,
   provisionWorkflowWorktree,
+  validateContinuationSnapshot,
 } from "../../../src/workflow/worktree-lifecycle.js";
 
 export const M5_EXIT_RUN_ID = "wf-m5-exit";
@@ -260,6 +261,7 @@ export function buildM5Harness(options: M5HarnessOptions): M5Harness {
   const spawnKinds: WorkflowSpawnKind[] = [];
 
   const worktrees: WorkflowWorktreeBroker = {
+    validateContinuation: async input => validateContinuationSnapshot({ ...input, broker }),
     captureBaseState: async (repoPath) => captureBaseState(repoPath, broker),
     provision: async (spec) => {
       const handle = await provisionWorkflowWorktree(spec, broker);

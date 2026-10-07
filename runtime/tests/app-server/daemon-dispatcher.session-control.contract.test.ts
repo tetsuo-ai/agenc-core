@@ -699,11 +699,54 @@ describe("daemon session-control internal method dispatch", () => {
     await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "effort", method: "session.applyConfig", params: { sessionId: "session_1", reasoningEffort: "max" } }))
       .resolves.toMatchObject({ result: { applied: true } });
     expect(applyConfigToSession).toHaveBeenCalledWith({ sessionId: "session_1", reasoningEffort: "max" });
-    for (const extra of [{ reasoningEffort: "unknown" }, { reasoningEffort: "max", reload: true }, { reasoningEffort: "low", profile: "fast" }]) {
+    // Null clears the session's effort so it follows the model default.
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "clear-effort", method: "session.applyConfig", params: { sessionId: "session_1", reasoningEffort: null } }))
+      .resolves.toMatchObject({ result: { applied: true } });
+    expect(applyConfigToSession).toHaveBeenLastCalledWith({ sessionId: "session_1", reasoningEffort: null });
+    for (const extra of [
+      { reasoningEffort: "unknown" }, { reasoningEffort: 1 }, { reasoningEffort: "max", reload: true },
+      { reasoningEffort: "low", profile: "fast" }, { reasoningEffort: null, reload: true },
+    ]) {
       await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "bad-effort", method: "session.applyConfig", params: { sessionId: "session_1", ...extra } }))
         .resolves.toMatchObject({ error: { code: -32602 } });
     }
-    expect(applyConfigToSession).toHaveBeenCalledTimes(1);
+    expect(applyConfigToSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("validates and forwards response detail independently, including an atomic effort update", async () => {
+    const applyConfigToSession = vi.fn(async (params: SessionApplyConfigParams) => ({
+      sessionId: params.sessionId, applied: true, modelVerbosity: params.modelVerbosity,
+      runtimeSettingsEventId: "settings:2", summary: "updated",
+    }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession } as never });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+    for (const modelVerbosity of ["low", "medium", "high", null] as const) {
+      const params = { sessionId: "session_1", modelVerbosity };
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "detail", method: "session.applyConfig", params }))
+        .resolves.toMatchObject({ result: { modelVerbosity, runtimeSettingsEventId: "settings:2" } });
+      expect(applyConfigToSession).toHaveBeenLastCalledWith(params);
+    }
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "both", method: "session.applyConfig", params: { sessionId: "session_1", reasoningEffort: "high", modelVerbosity: "low" } }))
+      .resolves.toMatchObject({ result: { modelVerbosity: "low" } });
+    for (const extra of [
+      { modelVerbosity: "verbose" }, { modelVerbosity: 1 },
+      { modelVerbosity: "low", profile: "fast" }, { modelVerbosity: null, reload: true },
+    ]) {
+      await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "invalid", method: "session.applyConfig", params: { sessionId: "session_1", ...extra } }))
+        .resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(applyConfigToSession).toHaveBeenCalledTimes(5);
+  });
+
+  it("advertises response detail and effort clearing to initialized clients", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: { applyConfigToSession: vi.fn() } as never });
+    const connection = dispatcher.createConnection();
+    await expect(connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "init-detail", method: "initialize", params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } } }))
+      .resolves.toMatchObject({ result: { capabilities: {
+        "session.applyConfig.modelVerbosity": true,
+        "session.applyConfig.reasoningEffortClear": true,
+      } } });
   });
 
   it("routes session.applyConfig with reload flag", async () => {

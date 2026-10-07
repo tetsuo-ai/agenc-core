@@ -1,6 +1,7 @@
 /** Read and control durable M3 run state through the daemon protocol. */
 
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { formatPendingToolApprovals } from "../permissions/pending-approval-display.js";
 
@@ -55,6 +56,8 @@ export type AgenCRunCliCommand =
       readonly limit?: number;
     }
   | { readonly kind: "cancel"; readonly runId: string; readonly reason?: string }
+  | { readonly kind: "pause"; readonly runId: string; readonly requestId?: string }
+  | { readonly kind: "resume"; readonly runId: string; readonly suspensionId?: string }
   | AgenCRunStartCliCommand
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
@@ -84,6 +87,8 @@ export function formatAgenCRunCliHelpText(): string {
     "  replay <run-id>                 Page the admission journal",
     "  evidence <run-id>               Export hashed admission evidence",
     "  cancel <run-id>                 Cancel the run and its descendants",
+    "  pause <run-id>                  Pause after the active workflow stage",
+    "  resume <run-id>                 Resume the same workflow and limits",
     "",
     "Start options:",
     "  --goal <text>                   The engineering goal (or --goal-file)",
@@ -95,7 +100,7 @@ export function formatAgenCRunCliHelpText(): string {
     "  --permission-mode <mode>        default | plan | acceptEdits | bypassPermissions",
     '  --verify "label=script"         Required verification command (repeatable)',
     "  --json                          Print the raw daemon result as JSON",
-    "  --follow                        Follow the run journal until terminal",
+    "  --follow                        Follow until the run is terminal or paused",
     "",
     "Status options:",
     "  --json                          Always print JSON (skip the step table)",
@@ -106,6 +111,13 @@ export function formatAgenCRunCliHelpText(): string {
     "",
     "Cancel options:",
     "  --reason <text>                 Journaled cancellation reason",
+    "",
+    "Pause options:",
+    "  --request-id <id>               Retry a specific pause request safely",
+    "",
+    "Resume options:",
+    "  --suspension <id>               Resume this exact pause (default: read status)",
+    "  Resume keeps the original cost cap, token cap, and absolute deadline.",
     "",
     "All other successful commands print canonical JSON.",
   ].join("\n");
@@ -169,6 +181,19 @@ export function parseAgenCRunCliArgs(
         ? { reason: parsed.values.reason }
         : {}),
     };
+  }
+  if (action === "pause" || action === "resume") {
+    const key = action === "pause" ? "request-id" : "suspension";
+    const parsed = parseRunOptions(rest, new Set([key]));
+    if (!parsed.ok) return { kind: "error", message: parsed.message };
+    const value = parsed.values[key];
+    const maxLength = action === "pause" ? 128 : 512;
+    if (value !== undefined && (value.length > maxLength || !/^[A-Za-z0-9][A-Za-z0-9._:#-]*$/.test(value))) {
+      return { kind: "error", message: `--${key} must be a 1..${maxLength} character identifier` };
+    }
+    return action === "pause"
+      ? { kind: "pause", runId, ...(value !== undefined ? { requestId: value } : {}) }
+      : { kind: "resume", runId, ...(value !== undefined ? { suspensionId: value } : {}) };
   }
   const parsed = parseRunOptions(rest, new Set(["after", "limit"]));
   if (!parsed.ok) return { kind: "error", message: parsed.message };
@@ -408,7 +433,7 @@ async function runStartCommand(
   return followRun(client, result.runId, io, options);
 }
 
-/** Replay-cursor follow loop: page journal events until the run is terminal. */
+/** Replay-cursor follow loop: stop when work is terminal or durably paused. */
 async function followRun(
   client: AgenCJsonLineDaemonRequestClient,
   runId: string,
@@ -445,6 +470,11 @@ async function followRun(
       }
       io.stdout.write(`run ${runId} terminal: ${status.status}\n`);
       return status.status === "completed" ? 0 : 1;
+    }
+    if (status.workflow?.control?.state === "paused") {
+      io.stdout.write(formatWorkflowStatusTable(status as RunStatusResult & { workflow: RunWorkflowStatus }));
+      io.stdout.write(`run ${runId} paused. Resume keeps the original limits and deadline.\n`);
+      return 0;
     }
     const modes = status.workflow === undefined ? "" : formatWorkflowPermissionModes(status.workflow).join("\n");
     if (modes.length > 0 && modes !== previousPermissionModes) {
@@ -491,8 +521,12 @@ export function formatWorkflowStatusTable(
   result: RunStatusResult & { readonly workflow: RunWorkflowStatus },
 ): string {
   const lines = [
-    `run ${result.runId} — ${result.status}${result.terminal ? " (terminal)" : ""}`,
+    `run ${result.runId}: ${result.status}${result.terminal ? " (terminal)" : ""}`,
     ...formatWorkflowPermissionModes(result.workflow),
+    ...(result.workflow.control === undefined ? [] : [
+      `workflow control: ${result.workflow.control.state}`,
+      ...(result.workflow.control.suspensionId === undefined ? [] : [`suspension: ${result.workflow.control.suspensionId}`]),
+    ]),
     "STAGE                 STATUS           ATTEMPTS  VERDICT",
   ];
   for (const step of result.workflow.steps) {
@@ -530,6 +564,23 @@ async function requestForCommand(
         runId: command.runId,
         ...(command.reason !== undefined ? { reason: command.reason } : {}),
       });
+    case "pause":
+      return client.request("run.pause", {
+        runId: command.runId,
+        requestId: command.requestId ?? randomUUID(),
+      });
+    case "resume": {
+      let suspensionId = command.suspensionId;
+      if (suspensionId === undefined) {
+        const status = await client.request("run.status", { runId: command.runId });
+        const control = status.workflow?.control;
+        if (control?.state !== "paused" || control.suspensionId === undefined) {
+          throw new Error(`run ${command.runId} has no paused workflow to resume`);
+        }
+        suspensionId = control.suspensionId;
+      }
+      return client.request("run.resume", { runId: command.runId, suspensionId });
+    }
   }
 }
 
@@ -549,8 +600,8 @@ function pageParams(command: {
 
 function isRunAction(
   value: string,
-): value is "status" | "result" | "replay" | "evidence" | "cancel" {
-  return ["status", "result", "replay", "evidence", "cancel"].includes(value);
+): value is "status" | "result" | "replay" | "evidence" | "cancel" | "pause" | "resume" {
+  return ["status", "result", "replay", "evidence", "cancel", "pause", "resume"].includes(value);
 }
 
 function parseRunOptions(

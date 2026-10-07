@@ -65,12 +65,13 @@ export interface RunTerminalResult {
 }
 
 /** Internal lifecycle reasons are protocol values, never caller prose. */
-export const RUN_SUSPENSION_REASONS = ["daemon_shutdown_idle"] as const;
+export const RUN_SUSPENSION_REASONS = ["daemon_shutdown_idle", "workflow_user_pause"] as const;
 export type RunSuspensionReason = (typeof RUN_SUSPENSION_REASONS)[number];
 
 export const RUN_RESUME_REASONS = [
   "daemon_startup_restore",
   "explicit_continue",
+  "workflow_user_resume",
 ] as const;
 export type RunResumeReason = (typeof RUN_RESUME_REASONS)[number];
 
@@ -453,6 +454,8 @@ export const RESERVED_RUN_METHODS = [
   "run.cancel",
   /** Start the M5 verified-change workflow as a durable run (contract-change PR, additive). */
   "run.start",
+  "run.pause",
+  "run.resume",
 ] as const;
 export type ReservedRunMethod = (typeof RESERVED_RUN_METHODS)[number];
 
@@ -517,6 +520,7 @@ export type WorkflowStepStatus = (typeof WORKFLOW_STEP_STATUSES)[number];
  */
 export const WORKFLOW_STOP_REASONS = [
   "verification_failed",
+  "requirement_conflict",
   "review_rejected",
   "base_moved_conflict",
   "budget_exhausted",
@@ -543,14 +547,35 @@ export type WorkflowStopReason = (typeof WORKFLOW_STOP_REASONS)[number];
  * Resolved fields (reviewerModel, baseCommit) are never re-resolved later —
  * a moved base is detected against `baseCommit` and surfaced explicitly.
  */
+export interface WorkflowContinuation {
+  readonly sourceRunId: RunId;
+  readonly sourceSpecDigest: string;
+  readonly sourceBaseCommit: string;
+  readonly sourceHeadCommit: string;
+  readonly sourceTreeHash: string;
+  readonly sourcePatchDigest: string;
+  readonly sourceSealDigest: string;
+  readonly seriesRootRunId: RunId;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  /** Cumulative recorded spend of earlier iterations. Null means unknown. */
+  readonly previousCostUsd: number | null;
+  readonly previousCostEstimated?: boolean;
+  readonly sourceUsage: RunUsageTotals | null;
+}
+
 export interface WorkflowSpec {
   readonly runId: RunId;
   /** The engineering goal / issue text driving the change. */
   readonly goal: string;
+  /** Frozen Light mode authority for the run session and its descendants. */
+  readonly lightMode?: boolean;
   /** Absolute git root of the target repository. */
   readonly repoPath: string;
   /** Exact base commit recorded before any work begins. */
   readonly baseCommit: string;
+  /** Immutable link to the verified result used to seed this iteration. */
+  readonly continuationOf?: WorkflowContinuation;
   /** Dirty-state summary of the user's checkout at intake (never mutated). */
   readonly baseDirty: {
     readonly dirty: boolean;

@@ -140,6 +140,7 @@ export interface BootstrapSessionConfiguredPayload {
  * those fields are not available at `bootstrapSession` call time.
  */
 export interface BootstrapSessionOptions extends SessionOpts {
+  readonly deferSkillsWatcherUntilRequest?: (setup: () => Promise<void>) => void;
   readonly mcp?: {
     readonly manager: MCPManager;
     readonly startOpts?: MCPManagerStartOpts;
@@ -444,7 +445,13 @@ export async function bootstrapSession(
   //    sidecar start + live MCP connection manager init. The
   //    watcher/skills listener and the real MCP connection manager
   //    start AFTER the SessionConfigured dispatch.
-  if (
+  if (opts.deferSkillsWatcherUntilRequest !== undefined) {
+    opts.deferSkillsWatcherUntilRequest(async () => {
+      throwIfAborted(opts.signal);
+      session.abortController.signal.throwIfAborted();
+      await opts.services.skillsWatcher?.start?.();
+    });
+  } else if (
     opts.deferOrdinaryStartup === true &&
     opts.services.skillsWatcher?.start !== undefined
   ) {

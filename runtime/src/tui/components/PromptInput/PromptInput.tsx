@@ -427,6 +427,12 @@ type Props = {
     readonly input: string;
     readonly pastedContents?: Record<number, PastedContent>;
   }) => void;
+  /**
+   * Bumped by the owner each time it restores a draft. Each new value moves
+   * the cursor to the end of `input`, which also covers a submit clear and
+   * restore that commit in one render and so never change the input prop.
+   */
+  draftRestoreRevision?: number;
   onSubmit: (
     input: string,
     helpers: PromptInputHelpers,
@@ -611,6 +617,7 @@ function PromptInput({
   queueOwner,
   queueExecutionCwd,
   restoreComposerDraft,
+  draftRestoreRevision = 0,
   onSubmit: onSubmitProp,
   onAgentSubmit,
   isSearchingHistory,
@@ -693,6 +700,21 @@ function PromptInput({
       setCurrentCursorOffset(input.length);
     }
   }, [input, setCurrentCursorOffset]);
+  // A failed submit resets the cursor to 0, clears the input, then restores
+  // the draft. When the clear and the restore commit together the effect
+  // above sees no input change, so the restore revision moves the cursor.
+  const lastDraftRestoreRevisionRef = useRef(draftRestoreRevision);
+  React.useLayoutEffect(() => {
+    if (draftRestoreRevision === lastDraftRestoreRevisionRef.current) {
+      return;
+    }
+    lastDraftRestoreRevisionRef.current = draftRestoreRevision;
+    lastPropInputRef.current = input;
+    lastInternalInputRef.current = input;
+    if (cursorOffsetRef.current !== input.length) {
+      setCurrentCursorOffset(input.length);
+    }
+  }, [draftRestoreRevision, input, setCurrentCursorOffset]);
   React.useLayoutEffect(() => {
     if (pastedContents === lastPastedContentsPropRef.current) {
       return;
@@ -3422,7 +3444,6 @@ function PromptInput({
         justifyContent="center"
         width="100%"
         paddingX={1}
-        backgroundColor="surfaceBackground"
         opaque
       >
         <Text dimColor italic>
@@ -3435,10 +3456,11 @@ function PromptInput({
     <ConfiguredPromptTextInput baseProps={baseProps} />
   );
   return (
+    // Opaque without a color of its own: the area clears to the screen's
+    // background, so the gray band never sits inside a darker frame.
     <Box
       flexDirection="column"
       marginTop={briefOwnsGap ? 0 : 1}
-      backgroundColor="surfaceBackground"
       opaque
     >
       {!isFullscreen && (
@@ -3485,15 +3507,16 @@ function PromptInput({
           </Text>
         </>
       ) : (
+        // Borderless input: a filled band one row taller than the text, so
+        // the prompt reads as its own surface without a frame around it.
         <Box
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          borderColor="text"
-          borderStyle="single"
-          width="100%"
+          marginX={2}
           paddingX={1}
-          backgroundColor="surfaceBackground"
+          paddingY={1}
+          backgroundColor="promptBackground"
           opaque
         >
           <PromptInputModeIndicator
@@ -3594,7 +3617,6 @@ function PromptInput({
           flexDirection="column"
           justifyContent="flex-end"
           overflow="hidden"
-          backgroundColor="surfaceBackground"
           opaque
         >
           <Notifications

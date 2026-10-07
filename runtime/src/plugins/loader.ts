@@ -1,4 +1,4 @@
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
   PLUGIN_MARKDOWN_WALK,
@@ -20,6 +20,7 @@ import type {
   PluginEntryConfig,
   PluginMcpServerConfig,
 } from "../config/schema.js";
+import { nearestExistingRealpath } from "./nearest-existing-realpath.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import { isExcludedPluginPayloadDirectory } from "./payload-paths.js";
 import {
@@ -27,6 +28,11 @@ import {
   isReservedPluginStorageChildName,
   migrateLegacyPluginDataDirectories,
 } from "./directories.js";
+import {
+  isPluginInstallTransactionArtifactName,
+  recoverPluginInstallTransactions,
+} from "./cli/plugin-install-transaction.js";
+import { restoreTrustedUserPluginConfig } from "./plugin-config-rollback.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   assertNoRetiredRootPluginManifest,
@@ -99,7 +105,8 @@ export type PluginLoadIssueType =
   | "mcp"
   | "lsp"
   | "dependency"
-  | "settings";
+  | "settings"
+  | "install-recovery";
 
 export interface PluginLoadIssue {
   readonly type: PluginLoadIssueType;
@@ -179,6 +186,8 @@ export interface PluginLoaderOptions {
   readonly readOnly?: boolean;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
+  /** Canonical user config.toml. The loader never derives this from the storage root. */
+  readonly userConfigPath?: string;
   readonly config?: Pick<AgenCConfig, "plugins"> | undefined;
   readonly extraPluginDirs?: readonly string[];
 }
@@ -370,7 +379,8 @@ async function discoverRootsUnder(
     if (
       !entry.isDirectory() ||
       SKIP_PLUGIN_ROOTS.has(entry.name) ||
-      isReservedPluginStorageChildName(entry.name)
+      isReservedPluginStorageChildName(entry.name) ||
+      isPluginInstallTransactionArtifactName(entry.name)
     ) continue;
     const candidate = join(baseDir, entry.name);
     if (await hasPluginShape(candidate)) {
@@ -559,9 +569,137 @@ export async function discoverPluginRoots(
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
+function installRecoveryIssue(
+  issue: { readonly destination?: string; readonly pluginId?: string; readonly preservedPaths: readonly string[]; readonly message: string },
+  fallbackSource: string,
+): PluginLoadIssue {
+  return {
+    type: "install-recovery",
+    source: issue.destination ?? fallbackSource,
+    ...(issue.pluginId === undefined ? {} : { plugin: issue.pluginId }),
+    path: issue.preservedPaths[0],
+    message: issue.message,
+  };
+}
+
+async function recoverRootIssues(
+  installRoot: string,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  reportUnrestoredConfig: boolean,
+  userConfigPath: string | undefined,
+): Promise<readonly PluginLoadIssue[]> {
+  try {
+    const result = await recoverPluginInstallTransactions({
+      installRoots: [installRoot],
+      ...(restorePluginConfig === undefined ? {} : { restorePluginConfig }),
+      ...(reportUnrestoredConfig ? { reportUnrestoredConfig: true } : {}),
+      ...(userConfigPath === undefined ? {} : { userConfigPath }),
+    });
+    return result.issues.map((issue) => installRecoveryIssue(issue, installRoot));
+  } catch (error) {
+    return [{
+      type: "install-recovery",
+      source: installRoot,
+      message: error instanceof Error ? error.message : String(error),
+    }];
+  }
+}
+
+function pathIsInsideOrEqual(candidate: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string): Promise<boolean> {
+  if (pathIsInsideOrEqual(userRoot, repoRoot)) return true;
+  const userReal = await nearestExistingRealpath(userRoot);
+  const repoReal = await nearestExistingRealpath(repoRoot);
+  if (userReal === undefined || repoReal === undefined) return true;
+  return pathIsInsideOrEqual(userReal, repoReal);
+}
+
+async function loadPluginInstallRecoveryIssues(
+  options: PluginLoaderOptions,
+): Promise<readonly PluginLoadIssue[]> {
+  const userRoot = resolve(options.pluginStorageRoot);
+  const repoRoot = resolve(join(options.workspaceRoot, ".agents", "plugins"));
+  const userConfigPath = options.userConfigPath;
+  const repositoryOwned = await storageRootIsRepositoryPlugins(userRoot, repoRoot);
+  const restoreUserConfig = userConfigPath !== undefined && !repositoryOwned;
+  const leftover = repositoryOwned
+    ? undefined
+    : await reportProjectScopeInstallLeftovers(join(repoRoot, ".plugin-install-ops"));
+  const recovered = await recoverRootIssues(
+    userRoot,
+    restoreUserConfig
+      ? (pluginId, previous) => Promise.resolve(restoreTrustedUserPluginConfig(
+        userConfigPath,
+        pluginId,
+        previous,
+      ))
+      : undefined,
+    !restoreUserConfig,
+    restoreUserConfig ? userConfigPath : undefined,
+  );
+  return leftover === undefined ? recovered : [leftover, ...recovered];
+}
+
+const PROJECT_SCOPE_LEFTOVER_LIMIT = 20;
+
+async function reportProjectScopeInstallLeftovers(
+  opsDir: string,
+): Promise<PluginLoadIssue | undefined> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install records were left behind and were not recovered; remove ${opsDir} manually: ${(error as Error).message}`,
+    };
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install operation directory is not a real directory; remove ${opsDir} manually`,
+    };
+  }
+  let names: string[];
+  try {
+    names = await readdir(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install records were left behind and were not recovered; remove ${opsDir} manually: ${(error as Error).message}`,
+    };
+  }
+  const sorted = names.toSorted((a, b) => a.localeCompare(b));
+  if (sorted.length === 0) return undefined;
+  const shown = sorted.slice(0, PROJECT_SCOPE_LEFTOVER_LIMIT);
+  const listed = shown.map((name) => join(opsDir, name)).join(", ");
+  const extra = sorted.length > shown.length ? ` (${String(sorted.length)} entries)` : "";
+  return {
+    type: "install-recovery",
+    source: opsDir,
+    path: opsDir,
+    message: `project-scope install records were left behind and were not recovered; remove them manually: ${listed}${extra}`,
+  };
+}
+
 export async function loadPlugins(
   options: PluginLoaderOptions,
 ): Promise<PluginLoadResult> {
+  const recoveryIssues = options.readOnly === true
+    ? []
+    : await loadPluginInstallRecoveryIssues(options);
   const roots = await discoverPluginRoots(options);
   const configured = configuredPluginEntries(options.config);
   const allowlist = configuredPluginAllowlist(options.config);
@@ -682,6 +820,7 @@ export async function loadPlugins(
     enabled: finalPlugins.filter((plugin) => plugin.enabled),
     disabled: finalPlugins.filter((plugin) => !plugin.enabled),
     errors: [
+      ...recoveryIssues,
       ...loaded.flatMap((entry) => entry.errors),
       ...identityErrors,
       ...dataMigrationErrors,

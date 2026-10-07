@@ -1,3 +1,4 @@
+import { promoteOneShotRun, withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -412,11 +413,11 @@ export class ExecutionAdmissionKernel {
   ): AdmissionAttempt {
     this.#assertOpen();
     const request = requestFor(binding, input, this.#now());
-    const attempt = binding.workspace.repository.enqueue(request, {
-      ownerId: this.#ownerId,
-      ownerPid: this.#ownerPid,
-      attached: true,
-    });
+    if (request.kind === "spawn") promoteOneShotRun(request.step.runId);
+    const attempt = withOneShotWriteScope(binding.workspace.paths.projectDir, request.step.runId,
+      () => binding.workspace.repository.enqueue(request, {
+        ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true,
+      }));
     this.#publishNewJournal(binding.workspace);
     return attempt;
   }
@@ -429,7 +430,10 @@ export class ExecutionAdmissionKernel {
     const attempt = this.admit(binding, input);
     if (attempt.decision.decision === "deny") {
       return Promise.reject(
-        new AdmissionDeniedError(attempt.decision.reason ?? "denied"),
+        new AdmissionDeniedError(
+          attempt.decision.reason ?? "denied",
+          admissionDenialDecision(attempt.record),
+        ),
       );
     }
     if (attempt.decision.decision === "approval_required") {
@@ -503,7 +507,8 @@ export class ExecutionAdmissionKernel {
     if (found === undefined) {
       throw new AdmissionDeniedError("reservation_not_found");
     }
-    const record = found.binding.repository.markDispatched(reservationId, {
+    const record = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => found.binding.repository.markDispatched(reservationId, {
       ...(evidence.timestamp !== undefined
         ? { dispatchedAt: evidence.timestamp }
         : {}),
@@ -514,7 +519,7 @@ export class ExecutionAdmissionKernel {
         ...(evidence.details ?? {}),
         boundary: evidence.boundary,
       },
-    });
+    }));
     this.#publishNewJournal(found.binding);
     if (record.status !== "running") {
       const error = new AdmissionDeniedError(
@@ -535,7 +540,8 @@ export class ExecutionAdmissionKernel {
     usage: AdmissionUsage,
   ): AdmissionReconcileResult {
     const found = this.#requireReservation(reservationId);
-    const reconciled = reconcileAdmissionAndRunTree(
+    const reconciled = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
+      () => reconcileAdmissionAndRunTree(
       found.binding.driver,
       found.binding.repository,
       {
@@ -543,7 +549,7 @@ export class ExecutionAdmissionKernel {
         input: { kind: "reported", usage },
         reconciledAt: this.#timestamp(),
       },
-    );
+    ));
     const result = reconciled.admission;
     this.#finishCapacity(reservationId);
     this.#publishNewJournal(found.binding);
@@ -842,6 +848,21 @@ export class ExecutionAdmissionKernel {
     });
   }
 
+  /** Read the final admission evidence without reclassifying legacy stop codes. */
+  getLatestJournalEventByRunId(runId: string): AdmissionJournalEvent | undefined {
+    this.#assertOpen();
+    return this.#withBindingsForRun(runId, (bindings) => {
+      let latest: AdmissionJournalEvent | undefined;
+      for (const binding of bindings) {
+        const event = binding.repository.getLatestJournalEvent(runId);
+        if (event !== undefined && (latest === undefined || event.timestamp > latest.timestamp)) {
+          latest = event;
+        }
+      }
+      return latest;
+    });
+  }
+
   cancelRun(
     runId: string,
     reason: string,
@@ -1020,7 +1041,8 @@ export class ExecutionAdmissionKernel {
       this.#byWorkspace.set(workspaceAlias, existing);
       return existing;
     }
-    const driver = openStateDatabasePaths(paths);
+    // Admission and recovery use state only; retain its eager FULL connection.
+    const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true });
     const binding: WorkspaceBinding = {
       workspaceId: paths.projectDir,
       paths,
@@ -1238,13 +1260,11 @@ export class ExecutionAdmissionKernel {
       // but it is not a reservation commit and must not be labelled as one in
       // crash-injection evidence.
       hitM4DurabilityFailpoint("before_reservation_commit");
-      const result = entry.binding.repository.claim({
-        key: entry.key,
-        ownerId: this.#ownerId,
-        ownerPid: this.#ownerPid,
-        attached: true,
-        now: this.#timestamp(),
-      });
+      const result = withOneShotWriteScope(entry.binding.paths.projectDir, entry.record.request.step.runId,
+        () => entry.binding.repository.claim({
+          key: entry.key, ownerId: this.#ownerId, ownerPid: this.#ownerPid,
+          attached: true, now: this.#timestamp(),
+        }));
       if (result.kind === "claimed") {
         // The reservation is committed while no live lease or journal
         // subscriber has been notified yet. Restart must recover solely from
@@ -1265,7 +1285,13 @@ export class ExecutionAdmissionKernel {
       }
       if (result.kind === "not_claimed") {
         this.#pending.delete(entry.key);
-        this.#settlePending(entry, new AdmissionDeniedError(result.reason));
+        this.#settlePending(
+          entry,
+          new AdmissionDeniedError(
+            result.reason,
+            admissionDenialDecision(result.record),
+          ),
+        );
         madeProgress = true;
       }
     }
@@ -1960,6 +1986,20 @@ function scheduleAt(
       timer = undefined;
     },
   };
+}
+
+function admissionDenialDecision(
+  record: PersistedAdmissionRecord,
+): "deny" | "cancelled" {
+  // The durable AdmissionDecision vocabulary encodes cancellations as deny.
+  // Restore their cause before consumers classify a denial as budget failure.
+  return record.status === "cancelled" ||
+    (record.reason === "parent_cancel_locked" &&
+      record.parentLockCause === "cancellation") ||
+    record.reason?.startsWith("cancelled_before_dispatch:") === true ||
+    record.reason?.startsWith("cancelled_after_dispatch:") === true
+    ? "cancelled"
+    : "deny";
 }
 
 function normalizePositiveInteger(

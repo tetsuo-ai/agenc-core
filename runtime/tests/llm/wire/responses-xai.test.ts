@@ -75,7 +75,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         { role: "user", content: "run echo" },
         {
@@ -101,7 +100,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         { role: "user", content: "previous ask" },
         {
@@ -131,7 +129,6 @@ describe("responses-xai wire shim", () => {
 
     const built = buildXaiResponsesInputItems(messages);
 
-    expect(built.hasImages).toBe(true);
     expect(built.input).toEqual([
       {
         type: "function_call_output",
@@ -169,7 +166,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: true,
       input: [
         {
           role: "user",
@@ -204,7 +200,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         {
           role: "user",
@@ -236,7 +231,6 @@ describe("responses-xai wire shim", () => {
     ]);
 
     expect(built).toEqual({
-      hasImages: false,
       input: [
         {
           role: "user",

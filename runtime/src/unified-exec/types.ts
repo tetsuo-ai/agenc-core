@@ -216,11 +216,21 @@ export interface ExecCommandToolOutput {
    * and the supervisor stopped them.
    */
   readonly residual_processes_terminated?: boolean;
+  /** The authenticated init observed live descendants after task exit, then
+   * completed cleanup. Does not claim which actor terminated them. */
+  readonly residual_processes_observed?: boolean;
+  /** Cleanup is proven, but the dispatched command has no terminal report.
+   * Neither state authorizes an automatic retry or a no-effect claim. */
+  readonly command_outcome?: "aborted" | "unavailable";
 }
 
 export interface UnifiedExecProcessManagerLike {
   /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
+  /** Shell used when a request names none, when the manager exposes it. */
+  readonly shellPath?: string;
+  /** Whether commands inherit shell startup hooks (BASH_ENV, exported functions, SHELLOPTS). */
+  shellStartupHooksPresent?(): boolean;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   /** Start a service that outlives the command and the session; see DetachedProcessRequest. */
   startDetachedProcess?(
@@ -251,6 +261,8 @@ export interface UnifiedExecProcessManagerLike {
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
+  /** Concrete managers freeze admission and verify cleanup before sealing. */
+  prepareForDurableClose?(): Promise<void>;
 }
 
 export class UnifiedExecError extends Error {

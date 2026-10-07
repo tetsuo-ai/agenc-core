@@ -5,7 +5,7 @@
  * without repeating literal rows per shell.
  */
 
-/** Shells that run the one word after a `-c` cluster. */
+/** Shells that run the first word after all of their options when `c` is among them. */
 const POSIX_SHELLS = [
   "sh",
   "bash",
@@ -13,7 +13,6 @@ const POSIX_SHELLS = [
   "dash",
   "ash",
   "hush",
-  "fish",
   "ksh",
   "ksh93",
   "mksh",
@@ -22,9 +21,10 @@ const POSIX_SHELLS = [
   "posh",
   "yash",
   "rbash",
-  "csh",
-  "tcsh",
 ] as const;
+
+/** Shells that take the word right after `-c` as the code, `--` included. */
+const NEXT_WORD_SHELLS = ["fish", "csh", "tcsh"] as const;
 
 /** BusyBox applets that are shells. */
 const BUSYBOX_SHELLS = ["sh", "ash", "hush"] as const;
@@ -38,6 +38,17 @@ const posixShellCases = POSIX_SHELLS.flatMap((shell): FloorCase[] => [
   [`${shell} -c ${REMOVE_ROOT}`, "rm -rf"],
   [`${shell} -lc ${REMOVE_ROOT}`, "rm -rf"],
   [`/bin/${shell} -c -- ${REMOVE_ROOT}`, "rm -rf"],
+  [`${shell} -c -e ${REMOVE_ROOT}`, "rm -rf"],
+  [`${shell} -c -o pipefail ${REMOVE_ROOT}`, "rm -rf"],
+  [`env ${shell} -c ${REMOVE_ROOT}`, "rm -rf"],
+  [`${DOWNLOAD_PIPE} ${shell}`, "curl|sh"],
+]);
+
+const nextWordShellCases = NEXT_WORD_SHELLS.flatMap((shell): FloorCase[] => [
+  [`${shell} -c ${REMOVE_ROOT}`, "rm -rf"],
+  [`${shell} -lc ${REMOVE_ROOT}`, "rm -rf"],
+  [`/bin/${shell} -c ${REMOVE_ROOT}`, "rm -rf"],
+  [`${shell} -c 'echo ok' -c ${REMOVE_ROOT}`, "rm -rf"],
   [`env ${shell} -c ${REMOVE_ROOT}`, "rm -rf"],
   [`${DOWNLOAD_PIPE} ${shell}`, "curl|sh"],
 ]);
@@ -139,17 +150,25 @@ const powerShellCases: FloorCase[] = [
   [`pwsh -e ${encodedPowerShell("Remove-Item -Recurse -Force C:\\")}`, "Remove-Item -Force"],
 ];
 
-/** fish runs every -c, -C, --command and --init-command it is given. */
+/**
+ * fish runs every -c, -C, --command and --init-command it is given, with the
+ * code attached or the next word, and any unique abbreviation of the long
+ * options.
+ */
 const fishCases: FloorCase[] = [
   [`fish --command ${REMOVE_ROOT}`, "rm -rf"],
   [`fish -C ${REMOVE_ROOT}`, "rm -rf"],
   [`fish --command=${REMOVE_ROOT}`, "rm -rf"],
   [`fish -c 'echo ok' --init-command=${REMOVE_ROOT}`, "rm -rf"],
   [`fish -c 'echo ok' -c ${REMOVE_ROOT}`, "rm -rf"],
+  ["fish '-crm -rf /'", "rm -rf"],
+  [`fish -ic ${REMOVE_ROOT}`, "rm -rf"],
+  [`fish --comm ${REMOVE_ROOT}`, "rm -rf"],
 ];
 
 export const REMOVAL_FLOOR_SHELL_CASES: FloorCase[] = [
   ...posixShellCases,
+  ...nextWordShellCases,
   ...busyboxCases,
   ...windowsShellCases,
   ...spellingCases,
@@ -169,4 +188,10 @@ export const INERT_SHELL_SCRIPT_COMMANDS: readonly string[] = [
   `pwsh -enc ${encodedPowerShell("Get-Date")}`,
   "setsid ls",
   "toybox --long",
+  "bash script.sh -c 'rm -rf /'",
+  "bash -- -c 'rm -rf /'",
+  "bash -c 'echo ok' 'rm -rf /'",
+  "tcsh -c -e 'rm -rf /'",
+  "fish -c -- 'rm -rf /'",
+  "fish -ci 'rm -rf /'",
 ];

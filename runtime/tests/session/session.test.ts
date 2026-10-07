@@ -52,6 +52,7 @@ import {
   type ManagedFeatures,
   type ModelInfo,
   type NetworkProxy,
+  type ReasoningEffort,
   type SessionConfiguration,
   type SessionForTurn,
 } from "./turn-context.js";
@@ -97,6 +98,8 @@ import {
   runWithAgentRuntimeOptions,
 } from "./runtime-options.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
+import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
+import { withSessionReasoningEffort } from "./reasoning-effort-for-model.js";
 import {
   clearSessionReadState,
   recordSessionRead,
@@ -951,6 +954,160 @@ describe("Session rollout persistence suspension", () => {
   });
 });
 
+/** A Gemini session on gemini-3.5-flash at `reasoningEffort`. */
+function geminiSession(reasoningEffort: ReasoningEffort): Session {
+  return buildSession({
+    services: {
+      provider: createProvider("gemini", {
+        model: "gemini-3.5-flash",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
+            },
+            endpointPlan: createGeminiEndpointPlan(),
+          },
+        },
+      }),
+      configStore: { current: () => ({}) } as unknown as ConfigStore,
+    },
+    sessionConfiguration: {
+      ...mkSessionConfiguration("gemini-3.5-flash"),
+      provider: { slug: "gemini" },
+      collaborationMode: { model: "gemini-3.5-flash", reasoningEffort },
+    } as unknown as SessionConfiguration,
+    readSavedApiKey: async (provider) =>
+      provider === "gemini" ? "saved-key" : undefined,
+  });
+}
+
+describe("reasoning effort when a model switch takes effect", () => {
+  function switchWarnings(emit: ReturnType<typeof vi.spyOn>): string[] {
+    return emit.mock.calls.flatMap(([event]: unknown[]) => {
+      const msg = (event as { msg?: { type?: string; payload?: { cause?: string; message?: string } } }).msg;
+      return msg?.type === "warning" && msg.payload?.cause === "provider_switched"
+        ? [msg.payload.message ?? ""]
+        : [];
+    });
+  }
+
+  it("drops a level the new model rejects, so the next request sends none", async () => {
+    // What /effort default pinned on gemini-3.5-flash; Gemma has only
+    // minimal and high, and Gemini refused every request at medium.
+    const session = geminiSession("medium");
+    const emit = vi.spyOn(session, "emit");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    await expect(consumePendingProviderSwitch(session)).resolves.toMatchObject({
+      applied: true,
+      model: "gemma-4-31b-it",
+    });
+
+    expect(session.sessionConfiguration.collaborationMode).toEqual({
+      model: "gemma-4-31b-it",
+    });
+    // Cleared on purpose, so the configured reasoning_effort cannot refill it.
+    expect(session.sessionConfiguration.reasoningEffortCleared).toBe(true);
+    const turn = session.newDefaultTurn();
+    expect(turn.reasoningEffort).toBeUndefined();
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
+    expect(switchWarnings(emit)).toEqual([
+      expect.stringContaining(
+        "gemma-4-31b-it does not support medium reasoning effort, so the session now uses its default effort.",
+      ),
+    ]);
+  });
+
+  it("keeps a level the new model accepts for the next request", async () => {
+    const session = geminiSession("high");
+    const emit = vi.spyOn(session, "emit");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    await consumePendingProviderSwitch(session);
+
+    const turn = session.newDefaultTurn();
+    expect(turn.reasoningEffort).toBe("high");
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBe("high");
+    expect(switchWarnings(emit)).toEqual([
+      expect.not.stringContaining("reasoning effort"),
+    ]);
+  });
+});
+
+describe("reasoning effort of a session that cleared its level", () => {
+  function grokSession(config: Record<string, unknown>) {
+    return buildSession({
+      services: {
+        provider: createProvider("grok", { apiKey: "test-key", model: "grok-4.6" }),
+        configStore: { current: () => config } as unknown as ConfigStore,
+      },
+      sessionConfiguration: {
+        ...mkSessionConfiguration("grok-4.6"),
+        provider: { slug: "grok" },
+      } as unknown as SessionConfiguration,
+    });
+  }
+
+  it("is not refilled from the configured reasoning_effort", async () => {
+    // A saved /effort high stays in the daemon's config snapshot until a
+    // reload, and the built-in default is medium.
+    const session = grokSession({ reasoning_effort: "high" });
+    const nextRequestEffort = () =>
+      runWithCanonicalSettingsAuthority(session.services.configStore!, () =>
+        resolveMainLoopReasoningEffort(session, session.newDefaultTurn()),
+      );
+    // A session without a level of its own still takes the configured one.
+    expect(nextRequestEffort()).toBe("high");
+
+    await session.state.with((state) => {
+      state.sessionConfiguration = withSessionReasoningEffort(
+        state.sessionConfiguration,
+        null,
+      );
+    });
+
+    // grok-4.6 now runs at its own default.
+    expect(nextRequestEffort()).toBeUndefined();
+  });
+});
+
+describe("reasoning effort when a switch does not apply cleanly", () => {
+  it("keeps the level when the staged switch fails to publish", async () => {
+    const session = geminiSession("medium");
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+    vi.spyOn(session.providerService, "commit").mockImplementation(() => {
+      throw new Error("failpoint before provider commit");
+    });
+
+    await expect(
+      consumePendingProviderSwitchTransaction(session),
+    ).resolves.toMatchObject({ status: "clean-rejection" });
+
+    // The old model keeps running at the user's level.
+    expect(session.sessionConfiguration.collaborationMode).toEqual({
+      model: "gemini-3.5-flash",
+      reasoningEffort: "medium",
+    });
+    expect(session.sessionConfiguration.reasoningEffortCleared).toBeUndefined();
+  });
+
+  it("gives a turn the re-judged level when a model fallback switches its model mid-turn", async () => {
+    const session = geminiSession("medium");
+    // The turn's effort is frozen for gemini-3.5-flash when it starts.
+    const turn = session.newDefaultTurn();
+    session.setPendingProviderSwitch({ provider: "gemini", model: "gemma-4-31b-it" });
+
+    // What run-turn does on a model_fallback transition.
+    await consumePendingProviderSwitch(session);
+
+    expect(turn.reasoningEffort).toBe("medium");
+    // Main sent the frozen medium to Gemma, which Gemini refuses.
+    expect(resolveMainLoopReasoningEffort(session, turn)).toBeUndefined();
+  });
+});
+
 describe("Session.consumePendingProviderSwitch", () => {
   it("clears a staged switch without publishing when provider commit rejects", async () => {
     const session = buildProviderSwitchTestSession();
@@ -1245,6 +1402,39 @@ describe("Session.consumePendingProviderSwitch", () => {
 
     expect(resetSpy).toHaveBeenCalled();
     expect(bindSpy).toHaveBeenCalledWith("conv-test");
+  });
+
+  it("plans a switched session with its bound provider's model info, not a slug-only lookup", async () => {
+    // The managed AgenC route and public OpenRouter list the same DeepSeek
+    // id. A slug-only lookup took OpenRouter's 943,718-token output limit, so
+    // the managed gateway refused every request above its reviewed 384,000.
+    const slugOnly: string[] = [];
+    const byProvider: Array<readonly [string, string]> = [];
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+        modelsManager: {
+          getModelInfo: async (model: string) => {
+            slugOnly.push(model);
+            return { ...mkModelInfo(), slug: model, maxOutputTokens: 524_288 };
+          },
+          getModelInfoForProvider: async (provider: string, model: string) => {
+            byProvider.push([provider, model]);
+            return { ...mkModelInfo(), slug: model, maxOutputTokens: 64_000 };
+          },
+        },
+      },
+    });
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.3" });
+
+    await consumePendingProviderSwitch(session);
+
+    expect(byProvider).toEqual([["grok", "grok-4.3"]]);
+    expect(slugOnly).toEqual([]);
+    expect(session.modelInfo.maxOutputTokens).toBe(64_000);
   });
 
   it("applies provider slug, live provider, config model, and modelInfo together", async () => {
@@ -2185,6 +2375,32 @@ describe("Session turn-driver hooks", () => {
 
     expect(closeCount).toBe(1);
     await expect(session.conversation.runningState()).resolves.toBeUndefined();
+  });
+
+  it.each([false, true])("requires concrete exec cleanup proof before durable finalization (failure=%s)", async failure => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const manager = {
+      prepareForDurableClose: async () => {
+        order.push("cleanup");
+        await gate;
+        if (failure) throw new Error("unproven process cleanup");
+      },
+    } as unknown as SessionServices["unifiedExecManager"];
+    const session = buildSession({ services: { unifiedExecManager: manager } });
+    session.onBeforeDurableClose(() => { order.push("terminal"); });
+    const stopping = session.shutdown();
+    void stopping.catch(() => {});
+    await vi.waitFor(() => expect(order).toEqual(["cleanup"]));
+    release();
+    if (failure) {
+      await expect(stopping).rejects.toThrow("unproven process cleanup");
+      expect(order).toEqual(["cleanup"]);
+    } else {
+      await stopping;
+      expect(order).toEqual(["cleanup", "terminal"]);
+    }
   });
 
   it("drains durable continuations before finalizing and sealing the journal", async () => {

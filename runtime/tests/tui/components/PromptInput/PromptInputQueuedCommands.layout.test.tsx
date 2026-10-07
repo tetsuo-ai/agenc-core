@@ -26,16 +26,23 @@ vi.mock('../../../../src/tui/state/AppState.js', () => ({
 const WRAPPING_BODY =
   'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp qqqq'
 
-// Pull out the body lines under a "│ queued" header and return their
+// A queued item's header row: the user's ❯ glyph, then the quiet "queued"
+// marker (after the label when one is shown, e.g. "❯ you queued"). The
+// banner above ("N inputs queued for next turn") carries no ❯.
+function isQueuedHeader(line: string): boolean {
+  return /❯(?: \S+)? queued\s*$/u.test(line)
+}
+
+// Pull out the body lines under a queued header and return their
 // leading-space counts (the indent of each rendered continuation line).
 function bodyLeadWidths(output: string): number[] {
   const lines = output.split('\n')
-  const headerIndex = lines.findIndex((line) => line.includes('│ queued'))
+  const headerIndex = lines.findIndex(isQueuedHeader)
   if (headerIndex === -1) return []
   const body: number[] = []
   for (const line of lines.slice(headerIndex + 1)) {
     if (line.trim().length === 0) break
-    if (line.includes('│ queued')) break
+    if (isQueuedHeader(line)) break
     body.push(line.length - line.trimStart().length)
   }
   return body
@@ -73,9 +80,9 @@ describe('PromptInputQueuedCommands layout', () => {
     const output = await renderToString(<PromptInputQueuedCommands />, 60)
     const lines = output.split('\n')
 
-    // Collect the row index of each item's "│ queued" header.
+    // Collect the row index of each item's "❯ queued" header.
     const headerRows = lines
-      .map((line, index) => (line.includes('│ queued') ? index : -1))
+      .map((line, index) => (isQueuedHeader(line) ? index : -1))
       .filter((index) => index !== -1)
 
     expect(headerRows).toHaveLength(3)
@@ -92,10 +99,12 @@ describe('PromptInputQueuedCommands layout', () => {
     }
 
     // The first item must NOT have an extra blank immediately above its body
-    // beyond the banner gap: its header is the first "YOU queued" row, and the
-    // banner (with its own marginBottom) sits above it — there is no double gap
-    // before the first item.
+    // beyond the banner gap: its header is the first "❯ queued" row, and the
+    // banner (with its own marginBottom) sits above it, so there is exactly one
+    // blank row (no double gap) before the first item.
     const firstHeader = headerRows[0]!
-    expect(lines[firstHeader]).toContain('│ queued')
+    expect(isQueuedHeader(lines[firstHeader]!)).toBe(true)
+    expect(lines[firstHeader - 1]!.trim()).toBe('')
+    expect(lines[firstHeader - 2]!.trim()).not.toBe('')
   })
 })

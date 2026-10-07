@@ -22,7 +22,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
-import { structuredPatch } from "diff";
+import { loadDiff } from "../../utils/lazy-runtime-packages.js";
 
 import {
   dropSessionReadSnapshot,
@@ -95,7 +95,7 @@ interface PendingFile {
  */
 function computeSnippet(before: string, after: string): string {
   if (before === after) return "";
-  const patch = structuredPatch(
+  const patch = loadDiff().structuredPatch(
     "file.txt",
     "file.txt",
     before,

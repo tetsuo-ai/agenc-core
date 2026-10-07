@@ -148,7 +148,7 @@ function UsageRow({
       </Box>
       <Box width={14}>
         <ThemedText color="text2" wrap="truncate-end">
-          {tokens !== undefined ? formatTokens(tokens) : '—'}
+          {tokens !== undefined ? formatTokens(tokens) : 'unknown'}
         </ThemedText>
       </Box>
       <Box width={7}>

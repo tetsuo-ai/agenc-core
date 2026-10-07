@@ -9,6 +9,7 @@
 
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
+import { isNativeDeepSeekModel } from "./registry/deepseek-models.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { ProviderTokenCountCapability } from "./token-accounting.js";
 import type { ToolResultIntegrity } from "../session/tool-result-integrity.js";
@@ -57,6 +58,23 @@ export type LLMContentPart =
 export interface ProviderReasoningProvenance {
   readonly provider: string;
   readonly model: string;
+}
+
+/** An explicit empty supported tool-response replay differs from unavailable reasoning. */
+export function isKnownEmptyProviderReasoning(
+  content: unknown,
+  provenance: unknown,
+): boolean {
+  if (content !== "" || !isRecord(provenance) ||
+      typeof provenance.provider !== "string" || typeof provenance.model !== "string") {
+    return false;
+  }
+  const provider = provenance.provider.trim().toLowerCase();
+  return provider === "deepseek"
+    ? isNativeDeepSeekModel(provenance.model)
+    : ["zai", "zai-coding-plan"].includes(provider) &&
+      /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i
+        .test(provenance.model.trim());
 }
 
 /** Legacy unbound durable replay state; readable but never safe to replay. */
@@ -751,10 +769,14 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Disable thinking for one reasoning-only output-cap recovery sample, on supported routes only. */
+  readonly disableThinkingForRecovery?: true;
   /** Provider-facing reasoning-summary hint for APIs that expose it. */
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */
   readonly modelVerbosity?: LLMModelVerbosity;
+  /** Explicit session response detail, used only for prompt fallback routes. */
+  readonly responseDetailOverride?: LLMModelVerbosity;
   /** Provider-facing service-tier hint for APIs that expose it. */
   readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
@@ -822,10 +844,16 @@ export interface LLMStoredResponseDeleteResult {
  * Response from an LLM provider
  */
 export interface LLMResponse {
+  /** Non-executable identities only; argument bytes were cut off by the
+   * provider output limit. Used to report a retryable failure and guide repair. */
+  incompleteToolCalls?: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+
   content: string;
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */
   readonly toolCallRecovery?: {
+    /** Native calls rejected by provider validation, with no executable payload. */
+    readonly source?: "native";
     readonly reason: "invalid_arguments" | "not_advertised";
     readonly toolName: string;
     readonly message: string;
@@ -874,6 +902,8 @@ export interface LLMStreamChunk {
   content: string;
   done: boolean;
   toolCalls?: LLMToolCall[];
+  /** New non-whitespace output buffered for validation; carries no displayable text. */
+  bufferedContentProgress?: boolean;
   /**
    * When true, `content` is the full-so-far snapshot of the assistant
    * reply rather than an incremental delta. Downstream consumers MUST
@@ -1127,6 +1157,12 @@ function normalizeToolArguments(
   toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  // Handoffs carry exact task text and literal reference delimiters. Never
+  // repair a partial JSON string into an empty object or decode its contents.
+  if (toolName === "spawn_agent") {
+    try { return { value: JSON.parse(argumentsRaw) as unknown }; }
+    catch { return null; }
+  }
   const finalizeParsed = (value: unknown): { value: unknown } => {
     if (isRecord(value)) {
       return { value };
@@ -1239,7 +1275,7 @@ export function validateToolCallDetailed(
   }
 
   const normalizedArguments = JSON.stringify(
-    decodeHtmlEntitiesDeep(parsed) as Record<string, unknown>,
+    (name === "spawn_agent" ? parsed : decodeHtmlEntitiesDeep(parsed)) as Record<string, unknown>,
   );
 
   return {

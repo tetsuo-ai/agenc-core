@@ -1,3 +1,4 @@
+import { lightPresentation } from "../src/tools/light-presentation.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1199,9 +1200,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
     ).toMatchObject({
       metadata: expect.objectContaining({ family: "agent" }),
       inputSchema: expect.objectContaining({
-        required: ["message", "task_name"],
+        required: ["task_name"],
         additionalProperties: false,
         properties: expect.objectContaining({
+          message_ref: expect.objectContaining({ required: ["source"], additionalProperties: false }),
           agent_type: expect.objectContaining({
             enum: expect.arrayContaining(["netrunner", "scanner", "runner"]),
             description: expect.stringContaining(
@@ -2131,17 +2133,16 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
   });
 
-  test("keeps the complete executable catalog and unchanged function and parameter documentation", () => {
+  test("keeps the complete executable catalog with Light-only presentation", () => {
     const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "FileRead", "Edit", "Write", "exec_command", "system.searchTools",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented.function).toEqual({ name: canonical.name, description: canonical.description, parameters: canonical.inputSchema });
-      expect(presented).toEqual(normal.toLLMTools().find(tool => tool.function.name === canonical.name));
+      expect(presented).toEqual(lightPresentation({ type: "function", function: { name: canonical.name, description: canonical.description, parameters: canonical.inputSchema } }, { leanExec: presented.function.name === "exec_command" }));
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
@@ -2163,7 +2164,27 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(normal.toLLMTools()).toEqual(normalBefore);
     await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
     const read = light.tools.find(tool => tool.name === "FileRead")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")?.function).toEqual({ name: read.name, description: read.description, parameters: read.inputSchema });
+    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(lightPresentation({ type: "function", function: { name: read.name, description: read.description, parameters: read.inputSchema } }));
+  });
+
+  test("loads search schemas on demand without changing canonical tools or other sessions", async () => {
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const other = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const baseline = light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }));
+    for (const name of ["Grep", "Glob"]) {
+      expect(light.toLLMTools().some(t => t.function.name === name)).toBe(false);
+      const result = await light.dispatch({ id: `select-${name}`, name: "system.searchTools",
+        arguments: JSON.stringify({ select: name }) });
+      expect(JSON.parse(result.content).loaded).toEqual([name]);
+      const tool = light.tools.find(tool => tool.name === name)!;
+      expect(light.toLLMTools().find(t => t.function.name === name)).toEqual(lightPresentation({
+        type: "function", function: { name, description: tool.description, parameters: tool.inputSchema },
+      }));
+      expect(other.toLLMTools().some(t => t.function.name === name)).toBe(false);
+    }
+    expect(light.tools.map(tool => ({ name: tool.name, schema: tool.inputSchema,
+      approval: tool.requiresApproval, recovery: tool.recoveryCategory, execute: tool.execute }))).toEqual(baseline);
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
@@ -2172,12 +2193,14 @@ describe("Light presentation and deferred capability preservation", () => {
       const light = buildToolRegistry({
         workspaceRoot: "/tmp",
         lightMode: true,
-        unavailableCalledTools: ["Grep"],
+        unavailableCalledTools: ["Grep", "Edit", "Write"],
         ...(toolsConfig !== undefined ? { toolsConfig } : {}),
       });
-      light.discoverToolNames?.(["Grep"]);
-      expect(light.tools.map(tool => tool.name)).toContain("Grep");
-      expect(light.toLLMTools().map(tool => tool.function.name)).not.toContain("Grep");
+      light.discoverToolNames?.(["Grep", "Edit", "Write"]);
+      for (const name of ["Grep", "Edit", "Write"]) {
+        expect(light.tools.map(tool => tool.name)).toContain(name);
+        expect(light.toLLMTools().map(tool => tool.function.name)).not.toContain(name);
+      }
     },
   );
 
@@ -2188,7 +2211,15 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
     expect(await disabled.dispatch({ id: "disabled", name: "Write", arguments: '{}' })).toMatchObject({ isError: true, content: expect.stringContaining("unknown tool: Write") });
     const admitted = buildProductionToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
-    expect(await admitted.dispatch({ id: "no-authority", name: "FileRead", arguments: '{"file_path":"/tmp/never-read"}' })).toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
+    for (const name of ["FileRead", "Edit", "Write"]) {
+      expect(admitted.toLLMTools().some(tool => tool.function.name === name)).toBe(true);
+      expect(await admitted.dispatch({ id: `no-authority-${name}`, name,
+        arguments: JSON.stringify({ file_path: "/tmp/never-read",
+          ...(name === "Write" ? { content: "blocked" } : {}),
+          ...(name === "Edit" ? { old_string: "before", new_string: "after" } : {}),
+        }) }))
+        .toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
+    }
   });
 });
 

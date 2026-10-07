@@ -6,6 +6,8 @@ export interface LocalSqliteLockOptions {
   readonly deadline?: number;
   /** Optional phase-only diagnostics; never receives a protected path. */
   readonly onProgress?: (phase: string) => void | PromiseLike<void>;
+  /** Shorten one busy sleep; does not cancel, grant ownership or renew the deadline. */
+  readonly retryWakeSignal?: AbortSignal;
   /** Permit a root/current-user-owned sticky directory as the validated leaf. */
   readonly allowTrustedStickyLeaf?: boolean;
 }

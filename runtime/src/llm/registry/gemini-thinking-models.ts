@@ -8,6 +8,8 @@ interface GeminiThinkingModel {
   readonly levels: readonly GeminiThinkingLevel[];
   readonly defaultLevel?: GeminiThinkingLevel;
   readonly curated: boolean;
+  readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
 }
 
 const PRO_LEVELS = Object.freeze(["low", "medium", "high"] as const);
@@ -29,10 +31,15 @@ export const GEMINI_THINKING_MODELS: readonly GeminiThinkingModel[] = Object.fre
   { model: "gemini-3.5-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
   { model: "gemini-3.1-flash-lite", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "medium", curated: true },
   { model: "gemini-2.5-flash", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
-  { model: "gemini-3-flash-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: false },
+  { model: "gemini-3-flash-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true },
   { model: "gemini-3-pro-preview", control: "thinkingLevel", levels: ORIGINAL_PRO_LEVELS, defaultLevel: "high", curated: false },
-  { model: "gemini-2.5-pro", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: false },
-  { model: "gemini-2.5-flash-lite", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: false },
+  { model: "gemini-2.5-pro", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
+  { model: "gemini-2.5-flash-lite", control: "thinkingBudget", levels: BUDGET_LEVELS, curated: true },
+  // Official hosted Gemma guide: minimal disables thinking, high enables it.
+  { model: "gemini-3.1-pro-preview-customtools", control: "thinkingLevel", levels: PRO_LEVELS, defaultLevel: "high", curated: true },
+  { model: "gemma-4-31b-it", control: "thinkingLevel", levels: ["minimal", "high"], curated: true, contextWindow: 262_144, maxOutputTokens: 32_768 },
+  { model: "gemma-4-26b-a4b-it", control: "thinkingLevel", levels: ["minimal", "high"], curated: true, contextWindow: 262_144, maxOutputTokens: 32_768 },
+  { model: "gemini-robotics-er-2-preview", control: "thinkingLevel", levels: FLASH_LEVELS, defaultLevel: "high", curated: true, contextWindow: 131_072 },
 ] satisfies GeminiThinkingModel[]).map((entry) => Object.freeze(entry)));
 
 export function resolveGeminiThinkingModel(model: string): GeminiThinkingModel | undefined {

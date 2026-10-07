@@ -6,10 +6,11 @@
  * defaults, ordered environment ingress names, and onboarding classification.
  */
 
+import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
-import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { registerProviderFundsDisplayNames } from "../funds.js";
 
 export const GEMINI_DEVELOPER_NATIVE_BASE_URL =
   "https://generativelanguage.googleapis.com/v1beta";
@@ -26,23 +27,21 @@ const GITHUB_COPILOT_MODEL_IDS = Object.freeze([
   "gpt-5.6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
   "claude-fable-5",
   "claude-haiku-4.5",
-  "claude-opus-4.5",
-  "claude-opus-4.6",
   "claude-opus-4.7",
   "claude-opus-4.8",
   "claude-opus-5",
-  "claude-sonnet-4.5",
+  "claude-opus-5.5",
   "claude-sonnet-4.6",
   "claude-sonnet-5",
-  "gemini-3.1-pro-preview",
   "gemini-3.5-flash",
   "gemini-3.6-flash",
   "gemini-3.7-flash",
-  "mai-code-1-flash-picker",
   "mai-code-1.1-flash",
-  "raptor-mini",
   "kimi-k2.7-code",
   "kimi-k3",
   "grok-4.5",
@@ -167,6 +166,7 @@ const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
   "moonshotai/kimi-k2-thinking",
   "moonshotai/kimi-k2.5-thinking",
   "moonshotai/kimi-k2-instruct-0905",
+  ...NVIDIA_CURRENT_MODEL_CATALOG.map((entry) => entry.model),
 ] as const);
 
 // Single source of truth: model lists for providers that have entries in
@@ -410,7 +410,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   groq: providerDefinition({
     name: "Groq",
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "openai/gpt-oss-120b",
     baseURL: "https://api.groq.com/openai/v1",
     credentials: apiKeyCredentials(["GROQ_API_KEY"]),
     baseURLEnvVars: ["GROQ_BASE_URL"],
@@ -652,15 +652,15 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   openai: mergeDerivedProviderModels("openai", {
     trailingExtras: ["o3"],
   }),
-  // The current lineup platform.claude.com lists (2026-09-22), then the
-  // legacy models it still serves, in the order the models overview lists
-  // them. Opus 5 moved to legacy when Opus 5.5 shipped. Haiku 4.5 is not
-  // offered: it takes no effort parameter, and the picker's dial would be a
-  // lie there.
+  // Current lineup verified against the authenticated Models API and
+  // platform.claude.com (2026-09-29), followed by older supported choices.
+  // Haiku 4.5 remains current; its catalog row exposes no effort dial.
   anthropic: Object.freeze([
     "claude-opus-5-5",
-    "claude-sonnet-5",
+    "claude-sonnet-5-5",
     "claude-fable-5-1",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5",
     "claude-fable-5",
     "claude-opus-5",
     "claude-opus-4-8",
@@ -669,7 +669,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
   "openai-compatible": Object.freeze(["local-model"]),
-  openrouter: Object.freeze([
+  openrouter: mergeDerivedProviderModels("openrouter", { leadingExtras: [
     "x-ai/grok-4.5",
     "x-ai/grok-4.3",
     "x-ai/grok-build-0.1",
@@ -691,14 +691,9 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "meta-llama/llama-4-scout",
     "minimax/minimax-m2.5",
     "z-ai/glm-4.7-flash",
-    ...OPENROUTER_FREE_MODEL_IDS,
-  ]),
-  // mixtral-8x7b-32768 was shut down by groq on 2025-03-20 (deprecations
-  // page); listing it produced guaranteed-dead sessions.
-  groq: Object.freeze([
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-  ]),
+  ] }),
+  // Shared API Llama rows retired 2026-08-16; enterprise IDs remain custom.
+  groq: mergeDerivedProviderModels("groq"),
   deepseek: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
   // `/models` also advertises image generation and voice transcription.
   // Those are not chat-completion LLMs and deliberately stay out of this list.
@@ -712,27 +707,18 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   kimi: mergeDerivedProviderModels("kimi"),
   // Mirrors the curated rows of GEMINI_THINKING_MODELS: every id here has a
   // verified thinking contract, so an effort never dies at request build.
-  gemini: Object.freeze([
-    "gemini-3.1-pro-preview",
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
-  ]),
-  mistral: Object.freeze(["mistral-medium-latest"]),
+  gemini: mergeDerivedProviderModels("gemini"),
+  mistral: mergeDerivedProviderModels("mistral"),
   "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
   minimax: mergeDerivedProviderModels("minimax"),
   // Copilot proxies models owned by several providers. Keep those entries
   // qualified here so bare slugs such as gpt-5.4 retain one global owner.
   github: GITHUB_COPILOT_CATALOG_MODELS,
-  "amazon-bedrock": Object.freeze([
+  "amazon-bedrock": mergeDerivedProviderModels("amazon-bedrock", { leadingExtras: [
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",
     "amazon.nova-micro-v1:0",
-  ]),
+  ] }),
   agenc: Object.freeze(["agenc"]),
 });
 
@@ -869,3 +855,9 @@ export function resolveBuiltInProviderSlug(
     ? (normalized as BuiltInProviderSlug)
     : undefined;
 }
+
+// funds.ts imports nothing so the catalog can load first; give it the display
+// names it uses for billing refusals.
+registerProviderFundsDisplayNames(
+  (provider) => listBuiltInProviderInfo().find((info) => info.id === provider)?.name,
+);

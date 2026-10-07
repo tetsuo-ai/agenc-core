@@ -1,3 +1,4 @@
+import * as oneShotDurability from "../../src/durability/one-shot-durability.js";
 import {
   copyFileSync,
   existsSync,
@@ -12,9 +13,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { canonicalTmpdir } from "../helpers/canonical-temp-dir.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { pruneRolloutSessions } from "../state/pruning.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
@@ -94,8 +95,8 @@ function createThreadStoreTestDirs(): {
   readonly home: string;
   readonly restoreEnv: () => void;
 } {
-  const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-lifecycle-cwd-"));
-  const home = mkdtempSync(join(tmpdir(), "agenc-agent-lifecycle-home-"));
+  const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-lifecycle-cwd-"));
+  const home = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-lifecycle-home-"));
   const previous = process.env.AGENC_HOME;
   process.env.AGENC_HOME = home;
   return {
@@ -124,7 +125,7 @@ function openRollout(
     cwd,
     sessionId,
     agencVersion: "0.2.0",
-    sessionTempRoot: tmpdir(),
+    sessionTempRoot: canonicalTmpdir(),
   });
   rollout.open({
     sessionId,
@@ -1238,9 +1239,9 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("reads agent rollout history from the agent cwd when daemon cwd differs", async () => {
-    const daemonCwd = mkdtempSync(join(tmpdir(), "agenc-agent-daemon-cwd-"));
-    const agentCwd = mkdtempSync(join(tmpdir(), "agenc-agent-worker-cwd-"));
-    const home = mkdtempSync(join(tmpdir(), "agenc-agent-route-home-"));
+    const daemonCwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-daemon-cwd-"));
+    const agentCwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-worker-cwd-"));
+    const home = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-route-home-"));
     const previous = process.env.AGENC_HOME;
     process.env.AGENC_HOME = home;
     const rollout = openRollout(agentCwd, "session-agent-cwd-log");
@@ -2278,6 +2279,13 @@ describe("AgenC background agent lifecycle", () => {
     });
     await agents.applyConfigToSession({ sessionId: "session-applyconfig", reasoningEffort: "max" });
     expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", reasoningEffort: "max" });
+    applyAgentConfig.mockResolvedValueOnce({
+      applied: true, modelVerbosity: null, runtimeSettingsEventId: "settings:2",
+      summary: "Response detail set to inherited",
+    });
+    await expect(agents.applyConfigToSession({ sessionId: "session-applyconfig", modelVerbosity: null }))
+      .resolves.toMatchObject({ sessionId: "session-applyconfig", modelVerbosity: null, runtimeSettingsEventId: "settings:2" });
+    expect(applyAgentConfig).toHaveBeenLastCalledWith("agent-applyconfig", { sessionId: "session-applyconfig", modelVerbosity: null });
   });
 
   it("rejects session.applyConfig when no runner is available", async () => {
@@ -2692,9 +2700,9 @@ describe("AgenC background agent lifecycle", () => {
 
   it("rebinds restored runtime events so terminal status updates persist", async () => {
     const home = mkdtempSync(
-      join(tmpdir(), "agenc-agent-restore-events-home-"),
+      join(canonicalTmpdir(), "agenc-agent-restore-events-home-"),
     );
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-restore-events-cwd-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-restore-events-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -2762,6 +2770,24 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it.each([false, true])("attachment promotes live print durability unless collecting initial output (%s)", async oneShotOutput => {
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => "attach-session", createAttachmentId: () => "attach-output" });
+    const runtimeSettings = canonicalRuntimeSettings("default", process.cwd());
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({ agentId: "print-agent", agentPath: "/root", startedAt: "2026-10-03T00:00:00Z", status: "running" }),
+      getAgentSnapshot: async () => ({ status: "running", lastActiveAt: "2026-10-03T00:00:00Z", runtimeSettings, runtimeSettingsEventId: "settings" }),
+    };
+    const agents = new AgenCDaemonAgentManager({ defaultCwd: () => process.cwd(), runner, sessionManager: sessions });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "work", metadata: { source: "agenc.prompt", mode: "one-shot" },
+      runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, nonInteractive: true, relaxedOneShot: true } });
+    const promote = vi.spyOn(oneShotDurability, "promoteOneShotRun").mockImplementation(() => { throw new Error("checkpoint blocked"); });
+    try {
+      const attached = agents.attachAgent({ agentId: "print-agent", oneShotOutput }, registerNoopSessionRoute);
+      if (oneShotOutput) { await expect(attached).resolves.toMatchObject({ runtimeOptions: { relaxedOneShot: true } }); expect(promote).not.toHaveBeenCalled(); }
+      else { await expect(attached).rejects.toThrow("checkpoint blocked"); expect(promote).toHaveBeenCalledWith("print-agent"); }
+    } finally { promote.mockRestore(); }
+  });
+
   it.each([false, true])("agent.create persists actual Light mode (%s), ignoring caller metadata", async (lightMode) => {
     const selectedRuntimeOptions = { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode };
     const sessions = new AgenCDaemonSessionManager({
@@ -2820,6 +2846,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: selectedRuntimeOptions,
       },
       sessionId: "session_1",
@@ -2837,6 +2864,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: [],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: selectedRuntimeOptions,
         },
         unattendedAllow: [],
@@ -2862,6 +2890,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: selectedRuntimeOptions,
       },
     });
@@ -2884,6 +2913,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: selectedRuntimeOptions,
           },
         },
@@ -2918,6 +2948,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: selectedRuntimeOptions,
           },
           activeAttachmentIds: ["attachment_1"],
@@ -3372,7 +3403,7 @@ describe("AgenC background agent lifecycle", () => {
     const threadStore = new MultiProjectFileThreadStore({
       primaryCwd: fixture.cwd, agencHome,
     });
-    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-light-decoy-"));
+    const otherCwd = mkdtempSync(join(canonicalTmpdir(), "agenc-light-decoy-"));
     mkdirSync(join(otherCwd, ".git"));
     const otherRollout = openRollout(otherCwd, sessionId);
     const otherStore = new FileThreadStore({ cwd: otherCwd, agencHome });
@@ -3469,6 +3500,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: { AGENC_MODEL: "grok-4.3" }, withheldKeys: [] },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       restoreAttemptId: expect.any(String),
@@ -3915,7 +3947,7 @@ describe("AgenC background agent lifecycle", () => {
     } finally {
       driver.close();
     }
-    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-escape-decoy-"));
+    const otherCwd = mkdtempSync(join(canonicalTmpdir(), "agenc-escape-decoy-"));
     mkdirSync(join(otherCwd, ".git"));
     const otherRollout = openRollout(otherCwd, sessionId);
     const otherStore = new FileThreadStore({ cwd: otherCwd, agencHome });
@@ -5086,8 +5118,8 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("persists live agent run rows with current session ids and terminal stop state", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-home-"));
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-cwd-"));
+    const home = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-home-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -5150,8 +5182,8 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("keeps replayed terminal runner status from being overwritten by agent.create persistence", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-replay-home-"));
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-replay-cwd-"));
+    const home = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-replay-home-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-replay-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -5221,8 +5253,8 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("marks inserted agent run errored when agent.create rolls back after attach failure", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-agent-run-rollback-home-"));
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-run-rollback-cwd-"));
+    const home = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-rollback-home-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-run-rollback-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -5339,6 +5371,7 @@ describe("AgenC background agent lifecycle", () => {
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
+        sessionEnvironment: { values: {}, withheldKeys: [] },
         runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
@@ -5675,6 +5708,7 @@ describe("AgenC background agent lifecycle", () => {
               unattendedAllow: [],
               unattendedDeny: [],
               commandEnvironment: { PATH: "" },
+              sessionEnvironment: { values: {}, withheldKeys: [] },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -5865,6 +5899,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -5880,6 +5915,7 @@ describe("AgenC background agent lifecycle", () => {
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
+            sessionEnvironment: { values: {}, withheldKeys: [] },
             runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
@@ -6042,6 +6078,7 @@ describe("AgenC background agent lifecycle", () => {
       streamId: "stream_1",
       acceptedAt: "2026-05-01T12:00:01.000Z",
       displayUserMessage: null,
+      exactOutput: true,
     });
 
     expect(submitted).toEqual([
@@ -6064,6 +6101,7 @@ describe("AgenC background agent lifecycle", () => {
             },
           ],
           displayUserMessage: null,
+      exactOutput: true,
           messageId: "message_1",
           streamId: "stream_1",
           acceptedAt: "2026-05-01T12:00:01.000Z",
@@ -6073,7 +6111,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("records snapshot-policy hooks for agent status and message exchanges", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-snapshot-policy-cwd-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-snapshot-policy-cwd-"));
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_snapshot"]),
       now: sequence(["2026-05-01T12:00:00.000Z"]),
@@ -6143,8 +6181,8 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("deduplicates runner events and lifecycle hooks in snapshot policy", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-lifecycle-snapshot-home-"));
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-lifecycle-snapshot-cwd-"));
+    const home = mkdtempSync(join(canonicalTmpdir(), "agenc-lifecycle-snapshot-home-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-lifecycle-snapshot-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -6255,7 +6293,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("records runner-observed status transitions during refresh", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-status-refresh-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-status-refresh-"));
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_status_refresh"]),
       now: sequence(["2026-05-01T12:00:00.000Z"]),
@@ -6312,9 +6350,9 @@ describe("AgenC background agent lifecycle", () => {
 
   it("persists runner snapshot metadata during status refresh", async () => {
     const home = mkdtempSync(
-      join(tmpdir(), "agenc-agent-budget-refresh-home-"),
+      join(canonicalTmpdir(), "agenc-agent-budget-refresh-home-"),
     );
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-budget-refresh-cwd-"));
+    const cwd = mkdtempSync(join(canonicalTmpdir(), "agenc-agent-budget-refresh-cwd-"));
     mkdirSync(join(cwd, ".git"));
     const driver = openStateDatabases({ cwd, agencHome: home });
     try {
@@ -6664,7 +6702,7 @@ describe("AgenC background agent lifecycle", () => {
 
   it("resolves legacy review rows only in the manager's captured home", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
-    const otherHome = mkdtempSync(join(tmpdir(), "agenc-review-other-home-"));
+    const otherHome = mkdtempSync(join(canonicalTmpdir(), "agenc-review-other-home-"));
     const sessionId = "session_same_workspace_review";
     const sessions = new AgenCDaemonSessionManager({ createSessionId: () => sessionId });
     const ownerDriver = openStateDatabases({ cwd, agencHome: home });
@@ -7146,7 +7184,6 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.24.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },
@@ -7220,6 +7257,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: [],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
@@ -7266,6 +7304,7 @@ describe("AgenC background agent lifecycle", () => {
               unattendedAllow: [],
               unattendedDeny: [],
               commandEnvironment: { PATH: "" },
+              sessionEnvironment: { values: {}, withheldKeys: [] },
               runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
@@ -7779,7 +7818,7 @@ describe("AgenC background agent lifecycle", () => {
       role: "control",
       allowFiles: false,
       allowApprovals: false,
-    }, () => true, (id) => sessions.getSession(id), tmpdir());
+    }, () => true, (id) => sessions.getSession(id), canonicalTmpdir());
     const connection = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
       sessionManager: sessions,
@@ -7897,6 +7936,7 @@ describe("AgenC background agent lifecycle", () => {
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
+          sessionEnvironment: { values: {}, withheldKeys: [] },
           runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: ["FileRead"],

@@ -1,7 +1,13 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { OllamaProvider } from "../../../../src/llm/providers/ollama/adapter.js";
 import { createAskUserQuestionTool } from "../../../../src/tools/ask-user-question/tool.js";
 import type { LLMChatOptions, LLMStreamChunk, LLMTool } from "../../../../src/llm/types.js";
+import { streamModel } from "../../../../src/phases/stream-model.js";
+import { buildInitialTurnState } from "../../../../src/session/turn-state.js";
+import { REASONING_NO_PROGRESS_MS } from "../../../../src/llm/stream-progress.js";
+import { mkCtx, mkSession } from "../../../fixtures.js";
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 const readTool: LLMTool = {
   type: "function",
@@ -45,6 +51,98 @@ function providerFor(
 }
 
 describe("Ollama text-call recovery in actual adapter requests", () => {
+  test("buffered native tool generation after thinking survives three minutes without dispatching calls early", async () => {
+    vi.useFakeTimers();
+    const chunks: LLMStreamChunk[] = [];
+    const provider = new OllamaProvider({ model: "test-model", tools: [readTool] });
+    const paths = ["one.txt", "two.txt", "three.txt", "four.txt"];
+    async function* stream() {
+      yield { message: { thinking: "Prepare the tool calls." } };
+      for (const file_path of paths) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(chunks.every(chunk => chunk.content === "" && !chunk.toolCalls && !chunk.toolInputDelta)).toBe(true);
+        yield { message: { tool_calls: [{ function: { name: "FileRead", arguments: { file_path } } }] } };
+      }
+      yield { done: true, done_reason: "stop" };
+    }
+    Object.assign(provider, { client: {
+      chat: async () => stream(), list: async () => ({ models: [] }),
+    } });
+    const chatStream = provider.chatStream.bind(provider);
+    vi.spyOn(provider, "chatStream").mockImplementation((input, emit, options) =>
+      chatStream(input, chunk => { chunks.push(chunk); emit(chunk); }, options));
+    const { session } = mkSession({ provider });
+    const ctx = mkCtx();
+    const state = buildInitialTurnState(ctx, messages[0]!);
+    const pending = streamModel(state, ctx, session, {
+      input: state.messages, tools: [readTool], parallelToolCalls: false, baseInstructions: "",
+      maxOutputTokens: 8192,
+    }).then(() => undefined, error => error);
+    const duration = paths.length * 60_000;
+    expect(duration).toBeGreaterThan(REASONING_NO_PROGRESS_MS);
+    await vi.advanceTimersByTimeAsync(duration + 1);
+    expect(await pending).toBeUndefined();
+    expect(provider.chatStream).toHaveBeenCalledOnce();
+    expect(chunks.filter(chunk => chunk.bufferedContentProgress)).toHaveLength(paths.length);
+    expect(chunks.flatMap(chunk => chunk.toolCalls ?? [])).toMatchObject(
+      paths.map(file_path => ({ name: "FileRead", arguments: JSON.stringify({ file_path }) })),
+    );
+    expect(chunks.filter(chunk => chunk.toolCalls?.length).every(chunk => chunk.done)).toBe(true);
+    expect(chunks.map(chunk => chunk.content).join("")).toBe("");
+  });
+
+  test.each(["tool", "code"])("buffered %s generation after thinking survives three minutes without exposing unvalidated text", async kind => {
+    vi.useFakeTimers();
+    const text = kind === "tool" ? call : "```ts\nconst answer = 42;\n```";
+    const chunks: LLMStreamChunk[] = [];
+    const provider = new OllamaProvider({ model: "test-model", tools: [readTool] });
+    let finished = false;
+    async function* stream() {
+      yield { message: { thinking: "Prepare the response." } };
+      for (let i = 0; i < text.length; i += 8) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(chunks.every(chunk => chunk.content === "" && !chunk.toolCalls && !chunk.toolInputDelta)).toBe(true);
+        yield { message: { content: text.slice(i, i + 8) } };
+      }
+      finished = true;
+      yield { done: true, done_reason: "stop" };
+    }
+    Object.assign(provider, { client: {
+      chat: async () => stream(), list: async () => ({ models: [] }),
+    } });
+    const chatStream = provider.chatStream.bind(provider);
+    vi.spyOn(provider, "chatStream").mockImplementation((input, emit, options) =>
+      chatStream(input, chunk => { chunks.push(chunk); emit(chunk); }, options));
+    const { session } = mkSession({ provider });
+    const ctx = mkCtx();
+    const state = buildInitialTurnState(ctx, messages[0]!);
+    const pending = streamModel(state, ctx, session, {
+      input: state.messages, tools: [readTool], parallelToolCalls: false, baseInstructions: "",
+      maxOutputTokens: 8192,
+    }).then(() => undefined, error => error);
+    const duration = Math.ceil(text.length / 8) * 60_000;
+    expect(duration).toBeGreaterThan(REASONING_NO_PROGRESS_MS);
+    await vi.advanceTimersByTimeAsync(duration + 1);
+    expect(await pending).toBeUndefined();
+    expect(finished).toBe(true);
+    expect(provider.chatStream).toHaveBeenCalledOnce();
+    if (kind === "tool") {
+      expect(chunks.flatMap(chunk => chunk.toolCalls ?? [])).toMatchObject([
+        { name: "FileRead", arguments: '{"file_path":"note.txt"}' },
+      ]);
+      expect(chunks.map(chunk => chunk.content).join("")).toBe("");
+    } else {
+      expect(chunks.map(chunk => chunk.content).join("")).toBe(text);
+    }
+  });
+
+  test("forwards native thinking to the shared progress guard without adding answer text", async () => {
+    const { provider } = providerFor([], [], { message: { thinking: "Check the boundary condition." }, done: true });
+    const chunks: LLMStreamChunk[] = [];
+    const response = await provider.chatStream(messages, chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingDelta: { delta: "Check the boundary condition.", index: 0 } });
+    expect(response.content).toBe("");
+  });
   test.each([false, true])("uses constructor tools when the call has no override (stream=%s)", async (streaming) => {
     const { provider, requests } = providerFor([call]);
     const chunks: LLMStreamChunk[] = [];

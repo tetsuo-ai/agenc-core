@@ -41,6 +41,7 @@
  */
 
 import { isWorkflowApprovalSession, workflowApprovalFailureFromMetadata } from "../permissions/approval-failure.js";
+import { isLightPrintRun } from "../prompts/light-print.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -120,7 +121,6 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
@@ -147,6 +147,11 @@ import {
 import { waitForProviderRetry } from "../recovery/provider-wait.js";
 import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
+  STREAM_RETRY_WINDOW_MS,
+  STREAM_STALL_RETRY_BUDGET_MS,
+  StreamProgressError,
+} from "../llm/stream-progress.js";
+import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
 } from "../config/schema.js";
@@ -159,7 +164,7 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
-  llmMessageToCheckpointResponseItem,
+  createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
 import {
@@ -246,6 +251,7 @@ import {
   isRetryableStreamError,
   streamRetryErrorStatus,
   streamRetryNoticeMessage,
+  isStreamProgressStop,
   suppressInterruptedStreamToolHistory,
   type InterruptedStreamHistoryState,
 } from "./run-turn-stream-retry.js";
@@ -304,6 +310,8 @@ import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_I
 export interface RunTurnOptions {
   /** The child routing supervisor owns retries across providers for this task. */
   readonly automaticChildRouting?: boolean;
+  /** Explicit output contract; never inferred from user prose. */
+  readonly exactOutput?: boolean;
   /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
   readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
@@ -919,6 +927,7 @@ async function prepareSamplingRequestBoundary(
   const attachments = await getAttachments({
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
+    lightPrint: isLightPrintRun(session.services.runtimeOptions, session.services.providerEnvironment),
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -984,21 +993,11 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
-    trackingState: getAttachmentTrackingState(session),
-    turnId: ctx.subId,
-    subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
 
   return {
     kind: "request",
     samplingContext,
-    request: snapshotSamplingRequestContract({
-      ...request,
-      ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
-    }),
+    request: snapshotSamplingRequestContract(request),
   };
 }
 
@@ -1025,6 +1024,7 @@ async function tryRunSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
   assistantOutputSink?: AssistantOutputStreamSink,
+  stallRetryStarted = false,
 ): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -1110,6 +1110,11 @@ async function tryRunSamplingRequest(
 
   // Phase 3: post-sample recovery. Always runs — even on stream
   // error — so the ladder can decide between recovery vs terminal.
+  // Progress stops have their own one-retry bound. No fallback trigger may
+  // swallow them or errors from their retry and restart the recovery ladder.
+  if (streamModelError && (stallRetryStarted || isStreamProgressStop(streamModelError))) {
+    throw streamModelError;
+  }
   await postSampleRecovery(state, ctx, session, signal);
 
   // If recovery applied a transition (any of I-10's triggers fired),
@@ -1214,8 +1219,6 @@ async function runSamplingRequest(
   beforeOutageRetry?: () => void,
   automaticChildRouting = false,
 ): Promise<SamplingRequestResult> {
-  const trackingState = getAttachmentTrackingState(session);
-  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
   let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
@@ -1226,9 +1229,6 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
   if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
-    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
-      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
-    }
     prepared = await prepareSamplingRequestBoundary(
       state, ctx, session, signal, events, querySource,
     );
@@ -1243,106 +1243,132 @@ async function runSamplingRequest(
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
   let outageRetries = 0;
-  for (;;) {
-    let retryBlocked = false;
-    const outcome = await reconnectWithBackoff<SamplingRequestResult>({
-      session,
-      signal,
-      // One initial provider call plus the five recovery-ladder reservations.
-      // The reservation hook remains authoritative when another recovery path
-      // has already consumed part of the shared A1 ladder.
-      maxAttempts: automaticChildRouting ? 1 : MAX_RECOVERY_REENTRIES + 1,
-      attempt: () =>
-        tryRunSamplingRequest(
-          state,
-          samplingContext,
-          session,
-          request,
-          signal,
-          events,
-          assistantOutputSink,
-        ),
-      isTransient: isTransientSamplingError,
-      onTransientRetry: async (attempt, err) => {
-        const blockedReason = interruptedStreamRetryBlockReason(state, session);
-        if (blockedReason !== null) {
-          retryBlocked = true;
-          suppressInterruptedStreamToolHistory(state);
-          cancelQueuedInterruptedTools(state);
+  let stallRetryStarted = false;
+  const stallRetryController = new AbortController();
+  signal = AbortSignal.any([signal, stallRetryController.signal]);
+  let stallRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    for (;;) {
+      let retryBlocked = false;
+      const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+        session,
+        signal,
+        // One initial provider call plus the five recovery-ladder reservations.
+        // The reservation hook remains authoritative when another recovery path
+        // has already consumed part of the shared A1 ladder.
+        maxAttempts: automaticChildRouting ? 1 : MAX_RECOVERY_REENTRIES + 1,
+        giveUpMs: STREAM_RETRY_WINDOW_MS,
+        attempt: () =>
+          tryRunSamplingRequest(
+            state,
+            samplingContext,
+            session,
+            request,
+            signal,
+            events,
+            assistantOutputSink,
+            stallRetryStarted,
+          ),
+        isTransient: isTransientSamplingError,
+        onTransientRetry: async (attempt, err) => {
+          // A stopped stream gets at most one new physical request, including
+          // when that retry fails for a different transient reason.
+          if (stallRetryStarted) return false;
+          const progressStop = isStreamProgressStop(err);
+          const blockedReason = interruptedStreamRetryBlockReason(state, session);
+          if (blockedReason !== null) {
+            retryBlocked = true;
+            suppressInterruptedStreamToolHistory(state);
+            cancelQueuedInterruptedTools(state);
+            emitError(session, session.nextInternalSubId(), {
+              cause: "stream_disconnected",
+              message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+              provider: session.services.provider.name,
+              status: streamRetryErrorStatus(err),
+              streamError: true,
+            });
+            return false;
+          }
+          const reservation = await reserveRecoveryReentry(session, state, {
+            triggerName: "reconnect",
+          });
+          if (reservation.kind !== "reserved") {
+            // The fast ladder is spent. Whether the turn now waits for the
+            // provider or ends is decided below, once the outcome is known.
+            return false;
+          }
+          cleanupInterruptedStreamAttempt(state, session, err);
+          if (progressStop) {
+            stallRetryStarted = true;
+            session.resetProviderIncrementalState();
+            stallRetryTimer = setTimeout(() => {
+              stallRetryController.abort(new StreamProgressError(
+                session.services.provider.name, "stream_retry_budget",
+              ));
+            }, STREAM_STALL_RETRY_BUDGET_MS);
+            stallRetryTimer.unref?.();
+          }
           emitError(session, session.nextInternalSubId(), {
             cause: "stream_disconnected",
-            message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+            message: streamRetryNoticeMessage(
+              err,
+              progressStop ? 1 : attempt,
+              progressStop ? 2 : MAX_RECOVERY_REENTRIES + 1,
+            ),
             provider: session.services.provider.name,
             status: streamRetryErrorStatus(err),
             streamError: true,
           });
-          return false;
-        }
-        const reservation = await reserveRecoveryReentry(session, state, {
-          triggerName: "reconnect",
-        });
-        if (reservation.kind !== "reserved") {
-          // The fast ladder is spent. Whether the turn now waits for the
-          // provider or ends is decided below, once the outcome is known.
-          return false;
-        }
-        cleanupInterruptedStreamAttempt(state, session, err);
-        emitError(session, session.nextInternalSubId(), {
-          cause: "stream_disconnected",
-          message: streamRetryNoticeMessage(
-            err,
-            attempt,
-            MAX_RECOVERY_REENTRIES + 1,
-          ),
-          provider: session.services.provider.name,
-          status: streamRetryErrorStatus(err),
-          streamError: true,
-        });
-        return true;
-      },
-    });
+          return true;
+        },
+      });
 
-    if (outcome.kind === "ok") return outcome.value;
-    if (outcome.kind === "aborted") {
-      throw samplingAbortError(signal, outcome.reason);
-    }
-    // The fast ladder is exhausted. A provider that is down for minutes is
-    // not the turn's fault (#2212): wait with a slow backoff and try again,
-    // within the operator's patience, unless retrying is unsafe.
-    const lastError = outcome.lastError;
-    const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
-    const canWait =
-      !automaticChildRouting &&
-      !retryBlocked &&
-      outage.waitMs > 0 &&
-      waitedMs + delayMs <= outage.waitMs &&
-      isTransientSamplingError(lastError);
-    if (!canWait) {
-      if (!retryBlocked) {
-        suppressInterruptedStreamToolHistory(state);
-        cancelQueuedInterruptedTools(state);
+      if (outcome.kind === "ok") return outcome.value;
+      if (outcome.kind === "aborted") {
+        throw samplingAbortError(signal, outcome.reason);
       }
-      if (lastError instanceof Error) throw lastError;
-      throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      // The fast ladder is exhausted. A provider that is down for minutes is
+      // not the turn's fault (#2212): wait with a slow backoff and try again,
+      // within the operator's patience, unless retrying is unsafe.
+      const lastError = outcome.lastError;
+      const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
+      const canWait =
+        !automaticChildRouting &&
+        !retryBlocked &&
+        !stallRetryStarted &&
+        !isStreamProgressStop(lastError) &&
+        outage.waitMs > 0 &&
+        waitedMs + delayMs <= outage.waitMs &&
+        isTransientSamplingError(lastError);
+      if (!canWait) {
+        if (!retryBlocked) {
+          suppressInterruptedStreamToolHistory(state);
+          cancelQueuedInterruptedTools(state);
+        }
+        if (lastError instanceof Error) throw lastError;
+        throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      }
+      outageRetries += 1;
+      waitedMs += delayMs;
+      cleanupInterruptedStreamAttempt(state, session, lastError);
+      const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+      await waitForProviderRetry({
+        session,
+        cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+        message: rateLimitNotice ??
+          (`${session.services.provider.name} is unavailable. ` +
+            `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+            `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+        delayMs,
+        wait: () => abortableSleep(delayMs, signal),
+      });
+      if (signal.aborted) throw samplingAbortError(signal, "aborted");
+      // The fast recovery counter remains spent. This is a new physical sample,
+      // so persist a distinct identity without reusing its unknown reservation.
+      beforeOutageRetry?.();
     }
-    outageRetries += 1;
-    waitedMs += delayMs;
-    cleanupInterruptedStreamAttempt(state, session, lastError);
-    const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
-    await waitForProviderRetry({
-      session,
-      cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
-      message: rateLimitNotice ??
-        (`${session.services.provider.name} is unavailable. ` +
-          `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
-          `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
-      delayMs,
-      wait: () => abortableSleep(delayMs, signal),
-    });
-    if (signal.aborted) throw samplingAbortError(signal, "aborted");
-    // The fast recovery counter remains spent. This is a new physical sample,
-    // so persist a distinct identity without reusing its unknown reservation.
-    beforeOutageRetry?.();
+  } finally {
+    clearTimeout(stallRetryTimer);
   }
 }
 
@@ -1594,6 +1620,7 @@ export async function drainInFlight(
           toolName,
           result.content,
           classifyUntrustedToolResult(toolName, registryTool),
+          session.services.runtimeOptions?.lightMode === true,
         );
         // Emit the tool_call_completed event so rollouts + observers
         // close the turn boundary with the synthetic result (I-8).
@@ -2026,7 +2053,7 @@ interface RunTurnKernelCommons {
     error?: unknown,
   ) => void;
   readonly emitTurnAborted: (reason: string) => void;
-  readonly emitTurnFailed: (message: string) => void;
+  readonly emitTurnFailed: (message: string, code?: string) => void;
   readonly referenceContextItem: TurnContextItem;
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
@@ -2254,6 +2281,7 @@ async function* runTurnKernelInner(
     session,
     isRootHumanTurn: commons.rootHumanTurnText !== undefined,
     taskText: commons.rootHumanTurnText,
+    exactOutput: opts.exactOutput,
   });
   // Phase 4c: restate an active goal at the top of every root human turn. The
   // goal is session state, not conversation, so a compacted history or a
@@ -2413,6 +2441,7 @@ async function* runTurnKernelInner(
   // rollout) — only the cursor + content hash + the resumable TurnState
   // slice (incl. the DERIVED taskBudgetRemaining, never a raw clock).
   const durableTurnsCfg = resolveDurableTurnsConfig(ctx.config);
+  const projectCheckpointMessage = createCheckpointResponseItemProjector();
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
@@ -2449,7 +2478,7 @@ async function* runTurnKernelInner(
     const durablePrefix = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => llmMessageToCheckpointResponseItem(message));
+      .map((message) => projectCheckpointMessage(message));
     for (const message of durablePrefix) requireSealedToolResult(message);
     const prefixHash = computeCheckpointPrefixHashV3(
       durablePrefix,
@@ -3103,8 +3132,12 @@ async function* runTurnKernelInner(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
           : "turn failed",
+        underlying instanceof StreamProgressError ? underlying.reason : undefined,
       );
-      const terminal: Terminal = { reason: "completed", error: underlying };
+      const terminal: Terminal = {
+        reason: underlying instanceof StreamProgressError ? "model_error" : "completed",
+        error: underlying,
+      };
       yield {
         type: "turn_complete",
         content: lastContent,
@@ -3706,6 +3739,7 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         automaticChildRouting?: boolean;
         systemPrompt?: string;
@@ -3729,6 +3763,7 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,
       automaticChildRouting: opts.automaticChildRouting,
       systemPrompt: opts.systemPrompt,

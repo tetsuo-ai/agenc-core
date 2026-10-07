@@ -1,7 +1,7 @@
 import { userRuntimeEnvironment } from './runtimeEnvironment.js'
 import { isEnvTruthy } from './envBoolean.js'
 import { isSecretEnvKey } from './secretEnv.js'
-import { assertNoObsoleteConfigEnvironment } from '../config/env.js'
+import { assertNoObsoleteConfigEnvironment } from '../config/obsolete-environment.js'
 import { isAbsolute, normalize } from 'node:path'
 import { convertWindowsPathToPosix } from './windows-path-conversion.js'
 

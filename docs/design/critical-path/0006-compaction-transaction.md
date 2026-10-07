@@ -51,8 +51,24 @@ idempotently. Missing proof keeps the source pinned.
 Immutable policy and output schema use the privileged instruction channel.
 Transcript, tool output, and prior summaries are untrusted structured data;
 their bytes are never interpolated into control delimiters. Complete semantic
-units preserve order and never separate a tool use from its result or lose the
-checkpoint-bound result digest from CP-0003.
+units preserve order and never separate a tool use from its result. The
+runtime binds each result's checkpoint-bound digest from CP-0003 to its unit
+and pins the unit's tool pairs into the summary itself.
+
+The summarizer payload carries only what the model summarizes. Within a
+unit, calls and results are linked by short refs (`c1`, `c2`, ...) instead of
+provider call IDs, and a result does not carry its checkpoint-bound digest.
+Tool-call arguments that parse are embedded as JSON values instead of escaped
+strings; a unit whose parsed arguments the canonical encoder refuses (node or
+depth bound, lone surrogate) keeps the strings. A tool result that is an exact
+untrusted-data frame for its tool is sent without the frame: the payload kind
+and the compactor's policy already label every unit untrusted, and the frame's
+body was sanitized when it was framed. Reduce and final calls receive each
+child's ref, narrative, and fact and open-action IDs and text, without its
+digest, pinned tool pairs, or record sources, so the fan-in preflight measures
+the payload that is sent. In captured sessions, the omitted digests, IDs,
+frames, and escaping were 5 to 35 percent of map input, depending on result
+size, and pinned tool pairs were 85 percent of a reduce call's input.
 
 The reduction plan is a bounded, preflighted map/reduce tree. It reserves policy,
 schema, and output tokens; caps source bytes/messages/units, chunks, levels,
@@ -86,6 +102,18 @@ kind's chunks back to back and refuses a kind switch while the previous kind is
 incomplete or a kind that resumes after another was written. It used to refuse
 the second chunk of the same kind, so any bundle over one line failed at
 commit as `durable compaction commit failed` (#2499).
+
+The model sees the committed summary as one user message after the boundary
+policy message: canonical JSON with `version: 2`,
+`kind: "agenc_compaction_context_v2"`, `trust: "untrusted_historical_data"`,
+the `narrative`, and the text of each fact and open action. `summary_sha256`,
+the runtime-pinned tool pairs, record IDs, and source refs stay in the durable
+summary, its `final_summary` and `summary_dag` payloads, and the
+`compactionHistory` marker. The model cannot use them, and in the message they
+would cost about 53 tokens per compacted tool call on every later request. The
+`PostCompact` hook's `compact_summary` is the same text. Readers identify the
+boundary and summary by the marker, never by content, so
+`agenc_compaction_context_v1` messages in older rollouts stay valid.
 
 ### Failure, commit, and projection
 
@@ -354,10 +382,27 @@ native tools. Admission derives its provider-native accounting catalog from
 the same options that the wire adapter receives, so it accounts the same
 selected native tools that can reach the provider.
 
+Summary calls send the reasoning effort the main loop sends. Each
+transaction reads the session's current effort, or the configured
+`reasoning_effort` when the session has none, and resolves it for the
+session's provider and model with the main loop's resolver
+(`runtime/src/session/session-reasoning-effort.ts`). It reads the
+configuration through the session's own settings authority, as a turn
+does: a manual compaction that the daemon runs has no authority bound. An
+in-process teammate's summary calls send the parent session's current
+effort, resolved for the teammate's model, as the teammate's own requests
+do. A summary call without an effort would get the provider default, which
+can be higher: xAI's default on grok-4.6 is high, the configured default is
+medium. A model-downshift compaction sends its summary calls to the
+previous model with the effort resolved for the current one, so a tier that
+only the current model offers can be refused there.
+
 Accepted output is still strict `CompactionSummaryV1`. Shrink must save at
 least **1,024** tokens and **20 percent**. Automatic compaction is suppressed
 after **two** durable `compaction_failed` rows for the same
 history/configuration digest; `/compact` (manual) is the explicit retry.
+The digest leaves out the reasoning effort, so changing the effort does not
+lift that suppression.
 
 ### Compaction transaction wall budget
 

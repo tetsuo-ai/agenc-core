@@ -6,6 +6,7 @@ import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -13,12 +14,9 @@ import {
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
-import {
-  describeWorkspaceMutationNoEffect,
-  executeWorkspaceFileMutation,
-  workspaceMutationNoEffectEvidence,
-  type WorkspaceFileMutationTestHooks,
-} from "../../workspace/file-mutation-transaction.js";
+import { type WorkspaceFileMutationTestHooks } from "../../workspace/file-mutation-transaction.js";
+import { describeWorkspaceMutationNoEffect, workspaceMutationNoEffectEvidence } from "../../workspace/file-mutation-evidence.js";
+import { executeWorkspaceFileMutation } from "../../workspace/lazy-file-mutation.js";
 
 export const NOTEBOOK_EDIT_TOOL_NAME = "NotebookEdit";
 const MAX_NOTEBOOK_EDIT_BYTES = 16 * 1024 * 1024;
@@ -412,18 +410,26 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         });
       }
 
-      return json({
-        notebook_path: filePath,
-        cell_id: resultCellId,
-        ...(editMode !== "delete" && resultCellType !== undefined
-          ? { cell_type: resultCellType }
-          : {}),
-        language: notebookLanguage(parsed),
-        edit_mode: editMode,
-        ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
-        original_file: original,
-        updated_file: updated,
-      });
+      return {
+        ...json({
+          notebook_path: filePath,
+          cell_id: resultCellId,
+          ...(editMode !== "delete" && resultCellType !== undefined
+            ? { cell_type: resultCellType }
+            : {}),
+          language: notebookLanguage(parsed),
+          edit_mode: editMode,
+          ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
+          original_file: original,
+          updated_file: updated,
+        }),
+        metadata: buildFileMutationMetadata({
+          filePath: notebookPath,
+          operation: "edit",
+          beforeText: original,
+          afterText: updated,
+        }),
+      };
     },
   };
 }

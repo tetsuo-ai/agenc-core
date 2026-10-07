@@ -9,7 +9,7 @@
 
 import { stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { load as loadYaml } from "js-yaml";
+import { loadYaml } from "../../utils/lazy-runtime-packages.js";
 import {
   PLUGIN_MARKDOWN_WALK,
   bindContainedRoot,
@@ -90,9 +90,11 @@ export function toPluginLoaderOptions(
   const pluginStorageRoot = resolvePluginStorageAuthority(
     options.pluginStorageRoot,
   ).pluginStorageRoot;
+  const userConfigPath = authority?.homeContext.configTomlPath;
   return {
     pluginStorageRoot,
     workspaceRoot,
+    ...(userConfigPath === undefined ? {} : { userConfigPath }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.extraPluginDirs !== undefined ? { extraPluginDirs: options.extraPluginDirs } : {}),
@@ -144,8 +146,9 @@ export function splitFrontmatter(raw: string): {
   }
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
+  const { load: parseYaml } = loadYaml();
   try {
-    const parsed = loadYaml(match[1] ?? "");
+    const parsed = parseYaml(match[1] ?? "");
     return {
       frontmatter: isRecord(parsed) ? parsed : {},
       markdown: match[2] ?? "",

@@ -1076,3 +1076,39 @@ describe("sumReconciledUsageByRunId — the child usage rollup read", () => {
     });
   });
 });
+
+
+describe("durable admission limit dimensions", () => {
+  it.each([
+    ["tokens", { maxTokens: 39, maxCostUsd: 1 }],
+    ["cost", { maxTokens: 100, maxCostUsd: 0.003 }],
+  ] as const)("records %s without changing the legacy denial reason", (dimension, limits) => {
+    const queued = admissions.enqueue(request("goal", "next-model", {
+      scopes: [{ key: "goal-budget", ...limits }],
+    }));
+    expect(admissions.claim({ key: queued.record.key })).toMatchObject({
+      kind: "not_claimed", reason: "budget_exceeded",
+    });
+    expect(admissions.getLatestJournalEvent("goal")).toMatchObject({
+      event: "denied", reason: "budget_exceeded", details: {
+        budgetDimension: dimension, allocationKey: "goal-budget",
+        ...(dimension === "tokens" ? { requestedTokens: 40, usedTokens: 0, heldTokens: 0, maxTokens: 39 }
+          : { requestedCostNanos: 4000000, usedCostNanos: 0, heldCostNanos: 0, maxCostNanos: 3000000 }),
+      },
+    });
+    // A fresh repository sees the same committed reason after restart.
+    const reopened = new ExecutionAdmissionRepository(driver);
+    expect(reopened.getLatestJournalEvent("goal")).toEqual(admissions.getLatestJournalEvent("goal"));
+    expect(reopened.getLatestJournalEvent("absent")).toBeUndefined();
+  });
+
+  it("reports an ancestor token limit even when the child's own budget has room", () => {
+    const queued = admissions.enqueue(request("child", "next-model", {
+      scopes: [{ key: "root", maxTokens: 39 }, { key: "child", parentKey: "root", maxTokens: 100 }],
+    }));
+    admissions.claim({ key: queued.record.key });
+    expect(admissions.getLatestJournalEvent("child")).toMatchObject({
+      details: { budgetDimension: "tokens", allocationKey: "root" },
+    });
+  });
+});

@@ -1,9 +1,29 @@
 import { describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
 } from "./messages-anthropic.js";
 import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../structured-output.js";
+import type { LLMMessage } from "../types.js";
+
+/** A turn that reads two files in parallel, followed by both results. */
+function parallelReadHistory(): LLMMessage[] {
+  return [
+    { role: "user", content: "read both files" },
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        { id: "toolu_a", name: "FileRead", arguments: "{\"file_path\":\"a.ts\"}" },
+        { id: "toolu_b", name: "FileRead", arguments: "{\"file_path\":\"b.ts\"}" },
+      ],
+    },
+    { role: "tool", toolCallId: "toolu_a", toolName: "FileRead", content: "A" },
+    { role: "tool", toolCallId: "toolu_b", toolName: "FileRead", content: "B" },
+  ];
+}
 
 function countCacheControlBlocks(value: unknown): number {
   if (Array.isArray(value)) {
@@ -22,6 +42,108 @@ function countCacheControlBlocks(value: unknown): number {
       0,
     );
 }
+
+describe("Sonnet 5.5 Messages API contract", () => {
+  const model = "claude-sonnet-5-5";
+  const messages = [{ role: "user" as const, content: "Call echo with ok." }];
+  const tools = [{ type: "function" as const, function: {
+    name: "echo", description: "Echo a value", parameters: { type: "object" },
+  } }];
+
+  test("keeps tools, effort, output cap and cached head identical across response detail levels", () => {
+    const build = (modelVerbosity?: "low" | "medium" | "high") => buildAnthropicMessagesRequest({
+      model, messages, tools, maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required" },
+    });
+    const inherited = build();
+    for (const level of ["low", "medium", "high"] as const) {
+      const candidate = build(level);
+      expect(candidate.tools).toEqual(inherited.tools);
+      expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+      expect(candidate.output_config).toEqual(inherited.output_config);
+      expect(candidate.max_tokens).toEqual(inherited.max_tokens);
+      expect(candidate.system).toEqual(inherited.system);
+      expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
+      expect(JSON.stringify(candidate.messages)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
+    }
+    expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
+    const inheritedConfig = buildAnthropicMessagesRequest({ model, messages, tools,
+      options: { systemPrompt: "STATIC_HEAD", modelVerbosity: "high" } });
+    expect(JSON.stringify(inheritedConfig)).not.toContain("# Response Detail");
+  });
+  test("keeps unset request bytes and output cap from the pre-detail builder", () => {
+    const request = buildAnthropicMessagesRequest({
+      model, messages: [{ role: "user", content: "hello" }], tools: [], maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL" },
+    });
+    expect(createHash("sha256").update(JSON.stringify(request)).digest("hex"))
+      .toBe("c66fb5c6b7879af6bf3a19d1a4f42fef4874824a4a2731d138d72d1d62a84ec6");
+    expect(request.max_tokens).toBe(4096);
+  });
+
+  test("uses adaptive thinking with readable progress updates at every effort", () => {
+    for (const reasoningEffort of [undefined, "low", "medium", "high", "xhigh", "max"] as const) {
+      const body = buildAnthropicMessagesRequest({ model, messages, tools,
+        options: { reasoningEffort, temperature: 0.1, toolChoice: "required", serviceTier: "priority" },
+      });
+      expect(body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+      expect(body.output_config).toEqual(reasoningEffort ? { effort: reasoningEffort } : undefined);
+      expect(body).not.toHaveProperty("temperature");
+      expect(body).not.toHaveProperty("tool_choice");
+      expect(body).not.toHaveProperty("speed");
+    }
+  });
+
+  test("maps none to between_tools without unsupported additional fields or forced tools", () => {
+    const body = buildAnthropicMessagesRequest({ model, messages, tools, options: {
+      reasoningEffort: "none", toolChoice: { type: "function", name: "echo" },
+    } });
+    expect(body.thinking).toEqual({ type: "between_tools" });
+    expect(body).not.toHaveProperty("output_config");
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(buildAnthropicMessagesRequest({ model, messages, tools, options: { toolChoice: "none" } }).tool_choice)
+      .toEqual({ type: "none" });
+  });
+
+  test("does not force the structured-output tool", () => {
+    const body = buildAnthropicMessagesRequest({ model, messages, tools: [], options: {
+      structuredOutput: { schema: { type: "json_schema", name: "answer", schema: { type: "object" } } },
+    } });
+    expect(body.tools).toEqual([expect.objectContaining({ name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME })]);
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  test("keeps thinking signatures out of conversation replay across models and edited prefixes", () => {
+    const response = parseAnthropicMessagesResponse(model, {
+      content: [
+        { type: "thinking", thinking: "Calling echo.", signature: "model-bound-test-signature" },
+        { type: "tool_use", id: "call_1", name: "echo", input: {} },
+      ],
+      stop_reason: "tool_use", usage: { input_tokens: 3, output_tokens: 4 },
+    }, { model, messages, tools });
+    expect(response.thinking?.[0]).toMatchObject({ text: "Calling echo.", signature: "model-bound-test-signature" });
+    // AgenC renders the summary but currently preserves no Anthropic opaque
+    // replay state. Model-bound signatures therefore never cross a switch
+    // or return with an edited system/tool/message prefix.
+    expect(response.providerReasoningContent).toBeUndefined();
+    for (const target of [model, "claude-sonnet-5", "claude-opus-5-5"]) {
+      const body = buildAnthropicMessagesRequest({ model: target, tools,
+        messages: [
+          { role: "system", content: "Changed instructions." },
+          ...messages,
+          { role: "assistant", content: response.content, toolCalls: response.toolCalls },
+          { role: "tool", toolCallId: "call_1", content: "ok" },
+        ],
+      });
+      expect(JSON.stringify(body)).not.toContain("model-bound-test-signature");
+      expect(JSON.stringify(body)).not.toContain("Calling echo.");
+      expect(body.messages).toContainEqual(expect.objectContaining({ role: "assistant", content: [
+        { type: "tool_use", id: "call_1", name: "echo", input: {} },
+      ] }));
+    }
+  });
+});
 
 describe("buildAnthropicMessagesRequest", () => {
   test("sends speed fast only for fast-mode models on the priority tier", () => {
@@ -590,6 +712,126 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(messages.at(-1)).toEqual({
       role: "user",
       content: "continue",
+    });
+  });
+
+  test("returns the results of one parallel tool turn in a single user message", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: parallelReadHistory(),
+      tools: [],
+      options: {
+        systemPrompt: `static head\n${SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER}\nbranch: main`,
+      },
+    });
+
+    // The results answer the tool_use blocks in order, the breakpoint sits on
+    // the last result, and the volatile tail follows every tool_result block.
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "read both files",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "toolu_a", name: "FileRead", input: { file_path: "a.ts" } },
+          { type: "tool_use", id: "toolu_b", name: "FileRead", input: { file_path: "b.ts" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_a", content: "A" },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_b",
+            content: "B",
+            cache_control: { type: "ephemeral" },
+          },
+          { type: "text", text: "<system-reminder>\nbranch: main\n</system-reminder>" },
+        ],
+      },
+    ]);
+    // The static head, the last user message and the last tool result.
+    expect(countCacheControlBlocks(request)).toBe(3);
+  });
+
+  test("keeps the results of separate tool turns in separate user messages", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        ...parallelReadHistory(),
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "toolu_c", name: "FileRead", arguments: "{\"file_path\":\"c.ts\"}" },
+          ],
+        },
+        { role: "tool", toolCallId: "toolu_c", toolName: "FileRead", content: "C" },
+      ],
+      tools: [],
+    });
+
+    const messages = request.messages as Array<Record<string, unknown>>;
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    // The earlier results keep their blocks and order; only the breakpoint
+    // has moved on to the newest result.
+    expect(messages[2]).toEqual({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "toolu_a", content: "A" },
+        { type: "tool_result", tool_use_id: "toolu_b", content: "B" },
+      ],
+    });
+    expect(messages[4]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_c",
+          content: "C",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    });
+  });
+
+  test("skipCacheWrite keeps the fork's cache marker on the result it was placed on", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: parallelReadHistory(),
+      tools: [],
+      options: { skipCacheWrite: true },
+    });
+
+    // The marker lands on the second-to-last message, the first result; the
+    // fork's final result stays out of the cache.
+    expect(countCacheControlBlocks(request)).toBe(1);
+    expect((request.messages as Array<Record<string, unknown>>).at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_a",
+          content: "A",
+          cache_control: { type: "ephemeral" },
+        },
+        { type: "tool_result", tool_use_id: "toolu_b", content: "B" },
+      ],
     });
   });
 

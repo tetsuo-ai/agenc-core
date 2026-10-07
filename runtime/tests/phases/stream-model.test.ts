@@ -27,7 +27,11 @@ import type {
 import type { AdmissionLease } from "../budget/admission-types.js";
 import { WorkflowHandoffSpool } from "../agents/workflow-handoff-spool.js";
 import { defaultConfig } from "../config/schema.js";
-import { STREAM_IDLE_ABORT_REASON } from "../llm/stream-watchdog.js";
+import {
+  STREAM_IDLE_ABORT_REASON,
+  STREAM_IDLE_WARNING_REASON,
+  STREAM_QUIET_WARNING_MS,
+} from "../llm/stream-watchdog.js";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -631,9 +635,115 @@ describe("streamModel — live assistant text sanitization", () => {
         }),
       );
       expect(error).toBeInstanceOf(StreamModelError);
-      expect((error as Error).message).toMatch(/^stream_idle: no data for 600000ms/);
+      expect((error as Error).message).toMatch(/^stream_idle: no progress for 600000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stream warns despite byte heartbeats and aborts from its last meaningful progress", async () => {
+    vi.useFakeTimers();
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const external = new AbortController();
+    try {
+      const ctx = mkCtx("chat");
+      let providerSignal: AbortSignal | undefined;
+      const provider = mkProvider(
+        (_messages, onChunk, options) =>
+          new Promise<LLMResponse>((_resolve, reject) => {
+            providerSignal = options?.signal;
+            onChunk({ content: "hi", done: false });
+            const heartbeat = setInterval(() => onChunk({ content: "", done: false }), 10);
+            options?.signal?.addEventListener(
+              "abort",
+              () => {
+                clearInterval(heartbeat);
+                reject(new Error(String(options.signal?.reason)));
+              },
+              { once: true },
+            );
+          }),
+      );
+      const { session, events } = mkSession(provider);
+      (session.services as { configStore?: unknown }).configStore = {
+        current: () => ({ stream_watchdog_timeout_ms: 100 }),
+      };
+
+      const outcome = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+        external.signal,
+      ).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(51);
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "warning" &&
+            (event.msg.payload as { cause?: string }).cause ===
+              STREAM_IDLE_WARNING_REASON,
+        ),
+      ).toBe(true);
+      expect(providerSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(providerSignal?.aborted).toBe(true);
+      expect(providerSignal?.reason).toBe(STREAM_IDLE_ABORT_REASON);
+      expect(
+        events.some((event) => event.msg.type === "stream_error"),
+      ).toBe(true);
+
+      const error = await outcome;
+      expect((error as Error).message).toMatch(/^stream_idle: no progress for 100ms/);
+    } finally {
+      monotonicClock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("quiet observation warns with abort disabled and stops on cancellation", async () => {
+    vi.useFakeTimers();
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const external = new AbortController();
+    try {
+      const ctx = mkCtx("chat");
+      let providerSignal: AbortSignal | undefined;
+      const provider = mkProvider((_messages, onChunk, options) =>
+        new Promise<LLMResponse>((_resolve, reject) => {
+          providerSignal = options?.signal;
+          const heartbeat = setInterval(() => onChunk({ content: "", done: false }), 10_000);
+          options?.signal?.addEventListener("abort", () => {
+            clearInterval(heartbeat);
+            reject(new Error(String(options.signal?.reason)));
+          }, { once: true });
+        }),
+      );
+      const { session, events } = mkSession(provider);
+      (session.services as { configStore?: unknown }).configStore = {
+        current: () => ({ stream_watchdog_timeout_ms: 0 }),
+      };
+      const outcome = streamModel(mkState(ctx), ctx, session,
+        mkRequest([{ role: "user", content: "hello" }]), external.signal).catch(error => error);
+      await vi.advanceTimersByTimeAsync(STREAM_QUIET_WARNING_MS + 1);
+      const warnings = () => events.filter(event => event.msg.type === "warning" &&
+        (event.msg.payload as { cause?: string }).cause === STREAM_IDLE_WARNING_REASON);
+      expect(warnings()).toHaveLength(1);
+      expect(providerSignal?.aborted).toBe(false);
+      external.abort("user stop");
+      await outcome;
+      expect(providerSignal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(STREAM_QUIET_WARNING_MS * 2);
+      expect(warnings()).toHaveLength(1);
+      expect(events.some(event => event.msg.type === "stream_error")).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      monotonicClock.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -1294,6 +1404,7 @@ describe("streamModel — live assistant text sanitization", () => {
       undefined,
     );
 
+    expect(state.pendingTextToolCallCorrection).toEqual({ toolName: "FileRead", reason: "invalid_arguments" });
     expect(streamedDispatchCalls).toEqual([]);
     expect(state.toolUseBlocks).toEqual([]);
     expect(
@@ -1310,6 +1421,30 @@ describe("streamModel — live assistant text sanitization", () => {
           event.msg.payload.cause === "malformed_tool_call",
       ),
     ).toBe(true);
+  });
+
+  test.each(["streamed", "buffered"])("a truncated %s spawn argument produces a retryable error and never dispatches", async (mode) => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const provider = mkProvider(async (_messages, onChunk) => {
+      if (mode === "streamed") onChunk({ done: false, toolInputBlockStart: { callId: "spawn-cut", index: 0,
+        contentBlock: { type: "tool_use", id: "spawn-cut", name: "spawn_agent", input: {} } } });
+      onChunk({ done: false, toolInputDelta: { callId: "spawn-cut", index: 0,
+        partialJson: '{"task_name":"child","message":"' + "long task ".repeat(5_000) } });
+      return { content: "", toolCalls: [], model: "test-model", finishReason: "length",
+        ...(mode === "buffered" ? { incompleteToolCalls: [{ id: "spawn-cut", name: "spawn_agent" }] } : {}),
+        usage: { promptTokens: 20_000, completionTokens: 4096, totalTokens: 24096 } };
+    });
+    const { session, events } = mkSession(provider);
+    await streamModel(state, ctx, session, mkRequest([{ role: "user", content: "Delegate this" }]));
+    expect(streamedDispatchCalls).toEqual([]);
+    expect(state.truncatedToolCallNames).toEqual(["spawn_agent"]);
+    const completion = events.find(event => event.msg.type === "tool_call_completed");
+    expect(completion?.msg.payload).toMatchObject({ callId: "spawn-cut", isError: true });
+    expect(JSON.parse((completion?.msg.payload as { result: string }).result)).toMatchObject({
+      code: "tool_arguments_truncated", retryable: true, executed: false,
+    });
   });
 
   test("marks length responses for max-output recovery and drops tool calls", async () => {
@@ -2234,4 +2369,65 @@ describe("streamModel — execution admission identity", () => {
     });
     expect(state.pendingAdmissionFallback).toBeUndefined();
   });
+});
+
+
+describe("startup diagnostic drain at actual provider outcomes", () => {
+  test.each(["chunk", "empty", "failure"])("drains once for %s after provider invocation", async outcome => {
+    const ctx = mkCtx();
+    const state = mkState(ctx);
+    const flush = vi.fn();
+    const provider = mkProvider(async (_messages, onChunk) => {
+      expect(flush).not.toHaveBeenCalled();
+      if (outcome === "failure") throw new Error("provider failed before chunks");
+      if (outcome === "chunk") {
+        onChunk({ content: "hello", done: false });
+        expect(flush).toHaveBeenCalledOnce();
+        onChunk({ content: " world", done: true });
+      }
+      return { content: "", toolCalls: [], model: "test-model", finishReason: "stop" };
+    });
+    const { session } = mkSession(provider);
+    Object.assign(session.services, { flushStartupLogIndex: flush });
+    const result = streamModel(state, ctx, session, mkRequest([{ role: "user", content: "hello" }]));
+    if (outcome === "failure") await expect(result).rejects.toThrow("provider failed before chunks");
+    else await result;
+    expect(flush).toHaveBeenCalledOnce();
+  });
+
+  test("drains before a tool-only first chunk enters early dispatch", async () => {
+    const ctx = mkCtx(); const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const flush = vi.fn(() => expect(streamedDispatchCalls).toEqual([]));
+    const registry = mkRegistry([{ name: "FileRead", description: "reads", inputSchema: { type: "object" },
+      concurrencyClass: { kind: "shared_read" }, execute: async () => ({ content: "read" }) }]);
+    const toolCalls = [{ id: "startup-tool", name: "FileRead", arguments: "{}" }];
+    const provider = mkProvider(async (_messages, onChunk) => {
+      expect(flush).not.toHaveBeenCalled();
+      onChunk({ content: "", done: false, toolCalls });
+      expect(flush).toHaveBeenCalledOnce();
+      expect(streamedDispatchCalls).toEqual(["startup-tool"]);
+      return { content: "", toolCalls, model: "test-model", finishReason: "tool_calls" };
+    });
+    const { session } = mkSession(provider, null, registry);
+    Object.assign(session.services, { flushStartupLogIndex: flush });
+    await streamModel(state, ctx, session, { ...mkRequest([{ role: "user", content: "hello" }]), tools: registry.toLLMTools() });
+    expect(flush).toHaveBeenCalledOnce();
+  });
+});
+
+
+test("drains startup diagnostics if admission refuses before provider invocation", async () => {
+  const ctx = mkCtx(); const state = mkState(ctx);
+  const flush = vi.fn();
+  const chatStream = vi.fn(async () => ({ content: "", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
+  const { session } = mkSession(mkProvider(chatStream));
+  const acquire = vi.fn(async () => { throw new Error("startup admission denied"); });
+  Object.assign(session.services, { flushStartupLogIndex: flush, admissionRequired: true,
+    executionAdmission: { scope: { runId: "run", workspaceId: "workspace", sessionId: "conv-stream", autonomous: false },
+      acquire, recordFallback: vi.fn(), subscribe: vi.fn(() => () => {}) } });
+  await expect(streamModel(state, ctx, session, mkRequest([{ role: "user", content: "hello" }])))
+    .rejects.toThrow("startup admission denied");
+  expect(acquire).toHaveBeenCalledOnce(); expect(chatStream).not.toHaveBeenCalled();
+  expect(flush).toHaveBeenCalledOnce();
 });

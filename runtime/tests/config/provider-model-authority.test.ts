@@ -209,6 +209,19 @@ describe("provider/model configuration authority", () => {
     ).toMatchObject({ model_provider: "openai", model: "shared-model" });
   });
 
+  test("an exact hidden managed route remains canonical without entering the public catalog", () => {
+    const model = "deepseek/deepseek-v4.1-flash";
+    expect(buildProviderModelCatalog().agenc).not.toContain(model);
+    expect(mergeProviderModelLayer({}, {
+      model_provider: "agenc",
+      model,
+    })).toMatchObject({ model_provider: "agenc", model });
+    expect(() => mergeProviderModelLayer({}, {
+      model_provider: "grok",
+      model,
+    })).toThrow(/not explicitly selected provider 'grok'/u);
+  });
+
   test("an explicit provider rejects a known foreign model", () => {
     expect(() =>
       resolveProviderModelLayer(defaultConfig(), {

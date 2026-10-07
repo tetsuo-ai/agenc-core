@@ -19,6 +19,7 @@
 
 import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { bindExecSessionDiscovery } from "../tools/exec-session-discovery.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -175,6 +176,8 @@ import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
+import { CompletedTaskResults } from "./completed-task-results.js";
+
 const inspectionBrokers = new WeakMap<Session, Map<string, SandboxExecutionBrokerLike>>();
 
 // ─────────────────────────────────────────────────────────────────────
@@ -186,6 +189,7 @@ export interface RunAgentParams {
   readonly parent: Session;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly worktree?: WorktreeHandle;
   /** Tool allowlist — filters the parent's catalog. Default: all. */
   readonly toolAllowlist?: ReadonlyArray<string>;
@@ -1062,16 +1066,17 @@ function truncateReceiptField(value: string): string {
 function projectTaskReceiptForParent(
   receipt: TaskTurnReceipt,
 ): TaskTurnReceipt {
+  const { message, ...rest } = receipt;
   return {
-    ...receipt,
+    ...rest,
     ...(receipt.terminal !== undefined ? { terminal: {
       ...receipt.terminal,
       completedWork: truncateReceiptField(receipt.terminal.completedWork),
       unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
     } } : {}),
-    ...(receipt.message !== undefined
-      ? { message: truncateReceiptField(receipt.message) }
-      : {}),
+    // Larger final answers use result_ref; never publish broken JSON.
+    ...(message !== undefined && Buffer.byteLength(message, "utf8") <= MAX_PARENT_RECEIPT_FIELD_BYTES
+      ? { message } : {}),
     ...(receipt.reason !== undefined
       ? { reason: truncateReceiptField(receipt.reason) }
       : {}),
@@ -1253,6 +1258,8 @@ function sendSubagentNotificationToParent(params: {
       : undefined;
   const content = formatSubagentNotification({
     agentPath: params.live.agentPath,
+    ...(params.receipt?.outcome === "completed" && params.receipt.message !== undefined
+      ? { resultRef: { agent_id: params.live.agentId, turn_id: params.receipt.turnId } } : {}),
     status:
       projectedReceipt === undefined
         ? params.live.status.value
@@ -2340,6 +2347,7 @@ export function buildFilteredRegistry(
       const wrapped = wrapToolForChild(tool, {
         ...opts,
         toolCatalogScope,
+        onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
         ...(searchTools !== undefined ? { searchTools } : {}),
       });
       const sessionSurface = (wrapped as Tool & {
@@ -2389,7 +2397,10 @@ export function buildFilteredRegistry(
       });
     }
     const advertised = base.toLLMTools();
-    return (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+    const visible = advertised.length === 0 ? fallbackAdvertisedTools() : advertised;
+    const names = new Set(visible.map(tool => tool.function.name));
+    return [...visible, ...fallbackAdvertisedTools().filter(tool =>
+      discoveredToolNames.has(tool.function.name) && !names.has(tool.function.name))]
       .filter((tool) => isEligible(tool.function.name as string));
   };
   const advertisedLLMTools = () => {
@@ -2488,6 +2499,7 @@ export function buildFilteredRegistry(
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
           toolCatalogScope,
+          onExecSessionYielded: () => discoverToolNames(["write_stdin"]),
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2936,6 +2948,7 @@ function wrapToolForChild(
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
     readonly searchTools?: Tool["execute"];
+    readonly onExecSessionYielded?: () => void;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -3014,9 +3027,8 @@ function wrapToolForChild(
     } : {}),
     async execute(args) {
       const prepared = await prepareChildToolCall(source, args, executionOpts);
-      return "result" in prepared
-        ? prepared.result
-        : source.execute(prepared.args);
+      if ("result" in prepared) return prepared.result;
+      return source.execute(prepared.args);
     },
   });
   childToolBindings.set(wrapped, { source, ...(policy !== undefined ? { policy } : {}) });
@@ -3152,6 +3164,7 @@ async function prepareChildToolCall(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly onExecSessionYielded?: () => void;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -3250,6 +3263,11 @@ async function prepareChildToolCall(
     const runtimeSandbox = broker.runtimeSandbox("child_agent");
     if (runtimeSandbox === undefined) throw new Error("Read-only inspection requires platform isolation");
     attachReadOnlyInspectionInvocation(childArgs, prepareReadOnlyInspectionInvocation(inspected.invocation, runtimeSandbox));
+  }
+  if (tool.name === "exec_command" && opts.onExecSessionYielded !== undefined) {
+    // Both admitted registry dispatch and direct tool execution use this final
+    // argument object. Bind after every policy rewrite and authority injection.
+    bindExecSessionDiscovery(childArgs, opts.onExecSessionYielded);
   }
   return { args: childArgs };
 }
@@ -3907,7 +3925,7 @@ export async function* runAgent(
       parent.services.provider.name;
     const model = params.plan?.destination.model ?? params.model ??
       live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
-    const costUsd = knownTaskCost();
+    const costUsd = receipt.outcome === "nack" ? 0 : knownTaskCost();
     const terminal = receipt.terminal ?? childTerminalOutcome({
       provider, model,
       ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
@@ -3916,7 +3934,7 @@ export async function* runAgent(
             ? { reason: crossPolicyWasRevoked ? "policy_revoked" as const : "parent_cancelled" as const }
             : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
       ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
-      dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
+      dispatch: receipt.outcome === "completed" ? "sent" : receipt.outcome === "nack" || childSession === null ? "not_sent" : "unknown",
       completedWork: receipt.message ?? latestChildProgress,
       unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
     });
@@ -4016,6 +4034,9 @@ export async function* runAgent(
     currentTurnReceiptCommitted = true;
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
+    if (receiptToCommit.outcome === "completed" && receiptToCommit.message !== undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(receiptToCommit.turnId, receiptToCommit.message);
+    }
     live.lastTaskReceipt = {
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
@@ -4484,6 +4505,7 @@ export async function* runAgent(
         totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0);
     });
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
+    let exactOutput = params.exactOutput;
     let firstTurn = true;
     let assistantText = "";
     let stoppedAtStepLimit = false;
@@ -4548,6 +4570,7 @@ export async function* runAgent(
       currentTaskId = accepted.taskId;
       bindTaskAdmission(currentTaskId, live.assignment?.executionPlan ?? live.metadata.executionPlan);
       taskStartedAt = Date.now();
+      exactOutput = live.assignment?.exactOutput ?? false;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
       taskStartingCost = knownWorkerCost();
@@ -4605,6 +4628,7 @@ export async function* runAgent(
 
       const iter = childSession.runTurn(nextUserMessage, {
         automaticChildRouting: (live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan)?.routing !== undefined,
+        exactOutput,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
@@ -5207,6 +5231,8 @@ export async function* runAgent(
       turnId = acceptedNotStarted.turnId;
       currentTaskId = acceptedNotStarted.taskId;
       taskStartedAt = Date.now();
+      currentTaskText = acceptedNotStarted.taskText;
+      latestChildProgress = "";
       currentTurnReceiptCommitted = false;
       currentTurnToolCallCount = 0;
       const nackCommitted = await commitTaskReceipt({

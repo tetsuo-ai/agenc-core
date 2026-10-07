@@ -6,6 +6,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import type * as undici from "undici";
+import { loadUndiciAgent } from "../llm/undici-dispatcher.js";
 import pMap from "p-map";
 import { resolveHomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
@@ -569,9 +570,8 @@ function getLiveWebFetchSsrfDispatcher(
 
   const mtlsConfig = getMTLSConfig(environment);
   const caCerts = getCACertificates(environment);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require("undici") as typeof undici;
-  const dispatcher = new undiciMod.Agent({
+  const Agent = loadUndiciAgent();
+  const dispatcher = new Agent({
     connect: {
       lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
       ...(mtlsConfig ?? {}),
@@ -3823,6 +3823,9 @@ async function runDuckDuckGoHtmlSearch(
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const requestEnvironment = requireModelFacingRequestEnvironment(opts);
+  // Bootstrap keeps this registry across provider switches. Resolve optional
+  // xAI credentials only when its deferred tool is actually requested.
+  const deferXSearch = opts.getSession() === null;
   const tools: Tool[] = [
     createWebFetchTool(opts),
     {
@@ -3955,6 +3958,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "Search X (Twitter) through an independently configured xAI backend. Any reasoning provider may call this read-only tool; it returns findings with x.com citations.",
       metadata: toolMetadata("web", {
         keywords: ["x", "twitter", "search", "social", "posts"],
+        deferred: deferXSearch,
       }),
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
@@ -3991,8 +3995,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   // main turn. The internal one-shot still uses a Grok provider because
   // native x_search is an xAI wire capability.
   const includeXSearch =
-    resolveXaiToolBackend(opts) !== undefined &&
-    isXaiLiveXSearchEnabled(opts.grokCapabilities);
+    isXaiLiveXSearchEnabled(opts.grokCapabilities) &&
+    (deferXSearch || resolveXaiToolBackend(opts) !== undefined);
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
   }

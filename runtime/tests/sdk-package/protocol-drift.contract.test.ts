@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHODS,
@@ -88,17 +88,36 @@ describe("agenc-sdk protocol mirror", () => {
     expect(source).not.toMatch(/@tetsuo-ai\/runtime/);
   });
 
-  it("mirrors the runtime local endpoint on Unix and Windows", () => {
+  it.skipIf(process.platform === "win32")("mirrors Unix endpoints for short and long homes", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-sdk-endpoint-")));
     try {
       for (const [home, platform] of [
         [join(root, "unix-home"), "linux"],
-        [join(root, "windows-home"), "win32"],
+        [join(root, "long-home-".repeat(15)), "linux"],
+        [join(root, "long-home-".repeat(15)), "darwin"],
       ] as const) {
         const env = { AGENC_HOME: home };
         expect(resolveDaemonSocketPath(env, home, platform)).toBe(
           agenCDaemonLocalEndpoint(home, platform),
         );
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mirrors Windows pipes without a Unix UID and the host endpoint", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-sdk-endpoint-")));
+    try {
+      // Windows has no process.getuid, regardless of the requested platform.
+      vi.stubGlobal("process", { ...process, getuid: undefined });
+      try {
+        const home = join(root, "long-home-".repeat(15));
+        const endpoint = resolveDaemonSocketPath({ AGENC_HOME: home }, home, "win32");
+        expect(endpoint).toBe(agenCDaemonLocalEndpoint(home, "win32"));
+        expect(endpoint).toMatch(/^\\\\\.\\pipe\\agenc-daemon-[a-f0-9]{64}$/);
+      } finally {
+        vi.unstubAllGlobals();
       }
       const hostHome = join(root, "host-home");
       expect(resolveDaemonSocketPath(

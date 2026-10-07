@@ -33,9 +33,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isKnownEmptyProviderReasoning } from "../llm/types.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
-import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
+import { createLazySavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
@@ -69,10 +70,6 @@ import {
   projectRuntimeOnly,
   projectToolExchangeFields,
 } from "./runtime-message-conversion.js";
-import {
-  buildPostCompactMessages,
-  partialCompactConversationAsync,
-} from "../services/compact/compact.js";
 import type {
   CompactContext,
   CompactionResult,
@@ -106,6 +103,10 @@ import {
   type ProviderBinding,
 } from "./provider-service.js";
 import { resolveProviderModelSelection } from "./provider-model-selection.js";
+import {
+  droppedReasoningEffortNotice,
+  reasoningEffortForModel,
+} from "./reasoning-effort-for-model.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
@@ -1340,6 +1341,8 @@ export interface StateDbContext {
 export interface SessionServices {
   /** Independent task checks supplied by a trusted host, never by the child model. */
   readonly childRoutingVerifier?: import("../agents/child-routing-verifier.js").ChildRoutingVerifier;
+  /** Flush only auxiliary startup log indexing at the first provider outcome. */
+  readonly flushStartupLogIndex?: () => void;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;
@@ -1869,6 +1872,7 @@ function normalizedReasoningProvenance(
 }
 
 function normalizedProviderReasoning(candidate: {
+  readonly toolCalls?: unknown;
   readonly providerReasoningContent?: unknown;
   readonly providerReasoningProvenance?: unknown;
   readonly providerReasoning?: unknown;
@@ -1878,8 +1882,7 @@ function normalizedProviderReasoning(candidate: {
 > {
   const hasFlatContent = candidate.providerReasoningContent !== undefined;
   const flatContent =
-    typeof candidate.providerReasoningContent === "string" &&
-    candidate.providerReasoningContent.length > 0
+    typeof candidate.providerReasoningContent === "string"
       ? candidate.providerReasoningContent
       : undefined;
   const hasFlatProvenance =
@@ -1895,7 +1898,7 @@ function normalizedProviderReasoning(candidate: {
       ? (candidate.providerReasoning as Record<string, unknown>)
       : undefined;
   const durableContent =
-    typeof durable?.content === "string" && durable.content.length > 0
+    typeof durable?.content === "string"
       ? durable.content
       : undefined;
 
@@ -1905,7 +1908,10 @@ function normalizedProviderReasoning(candidate: {
   if (
     (hasFlatContent && flatContent === undefined) ||
     (hasFlatProvenance && flatProvenance === undefined) ||
-    (hasDurable && durable === undefined)
+    (hasDurable && durable === undefined) ||
+    (flatContent === "" &&
+      (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+        !isKnownEmptyProviderReasoning(flatContent, flatProvenance)))
   ) {
     return {};
   }
@@ -1913,7 +1919,10 @@ function normalizedProviderReasoning(candidate: {
   if (durable !== undefined) {
     if (durable.version === 2) {
       const durableProvenance = normalizedReasoningProvenance(durable);
-      if (durableContent === undefined || durableProvenance === undefined) {
+      if (durableContent === undefined || durableProvenance === undefined ||
+          (durableContent === "" &&
+            (!Array.isArray(candidate.toolCalls) || candidate.toolCalls.length === 0 ||
+              !isKnownEmptyProviderReasoning(durableContent, durableProvenance)))) {
         return {};
       }
       if (
@@ -1929,7 +1938,7 @@ function normalizedProviderReasoning(candidate: {
         providerReasoningProvenance: durableProvenance,
       };
     }
-    if (durable.version !== 1 || durableContent === undefined) return {};
+    if (durable.version !== 1 || durableContent === undefined || durableContent.length === 0) return {};
     if (flatContent !== undefined && flatContent !== durableContent) return {};
     // V1 is deliberately unbound. Never upgrade it from adjacent flat fields;
     // only a producer-written V2 record is authoritative provenance.
@@ -2838,6 +2847,7 @@ export class Session {
       await deriveNextModelInfo(
         this.services.modelsManager,
         provider.binding.model,
+        provider.binding.provider,
       ),
       provider.binding,
     );
@@ -2969,7 +2979,7 @@ export class Session {
     }
     const saved = this.services.configStore === undefined
       ? (value: string) => value
-      : createSavedPluginSecretRedactor(this.services.configStore.homeContext);
+      : createLazySavedPluginSecretRedactor(this.services.configStore.homeContext);
     const plugin = (manager as McpManagerLike & { redactPluginSecrets?: (value: string) => string }).redactPluginSecrets;
     return projectMcpManagerToConnections(manager, value => plugin?.call(manager, saved(value)) ?? saved(value));
   }
@@ -3264,6 +3274,7 @@ export class Session {
     const providerService = this.providerService;
     let snapshot: ProviderSwitchPublicationSnapshot | undefined;
     let committedBinding: ProviderBinding | undefined;
+    let droppedReasoningEffort: string | undefined;
     try {
       await this.state.with((state) => {
         if (this.pendingProviderSwitch !== pending) {
@@ -3282,14 +3293,36 @@ export class Session {
             state,
           );
         snapshot = publicationSnapshot;
+        // The effort moves with the model only when the new model accepts it;
+        // otherwise the new model runs at its own default.
+        const {
+          reasoningEffort: previousReasoningEffort,
+          ...collaborationMode
+        } = publicationSnapshot.sessionConfiguration.collaborationMode;
+        const effort = reasoningEffortForModel({
+          provider: prepared.provider.binding.provider,
+          model: prepared.provider.binding.model,
+          reasoningEffort: previousReasoningEffort,
+          config: (
+            this.services as Partial<SessionServices>
+          ).configStore?.current(),
+        });
+        droppedReasoningEffort = effort.dropped;
         committedBinding = providerService.commit(prepared.provider);
         state.sessionConfiguration = {
           ...publicationSnapshot.sessionConfiguration,
           provider: { slug: prepared.provider.binding.provider },
           collaborationMode: {
-            ...publicationSnapshot.sessionConfiguration.collaborationMode,
+            ...collaborationMode,
             model: prepared.provider.binding.model,
+            ...(effort.reasoningEffort !== undefined
+              ? { reasoningEffort: effort.reasoningEffort }
+              : {}),
           },
+          // A dropped level is cleared on purpose: settings must not refill it.
+          ...(effort.dropped !== undefined
+            ? { reasoningEffortCleared: true }
+            : {}),
           baseInstructions: prepared.baseInstructions,
           permissionInstructionsDeferred: true,
         } as unknown as SessionConfiguration;
@@ -3355,6 +3388,10 @@ export class Session {
             cause: "provider_switched",
             message: `provider ${snapshot.binding.provider} -> ${prepared.provider.binding.provider}; model ${snapshot.binding.model} -> ${prepared.provider.binding.model}; previous_response_id reset${
               pending.profile ? `; profile ${pending.profile}` : ""
+            }${
+              droppedReasoningEffort !== undefined
+                ? `; ${droppedReasoningEffortNotice(prepared.provider.binding.model, droppedReasoningEffort)}`
+                : ""
             }`,
           },
         },
@@ -3980,6 +4017,9 @@ export class Session {
     }
 
     try {
+      this.throwIfPartialCompactAborted(abortController.signal);
+      const { buildPostCompactMessages, partialCompactConversationAsync } =
+        await import("../services/compact/compact.js");
       this.throwIfPartialCompactAborted(abortController.signal);
       await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
@@ -6251,6 +6291,9 @@ export class Session {
         }
       }
 
+      // Best-effort lifecycle closeAll may time out or retain cleanup failure.
+      // Neither permits a cancellation/suspension terminal to authorize seal.
+      await this.services.unifiedExecManager?.prepareForDurableClose?.();
       const finalizers = [...this.beforeDurableCloseListeners];
       this.beforeDurableCloseListeners.clear();
       for (const finalize of finalizers) {
@@ -6467,11 +6510,18 @@ function deriveMinimalModelInfo(slug: string): ModelInfo {
 async function deriveNextModelInfo(
   modelsManager: ModelsManager | undefined,
   model: string,
+  provider: string,
 ): Promise<ModelInfo> {
   if (!modelsManager || typeof modelsManager.getModelInfo !== "function") {
     return deriveMinimalModelInfo(model);
   }
   try {
+    // Two providers can list the same model id (the managed AgenC route and
+    // public OpenRouter share DeepSeek ids), so the bound provider decides
+    // whose limits apply.
+    if (typeof modelsManager.getModelInfoForProvider === "function") {
+      return await modelsManager.getModelInfoForProvider(provider, model);
+    }
     return await modelsManager.getModelInfo(model);
   } catch {
     return deriveMinimalModelInfo(model);

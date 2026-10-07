@@ -14,6 +14,7 @@ import type {
   HealthStatsResult,
 } from "./protocol/index.js";
 import type { AgenCSessionCounts } from "./session-lifecycle.js";
+import { healthPingResult } from "./health-ping.js";
 
 export interface AgenCHealthSessionCounter {
   countSessions(): Promise<AgenCSessionCounts> | AgenCSessionCounts;
@@ -57,10 +58,7 @@ export class AgenCDaemonHealthService {
   }
 
   ping(): HealthPingResult {
-    return {
-      ok: true,
-      now: this.#nowIso(),
-    };
+    return healthPingResult(this.#nowMs());
   }
 
   ready(): HealthReadyResult {

@@ -52,12 +52,19 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * 1.22 adds the step_limit child terminal reason for partial task results.
- * 1.23 adds durable child task admission and restart recovery references.
- * 1.24 adds optional child routing explanations and the no_progress terminal reason.
+ * 1.23 adds the no_progress child terminal reason.
+ * 1.24 adds durable child task admission and restart recovery references.
+ * 1.25 adds cooperative workflow pause/resume and its durable control status.
+ * 1.26 adds live workflow stop observations when terminal persistence fails.
+ * 1.27 adds explicit, idempotent continuation of completed verified results.
+ * 1.28 adds requirement_conflict for a failed structured planner report.
+ * 1.29 adds the model_loop child terminal reason.
+ * 1.30 adds authenticated local resident print invocations.
+ * 1.31 adds optional child routing explanations.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.24.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.31.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -70,6 +77,15 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
+export const AGENC_PRINT_INVOKE_CAPABILITY = "print.invoke.v1" as const;
+export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
+export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as const;
+/** Optional per-session response-detail mutation on session.applyConfig. */
+export const AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY =
+  "session.applyConfig.modelVerbosity" as const;
+/** session.applyConfig accepts reasoningEffort null: the session follows its model's default. */
+export const AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY =
+  "session.applyConfig.reasoningEffortClear" as const;
 /** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
   "routine.sessionAuthority.v1" as const;
@@ -132,6 +148,11 @@ export const AGENC_DAEMON_METHODS = [
   "telegram.agents.pair.cancel",
   "initialize",
   "request.cancel",
+  "print.invoke",
+  "print.admit",
+  "print.ack",
+  "print.cancel",
+
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -142,6 +163,8 @@ export const AGENC_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -243,6 +266,10 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
+  readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
+  readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
+  readonly [AGENC_SESSION_APPLY_CONFIG_MODEL_VERBOSITY_CAPABILITY]?: true;
+  readonly [AGENC_SESSION_APPLY_CONFIG_REASONING_EFFORT_CLEAR_CAPABILITY]?: true;
 };
 
 /**
@@ -488,6 +515,8 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
 ] as const;
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
+  "print.admission",
+  "print.output",
   "routine.updated",
   "routine.session.prepare",
   "commandExec.outputDelta",
@@ -611,6 +640,10 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Cancel an in-flight daemon request on the same connection.",
   },
+  "print.invoke": { method: "print.invoke", direction: "client-to-server", params: "required", result: "object", description: "Prepare and run one local print invocation." },
+  "print.admit": { method: "print.admit", direction: "client-to-server", params: "required", result: "object", description: "Acknowledge the second resident proof on this connection." },
+  "print.ack": { method: "print.ack", direction: "client-to-server", params: "required", result: "object", description: "Acknowledge delivered print output." },
+  "print.cancel": { method: "print.cancel", direction: "client-to-server", params: "required", result: "object", description: "Cancel this connection's print invocation." },
   "agent.create": {
     method: "agent.create",
     direction: "client-to-server",
@@ -686,6 +719,24 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Tree-scoped cancel: the run plus its queued and running descendants. " +
       "Durable cascade first, live interrupt second.",
+  },
+  "run.pause": {
+    method: "run.pause",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Request a durable workflow pause after the active stage settles. " +
+      "Acknowledgement of a request does not imply that the run is paused.",
+  },
+  "run.resume": {
+    method: "run.resume",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Resume the matching workflow suspension with the same run, worktree, " +
+      "charged usage, limits, and absolute deadline.",
   },
   "run.start": {
     method: "run.start",
@@ -1176,7 +1227,7 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "TUI-internal request to re-apply config (profile overlay and/or disk reload) to the daemon-owned session.",
+      "Re-apply config or atomically update an idle session's reasoning effort and response detail. The latter is advertised by session.applyConfig.modelVerbosity; clearing the effort with null by session.applyConfig.reasoningEffortClear.",
   },
   "session.mcp.reconnectServer": {
     method: "session.mcp.reconnectServer",
@@ -1205,6 +1256,8 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
 });
 
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
+  "print.admission": { method: "print.admission", direction: "server-to-client", params: "required", description: "Request the second resident identity proof." },
+  "print.output": { method: "print.output", direction: "server-to-client", params: "required", description: "Deliver ordered print stdout/stderr bytes awaiting acknowledgment." },
   "routine.updated": { method: "routine.updated", direction: "server-to-client", params: "required", description: "Invalidate local routine state for clients opting into routine.updated.v1." },
   "routine.session.prepare": { method: "routine.session.prepare", direction: "server-to-client", params: "required", description: "Ask a capable Desktop client to attach session tools before dispatch." },
   "commandExec.outputDelta": {
@@ -1362,6 +1415,10 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
    * normalized to false.
    */
   readonly nonInteractive?: boolean;
+  /** Skip the completion checklist for an explicit machine-readable output contract. */
+  readonly exactOutput?: boolean;
+  /** Fresh print-run request only; the daemon rechecks eligibility. */
+  readonly relaxedOneShot?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -1499,6 +1556,31 @@ export interface InitializeParams extends JsonObject {
   readonly capabilities?: JsonObject;
 }
 
+export interface PrintInvokeParams extends JsonObject {
+  readonly invocationId: string;
+  /** User argv, excluding executable and script. */
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  /** Ephemeral complete ingress snapshot, never journaled or logged. */
+  readonly env: Readonly<Record<string, string>>;
+  readonly caller: { readonly pid: number; readonly stdinIsTTY: boolean; readonly stdoutIsTTY: boolean; readonly stderrIsTTY: boolean };
+}
+export interface PrintAdmitParams extends JsonObject { readonly invocationId: string; readonly challenge: string; }
+export interface PrintAckParams extends JsonObject { readonly invocationId: string; readonly sequence: number; }
+export interface PrintCancelParams extends JsonObject {
+  readonly invocationId: string;
+  readonly reason: "signal" | "broken_pipe";
+  readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
+  readonly stream?: "stdout" | "stderr";
+}
+export interface PrintOutputParams extends JsonObject {
+  readonly invocationId: string;
+  readonly sequence: number;
+  readonly stream: "stdout" | "stderr";
+  readonly data: string;
+}
+export type PrintInvokeResult = { readonly kind: "fallback" } | { readonly kind: "exit"; readonly exitCode: number };
+
 export interface RequestCancelParams extends JsonObject {
   readonly requestId: RequestId;
   readonly reason?: string;
@@ -1514,6 +1596,8 @@ export interface AgentListParams extends JsonObject {
 }
 
 export interface AgentAttachParams extends JsonObject {
+  /** Collect only the initial print turn; new messages always restore full durability. */
+  readonly oneShotOutput?: boolean;
   readonly agentId: string;
   readonly clientId?: string;
 }
@@ -1557,6 +1641,35 @@ export interface RunCancelParams extends JsonObject {
   readonly reason?: string;
 }
 
+export interface RunPauseParams extends JsonObject {
+  readonly runId: string;
+  /** Caller-generated idempotency key, 1..128 identifier characters. */
+  readonly requestId: string;
+}
+
+export interface RunResumeParams extends JsonObject {
+  readonly runId: string;
+  /** Exact durable suspension event being resumed, not a later pause. */
+  readonly suspensionId: string;
+  /** Filtered credential snapshot. Never persisted in control evidence. */
+  readonly envOverrides?: { readonly [key: string]: string };
+}
+
+/** Authoritative workflow control state. A pause is not a terminal result. */
+export interface RunWorkflowControlState extends JsonObject {
+  readonly runId: string;
+  readonly state: "running" | "pause_requested" | "paused" | "terminal";
+  readonly requestId?: string;
+  readonly suspensionId?: string;
+  readonly requestedAt?: string;
+  readonly pausedAt?: string;
+  /** Active stage that must settle before a requested pause can take effect. */
+  readonly afterStage?: string;
+}
+
+export type RunPauseResult = RunWorkflowControlState;
+export type RunResumeResult = RunWorkflowControlState;
+
 /** One required verification command for a verified-change workflow run. */
 export interface RunStartVerificationCommand extends JsonObject {
   readonly label: string;
@@ -1564,10 +1677,14 @@ export interface RunStartVerificationCommand extends JsonObject {
 }
 
 export interface RunStartParams extends JsonObject {
+  /** New iteration from a completed result. Requires explicit cost and deadline. */
+  readonly continuation?: { readonly sourceRunId: string; readonly requestId: string };
   /** Ephemeral client credential snapshot. Never persisted in the workflow spec. */
   readonly envOverrides?: { readonly [key: string]: string };
   /** The engineering goal / issue text driving the change. */
   readonly goal: string;
+  /** Run the Goal and all of its child sessions in Light mode. Defaults to standard mode. */
+  readonly lightMode?: boolean;
   /** Absolute directory inside the target git repository (daemon cwd default). */
   readonly cwd?: string;
   readonly model?: string;
@@ -2049,8 +2166,13 @@ export interface SessionHookRunDiagnosticShape extends JsonObject {
 
 export interface SessionApplyConfigParams extends JsonObject {
   readonly sessionId: string;
-  /** Apply only this effort to the idle session, without reloading other settings. */
-  readonly reasoningEffort?: string;
+  /**
+   * Apply only this effort to the idle session, without reloading other
+   * settings. Null clears it, so the session follows its model's default.
+   */
+  readonly reasoningEffort?: string | null;
+  /** Per-session response detail; null clears the override. */
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   /** Profile to overlay onto the live session; omit for a plain reload. */
   readonly profile?: string;
   /** When `true`, re-read config from disk + env before applying. */
@@ -2079,6 +2201,8 @@ export interface MessageSendParams extends JsonObject {
 }
 
 export interface MessageStreamParams extends MessageSendParams {
+  /** Explicit output contract for this turn, including headless continuation. */
+  readonly exactOutput?: boolean;
   readonly streamId?: string;
 }
 
@@ -2476,6 +2600,8 @@ export interface AgenCDaemonNotificationWithParams<
 }
 
 export interface AgenCDaemonNotificationParamsByMethod {
+  readonly "print.admission": PrintAdmitParams;
+  readonly "print.output": PrintOutputParams;
   readonly "routine.updated": RoutineUpdatedEvent;
   readonly "routine.session.prepare": RoutineSessionPrepareEvent;
   readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
@@ -2499,6 +2625,8 @@ export interface AgenCDaemonNotificationParamsByMethod {
 }
 
 export type AgenCDaemonNotification =
+  | AgenCDaemonNotificationWithParams<"print.admission", PrintAdmitParams>
+  | AgenCDaemonNotificationWithParams<"print.output", PrintOutputParams>
   | AgenCDaemonNotificationWithParams<
       "commandExec.outputDelta",
       CommandExecOutputDeltaParams
@@ -2599,6 +2727,11 @@ export interface AgenCDaemonRequestWithoutParams<
 }
 
 export type AgenCDaemonRequest =
+  | AgenCDaemonRequestWithParams<"print.invoke", PrintInvokeParams>
+  | AgenCDaemonRequestWithParams<"print.admit", PrintAdmitParams>
+  | AgenCDaemonRequestWithParams<"print.ack", PrintAckParams>
+  | AgenCDaemonRequestWithParams<"print.cancel", PrintCancelParams>
+
   | AgenCDaemonRequestWithParams<"telegram.capabilities" | "telegram.status" | "telegram.configure" | "telegram.start" | "telegram.stop" | "telegram.revoke", JsonObject>
   | AgenCDaemonRequestWithParams<"telegram.agents.list" | "telegram.agents.create" | "telegram.agents.update" | "telegram.agents.start" | "telegram.agents.stop" | "telegram.agents.remove" | "telegram.agents.pair.begin" | "telegram.agents.pair.confirm" | "telegram.agents.pair.cancel", JsonObject>
   | AgenCDaemonRequestWithParams<"remote.capabilities" | "remote.status" | "remote.start" | "remote.stop" | "remote.pair.begin" | "remote.pair.refresh" | "remote.pair.cancel" | "remote.devices" | "remote.pending" | "remote.approve" | "remote.revoke", JsonObject>
@@ -2624,6 +2757,8 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"run.replay", RunReplayParams>
   | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams>
   | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
+  | AgenCDaemonRequestWithParams<"run.pause", RunPauseParams>
+  | AgenCDaemonRequestWithParams<"run.resume", RunResumeParams>
   | AgenCDaemonRequestWithParams<"run.start", RunStartParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams>
@@ -2809,7 +2944,11 @@ export type RunEffectivePermissionMode =
   | "dontAsk" | "auto" | "unattended" | "bubble";
 
 export interface RunStartResult extends JsonObject {
+  /** True when the exact continuation request already owns this run and budget. */
+  readonly replayed?: boolean;
+  readonly continuationOf?: RunWorkflowContinuation;
   readonly runId: string;
+  readonly lightMode?: boolean;
   /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
   readonly specDigest: string;
   /** Exact base commit recorded before any work began. */
@@ -2970,17 +3109,77 @@ export interface RunWorkflowStatusStep extends JsonObject {
 }
 
 /**
+ * A live daemon observation, not a persisted terminal result. The execution
+ * has stopped, so clients must stop spinners and disable workflow controls,
+ * while retaining durable run tracking for recovery and result inspection.
+ * A recovered durable terminal supersedes this observation.
+ */
+export interface RunWorkflowRuntimeFailure extends JsonObject {
+  readonly state: "stopped";
+  readonly reason: "terminal_persistence_failed";
+  readonly observedAt: string;
+  readonly message: string;
+  readonly worktree?: { readonly path: string; readonly branch: string };
+  /** Last canonical usage observed before shutdown, omitted when unavailable. */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+    readonly costEstimated?: boolean;
+  };
+}
+
+/** Immutable provenance pinned by Core, never supplied as a git revision by a client. */
+export interface RunWorkflowContinuation extends JsonObject {
+  readonly sourceRunId: string;
+  readonly sourceSpecDigest: string;
+  readonly sourceBaseCommit: string;
+  readonly sourceHeadCommit: string;
+  readonly sourceTreeHash: string;
+  readonly sourcePatchDigest: string;
+  readonly sourceSealDigest: string;
+  readonly seriesRootRunId: string;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  /** Earlier iteration spend, including the source. Null remains unknown. */
+  readonly previousCostUsd: number | null;
+  readonly previousCostEstimated?: boolean;
+  readonly sourceUsage: {
+    readonly inputTokens: number; readonly outputTokens: number;
+    readonly totalTokens: number; readonly costUsd: number;
+    readonly costKnown?: boolean; readonly costEstimated?: boolean;
+  } | null;
+}
+
+/** Recorded source for the Continue form. Core revalidates its Git snapshot at intake. */
+export interface RunWorkflowCompletedResult extends JsonObject {
+  readonly headCommit: string;
+  readonly specDigest: string;
+  readonly baseCommit: string;
+  readonly cumulativeCostUsd: number | null;
+  readonly cumulativeCostEstimated?: boolean;
+}
+
+/**
  * M5 verified-change workflow projection, present on `run.status` only for
  * runs that recorded workflow steps. Stages and requested mode derive from
  * durable `run_effects` rows; effective mode requires an owned live session.
  */
 export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
+  /** Frozen at intake and available after recovery. */
+  readonly lightMode?: boolean;
+  /** Absent on daemons without durable workflow controls. */
+  readonly control?: RunWorkflowControlState;
+  readonly runtimeFailure?: RunWorkflowRuntimeFailure;
+  readonly continuationOf?: RunWorkflowContinuation;
+  readonly completedResult?: RunWorkflowCompletedResult;
   /** Mode requested in the frozen workflow spec; does not establish live authority. */
   readonly requestedPermissionMode?: RunStartParams["permissionMode"];
   /** Actual mode observed from the owning live session; absent when unavailable. */
   readonly effectivePermissionMode?: RunEffectivePermissionMode;
-  /** Present when the run terminated with a frozen workflow stop reason. */
+  /** Present when the run terminated with a workflow stop reason. Protocol 1.28 adds requirement_conflict for a failed planner report. */
   readonly stopReason?: string;
 }
 
@@ -3068,6 +3267,7 @@ export interface RunStatusResult extends JsonObject {
   /** Terminal is true only for the current lifecycle epoch. */
   readonly terminal: boolean;
   readonly statusSource:
+    | "runtime_observation"
     | "run_terminal_result"
     | "run_lifecycle_epoch"
     | "agent_run"
@@ -3388,7 +3588,8 @@ export interface ChildTerminalOutcomeWire extends JsonObject {
     | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
     | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled"
     | "policy_revoked" | "resume_blocked" | "cost_cap_reached"
-    | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+    | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable"
+    | "model_loop";
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly dispatch: "not_sent" | "sent" | "unknown";
@@ -3846,6 +4047,8 @@ export interface SessionApplyConfigResult extends JsonObject {
   readonly provider?: string;
   readonly model?: string;
   readonly runtimeSettingsEventId?: string;
+  /** Accepted per-session response detail, including null when cleared. */
+  readonly modelVerbosity?: "low" | "medium" | "high" | null;
   /** Human-readable summary of what was re-applied, surfaced to the user. */
   readonly summary: string;
 }
@@ -4111,6 +4314,10 @@ export interface AuthLogoutResult extends JsonObject {
 }
 
 export interface AgenCDaemonResultByMethod {
+  readonly "print.invoke": PrintInvokeResult;
+  readonly "print.admit": { readonly ok: true };
+  readonly "print.ack": { readonly ok: true };
+  readonly "print.cancel": { readonly ok: true };
   readonly initialize: InitializeResult;
   readonly "request.cancel": RequestCancelResult;
   readonly "agent.create": AgentCreateResult;
@@ -4123,6 +4330,8 @@ export interface AgenCDaemonResultByMethod {
   readonly "run.replay": RunReplayResult;
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
+  readonly "run.pause": RunPauseResult;
+  readonly "run.resume": RunResumeResult;
   readonly "run.start": RunStartResult;
   readonly "routine.capabilities": RoutineCapabilities;
   readonly "remote.capabilities": JsonObject;

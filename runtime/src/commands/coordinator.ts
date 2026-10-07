@@ -68,7 +68,7 @@ export const coordinatorCommand: SlashCommand = {
         kind: "text",
         text: [
           `coordinator_mode = ${enabled} written to config.toml.`,
-          "Restart the session (or start a new one) to apply — the coordinator prompt and tool allowlist bind at session construction.",
+          "Restart the session (or start a new one) to apply. The coordinator prompt and tool allowlist bind at session construction.",
         ].join("\n"),
       };
     }),

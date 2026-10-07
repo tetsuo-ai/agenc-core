@@ -55,6 +55,7 @@ import {
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { wrapCommandForShell } from "../../utils/shell/commandExecution.js";
+import { readShellWrapperCode } from "../../utils/shell/wrapper-options.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -66,7 +67,6 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "ksh",
   "tcsh",
 ]);
-const SHELL_WRAPPER_INLINE_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
 const SHELL_INPUT_EVALUATORS = new Set([
   ...SHELL_WRAPPER_COMMANDS,
   "ash",
@@ -266,11 +266,10 @@ function argsRequireShellSemantics(args: readonly string[]): boolean {
 }
 
 function validateDirectArgs(
-  command: string,
   args: readonly string[],
+  wrapperCode: readonly string[],
 ): string | undefined {
-  const shellWrapperScript = extractShellWrapperInlineScript(command, args);
-  if (typeof shellWrapperScript === "string") {
+  if (wrapperCode.length > 0) {
     return undefined;
   }
   if (!argsRequireShellSemantics(args)) {
@@ -609,19 +608,18 @@ export function validateShellCommand(
   return { allowed: true };
 }
 
-function extractShellWrapperInlineScript(
+/**
+ * Every text a direct shell wrapper invocation may run as code, read the way
+ * that shell reads its options (`readShellWrapperCode`). Empty for a wrapper
+ * that runs a script or reads stdin, undefined for a command that is not a
+ * shell wrapper.
+ */
+function shellWrapperCode(
   command: string,
   args: readonly string[],
-): string | undefined {
-  if (!SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase())) {
-    return undefined;
-  }
-  for (let index = 0; index < args.length; index += 1) {
-    if (SHELL_WRAPPER_INLINE_FLAG_RE.test(args[index] ?? "")) {
-      return args[index + 1];
-    }
-  }
-  return undefined;
+): readonly string[] | undefined {
+  const shell = basename(command).toLowerCase();
+  return SHELL_WRAPPER_COMMANDS.has(shell) ? readShellWrapperCode(shell, args) : undefined;
 }
 
 /** Detect whether a command string requires shell interpretation. */
@@ -963,11 +961,11 @@ export function createBashTool(config?: BashToolConfig): Tool {
         const check = isCommandAllowed(command, denySet, allowSet, denyExclusionSet);
         if (!check.allowed) return failure(check.reason);
       }
-      const argsError = validateDirectArgs(command, directArgs);
+      const wrapperCode = shellWrapperCode(command, directArgs) ?? [];
+      const argsError = validateDirectArgs(directArgs, wrapperCode);
       if (argsError) return failure(argsError);
-      const wrapperScript = extractShellWrapperInlineScript(command, directArgs);
-      if (wrapperScript) {
-        const shellCheck = validateShellCommand(wrapperScript);
+      for (const code of wrapperCode) {
+        const shellCheck = validateShellCommand(code);
         if (!shellCheck.allowed) return failure(shellCheck.reason);
       }
     }

@@ -6,14 +6,12 @@
  * The npm semver fallback always uses { loose: true }.
  */
 
-import {
-  compare as compareSemver,
-  gt as gtSemver,
-  gte as gteSemver,
-  lt as ltSemver,
-  lte as lteSemver,
-  satisfies as satisfiesSemver,
-} from 'semver'
+import compareSemver from 'semver/functions/compare.js'
+import gtSemver from 'semver/functions/gt.js'
+import gteSemver from 'semver/functions/gte.js'
+import ltSemver from 'semver/functions/lt.js'
+import lteSemver from 'semver/functions/lte.js'
+import satisfiesSemver from 'semver/functions/satisfies.js'
 
 export function gt(a: string, b: string): boolean {
   if (typeof Bun !== 'undefined') {

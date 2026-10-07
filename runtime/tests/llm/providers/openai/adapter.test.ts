@@ -54,6 +54,25 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each([false, true])("uses the flat Responses named tool choice (stream=%s)", async stream => {
+    const output = [{ type: "function_call", id: "fc_fixture", call_id: "call_fixture", name: "mcp__memory__search_nodes", arguments: '{}' }];
+    const payload = { id: "resp_fixture", status: "completed", model: "gpt-5-pro", output, usage: { input_tokens: 8, output_tokens: 4 } };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(stream
+      ? sseResponse([`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: payload })}\n\n`])
+      : Response.json(payload));
+    const provider = new OpenAIProvider({ model: "gpt-5-pro", apiKey: "fixture", fetchImpl });
+    const messages = [{ role: "user" as const, content: "Search memory" }];
+    const options = { maxOutputTokens: 128, toolChoice: { type: "function" as const, name: "mcp.memory.search_nodes" }, tools: [{ type: "function" as const, function: { name: "mcp.memory.search_nodes", description: "Search", parameters: { type: "object", properties: {} } } }] };
+    const response = stream
+      ? await provider.chatStream(messages, vi.fn(), options)
+      : await provider.chat(messages, options);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://api.openai.com/v1/responses");
+    expect(body.stream).toBe(stream);
+    expect(body.tool_choice).toEqual({ type: "function", name: body.tools[0].name });
+    expect(body.tool_choice).not.toHaveProperty("function");
+    expect(response.toolCalls[0]?.name).toBe("mcp.memory.search_nodes");
+  });
   test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
     "bounds Chat Completions cache keys supplied through extraBody: %s",
     async (promptCacheKey) => {
@@ -1482,6 +1501,7 @@ describe("OpenAIProvider", () => {
     expect(chunks).toEqual([
       { content: "Hel", done: false },
       { content: "lo", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: false,
@@ -1704,7 +1724,9 @@ describe("OpenAIProvider", () => {
 
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "there", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: true,
@@ -1760,7 +1782,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow(
       `${PROVIDER_TEST_LABEL} chat-completions stream emitted invalid tool_call`,
     );
-    expect(chunks).toEqual([]);
+    expect(chunks).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -1794,6 +1816,7 @@ describe("OpenAIProvider", () => {
     expect(response.toolCalls).toEqual([]);
     expect(chunks).toEqual([
       { content: "Let me write that.", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "", done: true },
     ]);
   });

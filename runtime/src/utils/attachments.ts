@@ -1,3 +1,5 @@
+import { createAttachmentMessage } from './attachment-message.js'
+export { createAttachmentMessage, isRetiredAttachmentType, memoryHeader } from './attachment-message.js'
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
   toolMatchesName,
@@ -47,7 +49,7 @@ import {
   getImagePasteIds,
   isValidImagePaste,
 } from 'src/types/textInputTypes.js'
-import { randomUUID, type UUID } from 'crypto'
+import type { UUID } from 'crypto'
 import { getInitialSettings } from './settings/settings.js'
 import { getSnippetForTwoFileDiff } from 'src/tools/FileEditTool/utils.js'
 import type {
@@ -187,13 +189,12 @@ import {
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
-} from '../services/compact/autoCompact.js'
-import {
-  hasInstructionsLoadedHook,
-  executeInstructionsLoadedHooks,
-  type HookBlockingError,
-  type InstructionsMemoryType,
+} from '../services/compact/thresholds.js'
+import type {
+  HookBlockingError,
+  InstructionsMemoryType,
 } from './hooks.js'
+import { hasInstructionsLoadedHook } from './hooks/instructionsLoaded.js'
 import { jsonStringify } from './slowOperations.js'
 import { isPDFExtension } from './pdfUtils.js'
 import { getLocalISODate } from '../constants/common.js'
@@ -201,7 +202,6 @@ import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import {
-  formatRelevantMemoryHeader,
   getConditionalRulesForCwdLevelDirectory,
   getAutoMemPath,
   getGlobalMemoryPath,
@@ -389,24 +389,6 @@ export type HookNonBlockingErrorAttachment = {
   hookEvent: HookEvent
   command?: string
   durationMs?: number
-}
-
-const RETIRED_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([
-  'autocheckpointing',
-  'background_task_status',
-  'mcp_resource',
-  'todo',
-  'task_progress',
-  'ultramemory',
-])
-
-/**
- * Persisted sessions can contain attachment discriminators that no current
- * producer emits. Retired attachments are dropped at both model and TUI
- * boundaries; they have no executable producer or renderer.
- */
-export function isRetiredAttachmentType(type: string): boolean {
-  return RETIRED_ATTACHMENT_TYPES.has(type)
 }
 
 export type Attachment =
@@ -1635,7 +1617,7 @@ export function memoryFilesToAttachments(
           : memoryFile.parent
             ? 'include'
             : 'nested_traversal'
-        void executeInstructionsLoadedHooks(
+        const hookArgs: Parameters<typeof import('./hooks.js').executeInstructionsLoadedHooks> = [
           memoryFile.path,
           memoryFile.type,
           loadReason,
@@ -1644,6 +1626,9 @@ export function memoryFilesToAttachments(
             triggerFilePath,
             parentFilePath: memoryFile.parent,
           },
+        ]
+        void import('./hooks.js').then(({ executeInstructionsLoadedHooks }) =>
+          executeInstructionsLoadedHooks(...hookArgs),
         )
       }
     }
@@ -2085,9 +2070,6 @@ export function collectSurfacedMemories(messages: ReadonlyArray<Message>): {
  * Header string for a relevant-memory block.  Exported so messages.ts
  * can fall back for resumed sessions where the stored header is missing.
  */
-export function memoryHeader(path: string, mtimeMs: number): string {
-  return formatRelevantMemoryHeader(path, mtimeMs)
-}
 
 type ToolResultBlock = {
   type: 'tool_result'
@@ -2829,16 +2811,6 @@ export async function generateFileAttachment(
   }
 }
 
-export function createAttachmentMessage(
-  attachment: Attachment,
-): AttachmentMessage {
-  return {
-    attachment,
-    type: 'attachment',
-    uuid: randomUUID(),
-    timestamp: new Date().toISOString(),
-  }
-}
 
 function getTodoReminderTurnCounts(messages: Message[]): {
   turnsSinceLastTodoWrite: number

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -60,6 +60,27 @@ describe("StateSqliteHealthStatsReader", () => {
     }
   });
 
+  it("reports state counts without creating deferred logs", () => {
+    const writer = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    try { seedStateRows(writer, false); }
+    finally { writer.close(); }
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+    expect(new StateSqliteHealthStatsReader(paths).readStateStats()).toEqual({
+      available: true, readonly: true, projectDir: paths.projectDir,
+      agentRuns: 1, sessionStateSnapshots: 1, inFlightToolCalls: 1, logs: 0,
+    });
+    expect(existsSync(paths.logsDbPath)).toBe(false);
+  });
+
+  it("does not report corrupt existing logs as zero", () => {
+    const writer = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
+    writer.close();
+    const paths = resolveStateDatabasePaths({ cwd, agencHome: home });
+    writeFileSync(paths.logsDbPath, "corrupt logs");
+    expect(() => new StateSqliteHealthStatsReader(paths).readStateStats()).toThrow();
+  });
+
   it("aggregates counts across multiple state databases", () => {
     const otherCwd = mkdtempSync(join(tmpdir(), "agenc-health-state-other-"));
     mkdirSync(join(otherCwd, ".git"));
@@ -92,7 +113,7 @@ describe("StateSqliteHealthStatsReader", () => {
   });
 });
 
-function seedStateRows(driver: StateSqliteDriver): void {
+function seedStateRows(driver: StateSqliteDriver, includeLogs = true): void {
   driver
     .prepareState(
       `INSERT INTO agent_runs (
@@ -167,6 +188,7 @@ function seedStateRows(driver: StateSqliteDriver): void {
       )
       .run("session-health", id, "FileRead", "{}", status, "2026-05-01T00:00:30.000Z");
   }
+  if (!includeLogs) return;
   driver
     .prepareLogs(
       `INSERT INTO logs (

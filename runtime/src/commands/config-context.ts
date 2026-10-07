@@ -5,6 +5,7 @@ import type { EnvSnapshot } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
+import { withConfiguredProviderAuth, type ConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { asRecord } from "../utils/record.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -55,8 +56,8 @@ export function requireCommandConfigStore(
   return store;
 }
 
-/** Resolve the one immutable provider environment available to this session kind. */
-export function providerEnvironmentFromCommandContext(
+/** The provider environment this session captured, exactly as captured. */
+export function capturedProviderEnvironment(
   ctx: SlashCommandContext,
 ): EnvSnapshot {
   const services = asRecord(asRecord(ctx.session)?.services);
@@ -72,6 +73,29 @@ export function providerEnvironmentFromCommandContext(
   throw new Error(
     "Slash command requires the session's captured provider environment",
   );
+}
+
+/**
+ * Resolve the one immutable provider environment available to this session
+ * kind, with the current config's OpenAI/Grok `auth` choices filled in
+ * where the environment leaves them unset (an exported variable wins).
+ */
+export function providerEnvironmentFromCommandContext(
+  ctx: SlashCommandContext,
+): EnvSnapshot {
+  return withConfiguredProviderAuth(
+    capturedProviderEnvironment(ctx),
+    configForProviderAuth(ctx),
+  );
+}
+
+
+function configForProviderAuth(ctx: SlashCommandContext): ConfiguredProviderAuth | undefined {
+  try {
+    return readCommandConfig(ctx) as ConfiguredProviderAuth | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function remoteAuthContextFromCommandContext(

@@ -1,3 +1,4 @@
+import { endpointMetadataFailureHandler } from "./endpoint-metadata-cache.js";
 /**
  * Turn-scoped provider HTTP session.
  *
@@ -172,6 +173,13 @@ export interface ProviderHttpStreamResponse
   readonly status: number;
   readonly headers: Headers;
   readonly url: string;
+}
+
+// Evidence is created only from a rejected opening Response, not from an
+// error thrown while consuming an accepted JSON/SSE body.
+const initialHttpRejections = new WeakSet<Error>();
+export function isInitialProviderHttpRejection(error: unknown): error is ProviderHttpError {
+  return error instanceof ProviderHttpError && initialHttpRejections.has(error);
 }
 
 export class ProviderHttpError extends Error {
@@ -740,7 +748,7 @@ async function createProviderHttpError(
   const retryAfterDirective = parseProviderRetryAfterDirective(
     response.headers,
   );
-  return new ProviderHttpError({
+  const error = new ProviderHttpError({
     providerName,
     status: response.status,
     headers: response.headers,
@@ -749,6 +757,8 @@ async function createProviderHttpError(
     message: errorMessageFromBody(response.status, errorBody),
     retryAfterDirective,
   });
+  initialHttpRejections.add(error);
+  return error;
 }
 
 function createMalformedProviderJsonError(args: {
@@ -1101,7 +1111,7 @@ export class ProviderHttpClientSession {
               if (next.done) return;
               // LLM-09: empty chunks still count as body progress for idle
               // watchdog (providers may send keepalives).
-              watchdog.kick();
+              watchdog.kick("bytes");
               if (!next.value || next.value.length === 0) continue;
               if (prepared.continuation) {
                 const decoded = decoder.decode(next.value, { stream: true });
@@ -1406,12 +1416,20 @@ export class ProviderHttpClientSession {
     }
 
     const fetchImpl = this.config.fetchImpl ?? fetch;
-    return await fetchProviderRequest(url, {
-      method,
-      headers,
-      body,
-      signal,
-    }, fetchImpl);
+    const fail = endpointMetadataFailureHandler(this.config.providerName);
+    try {
+      const response = await fetchProviderRequest(url, {
+        method,
+        headers,
+        body,
+        signal,
+      }, fetchImpl);
+      if (!response.ok) fail();
+      return response;
+    } catch (error) {
+      fail();
+      throw error;
+    }
   }
 
   private prepareRequest(

@@ -1,4 +1,5 @@
-import { type StructuredPatchHunk, structuredPatch } from 'diff'
+import type { StructuredPatchHunk } from 'diff'
+import { loadDiff } from './lazy-runtime-packages.js'
 import { addToTotalLinesChanged } from '../cost/tracker.js'
 import type { FileEdit } from '../tools/FileEditTool/types.js'
 import { count } from './array.js'
@@ -81,7 +82,7 @@ export function getPatchFromContents({
   ignoreWhitespace?: boolean
   singleHunk?: boolean
 }): StructuredPatchHunk[] {
-  const result = structuredPatch(
+  const result = loadDiff().structuredPatch(
     filePath,
     filePath,
     escapeForDiff(oldContent),
@@ -129,7 +130,7 @@ export function getPatchForDisplay({
   const preparedFileContents = escapeForDiff(
     convertLeadingTabsToSpaces(fileContents),
   )
-  const result = structuredPatch(
+  const result = loadDiff().structuredPatch(
     filePath,
     filePath,
     preparedFileContents,

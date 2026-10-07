@@ -8,7 +8,7 @@ import { expect, test, vi } from "vitest";
 
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
-import { LLMProviderError, LLMRateLimitError } from "../../src/llm/errors.js";
+import { LLMProviderError, LLMRateLimitError, isLLMPreGenerationRejection } from "../../src/llm/errors.js";
 import { ZaiProvider } from "../../src/llm/providers/zai/index.js";
 import type { LLMMessage } from "../../src/llm/types.js";
 import { StreamModelError } from "../../src/phases/stream-model.js";
@@ -16,7 +16,7 @@ import { isTransientProviderError } from "../../src/recovery/api-errors.js";
 import { isRetryableStreamError } from "../../src/session/run-turn-stream-retry.js";
 import type { Session } from "../../src/session/session.js";
 
-test("an admitted Z.AI call refused for billing fails after one wire attempt and keeps its charge unknown", async () => {
+test("an admitted Z.AI call refused for billing fails after one wire attempt and settles its proven refusal without charge", async () => {
   const directory = mkdtempSync(join(tmpdir(), "agenc-zai-billing-admission-"));
   const workspace = join(directory, "workspace");
   mkdirSync(join(workspace, ".git"), { recursive: true });
@@ -62,10 +62,16 @@ test("an admitted Z.AI call refused for billing fails after one wire attempt and
     expect(isTransientProviderError(error)).toBe(false);
     expect(isRetryableStreamError(new StreamModelError(error))).toBe(false);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    // The refusal came after dispatch and reported no usage, so the charge stays unknown; it is never claimed as zero.
-    expect(hold).toHaveBeenCalledExactlyOnceWith(expect.any(String), "provider_call_failed_after_dispatch");
-    expect(reconcile).not.toHaveBeenCalled();
-    expect(client.getUsageSummary?.()).toMatchObject({ hasUnknownCost: true });
+    // The adapter observed this single opening HTTP refusal and preserved
+    // provider-bound evidence through billing-error mapping. Missing usage or
+    // the public numeric status alone would not justify a zero settlement.
+    expect(isLLMPreGenerationRejection(error, "zai")).toBe(true);
+    expect(isLLMPreGenerationRejection(error, "openai")).toBe(false);
+    expect(hold).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(expect.any(String), {
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+    });
+    expect(client.getUsageSummary?.()).toMatchObject({ hasUnknownCost: false });
     expect(kernel.activeCount).toBe(0);
     expect(kernel.queuedCount).toBe(0);
   } finally {

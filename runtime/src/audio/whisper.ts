@@ -1,3 +1,5 @@
+import { WhisperError } from "./whisper-error.js";
+export { WhisperError } from "./whisper-error.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -44,7 +46,7 @@ export interface WhisperService {
 // are multilingual. LFS SHA256 and byte lengths verified against the revision.
 const MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
 /** Give up on a download only after this long with no bytes arriving. */
-const DOWNLOAD_IDLE_MS = 60 * 1000;
+export const DOWNLOAD_IDLE_MS = 60 * 1000;
 export const WHISPER_MODELS = {
   base: { bytes: 147951465, sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe" },
   small: { bytes: 487601967, sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b" },
@@ -53,9 +55,6 @@ export const MAX_WHISPER_WAV_BYTES = 44 + 16000 * 2 * 30;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TRANSCRIPT_CHARS = 16000;
 
-export class WhisperError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = "WhisperError"; }
-}
 function invalid(message: string): never { throw new WhisperError("WHISPER_INVALID_ARGUMENT", message); }
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Expected an object");

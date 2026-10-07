@@ -15,7 +15,8 @@
 
 import { createHash } from "node:crypto";
 import { parse as parseShellWords } from "shell-quote";
-import { extractBashCommand, splitCommand } from "../shell-command/parser.js";
+import { splitCommand } from "../shell-command/parser.js";
+import { readShellWrapperCode } from "../utils/shell/wrapper-options.js";
 
 import type { RunStepIdentity } from "../contracts/run-contracts.js";
 import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
@@ -66,8 +67,13 @@ export function isTrivialVerificationCommand(script: string, depth = 0): boolean
     const words = [...tokens];
     while (/^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();
     if (words[0] === "command" || words[0] === "builtin") words.shift();
-    const wrapper = extractBashCommand(words);
-    if (wrapper !== null) return isTrivialVerificationCommand(wrapper.script, depth + 1);
+    // A shell wrapper proves nothing when all the code it may run proves
+    // nothing, whatever its options (`bash -ec true`, `sh -c -- true`).
+    const shell = (words[0] ?? "").split(/[\\/]/u).at(-1)!.toLowerCase().replace(/\.exe$/u, "");
+    const wrapped = readShellWrapperCode(shell, words.slice(1));
+    if (wrapped !== undefined && wrapped.length > 0) {
+      return wrapped.every((code) => isTrivialVerificationCommand(code, depth + 1));
+    }
     const command = (words[0] ?? "").split("/").at(-1);
     return command === "true" || command === ":" || command === "echo" || command === "printf" ||
       (command === "exit" && (words.length === 1 || (words.length === 2 && /^0+$/.test(words[1]!))));
@@ -85,7 +91,32 @@ export function plannedVerification(message: string): readonly { label: string; 
     throw new TypeError("The plan must name concrete verification commands, not placeholders");
   }
   if (new Set(scripts).size !== scripts.length) throw new TypeError("The plan repeats a verification command");
+  for (const script of scripts) {
+    if (hasLegacyBacktickSubstitution(script)) {
+      throw new TypeError("A planned check contains shell backtick substitution. Put literal backticks inside single quotes, escape them, or plan a test file and invoke it. Keep the same acceptance criteria.");
+    }
+  }
   return Object.freeze(scripts.map((script: string) => Object.freeze({ label: script, script })));
+}
+
+/** A conservative authoring lint for generated checks, not a shell security
+ * boundary. Legacy substitution commonly corrupts inline Markdown assertions.
+ * Complex shell programs should live in a planned test file. Client-supplied
+ * checks are never rewritten or subjected to this planner-only restriction. */
+function hasLegacyBacktickSubstitution(script: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < script.length; index++) {
+    const char = script[index];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      continue;
+    }
+    if (char === "\\") { index++; continue; }
+    if (char === "`") return true;
+    if (char === '"') quote = quote === '"' ? undefined : '"';
+    else if (char === "'" && quote === undefined) quote = "'";
+  }
+  return false;
 }
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {

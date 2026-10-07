@@ -3,7 +3,7 @@ import type { ReasoningEffort } from "../../src/session/turn-context.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import { defaultConfig } from "../../src/config/schema.js";
 
@@ -125,6 +125,67 @@ describe("Gemini session reasoning effort", () => {
     expect(() => resolveSessionReasoningEffort(effort, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
     settingsEffort.current = effort;
     expect(() => resolveSessionReasoningEffort(undefined, GROK_4_5_LEVELS, selection)).toThrow(/reasoning effort/iu);
+  });
+});
+
+describe("a session that cleared its level", () => {
+  beforeEach(() => { settingsEffort.current = undefined; });
+
+  test.each([
+    ["grok", "grok-4.6", "medium"],
+    ["anthropic", "claude-sonnet-5-5", "medium"],
+    ["zai-coding-plan", "glm-5.3", "high"],
+    ["gemini", "gemma-4-31b-it", "medium"],
+  ] as const)("on %s/%s is not refilled with a configured %s", (provider, model, configured) => {
+    // The built-in reasoning_effort is medium, and a saved /effort level stays
+    // in the daemon's config snapshot until a reload.
+    settingsEffort.current = configured;
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    expect(resolveSessionReasoningEffort(undefined, levels, {
+      provider,
+      model,
+      effortSource: "user",
+      followsModelDefault: true,
+    })).toBeUndefined();
+  });
+
+  test("still sends a level the session sets again", () => {
+    settingsEffort.current = "medium";
+    expect(resolveSessionReasoningEffort("low", GROK_4_6_LEVELS, {
+      provider: "grok",
+      model: "grok-4.6",
+      followsModelDefault: true,
+    })).toBe("low");
+  });
+});
+
+describe("benchmark configurations send exactly the configured level", () => {
+  test.each([
+    ["deepseek", "deepseek-v4-flash", "high"],
+    ["zai-coding-plan", "glm-5.3-flash", "high"],
+    ["openai", "gpt-6-luna", "low"],
+    ["openai", "gpt-6-sol", "low"],
+    ...(["minimal", "low", "medium", "high", "xhigh", "max"] as const).map(
+      (level) => ["meta", "muse-spark-1.3", level] as const,
+    ),
+  ] as const)("%s/%s at %s", (provider, model, level) => {
+    const seeded = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), model_provider: provider, model, reasoning_effort: level },
+      provider,
+      workspaceRoot: "/tmp/ws",
+      model,
+    }).collaborationMode.reasoningEffort;
+    expect(seeded).toBe(level);
+    const levels = resolveRegisteredModelCatalogEntry({ provider, model })?.supportedReasoningLevels;
+    // The seeded level is the turn's own: a different configured or cleared
+    // state never reaches it.
+    settingsEffort.current = level === "low" ? "high" : "low";
+    expect(resolveSessionReasoningEffort(seeded, levels, { provider, model })).toBe(level);
+    expect(resolveSessionReasoningEffort(seeded, levels, {
+      provider,
+      model,
+      followsModelDefault: true,
+    })).toBe(level);
   });
 });
 

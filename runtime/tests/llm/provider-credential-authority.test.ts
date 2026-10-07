@@ -753,6 +753,8 @@ describe("provider credential authority", () => {
   test("preserves per-session auth snapshots when a future session chooses another method", async () => {
     const home = await createHome("frozen-auth");
     const { providerOptions, openAiCredentials } = await loadCredentialModules();
+    const { snapshotProviderEnvironment } = await import("../../src/llm/provider-environment.js");
+    expect(providerOptions.snapshotProviderEnvironment).toBe(snapshotProviderEnvironment);
     openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "oauth-token", accountId: "account" });
     const { collectDaemonClientEnvOverrides, mergeDaemonClientEnvironment } = await import("../../src/app-server/client-env-snapshot.js");
     const environment = { OPENAI_AUTH_MODE: "oauth", OPENAI_API_KEY: "byok" };

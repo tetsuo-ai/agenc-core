@@ -358,7 +358,8 @@ function TaskItem(t0: TaskItemProps): React.ReactNode {
   }
   let t9;
   if ($[23] !== isBlocked || $[24] !== openBlockers) {
-    t9 = isBlocked && <Text dimColor={true}>{" "}{figures.pointerSmall} blocked by{" "}{[...openBlockers].sort(_temp).map(_temp2).join(", ")}</Text>;
+    // Task ids are internal slugs; say how many steps it waits on instead.
+    t9 = isBlocked && <Text dimColor={true}>{" "}{figures.pointerSmall} waiting on {openBlockers.length} {openBlockers.length === 1 ? "step" : "steps"}</Text>;
     $[23] = isBlocked;
     $[24] = openBlockers;
     $[25] = t9;
@@ -396,10 +397,4 @@ function TaskItem(t0: TaskItemProps): React.ReactNode {
     t12 = $[37];
   }
   return t12;
-}
-function _temp2(id: string): string {
-  return `#${id}`;
-}
-function _temp(a: string, b: string): number {
-  return parseInt(a, 10) - parseInt(b, 10);
 }
