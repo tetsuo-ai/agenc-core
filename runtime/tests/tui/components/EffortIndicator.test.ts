@@ -16,8 +16,12 @@ vi.mock("../../utils/effort.js", () => ({
   getDisplayedEffortLevelForContext: (_model: string, effortValue: string | undefined) =>
     effortValue ?? "medium",
   modelSupportsEffortForContext: (model: string) => model !== "basic-model",
-  isEffortOffByDefaultForContext: (model: string, effortValue: string | undefined) =>
-    model === "no-reasoning-default" && effortValue === undefined,
+  getModelDefaultReasoningEffortForContext: (model: string) =>
+    model === "no-reasoning-default"
+      ? "none"
+      : model === "unknown-default"
+        ? undefined
+        : "medium",
 }));
 
 describe("EffortIndicator", () => {
@@ -35,6 +39,10 @@ describe("EffortIndicator", () => {
     );
     expect(getEffortNotificationText("high", "no-reasoning-default", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
       `${EFFORT_HIGH} high · /effort`,
+    );
+    // An unknown default is named, never shown as a guessed tier.
+    expect(getEffortNotificationText(undefined, "unknown-default", TEST_REMOTE_AUTH_SESSION_CONTEXT)).toBe(
+      "model default · /effort",
     );
   });
 

@@ -17,6 +17,7 @@ import {
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
   AgentAttachParams,
+  AgentAttachResult,
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
   ElicitationRespondParams,
@@ -137,6 +138,16 @@ import {
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
+export const AGENC_DAEMON_REATTACHED_MESSAGE = "daemon reconnected";
+/** What to do when the session cannot attach again after a daemon restart. */
+const AGENC_DAEMON_CONTINUE_HINT = "quit and run agenc --continue to pick it up";
+/**
+ * How long work that needs the daemon's runtime settings (a submission, a
+ * model or permission change) waits for the daemon to come back and the
+ * session to attach again before it fails. Matches the client's own
+ * reconnect window.
+ */
+export const AGENC_DAEMON_REATTACH_WAIT_MS = 30_000;
 export const AGENC_DAEMON_LOST_TURN_REASON =
   "the daemon stopped responding; the turn cannot continue here";
 /**
@@ -534,6 +545,12 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly client: AgenCDaemonTuiClient;
   readonly sessionId: string;
   readonly clientId: string;
+  /**
+   * The daemon agent that owns this session. With it, the session attaches
+   * again after the daemon restarts and takes the daemon's runtime settings
+   * as the new authority, instead of fencing itself for good.
+   */
+  readonly agentId?: string;
   readonly conversationId?: string;
   readonly realtimeThreadId?: string;
   readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
@@ -542,6 +559,8 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly transcriptSnapshot?: SessionTranscriptV2Result;
   /** Test seam: how long a silent daemon keeps a turn alive mid-turn. */
   readonly lostTurnProbeMs?: number;
+  /** Test seam: how long work waits for the session to attach again. */
+  readonly reattachWaitMs?: number;
   /** Snapshot cursor captured only after this socket's session route exists. */
   readonly runtimeSettingsCursor: {
     readonly eventId: string;
@@ -904,9 +923,65 @@ export function createDaemonTuiSession<
     ...baseSession,
     services,
   };
+  const agentId = options.agentId;
   const runtimeSettingsReconciler = createRuntimeSettingsReconciler({
     baseSession: eventBridgeSession,
     cursor: options.runtimeSettingsCursor,
+    ...(options.reattachWaitMs === undefined
+      ? {}
+      : { reattachWaitMs: options.reattachWaitMs }),
+    ...(agentId === undefined
+      ? {}
+      : {
+          // The restarted daemon restored this session; attaching again
+          // returns its live settings and the cursor later events follow.
+          reattach: async () => {
+            let attachment: AgentAttachResult;
+            try {
+              attachment = await client.request("agent.attach", {
+                agentId,
+                clientId,
+              } satisfies AgentAttachParams);
+            } catch (error) {
+              // The daemon waits for its startup restore before answering, so
+              // this is final: the session came back without its runtime,
+              // for example because only this client holds its provider key.
+              // Resuming it from the CLI hands that key back.
+              if (isRecoveredWithoutRuntimeError(error)) {
+                throw new Error(
+                  `the daemon restarted and could not bring this session back; ${AGENC_DAEMON_CONTINUE_HINT}`,
+                );
+              }
+              throw error;
+            }
+            if (
+              !Array.isArray(attachment.sessionIds) ||
+              !attachment.sessionIds.includes(sessionId) ||
+              typeof attachment.runtimeSettingsEventId !== "string" ||
+              attachment.runtimeSettingsEventId.length === 0 ||
+              !isJsonObject(attachment.runtimeSettings)
+            ) {
+              throw new Error(
+                `the daemon restarted without this session; ${AGENC_DAEMON_CONTINUE_HINT}`,
+              );
+            }
+            return {
+              eventId: attachment.runtimeSettingsEventId,
+              settings: attachment.runtimeSettings,
+            };
+          },
+          onReattached: () => {
+            broadcastDaemonEvent({
+              id: `agenc-daemon-reattached-${Date.now()}`,
+              type: "warning",
+              payload: {
+                message: AGENC_DAEMON_REATTACHED_MESSAGE,
+                cause: "daemon_connection_state",
+                status: "connected",
+              },
+            });
+          },
+        }),
     onFailure: (error) => {
       runtimeSettingsAuthorityError = error;
       broadcastDaemonEvent({
@@ -2289,10 +2364,51 @@ function createRuntimeSettingsReconciler(params: {
   readonly baseSession: AgenCTuiBridgeSession;
   readonly cursor: { readonly eventId: string; readonly cwd: string };
   readonly onFailure: (error: Error) => void;
+  /**
+   * Attach to the session again after a reconnect and return the daemon's
+   * authoritative settings with their cursor. Without it a connection gap
+   * fences the session for good.
+   */
+  readonly reattach?: () => Promise<{
+    readonly eventId: string;
+    readonly settings: RunRuntimeSettingsSnapshot;
+  }>;
+  readonly onReattached?: () => void;
+  /** Test seam: how long authority-dependent work waits for the re-attach. */
+  readonly reattachWaitMs?: number;
 }): RuntimeSettingsReconciler {
   let cursor = params.cursor.eventId;
   let failure: Error | null = null;
   let observedConnectionGap = false;
+  // While a gap is open and a re-attach can close it, authority-dependent
+  // work waits on this instead of failing.
+  let recovery: {
+    readonly promise: Promise<void>;
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+  } | null = null;
+  let reattachInFlight = false;
+  let lastConnectionStatus: AgenCDaemonConnectionState["status"] | undefined;
+  // Settings events that arrive while the gap is open wait for the re-attach
+  // to set the cursor they must follow.
+  const heldAcrossGap: Array<{
+    readonly event: CanonicalRuntimeSettingsEvent | null;
+    readonly deliver: () => void;
+  }> = [];
+  const openRecovery = (): void => {
+    if (recovery !== null || params.reattach === undefined || failure !== null) {
+      return;
+    }
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, failed) => {
+      resolve = done;
+      reject = failed;
+    });
+    // Rejections reach only the callers that wait; never an unhandled one.
+    promise.catch(() => undefined);
+    recovery = { promise, resolve, reject };
+  };
   let queue: Promise<void> = Promise.resolve();
   let pendingWork = 0;
   const appliedEventIds = new Set<string>([cursor]);
@@ -2320,6 +2436,8 @@ function createRuntimeSettingsReconciler(params: {
       for (const waiter of pending) waiter.reject(failure);
     }
     waiters.clear();
+    recovery?.reject(failure);
+    recovery = null;
     params.onFailure(failure);
   };
   const markApplied = (eventId: string): void => {
@@ -2390,6 +2508,15 @@ function createRuntimeSettingsReconciler(params: {
     acceptLive: (event, deliver) => {
       const entry = parse(event, deliver);
       if (entry === null) return;
+      if (
+        entry.event !== null &&
+        observedConnectionGap &&
+        params.reattach !== undefined &&
+        failure === null
+      ) {
+        heldAcrossGap.push(entry);
+        return;
+      }
       if (entry.event === null && pendingWork === 0 && failure === null) {
         entry.deliver();
         return;
@@ -2428,6 +2555,8 @@ function createRuntimeSettingsReconciler(params: {
       });
     },
     noteConnectionState: (state) => {
+      const previousStatus = lastConnectionStatus;
+      lastConnectionStatus = state.status;
       if (state.status !== "connected") {
         observedConnectionGap = true;
         if (waiters.size > 0) {
@@ -2436,32 +2565,115 @@ function createRuntimeSettingsReconciler(params: {
               "daemon disconnected before the canonical runtime-settings successor arrived; re-attach is required",
             ),
           );
+          return;
         }
+        if (
+          state.status === "disconnected" &&
+          previousStatus === "reconnecting" &&
+          recovery !== null
+        ) {
+          // The client stopped trying: the daemon is not coming back. A
+          // socket that errors and then closes reports "disconnected" twice;
+          // only a reconnect that ends in "disconnected" means giving up.
+          fail(
+            new Error(
+              `the daemon did not come back after disconnecting; ${AGENC_DAEMON_CONTINUE_HINT}`,
+            ),
+          );
+          return;
+        }
+        openRecovery();
         return;
       }
-      if (observedConnectionGap) {
+      if (!observedConnectionGap) return;
+      if (params.reattach === undefined) {
         fail(
           new Error(
             "daemon reconnected without an authoritative runtime-settings snapshot; re-attach is required",
           ),
         );
+        return;
       }
+      if (reattachInFlight || failure !== null) return;
+      openRecovery();
+      reattachInFlight = true;
+      const reattach = params.reattach;
+      enqueue(async () => {
+        try {
+          if (failure !== null) return;
+          // The restarted daemon's settings become the authority, exactly
+          // as when the TUI first attached.
+          const snapshot = await reattach();
+          if (failure !== null) return;
+          await applyDaemonTuiRuntimeSettingsAuthority(
+            params.baseSession as unknown as AgenCDaemonOnlyTuiSession,
+            params.cursor.cwd,
+            snapshot.settings,
+          );
+          cursor = snapshot.eventId;
+          appliedEventIds.add(cursor);
+          observedConnectionGap = false;
+          for (const entry of heldAcrossGap.splice(0)) {
+            if (
+              entry.event !== null &&
+              entry.event.eventId !== cursor &&
+              entry.event.previousSettingsEventId !== cursor
+            ) {
+              // Older than the snapshot that replaced it: show, never apply.
+              entry.deliver();
+              continue;
+            }
+            await applySuccessor(entry);
+          }
+          recovery?.resolve();
+          recovery = null;
+          params.onReattached?.();
+        } finally {
+          reattachInFlight = false;
+        }
+      });
     },
     barrier: async () => {
       await queue;
       if (failure !== null) throw failure;
-      // A connection gap cannot heal: the next "connected" state fails this
-      // reconciler because no authoritative snapshot is replayed. Fail now,
-      // before authority-dependent work (a submission) waits inside the
-      // client's reconnect and reaches the restarted daemon after the fence.
-      if (observedConnectionGap) {
+      if (!observedConnectionGap) return;
+      // Without a re-attach a connection gap cannot heal: the next
+      // "connected" state fails this reconciler. Fail now, before
+      // authority-dependent work (a submission) waits inside the client's
+      // reconnect and reaches the restarted daemon after the fence.
+      const pending = recovery;
+      if (pending === null) {
         fail(
           new Error(
             "daemon disconnected and cannot resume without an authoritative runtime-settings snapshot; re-attach is required",
           ),
         );
         if (failure !== null) throw failure;
+        return;
       }
+      // Wait for the daemon to come back and the session to attach again,
+      // so the work goes out under the restarted daemon's settings.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waitMs = params.reattachWaitMs ?? AGENC_DAEMON_REATTACH_WAIT_MS;
+      try {
+        await Promise.race([
+          pending.promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              const error = new Error(
+                `the daemon did not come back within ${Math.round(waitMs / 1_000)} s; ${AGENC_DAEMON_CONTINUE_HINT}`,
+              );
+              fail(error);
+              reject(failure ?? error);
+            }, waitMs);
+            (timer as { unref?: () => void }).unref?.();
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      await queue;
+      if (failure !== null) throw failure;
     },
     waitFor: async (eventId) => {
       if (eventId.length === 0) {
@@ -3228,4 +3440,17 @@ function connectionNoticeEvents(
 
 function isJsonObject(value: unknown): value is JsonObject {
   return isRecord(value);
+}
+
+/** The daemon restored the agent's records but not its runtime. */
+function isRecoveredWithoutRuntimeError(error: unknown): boolean {
+  if (
+    error instanceof AgenCDaemonResponseError &&
+    isJsonObject(error.data) &&
+    error.data.code === "BACKGROUND_RUNNER_UNAVAILABLE"
+  ) {
+    return true;
+  }
+  return error instanceof Error &&
+    /recovered without a live runtime/u.test(error.message);
 }
