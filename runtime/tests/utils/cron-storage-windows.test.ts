@@ -1,8 +1,8 @@
 import "../helpers/cron-os-home.js";
-import { readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { windowsCronRepairCommand } from "../../src/utils/cron-storage-directory.js";
@@ -93,6 +93,14 @@ let root: string;
 let workspace: string;
 let outside: string;
 
+/** What `assertWindowsPrivatePathSecurity` throws: a CLIXML reason on the PowerShell cause. */
+function verifierFailure(path: string, reason = "inherited ACL is unsupported"): Error {
+  return Object.assign(new Error(`Windows private-path validation failed for ${path}`), {
+    name: "WindowsPrivatePathSecurityError",
+    cause: { stderr: Buffer.from(`#< CLIXML <S S="Error">${reason}_x000D__x000A_</S>`) },
+  });
+}
+
 function installAclMock(): void {
   privatePaths.clear();
   acl.assertWindowsPrivatePathSecurity.mockReset();
@@ -107,7 +115,7 @@ function installAclMock(): void {
       return;
     }
     if (!privatePaths.has(key)) {
-      throw new Error(`private ACL missing for ${path}`);
+      throw verifierFailure(path);
     }
   });
 }
@@ -279,7 +287,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     const permissions = {
       code: "CRON_STORAGE_UNSAFE_ACL",
       message: expect.stringContaining(PERMISSIONS_ERROR),
-      cause: expect.objectContaining({ message: expect.stringContaining("private ACL missing") }),
+      cause: expect.objectContaining({ name: "WindowsPrivatePathSecurityError" }),
     };
     await expect(withCronStorage(workspace, false, (storage) => storage.read())).rejects.toMatchObject(permissions);
     await expect(withCronStorage(workspace, true, async (storage) => {
@@ -299,9 +307,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     await expect(writeRecord()).rejects.toMatchObject({
       code: "CRON_STORAGE_UNSAFE_ACL",
       message: expect.stringContaining(PERMISSIONS_ERROR),
-      cause: expect.objectContaining({
-        message: expect.stringContaining("private ACL missing"),
-      }),
+      cause: expect.objectContaining({ name: "WindowsPrivatePathSecurityError" }),
     });
     expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
       expect.stringMatching(/\.agenc$/u), "directory", false,
@@ -353,7 +359,7 @@ describe("Windows cron storage uses private-path persistence", () => {
       cause: expect.objectContaining({ name: "ConfinedIoError" }),
     });
     await expect(readCronTasks(workspace)).rejects.toThrow(
-      `The task file was left unchanged. To give only the current user full control of ${directory}`,
+      `(inherited ACL is unsupported). The task file was left unchanged. To make ${directory} and everything in it private`,
     );
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe("unsafe");
@@ -397,39 +403,133 @@ describe("Windows cron storage uses private-path persistence", () => {
     writeFileSync(record, body);
     const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
     expect(error.message).toBe(
-      `${PERMISSIONS_ERROR}: ${directory} has a Windows ACL that is not private to the current user, and it was left unchanged. ` +
-      `To give only the current user full control of ${directory} and everything in it (its parent is not ` +
-      `changed), run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`,
+      `${PERMISSIONS_ERROR}: ${directory} has a Windows ACL that is not private to the current user ` +
+      "(inherited ACL is unsupported), and it was left unchanged. " +
+      `To make ${directory} and everything in it private to the current user (junctions, symbolic links and ` +
+      "hard-linked files inside it are skipped, its parent is not changed, and the script stops at the first " +
+      `error), run this in PowerShell, then retry: ${windowsCronRepairCommand(directory)}`,
     );
     expect(aclMutations()).toHaveLength(0);
     expect(await readFile(record, "utf8")).toBe(body);
   });
 
   test("quotes the repair path as one PowerShell literal", () => {
-    const directory = "C:\\Users\\Ty L\\it's $x & y (1) ;`b %PATH% [z] \u2019q\u2018\\.agenc";
-    const literal = "'C:\\Users\\Ty L\\it''s $x & y (1) ;`b %PATH% [z] \u2019\u2019q\u2018\u2018\\.agenc'";
-    expect(windowsCronRepairCommand(directory)).toBe(
-      "$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " +
-      `icacls ${literal} /setowner "*$u" /T /Q; ` +
-      `icacls ${literal} /reset /T /Q; ` +
-      `icacls ${literal} /inheritance:r /grant:r "*\${u}:(OI)(CI)F" /Q; ` +
-      `icacls ${literal} /inheritance:d /T /Q`,
+    const directory = "C:\\Users\\Ty L\\it's $x & y (1) ;`b %PATH% [z] ^ \u00e9 \u2019q\u2018\u201a\u201b\\.agenc";
+    const literal = "'C:\\Users\\Ty L\\it''s $x & y (1) ;`b %PATH% [z] ^ \u00e9 \u2019\u2019q\u2018\u2018\u201a\u201a\u201b\u201b\\.agenc'";
+    const command = windowsCronRepairCommand(directory);
+    expect(command).toContain(`; $root = ${literal}; `);
+    // The path appears once, as that literal; everything else refers to $root.
+    expect(command.split("Users").length - 1).toBe(1);
+  });
+
+  test("repairs with one stop-on-error script that never follows links", () => {
+    const command = windowsCronRepairCommand("C:\\p\\.agenc");
+    // One script block that stops at the first error; no native tool whose exit code could be missed.
+    expect(command.startsWith("& { $ErrorActionPreference = 'Stop'; ")).toBe(true);
+    expect(command.endsWith(" }")).toBe(true);
+    expect(command).not.toMatch(/icacls|takeown|cacls|\/T\b/iu);
+    // No API that rewrites the inherited entries of existing children (SetNamedSecurityInfo).
+    expect(command).not.toMatch(/Set-Acl|SetAccessControl\(/u);
+    expect(command).toContain("[AgencCronRepair.Native]::SetFileSecurityW($path, 0x80000005, $acl.GetSecurityDescriptorBinaryForm())");
+    expect(command).toContain("throw (New-Object ComponentModel.Win32Exception(");
+    // .agenc itself must be a real directory.
+    const refuseRoot = command.indexOf("if (($a -band $link) -ne 0 -or ($a -band $folder) -eq 0) { throw ");
+    const lockRoot = command.indexOf("& $private $root $true");
+    expect(refuseRoot).toBeGreaterThan(0);
+    expect(lockRoot).toBeGreaterThan(refuseRoot);
+    expect(command.indexOf("$todo.Push($root)")).toBeGreaterThan(lockRoot);
+    // Explicit stack: a reparse point is skipped before any write or descent;
+    // a directory is made private before it is pushed and listed.
+    const loop = command.slice(command.indexOf("while ($todo.Count -gt 0)"));
+    const skipLink = loop.indexOf("if (($a -band $link) -ne 0) { Write-Warning");
+    expect(skipLink).toBeGreaterThan(0);
+    expect(loop.indexOf("& $private $path $true; $todo.Push($path)")).toBeGreaterThan(skipLink);
+    expect(loop.indexOf("LinkType -eq 'HardLink') { Write-Warning")).toBeGreaterThan(skipLink);
+    expect(loop.indexOf("else { & $private $path $false }")).toBeGreaterThan(loop.indexOf("'HardLink'"));
+    expect(command).not.toMatch(/-Recurse|GetDirectories|EnumerateFileSystemEntries\([^)]*AllDirectories/u);
+    // The descriptor workflow-private-path.ts writes.
+    expect(command).toContain("$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false)");
+    expect(command).toContain("$inherit = 'ContainerInherit, ObjectInherit'");
+    expect(command).toContain("$inherit = 'None'");
+    expect(command).toContain("FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')");
+  });
+
+  test("documents the same repair script the error prints", async () => {
+    const docs = await readFile(resolve(__dirname, "../../../docs/durable-cron-storage.md"), "utf8");
+    const block = docs.match(/```powershell\n([^\n]+)\n```/u)?.[1];
+    expect(block).toBe(windowsCronRepairCommand("C:\\src\\my project\\.agenc"));
+  });
+
+  test("offers no ACL repair for a linked or non-regular task file", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    privatePaths.add(`directory\0${directory}`);
+    const record = join(directory, "scheduled_tasks.json");
+    const planted = join(outside, "planted.json");
+    writeFileSync(planted, body);
+    for (const plant of [() => symlinkSync(planted, record), () => linkSync(planted, record)]) {
+      plant();
+      const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+      expect(error.message).toBe(
+        `${PERMISSIONS_ERROR}: ${record} is a symbolic link, a junction, a hard-linked file or not a regular ` +
+        "entry, and it was left unchanged. Remove it, or replace it with a regular file or directory, then retry.",
+      );
+      expect(error.message).not.toContain("PowerShell");
+      expect(await readFile(planted, "utf8")).toBe(body);
+      unlinkSync(record);
+    }
+    expect(aclMutations()).toHaveLength(0);
+  });
+
+  test("offers no ACL repair when the verifier fails for a reason it does not name", async () => {
+    acl.assertWindowsPrivatePathSecurity.mockImplementation(() => {
+      throw Object.assign(new Error("Windows private-path validation failed"), {
+        name: "WindowsPrivatePathSecurityError",
+        cause: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+      });
+    });
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+    expect(error.message).toBe(
+      `${PERMISSIONS_ERROR}: ${directory} could not be verified as private to the current user ` +
+      "(Windows private-path validation failed), and it was left unchanged.",
     );
   });
 
+  test("names the task file and the repair when it cannot be inspected after the directory verified", async () => {
+    const directory = metadataDirectory();
+    await mkdir(directory, { mode: 0o700 });
+    privatePaths.add(`directory\0${directory}`);
+    const record = join(directory, "scheduled_tasks.json");
+    writeFileSync(record, body);
+    for (const code of ["EACCES", "EPERM"]) {
+      fsHooks.lstat = (path) => path === record
+        ? Object.assign(new Error(`${code}: operation not permitted, lstat '${path}'`), { code, path })
+        : undefined;
+      const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ name: "CronStorageAclError", code: "CRON_STORAGE_UNSAFE_ACL", cause: { code } });
+      expect(error.message).toContain(`${PERMISSIONS_ERROR}: ${record} could not be inspected (${code}), and it was left unchanged.`);
+      expect(error.message).toContain(`run this in PowerShell (elevated if access is denied), then retry: ${windowsCronRepairCommand(directory)}`);
+    }
+    expect(aclMutations()).toHaveLength(0);
+    expect(await readFile(record, "utf8")).toBe(body);
+  });
+
   test("names the repair when a created metadata directory cannot be made private", async () => {
-    acl.assertWindowsPrivatePathSecurity.mockImplementation((path: string, role: string, initialize: boolean) => {
-      if (initialize) throw new Error("SetAccessControl failed");
-      throw new Error(`private ACL missing for ${path} as ${role}`);
+    acl.assertWindowsPrivatePathSecurity.mockImplementation((path: string) => {
+      throw verifierFailure(path, "current-user full-control ACE is missing");
     });
     const directory = metadataDirectory();
-    await expect(writeRecord()).rejects.toMatchObject({
-      code: "CRON_STORAGE_UNSAFE_ACL",
-      message: expect.stringContaining(
-        `${PERMISSIONS_ERROR}: ${directory} was created, but its private Windows ACL could not be set. ` +
-        `Remove that empty directory, or repair it. To give only the current user full control of ${directory}`,
-      ),
-    });
+    const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+    expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(error.message).toContain(
+      `${PERMISSIONS_ERROR}: ${directory} was created, but it could not be made private to the current user ` +
+      "(current-user full-control ACE is missing). Remove that directory, or repair it, then retry. " +
+      `To make ${directory} and everything in it private`,
+    );
+    expect(error.message).not.toContain("empty");
     expect(await readdir(directory)).toEqual([]);
     expect(aclMutations()).toHaveLength(1);
     // The next call sees an existing directory: it validates only and still names the repair.
@@ -454,7 +554,7 @@ describe("Windows cron storage uses private-path persistence", () => {
     await mkdir(directory, { mode: 0o700 });
     const error = await readCronTasks(workspace).catch((caught: unknown) => caught) as Error;
     expect(error.message).toContain(`${directory} is on a volume that Windows durable cron storage does not support (NTFS is required)`);
-    expect(error.message).not.toContain("icacls");
+    expect(error.message).not.toContain("PowerShell");
   });
 
   test("startup restore stays quiet only when the task file is proven absent", async () => {
