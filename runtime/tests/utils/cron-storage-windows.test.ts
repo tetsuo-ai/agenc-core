@@ -15,6 +15,7 @@ const fsHooks = vi.hoisted(() => ({
   descriptorUnavailable: false,
   directorySyncError: undefined as NodeJS.ErrnoException | undefined,
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
+  agencCanonical: undefined as string | undefined,
   realpaths: [] as string[],
   opens: [] as string[],
 }));
@@ -32,6 +33,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       fsHooks.realpaths.push(path);
       if (fsHooks.descriptorUnavailable && /^\/(?:proc\/self\/fd|dev\/fd)\//u.test(path)) {
         throw Object.assign(new Error("No traversable descriptor alias"), { code: "ENOENT" });
+      }
+      if (fsHooks.agencCanonical !== undefined && path.endsWith(`${sep}.agenc`)) {
+        return fsHooks.agencCanonical;
       }
       return original.realpath(...args);
     },
@@ -97,6 +101,7 @@ beforeEach(async () => {
   fsHooks.descriptorUnavailable = false;
   fsHooks.directorySyncError = undefined;
   fsHooks.beforeRename = undefined;
+  fsHooks.agencCanonical = undefined;
   fsHooks.realpaths = [];
   fsHooks.opens = [];
   root = await mkdtemp(join(tmpdir(), "agenc-cron-windows-"));
@@ -196,6 +201,21 @@ describe("Windows cron storage uses private-path persistence", () => {
       throw new Error("inherited ACL is unsupported");
     });
     await expect(writeRecord()).rejects.toThrow("inherited ACL is unsupported");
+    expect(await readdir(join(workspace, ".agenc")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    })).not.toContain("scheduled_tasks.json");
+  });
+
+  test("does not publish through a canonical metadata directory with a different inode", async () => {
+    const decoy = join(outside, "decoy");
+    await mkdir(decoy, { mode: 0o700 });
+    acl.assertWindowsPrivatePathSecurity(decoy, "directory", true);
+    fsHooks.agencCanonical = decoy;
+    await expect(writeRecord()).rejects.toThrow(
+      "Cron storage must be owned by the current user and not writable by other users",
+    );
+    expect(await readdir(decoy)).toEqual([]);
     expect(await readdir(join(workspace, ".agenc")).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
       throw error;

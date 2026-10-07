@@ -108,8 +108,9 @@ const OWNERSHIP_ERROR = "Cron storage must be owned by the current user and not 
  * Windows has no traversable directory descriptor. `.agenc` is the private
  * root: its ACL is initialized by the workflow handoff helper, then reads
  * and writes stay inside `windows-private-path`. The project workspace keeps
- * its inherited DACL; publication rechecks that directory's device and inode
- * so a swapped workspace cannot redirect the private root.
+ * its inherited DACL. Publication rechecks the workspace device and inode,
+ * and both the lexical and canonical `.agenc` directories must stay the
+ * ACL-checked inode so a junction or swapped path cannot redirect the root.
  */
 async function withWindowsCronStorageDirectory<Result>(
   workspacePathResolved: string,
@@ -138,20 +139,24 @@ async function withWindowsCronStorageDirectory<Result>(
     }
     createdInfo = await lstat(directory, { bigint: true });
   }
-  if (!createdInfo.isDirectory() || createdInfo.isSymbolicLink()) {
+  if (createdInfo === undefined || !createdInfo.isDirectory() || createdInfo.isSymbolicLink()) {
     throw new Error(OWNERSHIP_ERROR);
   }
+  const directoryInfo = createdInfo;
   await assertRealDirectory(workspacePathResolved, workspaceInfo);
   ensureWindowsPrivateDirectory(directory);
   try {
     return await withConfinedDirectory(directory, WINDOWS_STORAGE_POLICY, async (bound) => {
       await bound.verify();
-      const boundInfo = await lstat(bound.canonicalPath, { bigint: true });
-      if (!boundInfo.isDirectory() || boundInfo.isSymbolicLink()) throw new Error(OWNERSHIP_ERROR);
+      // realpath follows Windows junctions. The confined root is usable only
+      // when that result is still the directory whose ACL was just checked.
+      const boundInfo = await assertRealDirectory(bound.canonicalPath, directoryInfo);
+      await assertRealDirectory(directory, directoryInfo);
       const verify = async () => {
         await bound.verify();
         await assertRealDirectory(workspacePathResolved, workspaceInfo);
         await assertRealDirectory(bound.canonicalPath, boundInfo);
+        await assertRealDirectory(directory, directoryInfo);
       };
       return operation({
         directory: bound,
