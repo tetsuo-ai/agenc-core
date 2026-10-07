@@ -75,14 +75,18 @@ describe('turn compatibility exec lifetime', () => {
       const polled = await f.manager.writeStdin({ session_id: command.session_id!, ownerId: 'compat-child',
         ownerBinding: second.session.unifiedExecOwnerBinding, yield_time_ms: 1 })
       expect(polled.session_id).toBe(command.session_id)
+      const releaseResources = vi.fn()
+      second.session.registerShutdownResourceRelease(releaseResources)
       await second.session.shutdown()
+      expect(releaseResources).toHaveBeenCalledOnce()
       await second.disposeOwnedProvider()
       expect(f.manager.listOwnedProcesses({ ownerId: 'compat-child' })[0]?.status).toBe('killed')
       expect(f.manager.listOwnedProcesses({ ownerId: 'compat-grandchild' })[0]?.status).toBe('killed')
       const third = await f.create()
-      const teardown = vi.spyOn(second.session, 'abortAllTasks')
+      const teardown = vi.spyOn(second.session.conversation, 'shutdown')
       await second.session.shutdown()
       expect(teardown).not.toHaveBeenCalled()
+      expect(releaseResources).toHaveBeenCalledOnce()
       expect(() => f.manager.assertOwnerAdmission('compat-child', third.session.unifiedExecOwnerBinding)).not.toThrow()
       // The replacement may collect settled output but must not write to it.
       await expect(f.manager.writeStdin({ session_id: command.session_id!, ownerId: 'compat-child',

@@ -134,7 +134,7 @@ describe("borrowed exec owner lifetimes", () => {
   it("invalidates a pending PTY load even across successful same-id replacement", async () => {
     const old = manager.createOwnerLifetime("child").bind();
     let finishLoad!: (value: { spawn: ReturnType<typeof vi.fn> }) => void;
-    const spawn = vi.fn();
+    const spawn = vi.fn(() => { throw new Error("unexpected late PTY spawn"); });
     const loadPty = vi.fn(() => new Promise(resolve => { finishLoad = resolve; }));
     Object.assign(manager, { loadPty });
     const pending = manager.execCommand({ cmd: "true", tty: true, ownerId: "child", ownerBinding: old });
@@ -143,8 +143,10 @@ describe("borrowed exec owner lifetimes", () => {
     await old.prepareForDurableClose();
     manager.createOwnerLifetime("child").bind();
     finishLoad({ spawn });
-    await expect(pending).rejects.toThrow(/lifetime/);
+    const rejected = await pending.catch(error => error);
     expect(spawn).not.toHaveBeenCalled();
+    expect(rejected).toBeInstanceOf(Error);
+    expect(rejected.message).toMatch(/lifetime/);
   });
 
   it("rejects a captured native handoff after close and replacement", async () => {
