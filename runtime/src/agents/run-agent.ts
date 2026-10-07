@@ -38,6 +38,8 @@ import { attachReadOnlyDelegationReadGuard } from "../permissions/readonly-read-
 import { LRUCache } from "lru-cache";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { recordChildRoutingOutcome } from "./child-routing.js";
+import { childRoutingSupervisorCanFallback } from "./child-routing-retries.js";
+import { childFailureAllowsFallback } from "./child-routing-fallback.js";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
@@ -160,7 +162,7 @@ import {
   isFinal,
   type AgentStatus,
 } from "./status.js";
-import { childDispatchCertainty, childTerminalOutcome, type ChildTerminalOutcome, type ChildTerminalReason } from "./child-terminal.js";
+import { childDispatchCertainty, childTerminalOutcome, classifyChildFailure, type ChildTerminalOutcome, type ChildTerminalReason } from "./child-terminal.js";
 import { asRecord } from "../utils/record.js";
 import {
   attachSandboxExecutionBroker,
@@ -4043,7 +4045,8 @@ export async function* runAgent(
       ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
     };
     if (receiptToCommit.terminal !== undefined) {
-      await recordChildRoutingOutcome(parent, live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan, {
+      // Best-effort telemetry. The receipt never waits for this file.
+      void recordChildRoutingOutcome(parent, live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan, {
         receiptId: `${live.agentId}:${receiptToCommit.turnId}`, terminal: receiptToCommit.terminal,
         latencyMs: Math.max(0, Date.now() - taskStartedAt),
       });
@@ -4627,7 +4630,16 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
-        automaticChildRouting: (live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan)?.routing !== undefined,
+        // Only while a live routing supervisor could still retry this task on
+        // another provider: no tool call yet, still in the spawning turn, and
+        // a failure it acts on. A stall keeps its stall retry. A restored
+        // child has no supervisor and keeps ordinary retries.
+        childRoutingOwnsRetries: (error) => {
+          const taskPlan = live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan;
+          return taskPlan?.routing !== undefined && taskPlan.task.id === currentTaskId &&
+            currentTurnToolCallCount === 0 && childRoutingSupervisorCanFallback(live) &&
+            childFailureAllowsFallback(classifyChildFailure(taskPlan.destination.provider, error));
+        },
         exactOutput,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
@@ -5308,7 +5320,8 @@ export async function* runAgent(
             ...(committedReceipt.terminal !== undefined ? { terminal: committedReceipt.terminal } : {}),
           };
           if (committedReceipt.terminal !== undefined) {
-            await recordChildRoutingOutcome(parent, live.metadata.executionPlan ?? params.plan, {
+            // Best-effort telemetry. The receipt never waits for this file.
+            void recordChildRoutingOutcome(parent, live.metadata.executionPlan ?? params.plan, {
               receiptId: `${live.agentId}:${committedReceipt.turnId}`, terminal: committedReceipt.terminal,
               latencyMs: Math.max(0, Date.now() - taskStartedAt),
             });

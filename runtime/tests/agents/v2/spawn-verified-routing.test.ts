@@ -22,7 +22,7 @@ describe("host verification through spawn_agent", () => {
     const value = await fixture();
     let checks = 0;
     const check = vi.fn(async () => ++checks === 1 ? "fail" as const : "pass" as const);
-    const pairs = ["deepseek/deepseek-flash", "deepseek/deepseek-v4-flash", "openai/gpt-6-luna", "openai/gpt-5.4-nano"];
+    const pairs = ["grok/grok-4.6", "deepseek/deepseek-flash", "deepseek/deepseek-v4-flash", "openai/gpt-6-luna", "openai/gpt-5.4-nano"];
     Object.assign(value.session.services, { childRoutingVerifier: { prepare: async () => ({ available: true,
       retrySafe: true, costUsd: 0, latencyMs: 0, targetQuality: 0.75,
       conditional: pairs.flatMap(first => pairs.filter(second => second !== first).map(second => ({ first, second, failures: 10, recovered: 10 }))), check }) } });

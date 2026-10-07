@@ -2,6 +2,7 @@ import { abilityPrior, updateAbility, validAbility, validFeatures, type TaskFeat
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { lock } from "../utils/lockfile.js";
 import { CHILD_ROUTING_PROFILE_REVISION } from "./provider-selector-profiles.js";
 import { CHILD_TASK_COMPLEXITIES, CHILD_TASK_KINDS } from "./provider-selector-types.js";
 import type { ChildProviderHealth, ChildRoutingAggregate, ChildRoutingOutcome, ChildRoutingSnapshot } from "./provider-selector-types.js";
@@ -104,7 +105,8 @@ function validOutcome(item: ChildRoutingOutcome): boolean {
     (!item.success || item.terminalReason === "completed") &&
     (item.verifiedSuccess === undefined || typeof item.verifiedSuccess === "boolean") &&
     (item.features === undefined || validFeatures(item.features)) &&
-    (item.costUsd === undefined || finite(item.costUsd)) && (item.retryAfterMs === undefined || finite(item.retryAfterMs));
+    (item.costUsd === undefined || finite(item.costUsd)) && (item.retryAfterMs === undefined || finite(item.retryAfterMs)) &&
+    (item.retryable === undefined || typeof item.retryable === "boolean");
 }
 
 function aggregateKey(item: Pick<ChildRoutingAggregate, "provider" | "model" | "taskKind" | "complexity" | "profileRevision">): string {
@@ -139,7 +141,8 @@ function applyOutcome(history: StoredHistory, item: ChildRoutingOutcome): Stored
   } else if (item.terminalReason === "insufficient_funds" || item.terminalReason === "auth_required") {
     health.push({ provider: item.provider, blockedReason: item.terminalReason,
       cooldownUntilMs: 0, consecutiveFailures: failures, lastObservedAtMs: item.atMs });
-  } else if (!item.success && ["rate_limited", "provider_unavailable", "timeout"].includes(item.terminalReason)) {
+  } else if (!item.success && item.retryable !== false &&
+      ["rate_limited", "provider_unavailable", "timeout"].includes(item.terminalReason)) {
     const base = item.terminalReason === "rate_limited" ? 30_000 : 5_000;
     const delay = Math.max(item.retryAfterMs ?? 0, Math.min(15 * 60_000, base * 2 ** Math.min(failures - 1, 8)));
     health.push({ provider: item.provider, consecutiveFailures: failures,
@@ -175,7 +178,33 @@ function updatedAbilities(abilities: readonly ModelAbility[], provider: string, 
   return [...abilities.filter(item => !matches(item)), updateAbility(prior, features, passed)].slice(-MAX_AGGREGATES);
 }
 
-/** One installation-owned instance. The caller supplies a private state path. */
+function hasProviderFailure(history: StoredHistory, provider: string): boolean {
+  const entry = history.health.find(item => item.provider === provider);
+  return entry !== undefined && (entry.cooldownUntilMs > 0 || entry.consecutiveFailures > 0 || entry.blockedReason !== undefined);
+}
+
+async function readHistoryFile(filePath: string): Promise<{ readonly history: StoredHistory; readonly invalid: boolean }> {
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { history: emptyHistory(), invalid: false };
+    throw error;
+  }
+  try {
+    const data = Buffer.alloc(MAX_FILE_BYTES + 1);
+    const { bytesRead } = await handle.read(data, 0, data.length, 0);
+    const parsed = bytesRead <= MAX_FILE_BYTES ? parseHistory(data.subarray(0, bytesRead).toString("utf8")) : undefined;
+    return { history: parsed ?? emptyHistory(), invalid: parsed === undefined };
+  } finally { await handle.close(); }
+}
+
+/**
+ * One instance per process and state path. The TUI and the daemon can share
+ * an AgenC home, so every write rereads the file under a lock, merges into
+ * what is there and replaces it atomically. A write that cannot get the lock
+ * in time is dropped: this is routing telemetry, never a durable receipt.
+ */
 export class ChildRoutingOutcomeStore {
   #history: StoredHistory;
   #pending: Promise<unknown> = Promise.resolve();
@@ -187,18 +216,8 @@ export class ChildRoutingOutcomeStore {
   }
 
   static async open(filePath: string): Promise<ChildRoutingOutcomeStore> {
-    try {
-      const handle = await open(filePath, "r");
-      try {
-        const data = Buffer.alloc(MAX_FILE_BYTES + 1);
-        const { bytesRead } = await handle.read(data, 0, data.length, 0);
-        const parsed = bytesRead <= MAX_FILE_BYTES ? parseHistory(data.subarray(0, bytesRead).toString("utf8")) : undefined;
-        return new ChildRoutingOutcomeStore(filePath, parsed ?? emptyHistory(), parsed === undefined);
-      } finally { await handle.close(); }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new ChildRoutingOutcomeStore(filePath, emptyHistory(), false);
-      throw error;
-    }
+    const { history, invalid } = await readHistoryFile(filePath);
+    return new ChildRoutingOutcomeStore(filePath, history, invalid);
   }
 
   snapshot(): ChildRoutingSnapshot {
@@ -206,16 +225,23 @@ export class ChildRoutingOutcomeStore {
       ...(this.#history.abilities?.length ? { abilities: this.#history.abilities } : {}) });
   }
 
+  /** Reread the shared file so outcomes another process recorded count too. */
+  refresh(): Promise<void> {
+    const pending = this.#pending.then(async () => {
+      this.#history = (await readHistoryFile(this.filePath)).history;
+    });
+    this.#pending = pending.catch(() => undefined);
+    return pending.catch(() => undefined);
+  }
+
   /** Serializes concurrent children and commits a receipt only after atomic persistence. */
   record(outcome: ChildRoutingOutcome): Promise<boolean> {
     const item = { ...outcome };
     const pending = this.#pending.then(async () => {
       if (!validOutcome(item)) throw new Error("Invalid child routing outcome");
-      if (item.atMs <= this.#history.receiptFloorMs || this.#history.receipts.some(receipt => receipt.id === item.receiptId)) return false;
-      const next = applyOutcome(this.#history, item);
-      await this.#persist(next);
-      this.#history = next;
-      return true;
+      return this.#update(history =>
+        item.atMs <= history.receiptFloorMs || history.receipts.some(receipt => receipt.id === item.receiptId)
+          ? undefined : applyOutcome(history, item));
     });
     this.#pending = pending.catch(() => undefined);
     return pending;
@@ -229,36 +255,57 @@ export class ChildRoutingOutcomeStore {
       const id = `verified:${item.receiptId}`;
       if (!identity(id) || !identity(item.provider) || !identity(item.model) || !validFeatures(item.features) ||
           typeof item.passed !== "boolean" || !finite(item.atMs)) throw new Error("Invalid independent verdict");
-      if (item.atMs <= this.#history.receiptFloorMs || this.#history.receipts.some(receipt => receipt.id === id)) return false;
-      const receipts = [...this.#history.receipts, { id, atMs: item.atMs }].sort((a, b) => a.atMs - b.atMs);
-      const removed = receipts.slice(0, Math.max(0, receipts.length - MAX_RECEIPTS));
-      const next: StoredHistory = { ...this.#history,
-        abilities: updatedAbilities(this.#history.abilities ?? [], item.provider, item.model, item.features, item.passed),
-        receipts: receipts.slice(-MAX_RECEIPTS),
-        receiptFloorMs: Math.max(this.#history.receiptFloorMs, ...removed.map(receipt => receipt.atMs)) };
-      await this.#persist(next);
-      this.#history = next;
-      return true;
+      return this.#update(history => {
+        if (item.atMs <= history.receiptFloorMs || history.receipts.some(receipt => receipt.id === id)) return undefined;
+        const receipts = [...history.receipts, { id, atMs: item.atMs }]
+          .sort((left, right) => left.atMs - right.atMs || left.id.localeCompare(right.id));
+        const removed = receipts.slice(0, Math.max(0, receipts.length - MAX_RECEIPTS));
+        return { ...history,
+          abilities: updatedAbilities(history.abilities ?? [], item.provider, item.model, item.features, item.passed),
+          receipts: receipts.slice(-MAX_RECEIPTS),
+          receiptFloorMs: Math.max(history.receiptFloorMs, ...removed.map(receipt => receipt.atMs)) };
+      });
     });
     this.#pending = pending.catch(() => undefined);
     return pending;
   }
 
-  /** Call after an explicit reconnect or retry. Funds/auth failures never expire silently. */
+  /**
+   * Call when a provider served a child again, or after an explicit reconnect.
+   * Funds/auth failures never expire silently. Writes nothing when the
+   * provider has no recorded failure.
+   */
   clearProviderFailure(provider: string, nowMs = Date.now()): Promise<void> {
     const pending = this.#pending.then(async () => {
       if (!identity(provider) || !finite(nowMs)) throw new Error("Invalid provider recovery evidence");
-      const next = { ...this.#history, health: [...this.#history.health.filter(item => item.provider !== provider),
-        { provider, cooldownUntilMs: 0, consecutiveFailures: 0, lastObservedAtMs: nowMs }].slice(-MAX_HEALTH) };
-      await this.#persist(next);
-      this.#history = next;
+      await this.#update(history => !hasProviderFailure(history, provider) ? undefined : {
+        ...history, health: [...history.health.filter(item => item.provider !== provider),
+          { provider, cooldownUntilMs: 0, consecutiveFailures: 0, lastObservedAtMs: nowMs }].slice(-MAX_HEALTH) });
     });
     this.#pending = pending.catch(() => undefined);
     return pending;
   }
 
-  async #persist(history: StoredHistory): Promise<void> {
+  async #update(change: (history: StoredHistory) => StoredHistory | undefined): Promise<boolean> {
     await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
+    const release = await lock(this.filePath, {
+      realpath: false, stale: 10_000,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+      // A lost lock must not throw from a timer in a long-lived process.
+      onCompromised: () => {},
+    });
+    try {
+      const current = (await readHistoryFile(this.filePath)).history;
+      const next = change(current);
+      if (next !== undefined) await this.#persist(next);
+      this.#history = next ?? current;
+      return next !== undefined;
+    } finally {
+      await release().catch(() => {});
+    }
+  }
+
+  async #persist(history: StoredHistory): Promise<void> {
     const temporary = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(history), { mode: 0o600, flag: "wx" });

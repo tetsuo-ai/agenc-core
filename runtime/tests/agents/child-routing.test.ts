@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
 import { routeChildTask, childRoutingBudget, recordChildRoutingOutcome } from "../../src/agents/child-routing.js";
+import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
 function fixture(connected: readonly string[], allowed = ["deepseek", "openai"]) {
@@ -19,6 +20,64 @@ function fixture(connected: readonly string[], allowed = ["deepseek", "openai"])
   } as unknown as Session;
   return { session, readiness };
 }
+
+const completed = { provider: "deepseek", model: "deepseek-flash", reason: "completed" as const,
+  retryable: false, dispatch: "sent" as const, completedWork: "Names", unfinishedWork: "" };
+
+async function withHome(run: (home: string) => Promise<void>): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), "child-routing-outcomes-"));
+  try { await run(home); } finally { await rm(home, { recursive: true, force: true }); }
+}
+
+describe("child routing outcome file", () => {
+  it.each([
+    ["off", { cross_provider_enabled: false, cross_provider_auto: false }],
+    ["cross-provider only", { cross_provider_enabled: true, cross_provider_auto: false }],
+    ["automatic choice only", { cross_provider_enabled: false, cross_provider_auto: true }],
+  ] as const)("writes nothing while automatic selection is %s", async (_name, agents) => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home }, current: () => ({ agents }) });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "planned", terminal: completed, latencyMs: 2 });
+      await recordChildRoutingOutcome(session, undefined, { receiptId: "inherited", terminal: completed, latencyMs: 2 });
+      await expect(stat(join(home, "state"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("does not cool down a provider for the child's own role timeout", async () => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home } });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "role-timeout", latencyMs: 2,
+        terminal: { ...completed, reason: "timeout", retryable: false, dispatch: "unknown" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected?.provider).toBe("deepseek");
+      await recordChildRoutingOutcome(session, plan, { receiptId: "provider-timeout", latencyMs: 2,
+        terminal: { ...completed, reason: "timeout", retryable: true, dispatch: "unknown" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.rejected)
+        .toContainEqual(expect.objectContaining({ provider: "deepseek", reason: "provider_cooldown" }));
+    });
+  });
+
+  it("clears a provider's failure when a child without a routing plan completes on it", async () => {
+    await withHome(async home => {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home } });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      await recordChildRoutingOutcome(session, plan, { receiptId: "throttled", latencyMs: 2,
+        terminal: { ...completed, reason: "rate_limited", retryable: true, retryAfterMs: 600_000, dispatch: "sent" } });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected).toBeUndefined();
+      await recordChildRoutingOutcome(session, undefined, { receiptId: "explicit-child", terminal: completed, latencyMs: 2 });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected?.provider).toBe("deepseek");
+      const history = JSON.parse(await readFile(join(home, "state", "child-routing-outcomes.json"), "utf8")) as {
+        aggregates: unknown[]; health: { provider: string; consecutiveFailures: number }[] };
+      // The unplanned child changed provider health only.
+      expect(history.aggregates).toHaveLength(1);
+      expect(history.health).toContainEqual(expect.objectContaining({ provider: "deepseek", consecutiveFailures: 0 }));
+    });
+  });
+});
 
 describe("child routing integration", () => {
   it("an explicit successful child restores a provider after its funds block", async () => {
@@ -45,11 +104,21 @@ describe("child routing integration", () => {
     expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
     expect(routed.task.inputTokens).toBeGreaterThan(16_384);
     expect(readiness.mock.calls.filter(([pair]) => pair.provider === "deepseek")).toHaveLength(1);
-    expect(routed.result.ranked.every(pair => pair.provider === "deepseek")).toBe(true);
+    expect(routed.result.ranked.every(pair => pair.provider === "deepseek" || pair.provider === "grok")).toBe(true);
   });
-  it("does not inherit a disallowed parent when all allowed providers are disconnected", async () => {
+  it("finds nothing when allowed providers are disconnected and the parent model does not fit", async () => {
+    // This stub parent model has no context window, so it cannot qualify.
     const { session } = fixture([]);
     expect((await routeChildTask(session, { prompt: "Review a small function" })).result.selected).toBeUndefined();
+  });
+  it("counts the parent's own model as a candidate when its provider is not allowed", async () => {
+    const { session } = fixture([]);
+    const config = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6" };
+    Object.assign(session, { modelInfo: await new StaticModelsManager({ config, fallbackProvider: "grok", metadata: { env: {} } })
+      .getModelInfo("grok-4.6") });
+    const routed = await routeChildTask(session, { prompt: "Review a small function" });
+    expect(routed.result.selected).toMatchObject({ provider: "grok", model: "grok-4.6" });
+    expect(routed.result.ranked.map(pair => pair.provider)).toEqual(["grok"]);
   });
   it("uses catalog vision capabilities and refuses undersized context", async () => {
     const { session } = fixture(["deepseek"]);

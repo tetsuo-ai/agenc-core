@@ -24,7 +24,8 @@ describe("initial automatic selection authority", () => {
       return originalRequest(...requestArgs);
     });
     value.finishFirst("rate_limited");
-    await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalledTimes(2));
+    // The first child runs on the parent's provider; the retry is the first to ask.
+    await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalledOnce());
     cancelled.abort();
     consentReady();
     await vi.waitFor(() => expect(value.queuedMessages.some(message =>
@@ -114,7 +115,9 @@ describe("initial automatic selection authority", () => {
       await pending;
       return originalRequest(...requestArgs);
     });
-    const result = value.tool.execute(args);
+    // The parent model's 500k window cannot hold this context, so the
+    // initial choice is another provider and needs consent.
+    const result = value.tool.execute({ ...args, context_tokens: 600_000 });
     await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalled());
     value.changeTurn("new-human-turn");
     consentReady();

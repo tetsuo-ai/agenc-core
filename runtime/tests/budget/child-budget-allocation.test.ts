@@ -126,6 +126,30 @@ describe("durable child allocations", () => {
     await expect(acquire(next, "worker-cap", 1.2)).rejects.toMatchObject(exceeded);
   });
 
+  it("rebinds a depth-2 agent after restart while its worker is idle or on another task", async () => {
+    const before = kernel();
+    const worker = root(before, 3).forSession({ runId: "worker", sessionId: "worker" });
+    const task = worker.forSession({ sessionId: "worker", taskId: "first", maxCostUsd: 1 });
+    // The nested child is spawned while the worker runs its first task.
+    const nested = task.forSession({ runId: "nested", sessionId: "nested", maxCostUsd: 2 });
+    await expect(acquire(nested, "over-task", 1.2)).rejects.toMatchObject(exceeded);
+    reconcile(nested, await acquire(nested, "within-task", 0.4), 0.4);
+    before.close();
+
+    const after = kernel();
+    expect(after.initializeExistingState().failures).toEqual([]);
+    const restoredWorker = root(after).forSession({ runId: "worker", sessionId: "worker" });
+    // Idle worker: no task allocation is bound when the child is restored.
+    const idle = restoredWorker.forSession({ runId: "nested", sessionId: "nested" });
+    expect(idle.scope).toMatchObject({ runId: "nested", parentRunId: "worker", maxCostUsd: 2 });
+    reconcile(idle, await acquire(idle, "after-restart", 0.1), 0.1);
+    // Worker on another task.
+    const other = restoredWorker.forSession({ sessionId: "worker", taskId: "second", maxCostUsd: 1 });
+    const rebound = other.forSession({ runId: "nested", sessionId: "nested" });
+    reconcile(rebound, await acquire(rebound, "on-second-task", 0.1), 0.1);
+    expect(restoredWorker.getUsageSummary?.()).toMatchObject({ costUsd: 0.6 });
+  });
+
   it("rejects invalid allocation limits and empty task identities at binding", () => {
     const parent = root(kernel());
     for (const maxCostUsd of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {

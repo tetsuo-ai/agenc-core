@@ -29,21 +29,42 @@ async function outcomeStore(session: Session): Promise<ChildRoutingOutcomeStore 
   catch { stores.delete(home); return undefined; }
 }
 
+/** Automatic child selection is on only when both settings are on. */
+export function automaticChildSelectionEnabled(session: Session): boolean {
+  const policy = childProviderPolicy(session);
+  return policy.cross_provider_enabled === true && policy.cross_provider_auto === true;
+}
+
+// The provider answered the child's requests, whatever became of the task.
+const PROVIDER_SERVED = new Set<ChildTerminalOutcome["reason"]>(["completed", "step_limit", "no_progress", "model_loop", "model_refused"]);
+
+/**
+ * Best-effort routing telemetry for one committed child receipt. Writes
+ * nothing while automatic selection is off. Callers do not await it, so the
+ * receipt never waits for this file.
+ */
 export async function recordChildRoutingOutcome(session: Session, plan: ChildExecutionPlan | undefined,
   outcome: { readonly receiptId: string; readonly terminal: ChildTerminalOutcome; readonly latencyMs: number }): Promise<void> {
-  if (plan === undefined) return;
-  // A successful explicit override can restore a provider after credits or
-  // credentials are repaired. Only verified quality labels train accuracy.
-  const classification = plan.routing ?? classifyChildTask(plan.task.text);
   try {
+    if (!automaticChildSelectionEnabled(session)) return;
     const store = await outcomeStore(session);
-    await store?.record({ receiptId: outcome.receiptId, provider: outcome.terminal.provider,
-      model: outcome.terminal.model, taskKind: "taskKind" in classification ? classification.taskKind : classification.kind, complexity: classification.complexity,
-      terminalReason: outcome.terminal.reason, success: outcome.terminal.reason === "completed",
-      latencyMs: outcome.latencyMs, atMs: Date.now(),
-      ...(outcome.terminal.costUsd !== undefined ? { costUsd: outcome.terminal.costUsd } : {}),
-      ...(outcome.terminal.retryAfterMs !== undefined ? { retryAfterMs: outcome.terminal.retryAfterMs } : {}),
-    });
+    if (store === undefined) return;
+    if (plan !== undefined) {
+      // Only verified quality labels train accuracy.
+      const classification = plan.routing ?? classifyChildTask(plan.task.text);
+      await store.record({ receiptId: outcome.receiptId, provider: outcome.terminal.provider,
+        model: outcome.terminal.model, taskKind: "taskKind" in classification ? classification.taskKind : classification.kind, complexity: classification.complexity,
+        terminalReason: outcome.terminal.reason, success: outcome.terminal.reason === "completed",
+        retryable: outcome.terminal.retryable, latencyMs: outcome.latencyMs, atMs: Date.now(),
+        ...(outcome.terminal.costUsd !== undefined ? { costUsd: outcome.terminal.costUsd } : {}),
+        ...(outcome.terminal.retryAfterMs !== undefined ? { retryAfterMs: outcome.terminal.retryAfterMs } : {}),
+      });
+    }
+    // Any child the provider served, explicit or inherited, shows that its
+    // credits, credentials and availability work again.
+    if (outcome.terminal.dispatch === "sent" && PROVIDER_SERVED.has(outcome.terminal.reason)) {
+      await store.clearProviderFailure(outcome.terminal.provider);
+    }
   } catch { /* Routing telemetry cannot invalidate a durable child receipt. */ }
 }
 
@@ -81,7 +102,9 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   readonly features: TaskFeatures;
   readonly verification?: TrustedChildVerification;
 }> {
-  const outcomes = request.outcomes ?? (await outcomeStore(session))?.snapshot();
+  const store = request.outcomes === undefined ? await outcomeStore(session) : undefined;
+  await store?.refresh();
+  const outcomes = request.outcomes ?? store?.snapshot();
   const inferred = classifyChildTask(request.prompt, request.role);
   const features = extractTaskFeatures(request.prompt, request.requiresTools ?? true);
   const verification = await session.services.childRoutingVerifier?.prepare({ prompt: request.prompt, features });
@@ -100,12 +123,18 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
     ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
   };
   const active = currentChildProvider(session);
+  const isParentModel = (pair: { readonly provider: string; readonly model: string }): boolean =>
+    pair.provider === active.provider && pair.model === active.model;
   const candidates: ChildProviderCandidate[] = [];
   // Read authority once per provider, then revalidate the exact model and
   // credentials during ordinary plan preparation after consent.
   const connected = new Map<string, Promise<{ readonly connected: boolean; readonly billingSource?: string }>>();
-  const pairs = allowedChildPairs(session).filter(pair => (pair.provider === active.provider && pair.model === active.model) ||
-    childModelProfile(pair.provider, pair.model) !== undefined);
+  // The parent's own model is always a candidate. It needs no entry in
+  // allowed_providers, because a child on it stays on the parent's provider,
+  // and no routing profile, because the selector keeps it as the default.
+  const allowedPairs = allowedChildPairs(session);
+  const pairs = [...allowedPairs, ...(allowedPairs.some(isParentModel) ? [] : [{ provider: active.provider, model: active.model }])]
+    .filter(pair => isParentModel(pair) || childModelProfile(pair.provider, pair.model) !== undefined);
   for (const pair of pairs) {
     if (!connected.has(pair.provider)) {
       connected.set(pair.provider, typeof session.providerService?.childProviderRoutingInfo === "function"
@@ -117,7 +146,12 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
     }
   }
   for (const pair of pairs) {
-    const authority = await connected.get(pair.provider);
+    const reported = await connected.get(pair.provider);
+    // The parent is running on its own model now. Keep only the billing
+    // source when the cross-provider readiness check excludes its provider.
+    const authority = isParentModel(pair)
+      ? { connected: true, ...(reported?.connected === true && reported.billingSource !== undefined ? { billingSource: reported.billingSource } : {}) }
+      : reported;
     if (!authority?.connected) continue;
     try {
       const info = await childModelInfo(session, pair, pair.provider !== active.provider);

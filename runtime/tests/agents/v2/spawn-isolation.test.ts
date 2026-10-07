@@ -184,7 +184,10 @@ describe("spawn_agent isolation", () => {
   it("automatically selects a connected permitted model and returns an explanation and task cap", async () => {
     const { tool } = await crossProviderFixture(["deepseek"]);
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5 });
+    // The parent model's 500k window cannot hold this context, so selection
+    // has to leave it.
+    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5,
+      context_tokens: 600_000 });
     expect(result.isError).not.toBe(true);
     expect(JSON.parse(result.content)).toMatchObject({ provider: "deepseek", model: "deepseek-flash", routing_reason: expect.any(String) });
     expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({
@@ -193,14 +196,40 @@ describe("spawn_agent isolation", () => {
     });
   });
 
-  it("refuses automatic selection when allowed providers are disconnected", async () => {
+  it("counts the parent's own model as a candidate without listing its provider", async () => {
     const { session, tool } = await crossProviderFixture(["deepseek"]);
     Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await tool.execute({ message: "Extract names", task_name: "extractor" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content).routing_reason).toContain("grok/grok-4.6");
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, routing: { taskKind: "extraction" } });
+  });
+
+  it("keeps the parent model when no connected allowed model qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    // Selector v2 has no task quality floor, so the parent model is the
+    // routed choice for a hard reasoning task.
+    const result = await tool.execute({ message: "Extract names", task_name: "extractor",
+      task_kind: "reasoning", complexity: "hard" });
+    expect(result.isError).not.toBe(true);
+    const content = JSON.parse(result.content) as { routing_reason: string; automatic_fallback?: string };
+    expect(content.routing_reason).toContain("Keep grok/grok-4.6");
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, routing: { taskKind: "reasoning", complexity: "hard" } });
+  });
+
+  it("still enforces a hard requirement when nothing qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    const result = await tool.execute({ message: "Summarize these records", task_name: "reader", context_tokens: 50_000_000 });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("No connected and allowed model");
+    expect(result.content).toContain("cannot fit the required context");
     expect(mockDelegate).not.toHaveBeenCalled();
-    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
   });
 
   it("keeps an explicit model override and permits explicit parent inheritance", async () => {
@@ -955,6 +984,46 @@ describe("spawn_agent isolation", () => {
     expect(result.isError).toBe(true);
     expect(result.effectDisposition).toBeDefined();
     expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  // An approval denial marks the session stopped until the next user message.
+  // A worker or an unattended root turn never sends one.
+  it("lets a worker spawn after an earlier approval denial set its stop flag", async () => {
+    const fixture = callerFixture();
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(result.content).not.toContain("invalid-runtime-identity");
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(() => mockDelegate.mock.calls[0]![0].assertParentSessionActive?.()).not.toThrow();
+    fixture.revoke();
+  });
+
+  it("lets an unattended root turn spawn after an earlier approval denial", async () => {
+    const session = makeSession();
+    Object.assign(session, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 3,
+      activeTurn: { unsafePeek: () => ({ turnId: "goal-turn" }) } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({ message: "inspect", task_name: "worker" });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
+  it("still refuses a spawn when the user stops during its awaits", async () => {
+    const fixture = callerFixture();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.spyOn(fixture.child.services.modelsManager, "listModels").mockImplementation(async () => { await pending; return [{ slug: "test-model" }] as never; });
+    const call = createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, model: "test-model" });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    release();
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("invalid-runtime-identity");
+    expect(mockDelegate).not.toHaveBeenCalled();
+    fixture.revoke();
   });
 
   it("cannot bind a sibling's Session to another live agent", () => {

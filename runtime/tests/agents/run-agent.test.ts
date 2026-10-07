@@ -169,7 +169,9 @@ import {
 } from "../services/lsp/manager.js";
 import { ConfigStore, nextConfigReadMark } from "../config/store.js";
 import { SessionProviderService } from "../session/provider-service.js";
-import { LLMFundsError } from "../llm/errors.js";
+import { LLMFundsError, LLMServerError } from "../llm/errors.js";
+import { superviseChildRoutingRetries } from "../../src/agents/child-routing-retries.js";
+import { StreamProgressError } from "../../src/llm/stream-progress.js";
 import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
@@ -5228,6 +5230,97 @@ describe("runAgent", () => {
     }
     expect(bindings.filter(entry => entry.client.scope.runId === live.agentId).every(entry => entry.release.mock.calls.length === 1)).toBe(true);
     expect(bindings[0]!.release).not.toHaveBeenCalled();
+  });
+
+  describe("automatic routing and provider retries", () => {
+    async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>) {
+      const configStore = new ConfigStore({ cwd: "/tmp", base: {
+        agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: ["deepseek"] },
+      } });
+      const queue = [...script];
+      const chatStream = vi.fn(async (): Promise<LLMResponse> => {
+        const next = queue.shift() ?? { content: "unexpected extra call" };
+        if (next instanceof Error) throw next;
+        return { content: "", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop", ...next };
+      });
+      const session = makeStubSession({ services: { provider: { ...makeProvider([]), chatStream }, configStore } });
+      const { live } = await spawnLive(session);
+      const plan = await createChildExecutionPlan({ session, selection: session.providerService.current(),
+        modelInfo: mkModelInfo(), parentPath: "/root", taskId: "routed-task", taskName: "worker", taskText: "go",
+        toolFree: false, forkedHistory: false,
+        routing: { taskKind: "general", complexity: "standard", reason: "Chosen by automatic selection." } });
+      const run = () => collectRun(runAgent({ live, parent: session, plan, taskId: plan.task.id,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+      return { live, chatStream, run };
+    }
+    const unavailable = () => new LLMServerError("fake", 503, "unavailable");
+    beforeEach(() => { vi.spyOn(Math, "random").mockReturnValue(0); });
+    afterEach(() => { vi.mocked(Math.random).mockRestore(); });
+
+    it("retries a 503 after the task's first tool call and completes, with a supervisor attached", async () => {
+      const { live, chatStream, run } = await routedChild([
+        { content: "Looking.", toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" },
+        unavailable(),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(3);
+        expect(live.toolCallCount).toBe(1);
+      } finally { release(); }
+    });
+
+    it("ends the task on a 503 before any tool call while the supervisor can act", async () => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "not reached" }]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("errored");
+        expect(chatStream).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "provider_unavailable", retryable: true });
+      } finally { release(); }
+    });
+
+    it("publishes the child's receipt without waiting for routing telemetry", async () => {
+      const { live, run } = await routedChild([{ content: "done" }]);
+      // A shared home can hold the outcome file's lock for a while.
+      const telemetry = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(() => new Promise(() => {}));
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(telemetry).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt).toMatchObject({ outcome: "completed", terminal: { reason: "completed" } });
+      } finally { telemetry.mockRestore(); }
+    });
+
+    it("keeps the stall retry, which no other provider would take over", async () => {
+      const { live, chatStream, run } = await routedChild([
+        new StreamProgressError("fake", "stream_no_progress"),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
+    });
+
+    it.each([
+      ["no supervisor, as for a child restored after a restart", false],
+      ["a supervisor that can no longer start a retry", true],
+    ] as const)("keeps provider retries with %s", async (_name, attachSupervisor) => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "done" }]);
+      const release = attachSupervisor ? superviseChildRoutingRetries(live, () => false) : () => {};
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
+    });
   });
 
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {

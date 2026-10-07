@@ -86,6 +86,11 @@ export interface ChildRoutingOutcome {
   readonly costUsd?: number;
   readonly atMs: number;
   readonly retryAfterMs?: number;
+  /**
+   * False when the terminal was not a provider failure, such as the child's
+   * own role timeout. Only provider failures start a provider cooldown.
+   */
+  readonly retryable?: boolean;
 }
 
 export interface RankedChildCandidate {
