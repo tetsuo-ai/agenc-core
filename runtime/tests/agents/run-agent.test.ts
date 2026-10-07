@@ -5343,6 +5343,18 @@ describe("runAgent", () => {
       } finally { release(); }
     });
 
+    it("runs a routed child on the parent's model past 32 model calls without a forced wrap-up", async () => {
+      const { live, chatStream, run } = await routedChild([
+        ...Array.from({ length: 40 }, (_, index) => ({ content: "", finishReason: "tool_calls" as const,
+          toolCalls: [{ id: `read-${index}`, name: "missing-tool", arguments: JSON.stringify({ page: index }) }] })),
+        { content: "done" },
+      ]);
+      const { result } = await run();
+      expect(result.outcome).toBe("completed");
+      expect(chatStream).toHaveBeenCalledTimes(41);
+      expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "completed" });
+    });
+
     it("publishes the child's receipt without waiting for routing telemetry", async () => {
       const { live, run } = await routedChild([{ content: "done" }]);
       // A shared home can hold the outcome file's lock for a while.

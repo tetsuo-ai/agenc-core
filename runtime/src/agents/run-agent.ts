@@ -4191,7 +4191,7 @@ export async function* runAgent(
       params = {
         ...params,
         plan,
-        ...(plan.crossProvider && plan.budgetAllocation !== null
+        ...(plan.crossProvider && plan.budgetAllocation?.maxModelCalls !== undefined
           ? { maxTurns: Math.min(params.maxTurns ?? Number.POSITIVE_INFINITY,
               plan.budgetAllocation.maxModelCalls) } : {}),
         model: plan.route.model,
@@ -4645,7 +4645,7 @@ export async function* runAgent(
         },
         exactOutput,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
-          ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
+          ...(params.plan?.budgetAllocation?.maxModelCalls !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
         } } : {}),
         ctx: (() => {

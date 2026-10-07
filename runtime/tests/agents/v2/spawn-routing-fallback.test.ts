@@ -123,6 +123,20 @@ describe("automatic fallback through spawn_agent", () => {
     await vi.waitFor(() => expect(childRoutingSupervisorCanFallback(value.threads[0]!.live)).toBe(false));
   });
 
+  it("gives a routed child on the parent's model no call cap, as routing=inherit has none", async () => {
+    const value = await fixture();
+    value.config.agents.allowed_providers = [];
+    const { max_cost_usd: _cap, ...uncapped } = args;
+    await value.tool.execute({ ...uncapped, __callId: "routed" });
+    expect(mockDelegate.mock.calls[0]![0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, budgetAllocation: null, routing: { taskKind: "extraction" } });
+    await value.tool.execute({ ...uncapped, __callId: "inherited", task_name: "inherited", routing: "inherit" });
+    expect(mockDelegate.mock.calls[1]![0].plan).toBeUndefined();
+    // A dollar cap stays when the spawn set one, without a call cap.
+    await value.tool.execute({ ...args, __callId: "capped", task_name: "capped" });
+    expect(mockDelegate.mock.calls[2]![0].plan?.budgetAllocation).toEqual({ maxCostUsd: 0.5 });
+  });
+
   it("leaves provider retries with a routed child that has no other candidate", async () => {
     const value = await fixture();
     value.config.agents.allowed_providers = [];
