@@ -1,6 +1,6 @@
 /** Bounded experimental policy. Recovery budgets are deliberately not owned here. */
 import { randomUUID } from "node:crypto";
-import { supportsThinkingOffRecovery } from "./session-reasoning-effort.js";
+import { supportsThinkingOffRecovery } from "./reasoning-recovery-capability.js";
 import type { TurnState } from "./turn-state.js";
 
 export interface ReasoningCapSample {
