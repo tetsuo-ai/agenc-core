@@ -133,12 +133,14 @@ const WINDOWS_LINK_REASONS = [
 ] as const;
 // Thrown by the created-directory initialization below.
 const WINDOWS_REPLACED_REASON = "directory identity changed before its ACL was set";
+const WINDOWS_ADD_TYPE_REASON = "Add-Type is unavailable";
 const DENIED_CODES = new Set(["EACCES", "EPERM"]);
 
 /** First verifier reason found in a cause chain, from a message or PowerShell stderr. */
 function windowsPrivatePathReason(error: unknown): string | undefined {
   const known = [
     ...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS, ...WINDOWS_LINK_REASONS, WINDOWS_REPLACED_REASON,
+    WINDOWS_ADD_TYPE_REASON,
   ];
   for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
     const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
@@ -171,6 +173,25 @@ function windowsDriveFormat(error: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Why `Add-Type` was unavailable to the created-directory initialization:
+ * the PowerShell language mode (`ConstrainedLanguage`, ...) or the .NET
+ * exception type `Add-Type` threw. `$` is excluded so PowerShell's echo of
+ * the throwing source line never matches.
+ */
+function windowsAddTypeDetail(error: unknown): string | undefined {
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
+    for (const value of [candidate.message, candidate.stderr]) {
+      const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
+      const detail = /Add-Type is unavailable \(([A-Za-z][A-Za-z0-9]{0,63})\)/u.exec(text)?.[1];
+      if (detail !== undefined) return detail;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
 /** Whether the ACL verifier itself (not a link or file-type check) failed somewhere in the chain. */
 function hasWindowsVerifierFailure(error: unknown): boolean {
   for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
@@ -189,6 +210,7 @@ export type WindowsCronFailure =
   | { readonly kind: "volume"; readonly reason: string }
   | { readonly kind: "link" }
   | { readonly kind: "replaced" }
+  | { readonly kind: "addtype" }
   | { readonly kind: "denied"; readonly code: string }
   | { readonly kind: "unknown" };
 
@@ -200,6 +222,7 @@ export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
     if ((WINDOWS_UNSUPPORTED_VOLUME_REASONS as readonly string[]).includes(reason)) return { kind: "volume", reason };
     if ((WINDOWS_LINK_REASONS as readonly string[]).includes(reason)) return { kind: "link" };
     if (reason === WINDOWS_REPLACED_REASON) return { kind: "replaced" };
+    if (reason === WINDOWS_ADD_TYPE_REASON) return { kind: "addtype" };
     if (hasWindowsVerifierFailure(error) || (WINDOWS_ACL_REASONS as readonly string[]).includes(reason)) {
       return { kind: "acl", reason };
     }
@@ -239,7 +262,9 @@ const WINDOWS_REPAIR_HELPER = [
   "public static SafeFileHandle Probe(string path) { return Open(path, 0x120080); }",
   // Opened relative to the folder handle (FILE_OPEN, FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT): it is an entry of that very folder.
   // No data access is requested, so the share mode neither locks the file nor conflicts with a reader; see windowsCronRepairCommand.
-  "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0); if (status == unchecked((int)0xC0000034)) return null; if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
+  // The three-argument form opens for the descriptor write (READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES).
+  "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path) { return OpenChild(folder, name, path, 0x1E0080); }",
+  "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path, uint access) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, access, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0); if (status == unchecked((int)0xC0000034)) return null; if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
   "public static Info Describe(SafeFileHandle handle, string path) { Info info; if (!GetFileInformationByHandle(handle, out info)) throw Fail(Marshal.GetLastWin32Error(), path); return info; }",
   // The file system of the volume the handle is on (NTFS, ReFS, FAT32, exFAT, ...).
   "public static string FileSystem(SafeFileHandle handle, string path) { uint serial, length, flags; StringBuilder system = new StringBuilder(261); if (!GetVolumeInformationByHandleW(handle, null, 0, out serial, out length, out flags, system, 261)) throw Fail(Marshal.GetLastWin32Error(), path); return system.ToString(); }",
@@ -277,9 +302,16 @@ const WINDOWS_PRIVATE_DESCRIPTOR =
  * refused or unopenable task file stops the script before anything is
  * written. Only then are both descriptors written through those handles
  * with `SetKernelObjectSecurity`, so a path swapped after the open cannot
- * redirect a write. The task file's link count is read again after its
- * write, and `.agenc` is reopened at the end and must have the same volume
- * serial and file ID. `Set-Acl`, .NET `SetAccessControl` and `icacls` are
+ * redirect a write. `.agenc` must be on NTFS (read from its handle) before
+ * either write. After the task file's write its link count is read again,
+ * and the name `scheduled_tasks.json` is reopened relative to the directory
+ * handle (attributes only) and must still be that file (volume serial and
+ * file ID) with one link: a same-volume rename keeps the count at one, so
+ * only the identity shows that another file now has the name. With no task
+ * file at the start, one that appears during the repair also stops it.
+ * `.agenc` is reopened at the end and must have the same volume serial and
+ * file ID. Every message after the first write starts with "Stopped" and
+ * says what is already private. `Set-Acl`, .NET `SetAccessControl` and `icacls` are
  * not used: they go through `SetNamedSecurityInfo`, which also rewrites
  * inherited entries of existing children (on Windows 11 it changed an
  * outside file hard-linked into `.agenc`), and `icacls /T` follows junctions.
@@ -298,7 +330,11 @@ const WINDOWS_PRIVATE_DESCRIPTOR =
  * the one made private. Someone who can rename entries in the project
  * folder could put their own real directory there first; it is then made
  * private to the current user, and the final identity check reports a
- * later swap. The script stops at the first error.
+ * later swap. These checks see changes made before them: an account that
+ * opened `.agenc` or the task file before the repair keeps the access that
+ * handle was granted until it closes it. The script stops at the first
+ * error. Without Full Language Mode (Constrained Language Mode, AppLocker,
+ * WDAC) it stops before `Add-Type` and says so.
  *
  * The path is a PowerShell single-quoted literal; PowerShell also treats
  * U+2018-U+201B as single quotes, so those are doubled too.
@@ -308,7 +344,9 @@ export function windowsCronRepairCommand(directory: string): string {
   return [
     "& { $ErrorActionPreference = 'Stop'",
     `$root = ${literal}`,
+    "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw \"Not repaired: this PowerShell runs in $($ExecutionContext.SessionState.LanguageMode) mode and the repair needs Add-Type (Full Language Mode). Nothing was changed.\" }",
     `Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}'`,
+    "[AgencCronRepair]::Prefix = 'Not repaired: '",
     `$descriptor = ${WINDOWS_PRIVATE_DESCRIPTOR}`,
     "$link = 0x400",
     "$folder = 0x10",
@@ -316,15 +354,24 @@ export function windowsCronRepairCommand(directory: string): string {
     "$dir = [AgencCronRepair]::OpenFolder($root)",
     "try { $id = [AgencCronRepair]::Describe($dir, $root); " +
       "if (($id.Attributes -band $link) -ne 0 -or ($id.Attributes -band $folder) -eq 0) { throw \"Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead.\" }; " +
+      "$system = [AgencCronRepair]::FileSystem($dir, $root); " +
+      "if ($system -ne 'NTFS') { throw \"Not repaired: $root is on $system, not NTFS. Nothing was changed.\" }; " +
       "$file = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task); " +
       "try { if ($file) { $info = [AgencCronRepair]::Describe($file, $task); " +
         "if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw \"Not repaired: $task is a link, a hard-linked file or not a regular file, and nothing was changed. Remove or replace it, then run this again.\" } }; " +
         "[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root); " +
+        "[AgencCronRepair]::Prefix = \"Stopped ($root is already private): \"; " +
         "if ($file) { [AgencCronRepair]::Protect($file, (& $descriptor $false), $task); " +
-          "if ([AgencCronRepair]::Describe($file, $task).Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private; remove the other name, then run this again.\" } } " +
+          "$written = [AgencCronRepair]::Describe($file, $task); " +
+          "if ($written.Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private; remove the other name, then run this again.\" }; " +
+          "$same = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
+          "if ($same) { try { $seen = [AgencCronRepair]::Describe($same, $task) } finally { $same.Dispose() } }; " +
+          "if (-not $same -or $seen.Volume -ne $written.Volume -or $seen.IndexHigh -ne $written.IndexHigh -or $seen.IndexLow -ne $written.IndexLow -or $seen.Links -ne 1) { throw \"Stopped: scheduled_tasks.json was replaced during the repair. $root and the original task file are private now; the file now at $task was not changed. Check it, then run this again.\" } } " +
+        "else { $late = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
+          "if ($late) { $late.Dispose(); throw \"Stopped: scheduled_tasks.json appeared during the repair. $root is private now; that file was not changed. Check it, then run this again.\" } } " +
       "} finally { if ($file) { $file.Dispose() } }; " +
       "$again = [AgencCronRepair]::OpenFolder($root); try { $now = [AgencCronRepair]::Describe($again, $root) } finally { $again.Dispose() }; " +
-      "if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw \"Not repaired: $root was replaced during the repair. Check it, then run this again.\" } " +
+      "if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw \"Stopped: $root was replaced during the repair. The directory opened there is private now; whatever is at $root now was not changed. Check it, then run this again.\" } " +
       "} finally { $dir.Dispose() }",
     "\"Repaired $root and its task file; other entries in it keep their ACLs.\" }",
   ].join("; ");
@@ -343,12 +390,18 @@ export function windowsCronRepairCommand(directory: string): string {
  * link to an outside file. A read-only probe handle reports the file
  * system and identity first, so a volume that is not NTFS gets the
  * platform message even where the write handle could not be opened.
+ * `Add-Type` needs Full Language Mode; without it (Constrained Language
+ * Mode, AppLocker, WDAC) the script throws `Add-Type is unavailable (...)`
+ * before any handle is opened. There is no path-based fallback: that is the
+ * `SetAccessControl` write this replaced, which propagates to children.
  */
 const WINDOWS_CREATED_DIRECTORY_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$target = $env:AGENC_CRON_DIRECTORY",
   "if ($target.StartsWith('\\\\')) { throw 'network and device paths are unsupported' }",
-  `Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}'`,
+  // Constrained Language Mode (also what AppLocker and WDAC script rules impose) refuses Add-Type; name it.
+  `if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw "${WINDOWS_ADD_TYPE_REASON} ($($ExecutionContext.SessionState.LanguageMode))" }`,
+  `try { Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}' } catch { throw "${WINDOWS_ADD_TYPE_REASON} ($($_.Exception.GetType().Name))" }`,
   "[AgencCronRepair]::Prefix = ''",
   `$descriptor = ${WINDOWS_PRIVATE_DESCRIPTOR}`,
   "$check = { param($handle) $info = [AgencCronRepair]::Describe($handle, $target); " +
@@ -419,6 +472,17 @@ export function windowsCronAclError(
       `Durable cron storage on Windows requires a local NTFS volume, and ${where}. ` +
         "This is a platform limitation that no permission change can fix; its permissions were left unchanged. " +
         "Move the project to a local NTFS volume, or schedule the task with durable:false.",
+    );
+  }
+  if (failure.kind === "addtype") {
+    const detail = windowsAddTypeDetail(cause);
+    const why = detail === undefined ? "" : /Language$/u.test(detail)
+      ? ` (PowerShell runs in ${detail} mode)` : ` (Add-Type failed with ${detail})`;
+    return fail(
+      `Durable cron storage on Windows could not make ${directory} private: that step loads a small C# helper ` +
+        `with PowerShell Add-Type, and Add-Type is not available here${why}. Constrained Language Mode, and AppLocker ` +
+        "or WDAC (Windows Defender Application Control) policies, block it. No ACL was written, and the directory was " +
+        "left unchanged. Allow Add-Type for this account, or remove that directory and schedule the task with durable:false.",
     );
   }
   if (state === "inaccessible" || failure.kind === "denied") {
