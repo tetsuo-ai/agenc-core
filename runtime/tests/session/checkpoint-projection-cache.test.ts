@@ -54,6 +54,10 @@ const identityPaths = [sealPath, [...sealPath, "original"], [...sealPath, "persi
 const integrityKeys = ["version", "algorithm", "runId", "toolCallId", "resultId", "original", "persisted"];
 const originalKeys = ["digest", "byteLength"];
 const persistedKeys = ["representation", "digest", "byteLength"];
+// Unlike echo/output/tool, these tokens are not BIP39 words. The boundary
+// fixtures must reach the line-size checks without mnemonic redaction first.
+const cleanPayload = "checkpoint_payload!\n";
+const cleanMetadata = "checkpoint_metadata!\n";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -264,10 +268,11 @@ describe("checkpoint projection reuse", () => {
   it.each([
     ["multibyte", "漢🙂é\n".repeat(200)],
     ["escaping", '\\"\t\n\u0000'.repeat(100)],
-    ["small boundary", "echo output\n".repeat(3_000).slice(0, 32_768)],
-    ["oversize", "echo output\n".repeat(3_000)],
+    ["small boundary", cleanPayload.repeat(2_000).slice(0, 32_768)],
+    ["oversize", cleanPayload.repeat(2_000)],
   ])("preserves exact %s bytes and applies the small-body limit", (_name, content) => {
     const message = tool("call-one", content);
+    expect(llmMessageToCheckpointResponseItem(message).content).toBe(content);
     const { project, full } = tracked();
     expect(wire(project(message))).toBe(wire(llmMessageToCheckpointResponseItem(message)));
     expect(wire(project(message))).toBe(wire(llmMessageToCheckpointResponseItem(message)));
@@ -275,7 +280,9 @@ describe("checkpoint projection reuse", () => {
   });
 
   it("keeps recovery-line bounding and limit errors on the full path", () => {
-    const oversized = tool("call-one", "echo \n".repeat(Math.ceil(HARD_MAX_RECOVERY_LINE_BYTES / 6)));
+    const oversized = tool("call-one", cleanPayload.repeat(
+      Math.ceil(HARD_MAX_RECOVERY_LINE_BYTES / cleanPayload.length),
+    ));
     const { project, full } = tracked();
     const bounded = project(oversized);
     expect(wire(bounded)).toBe(wire(llmMessageToCheckpointResponseItem(oversized)));
@@ -285,7 +292,9 @@ describe("checkpoint projection reuse", () => {
     expect(full).toHaveBeenCalledTimes(2);
 
     const metadata = tool();
-    metadata.toolName = "tool \n".repeat(Math.ceil(HARD_MAX_RECOVERY_LINE_BYTES / 6));
+    metadata.toolName = cleanMetadata.repeat(
+      Math.ceil(HARD_MAX_RECOVERY_LINE_BYTES / cleanMetadata.length),
+    );
     const failure = tracked();
     expect(() => llmMessageToCheckpointResponseItem(metadata)).toThrow("recovery line byte limit");
     expect(outcome(failure.project, metadata)).toEqual(outcome(llmMessageToCheckpointResponseItem, metadata));
@@ -363,7 +372,8 @@ describe("checkpoint projection reuse", () => {
     const message = tool();
     const { project, full } = tracked();
     project(message);
-    message.toolName = "display name ".repeat(7_000);
+    message.toolName = cleanMetadata.repeat(7_000);
+    expect(llmMessageToCheckpointResponseItem(message).toolName).toBe(message.toolName);
     expect(wire(project(message))).toBe(wire(llmMessageToCheckpointResponseItem(message)));
     project(message);
     expect(full).toHaveBeenCalledTimes(3);
