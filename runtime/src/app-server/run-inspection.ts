@@ -40,7 +40,10 @@ import {
   openStateDatabasePaths,
   type StateDatabasePaths,
 } from "../state/sqlite-driver.js";
-import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
+import {
+  projectLiveJournalTerminal,
+  recoverCanonicalRunJournalForRun,
+} from "../state/startup-run-journal-recovery.js";
 import { buildCanonicalRunReplay } from "./run-journal-replay.js";
 import { readWorkflowStepEvidence } from "./workflow/steps.js";
 import { projectWorkflowStatus } from "./workflow/status-projection.js";
@@ -190,9 +193,13 @@ export class AgenCDaemonRunInspectionService {
     const runId = normalizeRunId(params.runId, "run.status");
     const observedStop = this.#runtimeFailure?.(runId) !== undefined;
     const located = this.#locate(runId, observedStop);
-    this.#refreshStatusProjection(located.paths, runId, observedStop);
+    const journalTerminal = this.#refreshStatusProjection(
+      located.paths,
+      runId,
+      observedStop,
+    );
     const result = withReadonlyStateDatabase(located.paths, (db) =>
-      buildRunStatus(db, located, runId),
+      buildRunStatus(db, located, runId, journalTerminal),
     );
     const runtimeFailure = result.workflow !== undefined && !result.terminal
       ? this.#runtimeFailure?.(runId) : undefined;
@@ -236,11 +243,13 @@ export class AgenCDaemonRunInspectionService {
   result(params: RunResultParams): RunResultResult {
     const runId = normalizeRunId(params.runId, "run.result");
     const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
+    const journalTerminal = refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) => {
       const run = readAgentRun(db, runId) ?? located.run;
-      const durableTerminal = readCurrentTerminalResult(db, runId);
-      const status = buildRunStatus(db, located, runId);
+      const durableTerminal =
+        readCurrentTerminalResult(db, runId) ??
+        terminalRowFromJournal(journalTerminal);
+      const status = buildRunStatus(db, located, runId, journalTerminal);
       if (
         durableTerminal === undefined &&
         (run === undefined || !status.terminal)
@@ -300,12 +309,12 @@ export class AgenCDaemonRunInspectionService {
     const afterSequence = normalizeAfterSequence(params.afterSequence);
     const limit = normalizeReplayLimit(params.limit);
     const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
+    const journalTerminal = refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) => {
       // A single read transaction gives the status summary and journal page a
       // coherent SQLite snapshot without taking a write reservation.
       return db.transaction(() => {
-        const status = buildRunStatus(db, located, runId);
+        const status = buildRunStatus(db, located, runId, journalTerminal);
         const replay = buildRunReplay(db, located, runId, afterSequence, limit);
         const eventHashes = replay.events.map((event) => ({
           sequence: event.sequence,
@@ -387,12 +396,18 @@ export class AgenCDaemonRunInspectionService {
     });
   }
 
-  #refreshStatusProjection(paths: StateDatabasePaths, runId: string, observedStop: boolean): void {
-    try { refreshRunJournalProjection(paths, runId); }
-    catch (error) {
+  #refreshStatusProjection(
+    paths: StateDatabasePaths,
+    runId: string,
+    observedStop: boolean,
+  ): DurableRunTerminalRecord | undefined {
+    try {
+      return refreshRunJournalProjection(paths, runId);
+    } catch (error) {
       // A known storage failure may prevent rebuilding the durable projection.
       // Serve its last readable state plus the explicit live stop observation.
       if (!observedStop) throw error;
+      return undefined;
     }
   }
 
@@ -572,11 +587,14 @@ function buildRunStatus(
   db: BetterSqlite3.Database,
   located: LocatedRun,
   runId: string,
+  journalTerminal?: DurableRunTerminalRecord,
 ): RunStatusResult {
   const admission = located.admission?.summary ?? admissionSummary(db, runId);
   const run = readAgentRun(db, runId) ?? located.run;
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
-  const durableTerminal = readCurrentTerminalResult(db, runId);
+  const durableTerminal =
+    readCurrentTerminalResult(db, runId) ??
+    terminalRowFromJournal(journalTerminal);
   const workflow = workflowStatusProjection(db, runId, durableTerminal);
   const reopenedWithoutTerminal =
     currentLifecycleEpoch !== undefined && durableTerminal === undefined;
@@ -1504,24 +1522,53 @@ function columnExists(
  * Bring the rebuildable SQLite projection up to the fsynced JSONL tail before
  * a cursor read. The scan is scoped to one run and bounded; the canonical file
  * is never rewritten here.
+ *
+ * A live writer is not a recovery failure and must not record a deferral.
+ * A terminal record already in that journal is still authoritative: project
+ * it, and when the projection write itself fails, return the journal fact so
+ * status does not keep reporting the run as running.
  */
 function refreshRunJournalProjection(
   paths: StateDatabasePaths,
   runId: string,
-): void {
+): DurableRunTerminalRecord | undefined {
   const driver = openStateDatabasePaths(paths);
   try {
-    // run.status/run.replay on a run this daemon is executing find the rollout
-    // lease held by the live writer. That is not a recovery failure: serve
-    // the projection as it stands and persist no deferral, since an active
-    // run_recovery_deferred row would exclude the run from recovery at the
-    // next daemon start ("pending operator recovery action").
-    recoverCanonicalRunJournalForRun(driver, runId, {
+    const projected = recoverCanonicalRunJournalForRun(driver, runId, {
       strict: { liveSourceDeferral: "skip" },
     });
+    if (
+      projected.exclusion?.reasonCode !== "source_not_quiescent" ||
+      projected.exclusion.sourcePath === undefined
+    ) {
+      return undefined;
+    }
+    return projectLiveJournalTerminal(
+      driver,
+      runId,
+      projected.exclusion.sourcePath,
+    );
   } finally {
     driver.close();
   }
+}
+
+function terminalRowFromJournal(
+  terminal: DurableRunTerminalRecord | undefined,
+): RunTerminalRow | undefined {
+  if (terminal === undefined) return undefined;
+  return {
+    run_id: terminal.runId,
+    epoch: terminal.epoch,
+    status: terminal.status,
+    exit_code: terminal.exitCode,
+    stop_reason: terminal.stopReason,
+    final_message: terminal.finalMessage,
+    usage_json: terminal.usage === null ? null : JSON.stringify(terminal.usage),
+    last_sequence: terminal.lastSequence,
+    finished_at: terminal.finishedAt,
+    event_id: terminal.eventId,
+  };
 }
 
 function withReadonlyStateDatabase<T>(

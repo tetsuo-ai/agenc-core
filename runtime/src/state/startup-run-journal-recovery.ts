@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   opendirSync,
+  readSync,
   realpathSync,
   statSync,
 } from "node:fs";
@@ -33,6 +34,7 @@ import {
 import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { asRecord } from "../utils/record.js";
+import { parseRolloutLine } from "../session/rollout-item.js";
 import {
   createResumeRolloutDescriptorLease,
   hasSupportedFileIdentity,
@@ -44,7 +46,10 @@ import {
   type BackfillPinnedRolloutSource,
   type PreparedPinnedRolloutRun,
 } from "./backfill.js";
-import { RecoveryOperationalError } from "./recovery-contract.js";
+import {
+  MAX_RECOVERY_CANONICAL_LINE_BYTES,
+  RecoveryOperationalError,
+} from "./recovery-contract.js";
 import { StateRecoveryIncidentRepository } from "./recovery-incidents.js";
 import { RecoveryDescriptorBudget } from "./recovery-file.js";
 import {
@@ -58,8 +63,11 @@ import {
   recoveryRunIsExecutableSql,
   type RecoveryRunExclusion,
 } from "./recovery-exclusions.js";
-import { StateRunDurabilityRepository } from "./run-durability.js";
-import type { RunJournalBinding } from "./run-durability.js";
+import {
+  StateRunDurabilityRepository,
+  type DurableRunTerminalRecord,
+  type RunJournalBinding,
+} from "./run-durability.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
 import { StateThreadRepository } from "./threads.js";
@@ -255,6 +263,275 @@ export function recoverCanonicalRunJournalForRun(
   }
   const sources = selection.sources;
   return recoverStrictRun(driver, threads, run, sources, options.strict);
+}
+
+/**
+ * Project a terminal the live writer already fsynced.
+ *
+ * On-demand recovery refuses a rollout this process still has open, and it
+ * must not record a deferral for that. The refusal used to leave goal status
+ * `running` after the terminal line was durable and only its SQLite
+ * projection had failed. Read the committed tail (never the lock, never a
+ * partial last line) and insert that one result. When the insert still
+ * cannot be stored, return the journal fact so status can report it.
+ */
+export function projectLiveJournalTerminal(
+  driver: StateSqliteDriver,
+  runId: string,
+  sourcePath: string,
+): DurableRunTerminalRecord | undefined {
+  try {
+    if (!liveJournalPathIsInsideProject(driver.projectDir, sourcePath)) {
+      return undefined;
+    }
+    const repository = new StateRunDurabilityRepository(driver);
+    const epoch = repository.currentEpoch(runId)?.epoch;
+    if (
+      epoch === undefined ||
+      repository.getCurrentTerminalResult(runId) !== undefined
+    ) {
+      return undefined;
+    }
+    const lines = readCommittedJournalTail(sourcePath);
+    if (lines === undefined) return undefined;
+    const terminal = terminalFromCommittedTail(lines, runId, epoch);
+    if (terminal === undefined) return undefined;
+    try {
+      repository.recordTerminalResult({
+        epoch: terminal.epoch,
+        eventId: terminal.eventId,
+        result: {
+          runId: terminal.runId,
+          status: terminal.status,
+          exitCode: terminal.exitCode,
+          stopReason: terminal.stopReason,
+          finalMessage: terminal.finalMessage,
+          usage: terminal.usage,
+          lastSequence: terminal.lastSequence,
+          finishedAt: terminal.finishedAt,
+        },
+      });
+      return undefined;
+    } catch {
+      return terminal;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function liveJournalPathIsInsideProject(
+  projectDir: string,
+  sourcePath: string,
+): boolean {
+  const root = resolve(projectDir);
+  const resolved = resolve(sourcePath);
+  return resolved === root || resolved.startsWith(`${root}${sep}`);
+}
+
+function terminalFromCommittedTail(
+  lines: readonly string[],
+  runId: string,
+  epoch: number,
+): DurableRunTerminalRecord | undefined {
+  let terminal: DurableRunTerminalRecord | undefined;
+  let superseded = false;
+  for (const line of lines) {
+    const fact = classifyJournalTailLine(line);
+    if (fact.kind === "invalid") return undefined;
+    if (
+      fact.kind === "reopened" &&
+      fact.runId === runId &&
+      fact.epoch > epoch
+    ) {
+      superseded = true;
+      terminal = undefined;
+      continue;
+    }
+    if (
+      !superseded &&
+      fact.kind === "terminal" &&
+      fact.runId === runId &&
+      fact.epoch === epoch
+    ) {
+      terminal = {
+        ...fact.result,
+        epoch,
+        eventId: fact.eventId,
+      };
+    }
+  }
+  return terminal;
+}
+
+type JournalTailFact =
+  | { readonly kind: "other" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "reopened"; readonly runId: string; readonly epoch: number }
+  | {
+      readonly kind: "terminal";
+      readonly runId: string;
+      readonly epoch: number;
+      readonly eventId: string;
+      readonly result: RunTerminalResult;
+    };
+
+function classifyJournalTailLine(line: string): JournalTailFact {
+  let parsed: ReturnType<typeof parseRolloutLine>;
+  try {
+    parsed = parseRolloutLine(line);
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (parsed === null || parsed.type !== "event_msg") return { kind: "other" };
+  const event = parsed.payload;
+  if (event.msg.type === "run_reopened") {
+    const payload = asRecord(event.msg.payload);
+    const reopenedRunId = payload?.runId;
+    const reopenedEpoch = positiveTailInteger(payload?.epoch);
+    if (typeof reopenedRunId !== "string" || reopenedEpoch === undefined) {
+      return { kind: "invalid" };
+    }
+    return { kind: "reopened", runId: reopenedRunId, epoch: reopenedEpoch };
+  }
+  if (event.msg.type !== "run_terminal") return { kind: "other" };
+  try {
+    const payload = asRecord(event.msg.payload);
+    const terminalRunId = payload?.runId;
+    const terminalEpoch = positiveTailInteger(payload?.epoch);
+    const sequence = positiveTailInteger(event.seq);
+    if (
+      payload === null ||
+      typeof terminalRunId !== "string" ||
+      terminalEpoch === undefined ||
+      sequence === undefined
+    ) {
+      return { kind: "invalid" };
+    }
+    const eventId = canonicalTailEventId(event);
+    if (eventId === undefined) return { kind: "invalid" };
+    return {
+      kind: "terminal",
+      runId: terminalRunId,
+      epoch: terminalEpoch,
+      eventId,
+      result: {
+        runId: terminalRunId,
+        status: requireTerminalStatus(payload.status),
+        exitCode: nullableFiniteNumber(payload.exitCode, "exitCode"),
+        stopReason: nullableString(payload.stopReason, "stopReason"),
+        finalMessage: nullableString(payload.finalMessage, "finalMessage"),
+        usage: nullableUsage(payload.usage),
+        lastSequence: sequence,
+        finishedAt: requireString(payload.finishedAt, "finishedAt"),
+      },
+    };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function positiveTailInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function canonicalTailEventId(event: {
+  readonly eventId?: string;
+  readonly id: string;
+  readonly seq?: number;
+}): string | undefined {
+  if (typeof event.eventId === "string" && event.eventId.length > 0) {
+    return event.eventId;
+  }
+  if (
+    typeof event.seq === "number" &&
+    Number.isSafeInteger(event.seq) &&
+    event.seq > 0
+  ) {
+    return `legacy-event:${event.seq}:${event.id}`;
+  }
+  return event.id.length > 0 ? event.id : undefined;
+}
+
+/**
+ * Complete JSONL records from the end of a live rollout.
+ *
+ * Returns undefined when the window has to grow. A trailing partial line is
+ * dropped. The window stops at two maximum records, which covers a fsynced
+ * terminal plus one unfinished append after it.
+ */
+function readCommittedJournalTail(
+  sourcePath: string,
+): readonly string[] | undefined {
+  const noFollow =
+    (fsConstants as { readonly O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+  let fd: number | undefined;
+  try {
+    const listed = lstatSync(sourcePath);
+    if (!listed.isFile() || listed.isSymbolicLink()) return undefined;
+    fd = openSync(sourcePath, fsConstants.O_RDONLY | noFollow);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) return undefined;
+    const size = stat.size;
+    if (!Number.isSafeInteger(size) || size < 0) return undefined;
+    if (size === 0) return [];
+    const limit = Math.min(size, MAX_RECOVERY_CANONICAL_LINE_BYTES * 2);
+    let window = Math.min(size, 64 * 1024);
+    for (;;) {
+      const lines = completeJournalLines(fd, size, window);
+      if (lines !== undefined) return lines;
+      if (window >= limit) return undefined;
+      const next = Math.min(limit, window * 2);
+      if (next <= window) return undefined;
+      window = next;
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function completeJournalLines(
+  fd: number,
+  size: number,
+  window: number,
+): readonly string[] | undefined {
+  const start = size - window;
+  const buffer = Buffer.allocUnsafe(window);
+  const read = readSync(fd, buffer, 0, window, start);
+  if (read !== window) return [];
+  const chunk = buffer.subarray(0, read);
+  let from = 0;
+  if (start > 0) {
+    const boundary = chunk.indexOf(0x0a);
+    if (boundary < 0) return undefined;
+    from = boundary + 1;
+  }
+  let end = chunk.length;
+  if (end > from && chunk[end - 1] !== 0x0a) {
+    const boundary = chunk.lastIndexOf(0x0a);
+    if (boundary < from) return start === 0 ? [] : undefined;
+    end = boundary + 1;
+  }
+  const lines: string[] = [];
+  let lineStart = from;
+  for (let index = from; index < end; index += 1) {
+    if (chunk[index] !== 0x0a) continue;
+    const lineEnd =
+      index > lineStart && chunk[index - 1] === 0x0d ? index - 1 : index;
+    if (lineEnd - lineStart > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+      lineStart = index + 1;
+      continue;
+    }
+    if (lineEnd > lineStart) {
+      lines.push(chunk.subarray(lineStart, lineEnd).toString("utf8"));
+    }
+    lineStart = index + 1;
+  }
+  return lines;
 }
 
 /** The sha256 recorded for a source that no longer exists; an operator confirms it to abandon the incident. */
