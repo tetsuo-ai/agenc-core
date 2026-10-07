@@ -292,7 +292,7 @@ export function projectLiveJournalTerminal(
     ) {
       return undefined;
     }
-    const lines = readCommittedJournalTail(sourcePath);
+    const lines = readCommittedJournalTail(sourcePath, runId, epoch);
     if (lines === undefined) return undefined;
     const terminal = terminalFromCommittedTail(lines, runId, epoch);
     if (terminal === undefined) return undefined;
@@ -329,6 +329,13 @@ function liveJournalPathIsInsideProject(
   return resolved === root || resolved.startsWith(`${root}${sep}`);
 }
 
+/**
+ * Newest same-epoch terminal in the suffix, unless a later-epoch reopen
+ * for this run clears it.
+ *
+ * A `run_terminal` from an epoch SQLite has not projected is ignored. One
+ * unparseable line rejects the whole suffix; bad JSON is not skipped.
+ */
 function terminalFromCommittedTail(
   lines: readonly string[],
   runId: string,
@@ -455,15 +462,28 @@ function canonicalTailEventId(event: {
   return event.id.length > 0 ? event.id : undefined;
 }
 
+/** First suffix. Grows toward two maximum records while a fact is still missing. */
+const INITIAL_COMMITTED_JOURNAL_TAIL_BYTES = 64 * 1024;
+
 /**
  * Complete JSONL records from the end of a live rollout.
  *
- * Returns undefined when the window has to grow. A trailing partial line is
- * dropped. The window stops at two maximum records, which covers a fsynced
- * terminal plus one unfinished append after it.
+ * The first read is 64 KiB. A trailing partial line is dropped. When the
+ * suffix starts after byte 0 and does not yet decide this run, the window
+ * doubles until it does, or until it reaches two maximum records (~8 MiB).
+ * A same-epoch terminal does not stop the scan while earlier bytes remain:
+ * a `run_reopened` before that terminal still has to clear it. A superseding
+ * reopen does stop the scan. An empty complete-line list does not. A last
+ * line longer than the window can end inside it and still be only a prefix.
+ *
+ * One unparseable line rejects the suffix that contains it; growth does not
+ * skip that line. A terminal from an epoch SQLite has not projected is not
+ * adopted. A record over the 4 MiB canonical line cap stays omitted.
  */
 function readCommittedJournalTail(
   sourcePath: string,
+  runId: string,
+  epoch: number,
 ): readonly string[] | undefined {
   const noFollow =
     (fsConstants as { readonly O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
@@ -478,13 +498,20 @@ function readCommittedJournalTail(
     if (!Number.isSafeInteger(size) || size < 0) return undefined;
     if (size === 0) return [];
     const limit = Math.min(size, MAX_RECOVERY_CANONICAL_LINE_BYTES * 2);
-    let window = Math.min(size, 64 * 1024);
+    let window = Math.min(size, INITIAL_COMMITTED_JOURNAL_TAIL_BYTES);
     for (;;) {
       const lines = completeJournalLines(fd, size, window);
-      if (lines !== undefined) return lines;
-      if (window >= limit) return undefined;
+      const start = size - window;
+      if (
+        lines !== undefined &&
+        (start === 0 ||
+          !committedTailNeedsEarlierBytes(lines, runId, epoch))
+      ) {
+        return lines;
+      }
+      if (window >= limit) return lines;
       const next = Math.min(limit, window * 2);
-      if (next <= window) return undefined;
+      if (next <= window) return lines;
       window = next;
     }
   } catch {
@@ -492,6 +519,32 @@ function readCommittedJournalTail(
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/**
+ * Whether bytes before this suffix can still change the live decision.
+ *
+ * Stop once a reopen for this run sits above the SQLite epoch, or once an
+ * unparseable line has already failed the suffix closed. A same-epoch
+ * terminal does not stop the scan: the reopen that clears it may be earlier.
+ */
+function committedTailNeedsEarlierBytes(
+  lines: readonly string[],
+  runId: string,
+  epoch: number,
+): boolean {
+  for (const line of lines) {
+    const fact = classifyJournalTailLine(line);
+    if (fact.kind === "invalid") return false;
+    if (
+      fact.kind === "reopened" &&
+      fact.runId === runId &&
+      fact.epoch > epoch
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function completeJournalLines(
@@ -523,6 +576,8 @@ function completeJournalLines(
     const lineEnd =
       index > lineStart && chunk[index - 1] === 0x0d ? index - 1 : index;
     if (lineEnd - lineStart > MAX_RECOVERY_CANONICAL_LINE_BYTES) {
+      // Over the canonical line cap: omit the record. Do not fail the suffix
+      // closed, and do not treat the skip as a terminal.
       lineStart = index + 1;
       continue;
     }

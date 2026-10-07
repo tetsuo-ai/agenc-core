@@ -150,6 +150,113 @@ function seedCanonicalTerminalRollout(fileName: string, eventId: string): string
   return rolloutPath;
 }
 
+const INITIAL_JOURNAL_TAIL_BYTES = 64 * 1024;
+
+function liveRolloutLock(rolloutPath: string): void {
+  writeFileSync(
+    `${rolloutPath}.lock`,
+    `${JSON.stringify({
+      pid: process.pid,
+      startNs: "live-writer",
+      acquiredAtIso: NOW,
+    })}\n`,
+    { mode: 0o600 },
+  );
+}
+
+function canonicalTerminalLine(
+  eventId: string,
+  finalMessage: string,
+  seq: number,
+): string {
+  return serializeRolloutItem({
+    type: "event_msg",
+    payload: {
+      eventId,
+      id: eventId,
+      seq,
+      msg: {
+        type: "run_terminal",
+        payload: {
+          runId: "run-complete",
+          epoch: 1,
+          status: "completed",
+          exitCode: 0,
+          stopReason: "turn_completed",
+          finalMessage,
+          usage: {
+            inputTokens: 5,
+            outputTokens: 3,
+            totalTokens: 8,
+            costUsd: 0.001,
+          },
+          lastSequenceBeforeTerminal: null,
+          finishedAt: "2026-07-18T12:05:00.000Z",
+        },
+      },
+    },
+  });
+}
+
+function reopenLine(): string {
+  return serializeRolloutItem({
+    type: "event_msg",
+    payload: {
+      eventId: "reopen-outside-tail",
+      id: "reopen-outside-tail",
+      seq: 2,
+      msg: {
+        type: "run_reopened",
+        payload: {
+          runId: "run-complete",
+          previousEpoch: 1,
+          epoch: 2,
+          reason: "operator_retry",
+          reopenedAt: "2026-07-18T12:06:00.000Z",
+        },
+      },
+    },
+  });
+}
+
+/** Newline-terminated records the tail scanner accepts as complete lines. */
+function completePadding(minBytes: number): string {
+  const line = `${JSON.stringify({
+    type: "event_msg",
+    eventVersion: 1,
+    payload: {
+      eventId: "pad-line",
+      id: "pad-line",
+      seq: 40,
+      msg: { type: "turn_started", payload: { turnId: "pad" } },
+    },
+  })}\n`;
+  return line.repeat(Math.ceil(minBytes / Buffer.byteLength(line)));
+}
+
+function seedLiveRollout(fileName: string, body: string): void {
+  seedDurableRuns();
+  new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+    runId: "run-complete",
+    openedAt: NOW,
+  });
+  const sessionDir = join(paths.projectDir, "sessions", "run-complete");
+  mkdirSync(sessionDir, { recursive: true });
+  const rolloutPath = join(sessionDir, fileName);
+  writeFileSync(rolloutPath, body, "utf8");
+  liveRolloutLock(rolloutPath);
+}
+
+function deferredRecoveryCount(): number {
+  return (
+    driver
+      .prepareState<[], { readonly count: number }>(
+        "SELECT COUNT(*) AS count FROM run_recovery_deferred",
+      )
+      .get()?.count ?? 0
+  );
+}
+
 function seedDurableRuns(): readonly number[] {
   const admissions = new ExecutionAdmissionRepository(driver, {
     now: () => new Date(NOW),
@@ -849,6 +956,82 @@ describe("durable run inspection", () => {
         "run-complete",
       ),
     ).toBeUndefined();
+  });
+
+  it("projects a live terminal line longer than the initial 64 KiB tail", () => {
+    const line = canonicalTerminalLine(
+      "terminal-long-line",
+      "x".repeat(INITIAL_JOURNAL_TAIL_BYTES),
+      1,
+    );
+    expect(Buffer.byteLength(line)).toBeGreaterThan(INITIAL_JOURNAL_TAIL_BYTES);
+    seedLiveRollout("rollout-long-terminal.jsonl", line);
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({ eventId: "terminal-long-line", status: "completed" });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("projects a live terminal pushed out by more than 64 KiB of later complete lines", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-before-padding",
+      "Recovered from the journal",
+      1,
+    );
+    const padding = completePadding(INITIAL_JOURNAL_TAIL_BYTES + 1);
+    expect(Buffer.byteLength(padding)).toBeGreaterThan(INITIAL_JOURNAL_TAIL_BYTES);
+    seedLiveRollout("rollout-padded-terminal.jsonl", `${terminal}${padding}`);
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({
+      eventId: "terminal-before-padding",
+      status: "completed",
+    });
+    expect(deferredRecoveryCount()).toBe(0);
+  });
+
+  it("clears an older live terminal when reopen is outside the initial 64 KiB tail", () => {
+    const terminal = canonicalTerminalLine(
+      "terminal-after-missed-reopen",
+      "stale after reopen",
+      3,
+    );
+    const padding = completePadding(INITIAL_JOURNAL_TAIL_BYTES + 1);
+    // The reopen is earlier than the terminal, with more than 64 KiB of
+    // complete lines between them, so the initial suffix sees the terminal
+    // and misses the reopen that must clear it.
+    seedLiveRollout(
+      "rollout-reopen-outside-tail.jsonl",
+      `${reopenLine()}${padding}${terminal}`,
+    );
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toBeUndefined();
+    expect(deferredRecoveryCount()).toBe(0);
   });
 
   it("exports bounded hashes and explicitly excludes workflow evidence", () => {
