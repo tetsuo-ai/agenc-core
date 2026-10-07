@@ -69,7 +69,11 @@ with `SetKernelObjectSecurity`. That write does not propagate to entries
 already in the directory, so a planted hard link keeps the ACL of the file
 it points to. The path is then verified read-only. This uses the same C#
 helper as the repair script below. Windows PowerShell 5.1 compiles that
-helper (`Add-Type`) in the user's `TEMP` directory.
+helper (`Add-Type`) in the user's `TEMP` directory. What remains: a
+directory swapped in between `mkdir` and that `lstat` is the one made private
+(nothing outside it changes), and entries added before the ACL is written
+stay in `.agenc` with their own ACLs; a task file among them must still be a
+regular file with one link, or it is refused.
 After that directory check passes, an unsafe task file is replaced atomically
 with a newly created private file, and a read of an unsafe task file is
 rejected. The project workspace keeps its existing ACL.
