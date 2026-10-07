@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { REFERENCE_DIFFICULTY, abilityPrior, extractTaskFeatures, predictSuccess, sigmoid, updateAbility } from "../../src/agents/provider-selector-irt.js";
-import { cascadeThreshold, conditionalRecovery, pairKey, selectChildProviderV2, utilityWeights } from "../../src/agents/provider-selector-v2.js";
+import { MIN_VERIFIED_OBSERVATIONS, cascadeThreshold, conditionalRecovery, pairKey, selectChildProviderV2, utilityWeights } from "../../src/agents/provider-selector-v2.js";
 import type { ChildProviderCandidate } from "../../src/agents/provider-selector-types.js";
 const parent: ChildProviderCandidate = { provider: "deepseek", model: "deepseek-flash", allowed: true, connected: true,
   supportsToolUse: true, supportsVision: true, supportsReasoning: true, contextWindow: 100_000, maxOutputTokens: 8192,
@@ -150,7 +150,7 @@ describe("maintained adequacy and parent-first price handling", () => {
   it("sends a hard task from a parent below the floor to the least expensive adequate model", () => {
     const r = selectChildProviderV2({ ...reasoning("hard"), parent: flash, candidates: [flash, luna, astra, pro] });
     expect(r).toMatchObject({ mode: "utility", selected: { model: pro.model } });
-    expect(r.reason).toContain("meets the quality this hard reasoning task needs and your model does not");
+    expect(r.reason).toContain("is the least expensive model rated for this hard reasoning task, and your model is not");
     expect(r.rejected.map(item => item.model).sort()).toEqual([flash.model, luna.model].sort());
     const none = selectChildProviderV2({ ...reasoning("hard"), parent: flash, candidates: [flash, luna] });
     expect(none.selected).toBeUndefined();
@@ -174,11 +174,48 @@ describe("maintained adequacy and parent-first price handling", () => {
     expect(selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], abilities: verified })
       .selected?.model).toBe(pro.model);
   });
+  it("lets a cap only make the choice cheaper when the parent cannot take the task", () => {
+    // flash is below the hard floor, so every capped and uncapped choice is a
+    // destination; the least expensive adequate one wins under every cap.
+    const uncapped = selectChildProviderV2({ ...reasoning("standard"), parent: luna, candidates: [luna, flash, pro, astra] });
+    expect(uncapped).toMatchObject({ mode: "utility", selected: { model: flash.model } });
+    for (const cap of [0.5, 1, 5, 20]) for (const cost of ["quality", "balanced", "economy"] as const) {
+      const capped = selectChildProviderV2({ ...reasoning("standard", cap), parent: luna, candidates: [luna, flash, pro, astra],
+        preferences: { cost } });
+      expect(capped.selected?.estimatedCostUsd).toBeLessThanOrEqual(uncapped.selected!.estimatedCostUsd!);
+      expect(capped.reason).toContain("is the least expensive model rated for this standard reasoning task");
+    }
+  });
+  it("needs several verified outcomes and a clear lower bound before a higher tier counts", () => {
+    const features = reasoning("standard").features;
+    const passes = (count: number) => {
+      let ability = abilityPrior(pro.provider, pro.model, "reasoning");
+      for (let index = 0; index < count; index += 1) ability = updateAbility(ability, features, true);
+      return ability;
+    };
+    const route = (abilities: ReturnType<typeof passes>[]) =>
+      selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], abilities }).selected?.model;
+    // One host-verified pass leaves the prior's wide interval: no reason to leave.
+    expect(route([passes(1)])).toBe(flash.model);
+    // A tight posterior is not enough below the minimum count.
+    expect(route([{ ...passes(1), observations: MIN_VERIFIED_OBSERVATIONS - 1, mean: 6, variance: 0.01 }])).toBe(flash.model);
+    // At the minimum count it still needs its lower bound above the parent:
+    // here the expected quality is higher but the interval reaches far below.
+    expect(route([{ ...passes(MIN_VERIFIED_OBSERVATIONS), mean: 2.5, variance: 4 }])).toBe(flash.model);
+    expect(route([{ ...passes(MIN_VERIFIED_OBSERVATIONS), mean: 6, variance: 0.05 }])).toBe(pro.model);
+  });
   it("does not plan a verified cascade on a higher tier alone", () => {
     const check = { available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1, targetQuality: 0.75 };
     const cold = selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], verification: check });
     expect(cold).toMatchObject({ mode: "parent", selected: { model: flash.model } });
     expect(cold.cascade).toBeUndefined();
+    // Nor on price: a cheaper adequate first model without evidence is skipped under any cap.
+    for (const cap of [1, 2, 20]) {
+      const capped = selectChildProviderV2({ ...reasoning("standard", cap), parent: astra, candidates: [astra, flash, pro],
+        verification: check, preferences: { cost: "economy" } });
+      expect(capped.cascade).toBeUndefined();
+      expect(capped.mode).not.toBe("cascade");
+    }
     // Paired outcomes, where the parent rescued the first model's failures, do support one.
     const paired = selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro],
       verification: { ...check, conditional: [{ first: pairKey(pro), second: pairKey(flash), failures: 20, recovered: 19 }] } });

@@ -34,7 +34,7 @@ export interface V2Candidate extends RankedChildCandidate {
    * override of unknown quality.
    */
   readonly adequacy?: number;
-  /** The ability posterior rests on verified local outcomes, not only on the tier prior. */
+  /** At least MIN_VERIFIED_OBSERVATIONS verified outcomes back the ability, not only the tier prior. */
   readonly verified: boolean;
   readonly lowerQuality: number;
   readonly upperQuality: number;
@@ -53,6 +53,8 @@ export interface V2Selection {
     readonly expectedLatencyMs: number; readonly quality: number; readonly worstCaseCostUsd: number };
 }
 export const pairKey = (pair: { readonly provider: string; readonly model: string }): string => `${pair.provider}/${pair.model}`;
+/** Verified outcomes needed before an ability counts as local evidence rather than its tier prior. */
+export const MIN_VERIFIED_OBSERVATIONS = 3;
 const finite = (x: number | undefined): x is number => x !== undefined && Number.isFinite(x) && x >= 0;
 /**
  * Utility units per dollar and per second. The dollar weight is the share of
@@ -140,7 +142,7 @@ export function selectChildProviderV2(input: {
     // Unknown destinations need either verified local evidence or an explicit request. The active parent is connected evidence.
     const saved = (input.abilities ?? input.outcomes?.abilities)?.find(item => item.provider === candidate.provider &&
       item.model === candidate.model && item.skill === features.skill && validAbility(item));
-    const verified = saved !== undefined && saved.observations > 0;
+    const verified = saved !== undefined && saved.observations >= MIN_VERIFIED_OBSERVATIONS;
     if (!parent && !input.override && !verified && !childModelProfile(candidate.provider, candidate.model)) { reject("model_profile_unknown"); continue; }
     const ability = saved ?? abilityPrior(candidate.provider, candidate.model, features.skill);
     // A handoff needs evidence that the model is adequate for this task: the
@@ -179,12 +181,11 @@ export function selectChildProviderV2(input: {
   }
   const cheaper = (a: V2Candidate, b: V2Candidate): number =>
     (a.estimatedCostUsd ?? Number.POSITIVE_INFINITY) - (b.estimatedCostUsd ?? Number.POSITIVE_INFINITY);
-  // Under a cap, utility orders the candidates. Without one, price never
-  // moves a child off an adequate parent, so when the parent cannot take the
-  // task the least expensive adequate model comes first; verified outcomes
-  // can still favor a better one below.
-  ranked.sort((a, b) => (task.maxCostUsd === undefined ? cheaper(a, b) || b.score - a.score
-    : b.score - a.score || cheaper(a, b)) || pairKey(a).localeCompare(pairKey(b)));
+  // Least expensive first, with or without a cap. When the parent cannot
+  // take the task, the least expensive adequate model does, so a cap can
+  // only make the choice cheaper. Only verified outcomes, weighed below, can
+  // justify a more expensive one.
+  ranked.sort((a, b) => cheaper(a, b) || b.score - a.score || pairKey(a).localeCompare(pairKey(b)));
   if (!ranked.length) return finish(undefined, "unavailable", "No connected and allowed model meets this task's requirements.");
   if (input.override) return finish(ranked[0], "override", `${pairKey(ranked[0]!)} is your override; capability and spend checks passed.`);
   const parent = ranked.find(item => pairKey(item) === pairKey(input.parent));
@@ -199,7 +200,7 @@ export function selectChildProviderV2(input: {
     // Maintained tiers establish adequacy, not superiority: a higher predicted
     // quality is a reason to move only when verified local outcomes support it.
     const qualityDelta = item.quality - selected.quality;
-    const qualityGain = qualityDelta > 0 && !item.verified ? 0 : qualityDelta;
+    const qualityGain = qualityDelta > 0 && !verifiedBetter(item, selected) ? 0 : qualityDelta;
     // Comparing unknown dollars may not move a subscription parent for an imagined saving.
     const priceGain = item.estimatedCostUsd !== undefined && selected.estimatedCostUsd !== undefined
       ? lambda * (selected.estimatedCostUsd - item.estimatedCostUsd) : 0;
@@ -209,7 +210,7 @@ export function selectChildProviderV2(input: {
   const verifier = input.verification;
   if (verifier?.available && verifier.retrySafe && finite(verifier.costUsd) && finite(verifier.latencyMs)) {
     const target = verifier.targetQuality ?? 0.9;
-    const plans: (NonNullable<V2Selection["cascade"]> & { readonly comparableQuality: number })[] = [];
+    const plans: NonNullable<V2Selection["cascade"]>[] = [];
     if (Number.isFinite(target) && target > 0 && target <= 1) for (const first of ranked) for (const second of ranked) {
       // The parent is the escalation anchor. Sparse paired outcomes must not
       // send a failed task wandering through unrelated providers.
@@ -218,10 +219,10 @@ export function selectChildProviderV2(input: {
       if (downgradesHardTask(task, first, second)) continue;
       const recovered = conditionalRecovery(pairKey(first), pairKey(second), verifier.conditional);
       const quality = first.quality + (1 - first.quality) * recovered;
-      // As for a direct handoff, a tier alone supports no gain over the
-      // current choice: paired recovery or the first model's verified
-      // outcomes must back it.
-      const supported = recovered > 0 || first.verified;
+      // As for a direct handoff, a tier alone supports no plan: paired
+      // recovery outcomes, or verified outcomes showing the first model does
+      // better than the current choice, must back it.
+      if (recovered === 0 && !verifiedBetter(first, selected)) continue;
       const c1 = first.estimatedCostUsd + first.handoffCostUsd + verifier.costUsd;
       const c2 = second.estimatedCostUsd + second.handoffCostUsd + verifier.costUsd;
       const worstCaseCostUsd = c1 + c2;
@@ -231,21 +232,19 @@ export function selectChildProviderV2(input: {
       const expectedCostUsd = c1 + (1 - first.quality) * c2;
       const expectedLatencyMs = first.estimatedLatencyMs + first.handoffLatencyMs + verifier.latencyMs +
         (1 - first.quality) * (second.estimatedLatencyMs + second.handoffLatencyMs + verifier.latencyMs);
-      plans.push({ candidates: [first, second], expectedCostUsd, expectedLatencyMs, worstCaseCostUsd, quality,
-        comparableQuality: supported ? quality : Math.min(quality, selected.quality) });
+      plans.push({ candidates: [first, second], expectedCostUsd, expectedLatencyMs, worstCaseCostUsd, quality });
     }
     plans.sort((a, b) => a.expectedCostUsd - b.expectedCostUsd || a.expectedLatencyMs - b.expectedLatencyMs);
-    const found = plans.find(item => item.comparableQuality - lambda * item.expectedCostUsd - mu * item.expectedLatencyMs / 1000 > selected.score + 0.01);
-    const plan = found === undefined ? undefined : (({ comparableQuality: _comparable, ...rest }) => rest)(found);
+    const plan = plans.find(item => item.quality - lambda * item.expectedCostUsd - mu * item.expectedLatencyMs / 1000 > selected.score + 0.01);
     if (plan) return finish(plan.candidates[0], "cascade", `${pairKey(plan.candidates[0]!)} first; verify locally and try ${pairKey(plan.candidates[1]!)} only on failure (expected $${plan.expectedCostUsd.toFixed(4)}).`, plan);
   }
   // Contextual Thompson sampling within a conservative loss envelope, off unless opted in.
   const maxLoss = input.preferences?.maxExpectedLoss ?? 0.01;
-  if (input.preferences?.explore && parent && finite(maxLoss) && maxLoss <= 0.05 && selected.ability.observations >= 3) {
+  if (input.preferences?.explore && parent && finite(maxLoss) && maxLoss <= 0.05 && selected.ability.observations >= MIN_VERIFIED_OBSERVATIONS) {
     let bestSample = -Infinity;
     let explored = selected;
     for (const candidate of ranked) {
-      if (candidate.ability.observations < 3 || candidate.estimatedCostUsd === undefined || selected.estimatedCostUsd === undefined) continue;
+      if (candidate.ability.observations < MIN_VERIFIED_OBSERVATIONS || candidate.estimatedCostUsd === undefined || selected.estimatedCostUsd === undefined) continue;
       if (pairKey(candidate) !== pairKey(selected) && downgradesHardTask(task, candidate, selected)) continue;
       const conservativeLoss = selected.upperQuality - candidate.lowerQuality +
         lambda * Math.max(0, candidate.estimatedCostUsd + candidate.handoffCostUsd - selected.estimatedCostUsd) +
@@ -260,13 +259,22 @@ export function selectChildProviderV2(input: {
   }
   const estimate = selected.estimatedCostUsd === undefined ? "subscription dollars unknown" : `$${selected.estimatedCostUsd.toFixed(4)}`;
   const parentBelowFloor = rejected.some(item => pairKey(item) === pairKey(input.parent) && item.reason === "quality_below_task_floor");
+  const leastExpensive = parent === undefined && pairKey(selected) === pairKey(ranked[0]!);
   const reason = mode === "parent" ? `Keep ${pairKey(selected)}; expected delegation gain does not cover handoff and uncertainty.`
     : mode === "explore" ? `${pairKey(selected)} is a bounded local exploration within your spend cap.`
-    : parentBelowFloor ? `${pairKey(selected)} meets the quality this ${task.complexity} ${task.kind} task needs and your model does not (estimated ${estimate}).`
-    : parent === undefined && task.maxCostUsd === undefined && !selected.verified
-      ? `${pairKey(selected)} is the least expensive model that meets this task's requirements (estimated ${estimate}).`
-      : `${pairKey(selected)} has the highest supported task utility after handoff cost (estimated ${estimate}).`;
+    : leastExpensive && parentBelowFloor
+      ? `${pairKey(selected)} is the least expensive model rated for this ${task.complexity} ${task.kind} task, and your model is not (estimated ${estimate}).`
+    : leastExpensive ? `${pairKey(selected)} is the least expensive model that meets this task's requirements (estimated ${estimate}).`
+    : `${pairKey(selected)} has the highest supported task utility after handoff cost (estimated ${estimate}).`;
   return finish(selected, mode, reason);
+}
+
+/**
+ * Enough verified outcomes put the destination's lower 95% bound above the
+ * current choice's expected quality. One lucky pass, or a tier prior, never does.
+ */
+function verifiedBetter(destination: V2Candidate, current: V2Candidate): boolean {
+  return destination.ability.observations >= MIN_VERIFIED_OBSERVATIONS && destination.lowerQuality > current.quality;
 }
 
 /**

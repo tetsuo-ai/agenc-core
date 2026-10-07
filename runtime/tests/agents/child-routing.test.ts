@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
 import { routeChildTask, childRoutingBudget, recordChildRoutingOutcome } from "../../src/agents/child-routing.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
+import { abilityPrior, updateAbility } from "../../src/agents/provider-selector-irt.js";
 import type { Session } from "../../src/session/session.js";
 
 function fixture(connected: readonly string[], allowed = ["deepseek", "openai"]) {
@@ -23,13 +24,13 @@ function fixture(connected: readonly string[], allowed = ["deepseek", "openai"])
 
 /** A parent on a real catalog model, with every allowed provider connected. */
 async function catalogSession(provider: string, model: string, allowed: readonly string[],
-  services: Record<string, unknown> = {}): Promise<Session> {
+  services: Record<string, unknown> = {}, billing: Readonly<Record<string, string>> = {}): Promise<Session> {
   const config = { ...defaultConfig(), model_provider: provider, model,
     agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: [...allowed] } };
   const modelsManager = new StaticModelsManager({ config, fallbackProvider: provider, metadata: { env: {} } });
   return { modelInfo: await modelsManager.getModelInfo(model), config: {},
     providerService: { current: () => ({ provider, model }), environment: () => ({}),
-      childProviderRoutingInfo: async () => ({ connected: true, billingSource: "byok" }) },
+      childProviderRoutingInfo: async (pair: { provider: string }) => ({ connected: true, billingSource: billing[pair.provider] ?? "byok" }) },
     services: { modelsManager, configStore: { current: () => config }, ...services },
   } as unknown as Session;
 }
@@ -205,6 +206,79 @@ describe("parent-first routing with the real model catalog", () => {
       expect(flash.ability.mean).toBeLessThan(routed.result.selected!.ability.mean);
     }
   });
+  describe("a cap never makes a child more expensive", () => {
+    const pick = (routed: Awaited<ReturnType<typeof routeChildTask>>) =>
+      [`${routed.result.selected?.provider}/${routed.result.selected?.model}`, routed.result.selected?.estimatedCostUsd] as const;
+    it.each([
+      ["a grok-4.6 parent that cannot hold the context, simple extraction", ["grok", "grok-4.6", ["deepseek", "openai"]],
+        { prompt: "Extract a short list of record IDs", contextTokens: 600_000 }, "openai/gpt-6-luna"],
+      ["a grok-4.6 parent that cannot hold the context, standard reasoning", ["grok", "grok-4.6", ["deepseek", "openai"]],
+        { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning", complexity: "standard", contextTokens: 600_000 },
+        "deepseek/deepseek-flash"],
+      ["a gpt-6-luna parent below the standard reasoning floor", ["openai", "gpt-6-luna", ["deepseek", "openai"]],
+        { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning", complexity: "standard" }, "deepseek/deepseek-flash"],
+    ] as const)("starts from the least expensive adequate model for %s", async (_name, [provider, model, allowed], request, cheapest) => {
+      const session = await catalogSession(provider, model, allowed);
+      const [uncappedPair, uncappedCost] = pick(await routeChildTask(session, request));
+      expect(uncappedPair).toBe(cheapest);
+      for (const maxCostUsd of [1, 5, 20]) {
+        const [cappedPair, cappedCost] = pick(await routeChildTask(session, { ...request, maxCostUsd }));
+        expect(cappedPair).toBe(cheapest);
+        expect(cappedCost).toBeLessThanOrEqual(uncappedCost!);
+      }
+    });
+    it("moves a subscription parent with unknown dollars to the least expensive adequate model under a cap", async () => {
+      const session = await catalogSession("openai", "gpt-6-astra", ["deepseek", "anthropic"], {}, { openai: "sign_in" });
+      const request = { prompt: "Extract a short list of record IDs" };
+      expect((await routeChildTask(session, request)).result).toMatchObject({ mode: "parent", selected: { model: "gpt-6-astra" } });
+      for (const maxCostUsd of [1, 5, 20]) {
+        const routed = await routeChildTask(session, { ...request, maxCostUsd });
+        expect(routed.result.rejected).toContainEqual(expect.objectContaining({ model: "gpt-6-astra", reason: "price_unknown" }));
+        expect(pick(routed)[0]).toBe("deepseek/deepseek-flash");
+      }
+    });
+    it("keeps an adequate parent under balanced at any cap; economy trades it for a material saving", async () => {
+      const session = await catalogSession("openai", "gpt-6-astra", ["deepseek", "openai"]);
+      const request = { prompt: "Extract a short list of record IDs" };
+      for (const maxCostUsd of [0.8, 1, 2, 5, 20]) {
+        for (const cost of ["quality", "balanced"] as const) {
+          expect((await routeChildTask(session, { ...request, maxCostUsd, preferences: { cost } })).result)
+            .toMatchObject({ mode: "parent", selected: { model: "gpt-6-astra" } });
+        }
+      }
+      // The parent would use most of a $1 cap; an adequate model saves nearly all of it.
+      const economy = await routeChildTask(session, { ...request, maxCostUsd: 1, preferences: { cost: "economy" } });
+      expect(economy.result.mode).toBe("utility");
+      expect(economy.result.selected!.estimatedCostUsd).toBeLessThan(0.05);
+      // Against a $20 cap the same saving is not material.
+      expect((await routeChildTask(session, { ...request, maxCostUsd: 20, preferences: { cost: "economy" } })).result.selected?.model)
+        .toBe("gpt-6-astra");
+    });
+  });
+
+  it("plans no cascade from a strong parent without paired or verified evidence", async () => {
+    const verifier = { prepare: vi.fn(async () => ({ available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1,
+      check: async () => "pass" as const })) };
+    const session = await catalogSession("openai", "gpt-6-astra", ["deepseek", "openai"], { childRoutingVerifier: verifier });
+    for (const [maxCostUsd, request] of [[1, { prompt: "Extract a short list of record IDs" }],
+      [2, { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning" as const, complexity: "standard" as const }]] as const) {
+      const routed = await routeChildTask(session, { ...request, maxCostUsd });
+      expect(routed.verification).toBeDefined();
+      expect(routed.result.cascade).toBeUndefined();
+      expect(routed.result).toMatchObject({ mode: "parent", selected: { model: "gpt-6-astra" } });
+    }
+  });
+
+  it("does not move a deepseek-flash parent up a tier after one verified pass", async () => {
+    const session = await catalogSession("deepseek", "deepseek-flash", ["deepseek"]);
+    const request = { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning" as const, complexity: "standard" as const };
+    const { features } = await routeChildTask(session, request);
+    let ability = abilityPrior("deepseek", "deepseek-v4-pro", features.skill);
+    ability = updateAbility(ability, features, true);
+    const once = await routeChildTask(session, { ...request, outcomes: { aggregates: [], health: [], abilities: [ability] } });
+    expect(once.result).toMatchObject({ mode: "parent", selected: { model: "deepseek-flash" } });
+  });
+
   describe("a cheap deepseek-flash parent with the evaluation's providers and $0.05 cap", () => {
     const providers = ["deepseek", "meta", "kimi", "minimax"];
     const prompts = ["Extract the invoice numbers from these lines as a JSON array.",
