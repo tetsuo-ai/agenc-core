@@ -35,8 +35,9 @@ import type { ProviderSelection } from "../../session/provider-service.js";
 import { automaticChildSelectionEnabled, routeChildTask, childRoutingBudget } from "../child-routing.js";
 import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, type RankedChildCandidate } from "../provider-selector.js";
 import type { ChildExecutionPlan } from "../cross-provider.js";
-import { runChildRoutingFallback, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
+import { runChildRoutingFallback, type ChildRoutingAttemptContext, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
 import { observeChildRoutingAttempt } from "../child-routing-supervisor.js";
+import { superviseChildRoutingRetries } from "../child-routing-retries.js";
 import { requestParentFollowupTurn } from "../run-agent.js";
 import { createMailboxMetadataRecord, isMailboxSendAccepted, readMailboxMetadata } from "../mailbox.js";
 import {
@@ -1311,6 +1312,29 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const firstObservation = initialObservation;
       const decision = routingDecision;
       const originalTurnId = session.activeTurn?.unsafePeek()?.turnId;
+      // Retries run only inside the turn that spawned the child, under the
+      // current settings and caller authority.
+      const attemptBlocker = (): string | undefined =>
+        session.activeTurn?.unsafePeek()?.turnId !== originalTurnId ? "the turn that spawned this child has ended."
+          : !automaticSelectionOn(session) ? "automatic selection was turned off."
+            : !callerIsCurrent() || session.isShuttingDown ? "the calling agent was stopped or is no longer live."
+              : undefined;
+      const mayStartAttempt = (): boolean => attemptBlocker() === undefined;
+      const providerAllowed = (provider: string): boolean => provider === activeProvider ||
+        (childProviderPolicy(session).allowed_providers ?? []).includes(provider);
+      // While this holds, the child ends its task on a provider failure
+      // instead of retrying that provider, so this supervisor can retry it on
+      // another one. Otherwise the child keeps its own provider retries. The
+      // runner tries the next ranked candidate and stops if it cannot start.
+      const supervise = (child: AgentThread["live"], context: ChildRoutingAttemptContext<AgentThread>,
+        observation: Promise<unknown>): void => {
+        const next = context.fallbackCandidates[0];
+        if (next === undefined) return;
+        const release = superviseChildRoutingRetries(child, () => child.toolCallCount === 0 && mayStartAttempt() &&
+          providerAllowed(next.provider));
+        void observation.then(release, release);
+      };
+      let retryAnnounced = false;
       const notice = (message: string): void => {
         if (session.isShuttingDown) return;
         try {
@@ -1328,11 +1352,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(routingBudget !== undefined ? { maxCostUsd: routingBudget } : {}),
         signal: session.abortController.signal,
         runAttempt: async context => {
-          if (context.attempt === 1) return firstObservation;
-          if (!callerIsCurrent() || session.isShuttingDown || session.activeTurn?.unsafePeek()?.turnId !== originalTurnId) {
-            throw new Error("The parent turn ended before automatic fallback.");
+          if (context.attempt === 1) {
+            supervise(live, context, firstObservation);
+            return firstObservation;
           }
+          const blocker = attemptBlocker();
+          if (blocker !== undefined) throw new Error(blocker);
           const nextName = `${taskName.slice(0, 42)}_retry${context.attempt}`;
+          retryAnnounced = true;
           notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after a provider failure. Wait for this attempt before concluding the task.`);
           let nextObservation: Promise<ChildRoutingAttemptResult<AgentThread>> | undefined;
           const retryArgs = { ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
@@ -1348,21 +1375,34 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible provider after a provider failure.`,
               ...(context.candidate.estimatedCostUsd !== undefined ? { estimatedCostUsd: context.candidate.estimatedCostUsd } : {}) },
             maxModelCalls: context.remainingModelCalls,
-            onStarted: (_thread, observation) => { nextObservation = observation; },
+            onStarted: (started, observation) => {
+              nextObservation = observation;
+              supervise(started.live, context, observation);
+            },
           });
-          if (retry.isError || nextObservation === undefined) throw new Error("The next provider could not start with current consent, policy and budget.");
+          if (retry.isError || nextObservation === undefined) {
+            throw new Error(`${nextName} could not start with the current consent, settings and budget.`);
+          }
           return nextObservation;
         },
       }).then(result => {
-        if (result.attempts.length > 1 || result.stopReason !== "completed") {
-          notice(`Finished after ${result.attempts.length} attempt(s). Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
+        // One attempt's receipt already tells the parent how it ended. After
+        // a retry, say that the chain is over.
+        if (result.attempts.length > 1) {
+          notice(`Finished after ${result.attempts.length} attempts. Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
         }
-      }, () => notice("Stopped automatic fallback. The next attempt lacked current authority or verified accounting. Use the existing child results."));
+      }, (error: unknown) => {
+        // Before any retry was announced, the first receipt is the whole
+        // story. After one, say why no further attempt runs.
+        if (!retryAnnounced) return;
+        const reason = error instanceof Error ? error.message : String(error);
+        notice(`Stopped automatic fallback: ${reason.charAt(0).toLowerCase()}${reason.slice(1)} Use the existing child results.`);
+      });
     }
     return json({
       task_name: live.agentPath,
       ...(routingReason !== undefined ? { routing_reason: routingReason } : {}),
-      ...(routingCandidates !== undefined ? { automatic_fallback: "Provider failures before any child tool call may start up to two named retry workers. Wait for routing updates and all attempt receipts." } : {}),
+      ...(routingCandidates !== undefined ? { automatic_fallback: "If this child fails on a provider error before it runs a tool, up to two retry workers may start on other providers while this turn lasts. A routing message names each one. Without such a message, this child's own result is final." } : {}),
       ...(crossProviderRequested ? {
         provider: reportedProvider,
         model: reportedModel,

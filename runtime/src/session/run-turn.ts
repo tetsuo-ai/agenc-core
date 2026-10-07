@@ -308,8 +308,13 @@ export type {
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
-  /** The child routing supervisor owns retries across providers for this task. */
-  readonly automaticChildRouting?: boolean;
+  /**
+   * Read at each provider failure, with that failure. True while a live child
+   * routing supervisor could still restart this task on another provider for
+   * it: the failure then ends the turn without the retry ladder, stall retry
+   * or outage wait. Otherwise the ordinary retries apply.
+   */
+  readonly childRoutingOwnsRetries?: (error: unknown) => boolean;
   /** Explicit output contract; never inferred from user prose. */
   readonly exactOutput?: boolean;
   /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
@@ -1217,7 +1222,7 @@ async function runSamplingRequest(
   assistantOutputSink?: AssistantOutputStreamSink,
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
-  automaticChildRouting = false,
+  childRoutingOwnsRetries?: (error: unknown) => boolean,
 ): Promise<SamplingRequestResult> {
   let prepared = await prepareSamplingRequestBoundary(
     state,
@@ -1241,6 +1246,9 @@ async function runSamplingRequest(
   const samplingContext = prepared.samplingContext;
 
   const outage = providerOutagePolicy(session);
+  const supervisorOwnsRetry = (error: unknown): boolean => {
+    try { return childRoutingOwnsRetries?.(error) === true; } catch { return false; }
+  };
   let waitedMs = 0;
   let outageRetries = 0;
   let stallRetryStarted = false;
@@ -1256,7 +1264,7 @@ async function runSamplingRequest(
         // One initial provider call plus the five recovery-ladder reservations.
         // The reservation hook remains authoritative when another recovery path
         // has already consumed part of the shared A1 ladder.
-        maxAttempts: automaticChildRouting ? 1 : MAX_RECOVERY_REENTRIES + 1,
+        maxAttempts: MAX_RECOVERY_REENTRIES + 1,
         giveUpMs: STREAM_RETRY_WINDOW_MS,
         attempt: () =>
           tryRunSamplingRequest(
@@ -1271,6 +1279,8 @@ async function runSamplingRequest(
           ),
         isTransient: isTransientSamplingError,
         onTransientRetry: async (attempt, err) => {
+          // The routing supervisor retries this task on another provider.
+          if (supervisorOwnsRetry(err)) return false;
           // A stopped stream gets at most one new physical request, including
           // when that retry fails for a different transient reason.
           if (stallRetryStarted) return false;
@@ -1333,7 +1343,7 @@ async function runSamplingRequest(
       const lastError = outcome.lastError;
       const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
       const canWait =
-        !automaticChildRouting &&
+        !supervisorOwnsRetry(lastError) &&
         !retryBlocked &&
         !stallRetryStarted &&
         !isStreamProgressStop(lastError) &&
@@ -3048,7 +3058,7 @@ async function* runTurnKernelInner(
           emitTurnCheckpoint("iteration", { force: true });
           checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
         },
-        opts.automaticChildRouting,
+        opts.childRoutingOwnsRetries,
       );
       for (const ev of pending) {
         yield ev;
@@ -3741,7 +3751,7 @@ export function runTurn(
         ctx?: TurnContext;
         exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
-        automaticChildRouting?: boolean;
+        childRoutingOwnsRetries?: (error: unknown) => boolean;
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3765,7 +3775,7 @@ export function runTurn(
       ctx,
       exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,
-      automaticChildRouting: opts.automaticChildRouting,
+      childRoutingOwnsRetries: opts.childRoutingOwnsRetries,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,

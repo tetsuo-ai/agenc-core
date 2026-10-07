@@ -4,6 +4,7 @@ vi.mock("../../../src/agents/delegate.js", () => ({ delegate: vi.fn() }));
 
 import { delegate } from "../../../src/agents/delegate.js";
 import { createSpawnAgentTool } from "../../../src/agents/v2/spawn.js";
+import { childRoutingSupervisorCanFallback } from "../../../src/agents/child-routing-retries.js";
 import { createAgentRoleWorkspace } from "../../../src/agents/role.js";
 import { AgentRoleCatalog } from "../../../src/agents/role-catalog.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
@@ -117,5 +118,6 @@ describe("spawn_agent with automatic selection off", () => {
     expect(request.model).toBeUndefined();
     expect(request).toMatchObject({ taskPrompt: "Extract names", taskId: "spawn-1", agentName: "worker",
       runInBackground: true, keepAlive: true, summarizeAtStepLimit: true, exactOutput: false });
+    expect(childRoutingSupervisorCanFallback(thread.live)).toBe(false);
   });
 });

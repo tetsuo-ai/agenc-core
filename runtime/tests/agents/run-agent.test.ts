@@ -169,7 +169,9 @@ import {
 } from "../services/lsp/manager.js";
 import { ConfigStore, nextConfigReadMark } from "../config/store.js";
 import { SessionProviderService } from "../session/provider-service.js";
-import { LLMFundsError } from "../llm/errors.js";
+import { LLMFundsError, LLMServerError } from "../llm/errors.js";
+import { superviseChildRoutingRetries } from "../../src/agents/child-routing-retries.js";
+import { StreamProgressError } from "../../src/llm/stream-progress.js";
 import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
@@ -5252,6 +5254,35 @@ describe("runAgent", () => {
         initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
       return { live, chatStream, run };
     }
+    const unavailable = () => new LLMServerError("fake", 503, "unavailable");
+    beforeEach(() => { vi.spyOn(Math, "random").mockReturnValue(0); });
+    afterEach(() => { vi.mocked(Math.random).mockRestore(); });
+
+    it("retries a 503 after the task's first tool call and completes, with a supervisor attached", async () => {
+      const { live, chatStream, run } = await routedChild([
+        { content: "Looking.", toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" },
+        unavailable(),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(3);
+        expect(live.toolCallCount).toBe(1);
+      } finally { release(); }
+    });
+
+    it("ends the task on a 503 before any tool call while the supervisor can act", async () => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "not reached" }]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("errored");
+        expect(chatStream).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "provider_unavailable", retryable: true });
+      } finally { release(); }
+    });
 
     it("publishes the child's receipt without waiting for routing telemetry", async () => {
       const { live, run } = await routedChild([{ content: "done" }]);
@@ -5263,6 +5294,32 @@ describe("runAgent", () => {
         expect(telemetry).toHaveBeenCalledOnce();
         expect(live.lastTaskReceipt).toMatchObject({ outcome: "completed", terminal: { reason: "completed" } });
       } finally { telemetry.mockRestore(); }
+    });
+
+    it("keeps the stall retry, which no other provider would take over", async () => {
+      const { live, chatStream, run } = await routedChild([
+        new StreamProgressError("fake", "stream_no_progress"),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
+    });
+
+    it.each([
+      ["no supervisor, as for a child restored after a restart", false],
+      ["a supervisor that can no longer start a retry", true],
+    ] as const)("keeps provider retries with %s", async (_name, attachSupervisor) => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "done" }]);
+      const release = attachSupervisor ? superviseChildRoutingRetries(live, () => false) : () => {};
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
     });
   });
 

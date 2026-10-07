@@ -25,6 +25,12 @@ export interface ChildRoutingAttemptContext<T> {
   readonly remainingModelCalls: number;
   readonly remainingCostUsd?: number;
   readonly previousAttempts: readonly ChildRoutingAttempt<T>[];
+  /**
+   * Candidates a later attempt could still use if this one fails before any
+   * tool call, judged before this attempt's own spend. Empty on the last
+   * permitted attempt.
+   */
+  readonly fallbackCandidates: readonly RankedChildCandidate[];
 }
 
 export type ChildRoutingStopReason = "completed" | "terminal_outcome" | "tools_already_run"
@@ -44,10 +50,11 @@ function nonNegative(value: number | undefined): value is number {
   return value !== undefined && Number.isFinite(value) && value >= 0;
 }
 
-function canFallback(terminal: ChildTerminalOutcome): boolean {
-  return terminal.reason === "insufficient_funds" ||
-    (terminal.retryable && (terminal.reason === "rate_limited" ||
-      terminal.reason === "provider_unavailable" || terminal.reason === "timeout"));
+/** A provider failure that another provider can retry. Tasks, limits and stalls are not. */
+export function childFailureAllowsFallback(failure: Pick<ChildTerminalOutcome, "reason" | "retryable">): boolean {
+  return failure.reason === "insufficient_funds" ||
+    (failure.retryable && (failure.reason === "rate_limited" ||
+      failure.reason === "provider_unavailable" || failure.reason === "timeout"));
 }
 
 /**
@@ -94,10 +101,13 @@ export async function runChildRoutingFallback<T>(options: {
     if (candidate === undefined) {
       return finish(eligible.length === 0 ? "no_candidate" : "cost_budget_exhausted");
     }
+    const fallbackCandidates = attempts.length + 1 >= maxAttempts ? [] : eligible.filter((item) =>
+      item.provider !== candidate.provider && (remainingCostUsd === undefined ||
+        (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd <= remainingCostUsd)));
     const outcome = await options.runAttempt({ candidate, attempt: attempts.length + 1,
       remainingModelCalls: options.maxModelCalls - modelCalls,
       ...(remainingCostUsd !== undefined ? { remainingCostUsd } : {}),
-      previousAttempts: [...attempts] });
+      previousAttempts: [...attempts], fallbackCandidates });
     attempts.push({ ...outcome, candidate, attempt: attempts.length + 1 });
     attemptedProviders.add(candidate.provider);
     if (!Number.isSafeInteger(outcome.modelCalls) || outcome.modelCalls < 0 ||
@@ -130,7 +140,7 @@ export async function runChildRoutingFallback<T>(options: {
     }
     if (options.signal?.aborted) return finish("cancelled");
     if (outcome.terminal.reason === "completed") return finish("completed");
-    if (!canFallback(outcome.terminal)) return finish("terminal_outcome");
+    if (!childFailureAllowsFallback(outcome.terminal)) return finish("terminal_outcome");
     if (outcome.toolCalls > 0) return finish("tools_already_run");
     if (!usageKnown) return finish("usage_unknown");
   }
