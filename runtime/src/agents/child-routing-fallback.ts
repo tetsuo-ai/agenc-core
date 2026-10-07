@@ -170,7 +170,8 @@ export async function runChildRoutingFallback<T>(options: {
     if (options.signal?.aborted) return finish("cancelled");
     if (options.verification !== undefined && CHECKABLE_CHILD_TERMINALS.has(outcome.terminal.reason)) {
       // Unknown or held usage matters only to a cap that must admit the
-      // check's charge; under a cap the reconciled spend is known here.
+      // check's charge. Under a cap an unknown spend has already stopped the
+      // chain, and a held reservation counts in full.
       if (options.maxCostUsd !== undefined && accountedCostUsd! + options.verification.costUsd > options.maxCostUsd) {
         return finish("verification_over_budget");
       }

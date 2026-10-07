@@ -7,7 +7,7 @@
     "../../../src/agents/provider-selector-v2.ts": "3243ee29f8568c30fe3c0f1272e18d75d28404038486c7423567d8257996a002",
     "../../../src/agents/provider-selector-profiles.ts": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
     "../../../src/agents/provider-selector.ts": "0261f8be4c4bda5c00a713844406cdc0264ffefd3cf4b7c241970e569a64c838",
-    "../../../src/agents/child-routing-fallback.ts": "5271a329f86f4fdbf1078915769a577136ea81604ce43f8c7bd088e850243593",
+    "../../../src/agents/child-routing-fallback.ts": "9f9b8934a4c0e666e242c0f47105edd2ced9ca577692b1a496a26014bfe4602b",
     "../calibrate.mts": "5283969dfd10ddf2a8adadac2e4f9f83942c0996ea6a3ebca1b3bf50c1e2cf7b",
     "../evaluate.mts": "ce8e1d72d945303696f94224e2e7139a41fbdf3c85358ec9b56c78333ea5c106",
     "calibration-post-review.json": "72a1bf15304795ce968cd80e29da116fd37585ff5afa9a12fa39d6a4b012a844",
@@ -15,5 +15,13 @@
   },
   "fitOnCalibrationOnly": true,
   "heldoutPreviouslyPublished": true,
-  "note": "Post-review policy: the review fixes, then a refit on calibration data only. Paths are relative to this evidence folder. The held-out tasks and the earlier policy's held-out results were already published, so this replay is not a blind held-out result."
+  "note": "Post-review policy: the review fixes, then a refit on calibration data only. Paths are relative to this evidence folder. The held-out tasks and the earlier policy's held-out results were already published, so this replay is not a blind held-out result.",
+  "postReplayChanges": [
+    {
+      "file": "../../../src/agents/child-routing-fallback.ts",
+      "replaySha256": "5271a329f86f4fdbf1078915769a577136ea81604ce43f8c7bd088e850243593",
+      "sha256": "9f9b8934a4c0e666e242c0f47105edd2ced9ca577692b1a496a26014bfe4602b",
+      "reason": "Comment-only correction after the replay: a held reservation counts in full under a cap. No code changed."
+    }
+  ]
 }

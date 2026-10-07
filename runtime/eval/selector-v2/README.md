@@ -71,7 +71,7 @@ Restore a router-bench directory: copy `evidence/benchmark/bench_tasks.py`, `TAS
 
 **Frozen policy.** `portable-policy-freeze.json` pins the source evaluated before the review, which matches commit `1f6f98ec0` of this branch. That commit's `evidence/` still holds the raw files, identical to the archive, and its README gives the replay steps. The freeze records one post-evaluation change: inserting "and" in the unavailable-model rejection text to preserve an existing test contract. All 378 decisions, verdicts, request IDs and costs replay identically. The exported matrix drops unused private accounting fields, so its file hash differs from the original; request IDs, prompts, answers, grades, token usage and dollar fields remain unchanged.
 
-**Post-review policy.** `post-review-policy-freeze.json` pins the selector after the review fixes and a refit by `calibrate.mts` on calibration data only. Decompress `calibration-input.json.gz` and copy `post-review/calibration-post-review.json` from the archive into `evidence/`, then run, from there:
+**Post-review policy.** `post-review-policy-freeze.json` pins the selector after the review fixes and a refit by `calibrate.mts` on calibration data only. It records one later comment-only change to the fallback runner; a replay after it matches every decision, verdict, request ID and cost. Decompress `calibration-input.json.gz` and copy `post-review/calibration-post-review.json` from the archive into `evidence/`, then run, from there:
 
 ```sh
 ../../../../node_modules/.bin/tsx ../evaluate.mts /path/to/router-bench calibration-post-review.json post-review-policy-freeze.json evaluation-post-review.json
