@@ -2373,8 +2373,19 @@ export class SessionStore {
    * Append a non-event RolloutItem (session_state / response_item /
    * compacted / turn_context). These don't carry seq so just get
    * batched and eventually flushed.
+   *
+   * `run_terminal` and `run_reopened` go through `append`, which checks
+   * lifecycle order. This path refuses them.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (item.type === "event_msg") {
+      const messageType = item.payload.msg.type;
+      if (messageType === "run_terminal" || messageType === "run_reopened") {
+        throw new Error(
+          `refusing to append ${messageType}: lifecycle events cannot use appendRollout`,
+        );
+      }
+    }
     const durable =
       opts.durable === true ||
       (item.type === "event_msg" && isDurableEvent(item.payload));

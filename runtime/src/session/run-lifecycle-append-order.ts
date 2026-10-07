@@ -19,6 +19,10 @@ interface RunLifecycleCursor {
  * Those are the only orders that would put a clearing reopen outside a tail
  * window that still contains the terminal (`reopenTerminalEpoch` appends the
  * reopen, via this check, after the terminal line is already durable).
+ *
+ * The prior-byte scan matches the startup tail reader: a trailing segment
+ * with no newline is not a record, and a complete line that mentions a
+ * lifecycle type but does not parse refuses the append.
  */
 export function assertRunLifecycleAppendOrder(
   priorBytes: Buffer,
@@ -35,7 +39,12 @@ export function assertRunLifecycleAppendOrder(
       `refusing to append ${message.type}: lifecycle binding is invalid`,
     );
   }
-  const cursor = cursorFromPrior(priorBytes, pending, incoming.runId);
+  const cursor = cursorFromPrior(
+    priorBytes,
+    pending,
+    incoming.runId,
+    message.type,
+  );
   switch (incoming.kind) {
     case "terminal":
       if (incoming.epoch !== cursor.activeEpoch) {
@@ -81,30 +90,42 @@ function cursorFromPrior(
   priorBytes: Buffer,
   pending: readonly RolloutItem[],
   runId: string,
+  appendedType: "run_terminal" | "run_reopened",
 ): RunLifecycleCursor {
   const cursor: RunLifecycleCursor = { activeEpoch: 1, terminal: false };
   const text = priorBytes.toString("utf8");
   let lineStart = 0;
-  for (let index = 0; index <= text.length; index += 1) {
-    if (index !== text.length && text.charCodeAt(index) !== 0x0a) continue;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) !== 0x0a) continue;
     const line = text.slice(lineStart, index);
     lineStart = index + 1;
-    if (
-      !line.includes('"run_terminal"') &&
-      !line.includes('"run_reopened"')
-    ) {
-      continue;
-    }
-    let parsed: RolloutItem | null;
-    try {
-      parsed = parseRolloutLine(line);
-    } catch {
-      continue;
-    }
-    if (parsed !== null) noteLifecycleFact(cursor, parsed, runId);
+    noteCompleteLifecycleLine(cursor, line, runId, appendedType);
   }
   for (const item of pending) noteLifecycleFact(cursor, item, runId);
   return cursor;
+}
+
+function noteCompleteLifecycleLine(
+  cursor: RunLifecycleCursor,
+  line: string,
+  runId: string,
+  appendedType: "run_terminal" | "run_reopened",
+): void {
+  if (
+    !line.includes('"run_terminal"') &&
+    !line.includes('"run_reopened"')
+  ) {
+    return;
+  }
+  let parsed: RolloutItem | null;
+  try {
+    parsed = parseRolloutLine(line);
+  } catch {
+    throw new Error(
+      `refusing to append ${appendedType}: unreadable lifecycle line`,
+    );
+  }
+  if (parsed !== null) noteLifecycleFact(cursor, parsed, runId);
 }
 
 function noteLifecycleFact(

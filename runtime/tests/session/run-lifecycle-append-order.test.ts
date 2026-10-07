@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -104,6 +104,103 @@ describe("run lifecycle append order", () => {
         reopenEvent(sessionId, 1),
       ),
     ).toThrow(/refusing to append run_reopened/);
+  });
+
+  it("ignores a torn trailing lifecycle segment with no terminating newline", () => {
+    const cwd = freshCwd();
+    const sessionId = "torn-trailing-lifecycle";
+    const store = openStore({ cwd, sessionId });
+    try {
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(true);
+      const tornReopen = journalLine(reopenEvent(sessionId, 9)).replace(
+        /\n$/,
+        "",
+      );
+      expect(tornReopen.endsWith("\n")).toBe(false);
+      expect(tornReopen).toContain('"run_reopened"');
+      appendFileSync(store.rolloutPath, tornReopen);
+      expect(
+        store.append(reopenEvent(sessionId, 2), { durable: true }),
+      ).toBe(true);
+      const text = readFileSync(store.rolloutPath, "utf8");
+      const terminalAt = text.indexOf('"type":"run_terminal"');
+      const reopenAt = text.indexOf('"type":"run_reopened"');
+      expect(terminalAt).toBeGreaterThanOrEqual(0);
+      expect(reopenAt).toBeGreaterThan(terminalAt);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses the append when a complete lifecycle line does not parse and leaves bytes unchanged", () => {
+    const cwd = freshCwd();
+    const sessionId = "unreadable-lifecycle-line";
+    const store = openStore({ cwd, sessionId });
+    try {
+      const corrupt =
+        '{"type":"event_msg","payload":{"id":"bad","msg":{"type":"run_terminal","payload":}}\n';
+      appendFileSync(store.rolloutPath, corrupt);
+      const before = readFileSync(store.rolloutPath);
+      expect(before.subarray(before.length - 1)).toEqual(Buffer.from("\n"));
+      expect(() =>
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toThrow(/refusing to append run_terminal: unreadable lifecycle line/);
+      expect(readFileSync(store.rolloutPath)).toEqual(before);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not refuse a non-lifecycle line that quotes lifecycle substrings", () => {
+    const cwd = freshCwd();
+    const sessionId = "quoted-lifecycle-substrings";
+    const store = openStore({ cwd, sessionId });
+    try {
+      // Escaped quotes inside message text do not form the prefilter needle.
+      // A JSON string whose value is the token does, and must be ignored.
+      const quotedLine =
+        '{"type":"response_item","payload":{"role":"user","content":"please explain \\"run_terminal\\" and \\"run_reopened\\"","quoted":["run_terminal","run_reopened"]},"eventVersion":1}\n';
+      expect(quotedLine).toContain('"run_terminal"');
+      expect(quotedLine).toContain('"run_reopened"');
+      expect(quotedLine).not.toContain('"type":"run_terminal"');
+      appendFileSync(store.rolloutPath, quotedLine);
+      expect(
+        store.append(terminalEvent(sessionId, 1, 1), { durable: true }),
+      ).toBe(true);
+      expect(readFileSync(store.rolloutPath, "utf8")).toContain(
+        '"type":"run_terminal"',
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses appendRollout of a lifecycle event", () => {
+    const cwd = freshCwd();
+    const sessionId = "append-rollout-lifecycle";
+    const store = openStore({ cwd, sessionId });
+    try {
+      const before = readFileSync(store.rolloutPath);
+      expect(() =>
+        store.appendRollout(eventItem(terminalEvent(sessionId, 1, 1)), {
+          durable: true,
+        }),
+      ).toThrow(
+        /refusing to append run_terminal: lifecycle events cannot use appendRollout/,
+      );
+      expect(() =>
+        store.appendRollout(eventItem(reopenEvent(sessionId, 2)), {
+          durable: true,
+        }),
+      ).toThrow(
+        /refusing to append run_reopened: lifecycle events cannot use appendRollout/,
+      );
+      expect(readFileSync(store.rolloutPath)).toEqual(before);
+    } finally {
+      store.close();
+    }
   });
 
   it("rejects a journal whose clearing reopen precedes the terminal", () => {
