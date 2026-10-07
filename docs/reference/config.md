@@ -306,6 +306,7 @@ otherwise.
 | `approval_policy` | `on-request` |
 | `sandbox_mode` | `workspace-write` |
 | `reasoning_effort` | `medium`; omitted for Gemini unless explicitly configured |
+| `reasoning_cap_policy` | `off`. Experimental `streak2` on native DeepSeek: two consecutive reasoning-only caps with productive native recoveries allow one additional normal sample with thinking disabled. Configured thinking returns on the following sample. Recovery budgets, output limits and tool validation are unchanged. No established token or quality benefit; unsupported routes are unaffected. |
 | `approvals_reviewer` | `user` |
 | `agent_max_depth` | `1` |
 | `auth.backend` | `remote` |
@@ -680,7 +681,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `profiles`, `profiles.<profile>` | Named selection bundles. |
 | `profiles.<profile>.model`, `profiles.<profile>.model_provider` | Model/provider override. Provider values follow the same strict canonical-selector rule as root `model_provider`. |
 | `profiles.<profile>.approval_policy`, `profiles.<profile>.sandbox_mode` | Approval/sandbox override. |
-| `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary` | Reasoning overrides. |
+| `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary`, `profiles.<profile>.reasoning_cap_policy` | Reasoning overrides. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |

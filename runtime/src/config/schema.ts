@@ -184,6 +184,8 @@ export interface ProfileOverride {
   readonly approval_policy?: ApprovalPolicy;
   readonly sandbox_mode?: SandboxMode;
   readonly reasoning_effort?: ReasoningEffort;
+  /** Experimental bounded native cap recovery extension. Default: off. */
+  readonly reasoning_cap_policy?: "off" | "streak2";
   readonly reasoning_summary?: ReasoningSummary;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
@@ -872,6 +874,8 @@ export interface AgenCConfig {
   readonly sandbox?: SandboxConfig;
   readonly shell_environment_policy?: ShellEnvironmentPolicy;
   readonly reasoning_effort?: ReasoningEffort;
+  /** Experimental bounded native cap recovery extension. Default: off. */
+  readonly reasoning_cap_policy?: "off" | "streak2";
   readonly reasoning_summary?: ReasoningSummary;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
@@ -1025,6 +1029,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "sandbox",
   "shell_environment_policy",
   "reasoning_effort",
+  "reasoning_cap_policy",
   "reasoning_summary",
   "approvals_reviewer",
   "model_verbosity",
@@ -1149,6 +1154,7 @@ export function defaultConfig(): AgenCConfig {
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,
+    reasoning_cap_policy: "off" as const,
     approvals_reviewer: "user" as ApprovalsReviewer,
     agent_max_depth: 1,
     auth: Object.freeze({
@@ -3494,6 +3500,7 @@ export const PROFILE_OVERRIDE_KEYS = Object.freeze([
   "approval_policy",
   "sandbox_mode",
   "reasoning_effort",
+  "reasoning_cap_policy",
   "reasoning_summary",
   "approvals_reviewer",
   "model_verbosity",
@@ -3573,6 +3580,12 @@ export function validateProfilesConfig(
       profile.reasoning_effort,
       `${name}.reasoning_effort`,
       ["minimal", "low", "medium", "high", "xhigh", "max", "none"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.reasoning_cap_policy,
+      `${name}.reasoning_cap_policy`,
+      ["off", "streak2"],
       makeError,
     );
     validateEnumValue(

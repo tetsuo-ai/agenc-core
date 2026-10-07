@@ -1,3 +1,4 @@
+import { readReasoningCapPolicy, type ReasoningCapPolicyState } from "./reasoning-cap-policy.js";
 /**
  * TurnState — mutable working set carried across phase-machine iterations.
  *
@@ -392,6 +393,7 @@ export interface TurnState {
   maxOutputTokensRecoveryCount: number;
   /** Durable intent for the next sample only; transport retries reuse it. */
   reasoningOnlyRecoveryPending?: true;
+  reasoningCapPolicy?: ReasoningCapPolicyState;
   /** Unproductive native reasoning-only retries since the last productive recovery. */
   reasoningOnlyRecoveryCount?: number;
 
@@ -670,6 +672,7 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     recoveryReentryCount: number;
     maxOutputTokensRecoveryCount: number;
     reasoningOnlyRecoveryPending?: true;
+    reasoningCapPolicy?: ReasoningCapPolicyState;
     reasoningOnlyRecoveryCount?: number;
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
@@ -697,6 +700,9 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
+  }
+  if (state.reasoningCapPolicy !== undefined) {
+    slice.reasoningCapPolicy = readReasoningCapPolicy(state.reasoningCapPolicy);
   }
   if (state.reasoningOnlyRecoveryCount !== undefined) {
     slice.reasoningOnlyRecoveryCount = state.reasoningOnlyRecoveryCount;
@@ -800,6 +806,7 @@ export function restoreFromCheckpoint(
   state.textToolCallCorrection = readTextToolCallCorrection(slice.textToolCallCorrection);
   state.reasoningOnlyRecoveryPending = slice.reasoningOnlyRecoveryPending === true ? true : undefined;
   state.reasoningOnlyRecoveryCount = slice.reasoningOnlyRecoveryCount;
+  state.reasoningCapPolicy = readReasoningCapPolicy(slice.reasoningCapPolicy);
   if (state.modelSampleResumePrompt === "text_tool_call_correction" &&
       (!state.textToolCallCorrection || state.textToolCallCorrectionCount < 1)) {
     throw new Error("Cannot resume tool-call correction without its validated identity and spent correction count.");

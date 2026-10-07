@@ -75,6 +75,8 @@ export function resolveProfile(
     override.sandbox_mode = profile.sandbox_mode;
   if (hasProfileOverride(profile, "reasoning_effort"))
     override.reasoning_effort = profile.reasoning_effort;
+  if (hasProfileOverride(profile, "reasoning_cap_policy"))
+    override.reasoning_cap_policy = profile.reasoning_cap_policy;
   if (hasProfileOverride(profile, "reasoning_summary"))
     override.reasoning_summary = profile.reasoning_summary;
   if (hasProfileOverride(profile, "approvals_reviewer"))

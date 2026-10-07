@@ -1,3 +1,4 @@
+import type { ReasoningCapPolicyState } from "./reasoning-cap-policy.js";
 /**
  * Versioned serialized state carried by durable turn checkpoints.
  *
@@ -34,6 +35,7 @@ export const TURN_CHECKPOINT_SLICE_KEYS = Object.freeze([
   "textToolCallCorrectionCount",
   "textToolCallCorrection",
   "reasoningOnlyRecoveryPending",
+  "reasoningCapPolicy",
   "reasoningOnlyRecoveryCount",
 ] as const);
 
@@ -58,6 +60,7 @@ export interface TurnCheckpointSliceLine {
   readonly recoveryReentryCount: number;
   readonly maxOutputTokensRecoveryCount: number;
   readonly reasoningOnlyRecoveryPending?: true;
+  readonly reasoningCapPolicy?: ReasoningCapPolicyState;
   readonly reasoningOnlyRecoveryCount?: number;
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
@@ -83,7 +86,7 @@ export interface TurnCheckpointSliceLine {
 
 export type LegacyTurnCheckpointSliceLine = Omit<
   TurnCheckpointSliceLine,
-  "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending" | "reasoningOnlyRecoveryCount"
+  "completionGateRound" | "pendingAdmissionFallback" | "textToolCallCorrectionCount" | "textToolCallCorrection" | "reasoningOnlyRecoveryPending" | "reasoningOnlyRecoveryCount" | "reasoningCapPolicy"
 > & {
   readonly pendingAdmissionFallback?: never;
 };

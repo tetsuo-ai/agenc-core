@@ -1,0 +1,81 @@
+import { expect, test, vi } from "vitest";
+import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
+import { runTurn } from "../../src/session/run-turn.js";
+import { drain, mkCtx, mkSession } from "../fixtures.js";
+import { bodyAt, sseResponse } from "../llm/providers/openai-compatible-test-helpers.js";
+
+type Sample = "reason-cap" | "visible-cap" | "tool-cap" | "tool" | "final";
+async function scenario(samples: Sample[], policy: "off" | "streak2" | "absent" = "streak2") {
+  const execute = vi.fn(async () => ({ content: "observed fixture" }));
+  const tool = { name: "read_fixture", description: "Read fixture", inputSchema: { type: "object", properties: {} },
+    isReadOnly: true, recoveryCategory: "idempotent" as const, execute };
+  const registry = { tools: [tool], toLLMTools: () => [{ type: "function" as const,
+    function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }], dispatch: execute };
+  let index = 0;
+  const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+    const i = index++;
+    const sample = samples[i] ?? "final";
+    const capped = sample.endsWith("-cap");
+    const delta = sample === "reason-cap" ? { reasoning_content: "Consider next step." }
+      : sample === "tool" || sample === "tool-cap" ? { tool_calls: [{ index: 0, id: `read${i}`, type: "function",
+        function: { name: tool.name, arguments: sample === "tool" ? "{}" : '{"partial":' } }] }
+      : { content: sample === "final" ? "Finished." : "Partial answer." };
+    return sseResponse([
+      `data: ${JSON.stringify({ model: "deepseek-flash", choices: [{ index: 0, delta }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: capped ? "length" : sample === "tool" ? "tool_calls" : "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: capped ? 8192 : 10, total_tokens: capped ? 8202 : 20,
+          ...(sample === "reason-cap" ? { completion_tokens_details: { reasoning_tokens: 8192 } } : {}) } })}\n\n`,
+      "data: [DONE]\n\n",
+    ]);
+  });
+  const provider = new DeepSeekProvider({ apiKey: "test", model: "deepseek-flash", fetchImpl });
+  const { session, events } = mkSession({ provider, model: "deepseek-flash", registry });
+  Object.assign(session.config!, { reasoningCapPolicy: policy === "absent" ? undefined : policy });
+  const ctx = mkCtx({ reasoningEffort: "high" });
+  await drain(runTurn(session, { ...ctx,
+    config: { ...ctx.config, model: "deepseek-flash", model_provider: "deepseek", max_output_tokens: 8192 },
+    modelInfo: { ...ctx.modelInfo, maxOutputTokens: 8192, maxOutputTokensExplicit: true, supportedReasoningLevels: ["low", "high", "max"] },
+  }, "Read fixtures and finish."));
+  for (let i = 0; i < fetchImpl.mock.calls.length; i++) {
+    expect(bodyAt(fetchImpl, i)).toMatchObject({ max_tokens: 8192, reasoning_effort: "high" });
+  }
+  return { fetchImpl, execute, events };
+}
+
+
+const modes = (fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>) => fetchImpl.mock.calls.map((_, i) => (bodyAt(fetchImpl, i).thinking as { type: string }).type);
+
+test("native SSE produces enabled/off/enabled/off/extra-off/enabled with distinct policy notice", async () => {
+  const { fetchImpl, events, execute } = await scenario(["reason-cap", "tool", "reason-cap", "tool", "tool", "final"]);
+  expect(modes(fetchImpl)).toEqual(["enabled", "disabled", "enabled", "disabled", "disabled", "enabled"]);
+  expect(execute).toHaveBeenCalledTimes(3);
+  expect(events.filter(e => e.msg.type === "warning" && e.msg.payload.cause === "reasoning_cap_policy")).toHaveLength(1);
+  expect(events.filter(e => e.msg.type === "warning" && e.msg.payload.cause === "thinking_disabled_recovery")).toHaveLength(2);
+  expect(events.some(e => e.msg.type === "turn_complete")).toBe(true);
+});
+
+test("multiple cycles need two fresh recoveries after each extra sample", async () => {
+  const { fetchImpl } = await scenario(["reason-cap", "tool", "reason-cap", "tool", "tool", "reason-cap", "tool", "reason-cap", "tool", "tool", "final"]);
+  expect(modes(fetchImpl)).toEqual(["enabled", "disabled", "enabled", "disabled", "disabled", "enabled", "disabled", "enabled", "disabled", "disabled", "enabled"]);
+});
+
+test("intervening ordinary success resets the streak", async () => {
+  const { fetchImpl } = await scenario(["reason-cap", "tool", "tool", "reason-cap", "tool", "final"]);
+  expect(modes(fetchImpl)).toEqual(["enabled", "disabled", "enabled", "enabled", "disabled", "enabled"]);
+});
+
+test("absent and explicit off preserve complete native request bodies", async () => {
+  const samples: Sample[] = ["reason-cap", "tool", "reason-cap", "tool", "tool", "final"];
+  const absent = await scenario(samples, "absent");
+  const off = await scenario(samples, "off");
+  expect(modes(off.fetchImpl)).toEqual(["enabled", "disabled", "enabled", "disabled", "enabled", "enabled"]);
+  expect(absent.fetchImpl.mock.calls.map((_, i) => bodyAt(absent.fetchImpl, i))).toEqual(off.fetchImpl.mock.calls.map((_, i) => bodyAt(off.fetchImpl, i)));
+  expect(off.events.filter(e => e.msg.type === "warning" && e.msg.payload.cause === "reasoning_cap_policy")).toHaveLength(0);
+});
+
+test("policy cap does not qualify its native recovery for another streak and still exhausts", async () => {
+  const { fetchImpl, events } = await scenario(["reason-cap", "tool", "reason-cap", "tool", "reason-cap", "reason-cap", "reason-cap", "reason-cap", "final"]);
+  expect(fetchImpl).toHaveBeenCalledTimes(8);
+  expect(events.some(e => e.msg.type === "turn_complete")).toBe(false);
+  expect(events.find(e => e.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("Output recovery is exhausted") } });
+});
