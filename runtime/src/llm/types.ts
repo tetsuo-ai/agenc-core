@@ -775,7 +775,7 @@ export interface LLMChatOptions {
   readonly reasoningSummary?: LLMReasoningSummary;
   /** Provider-facing output verbosity hint for APIs that expose it. */
   readonly modelVerbosity?: LLMModelVerbosity;
-  /** Explicit session response detail, used only for prompt fallback routes. */
+  /** Effective session response detail, used only for prompt fallback routes. */
   readonly responseDetailOverride?: LLMModelVerbosity;
   /** Provider-facing service-tier hint for APIs that expose it. */
   readonly serviceTier?: LLMServiceTier;

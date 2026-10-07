@@ -10,7 +10,7 @@
  *     config snapshot.
  */
 
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   applySessionConfiguration,
   buildPerTurnConfig,
@@ -35,6 +35,15 @@ import {
   type SessionForTurn,
 } from "./turn-context.js";
 import type { LLMProvider } from "../llm/types.js";
+import { defaultConfig, type AgenCConfig } from "../../src/config/schema.js";
+import { resolveProfile } from "../../src/config/profiles.js";
+import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
+import type { Session } from "../../src/session/session.js";
+import { assembleSystemPrompt } from "../../src/prompts/system-prompt.js";
+import { buildProviderOptions } from "../../src/phases/stream-model.js";
+import { buildChatCompletionsRequest } from "../../src/llm/wire/chat-completions.js";
+import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
+import { buildOpenAIResponsesRequest } from "../../src/llm/wire/responses-openai.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
@@ -708,5 +717,139 @@ describe("toTurnContextItem field parity", () => {
     );
     // traceId is undefined on a fresh context but the field exists.
     expect("traceId" in item).toBe(true);
+  });
+});
+
+// Exercise the actual config -> turn -> prompt -> phase options -> wire path.
+// Wire-only tests with an explicit responseDetailOverride missed config values.
+describe("configured response detail reaches provider requests", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-07T00:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  type Level = "low" | "medium" | "high";
+  const routes = [
+    ["deepseek", "deepseek-v4-flash"],
+    ["anthropic", "claude-sonnet-5-5"],
+    ["zai-coding-plan", "glm-5.3"],
+  ] as const;
+
+  async function requestFor({
+    provider, model, configured, override, profile = false, simple = false,
+    light = false, chatgptBackend = false,
+  }: {
+    provider: string; model: string; configured?: Level; override?: Level | null;
+    profile?: boolean; simple?: boolean; light?: boolean; chatgptBackend?: boolean;
+  }) {
+    const raw: AgenCConfig = {
+      ...defaultConfig(), model_provider: provider, model,
+      ...(configured === undefined ? {} : { model_verbosity: configured }),
+      ...(profile ? { profiles: { concise: { model_verbosity: "low" as const } } } : {}),
+    };
+    const config = resolveProfile(raw, profile ? "concise" : undefined);
+    const seeded = sessionConfigurationFromAgenCConfig({
+      config, provider, model, workspaceRoot: "/tmp/detail-contract",
+    });
+    // applyAgentConfig keeps modelVerbosity effective and retains the inherited
+    // config for a subsequent null/reset. Preserve that runtime contract here.
+    const sc: SessionConfiguration = {
+      ...seeded, modelVerbosityOverride: override,
+      ...(override == null ? {} : {
+        inheritedModelVerbosity: seeded.modelVerbosity, modelVerbosity: override,
+      }),
+    };
+    const instance = { ...mkProvider(), name: provider } as LLMProvider;
+    const ctx = buildTurnContext({
+      conversationId: "detail-contract", subId: "detail-turn",
+      config: { ...mkConfig(), model },
+      modelInfo: { ...mkModelInfo(), slug: model },
+      provider: instance, sessionConfiguration: sc,
+      clock: { currentDate: "2026-10-07", timezone: "Etc/UTC" },
+    });
+    const session = {
+      services: { provider: instance }, sessionConfiguration: sc,
+    } as unknown as Session;
+    const prompt = await assembleSystemPrompt({
+      session, ctx, provider, simpleMode: simple, lightProfile: light,
+    });
+    const messages = [{ role: "user" as const, content: "Inspect the file and report the result." }];
+    const tools = [{ type: "function" as const, function: {
+      name: "read_file", description: "Read a file", parameters: { type: "object" },
+    } }];
+    const options = buildProviderOptions({
+      input: messages, tools, parallelToolCalls: true, baseInstructions: prompt.text,
+      maxOutputTokens: 8192,
+    }, ctx, new AbortController().signal, session);
+    const input = { model, messages, tools, options };
+    const wire = provider === "openai"
+      ? buildOpenAIResponsesRequest({ ...input, chatgptBackend })
+      : provider === "anthropic"
+        ? buildAnthropicMessagesRequest({ ...input, maxTokens: 8192 })
+        : buildChatCompletionsRequest(input);
+    return { wire, prompt, options, ctx, sc };
+  }
+
+  test.each(routes)("config low reaches %s/%s exactly once in every prompt mode", async (provider, model) => {
+    for (const mode of [{}, { light: true }, { simple: true }]) {
+      const baseline = await requestFor({ provider, model, ...mode });
+      const low = await requestFor({ provider, model, configured: "low", ...mode });
+      expect(JSON.stringify(baseline.wire)).not.toContain("# Response Detail");
+      expect(baseline.options.modelVerbosity).toBeUndefined();
+      expect(baseline.options.responseDetailOverride).toBeUndefined();
+      expect(low.prompt.staticPrefix).toBe(baseline.prompt.staticPrefix);
+      expect(low.prompt.text.match(/# Response Detail\n/gu)).toHaveLength(1);
+      const serialized = JSON.stringify(low.wire);
+      expect(serialized.match(/# Response Detail/gu)).toHaveLength(1);
+      expect(serialized).toContain("Concise: keep every user-facing message short.");
+      expect(serialized).toContain("Always report errors, blockers, and approval requests.");
+      expect(low.wire).not.toHaveProperty("text.verbosity");
+      expect(low.wire.tools).toEqual(baseline.wire.tools);
+      expect(low.wire.max_tokens).toBe(baseline.wire.max_tokens);
+      expect(low.options.reasoningEffort).toBe(baseline.options.reasoningEffort);
+      // Resolving the fallback must not pin an inherited setting as an override.
+      expect(low.sc.modelVerbosityOverride).toBeUndefined();
+    }
+  });
+
+  test.each(routes)("%s runtime override wins; clearing it restores config", async (provider, model) => {
+    const pinned = await requestFor({ provider, model, configured: "low", override: "high" });
+    expect(JSON.stringify(pinned.wire)).toContain("Detailed: give thorough user-facing answers.");
+    expect(JSON.stringify(pinned.wire)).not.toContain("Concise:");
+    const cleared = await requestFor({ provider, model, configured: "low", override: null });
+    expect(JSON.stringify(cleared.wire)).toContain("Concise: keep every user-facing message short.");
+    expect(JSON.stringify(cleared.wire).match(/# Response Detail/gu)).toHaveLength(1);
+    const defaulted = await requestFor({ provider, model, override: null });
+    expect(JSON.stringify(defaulted.wire)).not.toContain("# Response Detail");
+  });
+
+  test.each(routes)("%s honors the profile verbosity over the root config", async (provider, model) => {
+    const result = await requestFor({ provider, model, configured: "high", profile: true });
+    expect(JSON.stringify(result.wire)).toContain("Concise: keep every user-facing message short.");
+    expect(JSON.stringify(result.wire)).not.toContain("Detailed:");
+    expect(JSON.stringify(result.wire).match(/# Response Detail/gu)).toHaveLength(1);
+  });
+
+  test("direct OpenAI uses only native verbosity, including runtime override and reset", async () => {
+    const route = { provider: "openai", model: "gpt-5" };
+    const baseline = await requestFor(route);
+    for (const override of [undefined, "high", null] as const) {
+      const result = await requestFor({ ...route, configured: "low", override });
+      const { text, ...rest } = result.wire;
+      expect(text).toEqual({ verbosity: override ?? "low" });
+      expect(rest).toEqual(baseline.wire);
+      expect(result.prompt.text).not.toContain("# Response Detail");
+    }
+  });
+
+  test("OpenAI non-native and subscription routes use the fallback exactly once", async () => {
+    for (const route of [{ model: "gpt-4o" }, { model: "gpt-5", chatgptBackend: true }]) {
+      const result = await requestFor({ provider: "openai", configured: "low", ...route });
+      expect(result.prompt.text).not.toContain("# Response Detail");
+      expect(result.wire).not.toHaveProperty("text.verbosity");
+      expect(JSON.stringify(result.wire).match(/# Response Detail/gu)).toHaveLength(1);
+      expect(JSON.stringify(result.wire)).toContain("Concise: keep every user-facing message short.");
+    }
   });
 });
