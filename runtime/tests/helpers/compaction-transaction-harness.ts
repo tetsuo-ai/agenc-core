@@ -8,6 +8,7 @@ import type { LLMMessage, LLMProvider, LLMResponse } from "../../src/llm/types.j
 import type { ProviderTokenCountCapability } from "../../src/llm/token-accounting.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
+import { SessionStore } from "../../src/session/session-store.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import type { Session } from "../../src/session/session.js";
 import type { CompactContext, RuntimeMessage } from "../../src/services/compact/types.js";
@@ -124,14 +125,15 @@ export function createCompactionTransactionHarness(
   process.env.AGENC_HOME = home;
   const sessionId = options.sessionId ??
     `c2-harness-${Math.random().toString(36).slice(2)}`;
-  const store = new RolloutStore({
+  const storeOptions = {
     cwd,
     sessionId,
     agencVersion: "0.13.0",
     sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
-  });
-  store.open({
+  };
+  const seedStore = new SessionStore(storeOptions);
+  const metadata = {
     sessionId,
     timestamp: new Date().toISOString(),
     cwd,
@@ -139,9 +141,10 @@ export function createCompactionTransactionHarness(
     agencVersion: "0.13.0",
     model: "grok-4.5",
     modelProvider: "grok",
-  });
+  };
+  seedStore.open(metadata);
   for (const message of messages) {
-    store.appendRollout({
+    seedStore.appendRollout({
       type: "response_item",
       payload: {
         role: message.originalRole ?? message.role ?? "user",
@@ -161,10 +164,13 @@ export function createCompactionTransactionHarness(
       },
     });
   }
-  // Fixture construction has no observable intermediate crash boundary. Make
-  // the complete source durable once before exercising the real transaction,
-  // rather than issuing one journal commit per synthetic message.
-  store.flushDurable();
+  // Seed one durable source rather than simulating thousands of live turns.
+  // Reopening through RolloutStore validates the complete tool-pair history
+  // and builds its real SQLite projection in one transaction.
+  if (!seedStore.flushBatch(true)) throw new Error("fixture source was not durably flushed");
+  seedStore.close();
+  const store = new RolloutStore({ ...storeOptions, resume: true });
+  store.open(metadata);
 
   const provider = createProvider(options.chat);
   const kernel = new ExecutionAdmissionKernel({
