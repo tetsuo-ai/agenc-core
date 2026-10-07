@@ -877,6 +877,17 @@ export class RolloutStore {
       }
 
       this.store.open(meta);
+      if (existingEpoch !== undefined) {
+        const liveHistoryRefs = this.compactionRetentionRepo
+          .listActiveForSourceBinding(
+            `rollout:${this.rolloutPath}#epoch:${existingEpoch.epoch}`,
+          )
+          .flatMap((pin) => pin.activeHistoryRefs);
+        this.store.rewriteFailedCompactionPayloadChunksAtomically(
+          COMPACTION_SOURCE_DIGEST_DOMAIN,
+          liveHistoryRefs,
+        );
+      }
       this.promoteDurableCheckpointSchema(meta);
       this.rebuildLiveToolPairProjection();
       // Re-check under the canonical rollout lease. Retention can retire the
