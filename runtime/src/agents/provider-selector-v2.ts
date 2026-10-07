@@ -209,7 +209,7 @@ export function selectChildProviderV2(input: {
   const verifier = input.verification;
   if (verifier?.available && verifier.retrySafe && finite(verifier.costUsd) && finite(verifier.latencyMs)) {
     const target = verifier.targetQuality ?? 0.9;
-    const plans: NonNullable<V2Selection["cascade"]>[] = [];
+    const plans: (NonNullable<V2Selection["cascade"]> & { readonly comparableQuality: number })[] = [];
     if (Number.isFinite(target) && target > 0 && target <= 1) for (const first of ranked) for (const second of ranked) {
       // The parent is the escalation anchor. Sparse paired outcomes must not
       // send a failed task wandering through unrelated providers.
@@ -218,6 +218,10 @@ export function selectChildProviderV2(input: {
       if (downgradesHardTask(task, first, second)) continue;
       const recovered = conditionalRecovery(pairKey(first), pairKey(second), verifier.conditional);
       const quality = first.quality + (1 - first.quality) * recovered;
+      // As for a direct handoff, a tier alone supports no gain over the
+      // current choice: paired recovery or the first model's verified
+      // outcomes must back it.
+      const supported = recovered > 0 || first.verified;
       const c1 = first.estimatedCostUsd + first.handoffCostUsd + verifier.costUsd;
       const c2 = second.estimatedCostUsd + second.handoffCostUsd + verifier.costUsd;
       const worstCaseCostUsd = c1 + c2;
@@ -227,10 +231,12 @@ export function selectChildProviderV2(input: {
       const expectedCostUsd = c1 + (1 - first.quality) * c2;
       const expectedLatencyMs = first.estimatedLatencyMs + first.handoffLatencyMs + verifier.latencyMs +
         (1 - first.quality) * (second.estimatedLatencyMs + second.handoffLatencyMs + verifier.latencyMs);
-      plans.push({ candidates: [first, second], expectedCostUsd, expectedLatencyMs, worstCaseCostUsd, quality });
+      plans.push({ candidates: [first, second], expectedCostUsd, expectedLatencyMs, worstCaseCostUsd, quality,
+        comparableQuality: supported ? quality : Math.min(quality, selected.quality) });
     }
     plans.sort((a, b) => a.expectedCostUsd - b.expectedCostUsd || a.expectedLatencyMs - b.expectedLatencyMs);
-    const plan = plans.find(item => item.quality - lambda * item.expectedCostUsd - mu * item.expectedLatencyMs / 1000 > selected.score + 0.01);
+    const found = plans.find(item => item.comparableQuality - lambda * item.expectedCostUsd - mu * item.expectedLatencyMs / 1000 > selected.score + 0.01);
+    const plan = found === undefined ? undefined : (({ comparableQuality: _comparable, ...rest }) => rest)(found);
     if (plan) return finish(plan.candidates[0], "cascade", `${pairKey(plan.candidates[0]!)} first; verify locally and try ${pairKey(plan.candidates[1]!)} only on failure (expected $${plan.expectedCostUsd.toFixed(4)}).`, plan);
   }
   // Contextual Thompson sampling within a conservative loss envelope, off unless opted in.

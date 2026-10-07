@@ -174,6 +174,16 @@ describe("maintained adequacy and parent-first price handling", () => {
     expect(selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], abilities: verified })
       .selected?.model).toBe(pro.model);
   });
+  it("does not plan a verified cascade on a higher tier alone", () => {
+    const check = { available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1, targetQuality: 0.75 };
+    const cold = selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro], verification: check });
+    expect(cold).toMatchObject({ mode: "parent", selected: { model: flash.model } });
+    expect(cold.cascade).toBeUndefined();
+    // Paired outcomes, where the parent rescued the first model's failures, do support one.
+    const paired = selectChildProviderV2({ ...reasoning("standard"), parent: flash, candidates: [flash, pro],
+      verification: { ...check, conditional: [{ first: pairKey(pro), second: pairKey(flash), failures: 20, recovered: 19 }] } });
+    expect(paired.cascade?.candidates.map(pairKey)).toEqual([pairKey(pro), pairKey(flash)]);
+  });
 });
 
 describe("verified cost cascade", () => {
