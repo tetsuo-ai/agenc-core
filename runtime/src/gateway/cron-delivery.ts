@@ -27,6 +27,7 @@ import {
   CronDeliveryOutboxStore,
   type CronOccurrenceClaim,
 } from "./cron-outbox.js";
+import { cronRestoreFailureNeedsWarning } from "../utils/cronTasks.js";
 import { SessionRouter } from "./session-router.js";
 import type {
   ChannelAdapter,
@@ -410,6 +411,19 @@ export function startCronDelivery(
   let activeTick: Promise<void> | undefined;
   let retryFloorAt = 0;
   const now = (): number => clock.now().getTime();
+  // Same gate as session startup: unusable durable storage with no task file
+  // has nothing to deliver, so this 5-minute scan stays quiet for it.
+  const logUnavailable = async (error: unknown): Promise<void> => {
+    let report = true;
+    try {
+      report = await cronRestoreFailureNeedsWarning(error, options.workspaceDir);
+    } catch {
+      // Report when the gate itself cannot decide.
+    }
+    if (report) {
+      log(`cron: delivery state unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   const fireTask = async (claim: CronOccurrenceClaim): Promise<void> => {
     const task = claim.task;
@@ -573,7 +587,7 @@ export function startCronDelivery(
         Math.max(0, Math.max(retryFloorAt, earliest) - now()),
       );
     } catch (error) {
-      log(`cron: delivery state unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      await logUnavailable(error);
     }
     if (stopped) return;
     timer = clock.setTimer(() => {
@@ -597,7 +611,7 @@ export function startCronDelivery(
         }
       }
     } catch (error) {
-      log(`cron: delivery state unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      await logUnavailable(error);
     } finally {
       running = false;
       await arm();

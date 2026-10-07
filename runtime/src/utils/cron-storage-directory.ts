@@ -126,10 +126,15 @@ const WINDOWS_UNSUPPORTED_VOLUME_REASONS = [
   "NTFS is required",
   "network and device paths are unsupported",
 ] as const;
+const WINDOWS_LINK_REASONS = [
+  "reparse points are unsupported",
+  "path role does not match its type",
+] as const;
+const DENIED_CODES = new Set(["EACCES", "EPERM"]);
 
 /** First verifier reason found in a cause chain, from a message or PowerShell stderr. */
 function windowsPrivatePathReason(error: unknown): string | undefined {
-  const known = [...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS];
+  const known = [...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS, ...WINDOWS_LINK_REASONS];
   for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
     const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
     const texts = [candidate.message, candidate.stderr].map((value) =>
@@ -143,77 +148,155 @@ function windowsPrivatePathReason(error: unknown): string | undefined {
   return undefined;
 }
 
+/** Whether the ACL verifier itself (not a link or file-type check) failed somewhere in the chain. */
+function hasWindowsVerifierFailure(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    if ((current as { name?: unknown }).name === "WindowsPrivatePathSecurityError") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
- * PowerShell repair for one `.agenc` directory, tested on Windows 11 NTFS.
- * Every icacls call targets that directory: take ownership, drop explicit
- * and inherited entries, grant only the current user's SID full control on
- * the directory, then turn the contents' inherited entry into a protected
- * explicit one. The parent ACL is never written. The path is a PowerShell
- * single-quoted literal; PowerShell also treats U+2018-U+201B as single
- * quotes, so those are doubled too.
+ * How a Windows `.agenc` or task-file check failed. Only `acl` (the verifier
+ * named an ACL reason) and `denied` (EACCES / EPERM) get the ACL repair.
+ */
+export type WindowsCronFailure =
+  | { readonly kind: "acl"; readonly reason: string }
+  | { readonly kind: "volume"; readonly reason: string }
+  | { readonly kind: "link" }
+  | { readonly kind: "denied"; readonly code: string }
+  | { readonly kind: "unknown" };
+
+export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && DENIED_CODES.has(code)) return { kind: "denied", code };
+  const reason = windowsPrivatePathReason(error);
+  if (reason !== undefined) {
+    if ((WINDOWS_UNSUPPORTED_VOLUME_REASONS as readonly string[]).includes(reason)) return { kind: "volume", reason };
+    if ((WINDOWS_LINK_REASONS as readonly string[]).includes(reason)) return { kind: "link" };
+    if (hasWindowsVerifierFailure(error) || (WINDOWS_ACL_REASONS as readonly string[]).includes(reason)) {
+      return { kind: "acl", reason };
+    }
+  }
+  // `withRegularChild` reports a symbolic link, a hard-linked file, or a
+  // non-file as CHILD_UNSAFE without running the ACL verifier.
+  if (code === "CHILD_UNSAFE" && !hasWindowsVerifierFailure(error)) return { kind: "link" };
+  return { kind: "unknown" };
+}
+
+/**
+ * PowerShell repair for one `.agenc` directory (Windows PowerShell 5.1 and
+ * PowerShell 7). It refuses a `.agenc` that is itself a junction or symbolic
+ * link, then walks the tree with an explicit stack. A directory is made
+ * private before its entries are listed, so nobody else can add or swap an
+ * entry while the walk is inside it. Entries that are reparse points
+ * (junctions, symbolic links) are skipped and never entered, and files with
+ * more than one hard link are skipped, so nothing outside `.agenc` is
+ * changed. Every other directory and file gets the descriptor
+ * `workflow-private-path.ts` writes: owner = current user, protected DACL,
+ * one allow FullControl entry for that user ((OI)(CI) on directories). The
+ * script stops at the first error.
+ *
+ * Descriptors are written with `SetFileSecurityW`, which changes only the
+ * named object. `Set-Acl`, .NET `SetAccessControl` and `icacls` all go
+ * through `SetNamedSecurityInfo`, which also rewrites the inherited entries
+ * of every existing child, so a hard link under `.agenc` to an outside file
+ * would change that file (seen on Windows 11). `icacls /T` also follows
+ * junctions, and `/L` covers only symbolic links.
+ *
+ * The path is a PowerShell single-quoted literal; PowerShell also treats
+ * U+2018-U+201B as single quotes, so those are doubled too.
  */
 export function windowsCronRepairCommand(directory: string): string {
   const literal = `'${directory.replace(/['\u2018\u2019\u201A\u201B]/gu, (quote) => quote + quote)}'`;
-  return "$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; " +
-    `icacls ${literal} /setowner "*$u" /T /Q; ` +
-    `icacls ${literal} /reset /T /Q; ` +
-    `icacls ${literal} /inheritance:r /grant:r "*\${u}:(OI)(CI)F" /Q; ` +
-    `icacls ${literal} /inheritance:d /T /Q`;
+  return [
+    "& { $ErrorActionPreference = 'Stop'",
+    `$root = ${literal}`,
+    "$link = [IO.FileAttributes]::ReparsePoint",
+    "$folder = [IO.FileAttributes]::Directory",
+    "$a = [IO.File]::GetAttributes($root)",
+    "if (($a -band $link) -ne 0 -or ($a -band $folder) -eq 0) { throw \"Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead.\" }",
+    "Add-Type -Namespace AgencCronRepair -Name Native -MemberDefinition '[DllImport(\"advapi32.dll\", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool SetFileSecurityW(string path, int info, byte[] descriptor);'",
+    "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User",
+    "$private = { param($path, $isFolder) if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); if (-not [AgencCronRepair.Native]::SetFileSecurityW($path, 0x80000005, $acl.GetSecurityDescriptorBinaryForm())) { $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); $why = (New-Object ComponentModel.Win32Exception($code)).Message; throw (New-Object ComponentModel.Win32Exception($code, \"Not repaired: $path ($why)\")) } }",
+    "& $private $root $true",
+    "$todo = New-Object Collections.Stack",
+    "$todo.Push($root)",
+    "$skipped = 0",
+    "while ($todo.Count -gt 0) { foreach ($path in [IO.Directory]::GetFileSystemEntries($todo.Pop())) { $a = [IO.File]::GetAttributes($path); if (($a -band $link) -ne 0) { Write-Warning \"Skipped link: $path\"; $skipped++ } elseif (($a -band $folder) -ne 0) { & $private $path $true; $todo.Push($path) } elseif ((Get-Item -LiteralPath $path -Force).LinkType -eq 'HardLink') { Write-Warning \"Skipped hard-linked file: $path\"; $skipped++ } else { & $private $path $false } } }",
+    "\"Repaired $root ($skipped links skipped)\" }",
+  ].join("; ");
 }
 
 function windowsRepairAdvice(directory: string, extra = ""): string {
-  return `To give only the current user full control of ${directory} and everything in it ` +
-    `(its parent is not changed), run this in PowerShell${extra}, then retry: ` +
+  return `To make ${directory} and everything in it private to the current user ` +
+    "(junctions, symbolic links and hard-linked files inside it are skipped, its parent is not changed, " +
+    `and the script stops at the first error), run this in PowerShell${extra}, then retry: ` +
     windowsCronRepairCommand(directory);
 }
 
-/** A rejected Windows cron directory, with the path and a repair users can run. */
+function causeText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * A rejected Windows cron directory or task file, left unchanged. The ACL
+ * repair is offered only when the ACL verifier named an ACL problem or the
+ * path could not be inspected (EACCES / EPERM). A link or non-regular task
+ * file is to be removed or replaced; an unsupported volume has no repair.
+ * `inspected` is the path that failed when it is not `directory` itself.
+ */
 export function windowsCronAclError(
   directory: string,
   cause: unknown,
   state: "existing" | "created" | "inaccessible" | "record" = "existing",
+  inspected: string = directory,
 ): CronStorageAclError {
-  const reason = windowsPrivatePathReason(cause);
-  if (reason !== undefined && (WINDOWS_UNSUPPORTED_VOLUME_REASONS as readonly string[]).includes(reason)) {
-    return new CronStorageAclError(
+  const failure = classifyWindowsCronFailure(cause);
+  const fail = (message: string) => new CronStorageAclError(message, directory, { cause });
+  if (failure.kind === "volume") {
+    return fail(
       `${OWNERSHIP_ERROR}: ${directory} is on a volume that Windows durable cron storage does not support ` +
-        `(${reason}). Its permissions were left unchanged. Keep the project on a local NTFS volume, ` +
+        `(${failure.reason}). Its permissions were left unchanged. Keep the project on a local NTFS volume, ` +
         "or schedule the task with durable:false.",
-      directory,
-      { cause },
     );
   }
-  const detail = reason === undefined ? "" : ` (${reason})`;
+  if (state === "inaccessible" || failure.kind === "denied") {
+    const code = (cause as NodeJS.ErrnoException | null)?.code;
+    return fail(
+      `${OWNERSHIP_ERROR}: ${inspected} could not be inspected${code === undefined ? "" : ` (${code})`}, ` +
+        `and it was left unchanged. ${windowsRepairAdvice(directory, " (elevated if access is denied)")}`,
+    );
+  }
+  if (failure.kind === "link") {
+    return fail(
+      `${OWNERSHIP_ERROR}: ${inspected} is a symbolic link, a junction, a hard-linked file or not a regular ` +
+        "entry, and it was left unchanged. Remove it, or replace it with a regular file or directory, then retry.",
+    );
+  }
   if (state === "created") {
-    return new CronStorageAclError(
-      `${OWNERSHIP_ERROR}: ${directory} was created, but its private Windows ACL could not be set${detail}. ` +
-        `Remove that empty directory, or repair it. ${windowsRepairAdvice(directory)}`,
-      directory,
-      { cause },
+    const reason = failure.kind === "acl" ? ` (${failure.reason})` : ` (${causeText(cause)})`;
+    const repair = failure.kind === "acl" ? ` ${windowsRepairAdvice(directory)}` : "";
+    return fail(
+      `${OWNERSHIP_ERROR}: ${directory} was created, but it could not be made private to the current user${reason}. ` +
+        `Remove that directory, or repair it, then retry.${repair}`,
+    );
+  }
+  if (failure.kind !== "acl") {
+    return fail(
+      `${OWNERSHIP_ERROR}: ${inspected} could not be verified as private to the current user ` +
+        `(${causeText(cause)}), and it was left unchanged.`,
     );
   }
   if (state === "record") {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    return new CronStorageAclError(
-      `${message}${detail}. The task file was left unchanged. ${windowsRepairAdvice(directory)}`,
-      directory,
-      { cause },
+    return fail(
+      `${causeText(cause)} (${failure.reason}). The task file was left unchanged. ${windowsRepairAdvice(directory)}`,
     );
   }
-  if (state === "inaccessible") {
-    const code = (cause as NodeJS.ErrnoException | null)?.code;
-    return new CronStorageAclError(
-      `${OWNERSHIP_ERROR}: ${directory} could not be inspected${code === undefined ? "" : ` (${code})`}, ` +
-        `and it was left unchanged. ${windowsRepairAdvice(directory, " (elevated if access is denied)")}`,
-      directory,
-      { cause },
-    );
-  }
-  return new CronStorageAclError(
-    `${OWNERSHIP_ERROR}: ${directory} has a Windows ACL that is not private to the current user${detail}, ` +
+  return fail(
+    `${OWNERSHIP_ERROR}: ${directory} has a Windows ACL that is not private to the current user (${failure.reason}), ` +
       `and it was left unchanged. ${windowsRepairAdvice(directory)}`,
-    directory,
-    { cause },
   );
 }
 

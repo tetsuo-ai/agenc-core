@@ -132,12 +132,21 @@ function assertCronRecordOwned(info: BigIntStats, path: string): void {
   assertOwned(info);
 }
 
-/** Name the path and the repair when Windows rejects an existing task file's ACL. */
+/**
+ * Name the path, and the repair where one applies, when Windows rejects the
+ * existing task file: an ACL verifier failure gets the repair, a link or
+ * non-regular file is to be removed or replaced, and EACCES / EPERM after
+ * the directory verified is reported as not inspectable with the repair.
+ */
 function windowsUnsafeRecordError(error: unknown, directory: string): unknown {
   if (process.platform !== "win32") return error;
   const failure = error as { code?: unknown; name?: unknown } | null;
+  const record = join(directory, CRON_STORAGE_NAME);
+  if (failure?.code === "EACCES" || failure?.code === "EPERM") {
+    return windowsCronAclError(directory, error, "inaccessible", record);
+  }
   const unsafe = failure?.code === "CHILD_UNSAFE" || failure?.name === "WindowsPrivatePathSecurityError";
-  return unsafe ? windowsCronAclError(directory, error, "record") : error;
+  return unsafe ? windowsCronAclError(directory, error, "record", record) : error;
 }
 
 function initializeWindowsCronFile(path: string): void {

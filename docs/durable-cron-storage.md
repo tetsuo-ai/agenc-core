@@ -62,22 +62,41 @@ rejected. The project workspace keeps its existing ACL.
 On Windows this means a normal project `.agenc` is rejected until it is
 repaired. `agenc init`, skills, MCP config, worktrees, imagine output, agent
 memory, and Explorer or `mkdir` all create `.agenc` with the ACL inherited
-from the project folder, and durable cron does not change it. The error names
-the directory and prints this PowerShell command for it (shown here for
-`C:\src\my project\.agenc`):
+from the project folder, and durable cron does not change it. When the ACL
+check names an ACL problem, the error names the directory and prints this
+PowerShell script for it (Windows PowerShell 5.1 or PowerShell 7; shown here
+for `C:\src\my project\.agenc`):
 
 ```powershell
-$u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; icacls 'C:\src\my project\.agenc' /setowner "*$u" /T /Q; icacls 'C:\src\my project\.agenc' /reset /T /Q; icacls 'C:\src\my project\.agenc' /inheritance:r /grant:r "*${u}:(OI)(CI)F" /Q; icacls 'C:\src\my project\.agenc' /inheritance:d /T /Q
+& { $ErrorActionPreference = 'Stop'; $root = 'C:\src\my project\.agenc'; $link = [IO.FileAttributes]::ReparsePoint; $folder = [IO.FileAttributes]::Directory; $a = [IO.File]::GetAttributes($root); if (($a -band $link) -ne 0 -or ($a -band $folder) -eq 0) { throw "Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead." }; Add-Type -Namespace AgencCronRepair -Name Native -MemberDefinition '[DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool SetFileSecurityW(string path, int info, byte[] descriptor);'; $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User; $private = { param($path, $isFolder) if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); if (-not [AgencCronRepair.Native]::SetFileSecurityW($path, 0x80000005, $acl.GetSecurityDescriptorBinaryForm())) { $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); $why = (New-Object ComponentModel.Win32Exception($code)).Message; throw (New-Object ComponentModel.Win32Exception($code, "Not repaired: $path ($why)")) } }; & $private $root $true; $todo = New-Object Collections.Stack; $todo.Push($root); $skipped = 0; while ($todo.Count -gt 0) { foreach ($path in [IO.Directory]::GetFileSystemEntries($todo.Pop())) { $a = [IO.File]::GetAttributes($path); if (($a -band $link) -ne 0) { Write-Warning "Skipped link: $path"; $skipped++ } elseif (($a -band $folder) -ne 0) { & $private $path $true; $todo.Push($path) } elseif ((Get-Item -LiteralPath $path -Force).LinkType -eq 'HardLink') { Write-Warning "Skipped hard-linked file: $path"; $skipped++ } else { & $private $path $false } } }; "Repaired $root ($skipped links skipped)" }
 ```
 
-It gives the current user ownership and sole full control of `.agenc` and
-everything in it, and does not write the project folder's ACL. Other accounts,
-including sandbox groups, lose access to `.agenc`. The same message is used
-when a newly created `.agenc` could not be made private; removing that empty
-directory also works. Durable cron on Windows requires a local NTFS volume; a
-ReFS Dev Drive or network path is rejected without a repair command. Session
-startup warns about a rejected `.agenc` only when the task file exists or its
-existence cannot be checked.
+The script refuses a `.agenc` that is itself a junction or symbolic link. It
+then walks `.agenc` with an explicit stack and makes each directory private
+before listing it, so no one else can add or swap an entry during the walk.
+Junctions and symbolic links inside it are skipped and never entered, and
+files with more than one hard link are skipped, so nothing outside `.agenc`
+changes; each skipped entry is printed as a warning. Every other directory
+and file gets the current user as owner and a protected DACL with one allow
+FullControl entry for that user (inherited by new entries in directories),
+the same descriptor durable cron writes when it creates `.agenc`. The script
+stops at the first error. It writes each descriptor with `SetFileSecurityW`
+because `Set-Acl`, .NET `SetAccessControl` and `icacls` also rewrite the
+inherited entries of every child, which changes the outside file behind a
+hard link; `icacls /T` also follows junctions. It loads that function with
+`Add-Type`, so it does not run in Constrained Language Mode. The project
+folder's ACL is not written. Other accounts, including sandbox groups, lose access to
+`.agenc`.
+
+The same script is offered when a newly created `.agenc` could not be made
+private (removing that directory also works) and when `.agenc` or the task
+file cannot be inspected (`EACCES`/`EPERM`; run it elevated if access is
+denied). A task file that is a symbolic link, a junction, hard-linked, or not
+a regular file gets no ACL repair: remove it or replace it with a regular
+file. Durable cron on Windows requires a local NTFS volume; a ReFS Dev Drive
+or network path is rejected without a repair. Session startup, the gateway
+delivery scan and the in-session scheduler report a rejected `.agenc` only
+when the task file exists or its existence cannot be checked.
 Concurrent edits may cause a transaction to fail; failure after publication
 does not imply that the original task file is unchanged.
 
