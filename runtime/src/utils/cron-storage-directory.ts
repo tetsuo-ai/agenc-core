@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertWindowsPrivatePathSecurity } from "../agents/workflow-private-path.js";
+import { assertWindowsPrivatePathSecurity, runWindowsSecurityScript } from "../agents/workflow-private-path.js";
 import { sameIdentity, withConfinedDirectory, type ConfinedDirectory, type ConfinedIoPolicy } from "../fs/descriptor-confined-io.js";
 import { cronLockAuthorityRoot } from "../sandbox/cron-authority-protection.js";
 import { isWithinAuthorityPath } from "../sandbox/desktop-authority-protection.js";
@@ -130,11 +131,15 @@ const WINDOWS_LINK_REASONS = [
   "reparse points are unsupported",
   "path role does not match its type",
 ] as const;
+// Thrown by the created-directory initialization below.
+const WINDOWS_REPLACED_REASON = "directory identity changed before its ACL was set";
 const DENIED_CODES = new Set(["EACCES", "EPERM"]);
 
 /** First verifier reason found in a cause chain, from a message or PowerShell stderr. */
 function windowsPrivatePathReason(error: unknown): string | undefined {
-  const known = [...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS, ...WINDOWS_LINK_REASONS];
+  const known = [
+    ...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS, ...WINDOWS_LINK_REASONS, WINDOWS_REPLACED_REASON,
+  ];
   for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
     const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
     const texts = [candidate.message, candidate.stderr].map((value) =>
@@ -142,6 +147,24 @@ function windowsPrivatePathReason(error: unknown): string | undefined {
     for (const text of texts) {
       const reason = known.find((entry) => text.includes(entry));
       if (reason !== undefined) return reason;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
+/**
+ * The file system the verifier named in `NTFS is required (<DriveFormat>)`.
+ * `$` and parentheses are excluded so PowerShell's echo of the throwing
+ * source line (`($($drive.DriveFormat))`) never matches.
+ */
+function windowsDriveFormat(error: unknown): string | undefined {
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
+    for (const value of [candidate.message, candidate.stderr]) {
+      const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
+      const format = /NTFS is required \(([A-Za-z0-9][A-Za-z0-9 ._-]{0,31})\)/u.exec(text)?.[1]?.trim();
+      if (format !== undefined && format !== "") return format;
     }
     current = candidate.cause;
   }
@@ -165,6 +188,7 @@ export type WindowsCronFailure =
   | { readonly kind: "acl"; readonly reason: string }
   | { readonly kind: "volume"; readonly reason: string }
   | { readonly kind: "link" }
+  | { readonly kind: "replaced" }
   | { readonly kind: "denied"; readonly code: string }
   | { readonly kind: "unknown" };
 
@@ -175,6 +199,7 @@ export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
   if (reason !== undefined) {
     if ((WINDOWS_UNSUPPORTED_VOLUME_REASONS as readonly string[]).includes(reason)) return { kind: "volume", reason };
     if ((WINDOWS_LINK_REASONS as readonly string[]).includes(reason)) return { kind: "link" };
+    if (reason === WINDOWS_REPLACED_REASON) return { kind: "replaced" };
     if (hasWindowsVerifierFailure(error) || (WINDOWS_ACL_REASONS as readonly string[]).includes(reason)) {
       return { kind: "acl", reason };
     }
@@ -186,55 +211,88 @@ export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
 }
 
 /**
- * C# helper the repair loads with `Add-Type`: handle-based opens and
+ * C# helper loaded with `Add-Type` by both the repair command and the
+ * first-time initialization of a created `.agenc`: handle-based opens and
  * descriptor writes. No single quotes (the source is a PowerShell
  * single-quoted literal) and C# 5 only (Windows PowerShell 5.1).
  */
 const WINDOWS_REPAIR_HELPER = [
-  "using System; using System.ComponentModel; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;",
+  "using System; using System.ComponentModel; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;",
   "public static class AgencCronRepair {",
-  "[StructLayout(LayoutKind.Sequential)] public struct Info { public uint Attributes, Created1, Created2, Accessed1, Accessed2, Written1, Written2, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow; }",
+  "[StructLayout(LayoutKind.Sequential)] public struct Info { public uint Attributes, Created1, Created2, Accessed1, Accessed2, Written1, Written2, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow; public ulong Index { get { return ((ulong)IndexHigh << 32) | IndexLow; } } }",
   "[StructLayout(LayoutKind.Sequential)] struct Text { public ushort Length, MaximumLength; public IntPtr Buffer; }",
   "[StructLayout(LayoutKind.Sequential)] struct Target { public int Length; public IntPtr Root, Name; public uint Flags; public IntPtr Descriptor, Quality; }",
   "[StructLayout(LayoutKind.Sequential)] struct Result { public IntPtr Status, Information; }",
   "[DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool GetFileInformationByHandle(SafeFileHandle handle, out Info info);",
+  "[DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool GetVolumeInformationByHandleW(SafeFileHandle handle, StringBuilder name, int nameSize, out uint serial, out uint length, out uint flags, StringBuilder system, int systemSize);",
   "[DllImport(\"advapi32.dll\", SetLastError = true)] static extern bool SetKernelObjectSecurity(SafeFileHandle handle, uint information, byte[] descriptor);",
   "[DllImport(\"ntdll.dll\")] static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref Target target, out Result result, IntPtr size, uint attributes, uint share, uint disposition, uint options, IntPtr extra, uint extraLength);",
   "[DllImport(\"ntdll.dll\")] static extern int RtlNtStatusToDosError(int status);",
-  "static Exception Fail(int code, string path) { return new Win32Exception(code, \"Not repaired: \" + path + \" (\" + new Win32Exception(code).Message + \")\"); }",
-  // READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES (+ FILE_TRAVERSE for the folder);
+  "public static string Prefix = \"Not repaired: \";",
+  "static Exception Fail(int code, string path) { return new Win32Exception(code, Prefix + path + \" (\" + new Win32Exception(code).Message + \")\"); }",
   // FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT: a link at the path is opened, never followed.
-  "public static SafeFileHandle OpenFolder(string path) { SafeFileHandle handle = CreateFileW(path, 0x1E00A0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero); if (handle.IsInvalid) throw Fail(Marshal.GetLastWin32Error(), path); return handle; }",
+  "static SafeFileHandle Open(string path, uint access) { SafeFileHandle handle = CreateFileW(path, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero); if (handle.IsInvalid) throw Fail(Marshal.GetLastWin32Error(), path); return handle; }",
+  // READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES | FILE_TRAVERSE.
+  "public static SafeFileHandle OpenFolder(string path) { return Open(path, 0x1E00A0); }",
+  // READ_CONTROL | SYNCHRONIZE | FILE_READ_ATTRIBUTES: enough to read type, identity and file system.
+  "public static SafeFileHandle Probe(string path) { return Open(path, 0x120080); }",
   // Opened relative to the folder handle (FILE_OPEN, FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT): it is an entry of that very folder.
+  // No data access is requested, so the share mode neither locks the file nor conflicts with a reader; see windowsCronRepairCommand.
   "public static SafeFileHandle OpenChild(SafeFileHandle folder, string name, string path) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0); if (status == unchecked((int)0xC0000034)) return null; if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
   "public static Info Describe(SafeFileHandle handle, string path) { Info info; if (!GetFileInformationByHandle(handle, out info)) throw Fail(Marshal.GetLastWin32Error(), path); return info; }",
+  // The file system of the volume the handle is on (NTFS, ReFS, FAT32, exFAT, ...).
+  "public static string FileSystem(SafeFileHandle handle, string path) { uint serial, length, flags; StringBuilder system = new StringBuilder(261); if (!GetVolumeInformationByHandleW(handle, null, 0, out serial, out length, out flags, system, 261)) throw Fail(Marshal.GetLastWin32Error(), path); return system.ToString(); }",
   // OWNER | DACL | PROTECTED_DACL on the open handle only (NtSetSecurityObject): nothing is propagated to children.
   "public static void Protect(SafeFileHandle handle, byte[] descriptor, string path) { if (!SetKernelObjectSecurity(handle, 0x80000005, descriptor)) throw Fail(Marshal.GetLastWin32Error(), path); }",
   "}",
 ].join(" ");
 
 /**
+ * PowerShell script block returning the descriptor both scripts write:
+ * owner = current user, protected DACL, one allow FullControl entry for that
+ * user ((OI)(CI) on a directory so cron's new files inherit it). The same
+ * descriptor `workflow-private-path.ts` writes.
+ */
+const WINDOWS_PRIVATE_DESCRIPTOR =
+  "{ param($isFolder) $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User; " +
+  "if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } " +
+  "else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; " +
+  "$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); " +
+  "$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); " +
+  ",$acl.GetSecurityDescriptorBinaryForm() }";
+
+/**
  * Minimal PowerShell repair for one `.agenc` (Windows PowerShell 5.1 and
  * PowerShell 7). It changes at most two objects: the `.agenc` directory
- * itself and, if present, its `scheduled_tasks.json`. Each gets the
- * descriptor `workflow-private-path.ts` writes: owner = current user,
- * protected DACL, one allow FullControl entry for that user ((OI)(CI) on
- * the directory so cron's new files inherit it). Other entries in `.agenc`
- * keep their current ACLs, and nothing is walked.
+ * itself and, if present, its `scheduled_tasks.json`. Each gets
+ * WINDOWS_PRIVATE_DESCRIPTOR. Other entries in `.agenc` keep their current
+ * ACLs, and nothing is walked.
  *
  * Containment does not rest on skipping links. `.agenc` is opened once
  * with FILE_FLAG_OPEN_REPARSE_POINT, and its type, reparse attribute and
- * file ID are read from that handle; the descriptor is written through the
- * same handle with `SetKernelObjectSecurity`, so a path swapped after the
- * open cannot redirect the write. The task file is opened relative to that
- * directory handle (NtCreateFile with RootDirectory, FILE_OPEN_REPARSE_POINT)
- * and is written only when the handle shows a regular file with one link.
- * `.agenc` is reopened at the end and must have the same volume serial and
- * file ID. `Set-Acl`, .NET `SetAccessControl` and `icacls` are not used:
- * they go through `SetNamedSecurityInfo`, which also rewrites inherited
- * entries of existing children (on Windows 11 it changed an outside file
- * hard-linked into `.agenc`), and `icacls /T` follows junctions.
+ * file ID are read from that handle. The task file is opened relative to
+ * that directory handle (NtCreateFile with RootDirectory,
+ * FILE_OPEN_REPARSE_POINT) and must be a regular file with one link; a
+ * refused or unopenable task file stops the script before anything is
+ * written. Only then are both descriptors written through those handles
+ * with `SetKernelObjectSecurity`, so a path swapped after the open cannot
+ * redirect a write. The task file's link count is read again after its
+ * write, and `.agenc` is reopened at the end and must have the same volume
+ * serial and file ID. `Set-Acl`, .NET `SetAccessControl` and `icacls` are
+ * not used: they go through `SetNamedSecurityInfo`, which also rewrites
+ * inherited entries of existing children (on Windows 11 it changed an
+ * outside file hard-linked into `.agenc`), and `icacls /T` follows junctions.
+ *
+ * The task file handle requests no data access, so its share mode does not
+ * lock anything: Windows applies share modes only to opens that request
+ * read, write or delete access, and on Windows 11 `CreateHardLink` added
+ * names to a file held open with share mode 0 (with DELETE or READ_DATA
+ * access too), while share mode 0 made the open fail with a sharing
+ * violation whenever another process (such as a running AgenC) had the file
+ * open. A name added before the file is made private is caught by the link
+ * count read after the write; after that, only the current user can open
+ * the file to add one.
  *
  * Remaining race: whatever directory is at the path when it is opened is
  * the one made private. Someone who can rename entries in the project
@@ -251,24 +309,69 @@ export function windowsCronRepairCommand(directory: string): string {
     "& { $ErrorActionPreference = 'Stop'",
     `$root = ${literal}`,
     `Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}'`,
-    "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User",
-    "$descriptor = { param($isFolder) if ($isFolder) { $acl = New-Object Security.AccessControl.DirectorySecurity; $inherit = 'ContainerInherit, ObjectInherit' } else { $acl = New-Object Security.AccessControl.FileSecurity; $inherit = 'None' }; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow'))); ,$acl.GetSecurityDescriptorBinaryForm() }",
+    `$descriptor = ${WINDOWS_PRIVATE_DESCRIPTOR}`,
     "$link = 0x400",
     "$folder = 0x10",
     "$task = $root + '\\scheduled_tasks.json'",
     "$dir = [AgencCronRepair]::OpenFolder($root)",
     "try { $id = [AgencCronRepair]::Describe($dir, $root); " +
       "if (($id.Attributes -band $link) -ne 0 -or ($id.Attributes -band $folder) -eq 0) { throw \"Not repaired: $root is a junction, a symbolic link or not a directory. Remove it instead.\" }; " +
-      "[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root); " +
       "$file = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task); " +
-      "if ($file) { try { $info = [AgencCronRepair]::Describe($file, $task); " +
-        "if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw \"Not repaired: $task is a link, a hard-linked file or not a regular file. Remove or replace it, then run this again.\" }; " +
-        "[AgencCronRepair]::Protect($file, (& $descriptor $false), $task) } finally { $file.Dispose() } }; " +
+      "try { if ($file) { $info = [AgencCronRepair]::Describe($file, $task); " +
+        "if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw \"Not repaired: $task is a link, a hard-linked file or not a regular file, and nothing was changed. Remove or replace it, then run this again.\" } }; " +
+        "[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root); " +
+        "if ($file) { [AgencCronRepair]::Protect($file, (& $descriptor $false), $task); " +
+          "if ([AgencCronRepair]::Describe($file, $task).Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private; remove the other name, then run this again.\" } } " +
+      "} finally { if ($file) { $file.Dispose() } }; " +
       "$again = [AgencCronRepair]::OpenFolder($root); try { $now = [AgencCronRepair]::Describe($again, $root) } finally { $again.Dispose() }; " +
       "if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw \"Not repaired: $root was replaced during the repair. Check it, then run this again.\" } " +
       "} finally { $dir.Dispose() }",
     "\"Repaired $root and its task file; other entries in it keep their ACLs.\" }",
   ].join("; ");
+}
+
+/**
+ * First-time initialization of a `.agenc` this call just created, run by
+ * `runWindowsSecurityScript` with the path and the `lstat` identity in
+ * environment variables. It never resolves the path for a write: `.agenc`
+ * is opened without following a link, the handle must show a directory on
+ * NTFS with the volume serial and file ID of that `lstat` (otherwise the
+ * script fails closed before writing), and the descriptor is written
+ * through that same handle with `SetKernelObjectSecurity`. Unlike
+ * `SetAccessControl`, that write is not propagated to entries someone
+ * added to the new directory before it was made private, such as a hard
+ * link to an outside file. A read-only probe handle reports the file
+ * system and identity first, so a volume that is not NTFS gets the
+ * platform message even where the write handle could not be opened.
+ */
+const WINDOWS_CREATED_DIRECTORY_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$target = $env:AGENC_CRON_DIRECTORY",
+  "if ($target.StartsWith('\\\\')) { throw 'network and device paths are unsupported' }",
+  `Add-Type -TypeDefinition '${WINDOWS_REPAIR_HELPER}'`,
+  "[AgencCronRepair]::Prefix = ''",
+  `$descriptor = ${WINDOWS_PRIVATE_DESCRIPTOR}`,
+  "$check = { param($handle) $info = [AgencCronRepair]::Describe($handle, $target); " +
+    "if (($info.Attributes -band 0x400) -ne 0) { throw 'reparse points are unsupported' }; " +
+    "if (($info.Attributes -band 0x10) -eq 0) { throw 'path role does not match its type' }; " +
+    "$system = [AgencCronRepair]::FileSystem($handle, $target); " +
+    "if ($system -ne 'NTFS') { throw \"NTFS is required ($system)\" }; " +
+    `if ([string]$info.Volume -ne $env:AGENC_CRON_VOLUME -or [string]$info.Index -ne $env:AGENC_CRON_FILE_ID) { throw '${WINDOWS_REPLACED_REASON}' } }`,
+  "$probe = [AgencCronRepair]::Probe($target)",
+  "try { & $check $probe } finally { $probe.Dispose() }",
+  "$dir = [AgencCronRepair]::OpenFolder($target)",
+  "try { & $check $dir; [AgencCronRepair]::Protect($dir, (& $descriptor $true), $target) } finally { $dir.Dispose() }",
+  "[Console]::Out.Write('OK')",
+].join("\n");
+const WINDOWS_CREATED_DIRECTORY_SCRIPT_BASE64 = Buffer.from(WINDOWS_CREATED_DIRECTORY_SCRIPT, "utf16le").toString("base64");
+
+/** Make a `.agenc` this call created private, through a handle bound to `created` (its `lstat`). */
+function initializeCreatedWindowsDirectory(path: string, created: BigIntStats): void {
+  runWindowsSecurityScript(path, WINDOWS_CREATED_DIRECTORY_SCRIPT_BASE64, {
+    AGENC_CRON_DIRECTORY: path,
+    AGENC_CRON_VOLUME: created.dev.toString(),
+    AGENC_CRON_FILE_ID: created.ino.toString(),
+  }, tmpdir());
 }
 
 /** Who loses access when the repair replaces `.agenc`'s ACL. */
@@ -306,9 +409,12 @@ export function windowsCronAclError(
   const failure = classifyWindowsCronFailure(cause);
   const fail = (message: string) => new CronStorageAclError(message, directory, { cause });
   if (failure.kind === "volume") {
-    const where = failure.reason === "NTFS is required"
-      ? `${directory} is on a volume that is not NTFS (for example a ReFS Dev Drive, FAT32 or exFAT)`
-      : `${directory} is a network or device path`;
+    const format = windowsDriveFormat(cause);
+    const where = failure.reason !== "NTFS is required"
+      ? `${directory} is a network or device path`
+      : format === undefined
+        ? `${directory} is on a volume that is not NTFS`
+        : `${directory} is on a volume formatted as ${format}`;
     return fail(
       `Durable cron storage on Windows requires a local NTFS volume, and ${where}. ` +
         "This is a platform limitation that no permission change can fix; its permissions were left unchanged. " +
@@ -326,6 +432,12 @@ export function windowsCronAclError(
     return fail(
       `${OWNERSHIP_ERROR}: ${inspected} is a symbolic link, a junction, a hard-linked file or not a regular ` +
         "entry, and it was left unchanged. Remove it, or replace it with a regular file or directory, then retry.",
+    );
+  }
+  if (failure.kind === "replaced") {
+    return fail(
+      `${OWNERSHIP_ERROR}: ${directory} was replaced after it was created and before its ACL was set, ` +
+        "and no ACL was written. Check what is at that path, then retry.",
     );
   }
   if (state === "created") {
@@ -381,7 +493,7 @@ async function withWindowsCronStorageDirectory<Result>(
   await assertRealDirectory(workspacePathResolved, workspaceInfo);
   // No await between this identity check and the ACL write or check.
   await assertRealDirectory(directory, directoryInfo);
-  ensureWindowsPrivateDirectory(directory, opened.created);
+  ensureWindowsPrivateDirectory(directory, directoryInfo, opened.created);
   try {
     return await withConfinedDirectory(directory, WINDOWS_STORAGE_POLICY, async (bound) => {
       await bound.verify();
@@ -463,12 +575,15 @@ async function createWindowsAgencDirectory(directory: string): Promise<boolean> 
   }
 }
 
-function ensureWindowsPrivateDirectory(path: string, created: boolean): void {
+function ensureWindowsPrivateDirectory(path: string, info: BigIntStats, created: boolean): void {
   if (created) {
     // A failed first initialization leaves `.agenc` behind. Later calls see
     // it as existing and only validate, so this error names the repair.
+    // The ACL is written through a handle bound to `info`, never by path
+    // (`SetAccessControl` would re-resolve the path and propagate to entries
+    // added since `mkdir`).
     try {
-      assertWindowsPrivatePathSecurity(path, "directory", true);
+      initializeCreatedWindowsDirectory(path, info);
     } catch (cause) {
       throw windowsCronAclError(path, cause, "created");
     }

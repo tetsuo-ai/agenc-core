@@ -24,7 +24,7 @@ if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
 $isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
 if ($isDirectory -ne ($role -eq 'directory')) { throw 'path role does not match its type' }
 $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($target))
-if ($drive.DriveFormat -ne 'NTFS') { throw 'NTFS is required' }
+if ($drive.DriveFormat -ne 'NTFS') { throw "NTFS is required ($($drive.DriveFormat))" }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($initialize) {
   if ($role -eq 'directory') {
@@ -96,6 +96,29 @@ export function assertWindowsPrivatePathSecurity(
   initialize: boolean,
 ): void {
   if (process.platform !== "win32") return;
+  runWindowsSecurityScript(path, WINDOWS_PRIVATE_PATH_SCRIPT_BASE64, {
+    AGENC_WORKFLOW_PRIVATE_INITIALIZE: initialize ? "1" : "0",
+    AGENC_WORKFLOW_PRIVATE_PATH: path,
+    AGENC_WORKFLOW_PRIVATE_ROLE: role,
+  });
+}
+
+/**
+ * Run one fixed security script (UTF-16LE, base64) in the trusted Windows
+ * PowerShell with the same bounded, scrubbed environment as the verifier
+ * above. The script receives its inputs only through `variables` and must
+ * print exactly `OK`; anything else, including a failed launch, throws
+ * `WindowsPrivatePathSecurityError` for `path` with the cause attached.
+ * `temporaryDirectory` replaces TEMP/TMP (System32 by default, which a
+ * standard user cannot write; Windows PowerShell 5.1 `Add-Type` compiles
+ * there).
+ */
+export function runWindowsSecurityScript(
+  path: string,
+  encodedScript: string,
+  variables: Readonly<Record<string, string>>,
+  temporaryDirectory?: string,
+): void {
   let output: Buffer;
   try {
     const windowsPaths = resolveTrustedWindowsSystemPaths();
@@ -113,15 +136,13 @@ export function assertWindowsPrivatePathSecurity(
         "-NoProfile",
         "-NonInteractive",
         "-EncodedCommand",
-        WINDOWS_PRIVATE_PATH_SCRIPT_BASE64,
+        encodedScript,
       ],
       {
         cwd: workingDirectory,
         encoding: "buffer",
         env: {
-          AGENC_WORKFLOW_PRIVATE_INITIALIZE: initialize ? "1" : "0",
-          AGENC_WORKFLOW_PRIVATE_PATH: path,
-          AGENC_WORKFLOW_PRIVATE_ROLE: role,
+          ...variables,
           APPDATA: "",
           COMSPEC: "",
           HOMEDRIVE: "",
@@ -133,8 +154,8 @@ export function assertWindowsPrivatePathSecurity(
           PSMODULEPATH: "",
           SYSTEMDRIVE: "",
           SYSTEMROOT: systemRoot,
-          TEMP: workingDirectory,
-          TMP: workingDirectory,
+          TEMP: temporaryDirectory ?? workingDirectory,
+          TMP: temporaryDirectory ?? workingDirectory,
           USERDOMAIN: "",
           USERNAME: "",
           USERPROFILE: workingDirectory,
