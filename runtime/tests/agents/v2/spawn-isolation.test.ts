@@ -162,7 +162,8 @@ describe("spawn_agent isolation", () => {
         collaborationMode: { model: config.model },
       },
       config: { ...base.config, agents: config.agents },
-      providerService: { current: () => ({ provider: activeProvider, model: config.model }) },
+      providerService: { current: () => ({ provider: activeProvider, model: config.model }),
+        isChildProviderConnected: async ({ provider }: { provider: string }) => allowed.includes(provider) },
       services: {
         ...base.services,
         modelsManager,
@@ -179,6 +180,66 @@ describe("spawn_agent isolation", () => {
     } as unknown as Session;
     return { session, tool: createSpawnAgentTool(makeOptions(session)) };
   }
+
+  it("automatically selects a connected permitted model and returns an explanation and task cap", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    // The parent model's 500k window cannot hold this context, so selection
+    // has to leave it.
+    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5,
+      context_tokens: 600_000 });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({ provider: "deepseek", model: "deepseek-flash", routing_reason: expect.any(String) });
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({
+      destination: { provider: "deepseek", model: "deepseek-flash" },
+      budgetAllocation: { maxCostUsd: 0.5 }, routing: { taskKind: "extraction" },
+    });
+  });
+
+  it("counts the parent's own model as a candidate without listing its provider", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "Extract names", task_name: "extractor" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content).routing_reason).toContain("grok/grok-4.6");
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: false,
+      destination: { provider: "grok", model: "grok-4.6" }, routing: { taskKind: "extraction" } });
+  });
+
+  it("keeps the parent model when no connected allowed model qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    // A hard reasoning task is above the parent model's quality prior.
+    const result = await tool.execute({ message: "Extract names", task_name: "extractor",
+      task_kind: "reasoning", complexity: "hard" });
+    expect(result.isError).not.toBe(true);
+    const content = JSON.parse(result.content) as { routing_reason: string; automatic_fallback?: string };
+    expect(content.routing_reason).toBe("No connected and allowed model meets this task's requirements. The child keeps your current model.");
+    expect(content.automatic_fallback).toBeUndefined();
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toBeUndefined();
+    expect(mockDelegate.mock.calls[0]?.[0].model).toBeUndefined();
+  });
+
+  it("still enforces a hard requirement when nothing qualifies", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    const result = await tool.execute({ message: "Summarize these records", task_name: "reader", context_tokens: 50_000_000 });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cannot fit the required context");
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit model override and permits explicit parent inheritance", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    await tool.execute({ message: "Extract names", task_name: "manual", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.destination.model).toBe("deepseek-v4-pro");
+    await tool.execute({ message: "Extract names", task_name: "inherited", routing: "inherit" });
+    expect(mockDelegate.mock.calls[1]?.[0].plan).toBeUndefined();
+  });
 
   it("keeps cross-provider spawning off by default", async () => {
     const { tool } = await crossProviderFixture(["deepseek"], false);
@@ -279,7 +340,7 @@ describe("spawn_agent isolation", () => {
     const { session } = await crossProviderFixture(["openai"]);
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await createSpawnAgentTool(makeOptions(session)).execute({
-      message: "research this", task_name: "researcher", tool_free: true,
+      message: "research this", task_name: "researcher", tool_free: true, routing: "inherit",
     });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].toolAllowlist).toBeUndefined();
@@ -342,7 +403,7 @@ describe("spawn_agent isolation", () => {
   it("with automatic choice on, lists allowed models with their API prices", async () => {
     const { session } = await crossProviderFixture(["deepseek"]);
     const description = createSpawnAgentTool(makeOptions(session)).description;
-    expect(description).toContain("You may pick an allowed pair yourself");
+    expect(description).toContain("Omit provider and model for local automatic selection");
     expect(description).toContain("with API prices per 1M input/output tokens");
     expect(description).toMatch(/deepseek\/deepseek-v4-pro \$[\d.]+\/\$[\d.]+/u);
     expect(description).toContain("Sub-agents run at the lowest effort and standard speed;");
@@ -777,7 +838,7 @@ describe("spawn_agent isolation", () => {
         modelsManager: new StaticModelsManager({ config, fallbackProvider: "deepseek" }),
         crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch", request } } });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    const result = await createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, routing: "inherit" });
     expect(result.isError).not.toBe(true);
     expect(request).toHaveBeenCalledOnce();
     expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: true,
@@ -923,6 +984,46 @@ describe("spawn_agent isolation", () => {
     expect(result.isError).toBe(true);
     expect(result.effectDisposition).toBeDefined();
     expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  // An approval denial marks the session stopped until the next user message.
+  // A worker or an unattended root turn never sends one.
+  it("lets a worker spawn after an earlier approval denial set its stop flag", async () => {
+    const fixture = callerFixture();
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(result.content).not.toContain("invalid-runtime-identity");
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(() => mockDelegate.mock.calls[0]![0].assertParentSessionActive?.()).not.toThrow();
+    fixture.revoke();
+  });
+
+  it("lets an unattended root turn spawn after an earlier approval denial", async () => {
+    const session = makeSession();
+    Object.assign(session, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 3,
+      activeTurn: { unsafePeek: () => ({ turnId: "goal-turn" }) } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({ message: "inspect", task_name: "worker" });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
+  it("still refuses a spawn when the user stops during its awaits", async () => {
+    const fixture = callerFixture();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.spyOn(fixture.child.services.modelsManager, "listModels").mockImplementation(async () => { await pending; return [{ slug: "test-model" }] as never; });
+    const call = createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, model: "test-model" });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    release();
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("invalid-runtime-identity");
+    expect(mockDelegate).not.toHaveBeenCalled();
+    fixture.revoke();
   });
 
   it("cannot bind a sibling's Session to another live agent", () => {

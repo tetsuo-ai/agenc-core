@@ -175,6 +175,13 @@ export interface ProviderHttpStreamResponse
   readonly url: string;
 }
 
+// Evidence is created only from a rejected opening Response, not from an
+// error thrown while consuming an accepted JSON/SSE body.
+const initialHttpRejections = new WeakSet<Error>();
+export function isInitialProviderHttpRejection(error: unknown): error is ProviderHttpError {
+  return error instanceof ProviderHttpError && initialHttpRejections.has(error);
+}
+
 export class ProviderHttpError extends Error {
   readonly providerName: string;
   readonly status: number;
@@ -741,7 +748,7 @@ async function createProviderHttpError(
   const retryAfterDirective = parseProviderRetryAfterDirective(
     response.headers,
   );
-  return new ProviderHttpError({
+  const error = new ProviderHttpError({
     providerName,
     status: response.status,
     headers: response.headers,
@@ -750,6 +757,8 @@ async function createProviderHttpError(
     message: errorMessageFromBody(response.status, errorBody),
     retryAfterDirective,
   });
+  initialHttpRejections.add(error);
+  return error;
 }
 
 function createMalformedProviderJsonError(args: {

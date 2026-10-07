@@ -28,6 +28,7 @@ import { AgentControl } from "./control.js";
 import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
+import * as childRouting from "./child-routing.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -168,7 +169,9 @@ import {
 } from "../services/lsp/manager.js";
 import { ConfigStore, nextConfigReadMark } from "../config/store.js";
 import { SessionProviderService } from "../session/provider-service.js";
-import { LLMFundsError } from "../llm/errors.js";
+import { LLMFundsError, LLMServerError } from "../llm/errors.js";
+import { superviseChildRoutingRetries } from "../../src/agents/child-routing-retries.js";
+import { StreamProgressError } from "../../src/llm/stream-progress.js";
 import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
@@ -5145,6 +5148,251 @@ describe("runAgent", () => {
       }
     },
   );
+
+  it("binds and releases the current plan budget for each reusable worker assignment", async () => {
+    const taskHome = mkdtempSync(join(tmpdir(), "agenc-worker-budget-"));
+    const session = makeStubSession({ services: { provider: makeProvider([]) },
+      sessionConfiguration: mkSessionConfiguration({ cwd: taskHome }), config: { ...mkConfig(), cwd: taskHome } });
+    const store = new RolloutStore({ cwd: taskHome, sessionId: session.conversationId,
+      agencVersion: "0.2.0", agencHome: taskHome, sessionTempRoot: taskHome });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd: taskHome,
+      originator: "worker-budget-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const { control, live } = await spawnLive(session);
+    const template = makeChildToolAdmission({ runId: session.conversationId, sessionId: session.conversationId }).client;
+    const bindings: { client: ExecutionAdmissionClient; release: ReturnType<typeof vi.fn> }[] = [];
+    let workerCost = 0;
+    const makeAdmission = (scope: ExecutionAdmissionClient["scope"]): ExecutionAdmissionClient => {
+      const release = vi.fn();
+      const client: ExecutionAdmissionClient = { ...template, scope, release,
+        forSession: (options) => makeAdmission({ ...scope, ...options }),
+        getUsageSummary: () => ({ runId: scope.runId, sequence: 1, costUsd: 0,
+          heldCostUsd: 0, hasUnknownCost: false, modelCalls: 0, inputTokens: 0, outputTokens: 0,
+          totalTokens: 0, models: [], agents: [] }),
+        getDirectUsageSummary: () => ({ runId: scope.runId, sequence: 1, costUsd: workerCost,
+          heldCostUsd: 0, hasUnknownCost: false, modelCalls: 0, inputTokens: 0, outputTokens: 0,
+          totalTokens: 0, models: [], agents: [] }),
+      };
+      bindings.push({ client, release });
+      return client;
+    };
+    Object.assign(session.services, { executionAdmission: makeAdmission(template.scope) });
+    const planFor = (taskId: string, maxCostUsd: number) => createChildExecutionPlan({ session,
+      selection: session.providerService.current(), modelInfo: mkModelInfo(), parentPath: "/root",
+      taskId, taskName: "worker", taskText: taskId, toolFree: true, forkedHistory: false, maxCostUsd });
+    const plan = await planFor("first-budget-task", 0.2);
+    const outcomeSpy = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(async (_parent, recordedPlan, outcome) => {
+      expect(recordedPlan?.task.id).toMatch(/^(first|second)-budget-task$/);
+      expect(outcome.terminal.costUsd).toBeCloseTo(0.1);
+      // An outcome can teach local reliability only after its receipt is durable.
+      const journal = readFileSync(live.rolloutPath!, "utf8");
+      expect(journal).toContain('"type":"subagent_turn_outcome"');
+      expect(journal).toContain(outcome.receiptId.slice(live.agentId.length + 1));
+    });
+    const observed: ExecutionAdmissionClient["scope"][] = [];
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* (this: Session) {
+      observed.push(this.services.executionAdmission!.scope);
+      workerCost += 0.1;
+      // A new parent assignment no longer lists this child. Receipt accounting
+      // must use the child's stable run allocation instead of that facade.
+      Object.assign(session.services.executionAdmission!, { getUsageSummary: () => ({
+        runId: session.conversationId, sequence: 2, costUsd: 0, heldCostUsd: 0, hasUnknownCost: false,
+        modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, models: [], agents: [],
+      }) });
+      yield { type: "turn_complete", content: "bounded result", stopReason: "completed",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      return { reason: "completed" };
+    });
+    const iter = runAgent({ live, parent: session, plan,
+      initialMessages: [{ role: "user", content: "first-budget-task" }], taskPrompt: "first-budget-task",
+      taskId: "first-budget-task", keepAlive: true });
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      expect(observed[0]).toMatchObject({ runId: live.agentId, taskId: "first-budget-task", maxCostUsd: 0.2 });
+      expect(outcomeSpy).toHaveBeenCalledWith(session, expect.objectContaining({ task: expect.objectContaining({ id: "first-budget-task" }) }),
+        expect.objectContaining({ receiptId: expect.stringContaining(`${live.agentId}:`), terminal: expect.objectContaining({ reason: "completed" }), latencyMs: expect.any(Number) }));
+      expect(bindings.find(entry => entry.client.scope.taskId === "first-budget-task")?.release).toHaveBeenCalledOnce();
+      const nextPlan = await planFor("second-budget-task", 0.4);
+      live.metadata = { ...live.metadata, executionPlan: nextPlan };
+      const second = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+        content: "second-budget-task", taskId: "second-budget-task" });
+      await second;
+      expect(observed[1]).toMatchObject({ runId: live.agentId, taskId: "second-budget-task", maxCostUsd: 0.4 });
+      expect(outcomeSpy).toHaveBeenCalledTimes(2);
+      expect(bindings.find(entry => entry.client.scope.taskId === "second-budget-task")?.release).toHaveBeenCalledOnce();
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      turnSpy.mockRestore();
+      outcomeSpy.mockRestore();
+      store.close();
+      rmSync(taskHome, { recursive: true, force: true });
+    }
+    expect(bindings.filter(entry => entry.client.scope.runId === live.agentId).every(entry => entry.release.mock.calls.length === 1)).toBe(true);
+    expect(bindings[0]!.release).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reused worker's journal usage at run level across tasks", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-worker-usage-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-worker-usage-project-"));
+    mkdirSync(join(cwd, ".git"));
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home,
+      limits: { global: 20, workspace: 20, session: 20, parent: 20, provider: 20 } });
+    const rootAdmission = kernel.bindClient({ cwd, scope: { runId: "usage-parent", sessionId: "usage-parent", autonomous: false } });
+    const session = makeStubSession({ conversationId: "usage-parent",
+      services: { provider: makeProvider([]), executionAdmission: rootAdmission },
+      sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId, agencVersion: "0.2.0",
+      agencHome: home, sessionTempRoot: home });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd,
+      originator: "worker-usage-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const { control, live } = await spawnLive(session);
+    const costs = [0.2, 0.3];
+    let steps = 0;
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* (this: Session) {
+      // Each assignment spends through the child's own admission facade.
+      const admission = this.services.executionAdmission!;
+      const cost = costs[steps]!;
+      steps += 1;
+      const lease = await admission.acquire({ stepId: `usage-step-${steps}`, kind: "model_turn", model: "budget-model",
+        provider: "budget-provider", maxInputTokens: 1, maxOutputTokens: 0, maxCostUsd: cost });
+      admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+      admission.reconcile(lease.reservation.reservationId, { inputTokens: 1, outputTokens: 0, costUsd: cost });
+      admission.acknowledgeCompletion(lease.reservation.reservationId);
+      yield { type: "turn_complete", content: "done", stopReason: "completed",
+        usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 } };
+      return { reason: "completed" };
+    });
+    const iter = runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "first" }],
+      taskPrompt: "first", taskId: "first", keepAlive: true });
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const second = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath, content: "second", taskId: "second" });
+      await second;
+      expect(steps).toBe(2);
+      const child = liveAgentSession(live)!;
+      expect(child.services.executionAdmission!.getUsageSummary!().costUsd).toBeCloseTo(0.5);
+      const journaled = readFileSync(live.rolloutPath!, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { type?: string; payload?: { msg?: { type?: string; payload?: { costUsd?: number } } } })
+        .filter((item) => item.type === "event_msg" && item.payload?.msg?.type === "session_usage")
+        .map((item) => item.payload!.msg!.payload!.costUsd!);
+      // The journal follows the second task's spend instead of stopping at the first.
+      expect(journaled.at(-1)).toBeCloseTo(0.5);
+      expect(journaled.some((cost) => Math.abs(cost - 0.2) < 1e-9)).toBe(true);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      turnSpy.mockRestore();
+      store.close();
+      kernel.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  describe("automatic routing and provider retries", () => {
+    async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>) {
+      const configStore = new ConfigStore({ cwd: "/tmp", base: {
+        agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: ["deepseek"] },
+      } });
+      const queue = [...script];
+      const chatStream = vi.fn(async (): Promise<LLMResponse> => {
+        const next = queue.shift() ?? { content: "unexpected extra call" };
+        if (next instanceof Error) throw next;
+        return { content: "", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop", ...next };
+      });
+      const session = makeStubSession({ services: { provider: { ...makeProvider([]), chatStream }, configStore } });
+      const { live } = await spawnLive(session);
+      const plan = await createChildExecutionPlan({ session, selection: session.providerService.current(),
+        modelInfo: mkModelInfo(), parentPath: "/root", taskId: "routed-task", taskName: "worker", taskText: "go",
+        toolFree: false, forkedHistory: false,
+        routing: { taskKind: "general", complexity: "standard", reason: "Chosen by automatic selection." } });
+      const run = () => collectRun(runAgent({ live, parent: session, plan, taskId: plan.task.id,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+      return { live, chatStream, run };
+    }
+    const unavailable = () => new LLMServerError("fake", 503, "unavailable");
+    beforeEach(() => { vi.spyOn(Math, "random").mockReturnValue(0); });
+    afterEach(() => { vi.mocked(Math.random).mockRestore(); });
+
+    it("retries a 503 after the task's first tool call and completes, with a supervisor attached", async () => {
+      const { live, chatStream, run } = await routedChild([
+        { content: "Looking.", toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" },
+        unavailable(),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(3);
+        expect(live.toolCallCount).toBe(1);
+      } finally { release(); }
+    });
+
+    it("ends the task on a 503 before any tool call while the supervisor can act", async () => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "not reached" }]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("errored");
+        expect(chatStream).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "provider_unavailable", retryable: true });
+      } finally { release(); }
+    });
+
+    it("runs a routed child on the parent's model past 32 model calls without a forced wrap-up", async () => {
+      const { live, chatStream, run } = await routedChild([
+        ...Array.from({ length: 40 }, (_, index) => ({ content: "", finishReason: "tool_calls" as const,
+          toolCalls: [{ id: `read-${index}`, name: "missing-tool", arguments: JSON.stringify({ page: index }) }] })),
+        { content: "done" },
+      ]);
+      const { result } = await run();
+      expect(result.outcome).toBe("completed");
+      expect(chatStream).toHaveBeenCalledTimes(41);
+      expect(live.lastTaskReceipt?.terminal).toMatchObject({ reason: "completed" });
+    });
+
+    it("publishes the child's receipt without waiting for routing telemetry", async () => {
+      const { live, run } = await routedChild([{ content: "done" }]);
+      // A shared home can hold the outcome file's lock for a while.
+      const telemetry = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(() => new Promise(() => {}));
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(telemetry).toHaveBeenCalledOnce();
+        expect(live.lastTaskReceipt).toMatchObject({ outcome: "completed", terminal: { reason: "completed" } });
+      } finally { telemetry.mockRestore(); }
+    });
+
+    it("keeps the stall retry, which no other provider would take over", async () => {
+      const { live, chatStream, run } = await routedChild([
+        new StreamProgressError("fake", "stream_no_progress"),
+        { content: "done" },
+      ]);
+      const release = superviseChildRoutingRetries(live, () => true);
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
+    });
+
+    it.each([
+      ["no supervisor, as for a child restored after a restart", false],
+      ["a supervisor that can no longer start a retry", true],
+    ] as const)("keeps provider retries with %s", async (_name, attachSupervisor) => {
+      const { live, chatStream, run } = await routedChild([unavailable(), { content: "done" }]);
+      const release = attachSupervisor ? superviseChildRoutingRetries(live, () => false) : () => {};
+      try {
+        const { result } = await run();
+        expect(result.outcome).toBe("completed");
+        expect(chatStream).toHaveBeenCalledTimes(2);
+      } finally { release(); }
+    });
+  });
 
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {
     const provider = makeProvider([

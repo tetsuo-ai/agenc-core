@@ -6815,6 +6815,58 @@ describe("AgenC delegate background-agent runner", () => {
       expect(liveEffort(h)).toBe("medium");
     });
 
+    it("clears the live level on /effort default while a switch that drops it is staged", async () => {
+      const agentId = "default-effort-during-staged-drop";
+      const h = await startOn(agentId, "gemini", "gemini-3.5-flash");
+      await pin(h, "medium");
+      await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemma-4-31b-it" });
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      expect(liveEffort(h)).toBe("medium");
+      const before = recordedRuntimeSettingsEvents(h.rolloutItems);
+
+      await expect(pin(h, null)).resolves.toMatchObject({
+        applied: true,
+        summary: "Reasoning effort follows the model default",
+      });
+
+      // The journal already said none, and main returned there with medium
+      // still live.
+      expect(liveEffort(h)).toBeUndefined();
+      expect(liveConfiguration(h).reasoningEffortCleared).toBe(true);
+      expect(h.session.pendingProviderSwitch).toMatchObject({ model: "gemma-4-31b-it" });
+      // Nothing new to journal.
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+      // Asking again is a no-op.
+      await expect(pin(h, null)).resolves.toMatchObject({
+        applied: true,
+        runtimeSettingsEventId: before.at(-1)?.eventId,
+      });
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+
+      // A later switch before any turn no longer brings medium back.
+      const next = await h.runner.setAgentModel(agentId, { provider: "gemini", model: "gemini-3.6-flash" });
+
+      expect(next.summary).not.toContain("reasoning effort");
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      expect(liveEffort(h)).toBeUndefined();
+      expect(liveConfiguration(h).reasoningEffortCleared).toBe(true);
+    });
+
+    it("marks a fresh session that never set a level on /effort default", async () => {
+      const agentId = "default-effort-fresh-session";
+      const h = await startOn(agentId, "zai-coding-plan", "glm-5.3");
+      expect(liveEffort(h)).toBeUndefined();
+      expect(await journaledEffort(h, agentId)).toBeNull();
+      const before = recordedRuntimeSettingsEvents(h.rolloutItems);
+
+      await expect(pin(h, null)).resolves.toMatchObject({ applied: true });
+
+      // An unmarked session without a level takes the configured
+      // reasoning_effort on each request; main returned here unmarked.
+      expect(liveConfiguration(h).reasoningEffortCleared).toBe(true);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+    });
+
     it("keeps the level and the journal when the switch fails after staging", async () => {
       const agentId = "failed-switch-keeps-effort";
       const h = await startOn(agentId, "gemini", "gemini-3.5-flash");

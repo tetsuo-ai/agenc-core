@@ -34,12 +34,16 @@ import {
   LLMRateLimitError,
   LLMServerError,
   mapLLMError,
+  markLLMInitialHttpRejection,
+  isLLMPreGenerationRejection,
+  markLLMPreGenerationRejection,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
 import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
+  isInitialProviderHttpRejection,
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
@@ -71,6 +75,7 @@ import {
   buildOpenAIResponsesRequest,
   extractOpenAIReasoningReplay,
   parseOpenAIResponsesResponse,
+  parseOpenAIResponsesUsage,
 } from "../../wire/responses-openai.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
 import {
@@ -986,6 +991,8 @@ export class OpenAIProvider implements LLMProvider {
               options?.singleWireAttempt,
             ),
             singleWireAttempt: options?.singleWireAttempt,
+          }).catch(error => {
+            throw this.initialHttpRejection(error, options?.singleWireAttempt);
           });
           return parseOpenAIResponsesResponse(
             model,
@@ -1035,6 +1042,8 @@ export class OpenAIProvider implements LLMProvider {
             options?.singleWireAttempt,
           ),
           singleWireAttempt: options?.singleWireAttempt,
+        }).catch(error => {
+          throw this.initialHttpRejection(error, options?.singleWireAttempt);
         });
         return parseChatCompletionsResponse(model, response.data, {
           model,
@@ -1054,13 +1063,17 @@ export class OpenAIProvider implements LLMProvider {
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        const mappedError = mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+        if (isLLMPreGenerationRejection(error, this.name)) {
+          markLLMPreGenerationRejection(mappedError, this.name);
+        }
+        throw mappedError;
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -1120,13 +1133,17 @@ export class OpenAIProvider implements LLMProvider {
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        const mappedError = mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+        if (isLLMPreGenerationRejection(error, this.name)) {
+          markLLMPreGenerationRejection(mappedError, this.name);
+        }
+        throw mappedError;
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -1604,152 +1621,178 @@ export class OpenAIProvider implements LLMProvider {
       let retryDenied = response.headers.get("x-retry-metadata") === "NO_MORE_RETRY";
       let overloadEvent: Record<string, unknown> | undefined;
 
-      for await (const event of this.readSseEvents(response)) {
-        const eventType = event.event ?? String(event.data.type ?? "");
-        const responseSnapshot = event.data.response;
-        const snapshotOutput = responseSnapshot && typeof responseSnapshot === "object"
-          ? (responseSnapshot as Record<string, unknown>).output : undefined;
-        // Failed responses can contain output only in their snapshot, without
-        // any earlier deltas. Treat every nonempty output snapshot as partial.
-        hasResponseOutput ||= eventType.startsWith("response.output_") ||
-          eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
-          (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
-        if (eventType === "error" && this.name === "openai") {
-          retryDenied ||= forbidsStreamRetry(event.data);
-          if (readNestedProviderCode(event.data) === "server_is_overloaded") {
-            overloadEvent = event.data;
-            const status = inferErrorStatus(event.data);
-            const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;
-            // Do not let a subsequent transport drop turn a forbidden retry
-            // into a generic truncation/network recovery.
-            if (retryDenied || hasResponseOutput || terminalClientStatus) {
-              throw mapOpenAIStreamError({
-                providerName: this.name,
-                errorBody: event.data,
-                fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
-                responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
-              });
+      let reportedUsage: LLMResponse["usage"] | undefined;
+      let reportedModel = model;
+      try {
+        for await (const event of this.readSseEvents(response)) {
+          const eventType = event.event ?? String(event.data.type ?? "");
+          const responseSnapshot = event.data.response;
+          if ((eventType === "response.failed" || eventType === "response.completed" ||
+               eventType === "response.incomplete") && responseSnapshot && typeof responseSnapshot === "object") {
+            const payload = responseSnapshot as Record<string, unknown>;
+            const usage = parseOpenAIResponsesUsage(payload);
+            if (usage.availability === "reported") {
+              reportedUsage = usage;
+              if (typeof payload.model === "string") reportedModel = payload.model;
             }
           }
-        }
-
-        if (eventType === "response.output_text.delta") {
-          const delta =
-            typeof event.data.delta === "string" ? event.data.delta : "";
-          if (delta.length > 0) {
-            streamedContent += delta;
-            onChunk({ content: delta, done: false });
-          }
-          continue;
-        }
-
-        if (eventType === "response.output_item.done") {
-          const item =
-            event.data.item && typeof event.data.item === "object"
-              ? (event.data.item as Record<string, unknown>)
-              : undefined;
-          if (
-            item?.type === "reasoning" &&
-            requestOptions.reasoningReplayProvider !== undefined
-          ) {
-            streamedReasoningItems.push(item);
-          }
-          if (item?.type === "function_call") {
-            // A done item can still belong to an output-limited response.
-            // Wait for the terminal status before validating or publishing it.
-            streamedFunctionItems.push(item);
-            const id = String(item.call_id ?? item.id ?? "").trim();
-            const name = String(item.name ?? "").trim();
-            const args = String(item.arguments ?? "");
-            const snapshot = JSON.stringify([name, args]);
-            if ((id || name || args.trim()) && bufferedFunctionSnapshots.get(id) !== snapshot) {
-              bufferedFunctionSnapshots.set(id, snapshot);
-              // Only signal new buffered output. Replayed items cannot reset
-              // the watchdog, and unvalidated tool text stays inside the adapter.
-              onChunk({ content: "", done: false, bufferedContentProgress: true });
+          const snapshotOutput = responseSnapshot && typeof responseSnapshot === "object"
+            ? (responseSnapshot as Record<string, unknown>).output : undefined;
+          // Failed responses can contain output only in their snapshot, without
+          // any earlier deltas. Treat every nonempty output snapshot as partial.
+          hasResponseOutput ||= eventType.startsWith("response.output_") ||
+            eventType.startsWith("response.function_call") || eventType.startsWith("response.reasoning") ||
+            (Array.isArray(snapshotOutput) && snapshotOutput.length > 0);
+          if (eventType === "error" && this.name === "openai") {
+            retryDenied ||= forbidsStreamRetry(event.data);
+            if (readNestedProviderCode(event.data) === "server_is_overloaded") {
+              overloadEvent = event.data;
+              const status = inferErrorStatus(event.data);
+              const terminalClientStatus = status !== undefined && status >= 400 && status < 500 && status !== 429;
+              // Do not let a subsequent transport drop turn a forbidden retry
+              // into a generic truncation/network recovery.
+              if (retryDenied || hasResponseOutput || terminalClientStatus) {
+                throw mapOpenAIStreamError({
+                  providerName: this.name,
+                  errorBody: event.data,
+                  fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+                  responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+                });
+              }
             }
           }
-          continue;
-        }
 
-        if (
-          eventType === "response.completed" ||
-          eventType === "response.incomplete"
-        ) {
-          completedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : null;
-          break;
-        }
+          if (eventType === "response.output_text.delta") {
+            const delta =
+              typeof event.data.delta === "string" ? event.data.delta : "";
+            if (delta.length > 0) {
+              streamedContent += delta;
+              onChunk({ content: delta, done: false });
+            }
+            continue;
+          }
 
-        if (eventType === "response.failed") {
-          const failedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : {};
-          const failedError =
-            failedResponse.error && typeof failedResponse.error === "object"
-              ? (failedResponse.error as Record<string, unknown>)
-              : undefined;
-          const eventError =
-            event.data.error && typeof event.data.error === "object"
-              ? (event.data.error as Record<string, unknown>)
-              : undefined;
-          const message =
-            typeof failedError?.message === "string"
-              ? String(failedError.message)
-              : typeof eventError?.message === "string"
-                ? String(eventError.message)
-                : OPENAI_STREAM_FAILED_MESSAGE;
-          const errorBody = failedError ?? eventError ?? failedResponse;
-          const streamError = mapOpenAIStreamError({
-            providerName: this.name,
-            errorBody,
-            fallbackMessage: message,
-            responsesAttempt: {
-              hasOutput: hasResponseOutput, retryDenied,
-              status: inferErrorStatus(overloadEvent),
-            },
-          });
-          if (!(streamError instanceof LLMStreamRetryDeniedError) &&
-            !isProviderFundsFailure(this.name, streamError) &&
-            streamedContent.length === 0 && streamedToolCalls.size === 0) {
-            const fallbackDecision = this.evaluateConfiguredFallback(
-              openAIStreamFallbackCandidate(errorBody, message),
-              consecutiveFallbackFailures,
-              model,
-            );
+          if (eventType === "response.output_item.done") {
+            const item =
+              event.data.item && typeof event.data.item === "object"
+                ? (event.data.item as Record<string, unknown>)
+                : undefined;
             if (
-              options?.singleWireAttempt !== true &&
-              fallbackDecision?.kind === "wait" &&
-              await this.waitForConfiguredFallbackRetry(
-                fallbackDecision,
-                options?.signal,
-              )
+              item?.type === "reasoning" &&
+              requestOptions.reasoningReplayProvider !== undefined
             ) {
-              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
-              continue responseStreamAttempts;
+              streamedReasoningItems.push(item);
             }
+            if (item?.type === "function_call") {
+              // A done item can still belong to an output-limited response.
+              // Wait for the terminal status before validating or publishing it.
+              streamedFunctionItems.push(item);
+              const id = String(item.call_id ?? item.id ?? "").trim();
+              const name = String(item.name ?? "").trim();
+              const args = String(item.arguments ?? "");
+              const snapshot = JSON.stringify([name, args]);
+              if ((id || name || args.trim()) && bufferedFunctionSnapshots.get(id) !== snapshot) {
+                bufferedFunctionSnapshots.set(id, snapshot);
+                // Only signal new buffered output. Replayed items cannot reset
+                // the watchdog, and unvalidated tool text stays inside the adapter.
+                onChunk({ content: "", done: false, bufferedContentProgress: true });
+              }
+            }
+            continue;
           }
-          consecutiveFallbackFailures = 0;
-          throw streamError;
-        }
-      }
 
-      if (!completedResponse) {
-        if (overloadEvent !== undefined) {
-          throw mapOpenAIStreamError({
-            providerName: this.name,
-            errorBody: overloadEvent,
-            fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
-            responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
-          });
+          if (
+            eventType === "response.completed" ||
+            eventType === "response.incomplete"
+          ) {
+            completedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : null;
+            break;
+          }
+
+          if (eventType === "response.failed") {
+            const failedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : {};
+            const failedError =
+              failedResponse.error && typeof failedResponse.error === "object"
+                ? (failedResponse.error as Record<string, unknown>)
+                : undefined;
+            const eventError =
+              event.data.error && typeof event.data.error === "object"
+                ? (event.data.error as Record<string, unknown>)
+                : undefined;
+            const message =
+              typeof failedError?.message === "string"
+                ? String(failedError.message)
+                : typeof eventError?.message === "string"
+                  ? String(eventError.message)
+                  : OPENAI_STREAM_FAILED_MESSAGE;
+            const errorBody = failedError ?? eventError ?? failedResponse;
+            const streamError = mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody,
+              fallbackMessage: message,
+              responsesAttempt: {
+                hasOutput: hasResponseOutput, retryDenied,
+                status: inferErrorStatus(overloadEvent),
+              },
+            });
+            if (!(streamError instanceof LLMStreamRetryDeniedError) &&
+              !isProviderFundsFailure(this.name, streamError) &&
+              streamedContent.length === 0 && streamedToolCalls.size === 0) {
+              const fallbackDecision = this.evaluateConfiguredFallback(
+                openAIStreamFallbackCandidate(errorBody, message),
+                consecutiveFallbackFailures,
+                model,
+              );
+              if (
+                options?.singleWireAttempt !== true &&
+                fallbackDecision?.kind === "wait" &&
+                await this.waitForConfiguredFallbackRetry(
+                  fallbackDecision,
+                  options?.signal,
+                )
+              ) {
+                consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+                continue responseStreamAttempts;
+              }
+            }
+            consecutiveFallbackFailures = 0;
+            throw streamError;
+          }
         }
-        throw new LLMStreamTruncatedError(
-          this.name,
-          "Stream closed without a response.completed payload",
-        );
+
+        if (!completedResponse) {
+          if (overloadEvent !== undefined) {
+            throw mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody: overloadEvent,
+              fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+              responsesAttempt: { hasOutput: hasResponseOutput, retryDenied },
+            });
+          }
+          throw new LLMStreamTruncatedError(
+            this.name,
+            "Stream closed without a response.completed payload",
+          );
+        }
+
+      } catch (error) {
+        if (reportedUsage === undefined) throw error;
+        // Accepted-stream failure is not a rejection. Retain billable reasoning
+        // even if no visible text was emitted, and preserve the recovery error.
+        const toolCalls = Array.from(streamedToolCalls.values());
+        onChunk({ content: "", done: true, ...(toolCalls.length > 0 ? { toolCalls } : {}) });
+        return {
+          content: streamedContent, toolCalls,
+          ...extractOpenAIReasoningReplay(streamedReasoningItems, requestOptions),
+          usage: reportedUsage, model: reportedModel, finishReason: "error", partial: true,
+          error: error instanceof Error ? error : new LLMProviderError(this.name, String(error)),
+        };
       }
 
       if (completedResponse.status === "completed" || completedResponse.status === undefined) {
@@ -1805,7 +1848,7 @@ export class OpenAIProvider implements LLMProvider {
             return {
               content: streamedContent,
               toolCalls: recoveredToolCalls,
-              usage: coerceUsage({}),
+              usage: reportedUsage ?? coerceUsage({}),
               model,
               finishReason: "error",
               error: partialError,
@@ -2465,6 +2508,18 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  private initialHttpRejection(
+    error: unknown,
+    singleWireAttempt: boolean | undefined,
+  ): unknown {
+    // Managed admission has its own authenticated request-bound evidence.
+    // Keep the raw transport error for existing auth/fallback classification.
+    if (isInitialProviderHttpRejection(error) && !this.config.managedRequestId) {
+      markLLMInitialHttpRejection(error, this.name, error.status, singleWireAttempt);
+    }
+    return error;
+  }
+
   private async requestStream(args: {
     readonly api: "responses" | "chat_completions";
     readonly path: string;
@@ -2491,6 +2546,8 @@ export class OpenAIProvider implements LLMProvider {
       // Provider SSE streams do not expose resumable cursors; keep the
       // shared session contract but preserve single-attempt stream semantics.
       retryBudget: { maxRetries: 0 },
+    }).catch(error => {
+      throw this.initialHttpRejection(error, args.singleWireAttempt);
     });
   }
 

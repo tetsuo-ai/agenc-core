@@ -1,0 +1,798 @@
+{
+  "provenance": "recorded-measurements",
+  "suiteVersion": "xprov-deepseek-known-answer-v1",
+  "split": "held-out",
+  "selectorSourceSha256": "922251ae2d4d227d9696292741b9d158e590be19d5969720c4945402adba9d74",
+  "profilesSourceSha256": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
+  "profileRevision": "child-routing-v1",
+  "costBasis": "reported token usage times registry peak USD rates; not reconciled per-call charges",
+  "completeMatrix": true,
+  "calibrationObservations": 12,
+  "calibrationCostLearning": "omitted; per-call dollars are unreconciled",
+  "scores": [
+    {
+      "strategy": "selector",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.06689118,
+      "passedPerEstimatedDollar": 59.7986,
+      "totalLatencyMs": 335631,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    },
+    {
+      "strategy": "selector_calibrated",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.06689118,
+      "passedPerEstimatedDollar": 59.7986,
+      "totalLatencyMs": 335631,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    },
+    {
+      "strategy": "selector_classified",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.0210816,
+      "passedPerEstimatedDollar": 189.7389,
+      "totalLatencyMs": 89717,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    },
+    {
+      "strategy": "always_strongest",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.07095924,
+      "passedPerEstimatedDollar": 56.3704,
+      "totalLatencyMs": 347366,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    },
+    {
+      "strategy": "always_cheapest",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.0210816,
+      "passedPerEstimatedDollar": 189.7389,
+      "totalLatencyMs": 89717,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    },
+    {
+      "strategy": "fixed_parent",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.0210816,
+      "passedPerEstimatedDollar": 189.7389,
+      "totalLatencyMs": 89717,
+      "passFractionWilson95": [
+        0.3,
+        0.9032
+      ]
+    }
+  ],
+  "modelScores": [
+    {
+      "split": "calibration",
+      "model": "deepseek-flash",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 6,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.0054003,
+      "totalLatencyMs": 24312
+    },
+    {
+      "split": "calibration",
+      "model": "deepseek-v4-pro",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 6,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.04613796,
+      "totalLatencyMs": 202128
+    },
+    {
+      "split": "holdout",
+      "model": "deepseek-flash",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.0210816,
+      "totalLatencyMs": 89717
+    },
+    {
+      "split": "holdout",
+      "model": "deepseek-v4-pro",
+      "tasks": 6,
+      "recorded": 6,
+      "passed": 4,
+      "knownCost": 6,
+      "usageCostUsdAtPeakRates": 0.07095924,
+      "totalLatencyMs": 347366
+    }
+  ],
+  "decisions": [
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple extraction at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001476
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple coding at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001434
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple reasoning at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0004353
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this hard extraction at an estimated $0.0102.",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0005622
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "deepseek/deepseek-v4-pro fits this hard coding at an estimated $0.0341.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.03281388
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "selector",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "deepseek/deepseek-v4-pro fits this hard reasoning at an estimated $0.0341.",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0327888
+    },
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple extraction at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001476
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple coding at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001434
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple reasoning at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0004353
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this hard extraction at an estimated $0.0102.",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0005622
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "deepseek/deepseek-v4-pro fits this hard coding at an estimated $0.0341.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.03281388
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "selector_calibrated",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "deepseek/deepseek-v4-pro fits this hard reasoning at an estimated $0.0341.",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0327888
+    },
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this simple coding at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001476
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this standard coding at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "standard",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001434
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this standard general at an estimated $0.0101.",
+      "taskRequirements": {
+        "kind": "general",
+        "complexity": "standard",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0004353
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this standard general at an estimated $0.0102.",
+      "taskRequirements": {
+        "kind": "general",
+        "complexity": "standard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0005622
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this standard coding at an estimated $0.0102.",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "standard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098994
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "selector_classified",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "deepseek/deepseek-flash fits this standard general at an estimated $0.0102.",
+      "taskRequirements": {
+        "kind": "general",
+        "complexity": "standard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098937
+    },
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.00068772
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.00098472
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0013134
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.00237072
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.03281388
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "always_strongest",
+      "selected": "deepseek/deepseek-v4-pro",
+      "reason": "always_strongest",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0327888
+    },
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001476
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001434
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0004353
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0005622
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098994
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "always_cheapest",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "always_cheapest",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098937
+    },
+    {
+      "taskId": "hold-simple-extraction",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 997,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001476
+    },
+    {
+      "taskId": "hold-simple-coding",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 981,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0001434
+    },
+    {
+      "taskId": "hold-simple-reasoning",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "simple",
+        "requiresTools": false,
+        "requiresReasoning": false,
+        "inputTokens": 946,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0004353
+    },
+    {
+      "taskId": "hold-hard-extraction",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "extraction",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1335,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": true,
+      "usageCostUsdAtPeakRates": 0.0005622
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "coding",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1284,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098994
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "strategy": "fixed_parent",
+      "selected": "deepseek/deepseek-flash",
+      "reason": "fixed_parent",
+      "taskRequirements": {
+        "kind": "reasoning",
+        "complexity": "hard",
+        "requiresTools": false,
+        "requiresReasoning": true,
+        "inputTokens": 1249,
+        "outputTokens": 8192,
+        "expectedModelCalls": 1
+      },
+      "observedPassed": false,
+      "usageCostUsdAtPeakRates": 0.0098937
+    }
+  ],
+  "errors": [],
+  "failures": [
+    {
+      "taskId": "hold-hard-coding",
+      "model": "deepseek-flash",
+      "verdict": "empty_answer",
+      "finishReason": "length",
+      "completionTokens": 8192,
+      "reasoningTokens": 8192
+    },
+    {
+      "taskId": "hold-hard-coding",
+      "model": "deepseek-v4-pro",
+      "verdict": "empty_answer",
+      "finishReason": "length",
+      "completionTokens": 8192,
+      "reasoningTokens": 8192
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "model": "deepseek-v4-pro",
+      "verdict": "empty_answer",
+      "finishReason": "length",
+      "completionTokens": 8192,
+      "reasoningTokens": 8192
+    },
+    {
+      "taskId": "hold-hard-reasoning",
+      "model": "deepseek-flash",
+      "verdict": "empty_answer",
+      "finishReason": "length",
+      "completionTokens": 8192,
+      "reasoningTokens": 8192
+    }
+  ],
+  "limitations": [
+    "Six held-out tasks and one completion per model and task cannot establish general routing superiority.",
+    "Only native DeepSeek was measured. These direct API calls do not measure AgenC sub-agent orchestration or tool use.",
+    "Strongest means the predeclared Pro baseline, not a measured universal ranking.",
+    "selector and selector_calibrated use predeclared human task kind and complexity. selector_classified uses the current runtime text classifier.",
+    "Calibration uses only calibration labels. No measured holdout outcome is passed to the selector.",
+    "Price calculations use reported tokens and registry peak rates; off-peak rates and rounded account balance differ.",
+    "No commercial router or provider outside DeepSeek was called."
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "suiteVersion": "xprov-deepseek-known-answer-v1",
+  "suiteSha256": "5ead6e531662613d49a12929e3b6ff203510506c492caf671b5c7236fc00639a",
+  "suiteCanonicalSha256": "173ffc3dc6a6922dcd5ae32aeb81eecf5b8e0717e299c962b61114604e19ad44",
+  "runnerSha256": "3a11d17ef39c703e08a8d914de8aaf682acf29aca171178b6253c2742e7a69e4",
+  "startedAt": "2026-09-29T08:09:30.501945+00:00",
+  "endedAt": "2026-09-29T08:20:44.110418+00:00",
+  "models": [
+    "deepseek-flash",
+    "deepseek-v4-pro"
+  ],
+  "rates": {
+    "deepseek-flash": {
+      "inputUsdPer1K": 0.0003,
+      "outputUsdPer1K": 0.0012,
+      "cachedInputUsdPer1K": 6e-06
+    },
+    "deepseek-v4-pro": {
+      "inputUsdPer1K": 0.00132,
+      "outputUsdPer1K": 0.00396,
+      "cachedInputUsdPer1K": 4.4e-05
+    }
+  },
+  "priceProvenance": {
+    "source": "agenc-core/runtime/src/session/cost.ts:404-415",
+    "verifiedInRegistry": "2026-09-11",
+    "registrySourceSnapshotSha256": "d2fe1c126257b7907dd6c195209e79674a34b144a788b4e050a36e125416aea1",
+    "basis": "Native published peak USD rates. Off-peak billing can be lower. Usage-priced amounts are estimates, not invoices.",
+    "reasoning": "completion_tokens includes reasoning tokens; reasoning_tokens is never charged a second time."
+  },
+  "maxOutputTokens": 8192,
+  "effort": "high",
+  "timeoutSeconds": 180,
+  "callOrder": "calibration then holdout; alternating model order by task index; no retries",
+  "splitPolicy": "Fixed before any provider call: one task per kind and complexity in calibration, and one in holdout. Never tune with holdout answers or outcomes.",
+  "network": "direct native DeepSeek chat-completions, no tools, no AgenC orchestration",
+  "stopReason": "complete",
+  "callsRecorded": 24,
+  "completionTokensIncludeReasoning": true,
+  "provenance": "native-deepseek-live-collection",
+  "recordsSha256": "5859f132fc94ec66c0c00ab5e8b3d3995aa0b29051ab494b8a21245b5b81f665"
+}

@@ -1,0 +1,302 @@
+[
+  {
+    "taskId": "cal-simple-extraction",
+    "split": "calibration",
+    "kind": "extraction",
+    "coreHead": "02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7",
+    "grade": {
+      "pass": false,
+      "reason": "invalid-json"
+    },
+    "childGrade": {
+      "pass": true,
+      "reason": "exact-match"
+    },
+    "e2ePass": false,
+    "constraintCompliance": {
+      "oneChild": true,
+      "automaticChoiceObserved": true,
+      "childCompleted": true,
+      "allowedConnectedProviderModel": true,
+      "parentCallsWithin8": true,
+      "childCallsWithin4": true,
+      "toolUseObservedWhenRequired": true,
+      "noGuardRejections": true,
+      "daemonReceiptsPresent": true
+    },
+    "spawns": [
+      {
+        "callId": "call_00_ET_mFXqhGSLQWv1oSii7z0V9813",
+        "senderThreadId": "conv-mumhncaw",
+        "newThreadId": "27ccfbd9-3013-40e9-bfd0-8d03b30b80da",
+        "newAgentPath": "/root/bench_child",
+        "model": "muse-spark-1.2-contributor",
+        "provider": "meta",
+        "reasoningEffort": "low",
+        "routingReason": "meta/muse-spark-1.2-contributor fits this simple review at an estimated $0.0050.",
+        "status": {
+          "status": "pending_init"
+        }
+      }
+    ],
+    "successfulFixtureReadEvents": 0,
+    "rolloutProvenance": [
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/27ccfbd9-3013-40e9-bfd0-8d03b30b80da/rollout-2026-09-29T09-43-02-421Z-27ccfbd9-3013-40e9-bfd0-8d03b30b80da.jsonl",
+        "sha256": "a1d5739fbf502317f88169dd24f6c84dd0fc88265fdb49c49295a300eba3334b",
+        "rows": 22
+      },
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-cal-simple-fa1b86b00a6fb3aa57df6a91e11d2f7d9cb2b109bfb1600557ed0c6bfb7dc2a2/sessions/conv-mumhncaw/rollout-2026-09-29T09-42-59-360Z-conv-mumhncaw.jsonl",
+        "sha256": "3c509fa48fdb1766fde348fff1eb6bda25f9a491fe645eb78cbf3105a4a39144",
+        "rows": 1404
+      }
+    ],
+    "providerTotals": {
+      "deepseek": {
+        "calls": 6,
+        "estimatedUsd": 0.00345732,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.028741199999999998,
+        "inputTokens": 41374,
+        "outputTokens": 1632
+      },
+      "meta": {
+        "calls": 1,
+        "estimatedUsd": 0.0005948,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.0011896,
+        "inputTokens": 5706,
+        "outputTokens": 121
+      }
+    },
+    "guardRejections": [],
+    "latencySeconds": 21.23124051094055,
+    "exitCode": 0
+  },
+  {
+    "taskId": "hold-simple-coding",
+    "split": "holdout",
+    "kind": "coding",
+    "coreHead": "02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7",
+    "grade": {
+      "pass": false,
+      "reason": "invalid-json"
+    },
+    "childGrade": {
+      "pass": true,
+      "reason": "exact-match"
+    },
+    "e2ePass": false,
+    "constraintCompliance": {
+      "oneChild": true,
+      "automaticChoiceObserved": true,
+      "childCompleted": true,
+      "allowedConnectedProviderModel": true,
+      "parentCallsWithin8": true,
+      "childCallsWithin4": true,
+      "toolUseObservedWhenRequired": true,
+      "noGuardRejections": true,
+      "daemonReceiptsPresent": true
+    },
+    "spawns": [
+      {
+        "callId": "call_00_ET_jQcFzhyUk1Bcz0NBcm1W8938",
+        "senderThreadId": "conv-mumhswtr",
+        "newThreadId": "f37e3204-f1d9-4a1c-be85-8548194119ef",
+        "newAgentPath": "/root/bench_child",
+        "model": "muse-spark-1.2-contributor",
+        "provider": "meta",
+        "reasoningEffort": "low",
+        "routingReason": "meta/muse-spark-1.2-contributor fits this simple review at an estimated $0.0050.",
+        "status": {
+          "status": "pending_init"
+        }
+      }
+    ],
+    "successfulFixtureReadEvents": 0,
+    "rolloutProvenance": [
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/f37e3204-f1d9-4a1c-be85-8548194119ef/rollout-2026-09-29T09-47-22-275Z-f37e3204-f1d9-4a1c-be85-8548194119ef.jsonl",
+        "sha256": "dc2c6562b1c9bccd529ea34f151147b173bc5059edc87d63d3d3477ec269ec68",
+        "rows": 23
+      },
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-simpl-a4e8f28a66e3d8f51e07b4b38feca7c5cbb3ce6b061bcba2a8db8ac4a0fce7d7/sessions/conv-mumhswtr/rollout-2026-09-29T09-47-19-208Z-conv-mumhswtr.jsonl",
+        "sha256": "39c67637523e48207387e05458a9b6d7ebfe7964df2b44920718b0b58175c71f",
+        "rows": 1464
+      }
+    ],
+    "providerTotals": {
+      "deepseek": {
+        "calls": 6,
+        "estimatedUsd": 0.0035815199999999995,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.028989599999999997,
+        "inputTokens": 41576,
+        "outputTokens": 1685
+      },
+      "meta": {
+        "calls": 1,
+        "estimatedUsd": 0.0005929,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.0011858,
+        "inputTokens": 5703,
+        "outputTokens": 113
+      }
+    },
+    "guardRejections": [],
+    "latencySeconds": 21.798869609832764,
+    "exitCode": 0
+  },
+  {
+    "taskId": "hold-tool-artifact-manifest",
+    "split": "holdout",
+    "kind": "tool_use",
+    "coreHead": "02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7",
+    "grade": {
+      "pass": false,
+      "reason": "invalid-json"
+    },
+    "childGrade": {
+      "pass": false,
+      "reason": "answer-mismatch"
+    },
+    "e2ePass": false,
+    "constraintCompliance": {
+      "oneChild": true,
+      "automaticChoiceObserved": true,
+      "childCompleted": true,
+      "allowedConnectedProviderModel": true,
+      "parentCallsWithin8": true,
+      "childCallsWithin4": true,
+      "toolUseObservedWhenRequired": true,
+      "noGuardRejections": true,
+      "daemonReceiptsPresent": true
+    },
+    "spawns": [
+      {
+        "callId": "call_00_ET_QSeLwgtrJ0ulKpYRkHP00653",
+        "senderThreadId": "conv-mumi73a3",
+        "newThreadId": "0cddec50-0dce-48bc-9980-ea075ad4cdfa",
+        "newAgentPath": "/root/bench_child",
+        "model": "muse-spark-1.2-contributor",
+        "provider": "meta",
+        "reasoningEffort": "low",
+        "routingReason": "meta/muse-spark-1.2-contributor fits this simple review at an estimated $0.0050.",
+        "status": {
+          "status": "pending_init"
+        }
+      }
+    ],
+    "successfulFixtureReadEvents": 3,
+    "rolloutProvenance": [
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/conv-mumi73a3/rollout-2026-09-29T09-58-20-828Z-conv-mumi73a3.jsonl",
+        "sha256": "e3df98479f6cbe0ce00f6b1f619ab45ddf3c6f07d3df9771d64c94661f08395e",
+        "rows": 2273
+      },
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02-hold-tool--d44c4e13bc828b63afd6387d610d5b362a5e092698687fc680bd1fe09bc681a7/sessions/0cddec50-0dce-48bc-9980-ea075ad4cdfa/rollout-2026-09-29T09-58-23-862Z-0cddec50-0dce-48bc-9980-ea075ad4cdfa.jsonl",
+        "sha256": "165cfedc14e13524d89663c8a98611966b8c90b75374f358494244a3ec967249",
+        "rows": 73
+      }
+    ],
+    "providerTotals": {
+      "deepseek": {
+        "calls": 7,
+        "estimatedUsd": 0.00455388,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.03620279999999999,
+        "inputTokens": 50582,
+        "outputTokens": 2439
+      },
+      "meta": {
+        "calls": 3,
+        "estimatedUsd": 0.0013171460000000002,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.0037854000000000004,
+        "inputTokens": 17785,
+        "outputTokens": 571
+      }
+    },
+    "guardRejections": [],
+    "latencySeconds": 33.20070672035217,
+    "exitCode": 0
+  },
+  {
+    "taskId": "cal-tool-config-trace",
+    "split": "calibration",
+    "kind": "tool_use",
+    "coreHead": "02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7",
+    "grade": {
+      "pass": false,
+      "reason": "invalid-json"
+    },
+    "childGrade": {
+      "pass": true,
+      "reason": "exact-match"
+    },
+    "e2ePass": false,
+    "constraintCompliance": {
+      "oneChild": true,
+      "automaticChoiceObserved": true,
+      "childCompleted": true,
+      "allowedConnectedProviderModel": true,
+      "parentCallsWithin8": true,
+      "childCallsWithin4": true,
+      "toolUseObservedWhenRequired": true,
+      "noGuardRejections": true,
+      "daemonReceiptsPresent": true
+    },
+    "spawns": [
+      {
+        "callId": "call_00_XTLb5KrQjHzEljHaVbjh0341",
+        "senderThreadId": "conv-mumi6w8d",
+        "newThreadId": "a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4",
+        "newAgentPath": "/root/bench_child",
+        "model": "muse-spark-1.2-contributor",
+        "provider": "meta",
+        "reasoningEffort": "low",
+        "routingReason": "meta/muse-spark-1.2-contributor fits this standard review at an estimated $0.0099.",
+        "status": {
+          "status": "pending_init"
+        }
+      }
+    ],
+    "successfulFixtureReadEvents": 2,
+    "rolloutProvenance": [
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4/rollout-2026-09-29T09-58-14-389Z-a08c427b-d2e8-459e-a3ba-9b3b6dfee5e4.jsonl",
+        "sha256": "4d88dc5ef4af4080b9f7e3e499de0af04622ebb7b7396ce64d1fab1eb9306132",
+        "rows": 64
+      },
+      {
+        "path": "home/projects/v2--pc-task-root-router-bench-e2e-final02b-cal-tool--320b9bd4771b71c29fb9c2f15feeac5423d3a3d0b223f349f4e61e2f65ae6ce0/sessions/conv-mumi6w8d/rollout-2026-09-29T09-58-11-436Z-conv-mumi6w8d.jsonl",
+        "sha256": "6f2fb36e0e9abd8d34635e9958d498cdd5c8e89398f77b3fb5010be95dba29f7",
+        "rows": 2522
+      }
+    ],
+    "providerTotals": {
+      "deepseek": {
+        "calls": 7,
+        "estimatedUsd": 0.00480948,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.036714,
+        "inputTokens": 50430,
+        "outputTokens": 2690
+      },
+      "meta": {
+        "calls": 3,
+        "estimatedUsd": 0.0012541899999999999,
+        "unknownCostCalls": 0,
+        "budgetChargeUsd": 0.0036344,
+        "inputTokens": 17540,
+        "outputTokens": 316
+      }
+    },
+    "guardRejections": [],
+    "latencySeconds": 31.947101593017578,
+    "exitCode": 0
+  }
+]

@@ -259,6 +259,8 @@ memory disabled), since they ride that child run.
   data share one plugin storage root. The default is `$AGENC_HOME/plugins`.
   `AGENC_PLUGIN_CACHE_DIR` replaces that root as one unit. Project-scoped
   packages remain under the project path shown in the CLI section.
+  Interrupted install recovery runs only for that storage root. It does not recover `<workspace>/.agents/plugins` unless that path is the storage root.
+  A non-empty `<workspace>/.agents/plugins/.plugin-install-ops` is a known limitation when it is not the storage root: each load lists at most 20 entry names (and the total count when there are more), reports one issue, and does not open, parse, or delete those entries. The directory itself is only lstat'd and read by name. An empty directory is left in place with no issue. A symlink is reported as not a real directory and is not followed. Remove that directory manually.
 - Plugin private data uses a collision-resistant child name:
   `<plugin-storage-root>/data/<readable-id>--<sha256>/`.
 
@@ -359,6 +361,47 @@ Stdio plugin servers run under a tight sandbox profile (writes confined
 to the plugin data directory). Landlock can express this profile;
 ordinary workspace-write MCP is not. Operator merge rules, templates,
 and failure symptoms: [mcp.md](mcp.md#plugin-declared-servers).
+
+### Interrupted installation and shared config ownership
+
+Install/update records and destination leases cover payload replacement and
+process-crash recovery. Config publication also keeps a bounded, versioned
+`agenc-plugin-transactions` header comment in the user config. Values and that
+ownership ledger are written in the same atomic replacement. The comment is
+internal recovery metadata, not a configuration setting.
+
+Ownership preparation and its durable operation-record binding precede destination
+backup or replacement. Preparation alone does not enable plugins; its unpublished
+origin remains recorded if recovery itself restarts after taking a reservation.
+Each published pending install contributes global enablement. A committed install makes
+that enablement part of the shared baseline. Rolling back another plugin cannot
+undo it. If every pending install fails, recovery restores the original global
+flag, including its absence. Explicit newer enable/disable/remove edits carry
+intent even when their values do not change. A user disable is preserved across
+both rollback and committed cleanup.
+
+Before reverting payload files, recovery durably reserves the affected config
+entry. Cooperative config writers reject conflicting edits until recovery
+finishes; unrelated edits remain available. A process restart retains this
+reservation. Committed operations finalize config ownership before their records
+are removed. Config migration refuses targets with outstanding ownership
+metadata; finish plugin recovery first.
+
+Missing, malformed or mismatched ownership evidence, edited pending entries,
+and legacy snapshots without ownership proof require manual reconciliation.
+Recovery preserves ambiguous payloads, backups and operation records instead of
+replaying an old global flag. Do not delete the header or records to bypass an
+unresolved operation. At most 64 operation receipts and a 64 KiB header are
+allowed; unresolved ownership is never evicted to make room. Terminal receipts
+are removed after the corresponding operation record is deleted.
+
+These guarantees apply to cooperative writers and observable external edits.
+An external editor reproducing identical bytes, including the header, cannot be
+distinguished from no edit. The metadata is not authentication. Config aliases
+use the same resolved-target writer lock, and retargeting during publication is
+rejected. Existing process/lease limits still apply. Payload copying does not
+recursively fsync copied files, so this is not a guarantee against payload loss
+on power failure; directory syncing retains its existing platform limitations.
 
 ## Shipped plugins
 

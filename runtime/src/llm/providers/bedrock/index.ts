@@ -40,6 +40,7 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   LLMStreamTruncatedError,
+  markLLMInitialHttpRejection,
 } from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
 import {
@@ -1266,7 +1267,8 @@ export class BedrockProvider implements LLMProvider {
       }, this.config.fetchImpl ?? fetch);
       const parsed = await readJsonResponse(response);
       if (!response.ok) {
-        throw new BedrockHttpError("request", response, parsed);
+        throw markLLMInitialHttpRejection(new BedrockHttpError("request", response, parsed),
+          this.name, response.status, options?.singleWireAttempt);
       }
       return parseResponse(
         model,
@@ -1321,7 +1323,8 @@ export class BedrockProvider implements LLMProvider {
       }, this.config.fetchImpl ?? fetch);
       if (!response.ok) {
         const parsed = await readJsonResponse(response);
-        throw new BedrockHttpError("stream request", response, parsed);
+        throw markLLMInitialHttpRejection(new BedrockHttpError("stream request", response, parsed),
+          this.name, response.status, options?.singleWireAttempt);
       }
       return await parseStreamResponse({
         body: response.body,

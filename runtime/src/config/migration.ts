@@ -1,3 +1,4 @@
+import { readPluginTransactionHeader } from "./plugin-transaction-ledger.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   link,
@@ -5760,6 +5761,10 @@ async function applyConfigV2MigrationLocked(
     const preparationArtifacts: PreparationArtifact[] = [];
     for (const [index, write] of plan.writes.entries()) {
     const target = await readMigrationFile(write.targetPath);
+    if (target !== null && write.targetPath.endsWith(".toml")
+      && readPluginTransactionHeader(target.bytes.toString("utf8")).ledger !== undefined) {
+      throw new ConfigMigrationError("finish plugin install recovery before migrating its configuration");
+    }
     originalSnapshotsByTarget.set(write.targetPath, target);
     const targetExists = target !== null;
     if (sha256(write.content) !== write.afterSha256) {

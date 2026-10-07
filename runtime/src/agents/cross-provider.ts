@@ -57,6 +57,12 @@ export interface CrossProviderConsentService {
   readonly ownerSessionId: string;
   readonly sessionEpoch: string;
   /**
+   * Whether a spawn on this provider would be granted now without asking
+   * anyone: settings consent applies and no child in this conversation has
+   * stopped for funds. A grant for one exact scope does not count here.
+   */
+  grantsWithoutAsking?(provider: string): boolean;
+  /**
    * `routeProvider` is the provider of the plan's route. It differs from the
    * disclosed destination only for a managed child, which routes via agenc.
    */
@@ -75,7 +81,7 @@ export interface ChildExecutionPlan {
   };
   readonly modelInfo: ModelInfo;
   readonly catalogRevision: string;
-  readonly requiredCapabilities: { readonly clientTools: boolean };
+  readonly requiredCapabilities: { readonly clientTools: boolean; readonly vision?: boolean; readonly contextTokens?: number };
   readonly parent: { readonly sessionId: string; readonly agentPath: string };
   readonly task: { readonly id: string; readonly name: string; readonly text: string; readonly attachments: readonly string[]; readonly parentTurnId?: string };
   readonly scope: { readonly tools: "parent_filtered" | readonly string[]; readonly data: "task_only" | "forked_history"; readonly cwd: string;
@@ -83,7 +89,14 @@ export interface ChildExecutionPlan {
     readonly fileReadDenylist?: readonly string[]; readonly networkEnabled?: boolean };
   readonly policyRevision: string;
   readonly consentGrant: CrossProviderConsentGrant | null;
-  readonly budgetAllocation: { readonly maxModelCalls: number } | null;
+  /** A cross-provider plan always bounds its model calls. Others carry only a dollar cap their spawn set. */
+  readonly budgetAllocation: { readonly maxModelCalls?: number; readonly maxCostUsd?: number } | null;
+  readonly routing?: {
+    readonly taskKind: import("./provider-selector-types.js").ChildTaskKind;
+    readonly complexity: import("./provider-selector-types.js").ChildTaskComplexity;
+    readonly reason: string;
+    readonly estimatedCostUsd?: number;
+  };
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly crossProvider: boolean;
@@ -156,6 +169,11 @@ export async function createChildExecutionPlan(params: {
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly toolAllowlist?: readonly string[];
+  readonly maxCostUsd?: number;
+  readonly routing?: ChildExecutionPlan["routing"];
+  readonly requiresVision?: boolean;
+  readonly contextTokens?: number;
+  readonly maxModelCalls?: number;
   /** Destination provenance inherited through a same-provider child. */
   readonly inheritedConsentPlan?: ChildExecutionPlan;
   /**
@@ -171,6 +189,9 @@ export async function createChildExecutionPlan(params: {
   };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
+  // Automatic selection may keep the parent's own provider, which needs no
+  // allowed_providers entry. Another provider is checked below.
+  if (params.routing !== undefined) assertAutomaticSelectionEnabled(session);
   const plannedPolicyRevision = policyRevision(session);
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
@@ -195,6 +216,13 @@ export async function createChildExecutionPlan(params: {
   }
   const destinationModelInfo = selection.provider === "agenc"
     ? await childModelInfo(session, destination) : params.modelInfo;
+  if (params.requiresVision && resolveRegisteredModelCatalogEntry(destination)?.inputModalities.includes("image") !== true) {
+    throw new Error(`Model ${destination.provider}/${destination.model} does not support image input.`);
+  }
+  if (params.contextTokens !== undefined && (destinationModelInfo.contextWindow === undefined ||
+      params.contextTokens > destinationModelInfo.contextWindow * 0.95)) {
+    throw new Error(`Model ${destination.provider}/${destination.model} cannot fit the required context.`);
+  }
   const managed = selection.provider === "agenc" && !preliminaryManaged
     ? params.managedDestinationSettings?.(destination, destinationModelInfo) : undefined;
   const reasoningEffort = managed !== undefined ? managed.reasoningEffort : params.reasoningEffort;
@@ -228,7 +256,10 @@ export async function createChildExecutionPlan(params: {
     destination: Object.freeze({ ...destination, endpoint: endpointIdentity(endpoint), authProfile, billingSource }),
     modelInfo: freezeValue({ ...structuredClone(destinationModelInfo) }),
     catalogRevision: catalogRevision(session),
-    requiredCapabilities: Object.freeze({ clientTools: !params.toolFree }),
+    requiredCapabilities: Object.freeze({ clientTools: !params.toolFree,
+      ...(params.requiresVision ? { vision: true } : {}),
+      ...(params.contextTokens !== undefined ? { contextTokens: params.contextTokens } : {}),
+    }),
     parent: Object.freeze({ sessionId: session.conversationId, agentPath: params.parentPath }),
     task: Object.freeze({ id: params.taskId, name: params.taskName, text: params.taskText,
       attachments: Object.freeze([...(params.attachments ?? [])]),
@@ -248,9 +279,15 @@ export async function createChildExecutionPlan(params: {
       networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
     policyRevision: plannedPolicyRevision,
     consentGrant: null,
+    // Consent to another provider covers a bounded number of model calls. A
+    // child on the parent's provider, routed or not, runs as an inherited
+    // child would: no call cap and no forced wrap-up, only a dollar cap that
+    // its spawn set.
     budgetAllocation: crossProvider ? Object.freeze({
-      maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
-    }) : null,
+      maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32), params.maxModelCalls ?? 32),
+      ...(params.maxCostUsd !== undefined ? { maxCostUsd: params.maxCostUsd } : {}),
+    }) : params.maxCostUsd !== undefined ? Object.freeze({ maxCostUsd: params.maxCostUsd }) : null,
+    ...(params.routing !== undefined ? { routing: Object.freeze({ ...params.routing }) } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(serviceTier !== undefined ? { serviceTier } : {}),
     crossProvider,
@@ -370,9 +407,17 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
 }
 
 export async function assertChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<void> {
+  if (plan.routing !== undefined) {
+    assertAutomaticSelectionEnabled(session);
+    if (plan.route.provider !== currentChildProvider(session).provider) assertCrossProviderAllowed(session, plan.route.provider);
+  }
+  const taskCap = plan.budgetAllocation?.maxCostUsd;
+  if (taskCap !== undefined && (!Number.isFinite(taskCap) || taskCap < 0)) {
+    throw new Error("resume_blocked: child task has an invalid dollar allocation");
+  }
   if (plan.crossProvider) {
-    if (plan.budgetAllocation === null || !Number.isSafeInteger(plan.budgetAllocation.maxModelCalls) ||
-        plan.budgetAllocation.maxModelCalls < 1 || plan.budgetAllocation.maxModelCalls > 32) {
+    const maxModelCalls = plan.budgetAllocation?.maxModelCalls;
+    if (maxModelCalls === undefined || !Number.isSafeInteger(maxModelCalls) || maxModelCalls < 1 || maxModelCalls > 32) {
       throw new Error("resume_blocked: cross-provider plan has no bounded model-call allocation");
     }
     const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
@@ -418,6 +463,13 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   const catalogEntry = resolveRegisteredModelCatalogEntry({
     provider: plan.destination.provider, model: plan.destination.model,
   });
+  if (plan.requiredCapabilities.vision && catalogEntry?.inputModalities.includes("image") !== true) {
+    throw new Error("resume_blocked: child model no longer supports image input");
+  }
+  if (plan.requiredCapabilities.contextTokens !== undefined &&
+      (catalogEntry?.contextWindow === undefined || plan.requiredCapabilities.contextTokens > catalogEntry.contextWindow * 0.95)) {
+    throw new Error("resume_blocked: child model cannot fit the required context");
+  }
   if (plan.requiredCapabilities.clientTools && plan.modelInfo.supportsToolUse === false) {
     throw new Error(`Model ${plan.destination.provider}/${plan.destination.model} cannot call client-side tools`);
   }
@@ -500,6 +552,13 @@ export function currentChildProvider(session: Session): ProviderSelection {
     provider: session.services?.configStore?.current().model_provider ?? "grok",
     model: session.modelInfo.slug,
   };
+}
+
+function assertAutomaticSelectionEnabled(session: Session): void {
+  const policy = childProviderPolicy(session);
+  if (policy.cross_provider_enabled !== true || policy.cross_provider_auto !== true) {
+    throw new Error("Automatic child selection was disabled.");
+  }
 }
 
 export function assertCrossProviderAllowed(session: Session, provider: string): void {

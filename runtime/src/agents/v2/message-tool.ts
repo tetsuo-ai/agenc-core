@@ -154,8 +154,10 @@ export async function handleMessageStringTool(
         action: "Keep this message on the current provider or request consent again for a new task." }, true));
     }
   }
-  if (mode === "trigger_turn" && targetPlan?.crossProvider) {
-    const previous = targetPlan;
+  if (mode === "trigger_turn" && targetPlan !== undefined) {
+    // The initial spawn's routing supervisor has finished. A new assignment
+    // stays on this worker's destination and uses ordinary provider retries.
+    const { routing: _initialRouting, ...previous } = targetPlan;
     const parentTurnId = callerSession!.activeTurn?.unsafePeek()?.turnId;
     const proposed: ChildExecutionPlan = { ...previous,
       task: { id: callId, name: previous.task.name, text: message, attachments: [],

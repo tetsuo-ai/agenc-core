@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { cloneJsonValue, cloneRecord, isPlainRecord, stableJson, type JsonRecord } from "./json.js";
 import {
@@ -28,6 +28,16 @@ import {
   CANONICAL_CONFIG_VERSION_KEY,
   validateStrictConfigDocument,
 } from "./repository.js";
+
+import {
+  fencePluginTransactionEdits,
+  pluginConfigTargetDigest,
+  pluginIntentForPatch,
+  readPluginTransactionHeader,
+  withPluginTransactionHeader,
+  type PluginConfigWriteIntent,
+  type PluginTransactionLedger,
+} from "./plugin-transaction-ledger.js";
 
 const DEFAULT_FILE_MODE = 0o600;
 
@@ -93,8 +103,34 @@ export function parseCanonicalConfigText(text: string, path: string): JsonRecord
   return raw;
 }
 
-function readRaw(path: string): JsonRecord {
-  return parseCanonicalConfigText(readFileSync(path, "utf8"), path);
+/** Resolve aliases before locking, including symlinks in an existing parent. */
+function canonicalTarget(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+    // A dangling symlink is not an absent config file.
+    try {
+      if (lstatSync(absolute).isSymbolicLink()) throw new Error(`config symlink target does not exist: ${path}`);
+    } catch (missing) {
+      if (errorCode(missing) !== "ENOENT") throw missing;
+    }
+    const parent = dirname(absolute);
+    if (parent === absolute) throw error;
+    return join(canonicalTarget(parent), basename(absolute));
+  }
+}
+
+function withCanonicalTargetLock<T>(path: string, operation: (target: WritableTarget) => T): T {
+  const canonical = canonicalTarget(path);
+  return withConfigAuthorityLockSync(canonical, () => {
+    if (canonicalTarget(path) !== canonical) throw new Error(`config target changed before update: ${path}`);
+    const target = writableTarget(canonical);
+    const result = operation(target);
+    if (canonicalTarget(path) !== canonical) throw new Error(`config target changed during update: ${path}`);
+    return result;
+  });
 }
 
 export interface CanonicalUserConfigSnapshot {
@@ -113,7 +149,7 @@ export interface CanonicalUserConfigSnapshot {
 export function readCanonicalUserConfigSnapshotSync(
   path: string,
 ): CanonicalUserConfigSnapshot {
-  const target = writableTarget(path);
+  const target = writableTarget(canonicalTarget(path));
   const content = target.exists
     ? readFileSync(target.path, "utf8")
     : `${CANONICAL_CONFIG_VERSION_KEY} = ${CANONICAL_CONFIG_VERSION}\n`;
@@ -183,34 +219,69 @@ export function applyCanonicalConfigPatchSync(
   scope: WritableConfigScope,
 ): void {
   assertConfigPatchAuthority(scope, patch);
-  withConfigAuthorityLockSync(path, () => {
-    const target = writableTarget(path);
-    const raw = target.exists
-      ? readRaw(target.path)
-      : { [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION };
-    mergePatch(raw, patch);
-    prepareAndWrite(target, raw);
-  });
+  transformCanonicalConfigSync(path, state => {
+    const before = cloneRecord(state.raw);
+    mergePatch(state.raw, patch);
+    fencePluginTransactionEdits(state.ledger, before, state.raw, pluginIntentForPatch(patch));
+  }, false);
 }
 
 /**
- * Sole read-modify-write path for user config editors that need transformations
- * more expressive than a structural patch.
+ * Transform a canonical user document. Plugin writers must supply explicit
+ * intent for global/entry edits, including idempotent writes.
  */
 export function mutateCanonicalUserConfigSync(
   path: string,
   mutator: (raw: JsonRecord) => void,
+  intent: PluginConfigWriteIntent = {},
 ): void {
-  withConfigAuthorityLockSync(path, () => {
-    const target = writableTarget(path);
-    const raw = target.exists
-      ? readRaw(target.path)
-      : { [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION };
-    const before = cloneRecord(raw);
-    mutator(raw);
-    assertUserConfigDocumentAuthority(raw, target.path);
-    if (stableJson(raw) === stableJson(before)) return;
-    prepareAndWrite(target, raw);
+  mutateCanonicalPluginTransactionSync(path, state => {
+    const before = cloneRecord(state.raw);
+    mutator(state.raw);
+    fencePluginTransactionEdits(state.ledger, before, state.raw, intent);
+  });
+}
+
+export interface CanonicalPluginTransactionState {
+  readonly targetPath: string;
+  readonly raw: JsonRecord;
+  ledger: PluginTransactionLedger | undefined;
+}
+
+/** Internal atomic value+ownership publication; callback must not await. */
+export function mutateCanonicalPluginTransactionSync<T>(
+  path: string,
+  mutator: (state: CanonicalPluginTransactionState) => T,
+): T {
+  return transformCanonicalConfigSync(path, mutator, true);
+}
+
+function transformCanonicalConfigSync<T>(
+  path: string,
+  mutator: (state: CanonicalPluginTransactionState) => T,
+  assertUserAuthority: boolean,
+): T {
+  return withCanonicalTargetLock(path, target => {
+    const content = target.exists ? readFileSync(target.path, "utf8")
+      : `${CANONICAL_CONFIG_VERSION_KEY} = ${CANONICAL_CONFIG_VERSION}\n`;
+    const raw = parseCanonicalConfigText(content, target.path);
+    const { ledger } = readPluginTransactionHeader(content);
+    if (ledger !== undefined && ledger.target !== pluginConfigTargetDigest(target.path)) {
+      throw new Error("plugin transaction metadata belongs to a different config target");
+    }
+    const before = stableJson(raw);
+    const beforeLedger = stableJson(ledger ?? null);
+    const state: CanonicalPluginTransactionState = { targetPath: target.path, raw, ledger };
+    const result = mutator(state);
+    if (assertUserAuthority) assertUserConfigDocumentAuthority(raw, target.path);
+    if (state.ledger !== undefined && state.ledger.target !== pluginConfigTargetDigest(target.path)) {
+      throw new Error("plugin transaction metadata belongs to a different config target");
+    }
+    if (canonicalTarget(path) !== target.path) throw new Error(`config target changed during update: ${path}`);
+    if (stableJson(raw) !== before || stableJson(state.ledger ?? null) !== beforeLedger) {
+      prepareAndWrite(target, raw, state.ledger);
+    }
+    return result;
   });
 }
 
@@ -224,8 +295,7 @@ export function replaceCanonicalUserConfigTextSync(
   snapshot: CanonicalUserConfigSnapshot,
   replacement: string,
 ): boolean {
-  return withConfigAuthorityLockSync(snapshot.path, () => {
-    const target = writableTarget(snapshot.path);
+  return withCanonicalTargetLock(snapshot.path, target => {
     if (
       target.exists !== snapshot.exists ||
       target.path !== snapshot.targetPath
@@ -245,7 +315,21 @@ export function replaceCanonicalUserConfigTextSync(
     const raw = parseCanonicalConfigText(replacement, target.path);
     assertUserConfigDocumentAuthority(raw, target.path);
     if (replacement === snapshot.content) return false;
-    writeAtomic(target.path, replacement, target.mode);
+    const originalHeader = readPluginTransactionHeader(snapshot.content);
+    if (originalHeader.ledger !== undefined
+      && originalHeader.ledger.target !== pluginConfigTargetDigest(target.path)) {
+      throw new Error("plugin transaction metadata belongs to a different config target");
+    }
+    // The editor cannot create, replace or remove ownership authority. Restore
+    // the original metadata and fence observable field edits under the lock.
+    const editedHeader = readPluginTransactionHeader(replacement);
+    if (editedHeader.ledger !== undefined
+      && stableJson(editedHeader.ledger) !== stableJson(originalHeader.ledger ?? null)) {
+      throw new Error("editor changed plugin transaction ownership metadata");
+    }
+    fencePluginTransactionEdits(originalHeader.ledger, cloneRecord(snapshot.raw), raw);
+    if (canonicalTarget(snapshot.path) !== target.path) throw new Error("config target changed during edit");
+    writeAtomic(target.path, withPluginTransactionHeader(editedHeader.body, originalHeader.ledger), target.mode);
     return true;
   });
 }
@@ -253,6 +337,7 @@ export function replaceCanonicalUserConfigTextSync(
 function prepareAndWrite(
   target: WritableTarget,
   raw: JsonRecord,
+  ledger?: PluginTransactionLedger,
 ): void {
   raw[CANONICAL_CONFIG_VERSION_KEY] = CANONICAL_CONFIG_VERSION;
   validateStrictConfigDocument(raw, target.path);
@@ -261,5 +346,5 @@ function prepareAndWrite(
   if (stableJson(roundTrip) !== stableJson(raw)) {
     throw new Error(`canonical config update did not round-trip: ${target.path}`);
   }
-  writeAtomic(target.path, serialized, target.mode);
+  writeAtomic(target.path, withPluginTransactionHeader(serialized, ledger), target.mode);
 }
