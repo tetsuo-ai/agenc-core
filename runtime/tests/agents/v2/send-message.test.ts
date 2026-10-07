@@ -93,7 +93,9 @@ describe("send_message delivery report", () => {
       parent: { sessionId: "root-session", agentPath: "/root" },
       scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
       budgetAllocation: { maxModelCalls: 2, maxCostUsd: 0.5 },
-      routing: { taskKind: "extraction", complexity: "simple", reason: "Initial automatic choice" } };
+      routing: { taskKind: "extraction", complexity: "simple", reason: "Initial automatic choice" },
+      // The plan must carry the session's current delegation policy revision, as real plans do.
+      policyRevision: (await approvedChildPlan(f.session)).policyRevision };
     Object.assign(f.live.metadata, { executionPlan: plan });
     Object.assign(f.session.services, { crossProviderConsent: { ownerSessionId: "root-session", sessionEpoch: "epoch",
       request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
