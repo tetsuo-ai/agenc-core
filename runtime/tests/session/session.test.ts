@@ -247,6 +247,7 @@ function buildSession(
     config?: Config;
     modelInfo?: ModelInfo;
     mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
+    unifiedExecOwnership?: SessionOpts["unifiedExecOwnership"];
     readSavedApiKey?: (provider: string) => Promise<string | undefined>;
   } = {},
 ): Session {
@@ -364,6 +365,9 @@ function buildSession(
   };
   const opts: SessionOpts = {
     conversationId: "conv-test",
+    ...(overrides.unifiedExecOwnership === undefined
+      ? {}
+      : { unifiedExecOwnership: overrides.unifiedExecOwnership }),
     initialState: {
       sessionConfiguration: initialSessionConfiguration,
       history: [],
@@ -2401,6 +2405,54 @@ describe("Session turn-driver hooks", () => {
       await stopping;
       expect(order).toEqual(["cleanup", "terminal"]);
     }
+  });
+
+  it.each([false, true])("requires borrowed cleanup proof without closing the shared manager (failure=%s)", async failure => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const globalClose = vi.fn(async () => {});
+    const binding = {
+      ownerId: "conv-test",
+      assertCurrent: () => {},
+      release: vi.fn(),
+      prepareForDurableClose: async () => {
+        order.push("child_cleanup");
+        await gate;
+        if (failure) throw new Error("unproven child cleanup");
+      },
+    } as unknown as NonNullable<SessionOpts["unifiedExecOwnership"]>["binding"];
+    const session = buildSession({
+      unifiedExecOwnership: { kind: "borrowed", binding },
+      services: { unifiedExecManager: { prepareForDurableClose: globalClose } as unknown as SessionServices["unifiedExecManager"] },
+    });
+    session.onBeforeDurableClose(() => { order.push("terminal"); });
+    const stopping = session.shutdown();
+    void stopping.catch(() => {});
+    await vi.waitFor(() => expect(order).toEqual(["child_cleanup"]));
+    expect(globalClose).not.toHaveBeenCalled();
+    release();
+    if (failure) {
+      await expect(stopping).rejects.toThrow("unproven child cleanup");
+      expect(order).toEqual(["child_cleanup"]);
+    } else {
+      await stopping;
+      expect(order).toEqual(["child_cleanup", "terminal"]);
+    }
+    expect(globalClose).not.toHaveBeenCalled();
+  });
+
+  it("refuses a borrowed terminal without scoped cleanup authority", async () => {
+    const globalClose = vi.fn(async () => {});
+    const finalizer = vi.fn();
+    const session = buildSession({
+      unifiedExecOwnership: { kind: "borrowed" },
+      services: { unifiedExecManager: { prepareForDurableClose: globalClose } as unknown as SessionServices["unifiedExecManager"] },
+    });
+    session.onBeforeDurableClose(finalizer);
+    await expect(session.shutdown()).rejects.toThrow("no scoped cleanup authority");
+    expect(finalizer).not.toHaveBeenCalled();
+    expect(globalClose).not.toHaveBeenCalled();
   });
 
   it("drains durable continuations before finalizing and sealing the journal", async () => {

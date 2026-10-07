@@ -90,6 +90,8 @@ import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../agents/child-approval-context.js";
 import { isWorkflowApprovalSession } from "../permissions/approval-failure.js";
+import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import * as childRunJournal from "./child-run-journal.js";
 
 const TEST_REVIEW_CHILD_SESSION_ID =
   "review-70258a22d095bbaef7e15b5457a92c30c382f5bd2e4af2c54fcbf2e2e4da8a2d";
@@ -803,6 +805,37 @@ describe("review delegate spawn admission", () => {
 });
 
 describe("runAgenCReviewOneShot happy-path review", () => {
+  it.each([false, true])("closes only reviewer exec authority on completion or setup failure (failure=%s)", async failure => {
+    const cwd = mkdtempSync(join(tmpdir(), "review-exec-lifetime-"));
+    const manager = new UnifiedExecProcessManager({ cwd, sessionTempRoot: cwd });
+    const parent = mkSession(mkScriptedProvider(), { unifiedExecManager: manager }, { cwd });
+    const globalClose = vi.spyOn(manager, "prepareForDurableClose");
+    const register = vi.spyOn(manager, "createOwnerLifetime");
+    const mount = failure
+      ? vi.spyOn(childRunJournal, "mountChildRunJournal").mockImplementationOnce(() => { throw new Error("review journal setup failed"); })
+      : undefined;
+    try {
+      if (failure) {
+        await expect(spawnAgenCDelegateThread(parent, mkOneShotRequest(parent), "test-model", mkModelInfo(), new AbortController())).rejects.toThrow("review journal setup failed");
+      } else {
+        const thread = await spawnAgenCDelegateThread(parent, mkOneShotRequest(parent), "test-model", mkModelInfo(), new AbortController());
+        await thread.shutdown("test complete");
+      }
+      expect(register).toHaveBeenCalledOnce();
+      expect(register.mock.results[0]?.value.closed).toBe(true);
+      expect(globalClose).not.toHaveBeenCalled();
+      expect(() => manager.assertOwnerAdmission(parent.conversationId)).not.toThrow();
+      // A completed child identity may resume, but cannot reactivate old closures.
+      const replacement = manager.createOwnerLifetime(register.mock.calls[0]![0]).bind();
+      await replacement.prepareForDurableClose();
+    } finally {
+      mount?.mockRestore();
+      await parent.shutdown();
+      expect(globalClose).toHaveBeenCalledOnce();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ["success", "pass"],
     ["error", "fail"],

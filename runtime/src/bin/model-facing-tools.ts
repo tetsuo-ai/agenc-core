@@ -77,7 +77,7 @@ import {
   SESSION_ID_ARG,
 } from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
-import { processOwnerIdFromToolArgs } from "../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
 import { runtimeSandboxForExec } from "../tools/system/exec-command.js";
 import {
   formatUnifiedExecToolContent,
@@ -5173,6 +5173,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
           ...(numberValue(args.timeout_ms) !== undefined
             ? { timeoutMs: numberValue(args.timeout_ms) }
             : {}),
+          ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>),
           ...(ownerId !== undefined ? { ownerId } : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });

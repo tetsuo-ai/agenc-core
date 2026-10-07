@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 const root = existsSync(resolve(process.cwd(), "runtime/src"))
@@ -98,6 +99,9 @@ describe("memory wiring contract", () => {
       // graph into a low-level permissions module and fails module init with
       // `getPlatform is not a function`. It takes four pure path helpers.
       "runtime/src/permissions/path-validation.ts",
+      // This startup leaf must not load attachment producers through the
+      // memory barrel. Its entire runtime dependency closure is checked below.
+      "runtime/src/utils/attachment-message.ts",
     ]);
     const directMemoryModuleImport =
       /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;
@@ -125,6 +129,22 @@ describe("memory wiring contract", () => {
         "memory/index.js",
       );
     }
+  });
+
+  it("keeps attachment message construction on the pure memory age leaf", async () => {
+    const result = await build({
+      absWorkingDir: root,
+      entryPoints: ["runtime/src/utils/attachment-message.ts"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      write: false,
+      metafile: true,
+    });
+    expect(Object.keys(result.metafile.inputs).sort()).toEqual([
+      "runtime/src/memory/age.ts",
+      "runtime/src/utils/attachment-message.ts",
+    ]);
   });
 });
 

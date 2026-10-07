@@ -19,7 +19,7 @@ import {
   UnifiedExecError,
   type UnifiedExecProcessManagerLike,
 } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import {
@@ -118,6 +118,7 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           ...(args.__onProgress !== undefined
             ? { __onProgress: args.__onProgress }
             : {}),
+          ownerBinding: execOwnerBindingFromToolArgs(rawArgs as Record<string, unknown>),
           ...(ownerId !== undefined ? { ownerId } : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
