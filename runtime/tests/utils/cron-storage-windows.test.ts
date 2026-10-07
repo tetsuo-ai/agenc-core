@@ -1,5 +1,5 @@
 import "../helpers/cron-os-home.js";
-import { linkSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -11,6 +11,8 @@ import { cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/c
 
 const acl = vi.hoisted(() => ({
   assertWindowsPrivatePathSecurity: vi.fn(),
+  runWindowsSecurityScript: vi.fn(),
+  beforeHandleInit: undefined as ((path: string) => void) | undefined,
 }));
 const fsHooks = vi.hoisted(() => ({
   descriptorUnavailable: false,
@@ -27,6 +29,7 @@ const privatePaths = vi.hoisted(() => new Set<string>());
 
 vi.mock("../../src/agents/workflow-private-path.js", () => ({
   assertWindowsPrivatePathSecurity: acl.assertWindowsPrivatePathSecurity,
+  runWindowsSecurityScript: acl.runWindowsSecurityScript,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -129,10 +132,39 @@ function installAclMock(): void {
       throw verifierFailure(path);
     }
   });
+  acl.beforeHandleInit = undefined;
+  acl.runWindowsSecurityScript.mockReset();
+  // The handle-based initialization of a created `.agenc`.
+  acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+    acl.beforeHandleInit?.(path);
+    privatePaths.add(`directory\0${path}`);
+  });
 }
 
+/** Every ACL write: path-based initialization and the handle-based `.agenc` initialization. */
 function aclMutations(): ReadonlyArray<readonly unknown[]> {
-  return acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true);
+  return [
+    ...acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true),
+    ...acl.runWindowsSecurityScript.mock.calls.map(([path]) => [path, "directory", "handle"]),
+  ];
+}
+
+/** Path-based initializations of `.agenc` (SetAccessControl, which propagates to children). */
+function pathBasedDirectoryInits(): ReadonlyArray<readonly unknown[]> {
+  return acl.assertWindowsPrivatePathSecurity.mock.calls.filter(
+    ([path, role, initialize]) => role === "directory" && initialize === true && String(path).endsWith(".agenc"),
+  );
+}
+
+/** The script `runWindowsSecurityScript` ran, decoded. */
+function decodedInitScript(call = 0): string {
+  return Buffer.from(String(acl.runWindowsSecurityScript.mock.calls[call]?.[1]), "base64").toString("utf16le");
+}
+
+/** The C# source a script loads with Add-Type. */
+function addTypeSource(script: string): string {
+  const start = script.indexOf("Add-Type -TypeDefinition '") + "Add-Type -TypeDefinition '".length;
+  return script.slice(start, script.indexOf("'", start));
 }
 
 function metadataDirectory(): string {
@@ -232,9 +264,10 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(paths).toContain(".agenc");
     expect(paths.some((name) => name.includes("scheduled_tasks.json"))).toBe(true);
     expect(paths.every((name) => name === ".agenc" || name.includes("scheduled_tasks.json"))).toBe(true);
-    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
-      expect.stringMatching(/\.agenc$/u), "directory", true,
+    expect(acl.runWindowsSecurityScript).toHaveBeenCalledWith(
+      expect.stringMatching(/\.agenc$/u), expect.any(String), expect.any(Object), tmpdir(),
     );
+    expect(pathBasedDirectoryInits()).toHaveLength(0);
     expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
       expect.stringMatching(/scheduled_tasks\.json\.[^/\\]+\.tmp$/u), "file", true,
     );
@@ -343,13 +376,13 @@ describe("Windows cron storage uses private-path persistence", () => {
 
   test("initializes a metadata directory once when this call creates it", async () => {
     await writeRecord();
+    expect(acl.runWindowsSecurityScript).toHaveBeenCalledOnce();
     const directoryCalls = acl.assertWindowsPrivatePathSecurity.mock.calls.filter(
       ([path, role]) => role === "directory" && String(path).endsWith(`${sep}.agenc`),
     );
-    expect(directoryCalls.filter((call) => call[2] === true)).toHaveLength(1);
-    expect(directoryCalls[0]?.[2]).toBe(true);
-    expect(directoryCalls.slice(1).every((call) => call[2] === false)).toBe(true);
-    expect(directoryCalls.length).toBeGreaterThan(1);
+    // After the handle-based initialization, the path is only verified.
+    expect(directoryCalls.length).toBeGreaterThan(0);
+    expect(directoryCalls.every((call) => call[2] === false)).toBe(true);
 
     acl.assertWindowsPrivatePathSecurity.mockClear();
     expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
@@ -446,28 +479,38 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(command.match(/\[AgencCronRepair\]::Protect\(/gu)).toHaveLength(2);
     expect(command).toContain("SetKernelObjectSecurity(handle, 0x80000005, descriptor)");
     // .agenc is opened without following a link, and its type comes from that handle.
-    expect(command).toContain("CreateFileW(path, 0x1E00A0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
+    expect(command).toContain("CreateFileW(path, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
+    expect(command).toContain("public static SafeFileHandle OpenFolder(string path) { return Open(path, 0x1E00A0); }");
     const open = command.indexOf("$dir = [AgencCronRepair]::OpenFolder($root)");
     const describe = command.indexOf("$id = [AgencCronRepair]::Describe($dir, $root)");
     const refuse = command.indexOf("if (($id.Attributes -band $link) -ne 0 -or ($id.Attributes -band $folder) -eq 0) { throw ");
-    const protectDir = command.indexOf("[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root)");
     expect(open).toBeGreaterThan(0);
     expect(describe).toBeGreaterThan(open);
     expect(refuse).toBeGreaterThan(describe);
-    expect(protectDir).toBeGreaterThan(refuse);
-    // The task file is opened relative to that handle and written only as a
-    // regular, non-reparse file with one link.
+    // The task file is opened relative to that handle and must be a regular,
+    // non-reparse file with one link before EITHER write, so a refused or
+    // unopenable task file leaves .agenc unchanged.
     expect(command).toContain("target.Root = folder.DangerousGetHandle()");
-    expect(command).toContain("NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0)");
     const openFile = command.indexOf("$file = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task)");
     const refuseFile = command.indexOf("if (($info.Attributes -band ($link -bor $folder)) -ne 0 -or $info.Links -ne 1) { throw ");
+    const protectDir = command.indexOf("[AgencCronRepair]::Protect($dir, (& $descriptor $true), $root)");
     const protectFile = command.indexOf("[AgencCronRepair]::Protect($file, (& $descriptor $false), $task)");
-    expect(openFile).toBeGreaterThan(protectDir);
+    expect(openFile).toBeGreaterThan(refuse);
     expect(refuseFile).toBeGreaterThan(openFile);
-    expect(protectFile).toBeGreaterThan(refuseFile);
+    expect(protectDir).toBeGreaterThan(refuseFile);
+    expect(protectFile).toBeGreaterThan(protectDir);
+    expect(command).toContain("is a link, a hard-linked file or not a regular file, and nothing was changed.");
+    // The task file handle requests no data access (READ_CONTROL | WRITE_DAC |
+    // WRITE_OWNER | SYNCHRONIZE | FILE_READ_ATTRIBUTES), so share mode 0 would
+    // lock nothing; a name added before the write is caught by the link count
+    // read again after it.
+    expect(command).toContain("NtCreateFile(out handle, 0x1E0080, ref target, out result, IntPtr.Zero, 0, 7, 1, 0x200020, IntPtr.Zero, 0)");
+    const recount = command.indexOf("if ([AgencCronRepair]::Describe($file, $task).Links -ne 1) { throw ");
+    expect(recount).toBeGreaterThan(protectFile);
+    expect(command).toContain("$root and that file are already private; remove the other name, then run this again.");
     // .agenc must still be the same object at the end.
     const recheck = command.indexOf("$again = [AgencCronRepair]::OpenFolder($root)");
-    expect(recheck).toBeGreaterThan(protectFile);
+    expect(recheck).toBeGreaterThan(recount);
     expect(command).toContain("if ($now.Volume -ne $id.Volume -or $now.IndexHigh -ne $id.IndexHigh -or $now.IndexLow -ne $id.IndexLow) { throw ");
     expect(command.indexOf("\"Repaired $root")).toBeGreaterThan(recheck);
     // Failures throw, with the Windows reason.
@@ -478,8 +521,94 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(command).toContain("$inherit = 'None'");
     expect(command).toContain("FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')");
     // The C# source sits in one single-quoted PowerShell literal.
-    const helper = command.slice(command.indexOf("Add-Type -TypeDefinition '") + 26, command.indexOf("'; $sid = "));
-    expect(helper).not.toContain("'");
+    expect(addTypeSource(command)).not.toContain("'");
+    expect(command.indexOf("'; $descriptor = { param($isFolder)")).toBeGreaterThan(0);
+  });
+
+  test("makes a created .agenc private through a handle bound to its lstat, never by path", async () => {
+    const directory = metadataDirectory();
+    let created: import("node:fs").Stats | undefined;
+    acl.beforeHandleInit = (path) => {
+      created = lstatSync(path);
+    };
+    await writeRecord();
+    expect(acl.runWindowsSecurityScript).toHaveBeenCalledOnce();
+    const [path, , variables, temporary] = acl.runWindowsSecurityScript.mock.calls[0]!;
+    expect(path).toBe(directory);
+    const identity = lstatSync(directory, { bigint: true });
+    expect(variables).toEqual({
+      AGENC_CRON_DIRECTORY: directory,
+      AGENC_CRON_VOLUME: identity.dev.toString(),
+      AGENC_CRON_FILE_ID: identity.ino.toString(),
+    });
+    expect(created?.isDirectory()).toBe(true);
+    // Windows PowerShell 5.1 Add-Type compiles in TEMP; System32 is not writable.
+    expect(temporary).toBe(tmpdir());
+    // No path-based ACL write of .agenc (SetAccessControl re-resolves the path and propagates).
+    expect(pathBasedDirectoryInits()).toHaveLength(0);
+
+    const script = decodedInitScript();
+    expect(script).not.toMatch(/SetAccessControl|Set-Acl|SetNamedSecurityInfo|SetSecurityInfo|SetFileSecurity|icacls/u);
+    // One implementation: the same C# helper as the repair command.
+    expect(addTypeSource(script)).toBe(addTypeSource(windowsCronRepairCommand(directory)));
+    expect(script).toContain("$target = $env:AGENC_CRON_DIRECTORY");
+    // Type, reparse state, file system and identity come from the handle; a
+    // mismatch with the lstat fails closed before the write, which goes
+    // through the same handle.
+    const probe = script.indexOf("$probe = [AgencCronRepair]::Probe($target)");
+    const probeCheck = script.indexOf("try { & $check $probe }");
+    const write = script.indexOf("$dir = [AgencCronRepair]::OpenFolder($target)");
+    const writeCheck = script.indexOf("try { & $check $dir; [AgencCronRepair]::Protect($dir, (& $descriptor $true), $target) }");
+    expect(probe).toBeGreaterThan(0);
+    expect(probeCheck).toBeGreaterThan(probe);
+    expect(write).toBeGreaterThan(probeCheck);
+    expect(writeCheck).toBeGreaterThan(write);
+    expect(script.match(/::Protect\(/gu)).toHaveLength(1);
+    expect(script).toContain("if (($info.Attributes -band 0x400) -ne 0) { throw 'reparse points are unsupported' }");
+    expect(script).toContain("if (($info.Attributes -band 0x10) -eq 0) { throw 'path role does not match its type' }");
+    expect(script).toContain("$system = [AgencCronRepair]::FileSystem($handle, $target)");
+    expect(script).toContain("if ($system -ne 'NTFS') { throw \"NTFS is required ($system)\" }");
+    expect(script).toContain(
+      "if ([string]$info.Volume -ne $env:AGENC_CRON_VOLUME -or [string]$info.Index -ne $env:AGENC_CRON_FILE_ID) " +
+      "{ throw 'directory identity changed before its ACL was set' }",
+    );
+    expect(script.indexOf("FileSystem($handle")).toBeLessThan(script.indexOf("[string]$info.Volume"));
+    expect(script).toContain("GetVolumeInformationByHandleW(handle, null, 0, out serial, out length, out flags, system, 261)");
+    expect(script.endsWith("[Console]::Out.Write('OK')")).toBe(true);
+    // The command line stays well under the 32767-character CreateProcess limit.
+    expect(String(acl.runWindowsSecurityScript.mock.calls[0]![1]).length).toBeLessThan(30_000);
+    expect(await readFile(join(directory, "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  test("fails closed when the created .agenc was replaced before its ACL was set", async () => {
+    acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+      throw verifierFailure(path, "directory identity changed before its ACL was set");
+    });
+    const directory = metadataDirectory();
+    const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+    expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(error.message).toBe(
+      `${PERMISSIONS_ERROR}: ${directory} was replaced after it was created and before its ACL was set, ` +
+      "and no ACL was written. Check what is at that path, then retry.",
+    );
+    expect(error.message).not.toMatch(/PowerShell|Command:/u);
+    expect(await readdir(directory)).not.toContain("scheduled_tasks.json");
+    expect(pathBasedDirectoryInits()).toHaveLength(0);
+  });
+
+  test("does not follow a hard link planted in the new .agenc before its ACL is set", async () => {
+    const planted = join(outside, "planted.json");
+    writeFileSync(planted, "outside");
+    acl.beforeHandleInit = (path) => {
+      linkSync(planted, join(path, "scheduled_tasks.json"));
+      linkSync(planted, join(path, "other.json"));
+    };
+    await writeRecord();
+    // Only the handle write touched .agenc; publication replaced the planted
+    // name instead of writing through it.
+    expect(pathBasedDirectoryInits()).toHaveLength(0);
+    expect(await readFile(planted, "utf8")).toBe("outside");
+    expect(await readFile(join(metadataDirectory(), "scheduled_tasks.json"), "utf8")).toBe(body);
   });
 
   test("documents the same repair script the error prints", async () => {
@@ -575,8 +704,15 @@ describe("Windows cron storage uses private-path persistence", () => {
   test("explains an unsupported volume as a platform limit without a repair", async () => {
     const directory = metadataDirectory();
     await mkdir(directory, { mode: 0o700 });
+    // PowerShell echoes the throwing source line before the message; that echo never names a file system.
+    const echoed = (format: string) => `throw "NTFS is required ($($drive.DriveFormat))"_x000D__x000A_</S>` +
+      `<S S="Error">NTFS is required (${format})`;
     for (const [reason, where] of [
-      ["NTFS is required", `${directory} is on a volume that is not NTFS (for example a ReFS Dev Drive, FAT32 or exFAT)`],
+      [echoed("ReFS"), `${directory} is on a volume formatted as ReFS`],
+      ["NTFS is required (FAT32)", `${directory} is on a volume formatted as FAT32`],
+      ["NTFS is required (exFAT)", `${directory} is on a volume formatted as exFAT`],
+      ["NTFS is required", `${directory} is on a volume that is not NTFS`],
+      ["NTFS is required ()", `${directory} is on a volume that is not NTFS`],
       ["network and device paths are unsupported", `${directory} is a network or device path`],
     ]) {
       acl.assertWindowsPrivatePathSecurity.mockImplementation((path: string) => {

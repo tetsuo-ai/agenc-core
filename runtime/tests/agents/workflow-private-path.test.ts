@@ -21,6 +21,7 @@ vi.mock("../../src/utils/windows-system-path.js", () => ({
 
 import {
   assertWindowsPrivatePathSecurity,
+  runWindowsSecurityScript,
   WindowsPrivatePathSecurityError,
 } from "../../src/agents/workflow-private-path.js";
 
@@ -104,6 +105,10 @@ describe("Windows workflow private paths", () => {
     expect(script).toContain("FileAttributes]::ReparsePoint");
     expect(script).toContain("path role does not match its type");
     expect(script).toContain("$drive.DriveFormat -ne 'NTFS'");
+    // The rejection names the file system it found.
+    expect(script).toContain(
+      "if ($drive.DriveFormat -ne 'NTFS') { throw \"NTFS is required ($($drive.DriveFormat))\" }",
+    );
     expect(script).toContain("$acl.SetAccessRuleProtection($true, $false)");
     expect(script).toContain(
       "[System.IO.Directory]::SetAccessControl($target, $acl)",
@@ -201,5 +206,77 @@ describe("Windows workflow private paths", () => {
       ).toThrow(WindowsPrivatePathSecurityError);
     });
     expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("passes existing callers exactly the same hardened environment", () => {
+    execFileSyncMock.mockImplementation(() => Buffer.from("OK"));
+    withWindowsPlatform(() => {
+      assertWindowsPrivatePathSecurity(String.raw`C:\private\spool`, "directory", false);
+    });
+    const workingDirectory = win32.join(windowsSystemRoot, "System32");
+    expect(execFileSyncMock.mock.calls[0]![2]).toEqual({
+      cwd: workingDirectory,
+      encoding: "buffer",
+      env: {
+        AGENC_WORKFLOW_PRIVATE_INITIALIZE: "0",
+        AGENC_WORKFLOW_PRIVATE_PATH: String.raw`C:\private\spool`,
+        AGENC_WORKFLOW_PRIVATE_ROLE: "directory",
+        APPDATA: "",
+        COMSPEC: "",
+        HOMEDRIVE: "",
+        HOMEPATH: "",
+        LOCALAPPDATA: "",
+        LOGONSERVER: "",
+        PATH: workingDirectory,
+        PATHEXT: ".EXE",
+        PSMODULEPATH: "",
+        SYSTEMDRIVE: "",
+        SYSTEMROOT: windowsSystemRoot,
+        TEMP: workingDirectory,
+        TMP: workingDirectory,
+        USERDOMAIN: "",
+        USERNAME: "",
+        USERPROFILE: workingDirectory,
+        WINDIR: windowsSystemRoot,
+      },
+      maxBuffer: 1_048_576,
+      timeout: 30_000,
+      windowsHide: true,
+    });
+  });
+
+  it("runs another fixed script with the same environment, its variables and an optional TEMP", () => {
+    execFileSyncMock.mockImplementation(() => Buffer.from("OK"));
+    const encoded = Buffer.from("[Console]::Out.Write('OK')", "utf16le").toString("base64");
+    runWindowsSecurityScript(String.raw`C:\p\.agenc`, encoded, {
+      AGENC_CRON_DIRECTORY: String.raw`C:\p\.agenc`,
+      PATH: String.raw`C:\attacker`,
+    }, String.raw`C:\Users\me\AppData\Local\Temp`);
+    const [executable, arguments_, options] = execFileSyncMock.mock.calls[0]!;
+    const workingDirectory = win32.join(windowsSystemRoot, "System32");
+    expect(executable).toBe(windowsPowerShell);
+    expect(arguments_).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]);
+    expect(options).toMatchObject({
+      cwd: workingDirectory,
+      env: {
+        AGENC_CRON_DIRECTORY: String.raw`C:\p\.agenc`,
+        PATH: workingDirectory,
+        PSMODULEPATH: "",
+        TEMP: String.raw`C:\Users\me\AppData\Local\Temp`,
+        TMP: String.raw`C:\Users\me\AppData\Local\Temp`,
+        USERPROFILE: workingDirectory,
+      },
+    });
+
+    execFileSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error("Command failed"), { stderr: Buffer.from("NTFS is required (ReFS)") });
+    });
+    expect(() => runWindowsSecurityScript(String.raw`D:\p\.agenc`, encoded, {})).toThrow(
+      WindowsPrivatePathSecurityError,
+    );
+    execFileSyncMock.mockImplementationOnce(() => Buffer.from("nope"));
+    expect(() => runWindowsSecurityScript(String.raw`D:\p\.agenc`, encoded, {})).toThrow(
+      WindowsPrivatePathSecurityError,
+    );
   });
 });
