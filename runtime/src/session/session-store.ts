@@ -95,6 +95,12 @@ import {
   isDurableEvent,
 } from "./event-log.js";
 import {
+  canonicalRunTerminalFromGrowingTail,
+  canonicalRunTerminalFromItems,
+  type CanonicalRunTerminal,
+  type CommittedSuffix,
+} from "./canonical-run-terminal.js";
+import {
   parseRolloutLine,
   serializeRolloutItem,
   type RolloutItem,
@@ -2287,8 +2293,9 @@ export class SessionStore {
     this.lastBoundReadProof = undefined;
     // A clearing run_reopened is appended after the terminal it supersedes.
     // The terminal must already be a complete journal line, or ahead of the
-    // reopen in this unflushed batch. A terminal that is only queued after a
-    // failed write is not that order, and the reopen is refused.
+    // reopen in this unflushed batch (one ordered fsync). A terminal that is
+    // only in the in-flight drain slice or the degraded ring is not that
+    // order, and the reopen is refused.
     if (
       event.msg.type === "run_terminal" ||
       event.msg.type === "run_reopened"
@@ -2297,7 +2304,8 @@ export class SessionStore {
         this.readCurrentRolloutBytes(),
         this.pending,
         event,
-        this.degraded.queued(),
+        this.degraded.bufferedItems(),
+        this.degraded.inFlightItems(),
       );
       this.lastBoundReadProof = undefined;
       // The same terminal again writes nothing; it reports the state of the
@@ -2425,6 +2433,7 @@ export class SessionStore {
         return !this.degraded.isDegraded && this.pendingFsyncRetries.size === 0;
       case "pending":
         return this.flushBatch(/*durable*/ true);
+      case "inflight":
       case "degraded":
         return false;
       default: {
@@ -3869,6 +3878,60 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Last complete `run_terminal` for this epoch in a bounded suffix of the
+   * committed file. Does not see the in-flight slice, the degraded ring, or
+   * the unflushed batch. Undefined when that suffix does not contain one.
+   */
+  readCommittedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    let size: number;
+    try {
+      size = this.boundRolloutSize();
+    } catch {
+      return canonicalRunTerminalFromItems(this.readAll(), runId, epoch);
+    }
+    let readFailed = false;
+    const terminal = canonicalRunTerminalFromGrowingTail(
+      size,
+      (window) => {
+        const suffix = this.readCommittedSuffix(window);
+        if (suffix === undefined) {
+          readFailed = true;
+          return undefined;
+        }
+        return suffix;
+      },
+      runId,
+      epoch,
+    );
+    if (readFailed) {
+      return canonicalRunTerminalFromItems(this.readAll(), runId, epoch);
+    }
+    return terminal;
+  }
+
+  /**
+   * `run_terminal` for this epoch that is not yet a complete fsynced line:
+   * the in-flight drain slice, the degraded ring, then the unflushed batch.
+   */
+  queuedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return canonicalRunTerminalFromItems(
+      [
+        ...this.degraded.inFlightItems(),
+        ...this.degraded.bufferedItems(),
+        ...this.pending,
+      ],
+      runId,
+      epoch,
+    );
+  }
+
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
     if (this.resumeSourceFaulted) {
@@ -3892,6 +3955,46 @@ export class SessionStore {
       // Intentional: caller can surface as warning.
     }
     return hydrateManifestCompactionItems(items);
+  }
+
+  private boundRolloutSize(): number {
+    if (this.resumeSourceFd !== undefined) {
+      const size = fstatSync(this.resumeSourceFd).size;
+      if (!Number.isSafeInteger(size) || size < 0) {
+        throw new Error("canonical rollout size is not a safe integer");
+      }
+      return size;
+    }
+    if (!existsSync(this.rolloutPath)) return 0;
+    const size = statSync(this.rolloutPath).size;
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error("canonical rollout size is not a safe integer");
+    }
+    return size;
+  }
+
+  private readCommittedSuffix(window: number): CommittedSuffix | undefined {
+    if (!Number.isSafeInteger(window) || window <= 0) return undefined;
+    const noFollow =
+      "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+    let fd: number | undefined;
+    try {
+      fd = this.openCanonicalFile(fsConstants.O_RDONLY | noFollow, 0o600);
+      const size = fstatSync(fd).size;
+      if (!Number.isSafeInteger(size) || size < 0) return undefined;
+      if (size === 0) return { bytes: Buffer.alloc(0), start: 0, size: 0 };
+      const useWindow = Math.min(window, size);
+      const start = size - useWindow;
+      const bytes = Buffer.allocUnsafe(useWindow);
+      const read = readSync(fd, bytes, 0, useWindow, start);
+      if (read !== useWindow) return undefined;
+      this.assertCanonicalFileStillBound(fd);
+      return { bytes: bytes.subarray(0, read), start, size };
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) this.closeCanonicalOperationFd(fd);
+    }
   }
 
   private readCurrentRolloutBytes(): Buffer {

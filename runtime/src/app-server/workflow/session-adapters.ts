@@ -631,10 +631,36 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
     return this.#canonicalTerminal();
   }
 
+  queuedTerminal(): CanonicalRunTerminal | undefined {
+    const store = this.#rollout();
+    if (typeof store.queuedRunTerminal !== "function") return undefined;
+    return store.queuedRunTerminal(this.runId, this.epoch);
+  }
+
+  #rollout(): {
+    committedRunTerminal?: (
+      runId: string,
+      epoch: number,
+    ) => CanonicalRunTerminal | undefined;
+    queuedRunTerminal?: (
+      runId: string,
+      epoch: number,
+    ) => CanonicalRunTerminal | undefined;
+    readAll?: () => Parameters<typeof canonicalRunTerminalFromItems>[0];
+  } {
+    return this.#entry.bootstrap.rolloutStore;
+  }
+
   #canonicalTerminal(): CanonicalRunTerminal | undefined {
-    const store = this.#entry.bootstrap.rolloutStore as {
-      readAll?: () => Parameters<typeof canonicalRunTerminalFromItems>[0];
-    };
+    const store = this.#rollout();
+    if (typeof store.committedRunTerminal === "function") {
+      return store.committedRunTerminal(this.runId, this.epoch);
+    }
+    return this.#fileTerminal();
+  }
+
+  #fileTerminal(): CanonicalRunTerminal | undefined {
+    const store = this.#rollout();
     if (typeof store.readAll !== "function") return undefined;
     return canonicalRunTerminalFromItems(
       store.readAll(),
@@ -651,11 +677,7 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
     }
     const existing = this.#canonicalTerminal();
     if (existing !== undefined) {
-      return {
-        eventId: existing.eventId,
-        sequence: existing.sequence,
-        adoptedTerminal: existing.result,
-      };
+      return this.#adopted(existing);
     }
     const payload: RunTerminalEvent = {
       runId: this.runId,
@@ -679,20 +701,27 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
         sequence: requireSequence(event, "run_terminal"),
       };
     } catch (error) {
-      const sealed = this.#canonicalTerminal();
       if (
-        sealed !== undefined &&
         error instanceof Error &&
         error.message.includes("already sealed")
       ) {
-        return {
-          eventId: sealed.eventId,
-          sequence: sealed.sequence,
-          adoptedTerminal: sealed.result,
-        };
+        const sealed = this.#canonicalTerminal() ?? this.#fileTerminal();
+        if (sealed !== undefined) return this.#adopted(sealed);
       }
       throw error;
     }
+  }
+
+  #adopted(terminal: CanonicalRunTerminal): {
+    eventId: string;
+    sequence: number;
+    adoptedTerminal: CanonicalRunTerminal["result"];
+  } {
+    return {
+      eventId: terminal.eventId,
+      sequence: terminal.sequence,
+      adoptedTerminal: terminal.result,
+    };
   }
 
   appendSuspended(input: { readonly suspendedAt: string }) {

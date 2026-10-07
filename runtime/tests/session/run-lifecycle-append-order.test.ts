@@ -404,6 +404,32 @@ describe("run lifecycle append order", () => {
     }
   });
 
+  it("labels an in-flight terminal separately from the degraded ring", () => {
+    const sessionId = "inflight-label";
+    const terminal = terminalEvent(sessionId, 1, 1);
+    expect(() =>
+      assertRunLifecycleAppendOrder(
+        Buffer.alloc(0),
+        [],
+        reopenEvent(sessionId, 2),
+        [],
+        [eventItem(terminal)],
+      ),
+    ).toThrow(
+      /refusing to append run_reopened for inflight-label: terminal epoch 1 is not yet a complete line in the journal \(inflight\)/,
+    );
+    expect(() =>
+      assertRunLifecycleAppendOrder(
+        Buffer.alloc(0),
+        [],
+        reopenEvent(sessionId, 2),
+        [eventItem(terminal)],
+      ),
+    ).toThrow(
+      /refusing to append run_reopened for inflight-label: terminal epoch 1 is not yet a complete line in the journal \(degraded\)/,
+    );
+  });
+
   it("refuses a reopen while the sealing terminal is only in the degraded queue", () => {
     const sessionId = "degraded-terminal-reopen";
     const terminal = terminalEvent(sessionId, 1, 1);
@@ -556,7 +582,7 @@ describe("run lifecycle append order", () => {
       await degradedQueue(store).tryFlush();
       expect(refusal).toBeInstanceOf(Error);
       expect((refusal as Error).message).toMatch(
-        /already sealed by a different terminal \(eventId run-terminal:inflight-distinct-terminal:1, seq 1, degraded\)/,
+        /already sealed by a different terminal \(eventId run-terminal:inflight-distinct-terminal:1, seq 1, inflight\)/,
       );
       const after = readFileSync(store.rolloutPath);
       expect(sha256(before)).toBe(beforeHash);

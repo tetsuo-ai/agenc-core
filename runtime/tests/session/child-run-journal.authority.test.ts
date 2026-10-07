@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -193,5 +193,74 @@ describe("child journal admission-owner metadata", () => {
       .filter((line) => line.includes('"type":"run_terminal"'));
     expect(terminals).toHaveLength(1);
     expect(terminals[0]).toContain('"finalMessage":"original"');
+  });
+
+  it("does not stamp a second child terminal while the first is queued after ENOSPC", () => {
+    const cwd = join(root, "queued-close-child");
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    const eventLog = new EventLog();
+    let mounted: RolloutStore | null = null;
+    const closeCallbacks: Array<() => void> = [];
+    let failTerminal = true;
+    const child = {
+      conversationId: "queued-close-child",
+      eventLog,
+      sessionConfiguration: {
+        cwd,
+        collaborationMode: { model: "test-model" },
+      },
+      services: { admissionRequired: false, provider: { name: "test-provider" } },
+      mountRolloutStore: (store: RolloutStore | null) => {
+        mounted = store;
+        store?.store.setWriteImplForTest((fd, buffer, offset, length) => {
+          const text = Buffer.from(buffer).toString("utf8");
+          if (failTerminal && text.includes('"type":"run_terminal"')) {
+            throw Object.assign(new Error("no space left on device"), {
+              code: "ENOSPC",
+            });
+          }
+          return writeSync(fd, buffer, offset, length);
+        });
+      },
+      emit: (input: Event) => {
+        const event = eventLog.emit(input);
+        const committed = mounted?.append(event, { durable: true });
+        if (!committed) {
+          throw new Error(
+            `durable event ${event.msg.type} was not fsync-committed`,
+          );
+        }
+        return event;
+      },
+      onBeforeDurableClose: (callback: () => void) => {
+        closeCallbacks.push(callback);
+      },
+    } as unknown as Session;
+    const store = mountChildRunJournal({
+      parent,
+      child,
+      originator: "agenc-subagent",
+      terminalResult: () => ({
+        status: "failed",
+        stopReason: "daemon_shutdown",
+        finalMessage: "original",
+      }),
+    })!;
+    children.push(store);
+    expect(() => closeCallbacks.at(-1)!()).toThrow(/was not fsync-committed/);
+    const seqAfterQueue = eventLog.lastSeq;
+    const before = readFileSync(store.rolloutPath);
+    expect(before.toString("utf8")).not.toContain('"type":"run_terminal"');
+    expect(() => closeCallbacks.at(-1)!()).toThrow(/was not fsync-committed/);
+    expect(eventLog.lastSeq).toBe(seqAfterQueue);
+    expect(readFileSync(store.rolloutPath)).toEqual(before);
+    failTerminal = false;
+    store.store.setWriteImplForTest(writeSync);
+    store.close();
+    const lines = readFileSync(store.rolloutPath, "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"type":"run_terminal"'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('"finalMessage":"original"');
   });
 });

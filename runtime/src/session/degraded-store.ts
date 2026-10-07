@@ -160,6 +160,19 @@ export class DegradedStore<T> {
     return [...this.inFlight, ...this.buffer];
   }
 
+  /**
+   * The slice an unsettled `tryFlush()` is writing. Empty when no flush is
+   * in flight. This is not the ring buffer: a refusal names it separately.
+   */
+  inFlightItems(): ReadonlyArray<T> {
+    return [...this.inFlight];
+  }
+
+  /** Ring buffer, not including the in-flight drain slice. */
+  bufferedItems(): ReadonlyArray<T> {
+    return [...this.buffer];
+  }
+
   /** Remove and return all buffered events. */
   drain(): T[] {
     const out = this.buffer;

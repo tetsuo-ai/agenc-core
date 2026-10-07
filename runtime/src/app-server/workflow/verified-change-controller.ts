@@ -207,6 +207,14 @@ export interface WorkflowRunJournal {
     readonly sequence: number;
     readonly result: RunTerminalResult;
   } | undefined;
+  /**
+   * Terminal for this epoch held in the in-flight drain slice, the degraded
+   * ring, or the unflushed batch. It is not a complete fsynced line, so it
+   * must not be projected and must not be replaced by a detached row.
+   */
+  queuedTerminal?(): ReturnType<
+    NonNullable<WorkflowRunJournal["canonicalTerminal"]>
+  >;
   /** Suspend only after every effect has durably settled. */
   appendSuspended?(input: { readonly suspendedAt: string }): WorkflowEffectEventRef;
   close(): Promise<void>;
@@ -218,6 +226,17 @@ function readJournalTerminal(journal: WorkflowRunJournal): ReturnType<
   if (journal.canonicalTerminal === undefined) return undefined;
   try {
     return journal.canonicalTerminal();
+  } catch {
+    return undefined;
+  }
+}
+
+function readQueuedJournalTerminal(journal: WorkflowRunJournal): ReturnType<
+  NonNullable<WorkflowRunJournal["queuedTerminal"]>
+> {
+  if (journal.queuedTerminal === undefined) return undefined;
+  try {
+    return journal.queuedTerminal();
   } catch {
     return undefined;
   }
@@ -1360,11 +1379,47 @@ export class VerifiedChangeWorkflowController {
   }
 
   async #closeJournal(ctx: RunContext): Promise<void> {
+    const queued = ctx.terminalized
+      ? undefined
+      : readQueuedJournalTerminal(ctx.journal);
     try {
       await ctx.journal.close();
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
+      );
+    }
+    this.#projectDrainedTerminal(ctx, queued);
+  }
+
+  /**
+   * A terminal that was only queued becomes projectable once close drains it
+   * into a complete fsynced line. Until that line is in the file, SQLite
+   * stays empty: a detached row would name a different event.
+   */
+  #projectDrainedTerminal(
+    ctx: RunContext,
+    queued: ReturnType<typeof readQueuedJournalTerminal>,
+  ): void {
+    if (
+      queued === undefined ||
+      ctx.terminalized ||
+      ctx.repo.getCurrentTerminalResult(ctx.runId) !== undefined
+    ) {
+      return;
+    }
+    const adopted = readJournalTerminal(ctx.journal);
+    if (adopted === undefined || adopted.eventId !== queued.eventId) return;
+    try {
+      ctx.repo.recordTerminalResult({
+        epoch: ctx.journal.epoch,
+        eventId: adopted.eventId,
+        result: adopted.result,
+      });
+      ctx.terminalized = true;
+    } catch (error) {
+      this.#deps.warn(
+        `workflow ${ctx.runId} terminal projection after drain failed: ${errorMessage(error)}`,
       );
     }
   }
@@ -3052,6 +3107,10 @@ export class VerifiedChangeWorkflowController {
         } else if (journalTerminalAlreadySealed(error)) {
           this.#deps.warn(
             `workflow ${ctx.runId} journal already has a terminal; not recording a detached result`,
+          );
+        } else if (readQueuedJournalTerminal(ctx.journal) !== undefined) {
+          this.#deps.warn(
+            `workflow ${ctx.runId} terminal is queued for fsync and is not yet a complete journal line; not recording a detached result`,
           );
         } else {
           // A broken rollout file must not leave a stopped Goal looking live.

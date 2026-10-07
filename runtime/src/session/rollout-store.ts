@@ -47,6 +47,7 @@ import {
   type AgentPath,
   type ThreadId,
 } from "../agents/registry.js";
+import type { CanonicalRunTerminal } from "./canonical-run-terminal.js";
 import type { Event, EventMsg } from "./event-log.js";
 import {
   parseRolloutLine,
@@ -998,6 +999,28 @@ export class RolloutStore {
 
   append(event: Event, opts: AppendOptions = {}): boolean {
     return this.store.append(event, opts);
+  }
+
+  /**
+   * Complete `run_terminal` for this epoch in a bounded suffix of the
+   * committed file. Not the degraded ring or the unflushed batch.
+   */
+  committedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return this.store.readCommittedRunTerminal(runId, epoch);
+  }
+
+  /**
+   * `run_terminal` for this epoch held in the in-flight drain slice, the
+   * degraded ring, or the unflushed batch. Not a complete fsynced line.
+   */
+  queuedRunTerminal(
+    runId: string,
+    epoch: number,
+  ): CanonicalRunTerminal | undefined {
+    return this.store.queuedRunTerminal(runId, epoch);
   }
 
   /** Lifecycle epoch owned by this canonical rollout writer. */

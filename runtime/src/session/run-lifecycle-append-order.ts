@@ -3,7 +3,7 @@ import { parseRolloutLine, type RolloutItem } from "./rollout-item.js";
 import { stableStringify } from "../utils/stableStringify.js";
 
 /** Where an item the append-order scan saw is held. */
-export type RunLifecycleSource = "journal" | "degraded" | "pending";
+export type RunLifecycleSource = "journal" | "inflight" | "degraded" | "pending";
 
 /**
  * Active epoch for one run, derived only from `run_terminal` / `run_reopened`.
@@ -38,45 +38,48 @@ const APPEND: RunLifecycleAppendDecision = { kind: "append" };
 /**
  * Refuse a canonical lifecycle append the journal contract cannot replay.
  *
- * `run_reopened` is accepted only after the terminal it supersedes is already
- * in this file. A later `run_terminal` for that superseded epoch is refused.
- * Those are the only orders that would put a clearing reopen outside a tail
- * window that still contains the terminal (`reopenTerminalEpoch` appends the
- * reopen, via this check, after the terminal line is already durable).
- *
- * A reopen is accepted when its terminal is already a complete line in the
- * file, or is ahead of the reopen in the unflushed batch. That batch is one
- * ordered write: the store serializes `pending` in array order into a single
- * buffer and fsyncs that buffer, so a committed reopen has its terminal at a
- * lower byte offset in the same durable write. A terminal that is only in
- * the degraded ring is not part of that write. The reopen is refused and
- * the file is left untouched.
+ * A `run_reopened` is accepted when the terminal it supersedes is already a
+ * complete line in this file, or is ahead of the reopen in the same unflushed
+ * `pending` batch. That batch is one ordered fsync: the store serializes
+ * `pending` in array order into a single buffer and fsyncs that buffer, so a
+ * committed reopen has its terminal at a lower byte offset. A terminal that
+ * is only in the degraded ring, or only in the in-flight drain slice, is not
+ * part of that write. The reopen is refused and the file is left untouched.
+ * A later `run_terminal` for that superseded epoch is refused. Those are the
+ * orders that would put a clearing reopen outside a tail window that still
+ * contains the terminal (`reopenTerminalEpoch` appends the reopen, via this
+ * check, after the terminal line is already durable).
  *
  * A terminal for a later epoch is accepted only when the reopen that opened
  * the epoch, and the terminal that reopen cleared, are each already in the
- * file or in that same unflushed batch. Either record still sitting in the
- * degraded ring is not a durable order, so the append is refused.
+ * file or in that same unflushed batch. A record that is still in the
+ * degraded ring or the in-flight slice is not a durable order, so the append
+ * is refused.
  *
  * An epoch has one terminal. Once a terminal for the active epoch is in the
- * file, queued in the degraded buffer, or in the unflushed batch, a different
- * `run_terminal` for that epoch is refused. The same terminal again is a
- * retry: identical `eventId`, `id`, `seq` and payload (the store's form of
- * `run-durability` `recordTerminalResult`, which treats the same `eventId`
- * and the same content, including the sequence, as idempotent). The caller
- * writes nothing for a retry.
+ * file, in the in-flight drain slice, in the degraded ring, or in the
+ * unflushed batch, a different `run_terminal` for that epoch is refused. The
+ * same terminal again is a retry: identical `eventId`, `id`, `seq` and
+ * payload (the store's form of `run-durability` `recordTerminalResult`, which
+ * treats the same `eventId` and the same content, including the sequence, as
+ * idempotent). The caller writes nothing for a retry.
  *
  * Items are scanned in the order they reach disk: file bytes, then the
- * degraded queue, then the unflushed batch. The prior-byte scan matches the
- * startup tail reader: a trailing segment with no newline is not a record,
- * and a complete line that looks like a lifecycle record (`"type":"run_terminal"`
- * or `"type":"run_reopened"`) but does not parse refuses the append. A corrupt
- * ordinary line that only quotes those words is not a lifecycle record.
+ * in-flight drain slice, then the degraded ring, then the unflushed batch.
+ * The in-flight slice is the batch an unsettled degraded flush is writing.
+ * It is not the degraded ring, and refusal text names it `inflight`.
+ * The prior-byte scan matches the startup tail reader: a trailing segment
+ * with no newline is not a record, and a complete line that looks like a
+ * lifecycle record (`"type":"run_terminal"` or `"type":"run_reopened"`) but
+ * does not parse refuses the append. A corrupt ordinary line that only quotes
+ * those words is not a lifecycle record.
  */
 export function assertRunLifecycleAppendOrder(
   priorBytes: Buffer,
   pending: readonly RolloutItem[],
   event: Event,
   degraded: readonly RolloutItem[] = [],
+  inflight: readonly RolloutItem[] = [],
 ): RunLifecycleAppendDecision {
   const message = event.msg;
   if (message.type !== "run_terminal" && message.type !== "run_reopened") {
@@ -90,6 +93,7 @@ export function assertRunLifecycleAppendOrder(
   }
   const cursor = cursorFromPrior(
     priorBytes,
+    inflight,
     degraded,
     pending,
     incoming.runId,
@@ -154,7 +158,7 @@ function terminalIdentity(event: Event): string {
   });
 }
 
-/** File or the same unflushed batch. The degraded ring is neither. */
+/** File or the same unflushed batch. The in-flight slice and the degraded ring are neither. */
 function epochOpenIsDurable(openedBy: {
   readonly source: RunLifecycleSource;
   readonly seal: RunLifecycleSource;
@@ -184,6 +188,7 @@ type LifecycleFact =
 
 function cursorFromPrior(
   priorBytes: Buffer,
+  inflight: readonly RolloutItem[],
   degraded: readonly RolloutItem[],
   pending: readonly RolloutItem[],
   runId: string,
@@ -197,6 +202,9 @@ function cursorFromPrior(
     const line = text.slice(lineStart, index);
     lineStart = index + 1;
     noteCompleteLifecycleLine(cursor, line, runId, appendedType);
+  }
+  for (const item of inflight) {
+    noteLifecycleFact(cursor, item, runId, "inflight");
   }
   for (const item of degraded) {
     noteLifecycleFact(cursor, item, runId, "degraded");

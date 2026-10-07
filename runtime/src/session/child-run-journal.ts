@@ -3,7 +3,10 @@
 import { readFileSync } from "node:fs";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import { readProviderIdentity } from "../llm/provider.js";
-import { canonicalRunTerminalFromItems, canonicalRunTerminalFromText } from "./canonical-run-terminal.js";
+import {
+  canonicalRunTerminalFromItems,
+  canonicalRunTerminalFromText,
+} from "./canonical-run-terminal.js";
 import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
 import type { SubagentTurnOutcomeEvent } from "./event-log.js";
 import { RolloutStore, TerminalRunEpochOpenError } from "./rollout-store.js";
@@ -36,6 +39,43 @@ export interface RecordUnconstructedChildRunTerminalOptions {
    * When present, it is fsync-committed immediately before run_terminal.
    */
   readonly taskOutcome?: SubagentTurnOutcomeEvent;
+}
+
+function isBuriedTerminalAdoptError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (error.message.includes("already sealed") ||
+      error.message.includes("eventId already allocated"))
+  );
+}
+
+/**
+ * A capped tail can miss a terminal buried ahead of this epoch's reopen.
+ * That miss is not absence: adopt the line only after the append checker
+ * has already refused a second identity.
+ */
+function buriedChildTerminalPath(
+  store: RolloutStore,
+  runId: string,
+  epoch: number,
+): string | undefined {
+  const sealed =
+    store.committedRunTerminal(runId, epoch) ??
+    canonicalRunTerminalFromItems(store.readAll(), runId, epoch);
+  return sealed === undefined ? undefined : store.rolloutPath;
+}
+
+function throwIfQueuedChildTerminal(
+  store: RolloutStore,
+  runId: string,
+  epoch: number,
+  label: "child" | "unconstructed child",
+): void {
+  const queued = store.queuedRunTerminal(runId, epoch);
+  if (queued === undefined) return;
+  throw new Error(
+    `${label} run_terminal ${queued.eventId} was not fsync-committed`,
+  );
 }
 
 /**
@@ -126,12 +166,16 @@ export function recordUnconstructedChildRunTerminal(
       }
       throw error;
     }
-    const alreadySealed = canonicalRunTerminalFromItems(
-      store.readAll(),
+    const epoch = store.runEpoch;
+    if (store.committedRunTerminal(options.childRunId, epoch) !== undefined) {
+      return store.rolloutPath;
+    }
+    throwIfQueuedChildTerminal(
+      store,
       options.childRunId,
-      store.runEpoch,
+      epoch,
+      "unconstructed child",
     );
-    if (alreadySealed !== undefined) return store.rolloutPath;
     let lastSequenceBeforeTerminal = store
       .readAll()
       .filter((item) => item.type === "event_msg")
@@ -141,7 +185,6 @@ export function recordUnconstructedChildRunTerminal(
           Number.isSafeInteger(sequence) && (sequence ?? 0) > 0,
       )
       .reduce((highest, sequence) => Math.max(highest, sequence), 0);
-    const epoch = store.runEpoch;
     if (options.taskOutcome !== undefined) {
       const outcomeEventId = `subagent-turn-outcome:${options.childRunId}:${epoch}:${options.taskOutcome.turnId}`;
       const outcomeSequence = lastSequenceBeforeTerminal + 1;
@@ -165,40 +208,52 @@ export function recordUnconstructedChildRunTerminal(
       lastSequenceBeforeTerminal = outcomeSequence;
     }
     const eventId = `run-terminal:${options.childRunId}:${epoch}`;
-    const committed = store.append(
-      {
-        eventId,
-        id: eventId,
-        seq: lastSequenceBeforeTerminal + 1,
-        msg: {
-          type: "run_terminal",
-          payload: {
-            runId: options.childRunId,
-            epoch,
-            status: options.result.status,
-            exitCode:
-              options.result.status === "completed"
-                ? 0
-                : options.result.status === "failed"
-                  ? 1
+    try {
+      const committed = store.append(
+        {
+          eventId,
+          id: eventId,
+          seq: lastSequenceBeforeTerminal + 1,
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId: options.childRunId,
+              epoch,
+              status: options.result.status,
+              exitCode:
+                options.result.status === "completed"
+                  ? 0
+                  : options.result.status === "failed"
+                    ? 1
+                    : null,
+              stopReason: options.result.stopReason,
+              finalMessage: options.result.finalMessage ?? null,
+              usage: null,
+              lastSequenceBeforeTerminal:
+                lastSequenceBeforeTerminal > 0
+                  ? lastSequenceBeforeTerminal
                   : null,
-            stopReason: options.result.stopReason,
-            finalMessage: options.result.finalMessage ?? null,
-            usage: null,
-            lastSequenceBeforeTerminal:
-              lastSequenceBeforeTerminal > 0
-                ? lastSequenceBeforeTerminal
-                : null,
-            finishedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+            },
           },
         },
-      },
-      { durable: true },
-    );
-    if (!committed) {
-      throw new Error(
-        `unconstructed child run_terminal ${eventId} was not fsync-committed`,
+        { durable: true },
       );
+      if (!committed) {
+        throw new Error(
+          `unconstructed child run_terminal ${eventId} was not fsync-committed`,
+        );
+      }
+    } catch (error) {
+      if (isBuriedTerminalAdoptError(error)) {
+        const sealed = buriedChildTerminalPath(
+          store,
+          options.childRunId,
+          epoch,
+        );
+        if (sealed !== undefined) return sealed;
+      }
+      throw error;
     }
     return store.rolloutPath;
   } finally {
@@ -280,41 +335,49 @@ export function mountChildRunJournal(
       const result = options.terminalResult();
       const epoch = store.runEpoch;
       const runId = child.conversationId;
-      if (
-        canonicalRunTerminalFromItems(store.readAll(), runId, epoch) !==
-        undefined
-      ) {
+      if (store.committedRunTerminal(runId, epoch) !== undefined) {
         return;
       }
+      throwIfQueuedChildTerminal(store, runId, epoch, "child");
       const lastSequenceBeforeTerminal =
         Number.isSafeInteger(child.eventLog.lastSeq) &&
         child.eventLog.lastSeq > 0
           ? child.eventLog.lastSeq
           : null;
       const eventId = `run-terminal:${runId}:${epoch}`;
-      const terminal = child.emit({
-        eventId,
-        id: eventId,
-        msg: {
-          type: "run_terminal",
-          payload: {
-            runId,
-            epoch,
-            status: result.status,
-            exitCode:
-              result.status === "completed"
-                ? 0
-                : result.status === "failed"
-                  ? 1
-                  : null,
-            stopReason: result.stopReason,
-            finalMessage: result.finalMessage ?? null,
-            usage: null,
-            lastSequenceBeforeTerminal,
-            finishedAt: new Date().toISOString(),
+      let terminal;
+      try {
+        terminal = child.emit({
+          eventId,
+          id: eventId,
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId,
+              epoch,
+              status: result.status,
+              exitCode:
+                result.status === "completed"
+                  ? 0
+                  : result.status === "failed"
+                    ? 1
+                    : null,
+              stopReason: result.stopReason,
+              finalMessage: result.finalMessage ?? null,
+              usage: null,
+              lastSequenceBeforeTerminal,
+              finishedAt: new Date().toISOString(),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (isBuriedTerminalAdoptError(error)) {
+          if (buriedChildTerminalPath(store, runId, epoch) !== undefined) {
+            return;
+          }
+        }
+        throw error;
+      }
       if (
         terminal.eventId !== eventId ||
         terminal.id !== eventId ||
