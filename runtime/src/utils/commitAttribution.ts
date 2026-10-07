@@ -1,3 +1,4 @@
+import { isHaiku55 } from './model/anthropicThinkingControl.js'
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { stat } from 'fs/promises'
 import { isAbsolute, join, relative, sep } from 'path'
@@ -102,6 +103,7 @@ export function sanitizeSurfaceKey(surfaceKey: string): string {
  * Maps internal variants to their public names based on model family.
  */
 export function sanitizeModelName(shortName: string): string {
+  if (isHaiku55(shortName)) return 'claude-haiku-5-5'
   // Map internal variants to public equivalents based on model family
   if (shortName.includes('fable-5')) return 'claude-fable-5'
   if (shortName.includes('opus-4-8')) return 'claude-opus-4-8'

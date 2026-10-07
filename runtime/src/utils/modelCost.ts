@@ -367,8 +367,7 @@ export function formatModelPricing(costs: ModelCosts): string {
 export function getModelPricingString(model: string): string | undefined {
   const shortName = getCanonicalNameForCost(model)
   if (shortName === 'claude-haiku-5-5') {
-    const prompt = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-    return prompt > 100_000 ? COST_HAIKU_55_LONG : COST_HAIKU_55
+    return '$0.10/$0.50 per Mtok up to 100K prompt tokens; $0.50/$2.50 above 100K'
   }
   const costs = MODEL_COSTS[shortName]
   if (!costs) return undefined

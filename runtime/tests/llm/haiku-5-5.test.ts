@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { sanitizeModelName } from "../../src/utils/commitAttribution.js";
+import { defaultConfig } from "../../src/config/schema.js";
+import { StaticModelsManager } from "../../src/llm/models-manager.js";
+import { isCanonicalEventPayload } from "../../src/state/recovery-journal-schema.js";
 import { parseClaudeModelId } from "../../src/utils/model/claudeModelId.js";
 import { AGENC_HAIKU_5_5_CONFIG } from "../../src/utils/model/configs.js";
 import { firstPartyNameToCanonical, getMarketingNameForModel } from "../../src/utils/model/model.js";
@@ -11,7 +15,7 @@ import { resolveSessionReasoningEffort } from "../../src/session/session-reasoni
 import { buildAnthropicMessagesRequest, parseAnthropicMessagesResponse } from "../../src/llm/wire/messages-anthropic.js";
 import { anthropicSupportsFastMode } from "../../src/llm/providers/anthropic/fast-mode.js";
 import { getTokenizerConfigForProvider, roughTokenCountEstimationForProvider } from "../../src/llm/token-estimation.js";
-import { calculateUSDCost, getModelCosts } from "../../src/utils/modelCost.js";
+import { calculateUSDCost, getModelCosts, getModelPricingString } from "../../src/utils/modelCost.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS } from "../../src/session/cost.js";
 import { BedrockProvider } from "../../src/llm/providers/bedrock/index.js";
 import { AnthropicProvider } from "../../src/llm/providers/anthropic/adapter.js";
@@ -53,6 +57,7 @@ describe("Claude Haiku 5.5", () => {
     expect(parseClaudeModelId("claude-haiku-5")?.canonical).toBe("claude-haiku-5");
     expect(parseClaudeModelId("claude-haiku-5-50")?.canonical).toBe("claude-haiku-5-50");
     expect(getMarketingNameForModel(model)).toBe("Haiku 5.5");
+    expect(sanitizeModelName(model)).toBe(model);
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.anthropic).toBe("claude-opus-5-5");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic.indexOf(model)).toBeLessThan(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic.indexOf("claude-haiku-4-5-20251001"));
     expect(childModelProfile("anthropic", model)).toEqual(childModelProfile("anthropic", "claude-haiku-4-5"));
@@ -64,6 +69,11 @@ describe("Claude Haiku 5.5", () => {
     expect(row).toMatchObject({ contextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
       inputModalities: ["text", "image"], defaultReasoningLevel: "medium", additionalSpeedTiers: [] });
     expect([...row!.supportedReasoningLevels].sort()).toEqual([...levels].sort());
+  });
+  it("exposes the registered limits and efforts to the model picker", async () => {
+    const manager = new StaticModelsManager({ config: defaultConfig(), fallbackProvider: "anthropic" });
+    expect(await manager.getModelInfo(model)).toMatchObject({ contextWindow: 1_000_000,
+      maxOutputTokensUpperLimit: 128_000, supportedReasoningLevels: levels, usedFallbackModelMetadata: false });
   });
   it.each([undefined, ...levels])("sends summarized adaptive thinking at effort %s with no manual budget, sampling or priority", reasoningEffort => {
     const body = build({ reasoningEffort, temperature: 0.2, serviceTier: "priority", toolChoice: "required" });
@@ -108,6 +118,10 @@ describe("Claude Haiku 5.5", () => {
     ] });
     for (const text of ["prefix-bound", "private reasoning", "opaque-data"]) expect(JSON.stringify(body)).not.toContain(text);
   });
+  it("journals the one-hour write subset", () => {
+    expect(isCanonicalEventPayload("token_count", { cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000 })).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { cacheCreation1hInputTokens: "invalid" })).toBe(false);
+  });
   it("maps refusal through the same finish-reason contract as other 5.x models", () => {
     expect(parseAnthropicMessagesResponse(model, { ...responseBody, stop_reason: "refusal" }, { model, messages, tools }).finishReason).toBe("content_filter");
   });
@@ -133,6 +147,7 @@ describe("Claude Haiku 5.5", () => {
   });
   it("does not lend Haiku 5.5 prices to unknown minors or change Haiku 4.5", () => {
     const u = usage as Parameters<typeof getModelCosts>[1];
+    expect(getModelPricingString(model)).toContain("100K");
     expect(getModelCosts("claude-haiku-4-5", u).inputTokens).toBe(1);
     expect(getModelCosts("claude-haiku-5-50", u).inputTokens).not.toBe(0.1);
     expect(resolveRegisteredModelCatalogEntry({ provider: "anthropic", model: "claude-haiku-5-50" })).toBeUndefined();

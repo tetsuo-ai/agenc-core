@@ -1945,6 +1945,23 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     expect(tracker.emitted).toBe(348);
   });
 
+  test("Haiku 5.5 one-hour cache usage reaches event accounting and tiered session cost", async () => {
+    const ctx = mkCtx("chat");
+    const model = "claude-haiku-5-5";
+    const provider = mkProvider(async () => parseAnthropicMessagesResponse(model, {
+      model, content: [{ type: "text", text: "ok" }], stop_reason: "end_turn",
+      usage: { input_tokens: 60_001, output_tokens: 1000, cache_read_input_tokens: 20_000,
+        cache_creation_input_tokens: 20_000, cache_creation: { ephemeral_1h_input_tokens: 10_000 } },
+    }, { model, messages: [{ role: "user", content: "hello" }], tools: [] }));
+    const { session, events } = mkSession(provider);
+    const sidecar = new CostSidecar();
+    session.eventLog.subscribe(event => sidecar.onEvent(event));
+    await streamModel(mkState(ctx), ctx, session, mkRequest([{ role: "user", content: "hello" }]));
+    const event = events.find(event => event.msg.type === "token_count");
+    expect(event?.msg).toMatchObject({ payload: { cacheCreation1hInputTokens: 10_000 } });
+    expect(sidecar.getTotalCostUsd()).toBeCloseTo((60_001 * 0.5 + 1000 * 2.5 + 20_000 * 0.05 + 10_000 * 0.625 + 10_000) / 1e6, 10);
+  });
+
   test("a fast-served Anthropic turn reaches CostSidecar at fast-mode rates", async () => {
     // 1M input tokens on Opus 5.5: $4 standard, $8 in fast mode. A turn that
     // asked for fast but was served standard carries speed "standard".
