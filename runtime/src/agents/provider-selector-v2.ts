@@ -55,6 +55,13 @@ export interface V2Selection {
 export const pairKey = (pair: { readonly provider: string; readonly model: string }): string => `${pair.provider}/${pair.model}`;
 /** Verified outcomes needed before an ability counts as local evidence rather than its tier prior. */
 export const MIN_VERIFIED_OBSERVATIONS = 3;
+/**
+ * Paired failures of the first model needed before its row can support a
+ * cascade. One failure, rescued or not, is a single anecdote; two with a
+ * rescue is the least paired evidence that the second model recovers the
+ * first one's failures at all.
+ */
+export const MIN_PAIRED_FAILURES = 2;
 const finite = (x: number | undefined): x is number => x !== undefined && Number.isFinite(x) && x >= 0;
 /**
  * Utility units per dollar and per second. The dollar weight is the share of
@@ -68,12 +75,20 @@ export function utilityWeights(preferences: RoutingPreferences = {}, budgetUsd?:
   return { lambda: budgetUsd === undefined ? 0 : willingness / Math.max(0.001, budgetUsd),
     mu: preferences.speed === "fast" ? 0.01 : 0.0002 };
 }
-/** Bayesian shrinkage of P(second succeeds | first failed), never an independence assumption. */
+/**
+ * Bayesian shrinkage of P(second succeeds | first failed), never an
+ * independence assumption. Zero means no usable evidence: the raw counts must
+ * first show at least one rescue in at least MIN_PAIRED_FAILURES failures,
+ * and the smoothing only shapes the estimate after that.
+ */
 export function conditionalRecovery(first: string, second: string, evidence: readonly ConditionalSuccess[] = []): number {
   const row = evidence.find(item => item.first === first && item.second === second);
   if (row === undefined) return 0; // No evidence of complementary errors: do not invent a cascade gain.
   if (!Number.isSafeInteger(row.failures) || !Number.isSafeInteger(row.recovered) ||
       row.failures < 1 || row.recovered < 0 || row.recovered > row.failures) return 0;
+  // A row where the second model never rescued the first, or a lone failure,
+  // supports no cascade, however the prior would smooth it.
+  if (row.recovered < 1 || row.failures < MIN_PAIRED_FAILURES) return 0;
   return (row.recovered + 0.5) / (row.failures + 1);
 }
 /** Closed form minimum first-attempt success for c1+(1-p1)c2 <= budget. */
@@ -220,8 +235,9 @@ export function selectChildProviderV2(input: {
       const recovered = conditionalRecovery(pairKey(first), pairKey(second), verifier.conditional);
       const quality = first.quality + (1 - first.quality) * recovered;
       // As for a direct handoff, a tier alone supports no plan: paired
-      // recovery outcomes, or verified outcomes showing the first model does
-      // better than the current choice, must back it.
+      // outcomes in which the second model rescued the first, or verified
+      // outcomes showing the first model does better than the current
+      // choice, must back it.
       if (recovered === 0 && !verifiedBetter(first, selected)) continue;
       const c1 = first.estimatedCostUsd + first.handoffCostUsd + verifier.costUsd;
       const c2 = second.estimatedCostUsd + second.handoffCostUsd + verifier.costUsd;

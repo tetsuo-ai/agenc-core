@@ -228,6 +228,11 @@ describe("verified cost cascade", () => {
     expect(conditionalRecovery("a", "b")).toBe(0);
     expect(conditionalRecovery("a", "b", [{ first: "a", second: "b", failures: 0, recovered: 0 }])).toBe(0);
     expect(conditionalRecovery("a", "b", [{ first: "a", second: "b", failures: 9, recovered: 9 }])).toBe(0.95);
+    // The raw counts gate the smoothing: no rescue, or one lone failure, is no evidence.
+    for (const [failures, recovered] of [[1, 0], [10, 0], [1, 1]]) {
+      expect(conditionalRecovery("a", "b", [{ first: "a", second: "b", failures, recovered }])).toBe(0);
+    }
+    expect(conditionalRecovery("a", "b", [{ first: "a", second: "b", failures: 2, recovered: 1 }])).toBe(0.5);
     expect(cascadeThreshold(1, 4, 2)).toBe(0.75); expect(cascadeThreshold(2, 4, 1)).toBeUndefined();
   });
   it("requires a real verifier and a safe replay contract", () => {

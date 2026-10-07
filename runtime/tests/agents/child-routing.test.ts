@@ -269,6 +269,26 @@ describe("parent-first routing with the real model catalog", () => {
     }
   });
 
+  it.each([1, 10])("plans no cascade from paired outcomes with %i failures and no rescue, at any cap", async failures => {
+    const verifier = { prepare: vi.fn(async () => ({ available: true as const, retrySafe: true, costUsd: 0, latencyMs: 1,
+      conditional: [{ first: "deepseek/deepseek-v4-pro", second: "openai/gpt-6-astra", failures, recovered: 0 }],
+      check: async () => "pass" as const })) };
+    const verified = await catalogSession("openai", "gpt-6-astra", ["deepseek", "openai"], { childRoutingVerifier: verifier });
+    const plain = await catalogSession("openai", "gpt-6-astra", ["deepseek", "openai"]);
+    for (const maxCostUsd of [undefined, 1, 2, 20]) {
+      for (const request of [{ prompt: "Extract a short list of record IDs" },
+        { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning" as const, complexity: "standard" as const }]) {
+        const capped = { ...request, ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) };
+        const routed = await routeChildTask(verified, capped);
+        expect(routed.verification).toBeDefined();
+        expect(routed.result.cascade).toBeUndefined();
+        expect(routed.result.mode).not.toBe("cascade");
+        // The row changes nothing: the choice is the one made without a verifier.
+        expect(routed.result.selected?.model).toBe((await routeChildTask(plain, capped)).result.selected?.model);
+      }
+    }
+  });
+
   it("does not move a deepseek-flash parent up a tier after one verified pass", async () => {
     const session = await catalogSession("deepseek", "deepseek-flash", ["deepseek"]);
     const request = { prompt: "Find the probability that the graph has a cycle", taskKind: "reasoning" as const, complexity: "standard" as const };
