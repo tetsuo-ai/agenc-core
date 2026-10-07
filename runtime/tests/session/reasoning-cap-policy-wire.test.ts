@@ -45,7 +45,8 @@ async function scenario(samples: Sample[], policy: "off" | "streak2" | "absent" 
   const { session, events } = mkSession({ provider, model: "deepseek-flash", registry });
   Object.assign(session.config!, { reasoningCapPolicy: policy === "absent" ? undefined : policy });
   session.rolloutStore = {
-    assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout: vi.fn(),
+    assertCompactionProjectionReady: () => {}, assertToolAdmissionAllowed: vi.fn(),
+    append: vi.fn(), appendRollout: vi.fn(),
     rolloutPath: "/tmp/reasoning-cap-policy-fixture.jsonl",
   } as unknown as Session["rolloutStore"];
   const ctx = mkCtx({ reasoningEffort: "high" });
