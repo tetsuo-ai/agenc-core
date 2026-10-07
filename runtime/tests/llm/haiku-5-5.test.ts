@@ -19,6 +19,7 @@ import { calculateUSDCost, getModelCosts, getModelPricingString } from "../../sr
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS } from "../../src/session/cost.js";
 import { BedrockProvider } from "../../src/llm/providers/bedrock/index.js";
 import { AnthropicProvider } from "../../src/llm/providers/anthropic/adapter.js";
+import { LLMAuthenticationError, LLMRateLimitError } from "../../src/llm/errors.js";
 import { createTokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../src/llm/types.js";
 
@@ -163,7 +164,9 @@ describe("Claude Haiku 5.5", () => {
   it.each([403, 429])("retains Bedrock HTTP %s classification on the Messages route", async status => {
     const provider = new BedrockProvider({ model: `anthropic.${model}`, accessKeyId: "test-id", secretAccessKey: "test-secret",
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: status === 403 ? "permission_error" : "rate_limit_error", message: "test rejection" } }, { status })) });
-    await expect(provider.chat(messages, { singleWireAttempt: true })).rejects.toMatchObject({ status });
+    const request = provider.chat(messages, { singleWireAttempt: true });
+    await expect(request).rejects.toBeInstanceOf(status === 403 ? LLMAuthenticationError : LLMRateLimitError);
+    if (status === 403) await expect(request).rejects.toMatchObject({ statusCode: 403 });
   });
   it.each(["chat", "stream", "count"])("uses signed Bedrock Messages for %s", async method => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(method === "stream" ? sse() : Response.json(method === "count" ? { input_tokens: 100_000 } : responseBody));
