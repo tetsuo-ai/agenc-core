@@ -957,6 +957,46 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
+  // An approval denial marks the session stopped until the next user message.
+  // A worker or an unattended root turn never sends one.
+  it("lets a worker spawn after an earlier approval denial set its stop flag", async () => {
+    const fixture = callerFixture();
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(result.content).not.toContain("invalid-runtime-identity");
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(() => mockDelegate.mock.calls[0]![0].assertParentSessionActive?.()).not.toThrow();
+    fixture.revoke();
+  });
+
+  it("lets an unattended root turn spawn after an earlier approval denial", async () => {
+    const session = makeSession();
+    Object.assign(session, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 3,
+      activeTurn: { unsafePeek: () => ({ turnId: "goal-turn" }) } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({ message: "inspect", task_name: "worker" });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
+  it("still refuses a spawn when the user stops during its awaits", async () => {
+    const fixture = callerFixture();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.spyOn(fixture.child.services.modelsManager, "listModels").mockImplementation(async () => { await pending; return [{ slug: "test-model" }] as never; });
+    const call = createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, model: "test-model" });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    Object.assign(fixture.child, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    release();
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("invalid-runtime-identity");
+    expect(mockDelegate).not.toHaveBeenCalled();
+    fixture.revoke();
+  });
+
   it("cannot bind a sibling's Session to another live agent", () => {
     const fixture = callerFixture();
     fixture.revoke();

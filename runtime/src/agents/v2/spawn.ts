@@ -702,10 +702,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const originatingTurnId = session?.activeTurn?.unsafePeek()?.turnId;
     const originatingStopGeneration = session?.userStopGeneration;
     const originatingSignal = (args as { readonly __abortSignal?: AbortSignal }).__abortSignal;
+    // A Stop during this spawn's awaits advances the generation. The sticky
+    // stopped flag is not checked: an approval denial sets it until the next
+    // user message, and a worker or an unattended turn never sends one.
     const callerIsCurrent = (): boolean => session !== undefined &&
       opts.getSession() === rootSession && !session.isShuttingDown &&
       !session.abortController.signal.aborted && originatingSignal?.aborted !== true &&
-      session.stoppedByUserSinceLastPrompt !== true && session.userStopGeneration === originatingStopGeneration &&
+      session.userStopGeneration === originatingStopGeneration &&
       (originatingTurnId === undefined || session.activeTurn?.unsafePeek()?.turnId === originatingTurnId) &&
       (caller === undefined
         ? session === rootSession
