@@ -8,7 +8,6 @@
  */
 
 import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
-import { isNativeDeepSeekModel } from "../llm/registry/deepseek-models.js";
 import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-models.js";
 import type { LLMChatOptions } from "../llm/types.js";
 import { getInitialEffortSetting } from "../utils/effort.js";
@@ -18,10 +17,7 @@ import type { ReasoningEffort, TurnContext } from "./turn-context.js";
 
 type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 
-/** Only the native DeepSeek route has a measured, supported recovery switch. */
-export function supportsThinkingOffRecovery(provider: string, model: string): boolean {
-  return provider === "deepseek" && isNativeDeepSeekModel(model);
-}
+export { supportsThinkingOffRecovery } from "./reasoning-recovery-capability.js";
 
 function resolveGeminiSessionReasoningEffort(
   turnEffort: ReasoningEffort | undefined,

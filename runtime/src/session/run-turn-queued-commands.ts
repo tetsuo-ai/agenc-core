@@ -176,6 +176,11 @@ function drainQueuedCommandsAfterTools(params: {
         ? ({ kind: "task-notification" } as const)
         : undefined);
     const durableUserPrompt = queuedCommandIsDurableUserPrompt(command, origin);
+    // This can be a new human input inside the same runTurn invocation. The
+    // preceding prompt's caps cannot authorize a thinking override for it.
+    // Clear before the durable user event and the next checkpoint. Tool
+    // results, task notifications and meta attachments retain their scope.
+    if (durableUserPrompt) params.state.reasoningCapPolicy = undefined;
     const uuid =
       typeof command.uuid === "string" ? command.uuid : crypto.randomUUID();
     const displayText = queuedCommandDisplayText(command);

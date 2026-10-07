@@ -474,6 +474,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly reasoningCapPolicy?: "off" | "streak2";
   readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";

@@ -1,3 +1,4 @@
+import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
  * Phase 2 — Stream Model.
  *
@@ -93,6 +94,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  readonly reasoningCapSample?: ReasoningCapSample;
+  readonly reasoningCapTarget?: { readonly provider: string; readonly model: string };
   /** Snapshot of durable output-recovery intent, not a session config change. */
   readonly reasoningOnlyRecovery?: true;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
@@ -300,7 +303,10 @@ export function buildProviderOptions(
         : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
-    ...(request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+    ...((request.reasoningOnlyRecovery === true ||
+      (request.reasoningCapSample?.kind === "extra" && session.config?.reasoningCapPolicy === "streak2" &&
+        request.reasoningCapTarget?.provider === session.services.provider.name &&
+        request.reasoningCapTarget.model === (session.config?.model ?? ctx.modelInfo.slug))) && supportsThinkingOffRecovery(
       session.services.provider.name,
       session.config?.model ?? ctx.modelInfo.slug,
     ) ? { disableThinkingForRecovery: true as const } : {}),
@@ -1301,7 +1307,7 @@ export async function streamModel(
     resetCanonicalAssistantOutput();
     const messages = buildProviderMessages(request);
     const options = buildProviderOptions(request, ctx, scoped.signal, session);
-    if (options.disableThinkingForRecovery === true) {
+    if (options.disableThinkingForRecovery === true && request.reasoningOnlyRecovery === true) {
       session.emit({
         id: session.nextInternalSubId(),
         msg: { type: "warning", payload: {
@@ -1759,12 +1765,14 @@ export async function streamModel(
   // A completed thinking-off recovery that yields a validated tool call or
   // final answer is productive. Do not forgive visible/truncated retries,
   // empty replies, rejected calls, caps, or transport failures.
-  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
-      providerName, session.config?.model ?? ctx.modelInfo.slug,
-    ) && state.pendingTextToolCallCorrection === undefined &&
+  const productiveRecoveryOutput = state.pendingTextToolCallCorrection === undefined &&
     (response.finishReason === "stop" || response.finishReason === "tool_calls") &&
     (assistant.toolCalls.length > 0 ||
-      (response.finishReason === "stop" && Boolean(assistant.text?.trim())))) {
+      (response.finishReason === "stop" && Boolean(assistant.text?.trim())));
+  completeReasoningCapSample(state, request.reasoningCapSample, productiveRecoveryOutput, maxOutputTruncated);
+  if (request.reasoningOnlyRecovery === true && supportsThinkingOffRecovery(
+      providerName, session.config?.model ?? ctx.modelInfo.slug,
+    ) && productiveRecoveryOutput) {
     state.reasoningOnlyRecoveryCount = 0;
   }
   return state;

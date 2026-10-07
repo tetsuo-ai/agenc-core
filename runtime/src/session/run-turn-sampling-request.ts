@@ -262,6 +262,8 @@ function snapshotSamplingRequestContract(
     // Reconnects reuse this snapshot; a new sample or tool round snapshots
     // again and receives its own identity, even when the prompt is identical.
     managedRequestId: randomUUID(),
+    ...(request.reasoningCapSample ? { reasoningCapSample: { ...request.reasoningCapSample } } : {}),
+    ...(request.reasoningCapTarget ? { reasoningCapTarget: { ...request.reasoningCapTarget } } : {}),
     input: request.input.map(cloneLlmMessageSnapshot),
     tools: request.tools.map((tool) => ({
       ...tool,
