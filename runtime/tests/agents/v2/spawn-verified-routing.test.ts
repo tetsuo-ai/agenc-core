@@ -45,6 +45,10 @@ describe("host verification through spawn_agent", () => {
     const calls = mockDelegate.mock.calls.map(([request]) => request);
     expect(calls[0]?.plan?.task.id).not.toBe(calls[1]?.plan?.task.id);
     expect(calls[1]?.plan?.budgetAllocation?.maxCostUsd).toBeCloseTo(0.48);
+    await vi.waitFor(() => expect(routingNotices(value)).toHaveLength(2));
+    expect(routingNotices(value)[0]).toContain("after an independent check failed");
+    expect(routingNotices(value)[1]).toBe("Automatic routing for /root/extractor: Independent verification passed for " +
+      "/root/extractor_retry2. Use that child's durable result. The check failed for /root/extractor.");
   });
   it.each([
     ["rejects", () => Promise.reject(new Error("checker offline")), "The host task verifier failed: checker offline"],

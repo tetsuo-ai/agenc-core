@@ -249,11 +249,12 @@ function verificationNotice(result: ChildRoutingFallbackResult<AgentThread>, fir
   const path = last?.value.live.agentPath ?? firstPath;
   const earlier = result.attempts.slice(0, -1).filter(attempt => attempt.verdict === "fail")
     .map(attempt => attempt.value.live.agentPath);
-  const earlierFailed = earlier.length === 0 ? "" : ` Independent verification failed for ${earlier.join(" and ")}.`;
+  const earlierFailed = earlier.length === 0 ? "" : ` The check failed for ${earlier.join(" and ")}.`;
   const status = `Routing status: ${result.stopReason}.`;
-  if (last?.verdict === "pass") return `Independent verification passed for ${path}.${earlierFailed} Use that child's durable result.`;
+  if (last?.verdict === "pass") return `Independent verification passed for ${path}. Use that child's durable result.${earlierFailed}`;
   if (last?.verdict === "fail") {
-    return `Independent verification failed for ${path}.${earlierFailed} ${status} Do not accept its result as verified.`;
+    return `Independent verification failed for ${[...earlier, path].join(" and ")}. ${status} Do not accept ${
+      earlier.length === 0 ? "its result" : "these results"} as verified.`;
   }
   if (last?.verdict === "unavailable") {
     return `The independent check was unavailable for ${path}, so its result is unverified.${earlierFailed} ${status}`;
