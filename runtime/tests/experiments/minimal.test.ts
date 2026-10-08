@@ -23,7 +23,8 @@ test("tool bypass still propagates cancellation and the actual result", async ()
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
   const controller = new AbortController();
   const result = { content: "captured stdout", isError: false };
-  const params = { session: { services: {} }, signal: controller.signal, invoke: async (context: { signal: AbortSignal; crossEffectBoundary(): void }) => {
+  const params = { session: { services: {} }, turnId: "turn", callId: "call", args: {},
+    tool: { name: "fixture", recoveryCategory: "idempotent" }, signal: controller.signal, invoke: async (context: { signal: AbortSignal; crossEffectBoundary(): void }) => {
     context.crossEffectBoundary();
     controller.abort(new Error("stop"));
     expect(context.signal.aborted).toBe(true);

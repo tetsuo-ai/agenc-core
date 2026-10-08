@@ -1,3 +1,4 @@
+import { flushOneShotEffectJournal } from "../budget/admitted-tool-call.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
 import { classifyUntrustedToolResult } from "../tools/untrusted-tool-result-framing.js";
@@ -113,6 +114,7 @@ export async function* runMinimalTurn(
   } finally {
     // Request diagnostics are deliberately materialized off the command path.
     for (const response of responses) void response.requestMetrics;
+    flushOneShotEffectJournal(session);
     // The one-shot crash contract buffers this run; serialization redacts at close.
     for (const message of messages.slice(start)) {
       if (message.role === "tool" && message.toolCallId && !message.runtimeOnly?.toolResultIntegrity) {
