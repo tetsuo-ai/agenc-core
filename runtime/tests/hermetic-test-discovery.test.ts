@@ -29,6 +29,7 @@ const HERMETIC_ENV_CONTRACT = JSON.parse(
 
 const LIVE_TEST_FILES = [
   "tests/browser/live-e2e.test.ts",
+  "tests/live/anthropic-haiku-5-5.live.test.ts",
   "tests/live/anthropic-opus-5-5.live.test.ts",
   "tests/live/eval-executor-docker.live.test.ts",
   "tests/live/eval-executor-egress.live.test.ts",
