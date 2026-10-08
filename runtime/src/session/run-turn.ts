@@ -2064,11 +2064,13 @@ export async function* runTurnKernel(
       },
     );
   } catch (error) {
+    session.writeBehind?.finish();
     if (turnStarted) {
       emitTurnFailed(error instanceof Error ? error.message : String(error));
     }
     throw error;
   } finally {
+    session.writeBehind?.finish();
     for (const cleanup of signalCleanups) cleanup();
     codeModeTurnWorker.dispose();
     // `onTaskFinished` is emitted uniformly from the spawn site so every
@@ -3506,6 +3508,7 @@ async function* runTurnKernelInner(
     const sleepRan = state.toolUseBlocks.some(
       (block) => block.name === SLEEP_TOOL_NAME,
     );
+    session.writeBehind?.beginStep();
     await executeTools(state, ctx, session, signal);
     const cancelledAfterTools = await finishCancelledIfAborted();
     if (cancelledAfterTools !== null) {

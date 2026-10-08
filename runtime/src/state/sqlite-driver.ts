@@ -1,3 +1,4 @@
+import { drainProjectWriteBehind } from "../session/write-behind.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -101,6 +102,23 @@ export type SqliteStatement<
   Row = unknown,
 > = BetterSqlite3.Statement<Params, Row>;
 
+function withWriteBehindReadBarrier<Params extends unknown[], Row>(
+  statement: SqliteStatement<Params, Row>,
+  projectDir: string,
+): SqliteStatement<Params, Row> {
+  for (const method of ["get", "all", "iterate"] as const) {
+    const invoke = statement[method];
+    Object.defineProperty(statement, method, {
+      configurable: true,
+      value: function (this: SqliteStatement<Params, Row>, ...args: Params) {
+        drainProjectWriteBehind(projectDir);
+        return Reflect.apply(invoke, this, args);
+      },
+    });
+  }
+  return statement;
+}
+
 /** Distinct SQL texts kept compiled per connection (least recently used first out). */
 export const PREPARED_STATEMENT_CACHE_LIMIT = 512;
 
@@ -122,7 +140,7 @@ class PreparedStatementCache {
   readonly #database: SqliteDatabase;
   readonly #statements = new Map<string, SqliteStatement>();
 
-  constructor(database: SqliteDatabase) {
+  constructor(database: SqliteDatabase, private readonly projectDir: string) {
     this.#database = database;
   }
 
@@ -131,12 +149,12 @@ class PreparedStatementCache {
   ): SqliteStatement<Params, Row> {
     const cached = this.#statements.get(sql);
     if (cached !== undefined) {
-      if (cached.busy) return this.#database.prepare<Params, Row>(sql);
+      if (cached.busy) return withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.projectDir);
       this.#statements.delete(sql);
       this.#statements.set(sql, cached);
       return cached as unknown as SqliteStatement<Params, Row>;
     }
-    const statement = this.#database.prepare<Params, Row>(sql);
+    const statement = withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.projectDir);
     this.#statements.set(sql, statement as unknown as SqliteStatement);
     if (this.#statements.size > PREPARED_STATEMENT_CACHE_LIMIT) {
       const leastRecent = this.#statements.keys().next().value;
@@ -192,8 +210,8 @@ export class StateSqliteDriver {
     }
     this.state = state;
     this.#logs = logs;
-    this.#stateStatements = new PreparedStatementCache(state);
-    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs);
+    this.#stateStatements = new PreparedStatementCache(state, this.projectDir);
+    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs, this.projectDir);
   }
 
   get logs(): SqliteDatabase {
@@ -208,7 +226,7 @@ export class StateSqliteDriver {
       if (logs.open) logs.close();
       throw error;
     }
-    this.#logsStatements = new PreparedStatementCache(logs);
+    this.#logsStatements = new PreparedStatementCache(logs, this.projectDir);
     this.#logs = logs;
     return logs;
   }
@@ -225,7 +243,7 @@ export class StateSqliteDriver {
     sql: string,
   ): SqliteStatement<Params, Row> {
     const logs = this.logs;
-    return (this.#logsStatements ??= new PreparedStatementCache(logs))
+    return (this.#logsStatements ??= new PreparedStatementCache(logs, this.projectDir))
       .prepare<Params, Row>(sql);
   }
 
@@ -236,6 +254,7 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
+    drainProjectWriteBehind(this.projectDir);
     return this.withTransactionDurability(this.state, () => this.#stateTransaction(fn) as T);
   }
 
@@ -247,6 +266,7 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
+    drainProjectWriteBehind(this.projectDir);
     // The mode method supplies its fresh default wrapper as the callback's
     // receiver. Retain that callable family and per-invocation identity.
     return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
@@ -341,13 +361,13 @@ export class StateSqliteReader {
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.state.prepare<Params, Row>(sql);
+    return withWriteBehindReadBarrier(this.state.prepare<Params, Row>(sql), this.projectDir);
   }
 
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.logs.prepare<Params, Row>(sql);
+    return withWriteBehindReadBarrier(this.logs.prepare<Params, Row>(sql), this.projectDir);
   }
 
   close(): void {

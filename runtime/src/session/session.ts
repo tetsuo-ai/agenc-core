@@ -1,3 +1,4 @@
+import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
 /**
  * Session — initialized model agent context.
  *
@@ -2568,6 +2569,10 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+  private readonly transientWriteBehind = new SessionWriteBehindQueue();
+  get writeBehind(): SessionWriteBehindQueue {
+    return this.rolloutStore?.store.writeBehind ?? this.transientWriteBehind;
+  }
   private shutdownResourceRelease?: () => void | Promise<void>;
 
   private outOfBandElicitationPauseCount = 0;
@@ -3530,7 +3535,7 @@ export class Session {
     }
     const withTurnAuthority = <T>(operation: () => T): T =>
       runWithCurrentRuntimeSession(this, () =>
-        runWithCanonicalSettingsAuthority(configStore, operation),
+        withSessionWriteBehind(this.writeBehind, () => runWithCanonicalSettingsAuthority(configStore, operation)),
       );
     if (opts.ctx === undefined) {
       while (this.pendingProviderSwitch !== null) {
@@ -4883,6 +4888,7 @@ export class Session {
     event: Event,
     appendOpts: AppendOptions = {},
   ): { readonly event: Event; publish(): Event } {
+    if (this.writeBehind.draining) this.writeBehind.drain();
     if (this.canonicalJournalSealed) {
       throw new Error(
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
@@ -4978,6 +4984,11 @@ export class Session {
 
   /** Publish an event already stamped and appended by {@link prepareEmit}. */
   publishPreparedEvent(event: Event): Event {
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(event);
+      this.writeBehind.defer("event-publication", () => this.publishPreparedEvent(captured));
+      return event;
+    }
     hitM4DurabilityFailpoint("before_event_publish");
     this.eventLog.publish(event, (published) => {
       // Compatibility consumers belong to the same FIFO publication queue.
@@ -5769,6 +5780,7 @@ export class Session {
    * abort-then-install sequence).
    */
   private async abortAllTasksLocked(reason: TurnAbortReason): Promise<void> {
+    this.writeBehind.finish();
     const taken = await this.activeTurn.swap(null);
     if (taken === null) return;
     const tasks = Array.from(taken.tasks.values());
@@ -6125,6 +6137,7 @@ export class Session {
    * provider_switched re-entry).
    */
   abortTerminal(reason: AbortReason): void {
+    this.writeBehind.finish();
     if (reason === "provider_switched") {
       this.abortActiveTurnForProviderSwitch();
       return;
@@ -6338,6 +6351,7 @@ export class Session {
     }
     let durableCloseError: unknown;
     try {
+      this.writeBehind.finish();
       await shutdownEffectSettlementSupervisor(this, MAX_DRAIN_MS);
       let drainedOperationCount = 0;
       while (this.pendingDurableOperations.size > 0) {
@@ -6386,8 +6400,8 @@ export class Session {
       try {
         this.rolloutStore.flushDurable();
         this.rolloutStore.close();
-      } catch {
-        /* best-effort */
+      } catch (error) {
+        durableCloseError ??= error;
       }
     }
     try {

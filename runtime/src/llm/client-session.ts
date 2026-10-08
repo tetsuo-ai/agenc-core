@@ -1,3 +1,4 @@
+import { currentSessionWriteBehind } from "../session/write-behind.js";
 import { endpointMetadataFailureHandler } from "./endpoint-metadata-cache.js";
 /**
  * Turn-scoped provider HTTP session.
@@ -1425,8 +1426,10 @@ export class ProviderHttpClientSession {
         signal,
       }, fetchImpl);
       if (!response.ok) fail();
+      if (method === "POST") currentSessionWriteBehind()?.drain();
       return response;
     } catch (error) {
+      currentSessionWriteBehind()?.finish();
       fail();
       throw error;
     }

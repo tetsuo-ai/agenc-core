@@ -1,7 +1,28 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { dirname, resolve } from "node:path";
 
 type WriteBehindJob = { readonly kind: string; readonly run: () => void };
 const currentQueue = new AsyncLocalStorage<SessionWriteBehindQueue>();
+const writers = new Map<string, { project: string; queue: SessionWriteBehindQueue }>();
+
+export function registerSessionWriteBehind(rolloutPath: string, queue: SessionWriteBehindQueue): () => void {
+  const path = resolve(rolloutPath);
+  const entry = { project: dirname(dirname(dirname(path))), queue };
+  writers.set(path, entry);
+  return () => { if (writers.get(path) === entry) writers.delete(path); };
+}
+
+export function drainRolloutWriteBehind(rolloutPath: string): void {
+  const queue = writers.get(resolve(rolloutPath))?.queue;
+  if (queue !== undefined && !queue.draining) queue.drain();
+}
+
+export function drainProjectWriteBehind(projectDir: string): void {
+  const project = resolve(projectDir);
+  for (const entry of writers.values()) {
+    if (entry.project === project && !entry.queue.draining) entry.queue.drain();
+  }
+}
 
 /** One session's ordered persistence work. Jobs must capture their inputs. */
 export class SessionWriteBehindQueue {

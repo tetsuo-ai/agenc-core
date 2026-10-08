@@ -1,3 +1,4 @@
+import { SessionWriteBehindQueue, registerSessionWriteBehind } from "./write-behind.js";
 import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
@@ -1753,6 +1754,8 @@ export interface SessionStoreDiagnostic {
 }
 
 export class SessionStore {
+  readonly writeBehind = new SessionWriteBehindQueue();
+  private unregisterWriteBehind: (() => void) | undefined;
   readonly cwd: string;
   readonly sessionId: string;
   readonly agencVersion: string;
@@ -1986,6 +1989,7 @@ export class SessionStore {
    * line if new.
    */
   open(meta: Omit<SessionMetaLine, "rolloutSchemaVersion">): void {
+    this.unregisterWriteBehind ??= registerSessionWriteBehind(this.rolloutPath, this.writeBehind);
     if (this.opened) return;
     let resumeFdToClose: number | undefined;
     this.lock.acquire();
@@ -2280,6 +2284,16 @@ export class SessionStore {
    */
   append(event: Event, opts: AppendOptions = {}): boolean {
     if (!this.opened || this.closed) return false;
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(event);
+      const options = { ...opts };
+      this.writeBehind.defer("canonical-event", () => {
+        const committed = withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+          () => this.append(captured, options));
+        if (!committed) throw new Error(`durable event ${captured.msg.type} was not fsync-committed`);
+      });
+      return true;
+    }
     this.lastBoundReadProof = undefined;
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
@@ -2360,6 +2374,15 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(item);
+      const options = { ...opts };
+      this.writeBehind.defer("canonical-rollout", () => {
+        withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+          () => this.appendRollout(captured, options));
+      });
+      return;
+    }
     const durable =
       opts.durable === true ||
       (item.type === "event_msg" && isDurableEvent(item.payload));
@@ -2384,6 +2407,7 @@ export class SessionStore {
    * for tests.
    */
   flushBatch(durable: boolean): boolean {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
     // the event loop that streams to every client, so it is worth reporting.
     // It must NOT go through this store's diagnostic channel:
@@ -2548,6 +2572,7 @@ export class SessionStore {
    * ambiguous fsync failure.
    */
   syncCanonicalTail(): void {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     if (!this.opened || this.closed) {
       throw new Error("cannot sync canonical tail on a closed store");
     }
@@ -2840,6 +2865,7 @@ export class SessionStore {
    * outside this module can route through the same durability dance.
    */
   rewriteRolloutAtomically(bytes: string | Buffer): void {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",
@@ -3707,26 +3733,32 @@ export class SessionStore {
 
   /** I-88: read the per-turn tool-result-bytes index. */
   getToolResultBytes(turnId: string): number {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return this.toolResultBytesByTurn.get(turnId) ?? 0;
   }
 
   getToolResultBytesIndexSnapshot(): ReadonlyMap<string, number> {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return new Map(this.toolResultBytesByTurn);
   }
 
   getTokenEstimate(turnId: string): number {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return this.tokenEstimateByTurn.get(turnId) ?? 0;
   }
 
   getTokenEstimateIndexSnapshot(): ReadonlyMap<string, number> {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return new Map(this.tokenEstimateByTurn);
   }
 
   getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return new Map(this.toolCallTurnIds);
   }
 
   getCompactionIndexSnapshot(): CompactionIndexSnapshot {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return {
       toolResultBytesByTurn: this.getToolResultBytesIndexSnapshot(),
       tokenEstimateByTurn: this.getTokenEstimateIndexSnapshot(),
@@ -3784,6 +3816,7 @@ export class SessionStore {
    * Receipts are fsynced before publication; pending non-durable events need
    * not be flushed to read that committed prefix. Never takes a second lease. */
   scanCanonicalChunks(maxBytes: number, consume: (chunk: Uint8Array) => void): void {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     if (!this.opened || this.closed) throw new Error("cannot read a closed canonical store");
     const identity = this.canonicalSourceIdentity();
     const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
@@ -3815,6 +3848,7 @@ export class SessionStore {
 
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",
@@ -3919,6 +3953,7 @@ export class SessionStore {
         errors.push(error);
       }
     };
+    capture(() => this.writeBehind.finish());
     capture(() => this.oneShotWriter?.seal());
     this.closed = true;
     capture(() => {
@@ -3967,6 +4002,8 @@ export class SessionStore {
     });
     capture(() => this.oneShotWriter?.release());
     capture(() => this.lock.release());
+    this.unregisterWriteBehind?.();
+    this.unregisterWriteBehind = undefined;
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) {
       throw new AggregateError(
@@ -4039,6 +4076,7 @@ export class SessionStore {
 
   /** Accessor for the byte-offset index (T12 `/resume` fast-seek). */
   getByteOffsetForSeq(seq: EventSeq): number | undefined {
+    if (!this.writeBehind.draining) this.writeBehind.drain();
     return this.offsetsBySeq.get(seq);
   }
 
