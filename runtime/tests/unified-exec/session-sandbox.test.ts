@@ -46,7 +46,7 @@ describe.runIf(process.platform === "linux")("persistent unified exec lifecycle"
   it("applies timeouts and cleans detached descendants", async () => {
     const result = await run("setsid sh -c 'sleep 1; echo leaked > leaked' & wait", { timeoutMs: 50 });
     expect(result.timedOut).toBe(true);
-    expect((await run("sleep 1.1; test ! -f leaked")).exitCode).toBe(0);
+    expect((await run("sleep 1.1; test ! -f leaked", { yield_time_ms: 3000 })).exitCode).toBe(0);
   });
   it("retires an idle namespace on turn cancellation and permits a subsequent turn", async () => {
     const controller = new AbortController();

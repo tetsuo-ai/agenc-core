@@ -192,6 +192,23 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
     await sandbox.close();
     expect(fs.readdirSync("/proc/self/fd").length).toBeLessThanOrEqual(descriptors);
   });
+  it("refuses reuse when the outer broker cannot prove cleanup", async () => {
+    const child = await sandbox.spawn(input("echo ready; sleep 30"), () => {});
+    expect(child).toBeDefined();
+    let ready = false; child!.stdout.on("data", () => { ready = true; });
+    await vi.waitFor(() => expect(ready).toBe(true));
+    const closed = new Promise<void>(resolve => child!.once("close", () => resolve()));
+    // Bypass the broker's translated kill method to destroy its proof channel.
+    process.kill(child!.pid!, "SIGKILL"); await closed;
+    try {
+      await expect(terminateProcessTreeAndReport(child!)).rejects.toThrow(/cleanup could not be proven/);
+      await expect(sandbox.spawn(input("echo unsafe > after-failure"), () => {})).rejects.toThrow(/cleanup could not be proven/);
+      expect(fs.existsSync(path.join(root, "work/after-failure"))).toBe(false);
+      await expect(sandbox.close()).rejects.toThrow(/cleanup could not be proven/);
+    } finally {
+      sandbox = new SessionSandbox();
+    }
+  });
   it("kills the namespace and its detached children when the daemon exits abruptly", async () => {
     const invocation = input("setsid sh -c 'sleep 1; echo leaked > daemon-leak' >/dev/null 2>&1 & echo ready; sleep 30");
     const module = path.join(runtime, "src/sandbox/linux-launcher/session-sandbox.ts");
