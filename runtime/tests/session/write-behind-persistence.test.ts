@@ -219,6 +219,39 @@ describe("write-behind persistence barriers", () => {
     await withSessionWriteBehind(queue, () => client.requestText({ body: { message: "next" } }));
     expect(seen).toEqual(["send", "persist"]);
     expect(queue.pending).toBe(0);
+    expect(queue.deferring).toBe(false);
+  });
+
+  it("publishes model deltas while the next response stream is still open", async () => {
+    const store = openStore();
+    const seen: string[] = [];
+    const session = emittingSession(store, seen);
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; } });
+    const client = new ProviderHttpClientSession({
+      providerName: "openai", baseURL: "https://example.test/v1", wireApi: "responses",
+      fetchImpl: async () => { seen.push("send"); return new Response(body); },
+    });
+    try {
+      await withSessionWriteBehind(store.writeBehind, async () => {
+        store.writeBehind.beginStep();
+        session.emit({ id: "tool-step", msg: { type: "warning", payload: { cause: "test", message: "previous step" } } }, { durable: true });
+        expect(seen).toEqual([]);
+        const stream = await client.requestStream({ body: {} });
+        expect(seen).toEqual(["send", "transport:1"]);
+        const reader = stream[Symbol.asyncIterator]();
+        try {
+          bodyController.enqueue(new TextEncoder().encode("data: first delta\n\n"));
+          expect((await reader.next()).done).toBe(false);
+          session.emit({ id: "delta", msg: { type: "agent_message_delta", payload: { delta: "first delta" } } });
+          expect(seen).toEqual(["send", "transport:1", "transport:2"]);
+          expect(store.writeBehind.pending).toBe(0);
+        } finally {
+          bodyController.close();
+          await reader.return?.();
+        }
+      });
+    } finally { store.close(); }
   });
 
   it("surfaces a flush failure without retrying the model request", async () => {

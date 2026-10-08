@@ -1429,7 +1429,9 @@ export class ProviderHttpClientSession {
       }, fetchImpl);
       if (!response.ok) fail();
       if (method === "POST") {
-        try { currentSessionWriteBehind()?.drain(); }
+        // The previous tool step is complete. New model-stream events must
+        // publish immediately instead of joining that step's loss window.
+        try { currentSessionWriteBehind()?.finish(); }
         catch (error) {
           await response.body?.cancel().catch(() => undefined);
           throw error;
