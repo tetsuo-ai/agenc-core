@@ -1,3 +1,4 @@
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -1602,6 +1603,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
+        // The native subreaper remains a complete containment boundary. Avoid
+        // probing cgroup delegation for every command in this short run.
+        ...(oneShotFastModeActive() ? { linuxContainment: "subreaper" as const } : {}),
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),

@@ -84,3 +84,22 @@ describe("tool router reuse", () => {
     expect(second.execute).toHaveBeenCalledTimes(1);
   });
 });
+
+test("fast presentation cache refreshes on discovery and live catalog changes", async () => {
+  const { withOneShotFastMode } = await import("../src/one-shot-fast-mode.js");
+  let extra = fixtureTool("mcp.qa.lookup", "first");
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", requireAdmission: false, lightMode: true,
+    mcpToolsProvider: { getTools: () => [extra], getAuthenticatedDesktopToolNames: () => [] } });
+  await withOneShotFastMode(async () => {
+    const first = registry.toLLMTools();
+    expect(registry.toLLMTools()).toBe(first);
+    registry.discoverToolNames?.([extra.name]);
+    const discovered = registry.toLLMTools();
+    expect(discovered).not.toBe(first);
+    expect(discovered.some(tool => tool.function.name === extra.name)).toBe(true);
+    extra = fixtureTool("mcp.qa.lookup", "replacement");
+    expect(registry.toLLMTools().find(tool => tool.function.name === extra.name)?.function.description).toBe("replacement");
+    (registry.getDiscoveredToolNames?.() as Set<string>).delete(extra.name);
+    expect(registry.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
+  });
+});

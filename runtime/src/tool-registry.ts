@@ -1,3 +1,4 @@
+import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
 /**
  * Tool registry — the lean coding-profile surface.
  *
@@ -1234,8 +1235,8 @@ export function buildToolRegistry(
       (deferRareTools && isRareDeferredTool(spec.tool.name));
   }
 
-  function visibleSpecs(): readonly ConfiguredToolSpec[] {
-    const specs = allSpecs().filter((spec) => spec.unavailable !== true);
+  function visibleSpecs(router?: ToolRouter): readonly ConfiguredToolSpec[] {
+    const specs = (router?.getSpecs() ?? allSpecs()).filter((spec) => spec.unavailable !== true);
     // A restrictive policy may remove discovery itself. Keep its remaining
     // capabilities callable instead of stranding them behind an absent tool.
     if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
@@ -1327,15 +1328,10 @@ export function buildToolRegistry(
     });
   }
 
-  return {
-    get tools(): readonly Tool[] {
-      return allSpecs().map((spec) => spec.tool);
-    },
-    toLLMTools(): LLMTool[] {
-      const visible = visibleSpecs();
-      // The lean exec_command points at system.searchTools for its advanced fields, so it is lean
-      // only while that discovery tool is presented; otherwise the full schema is shown, as other
-      // capabilities fall back when discovery is unavailable.
+  let presentationMemo: { router: ToolRouter; discovered: readonly string[];
+    provider: string | undefined; tools: LLMTool[] } | undefined;
+  function buildPresentedTools(router: ToolRouter): LLMTool[] {
+      const visible = visibleSpecs(router);
       const leanExec = visible.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) &&
         !discoveredToolNames.has("exec_command");
       const tools = visible.map((spec) => {
@@ -1344,15 +1340,30 @@ export function buildToolRegistry(
           ? lightPresentation(tool, { leanExec }) : tool;
       });
       if (!deferRareTools) return tools;
-      const pointer = rareToolPointer(new Set(
-        allSpecs()
-          .filter((spec) => spec.unavailable !== true && isRareDeferredTool(spec.tool.name))
-          .map((spec) => spec.tool.name),
-      ));
-      if (pointer === undefined) return tools;
-      return tools.map((tool) => tool.function.name === SYSTEM_SEARCH_TOOLS_NAME
+      const pointer = rareToolPointer(new Set(router.getSpecs()
+        .filter(spec => spec.unavailable !== true && isRareDeferredTool(spec.tool.name))
+        .map(spec => spec.tool.name)));
+      return pointer === undefined ? tools : tools.map(tool => tool.function.name === SYSTEM_SEARCH_TOOLS_NAME
         ? { ...tool, function: { ...tool.function, description: `${tool.function.description ?? ""}\n\n${pointer}`.trim() } }
         : tool);
+  }
+
+  return {
+    get tools(): readonly Tool[] {
+      return allSpecs().map((spec) => spec.tool);
+    },
+    toLLMTools(): LLMTool[] {
+      const router = buildRouter();
+      if (!oneShotFastModeActive()) return buildPresentedTools(router);
+      const provider = options.getSession?.()?.services?.provider?.name;
+      const discovered = [...discoveredToolNames];
+      const memo = presentationMemo;
+      if (memo?.router === router && memo.provider === provider &&
+          memo.discovered.length === discovered.length &&
+          memo.discovered.every((name, i) => name === discovered[i])) return memo.tools;
+      const tools = buildPresentedTools(router);
+      presentationMemo = { router, provider, discovered, tools };
+      return tools;
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;

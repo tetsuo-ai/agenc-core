@@ -1432,6 +1432,18 @@ export class OpenAIProvider implements LLMProvider {
     });
   }
 
+  private fastCapabilityMemo: { model: string; provider: string; managed: boolean | undefined;
+    value: ReturnType<typeof chatCompletionsCapabilityHintsForProvider> } | undefined;
+
+  private chatCapabilityHints(model: string): ReturnType<typeof chatCompletionsCapabilityHintsForProvider> {
+    const managed = this.config.managedRequestId;
+    const memo = this.fastCapabilityMemo;
+    if (oneShotFastModeActive() && memo?.model === model && memo.provider === this.name && memo.managed === managed) return memo.value;
+    const value = chatCompletionsCapabilityHintsForProvider(this.name, model, { managedGateway: managed });
+    if (oneShotFastModeActive()) this.fastCapabilityMemo = { model, provider: this.name, managed, value };
+    return value;
+  }
+
   private prepareChatCompletionsRequest(args: {
     readonly model: string;
     readonly messages: readonly LLMMessage[];
@@ -1444,11 +1456,7 @@ export class OpenAIProvider implements LLMProvider {
     // the gating automatically: the hint matrix lives in one place
     // and keys on the slug, so adding a new openai-compat provider
     // doesn't require new override boilerplate.
-    const providerCapabilityHints = chatCompletionsCapabilityHintsForProvider(
-      this.name,
-      args.model,
-      { managedGateway: this.config.managedRequestId },
-    );
+    const providerCapabilityHints = this.chatCapabilityHints(args.model);
     const request = buildChatCompletionsRequest({
       model: args.model,
       messages: args.messages,
@@ -1913,11 +1921,7 @@ export class OpenAIProvider implements LLMProvider {
     headers: Readonly<Record<string, string>> | undefined,
   ): Promise<LLMResponse> {
     const requestModel = options?.model?.trim() || this.config.model;
-    const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
-      this.name,
-      requestModel,
-      { managedGateway: this.config.managedRequestId },
-    );
+    const streamCapabilityHints = this.chatCapabilityHints(requestModel);
     const requestOptions = {
       model: requestModel,
       messages,
