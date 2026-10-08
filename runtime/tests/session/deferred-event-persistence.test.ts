@@ -61,7 +61,7 @@ describe("deferred event payloads", () => {
       expect(observed).not.toContain("missing canonical event");
       const beforeFailure = observed.length;
       store.writeBehind.defer("injected failure", () => { throw new Error("observer projection failed"); });
-      expect(() => admission.recordFallback({ stepId: "next", fromModel: "a", toModel: "b", reason: "test" })).toThrow("observer projection failed");
+      expect(() => admission.recordFallback({ stepId: "one", fromModel: "a", toModel: "b", reason: "test" })).toThrow("observer projection failed");
       expect(observed).toHaveLength(beforeFailure);
       expect(() => store.close()).toThrow("observer projection failed");
     } finally { unsubscribe(); unbind(); kernel.close(); }
