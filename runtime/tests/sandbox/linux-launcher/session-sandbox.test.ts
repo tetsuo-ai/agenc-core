@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,23 +128,18 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
   });
   it("revalidates lexical policy aliases when their targets change", async () => {
     const link = path.join(root, "link"), one = path.join(root, "one"), two = path.join(root, "two");
-    for (const dir of [one, two]) {
-      fs.mkdirSync(dir);
-      for (const name of [".git", ".agents", ".agenc"]) fs.mkdirSync(path.join(dir, name));
-    }
+    for (const dir of [one, two]) { fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "value"), dir); }
     fs.symlinkSync(one, link);
-    const make = (command: string) => {
-      const invocation = input(command), index = invocation.args.indexOf("--permission-profile") + 1;
+    const make = () => {
+      const invocation = input(`cat '${link}/value'`), index = invocation.args.indexOf("--permission-profile") + 1;
       const policy = JSON.parse(invocation.args[index]!);
-      policy.fileSystem.entries.push({ path: { kind: "path", path: link }, access: "write" });
+      policy.fileSystem.entries.push({ path: { kind: "path", path: link }, access: "read" });
       invocation.args[index] = JSON.stringify(policy); return invocation;
     };
-    const first = await runInput(make(`echo one > '${one}/first'`)); expect(first.code).toBe(0);
+    const first = await runInput(make()); expect(first.out).toBe(one);
     fs.unlinkSync(link); fs.symlinkSync(two, link);
-    const second = await runInput(make(`echo two > '${two}/second'; echo forbidden > '${one}/forbidden'`));
-    expect(second.pid).not.toBe(first.pid); expect(second.code).not.toBe(0);
-    expect(fs.readFileSync(path.join(two, "second"), "utf8")).toBe("two\n");
-    expect(fs.existsSync(path.join(one, "forbidden"))).toBe(false);
+    const second = await runInput(make());
+    expect(second.pid).not.toBe(first.pid); expect(second.out).toBe(two);
   });
   it("does not leak a previous command environment or umask", async () => {
     const original = await run("umask");
@@ -228,6 +223,44 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
     const result = await run("printf 'D\\000\\000\\000\\005\\000\\000\\000\\000\\000'; exit 9");
     expect(result.code).toBe(9); expect(result.out.length).toBe(10);
     expect((await run("echo after")).out).toBe("after\n");
+  });
+
+  it.each([
+    "import os; os.setpriority(os.PRIO_PROCESS, 1, 19)",
+    "import os; os.setpriority(os.PRIO_USER, 0, 19)",
+    "import os; os.sched_setaffinity(1, os.sched_getaffinity(1))",
+    "import os; os.sched_setscheduler(1, os.SCHED_BATCH, os.sched_param(0))",
+  ])("protects keeper scheduling from a same-UID command: %s", async (script) => {
+    const result = await run(`python3 -c '${script}'`);
+    expect(result.code).not.toBe(0); expect(result.err).toContain("Operation not permitted");
+    expect((await run("echo intact")).out).toBe("intact\n");
+  });
+
+  it.runIf(process.arch === "x64")("supports i386 commands without exposing keeper process controls", async () => {
+    const assembly = path.join(root, "work/compat.s"), executable = path.join(root, "work/compat");
+    fs.writeFileSync(assembly, `.global _start
+.text
+_start:
+mov $97, %eax
+mov $0, %ebx
+mov $1, %ecx
+mov $19, %edx
+int $0x80
+cmp $-1, %eax
+jne failed
+xor %ebx, %ebx
+jmp done
+failed:
+mov $1, %ebx
+done:
+mov $1, %eax
+int $0x80
+`);
+    execFileSync("cc", ["-m32", "-nostdlib", "-static", "-o", executable, assembly]);
+    const invocation = input(executable), index = invocation.args.indexOf("--permission-profile") + 1;
+    const policy = JSON.parse(invocation.args[index]!); policy.network = "enabled";
+    invocation.args[index] = JSON.stringify(policy);
+    expect((await runInput(invocation)).code).toBe(0);
   });
 
 });

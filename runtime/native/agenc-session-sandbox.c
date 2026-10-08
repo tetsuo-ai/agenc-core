@@ -51,35 +51,86 @@ static char *string(char **cursor, char *end) {
   if (!nul) fail();
   *cursor = nul + 1; return p;
 }
+/* Same-UID scheduler/resource APIs do not all use ptrace access checks.
+ * Protect the namespace keeper without restricting descendant process IDs.
+ * https://man7.org/linux/man-pages/man2/sched_setaffinity.2.html
+ * https://man7.org/linux/man-pages/man2/setpriority.2.html */
+#define DENY_INIT_PID(call) \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 4), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 1), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+#define DENY_INIT_OR_USER_SCOPE(call, user_scope) \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 6), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, user_scope, 3, 0), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 1, 0), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
+#define KEEPER_RULES(affinity, scheduler, param, attr, migrate, move, priority, ioprio, limits) \
+    DENY_INIT_PID(affinity), \
+    DENY_INIT_PID(scheduler), \
+    DENY_INIT_PID(param), \
+    DENY_INIT_PID(attr), \
+    DENY_INIT_PID(migrate), \
+    DENY_INIT_PID(move), \
+    DENY_INIT_OR_USER_SCOPE(priority, 2), \
+    DENY_INIT_OR_USER_SCOPE(ioprio, 3), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, limits, 0, 7), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 5), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])), \
+    BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, 0, 2, 0), \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2]) + 4), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+
 static void protect_keeper(void) {
 #if defined(__x86_64__)
 #define ARCH AUDIT_ARCH_X86_64
+#define COMPAT_ARCH AUDIT_ARCH_I386
 #elif defined(__aarch64__)
 #define ARCH AUDIT_ARCH_AARCH64
+#define COMPAT_ARCH AUDIT_ARCH_ARM
 #else
 #error Unsupported session executor architecture
 #endif
-  struct sock_filter filter[] = {
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ARCH, 1, 0),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+  const struct sock_filter native[] = {
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
 #if defined(__x86_64__)
-    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+    /* x32 shares these native syscall numbers except move_pages (533). */
+    BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ~0x40000000U),
+    DENY_INIT_PID(533),
 #endif
-    // Dumpability already protects ptrace and /proc/1/fd. prlimit writes
-    // use a same-UID check instead, so deny only modifications to PID 1.
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 7),
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 5),
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
-    BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, 0, 2, 0),
-    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2]) + 4),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    KEEPER_RULES(SYS_sched_setaffinity, SYS_sched_setscheduler,
+      SYS_sched_setparam, SYS_sched_setattr, SYS_migrate_pages, SYS_move_pages,
+      SYS_setpriority, SYS_ioprio_set, SYS_prlimit64),
   };
+  /* Linux UAPI syscall tables: arch/x86/entry/syscalls/syscall_32.tbl and
+   * arch/arm/tools/syscall.tbl. Preserve compatible binaries when the existing
+   * network filter permits them; never let a second ABI bypass this guard. */
+  const struct sock_filter compat[] = {
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#if defined(__x86_64__)
+    KEEPER_RULES(241, 156, 154, 351, 294, 317, 97, 289, 340),
+#else
+    KEEPER_RULES(241, 156, 154, 380, 400, 344, 97, 314, 369),
+#endif
+  };
+  enum { NATIVE_COUNT = sizeof(native) / sizeof(native[0]),
+         COMPAT_COUNT = sizeof(compat) / sizeof(compat[0]) };
+  _Static_assert(NATIVE_COUNT + 1 < 256, "seccomp architecture branch overflow");
+  struct sock_filter filter[4 + NATIVE_COUNT + COMPAT_COUNT] = {
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ARCH, 2, 0),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, COMPAT_ARCH, NATIVE_COUNT + 1, 0),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+  };
+  memcpy(filter + 4, native, sizeof(native));
+  memcpy(filter + 4 + NATIVE_COUNT, compat, sizeof(compat));
   struct sock_fprog program = {sizeof(filter) / sizeof(filter[0]), filter};
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) ||
       prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program)) fail();
@@ -166,7 +217,7 @@ static int trusted_execution_boundary(void) {
 }
 int main(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "--session-executor-v1") || getpid() != 1 ||
-      !trusted_execution_boundary() ||
+      !trusted_execution_boundary() || syscall(SYS_close_range, 3U, ~0U, 0U) ||
       prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) ||
       prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0)) return 125;
   signal(SIGPIPE, SIG_DFL);

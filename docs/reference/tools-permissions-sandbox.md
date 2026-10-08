@@ -208,6 +208,16 @@ and points at `yield_time_ms`. It cannot be combined with `tty`, and
 A detached service is not a managed session handle: it does not appear in
 `list_processes`, and `kill_process all: true` does not reach it.
 
+Linux shell commands normally reuse a sandbox within their owning session.
+Each command has separate process state, cwd, environment, and output pipes;
+its remaining descendants are stopped before the next command starts. Stop,
+session shutdown, policy changes, and changes to mounted objects retire the
+sandbox. A failed command is never replayed automatically. If the reusable
+sandbox cannot start, the command uses the existing per-command launcher.
+TTY, proxy-mediated networking, device bindings, and unsupported mount layouts
+continue to use that launcher. Set `sandbox.persistent_session = false` to use
+it for every command.
+
 #### Recovering background work
 
 Recovery from hung or leftover work goes through the identities the manager

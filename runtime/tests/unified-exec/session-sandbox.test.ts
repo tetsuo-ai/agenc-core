@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { SessionSandbox } from "../../src/sandbox/linux-launcher/session-sandbox.js";
@@ -12,7 +13,8 @@ beforeEach(() => {
   for (const name of [".git", ".agenc", ".agents", "temp"]) fs.mkdirSync(path.join(root, name));
   manager = new UnifiedExecProcessManager({ cwd: root, sessionTempRoot: path.join(root, "temp"),
     baseEnv: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
-  policy = { sandboxPolicyCwd: root, sessionTempRoot: path.join(root, "temp"),
+  policy = { agencLinuxSandboxExe: fileURLToPath(new URL("../../bin/agenc-linux-sandbox", import.meta.url)),
+    sandboxPolicyCwd: root, sessionTempRoot: path.join(root, "temp"),
     permissionProfile: permissionProfileFromRuntimePermissions(restrictedFileSystemPolicy([
       { path: { kind: "special", value: { kind: "root" } }, access: "read" },
       { path: { kind: "path", path: root }, access: "write" },
