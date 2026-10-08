@@ -10,19 +10,13 @@ import { redactDurableSecrets } from "../../src/session/provider-replay-redactio
 
 afterEach(() => vi.unstubAllEnvs());
 
-test("only the owned async scope selects fast admission, never the old environment switch", async () => {
-  vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "true");
-  expect(oneShotFastModeActive()).toBe(false);
+test("the removed experiment environment cannot enable fast mode and nested model calls retain admission", async () => {
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
-  const options = { maxOutputTokens: 8192 };
-  const result = { content: "answer", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test", finishReason: "stop" as const };
-  const invoke = vi.fn(async () => result);
-  // No services/provider access is permitted along this deliberately stripped path.
-  const params = { session: { services: {} }, options, invoke } as unknown as Parameters<typeof runAdmittedModelCall>[0];
-  expect(await withOneShotFastMode(() => runAdmittedModelCall(params))).toBe(result);
-  expect(invoke).toHaveBeenCalledWith(options);
-  vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "0");
-  await expect(runAdmittedModelCall(params)).rejects.toThrow();
+  expect(oneShotFastModeActive()).toBe(false);
+  const invoke = vi.fn();
+  const params = { session: { services: {} }, options: {}, invoke } as unknown as Parameters<typeof runAdmittedModelCall>[0];
+  await expect(withOneShotFastMode(() => runAdmittedModelCall(params))).rejects.toThrow();
+  expect(invoke).not.toHaveBeenCalled();
 });
 
 test("tool bypass still propagates cancellation and the actual result", async () => {

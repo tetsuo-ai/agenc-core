@@ -2307,11 +2307,7 @@ export class SessionStore {
    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
   append(event: Event, opts: AppendOptions = {}): boolean {
-    if (this.oneShotFastMode) {
-      if (!this.opened || this.closed) return false;
-      this.pending.push({ type: "event_msg", payload: event });
-      return true;
-    }
+    if (this.oneShotFastMode) event = structuredClone(event);
     this.writeBehind.assertHealthy();
     if (!this.opened || this.closed) return false;
     if (this.writeBehind.deferring) {
@@ -2404,10 +2400,7 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
-    if (this.oneShotFastMode) {
-      if (this.opened && !this.closed) this.pending.push(item);
-      return;
-    }
+    if (this.oneShotFastMode) item = structuredClone(item);
     this.writeBehind.assertHealthy();
     if (this.writeBehind.deferring) {
       const captured = structuredClone(item);

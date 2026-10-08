@@ -1,4 +1,3 @@
-import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { completeReasoningCapSample, type ReasoningCapSample } from "../session/reasoning-cap-policy.js";
 /**
  * Phase 2 — Stream Model.
@@ -1174,7 +1173,7 @@ export async function streamModel(
     // result is estimation-only; the continuation decision stays on
     // the boundary path so the final state uses provider-reported
     // completion tokens.
-    if (!oneShotFastModeActive() && session.budgetTracker) {
+    if (session.budgetTracker) {
       session.budgetTracker.addEmitted(estimateChunkTokens(chunk), "estimate");
       session.budgetTracker.sampleMidStream();
     }
@@ -1594,7 +1593,7 @@ export async function streamModel(
   // This sample completed. A new cap can re-arm recovery in Phase 3;
   // ordinary tool/final continuations return to normal thinking.
   state.reasoningOnlyRecoveryPending = undefined;
-  if (!oneShotFastModeActive() && response.usage) {
+  if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
     const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
@@ -1672,7 +1671,7 @@ export async function streamModel(
   // AgenC decides continuation from the finalized turn output,
   // not from an overshoot heuristic; the mid-stream sampler above is
   // only there to keep the local invariant's estimation path alive.
-  if (!oneShotFastModeActive() && session.budgetTracker) {
+  if (session.budgetTracker) {
     const turnTokens = session.budgetTracker.resolveBoundaryTokens(
       response.usage?.completionTokens ?? 0,
     );
@@ -1696,7 +1695,7 @@ export async function streamModel(
   // CostSidecar updates do not feed the current iteration's
   // completion tokens back into the tracker before boundary truth is
   // resolved.
-  if (!oneShotFastModeActive() && response.usage) {
+  if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
     const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
