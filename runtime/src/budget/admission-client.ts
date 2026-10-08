@@ -7,6 +7,7 @@ import type {
   AdmissionReconcileResult,
   AdmissionUsage,
   AdmissionUsageSummary,
+  AdmissionUsageSnapshot,
 } from "./admission-types.js";
 
 export interface AdmissionClientScope {
@@ -152,6 +153,8 @@ export interface ExecutionAdmissionClient {
    * no monetary cap. Dispatch still needs an atomic admission lease. */
   getRemainingCostUsd?(): number | undefined;
   subscribeUsage?(listener: (summary: AdmissionUsageSummary) => void): () => void;
+  /** Canonical observer; immutable numeric snapshots may be published after send. */
+  subscribeUsageSnapshot?(listener: (snapshot: AdmissionUsageSnapshot) => void): () => void;
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void;
 }
 

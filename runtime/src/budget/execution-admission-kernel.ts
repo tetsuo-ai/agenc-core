@@ -10,6 +10,7 @@ import type {
   AdmissionReconcileResult,
   AdmissionUsage,
   AdmissionUsageSummary,
+  AdmissionUsageSnapshot,
   PersistedAdmissionRecord,
   RuntimeAdmissionRequest,
 } from "./admission-types.js";
@@ -74,6 +75,7 @@ interface WorkspaceBinding {
 interface UsageSubscription {
   readonly binding: ClientBinding;
   readonly listener: (summary: AdmissionUsageSummary) => void;
+  readonly snapshotListener?: (snapshot: AdmissionUsageSnapshot) => void;
   signature: string;
 }
 
@@ -784,6 +786,23 @@ export class ExecutionAdmissionKernel {
     };
   }
 
+  subscribeUsageSnapshot(binding: ClientBinding, listener: (snapshot: AdmissionUsageSnapshot) => void): () => void {
+    const snapshot = binding.workspace.repository.captureUsageSummary(
+      binding.scope.runId, binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey,
+    );
+    const subscription: UsageSubscription = {
+      binding, listener: () => {}, snapshotListener: listener, signature: snapshot.signature,
+    };
+    const listeners = this.#usageListeners.get(binding.workspace) ?? new Set();
+    listeners.add(subscription);
+    this.#usageListeners.set(binding.workspace, listeners);
+    return () => {
+      listeners.delete(subscription);
+      if (listeners.size === 0) this.#usageListeners.delete(binding.workspace);
+      binding.workspace.repository.releaseUsageSnapshot(binding.scope.runId, binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey);
+    };
+  }
+
   subscribe(
     runId: string,
     listener: (event: AdmissionJournalEvent) => void,
@@ -1051,7 +1070,7 @@ export class ExecutionAdmissionKernel {
       return existing;
     }
     // Admission and recovery use state only; retain its eager FULL connection.
-    const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true });
+    const driver = openStateDatabasePaths(paths, undefined, { deferLogs: true, eagerAdmissionState: true });
     const binding: WorkspaceBinding = {
       workspaceId: paths.projectDir,
       paths,
@@ -1579,6 +1598,18 @@ export class ExecutionAdmissionKernel {
 
   #publishUsage(binding: WorkspaceBinding): void {
     for (const subscription of this.#usageListeners.get(binding) ?? []) {
+      if (subscription.snapshotListener !== undefined) {
+        const client = subscription.binding;
+        const snapshot = binding.repository.captureUsageSummary(
+          client.scope.runId, client.budget.taskAllocationKey ?? client.budget.runAllocationKey,
+        );
+        if (snapshot.signature === subscription.signature) continue;
+        // Canonical observer failures are session failures, including queue
+        // failure. Never swallow them like best-effort display observers.
+        subscription.snapshotListener(snapshot);
+        subscription.signature = snapshot.signature;
+        continue;
+      }
       try {
         const summary = this.getUsageSummary(subscription.binding);
         const signature = JSON.stringify({ ...summary, sequence: 0 });
@@ -1764,6 +1795,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {
     return this.kernel.subscribeUsage(this.binding, listener);
+  }
+
+  subscribeUsageSnapshot(listener: (snapshot: AdmissionUsageSnapshot) => void): () => void {
+    return this.kernel.subscribeUsageSnapshot(this.binding, listener);
   }
 
   subscribeCritical(

@@ -72,7 +72,18 @@ export function bindExecutionAdmissionJournal(
       session.emit({ id: `usage:${summary.runId}:${summary.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: summary } }, { durable: true });
       lastUsageSequence = summary.sequence;
     };
-    unsubscribeUsage = admission.subscribeUsage?.(appendUsage);
+    unsubscribeUsage = admission.subscribeUsageSnapshot !== undefined && session.emitDeferred !== undefined
+      ? admission.subscribeUsageSnapshot((snapshot) => {
+          if (snapshot.sequence <= lastUsageSequence) return;
+          if (typeof session.conversationId === "string" && snapshot.runId !== session.conversationId) return;
+          session.emitDeferred(
+            { id: `usage:${snapshot.runId}:${snapshot.sequence}`, eventId: randomUUID() },
+            () => ({ type: "session_usage", payload: snapshot.read() }),
+            { durable: true },
+          );
+          lastUsageSequence = snapshot.sequence;
+        })
+      : admission.subscribeUsage?.(appendUsage);
     const usage = admission.getUsageSummary?.();
     if (usage !== undefined) appendUsage(usage);
   } catch (error) {

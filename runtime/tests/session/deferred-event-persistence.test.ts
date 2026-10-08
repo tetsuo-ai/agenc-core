@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EventLog, type Event, type EventMsg } from "../../src/session/event-log.js";
 import { Session } from "../../src/session/session.js";
 import { SessionStore } from "../../src/session/session-store.js";
+import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -17,7 +20,8 @@ function fixture() {
   const published: Event[] = [];
   const facade = {
     writeBehind: store.writeBehind,
-    rolloutStore: { append: store.append.bind(store) },
+    rolloutStore: { append: store.append.bind(store), readAll: store.readAll.bind(store), syncCanonicalTail: store.syncCanonicalTail.bind(store) },
+    conversationId: "test",
     eventLog: new EventLog(),
     canonicalJournalSealed: false,
     isRolloutPersistenceSuspended: () => false,
@@ -38,6 +42,36 @@ function usage(): Extract<EventMsg, { type: "session_usage" }> {
 }
 
 describe("deferred event payloads", () => {
+  it("enforces budgets before send while journals and usage wait for an ordinary SQL reader", async () => {
+    const { store, session, published } = fixture();
+    const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
+    const admission = kernel.bindClient({ cwd: store.cwd, scope: { runId: "test", sessionId: "test", autonomous: false }, budget: { runMaxCostUsd: 0.75 } });
+    const unbind = bindExecutionAdmissionJournal(session, admission);
+    const reader = openStateDatabases({ cwd: store.cwd, agencHome: store.agencHome, deferLogs: true });
+    try {
+      const before = readFileSync(store.rolloutPath, "utf8");
+      const publishedBefore = published.length;
+      store.writeBehind.beginStep();
+      const request = { kind: "model_turn" as const, model: "test", provider: "test", maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 };
+      const lease = await admission.acquire({ ...request, stepId: "one" });
+      admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+      await expect(admission.acquire({ ...request, stepId: "over-budget" })).rejects.toThrow("budget");
+      expect(store.writeBehind.pending).toBeGreaterThan(0);
+      expect(published.length).toBe(publishedBefore);
+      expect(readFileSync(store.rolloutPath, "utf8")).toBe(before);
+      admission.reconcile(lease.reservation.reservationId, { inputTokens: 10, outputTokens: 5, costUsd: 0.25 });
+      expect(readFileSync(store.rolloutPath, "utf8")).toBe(before);
+      // The public SQL connection retains its barrier even for admission
+      // tables; only the kernel's synchronous authority has the narrow path.
+      reader.prepareState("SELECT COUNT(*) FROM execution_admission_reservations").get();
+      expect(store.writeBehind.pending).toBe(0);
+      const events = store.readAll().filter(item => item.type === "event_msg").map(item => item.payload);
+      expect(events).toEqual(published);
+      const summaries = events.filter(event => event.msg.type === "session_usage");
+      expect(summaries.at(-1)!.msg).toMatchObject({ payload: { costUsd: 0.25, modelCalls: 1, heldCostUsd: 0 } });
+    } finally { unbind(); store.close(); reader.close(); kernel.close(); }
+  });
+
   it("materializes at the reserved position and publishes the same persisted sequence", () => {
     const { store, session, published } = fixture();
     try {

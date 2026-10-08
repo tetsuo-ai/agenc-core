@@ -167,6 +167,7 @@ import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
   captureDurableResponseItem,
+  captureCheckpointMessage,
   createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
@@ -2375,6 +2376,7 @@ async function* runTurnKernelInner(
       payload: resolvedReferenceContextItem,
     });
   };
+  const pendingPersistedIdentities = new WeakSet<object>();
   const persistNewResponseItems = (): void => {
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
@@ -2409,12 +2411,14 @@ async function* runTurnKernelInner(
       const queue = session.writeBehind;
       if (queue?.deferring) {
         const resolve = captureDurableResponseItem(liveMessage);
+        if (persistedIntegrity !== undefined) pendingPersistedIdentities.add(persistedIntegrity);
         queue.defer("response-item-redaction", () => {
           const durableItem = resolve();
           if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
             persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
           }
           store.appendRollout({ type: "response_item", payload: durableItem });
+          if (persistedIntegrity !== undefined) pendingPersistedIdentities.delete(persistedIntegrity);
         });
       } else {
         const durableItem = llmMessageToDurableResponseItem(liveMessage);
@@ -2534,18 +2538,20 @@ async function* runTurnKernelInner(
     // Capture live content before future compaction/retention can change it.
     // The private integrity identity is shared with the earlier response-item
     // job, which fills its persisted seal before this FIFO checkpoint job.
+    const deferring = session.writeBehind?.deferring === true && session.emitDeferred !== undefined;
     const messages = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => ({
-        ...message,
-        content: structuredClone(message.content),
-        ...(message.toolCalls === undefined ? {} : { toolCalls: structuredClone(message.toolCalls) }),
-        ...(message.runtimeOnly === undefined ? {} : { runtimeOnly: { ...message.runtimeOnly } }),
-      }));
+      .map((message) => {
+        if (!deferring) return message;
+        const integrity = message.runtimeOnly?.toolResultIntegrity;
+        return captureCheckpointMessage(message,
+          integrity !== undefined && pendingPersistedIdentities.has(integrity) ? integrity : undefined);
+      });
     const capturedIteration = iterationIndex;
     const capturedCheckpoint = checkpointSeq;
-    const resumableState = toCheckpointSlice(state);
+    const slice = toCheckpointSlice(state);
+    const resumableState = deferring ? structuredClone(slice) : slice;
     const buildMsg = (): Extract<EventMsg, { type: "turn_checkpoint" }> => {
       const durablePrefix = messages.map((message) => projectCheckpointMessage(message));
       for (const message of durablePrefix) requireSealedToolResult(message);

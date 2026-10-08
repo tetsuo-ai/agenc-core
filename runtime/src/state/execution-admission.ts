@@ -11,6 +11,7 @@ import type {
   AdmissionRecoveryReport,
   AdmissionUsage,
   AdmissionUsageSummary,
+  AdmissionUsageSnapshot,
   AdmissionUsageTotals,
   PersistedAdmissionRecord,
   PersistedAdmissionStatus,
@@ -33,9 +34,12 @@ import {
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import { AdmissionUsageProjection, captureMaterializedUsage, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
+const MAX_USAGE_PROJECTION_RESERVATIONS = 10_000;
+const MAX_USAGE_PROJECTIONS = 128;
 const MAX_ALLOCATION_ANCESTOR_WALK = 64;
 
 const FINAL_RESERVATION_STATUSES = new Set([
@@ -423,6 +427,11 @@ export class ExecutionAdmissionRepository {
   #journalBufferExact = true;
   #writeDepth = 0;
   #writeRevision = 0;
+  readonly #usageViews = new Map<string, {
+    readonly projection: AdmissionUsageProjection;
+    readonly dirty: Set<string>;
+  }>();
+  #usageDatabaseVersion: string | undefined;
 
   constructor(
     driver: StateSqliteDriver,
@@ -1662,6 +1671,58 @@ export class ExecutionAdmissionRepository {
     });
   }
 
+  /** Capture numeric usage state now; build the observation at its FIFO slot. */
+  captureUsageSummary(runId: string, allocationKey: string): AdmissionUsageSnapshot {
+    requireNonEmpty(runId, "runId");
+    requireNonEmpty(allocationKey, "allocationKey");
+    return this.#driver.transaction(() => {
+      const version = this.#usageVersion();
+      if (version !== this.#usageDatabaseVersion) this.#usageViews.clear();
+      this.#usageDatabaseVersion = version;
+      const key = JSON.stringify([runId, allocationKey]);
+      let view = this.#usageViews.get(key);
+      const select = `SELECT reservation.* FROM execution_admission_reservations AS reservation
+        JOIN execution_admission_reservation_allocations AS allocation
+        ON allocation.reservation_id = reservation.reservation_id
+        WHERE allocation.scope_key = ? AND reservation.status != 'voided'`;
+      if (view === undefined) {
+        view = { projection: new AdmissionUsageProjection(), dirty: new Set() };
+        const rows = this.#driver.prepareState<[string], UsageReservation>(`${select} LIMIT ${MAX_USAGE_PROJECTION_RESERVATIONS + 1}`).all(allocationKey);
+        if (rows.length > MAX_USAGE_PROJECTION_RESERVATIONS) return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+        for (const row of rows) {
+          view.projection.update(row.reservation_id, row);
+        }
+        if (this.#usageViews.size >= MAX_USAGE_PROJECTIONS) this.#usageViews.delete(this.#usageViews.keys().next().value!);
+        this.#usageViews.set(key, view);
+      } else {
+        for (const id of view.dirty) {
+          const row = this.#driver.prepareState<[string, string], UsageReservation>(`${select} AND reservation.reservation_id = ?`).get(allocationKey, id);
+          view.projection.update(id, row);
+        }
+        view.dirty.clear();
+        if (view.projection.size > MAX_USAGE_PROJECTION_RESERVATIONS) {
+          this.#usageViews.delete(key);
+          return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+        }
+      }
+      const sequence = this.#driver.prepareState<[], { sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      ).get()?.sequence ?? 0;
+      return view.projection.capture(runId, sequence);
+    });
+  }
+
+  releaseUsageSnapshot(runId: string, allocationKey: string): void {
+    this.#usageViews.delete(JSON.stringify([runId, allocationKey]));
+  }
+
+  #usageVersion(): string {
+    // These inspect SQLite connection metadata, never a deferred projection.
+    const external = this.#driver.state.pragma("data_version", { simple: true });
+    const changes = this.#driver.state.prepare<[], { count: number }>("SELECT total_changes() AS count").get()?.count;
+    return `${external}:${changes}`;
+  }
+
   /** Read a consistent budget snapshot without creating or reserving a scope. */
   getRemainingCostUsd(scopes: readonly AdmissionBudgetScope[]): number | undefined {
     return this.#driver.transaction(() => {
@@ -1789,6 +1850,7 @@ export class ExecutionAdmissionRepository {
 
   #writeTransaction<T>(operation: () => T): T {
     const outermost = this.#writeDepth === 0;
+    let usageVersionBefore: string | undefined;
     // Nested inside a transaction this repository did not open: whether its
     // rows commit is not observable here, so the buffer cannot be trusted.
     if (outermost && this.#driver.state.inTransaction) this.#journalBufferExact = false;
@@ -1796,16 +1858,36 @@ export class ExecutionAdmissionRepository {
     this.#writeDepth += 1;
     let result: T;
     try {
-      result = this.#driver.transactionImmediate(operation);
+      result = this.#driver.transactionImmediate(() => {
+        if (outermost && this.#usageViews.size > 0) {
+          usageVersionBefore = this.#usageVersion();
+          if (this.#usageDatabaseVersion !== usageVersionBefore) this.#usageViews.clear();
+        }
+        return operation();
+      });
     } catch (error) {
       // The transaction or savepoint rolled back with these rows.
       this.#openJournal.length = mark;
+      this.#usageViews.clear();
       throw error;
     } finally {
       this.#writeDepth -= 1;
     }
     if (outermost) {
       this.#writeRevision += 1;
+      if (!this.#journalBufferExact || this.#driver.state.inTransaction) this.#usageViews.clear();
+      for (const view of this.#usageViews.values()) {
+        for (const event of this.#openJournal) {
+          if (event.reservationId !== undefined) view.dirty.add(event.reservationId);
+        }
+      }
+      if (this.#usageViews.size > 0) {
+        const versionAfter = this.#usageVersion();
+        // Another connection may commit just after our write lock releases.
+        // Never credit that writer's change to our own incremental deltas.
+        if (usageVersionBefore?.split(":")[0] !== versionAfter.split(":")[0]) this.#usageViews.clear();
+        this.#usageDatabaseVersion = versionAfter;
+      }
       for (const event of this.#openJournal) this.#committedJournal.push(event);
       this.#openJournal = [];
     }

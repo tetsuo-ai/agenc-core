@@ -1,3 +1,4 @@
+import { isAuditedAdmissionRead } from "./synchronous-admission-sql.js";
 import { projectWriteBehindBarrier } from "../session/write-behind.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
@@ -45,6 +46,13 @@ export {
 export interface StateSqliteDriverOptions {
   /** State-only consumers open the independent logs database on first use. */
   readonly deferLogs?: boolean;
+  /**
+   * Admission's private writer keeps reservations, allocations and run gates
+   * synchronous. Reads of ONLY those tables cannot observe a stale rollout
+   * projection. Its SQLite journal is synchronous too; the canonical rollout
+   * copy is queued. Other SQL readers retain the queue barrier.
+   */
+  readonly eagerAdmissionState?: boolean;
 }
 
 export interface OpenStateDatabaseOptions extends StateSqliteDriverOptions {
@@ -151,21 +159,26 @@ class PreparedStatementCache {
   readonly #database: SqliteDatabase;
   readonly #statements = new Map<string, SqliteStatement>();
 
-  constructor(database: SqliteDatabase, private readonly beforeRead: () => void) {
+  constructor(database: SqliteDatabase, private readonly beforeRead: () => void, private readonly eagerAdmissionState = false) {
     this.#database = database;
   }
 
   prepare<Params extends unknown[], Row>(
     sql: string,
   ): SqliteStatement<Params, Row> {
+    const prepare = () => {
+      const statement = this.#database.prepare<Params, Row>(sql);
+      return this.eagerAdmissionState && isAuditedAdmissionRead(sql)
+        ? statement : withWriteBehindReadBarrier(statement, this.beforeRead);
+    };
     const cached = this.#statements.get(sql);
     if (cached !== undefined) {
-      if (cached.busy) return withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.beforeRead);
+      if (cached.busy) return prepare();
       this.#statements.delete(sql);
       this.#statements.set(sql, cached);
       return cached as unknown as SqliteStatement<Params, Row>;
     }
-    const statement = withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.beforeRead);
+    const statement = prepare();
     this.#statements.set(sql, statement as unknown as SqliteStatement);
     if (this.#statements.size > PREPARED_STATEMENT_CACHE_LIMIT) {
       const leastRecent = this.#statements.keys().next().value;
@@ -180,6 +193,7 @@ class PreparedStatementCache {
 }
 
 export class StateSqliteDriver {
+  readonly #eagerAdmissionState: boolean;
   readonly projectDir: string;
   readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
@@ -196,6 +210,7 @@ export class StateSqliteDriver {
     private readonly durabilityRunId?: string,
     options: StateSqliteDriverOptions = {},
   ) {
+    this.#eagerAdmissionState = options.eagerAdmissionState === true;
     this.projectDir = paths.projectDir;
     this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
@@ -223,7 +238,7 @@ export class StateSqliteDriver {
     }
     this.state = state;
     this.#logs = logs;
-    this.#stateStatements = new PreparedStatementCache(state, this.#writeBehindBarrier);
+    this.#stateStatements = new PreparedStatementCache(state, this.#writeBehindBarrier, this.#eagerAdmissionState);
     if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs, this.#writeBehindBarrier);
   }
 
@@ -267,7 +282,7 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
-    this.#writeBehindBarrier();
+    if (!this.#eagerAdmissionState) this.#writeBehindBarrier();
     return this.withTransactionDurability(this.state, () => this.#stateTransaction(fn) as T);
   }
 
@@ -279,7 +294,7 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    this.#writeBehindBarrier();
+    if (!this.#eagerAdmissionState) this.#writeBehindBarrier();
     // The mode method supplies its fresh default wrapper as the callback's
     // receiver. Retain that callable family and per-invocation identity.
     return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());

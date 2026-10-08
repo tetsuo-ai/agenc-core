@@ -178,6 +178,15 @@ export function captureDurableResponseItem(message: LLMMessage): () => ResponseI
   return () => durable ??= redactResponseItemForPersistence(item, capturedIntegrity, "authenticate");
 }
 
+/** Capture checkpoint inputs; only the preceding writer's private seal may settle later. */
+export function captureCheckpointMessage(message: LLMMessage, pendingIntegrity?: ToolResultIntegrity): LLMMessage {
+  const captured = structuredClone(message);
+  if (pendingIntegrity !== undefined) {
+    captured.runtimeOnly = { ...captured.runtimeOnly, toolResultIntegrity: pendingIntegrity };
+  }
+  return captured;
+}
+
 /**
  * Recreate the already-persisted projection used by checkpoint hashing.
  * Tool-result bodies may have since been bounded in memory, so their sealed
