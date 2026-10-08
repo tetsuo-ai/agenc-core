@@ -64,7 +64,7 @@ function createToolExercise(options: { readonly fastMode?: boolean; readonly non
   };
   const nextResult = async () => {
     tools += 1;
-    return { content: tools === 4 ? "fresh oversized result ".repeat(1_000) : `fresh result ${tools}`, isError: false };
+    return { content: tools === 4 ? "fresh oversized result ".repeat(options.fastMode ? 10_000 : 1_000) : `fresh result ${tools}`, isError: false };
   };
   const registry = {
     tools: [{ name: "read_probe", description: "Read the next result", inputSchema: { type: "object" },
