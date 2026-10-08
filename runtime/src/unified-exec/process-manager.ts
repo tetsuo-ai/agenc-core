@@ -1614,18 +1614,19 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
-    const probeHint = params.runtimeSandbox === undefined ? undefined
-      : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+    let probeHint: ReturnType<typeof prepareLinuxSandboxProbeHint>;
     let child: ChildProcessWithoutNullStreams;
     try {
       const persistent = params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
         params.runtimeSandbox.persistentSession !== false
-        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: probeHint?.args ?? params.args,
+        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
             cwd: params.cwd, env: params.env }, () => {
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
             abortController.signal.throwIfAborted();
           }) : undefined;
+      if (persistent === undefined && params.runtimeSandbox !== undefined)
+        probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         cwd: params.cwd,
         env: params.env,
