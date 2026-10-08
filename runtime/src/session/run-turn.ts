@@ -2073,13 +2073,15 @@ export async function* runTurnKernel(
   } finally {
     try { session.writeBehind?.finish(); }
     finally {
-      for (const cleanup of signalCleanups) cleanup();
-      codeModeTurnWorker.dispose();
+      try {
+        for (const cleanup of signalCleanups) cleanup();
+        codeModeTurnWorker.dispose();
+      } finally {
+        // A failed persistence barrier must still release the task's done
+        // signal, otherwise Stop can wait forever for this failed turn.
+        await session.onTaskFinished(ctx.subId);
+      }
     }
-    // `onTaskFinished` is emitted uniformly from the spawn site so every
-    // task-kind shares the same lifecycle. The kernel BOTH runs the task
-    // body AND owns its finish emit.
-    await session.onTaskFinished(ctx.subId);
   }
 }
 

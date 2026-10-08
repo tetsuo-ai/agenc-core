@@ -1967,6 +1967,45 @@ describe("RolloutStore thread-spawn edges", () => {
 });
 
 describe("RolloutStore effect_intent childRunId", () => {
+  it("keeps the effect intent eager and projects a captured completion at the reader barrier", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-effect-write-behind-"));
+    const sessionId = "queued-effect-result";
+    const store = openStore({ cwd, sessionId });
+    const driver = openStateDatabases({ cwd, agencHome });
+    const payload = {
+      formatVersion: 2 as const, minimumReaderRuntime: "0.14.0",
+      runId: sessionId, stepId: "tool-step", callId: "call-1", toolName: "write",
+      recoveryCategory: "side-effecting" as const, intentDigest: "digest-1",
+      attempt: 1, recordedAt: "2026-08-19T00:00:00.000Z",
+    };
+    const intent: Event = { id: "intent", seq: 1, msg: { type: "effect_intent", payload } };
+    try {
+      store.store.writeBehind.beginStep();
+      store.append(intent, { durable: true });
+      store.recordEffectEvent(intent);
+      // Pre-dispatch projection forces the canonical intent out before the
+      // physical side effect can start.
+      expect(store.store.writeBehind.pending).toBe(0);
+      const repo = new StateRunDurabilityRepository(driver);
+      expect(repo.getEffect(sessionId, "tool-step")?.outcome).toBeUndefined();
+      const resultPayload = {
+        ...payload, intentEventSeq: 1, outcome: "committed" as const,
+        effectBoundary: "crossed" as const, resultDigest: "result-1",
+      };
+      const result: Event = { id: "result", seq: 2, msg: { type: "effect_result", payload: resultPayload } };
+      store.append(result, { durable: true });
+      store.recordEffectEvent(result);
+      expect(store.store.writeBehind.pending).toBeGreaterThan(0);
+      resultPayload.resultDigest = "mutated-after-enqueue";
+      expect(repo.getEffect(sessionId, "tool-step")).toMatchObject({
+        outcome: "committed", resultDigest: "result-1",
+      });
+      expect(store.store.writeBehind.pending).toBe(0);
+      const events = store.store.readAll().filter(item => item.type === "event_msg");
+      expect(events.at(-1)?.payload).toMatchObject({ msg: { payload: { resultDigest: "result-1" } } });
+    } finally { driver.close(); store.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it("projects the journaled childRunId and accepts a legacy replay that lacks it", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "workflow-child-run-id";

@@ -2868,6 +2868,24 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 
+  test("releases the active task when the terminal persistence barrier fails", async () => {
+    const { session } = mkSession({
+      provider: mkProvider({ content: "reply" }),
+      registry: mkRegistry(),
+    });
+    const failure = new Error("terminal persistence failed");
+    await expect((async () => {
+      for await (const event of session.runTurn("hello", { ctx: mkCtx() })) {
+        if (event.type === "turn_complete") {
+          session.writeBehind.beginStep();
+          session.writeBehind.defer("failed-terminal-append", () => { throw failure; });
+          break;
+        }
+      }
+    })()).rejects.toBe(failure);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
   test("writes finalized history back into session state and consumes it on the next turn", async () => {
     const seenMessages: LLMMessage[][] = [];
     const provider: LLMProvider = {
