@@ -58,6 +58,25 @@ function tableJournal(kernel: ExecutionAdmissionKernel, runId: string): readonly
 }
 
 describe("admission journal publication", () => {
+  it("deduplicates critical listeners by identity and either unsubscribe removes them", async () => {
+    const client = bind(createKernel(), "run-a");
+    const critical = vi.fn();
+    const barrier = vi.fn();
+    const duplicateBarrier = vi.fn();
+    const unsubscribe = client.subscribeCritical!(critical, barrier);
+    const unsubscribeDuplicate = client.subscribeCritical!(critical, duplicateBarrier);
+    client.subscribe(() => {});
+    await spend(client, "one");
+    expect(critical).toHaveBeenCalledTimes(4);
+    expect(barrier).toHaveBeenCalledTimes(4);
+    expect(duplicateBarrier).not.toHaveBeenCalled();
+    unsubscribeDuplicate();
+    await spend(client, "two");
+    expect(critical).toHaveBeenCalledTimes(4);
+    expect(barrier).toHaveBeenCalledTimes(4);
+    unsubscribe();
+  });
+
   it("projects this connection's commits without reading them back, equal to the table", async () => {
     const kernel = createKernel();
     const client = bind(kernel, "run-a");

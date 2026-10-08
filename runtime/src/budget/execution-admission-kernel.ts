@@ -223,7 +223,7 @@ export class ExecutionAdmissionKernel {
   >();
   readonly #criticalListeners = new Map<
     string,
-    Set<{ listener: (event: AdmissionJournalEvent) => void; beforeObserve?: () => void }>
+    Map<(event: AdmissionJournalEvent) => void, (() => void) | undefined>
   >();
   readonly #usageListeners = new Map<WorkspaceBinding, Set<UsageSubscription>>();
   #limits: AdmissionConcurrencyLimits;
@@ -821,12 +821,12 @@ export class ExecutionAdmissionKernel {
     listener: (event: AdmissionJournalEvent) => void,
     beforeObserve?: () => void,
   ): () => void {
-    const listeners = this.#criticalListeners.get(runId) ?? new Set();
-    const subscription = { listener, beforeObserve };
-    listeners.add(subscription);
+    const listeners = this.#criticalListeners.get(runId) ?? new Map();
+    // Preserve the original Set's listener identity and unsubscribe semantics.
+    if (!listeners.has(listener)) listeners.set(listener, beforeObserve);
     this.#criticalListeners.set(runId, listeners);
     return () => {
-      listeners.delete(subscription);
+      listeners.delete(listener);
       if (listeners.size === 0) this.#criticalListeners.delete(runId);
     };
   }
@@ -1667,9 +1667,9 @@ export class ExecutionAdmissionKernel {
         "after_admission_sqlite_commit_before_canonical_append",
       );
       const projections = this.#criticalListeners.get(event.runId);
-      for (const projection of projections ?? []) projection.listener(event);
+      for (const listener of projections?.keys() ?? []) listener(event);
       if ((this.#listeners.get(event.runId)?.size ?? 0) > 0) {
-        for (const projection of projections ?? []) projection.beforeObserve?.();
+        for (const beforeObserve of projections?.values() ?? []) beforeObserve?.();
       }
       binding.lastJournalSequence = Math.max(
         binding.lastJournalSequence,
