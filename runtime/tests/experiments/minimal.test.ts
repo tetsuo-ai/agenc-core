@@ -44,11 +44,11 @@ test("rollout is written at close, barriers and mirror are skipped, redaction is
   vi.stubEnv("AGENC_HOME", home);
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
   const mirror = vi.fn();
-  const store = new SessionStore({ cwd: home, sessionId: "minimal", agencVersion: "test", onRolloutCommitted: mirror });
+  const store = new SessionStore({ cwd: home, sessionId: "minimal", agencVersion: "test" });
   try {
     store.open({ sessionId: "minimal", timestamp: new Date().toISOString(), cwd: home, originator: "test", agencVersion: "test" });
     const before = readFileSync(store.rolloutPath, "utf8");
-    mirror.mockClear();
+    store.setOnRolloutCommitted(mirror);
     store.appendRollout({ type: "response_item", payload: { role: "user", content: "buffered-only" } }, { durable: true });
     expect(store.flushBatch(true)).toBe(true);
     expect(readFileSync(store.rolloutPath, "utf8")).toBe(before);
