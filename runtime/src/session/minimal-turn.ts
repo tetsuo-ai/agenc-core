@@ -7,7 +7,7 @@ import { modelFacingToolResultContent } from "../phases/execute-tools.js";
 import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 import { createFastContextGuard } from "./fast-context-guard.js";
 import type { EventMsg } from "./event-log.js";
-import type { LLMMessage, LLMUsage } from "../llm/types.js";
+import type { LLMMessage, LLMUsage, LLMResponse } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { buildProviderOptions } from "../phases/stream-model.js";
 import type { Terminal } from "./turn-state.js";
@@ -34,6 +34,7 @@ export async function* runMinimalTurn(
   let handoff = false;
   let modelCalls = 0;
   const observations: EventMsg[] = [];
+  const responses: LLMResponse[] = [];
   let usage: LLMUsage = UNKNOWN_USAGE;
   let lastResponseUsage: LLMUsage | undefined;
   yield { type: "turn_start", turnIndex: 0 };
@@ -48,6 +49,7 @@ export async function* runMinimalTurn(
       }
       const response = await session.services.provider.chatStream(messages, () => {}, options);
       modelCalls++;
+      responses.push(response);
       if (response.error) throw response.error;
       usage = cumulativeUsage(usage, response.usage);
       lastResponseUsage = response.usage;
@@ -109,6 +111,8 @@ export async function* runMinimalTurn(
       }
     }
   } finally {
+    // Request diagnostics are deliberately materialized off the command path.
+    for (const response of responses) void response.requestMetrics;
     // The one-shot crash contract buffers this run; serialization redacts at close.
     for (const message of messages.slice(start)) {
       if (message.role === "tool" && message.toolCallId && !message.runtimeOnly?.toolResultIntegrity) {

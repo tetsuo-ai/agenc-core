@@ -552,6 +552,21 @@ function openAiReasoningReplayEnabled(): boolean {
 }
 
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
+  if (oneShotFastModeActive()) {
+    const descriptor = Object.getOwnPropertyDescriptor(response, "requestMetrics");
+    let cached: LLMResponse["requestMetrics"];
+    let read = false;
+    Object.defineProperty(response, "requestMetrics", { enumerable: true, configurable: true,
+      get: () => {
+        if (!read) {
+          const metrics = descriptor?.get?.call(response) ?? descriptor?.value;
+          cached = metrics ? { ...metrics, stream: true } : undefined;
+          read = true;
+        }
+        return cached;
+      } });
+    return response;
+  }
   return {
     ...response,
     requestMetrics: response.requestMetrics
@@ -2429,8 +2444,7 @@ export class OpenAIProvider implements LLMProvider {
           ? { toolCalls: parsed.toolCalls }
           : {}),
       });
-      return {
-        ...parsed,
+      const finalFields = {
         ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
         ...(reasoningContent.length > 0
           ? {
@@ -2444,6 +2458,7 @@ export class OpenAIProvider implements LLMProvider {
           }
           : {}),
       };
+      return oneShotFastModeActive() ? Object.assign(parsed, finalFields) : { ...parsed, ...finalFields };
     }
   }
 
