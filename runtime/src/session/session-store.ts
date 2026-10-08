@@ -1,3 +1,4 @@
+import { experimentMinimal } from "../experiment-minimal.js";
 import { SessionWriteBehindQueue, registerSessionWriteBehind, drainRolloutWriteBehind } from "./write-behind.js";
 import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
 /**
@@ -2298,6 +2299,11 @@ export class SessionStore {
    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
   append(event: Event, opts: AppendOptions = {}): boolean {
+    if (experimentMinimal()) {
+      if (!this.opened || this.closed) return false;
+      this.pending.push({ type: "event_msg", payload: event });
+      return true;
+    }
     this.writeBehind.assertHealthy();
     if (!this.opened || this.closed) return false;
     if (this.writeBehind.deferring) {
@@ -2390,6 +2396,10 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    if (experimentMinimal()) {
+      if (this.opened && !this.closed) this.pending.push(item);
+      return;
+    }
     this.writeBehind.assertHealthy();
     if (this.writeBehind.deferring) {
       const captured = structuredClone(item);
@@ -2424,6 +2434,8 @@ export class SessionStore {
    * for tests.
    */
   flushBatch(durable: boolean): boolean {
+    // Experiment: even explicit durability barriers lie until close().
+    if (experimentMinimal() && !this.closed) return true;
     this.writeBehind.barrier();
     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
     // the event loop that streams to every client, so it is worth reporting.
@@ -2562,7 +2574,7 @@ export class SessionStore {
         this.fileSize += Buffer.byteLength(lines, "utf8");
         this.trajectoryExport.writeItems(toWrite);
         try {
-          withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
+          if (!experimentMinimal()) withOneShotWriteScope(dirname(dirname(this.sessionDir)), this.sessionId,
             () => this.onRolloutCommitted?.(this.rolloutPath));
         } catch {
           // The rollout is already appended. A mirror callback cannot make this

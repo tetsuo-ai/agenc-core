@@ -1,0 +1,18 @@
+# Minimal command loop floor experiment
+
+`AGENC_EXPERIMENT_MINIMAL=1` deliberately removes runtime guarantees to measure
+JavaScript overhead. This branch is not a merge candidate. Use only disposable
+bypass-mode sessions. The default path is unchanged; only the exact value `1`
+enables the experiment. The switch is process-wide, including daemon sessions.
+
+First cut: admission, effect journal, reservation/count_tokens accounting,
+checkpoint hashes, durable secret redaction, usage aggregation, periodic and
+explicit persistence barriers, and rollout SQLite mirroring are skipped.
+Rollout records are buffered in memory until the store closes. Process crashes
+lose the buffer. Recovery, accounting, durable visibility, and secret protection
+are intentionally invalid. Normal session metadata/setup may still write at
+startup; this experiment measures response-to-next-request command gaps.
+
+Subsequent cuts and measurements are recorded in round3/jobs/rx/REPORT.md outside
+the repository. Do not treat a successful fake-provider echo workload as proof
+of general agent correctness or safe shipping behavior.

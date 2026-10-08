@@ -1,3 +1,4 @@
+import { experimentMinimal } from "../experiment-minimal.js";
 /** Shared M3 boundary for approved tool effects. */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -773,6 +774,11 @@ function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
 export async function runAdmittedToolCall(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
+  if (experimentMinimal()) {
+    const dispatch = createDispatchContext(params.signal);
+    try { return await params.invoke(dispatch.context); }
+    finally { dispatch.cleanup(); }
+  }
   const category = recoveryCategory(params.tool);
   assertNoLiveUnknownEffect(params.session, category);
   params.session.rolloutStore?.assertToolAdmissionAllowed(category);
