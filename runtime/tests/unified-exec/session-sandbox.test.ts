@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { SessionSandbox } from "../../src/sandbox/linux-launcher/session-sandbox.js";
+import * as supervised from "../../src/utils/supervisedProcess.js";
 import { permissionProfileFromRuntimePermissions, restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
 import type { UnifiedExecRuntimeSandbox } from "../../src/unified-exec/types.js";
 let root: string, manager: UnifiedExecProcessManager, policy: UnifiedExecRuntimeSandbox;
@@ -42,6 +43,52 @@ describe.runIf(process.platform === "linux")("persistent unified exec lifecycle"
     const result = await run("echo once >> effects; cat effects");
     expect(result.exitCode).toBe(0); expect(result.stdout).toBe("once\n");
     expect(fs.readFileSync(path.join(root, "effects"), "utf8")).toBe("once\n");
+  });
+  it("caches a failed startup across policy drains and opt-out, logs once, and isolates owners", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess").mockImplementationOnce(() => { throw new Error("broken broker"); });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const owner = manager.createOwnerLifetime("failed");
+    const extra = { ownerId: "failed", ownerBinding: owner.bind() };
+    expect((await run("echo first", extra)).stdout).toBe("first\n");
+    expect(launch).toHaveBeenCalledTimes(2); // Failed keeper, successful per-command fallback.
+    expect((await run("echo next", extra)).stdout).toBe("next\n");
+    expect(launch).toHaveBeenCalledTimes(3);
+    await run("true", { ...extra, runtimeSandbox: { ...policy, persistentSession: false } });
+    const token = manager.beginSandboxAuthorityQuiesce();
+    await manager.finishSandboxAuthorityQuiesce(token); manager.resumeSandboxAuthorityAfterQuiesce(token);
+    expect((await run("echo after-drain", extra)).stdout).toBe("after-drain\n");
+    expect(launch).toHaveBeenCalledTimes(5);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]![0]).toContain("rest of this session");
+    const a = await run(namespace, { ownerId: "other" }), b = await run(namespace, { ownerId: "other" });
+    expect(a.stdout).toBe(b.stdout); expect(launch).toHaveBeenCalledTimes(6);
+    await owner.prepareForDurableClose();
+    const resumed = { ownerId: "failed", ownerBinding: manager.createOwnerLifetime("failed").bind() };
+    const c = await run(namespace, resumed), d = await run(namespace, resumed);
+    expect(c.stdout).toBe(d.stdout); expect(launch).toHaveBeenCalledTimes(7);
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+  it.each(["owner", "durable", "best-effort", "quiesce"])("still drains fallback processes if cached sandbox close rejects during %s close", async scope => {
+    const owner = manager.createOwnerLifetime("closing");
+    const extra = { ownerId: "closing", ownerBinding: owner.bind() };
+    await run("true", extra);
+    // Exercise the ordinary per-command route alongside the cached namespace.
+    vi.spyOn(SessionSandbox.prototype, "spawn").mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    const a = await run("sleep 30", { ...extra, yield_time_ms: 1 });
+    const b = await run("sleep 30", { ...extra, yield_time_ms: 1 });
+    expect(a.session_id).toBeDefined(); expect(b.session_id).toBeDefined();
+    const realClose = SessionSandbox.prototype.close;
+    vi.spyOn(SessionSandbox.prototype, "close").mockImplementationOnce(async function(this: SessionSandbox) {
+      await realClose.call(this);
+      throw new Error("injected namespace cleanup failure");
+    });
+    const close = scope === "owner" ? owner.prepareForDurableClose()
+      : scope === "durable" ? manager.prepareForDurableClose()
+      : scope === "quiesce" ? manager.finishSandboxAuthorityQuiesce(manager.beginSandboxAuthorityQuiesce())
+      : manager.closeAll();
+    await expect(close).rejects.toThrow(/cleanup/);
+    expect(manager.listOwnedProcesses({ ownerId: "closing" }).every(entry => entry.status !== "running")).toBe(true);
+    await expect(run("echo unsafe", extra)).rejects.toThrow(/cleanup|durable/);
   });
   it("applies timeouts and cleans detached descendants", async () => {
     const result = await run("setsid sh -c 'sleep 1; echo leaked > leaked' & wait", { timeoutMs: 50 });

@@ -215,7 +215,9 @@ session shutdown, policy changes, and changes to mounted objects retire the
 sandbox. A failed command is never replayed automatically. If the reusable
 sandbox cannot start, the command uses the existing per-command launcher.
 TTY, proxy-mediated networking, device bindings, and unsupported mount layouts
-continue to use that launcher. Set `sandbox.persistent_session = false` to use
+continue to use that launcher. A failed session-sandbox startup is logged once
+and keeps that session on the per-command launcher without repeated retries.
+Set `sandbox.persistent_session = false` to use
 it for every command.
 
 #### Recovering background work

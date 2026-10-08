@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionSandbox } from "../../../src/sandbox/linux-launcher/session-sandbox.js";
 import { terminateProcessTreeAndReport } from "../../../src/utils/supervisedProcess.js";
+import * as supervised from "../../../src/utils/supervisedProcess.js";
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
 let root: string, sandbox: SessionSandbox;
 beforeEach(() => {
@@ -13,7 +14,7 @@ beforeEach(() => {
   for (const p of ["work", "temp", "work/.git", "work/.agents", "work/.agenc"]) fs.mkdirSync(path.join(root, p));
   sandbox = new SessionSandbox();
 });
-afterEach(async () => { await sandbox.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { await sandbox.close(); vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }); });
 function input(command: string, env: Record<string, string> = {}) {
   const cwd = path.join(root, "work");
   const profile = { fileSystem: { kind: "restricted", entries: [
@@ -37,6 +38,22 @@ async function runInput(invocation: ReturnType<typeof input>, signal?: AbortSign
     outcome: await terminateProcessTreeAndReport(child!) };
 }
 describe.runIf(process.platform === "linux")("session sandbox", () => {
+  it("tries a timed-out keeper once and logs the session fallback once", async () => {
+    const original = supervised.spawnContainedProcess;
+    const launch = vi.spyOn(supervised, "spawnContainedProcess").mockImplementationOnce((...args) => {
+      const child = original(...args);
+      const on = child.stdout.on.bind(child.stdout);
+      vi.spyOn(child.stdout, "on").mockImplementation((event, listener) =>
+        on(event, event === "data" ? () => {} : listener));
+      return child;
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await sandbox.spawn(input("echo never > timeout-effect"), () => {})).toBeUndefined();
+    await sandbox.close();
+    expect(await sandbox.spawn(input("echo never > timeout-effect"), () => {})).toBeUndefined();
+    expect(launch).toHaveBeenCalledTimes(1); expect(log).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(root, "work/timeout-effect"))).toBe(false);
+  });
   it("reuses the namespace while resetting command cwd and environment", async () => {
     const a = await run("export POISON=bad; cd /; printf first");
     const b = await run('printf "%s:%s" "$PWD" "${POISON-clean}"');

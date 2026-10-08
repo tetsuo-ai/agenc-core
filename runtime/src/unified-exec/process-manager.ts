@@ -1,4 +1,4 @@
-import { SessionSandbox, SessionSandboxCleanupError } from "../sandbox/linux-launcher/session-sandbox.js";
+import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -551,15 +551,27 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
   private readonly sessionSandboxes = new Map<string, SessionSandbox>();
+  // Retain failed startup admission across policy drains, Stop and opt-out.
+  // Only closing the owner lifetime (or disposing this manager) resets it.
+  private readonly sessionSandboxAvailability = new Map<string, SessionSandboxAvailability>();
   private sessionSandboxFor(ownerId?: string): SessionSandbox {
     const key = ownerId ?? "";
     let sandbox = this.sessionSandboxes.get(key);
-    if (!sandbox) { sandbox = new SessionSandbox(); this.sessionSandboxes.set(key, sandbox); }
+    if (!sandbox) {
+      let availability = this.sessionSandboxAvailability.get(key);
+      if (!availability) { availability = { startupFailed: false }; this.sessionSandboxAvailability.set(key, availability); }
+      sandbox = new SessionSandbox(availability); this.sessionSandboxes.set(key, sandbox);
+    }
     return sandbox;
   }
   private async closeSessionSandboxes(): Promise<void> {
-    await Promise.all([...this.sessionSandboxes.values()].map(sandbox => sandbox.close()));
-    this.sessionSandboxes.clear();
+    const entries = [...this.sessionSandboxes.entries()];
+    const outcomes = await Promise.allSettled(entries.map(async ([key, sandbox]) => {
+      await sandbox.close();
+      if (this.sessionSandboxes.get(key) === sandbox) this.sessionSandboxes.delete(key);
+    }));
+    const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "session sandbox cleanup is unproven");
   }
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
@@ -643,7 +655,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         errors.push(result.reason);
       }
     }
-    await this.closeSessionSandboxes();
+    try { await this.closeSessionSandboxes(); } catch (error) { errors.push(error); }
     if (errors.length === 0) return;
     const primary = errors[0];
     const failure = new AggregateError(
@@ -1199,18 +1211,22 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
     this.sandboxAuthorityGeneration += 1;
-    await this.closeSessionSandboxes();
+    const sandboxCleanup = this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);
     }
-    await Promise.allSettled(
-      entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
-    );
+    const [sandboxOutcome] = await Promise.allSettled([
+      sandboxCleanup, ...entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
+    ]);
     // A best-effort timeout is not cleanup proof. Retain unsettled owners so
     // strict disposal and the durable-close boundary can still drain them.
     for (const entry of entries) {
       if (entry.exitState !== null) this.releaseProcessId(entry.processId);
+    }
+    if (sandboxOutcome!.status === "rejected") {
+      this.poisonSandboxAuthority(sandboxOutcome.reason);
+      throw sandboxOutcome.reason;
     }
   }
 
@@ -1296,11 +1312,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     lifetime.closing = true;
     const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
     lifetime.closeTask = Promise.resolve().then(async () => {
-      await this.sessionSandboxes.get(lifetime.ownerId)?.close();
-      this.sessionSandboxes.delete(lifetime.ownerId);
-      if (this.sandboxAuthorityCleanupFailure !== undefined) throw this.sandboxAuthorityCleanupFailure;
       const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
       const outcomes = await Promise.allSettled([
+        Promise.resolve().then(async () => {
+          await this.sessionSandboxes.get(lifetime.ownerId)?.close();
+          this.sessionSandboxes.delete(lifetime.ownerId);
+        }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
       const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
@@ -1312,6 +1329,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
       // Keep settled yielded entries for status/output collection and pruning.
       lifetime.closed = true;
+      this.sessionSandboxAvailability.delete(lifetime.ownerId);
     });
     return lifetime.closeTask;
   }
@@ -1321,13 +1339,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (this.durableCloseTask !== undefined) return this.durableCloseTask;
     this.durableCloseStarted = true;
     const task = Promise.resolve().then(async () => {
-      if (this.sandboxAuthorityCleanupFailure !== undefined) {
-        throw this.sandboxAuthorityCleanupFailure;
-      }
-      await this.closeSessionSandboxes();
       const entries = [...this.processes.values()];
-      const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
+      const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
+        this.closeSessionSandboxes(), ...entries.map(entry => this.closeProcessStrict(entry)),
+      ]);
       const failures: unknown[] = [];
+      if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
       for (const [index, outcome] of outcomes.entries()) {
         if (outcome.status === "rejected") failures.push(outcome.reason);
         else this.releaseProcessId(entries[index]!.processId);

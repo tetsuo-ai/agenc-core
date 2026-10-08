@@ -8,6 +8,10 @@ import { consumeDirectBwrapPlan, registerDirectBwrapPlan } from "../../utils/dir
 import { spawnContainedProcess, terminateProcessTreeAndReport } from "../../utils/supervisedProcess.js";
 import { sessionProcessBoundaries } from "../../utils/session-process-boundary.js";
 import type { ProcessBrokerV3Outcome } from "../../utils/process-broker-protocol-v3.js";
+import { createLogger } from "../../utils/logger.js";
+
+const logger = createLogger("warn", "[sandbox]");
+export interface SessionSandboxAvailability { startupFailed: boolean; }
 
 export class SessionSandboxCleanupError extends Error {
   constructor(cause: unknown) {
@@ -53,6 +57,7 @@ interface Active {
 
 /** One idle-or-running namespace. Busy callers retain per-command isolation. */
 export class SessionSandbox {
+  constructor(private readonly availability: SessionSandboxAvailability = { startupFailed: false }) {}
   private server?: ChildProcessWithoutNullStreams;
   private active?: Active;
   private key?: string;
@@ -77,6 +82,7 @@ export class SessionSandbox {
 
   async spawn(input: Invocation, validateAdmission: () => void, signal?: AbortSignal): Promise<ChildProcessWithoutNullStreams | undefined> {
     if (this.cleanupFailure) throw this.cleanupFailure;
+    if (this.availability.startupFailed) return undefined;
     if (process.platform !== "linux" || this.active || this.starting || this.closing) return undefined;
     const key = invocationKey(input);
     let current = this.key === key;
@@ -142,6 +148,10 @@ export class SessionSandbox {
         } finally { handoff.dispose(); }
       } catch {
         await this.close();
+        if (!this.availability.startupFailed && !signal?.aborted) {
+          this.availability.startupFailed = true;
+          logger.warn("Persistent sandbox startup failed; using a separate sandbox for each command for the rest of this session.");
+        }
         return undefined;
       } finally { this.starting = false; }
     }
