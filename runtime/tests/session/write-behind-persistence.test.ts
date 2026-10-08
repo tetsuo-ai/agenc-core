@@ -36,15 +36,16 @@ function emittingSession(store: SessionStore, seen: string[]): Session {
 describe("write-behind persistence barriers", () => {
   it("drains persistence before advancing a previously opened SQL iterator", () => {
     const store = openStore();
+    const writer = openStateDatabases({ cwd: store.cwd, agencHome: store.agencHome, deferLogs: true });
     const driver = openStateDatabases({ cwd: store.cwd, agencHome: store.agencHome, deferLogs: true });
-    driver.state.exec("CREATE TABLE wb_cursor(value INTEGER)");
+    writer.state.exec("CREATE TABLE wb_cursor(value INTEGER)");
     const iterator = driver.prepareState<[], { value: number }>("SELECT value FROM wb_cursor").iterate();
     try {
       store.writeBehind.beginStep();
-      store.writeBehind.defer("insert", () => { driver.prepareState("INSERT INTO wb_cursor VALUES (7)").run(); });
+      store.writeBehind.defer("insert", () => { writer.prepareState("INSERT INTO wb_cursor VALUES (7)").run(); });
       expect(iterator.next()).toEqual({ value: { value: 7 }, done: false });
       expect(store.writeBehind.pending).toBe(0);
-    } finally { iterator.return?.(); driver.close(); store.close(); }
+    } finally { iterator.return?.(); driver.close(); writer.close(); store.close(); }
   });
 
   it("preserves canonical bytes, append order, and fsync calls after flushing", () => {
