@@ -100,7 +100,11 @@ export function prepareDirectBwrapV3Plan(input: DirectBwrapInput): PreparedDirec
   return preparePlan(input, true);
 }
 
-function preparePlan(input: DirectBwrapInput, namespaceInit: boolean): PreparedDirectBwrap | undefined {
+export function prepareSessionBwrapPlan(input: DirectBwrapInput): PreparedDirectBwrap | undefined {
+  return preparePlan(input, false, true);
+}
+
+function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = false): PreparedDirectBwrap | undefined {
   if (process.platform !== "linux") return undefined;
   let source: ReturnType<typeof prepareSeccompSource> | undefined;
   try {
@@ -168,12 +172,33 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean): PreparedD
     if (!isCurrent()) return undefined;
     const seccomp = seccompMode === null ? undefined : createNetworkSeccompProgram(seccompMode);
     if (seccomp !== undefined) source = prepareSeccompSource(options.sessionTempRoot, seccomp);
+    let sessionSandbox;
+    if (session) {
+      const executable = path.join(root, "dist/agenc-session-sandbox");
+      const stat = fs.statSync(executable);
+      if (!mountProc || !stat.isFile() || (stat.mode & 0o022) !== 0 ||
+          (stat.uid !== 0 && stat.uid !== process.geteuid!()) ||
+          !bwrap.args.includes("--unshare-pid") ||
+          bwrap.args.includes("--dev-bind") ||
+          permissions.fileSystem.kind !== "restricted" ||
+          permissions.fileSystem.entries.some(entry => entry.path.kind === "glob")) return undefined;
+      // The executor must be immutable from every command's mount view.
+      const dist = path.dirname(executable);
+      if (!bwrap.args.some((arg, i) => arg === "--ro-bind" &&
+          bwrap.args[i + 1] === dist && bwrap.args[i + 2] === dist)) return undefined;
+      const delimiter = bwrap.args.indexOf("--");
+      sessionSandbox = { program: launcher.program,
+        args: [...bwrap.args.slice(0, delimiter), "--as-pid-1", "--", executable, "--session-executor-v1"],
+        env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" },
+        command: options.command, executable };
+    }
     const serialize = namespaceInit ? serializeProcessBrokerV3Payload : serializeProcessBrokerV2Payload;
     const payload = serialize({ program: launcher.program, args: bwrap.args,
       env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }, ownerPid: process.pid,
       ...(seccomp === undefined ? {} : { seccomp }) });
     const ownedSource = source;
     const plan = registerDirectBwrapPlan({ payload,
+      ...(sessionSandbox === undefined ? {} : { sessionSandbox }),
       ...(artifact === undefined ? {} : { namespaceInitArtifact: artifact.target }), sourceFd: source?.fd, isCurrent,
       dispose: () => ownedSource?.dispose() });
     source = undefined;

@@ -584,6 +584,7 @@ export function runtimeSandboxForExec(
         readonly windowsSandboxPrivateDesktop?: unknown;
       };
       readonly sandboxAllowGpu?: unknown;
+      readonly sandboxPersistentSession?: unknown;
     };
     readonly features?: unknown;
     readonly network?: unknown;
@@ -634,6 +635,7 @@ export function runtimeSandboxForExec(
     sandboxPolicyCwd,
     sessionTempRoot: childTempRoot,
     preference: "require",
+    persistentSession: booleanValue(turn.config?.sandboxPersistentSession) !== false,
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),

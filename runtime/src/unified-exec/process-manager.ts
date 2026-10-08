@@ -1,3 +1,4 @@
+import { SessionSandbox } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -549,6 +550,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly sessionSandbox = new SessionSandbox();
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
@@ -631,6 +633,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         errors.push(result.reason);
       }
     }
+    await this.sessionSandbox.close();
     if (errors.length === 0) return;
     const primary = errors[0];
     const failure = new AggregateError(
@@ -1185,6 +1188,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
+    await this.sessionSandbox.close();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);
@@ -1307,6 +1311,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         throw this.sandboxAuthorityCleanupFailure;
       }
+      await this.sessionSandbox.close();
       const entries = [...this.processes.values()];
       const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
       const failures: unknown[] = [];
@@ -1601,7 +1606,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
+      const persistent = params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
+        params.runtimeSandbox.persistentSession !== false && params.ownerId === undefined
+        ? await this.sessionSandbox.spawn({ program: params.program, args: probeHint?.args ?? params.args,
+            cwd: params.cwd, env: params.env }, () => {
+            this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+            this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+            abortController.signal.throwIfAborted();
+          }) : undefined;
+      child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         cwd: params.cwd,
         env: params.env,
         argv0: params.argv0 ?? basename(params.program),

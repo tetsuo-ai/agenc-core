@@ -300,6 +300,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
     ...(params.config.service_tier !== undefined
       ? { serviceTier: params.config.service_tier }
       : {}),
+    sandboxPersistentSession: params.config.sandbox?.persistent_session !== false,
     ...(params.config.sandbox?.allow_gpu === true
       ? { sandboxAllowGpu: true }
       : {}),

@@ -2,6 +2,13 @@ const brand = Symbol("prepared direct bubblewrap");
 export interface PreparedDirectBwrap { readonly [brand]: true }
 export interface DirectBwrapHandoff {
   readonly payload: Buffer;
+  readonly sessionSandbox?: {
+    readonly program: string;
+    readonly args: readonly string[];
+    readonly env: NodeJS.ProcessEnv;
+    readonly command: readonly string[];
+    readonly executable: string;
+  };
   /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
   readonly namespaceInitArtifact?: string;
   readonly sourceFd: number | undefined;
