@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -74,6 +74,9 @@ export function canonicalizeHomePath(path: string): string {
       `AGENC_HOME must be an absolute path so daemon, lock, and secure-storage identity is stable: ${JSON.stringify(path)}`,
     );
   }
+  const cached = canonicalHomeCache.get(normalized);
+  if (cached !== undefined && canonicalHomeStillValid(cached)) return cached.canonical;
+  canonicalHomeCache.delete(normalized);
   const missingComponents: string[] = [];
   let existingAncestor = normalized;
   while (!existsSync(existingAncestor)) {
@@ -86,15 +89,70 @@ export function canonicalizeHomePath(path: string): string {
     missingComponents.unshift(basename(existingAncestor));
     existingAncestor = parent;
   }
-  if (!statSync(existingAncestor).isDirectory()) {
+  const ancestorStats = statSync(existingAncestor);
+  if (!ancestorStats.isDirectory()) {
     throw new InvalidHomePathError(
       `AGENC_HOME must resolve beneath a directory: ${JSON.stringify(path)}`,
     );
   }
-  return join(
-    realpathSync(existingAncestor),
-    ...missingComponents,
-  ).normalize("NFC");
+  const ancestorReal = realpathSync(existingAncestor);
+  const canonical = join(ancestorReal, ...missingComponents).normalize("NFC");
+  rememberCanonicalHome(normalized, {
+    canonical,
+    ancestor: existingAncestor,
+    ancestorReal,
+    dev: ancestorStats.dev,
+    ino: ancestorStats.ino,
+    firstMissing: missingComponents.length > 0
+      ? join(existingAncestor, missingComponents[0]!)
+      : undefined,
+  });
+  return canonical;
+}
+
+/**
+ * One canonicalization result and the filesystem facts it was derived from.
+ * The result is reused only while those facts still hold: the deepest existing
+ * ancestor and its resolved path still name the same directory (device and
+ * inode), and the first missing component is still missing. A directory has
+ * one parent, so the resolved path cannot change without one of these
+ * changing, except where a bind mount makes one directory reachable at two
+ * symlink-free paths and a symlink is moved from one to the other.
+ */
+interface CanonicalHomeEntry {
+  readonly canonical: string;
+  readonly ancestor: string;
+  readonly ancestorReal: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly firstMissing: string | undefined;
+}
+
+const CANONICAL_HOME_CACHE_LIMIT = 64;
+const canonicalHomeCache = new Map<string, CanonicalHomeEntry>();
+
+function rememberCanonicalHome(path: string, entry: CanonicalHomeEntry): void {
+  canonicalHomeCache.set(path, entry);
+  if (canonicalHomeCache.size > CANONICAL_HOME_CACHE_LIMIT) {
+    const oldest = canonicalHomeCache.keys().next().value;
+    if (oldest !== undefined) canonicalHomeCache.delete(oldest);
+  }
+}
+
+function sameDirectory(stats: Stats | undefined, entry: CanonicalHomeEntry): boolean {
+  return stats !== undefined && stats.isDirectory() &&
+    stats.dev === entry.dev && stats.ino === entry.ino;
+}
+
+function canonicalHomeStillValid(entry: CanonicalHomeEntry): boolean {
+  if (!sameDirectory(statSync(entry.ancestor, { throwIfNoEntry: false }), entry)) return false;
+  if (
+    entry.ancestorReal !== entry.ancestor &&
+    !sameDirectory(statSync(entry.ancestorReal, { throwIfNoEntry: false }), entry)
+  ) {
+    return false;
+  }
+  return entry.firstMissing === undefined || !existsSync(entry.firstMissing);
 }
 
 export function homePathIdentityKey(
