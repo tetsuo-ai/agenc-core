@@ -21,6 +21,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { simulateWindowsPublication } from "../helpers/windows-publication-simulation.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
 
 const acl = vi.hoisted(() => ({
@@ -141,7 +142,37 @@ beforeEach(async () => {
     if (!privatePaths.has(key)) throw new Error(`not private: ${path}`);
   });
   acl.runWindowsSecurityScript.mockReset();
-  acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+  acl.runWindowsSecurityScript.mockImplementation((
+    path: string,
+    encoded?: string,
+    variables?: Record<string, string>,
+    _temporary?: string,
+    input?: Buffer,
+  ) => {
+    if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) {
+      recordTarget(path);
+      const script = Buffer.from(String(variables.AGENC_CRON_PUBLISH_BODY ?? encoded ?? ""), "base64").toString(
+        variables.AGENC_CRON_PUBLISH_BODY === undefined ? "utf16le" : "utf8",
+      );
+      simulateWindowsPublication({
+        directory: variables.AGENC_CRON_PUBLISH_DIRECTORY,
+        volume: variables.AGENC_CRON_VOLUME ?? "",
+        fileId: variables.AGENC_CRON_FILE_ID ?? "",
+        name: variables.AGENC_CRON_NAME ?? "",
+        temporary: variables.AGENC_CRON_TEMPORARY ?? "",
+        bytes: Buffer.isBuffer(input) ? input : Buffer.alloc(0),
+        script,
+        observe: () => { hooks.observeOutside?.(); },
+        onStage: (stage, info) => {
+          if (stage === "before-temp-create") hooks.beforeOpen?.(info.temporaryPath);
+          if (stage === "before-temp-security") hooks.beforeAclInit?.(info.temporaryPath);
+          if (stage === "before-published-check") hooks.afterRename?.(info.temporaryPath, info.destinationPath);
+        },
+        onPathMutation: recordTarget,
+      });
+      privatePaths.add(`file\0${join(variables.AGENC_CRON_PUBLISH_DIRECTORY, variables.AGENC_CRON_NAME ?? "")}`);
+      return;
+    }
     recordTarget(path);
     privatePaths.add(`directory\0${path}`);
   });
@@ -178,6 +209,7 @@ describe("#2976 F1: Windows publication never mutates through a redirected pathn
       linkSync(outsideFile, join(agenc(), basename(path)));
     };
     await expect(publish()).rejects.toThrow();
+    expect(fired).toBe(true);
     assertOutsideUntouched();
   });
 
@@ -190,6 +222,7 @@ describe("#2976 F1: Windows publication never mutates through a redirected pathn
       linkSync(outsideFile, join(agenc(), "scheduled_tasks.json"));
     };
     await expect(publish()).rejects.toThrow();
+    expect(fired).toBe(true);
     assertOutsideUntouched();
   });
 
@@ -202,6 +235,7 @@ describe("#2976 F1: Windows publication never mutates through a redirected pathn
       symlinkSync(outside, agenc(), "dir");
     };
     await expect(publish()).rejects.toThrow();
+    expect(fired).toBe(true);
     assertOutsideUntouched();
   });
 });

@@ -118,6 +118,7 @@ export function runWindowsSecurityScript(
   encodedScript: string,
   variables: Readonly<Record<string, string>>,
   temporaryDirectory?: string,
+  input?: Buffer,
 ): void {
   let output: Buffer;
   try {
@@ -164,6 +165,7 @@ export function runWindowsSecurityScript(
         maxBuffer: WINDOWS_SECURITY_MAX_OUTPUT_BYTES,
         timeout: WINDOWS_SECURITY_TIMEOUT_MS,
         windowsHide: true,
+        ...(input === undefined ? {} : { input }),
       },
     );
   } catch (cause) {

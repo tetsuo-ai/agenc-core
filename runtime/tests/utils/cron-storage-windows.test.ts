@@ -6,6 +6,7 @@ import { basename, join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readStartupCronTasks } from "../../src/utils/cron-startup.js";
 import { windowsCronRepairCommand } from "../../src/utils/cron-storage-directory.js";
+import { simulateWindowsPublication } from "../helpers/windows-publication-simulation.js";
 import { withCronStorage } from "../../src/utils/cron-storage.js";
 import { cronRestoreFailureNeedsWarning, readCronTasks } from "../../src/utils/cronTasks.js";
 
@@ -134,18 +135,57 @@ function installAclMock(): void {
   });
   acl.beforeHandleInit = undefined;
   acl.runWindowsSecurityScript.mockReset();
-  // The handle-based initialization of a created `.agenc`.
-  acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+  // Directory initialization marks `.agenc` private. Publication runs the
+  // handle-bound script's Linux stand-in so the task file lands in that directory.
+  acl.runWindowsSecurityScript.mockImplementation((
+    path: string,
+    encoded?: string,
+    variables?: Record<string, string>,
+    _temporary?: string,
+    input?: Buffer,
+  ) => {
+    if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) {
+      simulateWindowsPublication({
+        directory: variables.AGENC_CRON_PUBLISH_DIRECTORY,
+        volume: variables.AGENC_CRON_VOLUME ?? "",
+        fileId: variables.AGENC_CRON_FILE_ID ?? "",
+        name: variables.AGENC_CRON_NAME ?? "",
+        temporary: variables.AGENC_CRON_TEMPORARY ?? "",
+        bytes: Buffer.isBuffer(input) ? input : Buffer.alloc(0),
+        script: Buffer.from(String(variables.AGENC_CRON_PUBLISH_BODY ?? encoded ?? ""), "base64").toString(
+          variables.AGENC_CRON_PUBLISH_BODY === undefined ? "utf16le" : "utf8",
+        ),
+        onStage: (stage, info) => {
+          if (stage === "before-rename") fsHooks.beforeRename?.(info.temporaryPath, info.destinationPath);
+        },
+      });
+      privatePaths.add(`file\0${join(variables.AGENC_CRON_PUBLISH_DIRECTORY, variables.AGENC_CRON_NAME ?? "")}`);
+      return;
+    }
     acl.beforeHandleInit?.(path);
     privatePaths.add(`directory\0${path}`);
   });
 }
 
 /** Every ACL write: path-based initialization and the handle-based `.agenc` initialization. */
+function directoryInitCalls(): ReadonlyArray<readonly unknown[]> {
+  return acl.runWindowsSecurityScript.mock.calls.filter((call) => {
+    const variables = call[2] as { AGENC_CRON_DIRECTORY?: string; AGENC_CRON_PUBLISH_DIRECTORY?: string } | undefined;
+    return variables?.AGENC_CRON_DIRECTORY !== undefined && variables.AGENC_CRON_PUBLISH_DIRECTORY === undefined;
+  });
+}
+
+function publicationCalls(): ReadonlyArray<readonly unknown[]> {
+  return acl.runWindowsSecurityScript.mock.calls.filter((call) => {
+    const variables = call[2] as { AGENC_CRON_PUBLISH_DIRECTORY?: string } | undefined;
+    return variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined;
+  });
+}
+
 function aclMutations(): ReadonlyArray<readonly unknown[]> {
   return [
     ...acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true),
-    ...acl.runWindowsSecurityScript.mock.calls.map(([path]) => [path, "directory", "handle"]),
+    ...directoryInitCalls().map(([path]) => [path, "directory", "handle"]),
   ];
 }
 
@@ -157,8 +197,12 @@ function pathBasedDirectoryInits(): ReadonlyArray<readonly unknown[]> {
 }
 
 /** The script `runWindowsSecurityScript` ran, decoded. */
-function decodedInitScript(call = 0): string {
-  return Buffer.from(String(acl.runWindowsSecurityScript.mock.calls[call]?.[1]), "base64").toString("utf16le");
+function decodedScript(call: readonly unknown[] | undefined): string {
+  return Buffer.from(String(call?.[1] ?? ""), "base64").toString("utf16le");
+}
+
+function decodedInitScript(): string {
+  return decodedScript(directoryInitCalls()[0]);
 }
 
 /** The C# source a script loads with Add-Type. */
@@ -268,9 +312,15 @@ describe("Windows cron storage uses private-path persistence", () => {
       expect.stringMatching(/\.agenc$/u), expect.any(String), expect.any(Object), tmpdir(),
     );
     expect(pathBasedDirectoryInits()).toHaveLength(0);
-    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
-      expect.stringMatching(/scheduled_tasks\.json\.[^/\\]+\.tmp$/u), "file", true,
-    );
+    expect(acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true)).toEqual([]);
+    expect(publicationCalls()).toHaveLength(1);
+    const publication = publicationCalls()[0]!;
+    expect(publication[4]).toEqual(Buffer.from(body, "utf8"));
+    expect(publication[2]).toMatchObject({
+      AGENC_CRON_PUBLISH_FAULT: "",
+      AGENC_CRON_PUBLISH_HOOK: "",
+      AGENC_CRON_NAME: "scheduled_tasks.json",
+    });
   });
 
   test("does not consult the ACL helper when the metadata directory is absent", async () => {
@@ -376,7 +426,8 @@ describe("Windows cron storage uses private-path persistence", () => {
 
   test("initializes a metadata directory once when this call creates it", async () => {
     await writeRecord();
-    expect(acl.runWindowsSecurityScript).toHaveBeenCalledOnce();
+    expect(directoryInitCalls()).toHaveLength(1);
+    expect(publicationCalls()).toHaveLength(1);
     const directoryCalls = acl.assertWindowsPrivatePathSecurity.mock.calls.filter(
       ([path, role]) => role === "directory" && String(path).endsWith(`${sep}.agenc`),
     );
@@ -426,9 +477,8 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(renames.some(([from, to]) => to === record && /scheduled_tasks\.json\.[^/\\]+\.tmp$/u.test(from))).toBe(true);
     expect(await readFile(record, "utf8")).toBe(body);
     expect(aclMutations().filter((call) => call[1] === "directory")).toHaveLength(0);
-    expect(acl.assertWindowsPrivatePathSecurity).toHaveBeenCalledWith(
-      expect.stringMatching(/scheduled_tasks\.json\.[^/\\]+\.tmp$/u), "file", true,
-    );
+    expect(acl.assertWindowsPrivatePathSecurity.mock.calls.filter((call) => call[2] === true)).toEqual([]);
+    expect(publicationCalls()).toHaveLength(1);
     expect(await withCronStorage(workspace, false, (storage) => storage.read())).toBe(body);
   });
 
@@ -549,21 +599,26 @@ describe("Windows cron storage uses private-path persistence", () => {
     // directory handle (attributes only, share 7) and must be the written file with one link.
     const written = command.indexOf("$written = [AgencCronRepair]::Describe($file, $task)");
     const reopen = command.indexOf("$same = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080)");
-    const compare = command.indexOf(
-      "if (-not $same -or $seen.Volume -ne $written.Volume -or $seen.IndexHigh -ne $written.IndexHigh -or " +
-      "$seen.IndexLow -ne $written.IndexLow -or $seen.Links -ne 1) { throw \"Stopped: scheduled_tasks.json was replaced during the repair. ",
+    const missing = command.indexOf("throw \"Stopped: scheduled_tasks.json disappeared during the repair.");
+    const compare = command.indexOf("throw \"Stopped: scheduled_tasks.json was replaced during the repair.");
+    const linked = command.indexOf(
+      "if ($seen.Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private;",
     );
     expect(written).toBeGreaterThan(protectFile);
     expect(reopen).toBeGreaterThan(written);
     expect(command).toContain("if ($same) { try { $seen = [AgencCronRepair]::Describe($same, $task) } finally { $same.Dispose() } }");
-    expect(compare).toBeGreaterThan(reopen);
+    expect(missing).toBeGreaterThan(reopen);
+    expect(compare).toBeGreaterThan(missing);
+    expect(linked).toBeGreaterThan(compare);
+    expect(command.slice(linked, command.indexOf("}", linked))).not.toMatch(/was not changed|left unchanged/u);
     expect(command).toContain("$root and the original task file are private now; the file now at $task was not changed.");
+    expect(command).toContain("nothing is at that name.");
     // No task file at the start: one that appears during the repair also stops it.
     expect(command).toContain(
       "else { $late = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
       "if ($late) { $late.Dispose(); throw \"Stopped: scheduled_tasks.json appeared during the repair. ",
     );
-    expect(command.indexOf("$again = [AgencCronRepair]::OpenFolder($root)")).toBeGreaterThan(compare);
+    expect(command.indexOf("$again = [AgencCronRepair]::OpenFolder($root)")).toBeGreaterThan(linked);
     expect(command.indexOf("\"Repaired $root")).toBeGreaterThan(compare);
     // Every message after the first write says "Stopped" and what is already private; "Not repaired" means unchanged.
     expect(command.indexOf("[AgencCronRepair]::Prefix = \"Stopped ($root is already private): \"")).toBeGreaterThan(protectDir);
@@ -658,8 +713,9 @@ describe("Windows cron storage uses private-path persistence", () => {
       created = lstatSync(path);
     };
     await writeRecord();
-    expect(acl.runWindowsSecurityScript).toHaveBeenCalledOnce();
-    const [path, , variables, temporary] = acl.runWindowsSecurityScript.mock.calls[0]!;
+    expect(directoryInitCalls()).toHaveLength(1);
+    expect(publicationCalls()).toHaveLength(1);
+    const [path, , variables, temporary] = directoryInitCalls()[0]!;
     expect(path).toBe(directory);
     const identity = lstatSync(directory, { bigint: true });
     expect(variables).toEqual({
@@ -702,8 +758,74 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(script).toContain("GetVolumeInformationByHandleW(handle, null, 0, out serial, out length, out flags, system, 261)");
     expect(script.endsWith("[Console]::Out.Write('OK')")).toBe(true);
     // The command line stays well under the 32767-character CreateProcess limit.
-    expect(String(acl.runWindowsSecurityScript.mock.calls[0]![1]).length).toBeLessThan(30_000);
+    expect(String(directoryInitCalls()[0]![1]).length).toBeLessThan(30_000);
+    expect(String(publicationCalls()[0]![1]).length).toBeLessThan(8_000);
+    expect(String((publicationCalls()[0]![2] as { AGENC_CRON_PUBLISH_BODY: string }).AGENC_CRON_PUBLISH_BODY).length).toBeLessThan(32_767);
     expect(await readFile(join(directory, "scheduled_tasks.json"), "utf8")).toBe(body);
+  });
+
+  test("publishes the task file through the verified directory handle", async () => {
+    await writeRecord();
+    const call = publicationCalls()[0]!;
+    const script = Buffer.from(String((call[2] as { AGENC_CRON_PUBLISH_BODY: string }).AGENC_CRON_PUBLISH_BODY), "base64").toString("utf8");
+    const bootstrap = Buffer.from(String(call[1]), "base64").toString("utf16le");
+    expect(bootstrap).toContain("Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AGENC_CRON_PUBLISH_BODY)))");
+    expect(bootstrap.indexOf("LanguageMode")).toBeLessThan(bootstrap.indexOf("Invoke-Expression"));
+    expect(bootstrap).not.toMatch(/SetAccessControl|Set-Acl/u);
+    const variables = call[2] as Record<string, string>;
+    expect(variables.AGENC_CRON_PUBLISH_DIRECTORY).toBe(metadataDirectory());
+    expect(variables.AGENC_CRON_PUBLISH_FAULT).toBe("");
+    expect(variables.AGENC_CRON_PUBLISH_HOOK).toBe("");
+    expect(variables.AGENC_CRON_TEMPORARY).toMatch(/^scheduled_tasks\.json\.[0-9a-f-]{36}\.tmp$/u);
+    expect(call[4]).toEqual(Buffer.from(body, "utf8"));
+    expect(script).not.toMatch(/SetAccessControl|Set-Acl|SetNamedSecurityInfo|SetSecurityInfo|SetFileSecurity|icacls|Remove-Item/u);
+    const order = [
+      "Invoke-PublishFault 'before-temp-create'",
+      "CreateNewChild($dir, $temp, $tempPath)",
+      "Invoke-PublishFault 'before-temp-security'",
+      "[AgencCronRepair]::Protect($created,",
+      "WriteAll($created, $payload, $tempPath)",
+      "Invoke-PublishFault 'before-rename'",
+      "RenameWithin($created, $dir, $name, $full, $false)",
+      "RenameWithin($created, $dir, $name, $full, $true)",
+      "Invoke-PublishFault 'before-published-check'",
+      "OpenChild($dir, $name, $full, 0x100080)",
+      "DeleteWhenClosed($created, $tempPath)",
+    ];
+    let cursor = 0;
+    for (const needle of order) {
+      const at = script.indexOf(needle, cursor);
+      expect(at).toBeGreaterThan(cursor - 1);
+      cursor = at + needle.length;
+    }
+    expect(script.indexOf("CreateNewChild")).toBeGreaterThan(script.indexOf("OpenPublishFolder"));
+    expect(script.indexOf("[AgencCronRepair]::Protect($created,")).toBeLessThan(script.indexOf("Invoke-PublishFault 'before-rename'"));
+    expect(script.slice(script.indexOf("Invoke-PublishFault 'before-published-check'"))).not.toContain("::Protect(");
+    expect(script).toContain("if ($env:AGENC_CRON_PUBLISH_FAULT -ne $stage) { return }");
+    expect(script).toContain("target.Root = folder.DangerousGetHandle()");
+    expect(script).toContain("SetFileInformationByHandle(file, 22, buffer, size)");
+    expect(script).toContain("NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060,");
+    expect(String(call[1]).length).toBeLessThan(8_000);
+    expect(String((call[2] as { AGENC_CRON_PUBLISH_BODY: string }).AGENC_CRON_PUBLISH_BODY).length).toBeLessThan(32_767);
+  });
+
+  test("names a refused publication without offering the repair", async () => {
+    acl.runWindowsSecurityScript.mockImplementation((path: string, _encoded?: string, variables?: Record<string, string>) => {
+      if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) {
+        throw verifierFailure(path, "publication directory changed before acknowledgement");
+      }
+      privatePaths.add(`directory\0${path}`);
+    });
+    const directory = metadataDirectory();
+    const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+    expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(error.message).toBe(
+      `Durable cron storage did not publish the task file in ${directory}: publication directory changed before acknowledgement. ` +
+      "Nothing outside the verified directory was written, and the previous task file was left in place " +
+      "when publication could not be acknowledged.",
+    );
+    expect(error.message).not.toMatch(/Command:|Repaired/u);
+    expect(await readdir(directory)).toEqual([]);
   });
 
   test("fails closed when the created .agenc was replaced before its ACL was set", async () => {

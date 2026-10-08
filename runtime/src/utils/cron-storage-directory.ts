@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { assertWindowsPrivatePathSecurity, runWindowsSecurityScript } from "../agents/workflow-private-path.js";
 import { sameIdentity, withConfinedDirectory, type ConfinedDirectory, type ConfinedIoPolicy } from "../fs/descriptor-confined-io.js";
 import { cronLockAuthorityRoot } from "../sandbox/cron-authority-protection.js";
+import { MAX_CRON_FILE_BYTES } from "./cron-delivery-state.js";
 import { isWithinAuthorityPath } from "../sandbox/desktop-authority-protection.js";
 
 export const CRON_STORAGE_NAME = "scheduled_tasks.json";
@@ -35,7 +36,8 @@ export interface CronStorageDirectory {
   readonly directory: ConfinedDirectory;
   readonly workspaceIdentity: string;
   readonly lockDirectory: string;
-  verify(): Promise<void>;
+  /** The verified `.agenc` identity, rechecked immediately before it is returned. */
+  verify(): Promise<BigIntStats>;
 }
 
 /** Shared descriptor/ownership boundary for storage and the startup absence probe. */
@@ -87,7 +89,9 @@ export async function withCronStorageDirectory<Result>(
         const verify = async () => {
           await workspace.verify();
           await bound.verify();
-          assertOwned(await bound.handle!.stat({ bigint: true }));
+          const current = await bound.handle!.stat({ bigint: true });
+          assertOwned(current);
+          return current;
         };
         return operation({
           directory: bound,
@@ -134,13 +138,24 @@ const WINDOWS_LINK_REASONS = [
 // Thrown by the created-directory initialization below.
 const WINDOWS_REPLACED_REASON = "directory identity changed before its ACL was set";
 const WINDOWS_ADD_TYPE_REASON = "Add-Type is unavailable";
+const WINDOWS_PUBLICATION_REASONS = [
+  "publication directory changed before acknowledgement",
+  "Cron temporary publication file was replaced or linked",
+  "publication write did not match the task bytes",
+  "publication target is a link or not a file",
+  "invalid publication name",
+  "invalid temporary name",
+  "publication stage changed",
+  "publication fault hook is not a local script path",
+  "publication payload exceeds 16777216 bytes",
+] as const;
 const DENIED_CODES = new Set(["EACCES", "EPERM"]);
 
 /** First verifier reason found in a cause chain, from a message or PowerShell stderr. */
 function windowsPrivatePathReason(error: unknown): string | undefined {
   const known = [
     ...WINDOWS_ACL_REASONS, ...WINDOWS_UNSUPPORTED_VOLUME_REASONS, ...WINDOWS_LINK_REASONS, WINDOWS_REPLACED_REASON,
-    WINDOWS_ADD_TYPE_REASON,
+    WINDOWS_ADD_TYPE_REASON, ...WINDOWS_PUBLICATION_REASONS,
   ];
   for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
     const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
@@ -211,6 +226,7 @@ export type WindowsCronFailure =
   | { readonly kind: "link" }
   | { readonly kind: "replaced" }
   | { readonly kind: "addtype" }
+  | { readonly kind: "publication"; readonly reason: string }
   | { readonly kind: "denied"; readonly code: string }
   | { readonly kind: "unknown" };
 
@@ -223,6 +239,7 @@ export function classifyWindowsCronFailure(error: unknown): WindowsCronFailure {
     if ((WINDOWS_LINK_REASONS as readonly string[]).includes(reason)) return { kind: "link" };
     if (reason === WINDOWS_REPLACED_REASON) return { kind: "replaced" };
     if (reason === WINDOWS_ADD_TYPE_REASON) return { kind: "addtype" };
+    if ((WINDOWS_PUBLICATION_REASONS as readonly string[]).includes(reason)) return { kind: "publication", reason };
     if (hasWindowsVerifierFailure(error) || (WINDOWS_ACL_REASONS as readonly string[]).includes(reason)) {
       return { kind: "acl", reason };
     }
@@ -274,6 +291,23 @@ const WINDOWS_REPAIR_HELPER = [
 ].join(" ");
 
 /**
+ * Publication-only methods. They stay out of the repair command so that
+ * command does not grow by the write and rename helpers. The publication
+ * script appends them to the same class before Add-Type.
+ */
+const WINDOWS_PUBLISH_METHODS = [
+  "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool WriteFile(SafeFileHandle handle, IntPtr bytes, int count, out int written, IntPtr overlapped);",
+  "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool FlushFileBuffers(SafeFileHandle handle);",
+  "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle handle, int cls, IntPtr info, int size);",
+  "public static SafeFileHandle OpenPublishFolder(string path) { return Open(path, 0x1F01E7); }",
+  "public static SafeFileHandle CreateNewChild(SafeFileHandle folder, string name, string path) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060, IntPtr.Zero, 0); if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
+  "public static void WriteAll(SafeFileHandle handle, byte[] bytes, string path) { if (bytes != null && bytes.Length > 0) { GCHandle pin = GCHandle.Alloc(bytes, GCHandleType.Pinned); try { for (int offset = 0; offset < bytes.Length; ) { int wrote; int count = bytes.Length - offset; if (count > 1048576) count = 1048576; if (!WriteFile(handle, IntPtr.Add(pin.AddrOfPinnedObject(), offset), count, out wrote, IntPtr.Zero) || wrote < 1) throw Fail(Marshal.GetLastWin32Error(), path); offset += wrote; } } finally { pin.Free(); } } if (!FlushFileBuffers(handle)) throw Fail(Marshal.GetLastWin32Error(), path); }",
+  "public static void RenameWithin(SafeFileHandle file, SafeFileHandle folder, string name, string path, bool replace) { int nameBytes = name.Length * 2; int nameAt = IntPtr.Size == 8 ? 20 : 12; int size = nameAt + nameBytes; IntPtr buffer = Marshal.AllocHGlobal(size); try { int i; for (i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0); Marshal.WriteInt32(buffer, 0, replace ? 1 : 0); Marshal.WriteIntPtr(buffer, IntPtr.Size == 8 ? 8 : 4, folder.DangerousGetHandle()); Marshal.WriteInt32(buffer, IntPtr.Size == 8 ? 16 : 8, nameBytes); Marshal.Copy(Encoding.Unicode.GetBytes(name), 0, IntPtr.Add(buffer, nameAt), nameBytes); if (!SetFileInformationByHandle(file, 22, buffer, size)) throw Fail(Marshal.GetLastWin32Error(), path); } finally { Marshal.FreeHGlobal(buffer); } }",
+  "public static void DeleteWhenClosed(SafeFileHandle handle, string path) { IntPtr buffer = Marshal.AllocHGlobal(1); try { Marshal.WriteByte(buffer, 0, 1); if (!SetFileInformationByHandle(handle, 4, buffer, 1)) throw Fail(Marshal.GetLastWin32Error(), path); } finally { Marshal.FreeHGlobal(buffer); } }",
+].join(" ");
+const WINDOWS_PUBLISH_HELPER = `${WINDOWS_REPAIR_HELPER.slice(0, -1)} ${WINDOWS_PUBLISH_METHODS}}`;
+
+/**
  * PowerShell script block returning the descriptor both scripts write:
  * owner = current user, protected DACL, one allow FullControl entry for that
  * user ((OI)(CI) on a directory so cron's new files inherit it). The same
@@ -307,7 +341,11 @@ const WINDOWS_PRIVATE_DESCRIPTOR =
  * and the name `scheduled_tasks.json` is reopened relative to the directory
  * handle (attributes only) and must still be that file (volume serial and
  * file ID) with one link: a same-volume rename keeps the count at one, so
- * only the identity shows that another file now has the name. With no task
+ * only the identity shows that another file now has the name. That case says
+ * the file now at the name was not changed. The same file with another link
+ * uses the link-count sentence instead: the file was made private, so the
+ * message does not say it was left unchanged. A missing name says the name
+ * disappeared. None of these print `Repaired`. With no task
  * file at the start, one that appears during the repair also stops it.
  * `.agenc` is reopened at the end and must have the same volume serial and
  * file ID. Every message after the first write starts with "Stopped" and
@@ -366,7 +404,9 @@ export function windowsCronRepairCommand(directory: string): string {
           "if ($written.Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private; remove the other name, then run this again.\" }; " +
           "$same = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
           "if ($same) { try { $seen = [AgencCronRepair]::Describe($same, $task) } finally { $same.Dispose() } }; " +
-          "if (-not $same -or $seen.Volume -ne $written.Volume -or $seen.IndexHigh -ne $written.IndexHigh -or $seen.IndexLow -ne $written.IndexLow -or $seen.Links -ne 1) { throw \"Stopped: scheduled_tasks.json was replaced during the repair. $root and the original task file are private now; the file now at $task was not changed. Check it, then run this again.\" } } " +
+          "if (-not $same) { throw \"Stopped: scheduled_tasks.json disappeared during the repair. $root and the original task file are private now; nothing is at that name. Check it, then run this again.\" }; " +
+          "if ($seen.Volume -ne $written.Volume -or $seen.IndexHigh -ne $written.IndexHigh -or $seen.IndexLow -ne $written.IndexLow) { throw \"Stopped: scheduled_tasks.json was replaced during the repair. $root and the original task file are private now; the file now at $task was not changed. Check it, then run this again.\" }; " +
+          "if ($seen.Links -ne 1) { throw \"Stopped: another name for $task was added during the repair. $root and that file are already private; remove the other name, then run this again.\" } } " +
         "else { $late = [AgencCronRepair]::OpenChild($dir, 'scheduled_tasks.json', $task, 0x100080); " +
           "if ($late) { $late.Dispose(); throw \"Stopped: scheduled_tasks.json appeared during the repair. $root is private now; that file was not changed. Check it, then run this again.\" } } " +
       "} finally { if ($file) { $file.Dispose() } }; " +
@@ -417,6 +457,116 @@ const WINDOWS_CREATED_DIRECTORY_SCRIPT = [
   "[Console]::Out.Write('OK')",
 ].join("\n");
 const WINDOWS_CREATED_DIRECTORY_SCRIPT_BASE64 = Buffer.from(WINDOWS_CREATED_DIRECTORY_SCRIPT, "utf16le").toString("base64");
+
+/**
+ * Publish `scheduled_tasks.json` through one PowerShell process. The directory
+ * handle is opened without following a reparse point and must match `identity`.
+ * The temporary file is created, written, secured, renamed, and deleted by that
+ * handle. `AGENC_CRON_PUBLISH_FAULT` is empty unless a test set it; the script
+ * runs the hook only when the fault equals the stage name, and never skips a check.
+ */
+const WINDOWS_PUBLISH_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$target = $env:AGENC_CRON_PUBLISH_DIRECTORY",
+  "$name = $env:AGENC_CRON_NAME",
+  "$temp = $env:AGENC_CRON_TEMPORARY",
+  "if ($target.StartsWith('\\\\')) { throw 'network and device paths are unsupported' }",
+  "if ($name -ne 'scheduled_tasks.json') { throw 'invalid publication name' }",
+  "if ($temp -notmatch '^scheduled_tasks\\.json\\.[0-9a-fA-F-]{36}\\.tmp$') { throw 'invalid temporary name' }",
+  "$memory = New-Object IO.MemoryStream; $chunk = New-Object byte[] 65536; $stdin = [Console]::OpenStandardInput()",
+  "for ($n = $stdin.Read($chunk, 0, 65536); $n -gt 0; $n = $stdin.Read($chunk, 0, 65536)) { [void]$memory.Write($chunk, 0, $n) }",
+  "$payload = $memory.ToArray()",
+  "if ($payload.Length -gt 16777216) { throw 'publication payload exceeds 16777216 bytes' }",
+  `if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw "${WINDOWS_ADD_TYPE_REASON} ($($ExecutionContext.SessionState.LanguageMode))" }`,
+  `try { Add-Type -TypeDefinition '${WINDOWS_PUBLISH_HELPER}' } catch { throw "${WINDOWS_ADD_TYPE_REASON} ($($_.Exception.GetType().Name))" }`,
+  "[AgencCronRepair]::Prefix = ''",
+  `$descriptor = ${WINDOWS_PRIVATE_DESCRIPTOR}`,
+  "$R = 'Cron temporary publication file was replaced or linked'",
+  "$M = 'publication directory changed before acknowledgement'",
+  "function Invoke-PublishFault([string]$stage) { if ($env:AGENC_CRON_PUBLISH_FAULT -ne $stage) { return }; $hook = $env:AGENC_CRON_PUBLISH_HOOK; if ([string]::IsNullOrEmpty($hook)) { return }; if ($hook -notmatch '^[A-Za-z]:\\\\[^|&;<>]+\\.ps1$') { throw 'publication fault hook is not a local script path' }; & $hook $stage $env:AGENC_CRON_PUBLISH_DIRECTORY $env:AGENC_CRON_TEMPORARY $env:AGENC_CRON_NAME }",
+  "function Test-File([object]$i) { if (($i.Attributes -band 0x410) -ne 0 -or $i.Links -ne 1) { throw $R } }",
+  "function Assert-Dir { $p = [AgencCronRepair]::Probe($target); try { $n = [AgencCronRepair]::Describe($p, $target); if (($n.Attributes -band 0x400) -ne 0 -or ($n.Attributes -band 0x10) -eq 0 -or [string]$n.Volume -ne [string]$id.Volume -or [string]$n.Index -ne [string]$id.Index) { throw $M } } finally { $p.Dispose() } }",
+  "$full = $target + '\\' + $name; $tempPath = $target + '\\' + $temp; $bak = $temp + '.bak'",
+  "$dir = [AgencCronRepair]::OpenPublishFolder($target)",
+  "try {",
+  "  $id = [AgencCronRepair]::Describe($dir, $target)",
+  "  if (($id.Attributes -band 0x400) -ne 0) { throw 'reparse points are unsupported' }",
+  "  if (($id.Attributes -band 0x10) -eq 0) { throw 'path role does not match its type' }",
+  "  $system = [AgencCronRepair]::FileSystem($dir, $target)",
+  "  if ($system -ne 'NTFS') { throw \"NTFS is required ($system)\" }",
+  `  if ([string]$id.Volume -ne $env:AGENC_CRON_VOLUME -or [string]$id.Index -ne $env:AGENC_CRON_FILE_ID) { throw '${WINDOWS_REPLACED_REASON}' }`,
+  "  $stageCreate = 'before-temp-create'; if ($stageCreate -ne 'before-temp-create') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-create'",
+  "  $created = [AgencCronRepair]::CreateNewChild($dir, $temp, $tempPath)",
+  "  $renamed = $false; $movedAside = $false; $backup = $null",
+  "  try {",
+  "    Test-File ([AgencCronRepair]::Describe($created, $tempPath))",
+  "    $stageSecurity = 'before-temp-security'; if ($stageSecurity -ne 'before-temp-security') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-security'",
+  "    Test-File ([AgencCronRepair]::Describe($created, $tempPath))",
+  "    [AgencCronRepair]::Protect($created, (& $descriptor $false), $tempPath)",
+  "    [AgencCronRepair]::WriteAll($created, $payload, $tempPath)",
+  "    $born = [AgencCronRepair]::Describe($created, $tempPath); Test-File $born",
+  "    if (([int64]$born.SizeLow + ([int64]$born.SizeHigh * [int64]4294967296)) -ne [int64]$payload.LongLength) { throw 'publication write did not match the task bytes' }",
+  "    $stageRename = 'before-rename'; if ($stageRename -ne 'before-rename') { throw 'publication stage changed' }; Invoke-PublishFault 'before-rename'",
+  "    if (([AgencCronRepair]::Describe($created, $tempPath)).Links -ne 1) { throw $R }",
+  "    Assert-Dir",
+  "    $seen = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080); $existed = [bool]$seen",
+  "    if ($seen) { try { $cur = [AgencCronRepair]::Describe($seen, $full) } finally { $seen.Dispose() }; if (($cur.Attributes -band 0x410) -ne 0) { throw 'publication target is a link or not a file' }; if ($cur.Links -eq 1) { $backup = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x110080); $again = [AgencCronRepair]::Describe($backup, $full); if ($again.Links -ne 1 -or $again.IndexHigh -ne $cur.IndexHigh -or $again.IndexLow -ne $cur.IndexLow -or ($again.Attributes -band 0x410) -ne 0) { throw $R }; [AgencCronRepair]::RenameWithin($backup, $dir, $bak, $full, $false); $movedAside = $true } }",
+  "    if ($movedAside -or -not $existed) { [AgencCronRepair]::RenameWithin($created, $dir, $name, $full, $false) } else { [AgencCronRepair]::RenameWithin($created, $dir, $name, $full, $true) }",
+  "    $renamed = $true",
+  "    $stagePublished = 'before-published-check'; if ($stagePublished -ne 'before-published-check') { throw 'publication stage changed' }; Invoke-PublishFault 'before-published-check'",
+  "    $check = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080)",
+  "    try { if (-not $check) { throw $M }; $seenNow = [AgencCronRepair]::Describe($check, $full); $mine = [AgencCronRepair]::Describe($created, $full); if ($seenNow.Volume -ne $mine.Volume -or $seenNow.IndexHigh -ne $mine.IndexHigh -or $seenNow.IndexLow -ne $mine.IndexLow -or $seenNow.Links -ne 1 -or ($seenNow.Attributes -band 0x410) -ne 0) { throw $R } } finally { if ($check) { $check.Dispose() } }",
+  "    Assert-Dir",
+  "    if ($backup) { [AgencCronRepair]::DeleteWhenClosed($backup, $full) }",
+  "  } catch { $failure = $_; if ($renamed) { try { [AgencCronRepair]::RenameWithin($created, $dir, $temp, $full, $false) } catch {} }; if ($movedAside -and $backup) { try { [AgencCronRepair]::RenameWithin($backup, $dir, $name, ($target + '\\' + $bak), $false) } catch {} }; try { [AgencCronRepair]::DeleteWhenClosed($created, $tempPath) } catch {}; throw $failure }",
+  "  finally { if ($backup) { $backup.Dispose() }; $created.Dispose() }",
+  "} finally { $dir.Dispose() }",
+  "[Console]::Out.Write('OK')",
+].join("\n");
+const WINDOWS_PUBLISH_BODY_BASE64 = Buffer.from(WINDOWS_PUBLISH_SCRIPT, "utf8").toString("base64");
+// The body is larger than the CreateProcess command-line limit, so the encoded
+// command is only this bootstrap. The body is a variable this process sets; it
+// is not read from the caller's environment.
+const WINDOWS_PUBLISH_BOOTSTRAP = [
+  "$ErrorActionPreference = 'Stop'",
+  `if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw "${WINDOWS_ADD_TYPE_REASON} ($($ExecutionContext.SessionState.LanguageMode))" }`,
+  "Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:AGENC_CRON_PUBLISH_BODY)))",
+].join("\n");
+const WINDOWS_PUBLISH_BOOTSTRAP_BASE64 = Buffer.from(WINDOWS_PUBLISH_BOOTSTRAP, "utf16le").toString("base64");
+
+const WINDOWS_PUBLISH_HOOK_PATH = /^[A-Za-z]:\\[^|&;<>\r\n"]+\.ps1$/u;
+
+/**
+ * Publish the task file through the handle-bound script. A non-empty
+ * `AGENC_CRON_PUBLISH_FAULT` is the only way `AGENC_CRON_PUBLISH_HOOK` is
+ * forwarded, and only when that hook is one local `.ps1` path. Production
+ * leaves both empty. The hook does not skip identity, type, link, or NTFS checks.
+ */
+export function publishWindowsCronFile(directory: string, identity: BigIntStats, data: string): void {
+  if (Buffer.byteLength(data, "utf8") > MAX_CRON_FILE_BYTES) {
+    throw new Error("Cron task file exceeds its byte limit");
+  }
+  const fault = process.env.AGENC_CRON_PUBLISH_FAULT ?? "";
+  const hookRaw = process.env.AGENC_CRON_PUBLISH_HOOK ?? "";
+  const hook = fault !== "" && WINDOWS_PUBLISH_HOOK_PATH.test(hookRaw) ? hookRaw : "";
+  try {
+    runWindowsSecurityScript(directory, WINDOWS_PUBLISH_BOOTSTRAP_BASE64, {
+      AGENC_CRON_PUBLISH_DIRECTORY: directory,
+      AGENC_CRON_PUBLISH_BODY: WINDOWS_PUBLISH_BODY_BASE64,
+      AGENC_CRON_VOLUME: identity.dev.toString(),
+      AGENC_CRON_FILE_ID: identity.ino.toString(),
+      AGENC_CRON_NAME: CRON_STORAGE_NAME,
+      AGENC_CRON_TEMPORARY: `${CRON_STORAGE_NAME}.${randomUUID()}.tmp`,
+      AGENC_CRON_PUBLISH_FAULT: fault,
+      AGENC_CRON_PUBLISH_HOOK: hook,
+    }, tmpdir(), Buffer.from(data, "utf8"));
+  } catch (error) {
+    if (error instanceof Error && error.name === "WindowsPrivatePathSecurityError") {
+      throw windowsCronAclError(directory, error, "record");
+    }
+    throw error;
+  }
+}
 
 /** Make a `.agenc` this call created private, through a handle bound to `created` (its `lstat`). */
 function initializeCreatedWindowsDirectory(path: string, created: BigIntStats): void {
@@ -504,6 +654,13 @@ export function windowsCronAclError(
         "and no ACL was written. Check what is at that path, then retry.",
     );
   }
+  if (failure.kind === "publication") {
+    return fail(
+      `Durable cron storage did not publish the task file in ${directory}: ${failure.reason}. ` +
+        "Nothing outside the verified directory was written, and the previous task file was left in place " +
+        "when publication could not be acknowledged.",
+    );
+  }
   if (state === "created") {
     const reason = failure.kind === "acl" ? ` (${failure.reason})` : ` (${causeText(cause)})`;
     const repair = failure.kind === "acl" ? ` ${windowsRepairAdvice(directory)}` : "";
@@ -569,7 +726,7 @@ async function withWindowsCronStorageDirectory<Result>(
         await bound.verify();
         await assertRealDirectory(workspacePathResolved, workspaceInfo);
         await assertRealDirectory(bound.canonicalPath, boundInfo);
-        await assertRealDirectory(directory, directoryInfo);
+        return assertRealDirectory(directory, directoryInfo);
       };
       return operation({
         directory: bound,
