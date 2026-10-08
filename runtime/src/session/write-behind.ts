@@ -24,6 +24,11 @@ export function drainProjectWriteBehind(projectDir: string): void {
   }
 }
 
+/** Export and process-wide shutdown readers cover every live session. */
+export function drainAllSessionWriteBehind(): void {
+  for (const { queue } of writers.values()) queue.barrier();
+}
+
 /** One session's ordered persistence work. Jobs must capture their inputs. */
 export class SessionWriteBehindQueue {
   private jobs: WriteBehindJob[] = [];

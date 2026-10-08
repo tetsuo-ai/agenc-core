@@ -1,4 +1,4 @@
-import { SessionWriteBehindQueue, registerSessionWriteBehind } from "./write-behind.js";
+import { SessionWriteBehindQueue, registerSessionWriteBehind, drainRolloutWriteBehind } from "./write-behind.js";
 import { assertOneShotRecoverable, beginOneShotWriter, consumeOneShotSeal, supportsRelaxedOneShot, withOneShotWriteScope, type OneShotWriterAuthority } from "../durability/one-shot-durability.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
@@ -1990,6 +1990,7 @@ export class SessionStore {
    */
   open(meta: Omit<SessionMetaLine, "rolloutSchemaVersion">): void {
     if (this.opened) return;
+    drainRolloutWriteBehind(this.rolloutPath);
     let resumeFdToClose: number | undefined;
     this.lock.acquire();
     this.unregisterWriteBehind = registerSessionWriteBehind(this.rolloutPath, this.writeBehind);
@@ -2173,6 +2174,8 @@ export class SessionStore {
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
+      this.unregisterWriteBehind?.();
+      this.unregisterWriteBehind = undefined;
       if (cleanupErrors.length === 0) throw err;
       throw new AggregateError(
         [err, ...cleanupErrors],
@@ -3782,6 +3785,7 @@ export class SessionStore {
     readonly dev: string;
     readonly ino: string;
   } {
+    this.writeBehind.barrier();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",
@@ -3960,7 +3964,7 @@ export class SessionStore {
       }
     };
     capture(() => this.writeBehind.finish());
-    capture(() => this.oneShotWriter?.seal());
+    if (errors.length === 0) capture(() => this.oneShotWriter?.seal());
     this.closed = true;
     capture(() => {
       if (this.pending.length > 0) this.flushBatch(true);

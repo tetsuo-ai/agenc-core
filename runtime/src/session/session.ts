@@ -3841,6 +3841,7 @@ export class Session {
   }
 
   async withRolloutPersistenceSuspended<T>(fn: () => Promise<T>): Promise<T> {
+    this.writeBehind.finish();
     this.rolloutPersistenceSuspendDepth += 1;
     try {
       return await fn();
@@ -5652,6 +5653,7 @@ export class Session {
    * rollout_degraded) surface through the event log.
    */
   mountRolloutStore(store: RolloutStore | null): void {
+    this.writeBehind.finish();
     this.rolloutStore = store;
     if (store) {
       store.store.setDiagnosticListener((d) => {
@@ -6463,7 +6465,8 @@ export class Session {
         if (mcpDisposeTimer !== undefined) clearTimeout(mcpDisposeTimer);
       }
     }
-    this.eventLog.close();
+    try { this.eventLog.close(); }
+    catch (error) { durableCloseError ??= error; }
     this.txEvent.close();
     const sessionEnvironmentHome = this.services.configStore?.homeContext?.path;
     if (sessionEnvironmentHome !== undefined) {

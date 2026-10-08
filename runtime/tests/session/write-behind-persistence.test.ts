@@ -33,6 +33,18 @@ function emittingSession(store: SessionStore, seen: string[]): Session {
 }
 
 describe("write-behind persistence barriers", () => {
+  it("does not seal a relaxed one-shot after deferred persistence fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "write-behind-seal-"));
+    roots.push(root);
+    const store = new SessionStore({ cwd: root, agencHome: root, sessionId: "test", agencVersion: "test",
+      relaxedOneShot: true, checkpointOneShot: () => {} });
+    store.open({ cwd: root, sessionId: "test", agencVersion: "test", originator: "test", timestamp: "2026-10-08T00:00:00.000Z" });
+    store.writeBehind.beginStep();
+    store.writeBehind.defer("failed", () => { throw new Error("persistence failed"); });
+    expect(() => store.close()).toThrow("persistence failed");
+    expect(JSON.parse(readFileSync(`${store.rolloutPath}.durability.json`, "utf8")).phase).toBe("active");
+  });
+
   it("retains listener/transport order through a reentrant read and emit", () => {
     const store = openStore();
     const seen: string[] = [];
