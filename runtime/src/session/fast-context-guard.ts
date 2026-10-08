@@ -16,8 +16,16 @@ export function createFastContextGuard(options: LLMChatOptions): (messages: read
     if (messages.length < seen) return false;
     for (; seen < messages.length; seen++) {
       const message = messages[seen]!;
-      if (typeof message.content !== "string" && message.content !== null) return false;
-      bytes += 64 + Buffer.byteLength(message.content ?? "", "utf8");
+      const content = message.content;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part.type !== "text") return false;
+          bytes += 32 + Buffer.byteLength(part.text, "utf8");
+        }
+      } else if (typeof content === "string" || content === null) {
+        bytes += Buffer.byteLength(content ?? "", "utf8");
+      } else return false;
+      bytes += 64;
       bytes += Buffer.byteLength(message.providerReasoningContent ?? "", "utf8");
       if (message.toolCalls) bytes += Buffer.byteLength(JSON.stringify(message.toolCalls), "utf8");
     }

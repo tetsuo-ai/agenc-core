@@ -4,7 +4,7 @@ import type { LLMMessage } from "../../src/llm/types.js";
 
 test("small append-only text stays fast and an oversized fresh result requires canonical compaction", () => {
   const fits = createFastContextGuard({ contextWindowTokens: 100_000, maxOutputTokens: 8_000 });
-  const messages: LLMMessage[] = [{ role: "user", content: "run commands" }];
+  const messages: LLMMessage[] = [{ role: "user", content: [{ type: "text", text: "run commands" }] }];
   expect(fits(messages)).toBe(true);
   messages.push({ role: "assistant", content: "", toolCalls: [{ id: "a", name: "exec_command", arguments: "{}" }] });
   messages.push({ role: "tool", toolCallId: "a", content: "result ".repeat(10_000) });
