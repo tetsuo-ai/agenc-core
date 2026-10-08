@@ -167,7 +167,7 @@ export function toolResultContent(result: ToolDispatchResult): LLMMessage["conte
   return parts.length > 0 ? parts : result.content;
 }
 
-function modelFacingToolResultContent(
+export function modelFacingToolResultContent(
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,

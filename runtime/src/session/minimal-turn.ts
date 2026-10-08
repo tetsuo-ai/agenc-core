@@ -1,9 +1,13 @@
-import { toolResultContent } from "../phases/execute-tools.js";
+import { cumulativeUsage } from "./cumulative-usage.js";
+import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
+import { classifyUntrustedToolResult } from "../tools/untrusted-tool-result-framing.js";
+import { createToolResultIntegrity } from "./tool-result-integrity.js";
+import { modelFacingToolResultContent } from "../phases/execute-tools.js";
 /** One-shot bypass turn loop. Session data is finalized once at the terminal boundary. */
 import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 import { createFastContextGuard } from "./fast-context-guard.js";
 import type { EventMsg } from "./event-log.js";
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { buildProviderOptions } from "../phases/stream-model.js";
 import type { Terminal } from "./turn-state.js";
@@ -21,7 +25,7 @@ export async function* runMinimalTurn(
   messages: LLMMessage[],
   instructions: string,
   signal: AbortSignal,
-): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number }> {
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage }> {
   // Resolve the catalog, prompt, options and owner once for the whole turn.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
@@ -30,6 +34,8 @@ export async function* runMinimalTurn(
   let handoff = false;
   let modelCalls = 0;
   const observations: EventMsg[] = [];
+  let usage: LLMUsage = UNKNOWN_USAGE;
+  let lastResponseUsage: LLMUsage | undefined;
   yield { type: "turn_start", turnIndex: 0 };
   try {
     for (;;) {
@@ -38,11 +44,13 @@ export async function* runMinimalTurn(
           (typeof ctx.config?.maxBudgetUsd === "number" && ctx.config.maxBudgetUsd > 0) ||
           modelCalls >= (ctx.config?.maxTurns ?? 100)) {
         handoff = true;
-        return { reason: "continue_normal", modelCalls };
+        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
       }
       const response = await session.services.provider.chatStream(messages, () => {}, options);
       modelCalls++;
       if (response.error) throw response.error;
+      usage = cumulativeUsage(usage, response.usage);
+      lastResponseUsage = response.usage;
       if (response.usage) {
         const { speed, ...usage } = response.usage;
         observations.push({ type: "token_count", payload: {
@@ -61,7 +69,7 @@ export async function* runMinimalTurn(
           session.emit({ id: session.nextInternalSubId(), msg: { type: "agent_message", payload: { message: response.content } } });
           yield { type: "assistant_text", content: response.content };
         }
-        yield { type: "turn_complete", content: response.content, usage: UNKNOWN_USAGE, stopReason: "completed" };
+        yield { type: "turn_complete", content: response.content, usage, stopReason: "completed" };
         return { reason: "completed" };
       }
       for (const call of response.toolCalls) {
@@ -69,6 +77,7 @@ export async function* runMinimalTurn(
         let content: string;
         let modelContent: LLMMessage["content"] | undefined;
         let isError = false;
+        let metadata: Record<string, unknown> | undefined;
         const started = performance.now();
         observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
         try {
@@ -76,7 +85,11 @@ export async function* runMinimalTurn(
             abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
           });
           content = result.content;
-          modelContent = toolResultContent(result);
+          metadata = result.metadata;
+          markLoadedToolNamesDiscovered(call.name, result, session.services.registry.getDiscoveredToolNames?.());
+          const tool = session.services.registry.tools?.find(tool => tool.name === call.name);
+          modelContent = modelFacingToolResultContent(call.name, result,
+            classifyUntrustedToolResult(call.name, tool), session.services.runtimeOptions?.lightMode === true);
           isError = result.isError === true;
         } catch (error) {
           signal.throwIfAborted();
@@ -84,7 +97,7 @@ export async function* runMinimalTurn(
           content = JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
         }
         observations.push({ type: "tool_call_completed", payload: {
-          callId: call.id, toolName: call.name, result: content, isError, durationMs: performance.now() - started,
+          callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: performance.now() - started,
         } });
         messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content: modelContent ?? content });
       }
@@ -97,6 +110,13 @@ export async function* runMinimalTurn(
     }
   } finally {
     // The one-shot crash contract buffers this run; serialization redacts at close.
+    for (const message of messages.slice(start)) {
+      if (message.role === "tool" && message.toolCallId && !message.runtimeOnly?.toolResultIntegrity) {
+        message.runtimeOnly = { ...message.runtimeOnly, toolResultIntegrity: createToolResultIntegrity({
+          runId: session.conversationId, toolCallId: message.toolCallId, content: message.content,
+        }) };
+      }
+    }
     for (const msg of observations) session.emit({ id: session.nextInternalSubId(), msg });
     if (!handoff) {
     await session.state.with(state => { state.history = messages; });
