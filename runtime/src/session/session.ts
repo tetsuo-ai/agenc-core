@@ -2569,9 +2569,9 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
-  private readonly transientWriteBehind = new SessionWriteBehindQueue();
+  private transientWriteBehind: SessionWriteBehindQueue | undefined;
   get writeBehind(): SessionWriteBehindQueue {
-    return this.rolloutStore?.store?.writeBehind ?? this.transientWriteBehind;
+    return this.rolloutStore?.store?.writeBehind ?? (this.transientWriteBehind ??= new SessionWriteBehindQueue());
   }
   private shutdownResourceRelease?: () => void | Promise<void>;
 
