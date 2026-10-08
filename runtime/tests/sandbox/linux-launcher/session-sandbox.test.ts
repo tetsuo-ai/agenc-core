@@ -62,6 +62,25 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
     expect(child!.exitCode).toBe(137);
     expect((await run("echo after")).out).toBe("after\n");
   });
+  it("keeps networking disabled and hides keeper descriptors", async () => {
+    const network = await run("python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM)'");
+    expect(network.code).not.toBe(0);
+    const privateFd = await run("cat /proc/1/fd/0");
+    expect(privateFd.code).not.toBe(0);
+  });
+  it("prevents a command from lowering the executor resource limits", async () => {
+    const result = await run("python3 -c 'import resource; resource.prlimit(1, resource.RLIMIT_NOFILE, (3,3))'");
+    expect(result.code).not.toBe(0);
+    expect((await run("echo intact")).out).toBe("intact\n");
+  });
+  it("rebuilds after replacement of a mounted root", async () => {
+    const first = await run("echo old > marker");
+    fs.renameSync(path.join(root, "work"), path.join(root, "old"));
+    fs.mkdirSync(path.join(root, "work"));
+    for (const name of [".git", ".agents", ".agenc"]) fs.mkdirSync(path.join(root, "work", name));
+    const second = await run("test ! -f marker; echo new");
+    expect(second.pid).not.toBe(first.pid); expect(second.out).toBe("new\n");
+  });
   it("falls back while busy and closes the active namespace", async () => {
     const child = await sandbox.spawn(input("sleep 30"), () => {});
     expect(child).toBeDefined();

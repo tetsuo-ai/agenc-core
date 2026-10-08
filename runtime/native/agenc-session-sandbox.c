@@ -62,6 +62,10 @@ static void protect_keeper(void) {
     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ARCH, 1, 0),
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#if defined(__x86_64__)
+    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+#endif
     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 3),
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, 0),

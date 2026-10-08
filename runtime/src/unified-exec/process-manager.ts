@@ -550,7 +550,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
-  private readonly sessionSandbox = new SessionSandbox();
+  private readonly sessionSandboxes = new Map<string, SessionSandbox>();
+  private sessionSandboxFor(ownerId?: string): SessionSandbox {
+    const key = ownerId ?? "";
+    let sandbox = this.sessionSandboxes.get(key);
+    if (!sandbox) { sandbox = new SessionSandbox(); this.sessionSandboxes.set(key, sandbox); }
+    return sandbox;
+  }
+  private async closeSessionSandboxes(): Promise<void> {
+    await Promise.all([...this.sessionSandboxes.values()].map(sandbox => sandbox.close()));
+    this.sessionSandboxes.clear();
+  }
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
@@ -633,7 +643,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         errors.push(result.reason);
       }
     }
-    await this.sessionSandbox.close();
+    await this.closeSessionSandboxes();
     if (errors.length === 0) return;
     const primary = errors[0];
     const failure = new AggregateError(
@@ -1188,7 +1198,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
-    await this.sessionSandbox.close();
+    await this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);
@@ -1285,6 +1295,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     lifetime.closing = true;
     const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
     lifetime.closeTask = Promise.resolve().then(async () => {
+      await this.sessionSandboxes.get(lifetime.ownerId)?.close();
+      this.sessionSandboxes.delete(lifetime.ownerId);
       if (this.sandboxAuthorityCleanupFailure !== undefined) throw this.sandboxAuthorityCleanupFailure;
       const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
       const outcomes = await Promise.allSettled([
@@ -1311,7 +1323,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       if (this.sandboxAuthorityCleanupFailure !== undefined) {
         throw this.sandboxAuthorityCleanupFailure;
       }
-      await this.sessionSandbox.close();
+      await this.closeSessionSandboxes();
       const entries = [...this.processes.values()];
       const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
       const failures: unknown[] = [];
@@ -1607,8 +1619,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     let child: ChildProcessWithoutNullStreams;
     try {
       const persistent = params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
-        params.runtimeSandbox.persistentSession !== false && params.ownerId === undefined
-        ? await this.sessionSandbox.spawn({ program: params.program, args: probeHint?.args ?? params.args,
+        params.runtimeSandbox.persistentSession !== false
+        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: probeHint?.args ?? params.args,
             cwd: params.cwd, env: params.env }, () => {
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
