@@ -152,6 +152,7 @@ const WINDOWS_PUBLICATION_REASONS = [
   "publication write failed",
   "publication flush failed",
   "publication rename failed",
+  "publication read failed",
   "publication directory flush failed",
   "publication delete failed",
 ] as const;
@@ -221,6 +222,24 @@ function windowsPublicationCode(error: unknown): string | undefined {
       const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
       const code = /publication [a-z ]{1,24} failed \(((?:NTSTATUS 0x[0-9A-F]{8}, )?Win32 error \d{1,10})\)/u.exec(text)?.[1];
       if (code !== undefined) return code;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
+const WINDOWS_PUBLICATION_OUTCOMES = [
+  "previous-record-restored", "previous-record-not-restored", "previous-record-untouched", "new-record-in-place",
+] as const;
+
+/** Which record the publication script left behind when it failed (marker appended by the script). */
+function windowsPublicationOutcome(error: unknown): (typeof WINDOWS_PUBLICATION_OUTCOMES)[number] | undefined {
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
+    for (const value of [candidate.message, candidate.stderr]) {
+      const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
+      const found = WINDOWS_PUBLICATION_OUTCOMES.find((token) => text.includes(`[${token}]`));
+      if (found !== undefined) return found;
     }
     current = candidate.cause;
   }
@@ -317,20 +336,26 @@ const WINDOWS_REPAIR_HELPER = [
  */
 const WINDOWS_PUBLISH_METHODS = [
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool WriteFile(SafeFileHandle handle, IntPtr bytes, int count, out int written, IntPtr overlapped);",
+  "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool ReadFile(SafeFileHandle handle, IntPtr bytes, int count, out int read, IntPtr overlapped);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool FlushFileBuffers(SafeFileHandle handle);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle handle, int cls, IntPtr info, int size);",
   // kernel32 SetFileInformationByHandle rejects a rename whose RootDirectory is set (ERROR_INVALID_PARAMETER),
   // and with RootDirectory NULL it resolves a simple name against the process current directory. The
-  // directory-relative rename therefore goes to NtSetInformationFile(FileRenameInformation).
+  // directory-relative rename therefore goes to NtSetInformationFile(FileRenameInformationEx, class 65),
+  // which replaces the target atomically (one entry is never vacated) with FILE_RENAME_REPLACE_IF_EXISTS |
+  // FILE_RENAME_POSIX_SEMANTICS, so a reader holding the old file open keeps reading it while the name
+  // flips to the new file in one step (#2976 r9 reproducer R1, R2, R4, R6).
   "[DllImport(\"ntdll.dll\")] static extern int NtSetInformationFile(SafeFileHandle handle, out Result result, IntPtr info, int length, int cls);",
-  "[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct RenameInfo { public uint ReplaceIfExists; public IntPtr RootDirectory; public uint FileNameLength; public char FileName; }",
+  "[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct RenameInfo { public uint Flags; public IntPtr RootDirectory; public uint FileNameLength; public char FileName; }",
   "static Exception Broke(string step, int status) { int code = RtlNtStatusToDosError(status); return new Win32Exception(code, \"publication \" + step + \" failed (NTSTATUS 0x\" + status.ToString(\"X8\") + \", Win32 error \" + code + \")\"); }",
   "static Exception Broke(string step) { int code = Marshal.GetLastWin32Error(); return new Win32Exception(code, \"publication \" + step + \" failed (Win32 error \" + code + \")\"); }",
   "public static SafeFileHandle OpenPublishFolder(string path) { return Open(path, 0x1F01E7); }",
   "public static SafeFileHandle CreateNewChild(SafeFileHandle folder, string name) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060, IntPtr.Zero, 0); if (status < 0) throw Broke(\"create\", status); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
   "public static void WriteAll(SafeFileHandle handle, byte[] bytes) { if (bytes != null && bytes.Length > 0) { GCHandle pin = GCHandle.Alloc(bytes, GCHandleType.Pinned); try { for (int offset = 0; offset < bytes.Length; ) { int wrote; int count = bytes.Length - offset; if (count > 1048576) count = 1048576; if (!WriteFile(handle, IntPtr.Add(pin.AddrOfPinnedObject(), offset), count, out wrote, IntPtr.Zero)) throw Broke(\"write\"); if (wrote < 1) throw new InvalidOperationException(\"publication write failed (no progress)\"); offset += wrote; } } finally { pin.Free(); } } if (!FlushFileBuffers(handle)) throw Broke(\"flush\"); }",
-  // The buffer is sizeof(FILE_RENAME_INFORMATION) plus the name bytes, the size ntifs.h requires; offsets come from the layout.
-  "public static void RenameWithin(SafeFileHandle file, SafeFileHandle folder, string name, bool replace) { byte[] text = Encoding.Unicode.GetBytes(name); int size = Marshal.SizeOf(typeof(RenameInfo)) + text.Length; IntPtr buffer = Marshal.AllocHGlobal(size); try { for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"ReplaceIfExists\"), replace ? 1 : 0); Marshal.WriteIntPtr(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"RootDirectory\"), folder.DangerousGetHandle()); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileNameLength\"), text.Length); Marshal.Copy(text, 0, IntPtr.Add(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileName\")), text.Length); Result result; int status = NtSetInformationFile(file, out result, buffer, size, 10); if (status < 0) throw Broke(\"rename\", status); } finally { Marshal.FreeHGlobal(buffer); } }",
+  "public static byte[] ReadRecord(SafeFileHandle handle, Info info) { if (info.SizeHigh != 0 || info.SizeLow > 16777216) throw new InvalidOperationException(\"publication read failed (previous record too large)\"); int size = (int)info.SizeLow; byte[] data = new byte[size]; if (size == 0) return data; GCHandle pin = GCHandle.Alloc(data, GCHandleType.Pinned); try { for (int offset = 0; offset < size; ) { int got; if (!ReadFile(handle, IntPtr.Add(pin.AddrOfPinnedObject(), offset), size - offset, out got, IntPtr.Zero)) throw Broke(\"read\"); if (got < 1) throw new InvalidOperationException(\"publication read failed (short read)\"); offset += got; } } finally { pin.Free(); } return data; }",
+  // The buffer is sizeof(FILE_RENAME_INFORMATION_EX) plus the name bytes, the size ntifs.h requires; offsets come from the layout.
+  // Flags = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS when replacing, POSIX_SEMANTICS alone otherwise.
+  "public static void RenameWithin(SafeFileHandle file, SafeFileHandle folder, string name, bool replace) { byte[] text = Encoding.Unicode.GetBytes(name); int size = Marshal.SizeOf(typeof(RenameInfo)) + text.Length; IntPtr buffer = Marshal.AllocHGlobal(size); try { for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"Flags\"), replace ? 0x3 : 0x2); Marshal.WriteIntPtr(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"RootDirectory\"), folder.DangerousGetHandle()); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileNameLength\"), text.Length); Marshal.Copy(text, 0, IntPtr.Add(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileName\")), text.Length); Result result; int status = NtSetInformationFile(file, out result, buffer, size, 65); if (status < 0) throw Broke(\"rename\", status); } finally { Marshal.FreeHGlobal(buffer); } }",
   // Makes the rename durable, as the POSIX path fsyncs its directory. The handle holds FILE_ADD_FILE (FILE_WRITE_DATA).
   "public static void FlushFolder(SafeFileHandle folder) { if (!FlushFileBuffers(folder)) throw Broke(\"directory flush\"); }",
   "public static void DeleteWhenClosed(SafeFileHandle handle) { IntPtr buffer = Marshal.AllocHGlobal(1); try { Marshal.WriteByte(buffer, 0, 1); if (!SetFileInformationByHandle(handle, 4, buffer, 1)) throw Broke(\"delete\"); } finally { Marshal.FreeHGlobal(buffer); } }",
@@ -527,7 +552,7 @@ const WINDOWS_PUBLISH_SCRIPT = [
   `  if ([string]$id.Volume -ne $env:AGENC_CRON_VOLUME -or [string]$id.Index -ne $env:AGENC_CRON_FILE_ID) { throw '${WINDOWS_REPLACED_REASON}' }`,
   "  $stageCreate = 'before-temp-create'; if ($stageCreate -ne 'before-temp-create') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-create'",
   "  $created = [AgencCronRepair]::CreateNewChild($dir, $temp)",
-  "  $renamed = $false; $movedAside = $false; $backup = $null",
+  "  $renamed = $false; $existed = $false; $prev = $null",
   "  try {",
   "    Test-File ([AgencCronRepair]::Describe($created, $tempPath))",
   "    $stageSecurity = 'before-temp-security'; if ($stageSecurity -ne 'before-temp-security') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-security'",
@@ -539,18 +564,18 @@ const WINDOWS_PUBLISH_SCRIPT = [
   "    $stageRename = 'before-rename'; if ($stageRename -ne 'before-rename') { throw 'publication stage changed' }; Invoke-PublishFault 'before-rename'",
   "    if (([AgencCronRepair]::Describe($created, $tempPath)).Links -ne 1) { throw $R }",
   "    Assert-Dir",
-  "    $seen = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080); $existed = [bool]$seen",
-  "    if ($seen) { try { $cur = [AgencCronRepair]::Describe($seen, $full) } finally { $seen.Dispose() }; if (($cur.Attributes -band 0x410) -ne 0) { throw 'publication target is a link or not a file' }; if ($cur.Links -eq 1) { $backup = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x110080); $again = [AgencCronRepair]::Describe($backup, $full); if ($again.Links -ne 1 -or $again.IndexHigh -ne $cur.IndexHigh -or $again.IndexLow -ne $cur.IndexLow -or ($again.Attributes -band 0x410) -ne 0) { throw $R }; [AgencCronRepair]::RenameWithin($backup, $dir, $bak, $false); $movedAside = $true } }",
-  "    if ($movedAside -or -not $existed) { [AgencCronRepair]::RenameWithin($created, $dir, $name, $false) } else { [AgencCronRepair]::RenameWithin($created, $dir, $name, $true) }",
+  "    $seen = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x120089); $existed = [bool]$seen",
+  "    if ($seen) { try { $cur = [AgencCronRepair]::Describe($seen, $full); if (($cur.Attributes -band 0x410) -ne 0) { throw 'publication target is a link or not a file' }; $prev = [AgencCronRepair]::ReadRecord($seen, $cur) } finally { $seen.Dispose() } }",
+  "    [AgencCronRepair]::RenameWithin($created, $dir, $name, $true)",
   "    $renamed = $true",
+  "    $stageAfter = 'after-rename'; if ($stageAfter -ne 'after-rename') { throw 'publication stage changed' }; Invoke-PublishFault 'after-rename'",
   "    [AgencCronRepair]::FlushFolder($dir)",
   "    $stagePublished = 'before-published-check'; if ($stagePublished -ne 'before-published-check') { throw 'publication stage changed' }; Invoke-PublishFault 'before-published-check'",
   "    $check = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080)",
   "    try { if (-not $check) { throw $M }; $seenNow = [AgencCronRepair]::Describe($check, $full); $mine = [AgencCronRepair]::Describe($created, $full); if ($seenNow.Volume -ne $mine.Volume -or $seenNow.IndexHigh -ne $mine.IndexHigh -or $seenNow.IndexLow -ne $mine.IndexLow -or $seenNow.Links -ne 1 -or ($seenNow.Attributes -band 0x410) -ne 0) { throw $R } } finally { if ($check) { $check.Dispose() } }",
   "    Assert-Dir",
-  "    if ($backup) { [AgencCronRepair]::DeleteWhenClosed($backup) }",
-  "  } catch { $failure = $_; if ($renamed) { try { [AgencCronRepair]::RenameWithin($created, $dir, $temp, $false) } catch {} }; if ($movedAside -and $backup) { try { [AgencCronRepair]::RenameWithin($backup, $dir, $name, $false) } catch {} }; try { [AgencCronRepair]::DeleteWhenClosed($created) } catch {}; throw $failure }",
-  "  finally { if ($backup) { $backup.Dispose() }; $created.Dispose() }",
+  "  } catch { $failure = $_; $mark = ' [previous-record-untouched]'; if ($renamed) { if ($existed) { $mark = ' [previous-record-not-restored]'; try { if ($env:AGENC_CRON_PUBLISH_ROLLBACK -eq '1') { throw 'injected rollback failure' }; $restore = [AgencCronRepair]::CreateNewChild($dir, $bak); try { [AgencCronRepair]::Protect($restore, (& $descriptor $false), $tempPath); [AgencCronRepair]::WriteAll($restore, $prev); [AgencCronRepair]::RenameWithin($restore, $dir, $name, $true); $mark = ' [previous-record-restored]' } finally { $restore.Dispose() } } catch {} } else { $mark = ' [new-record-in-place]' } } else { try { [AgencCronRepair]::DeleteWhenClosed($created) } catch {} }; throw (New-Object System.InvalidOperationException(($failure.Exception.Message + $mark), $failure.Exception)) }",
+  "  finally { $created.Dispose() }",
   "} finally { $dir.Dispose() }",
   "[Console]::Out.Write('OK')",
 ].join("\n");
@@ -570,8 +595,10 @@ const WINDOWS_PUBLISH_HOOK_PATH = /^[A-Za-z]:\\[^|&;<>\r\n"]+\.ps1$/u;
 /**
  * Publish the task file through the handle-bound script. A non-empty
  * `AGENC_CRON_PUBLISH_FAULT` is the only way `AGENC_CRON_PUBLISH_HOOK` is
- * forwarded, and only when that hook is one local `.ps1` path. Production
- * leaves both empty. The hook does not skip identity, type, link, or NTFS checks.
+ * forwarded, and only when that hook is one local `.ps1` path. The gated
+ * `AGENC_CRON_PUBLISH_ROLLBACK` test knob (which forces the recovery replace to
+ * fail) rides the same fault switch. Production leaves all three empty. The hook
+ * does not skip identity, type, link, or NTFS checks.
  */
 export function publishWindowsCronFile(directory: string, identity: BigIntStats, data: string): void {
   if (Buffer.byteLength(data, "utf8") > MAX_CRON_FILE_BYTES) {
@@ -590,6 +617,7 @@ export function publishWindowsCronFile(directory: string, identity: BigIntStats,
       AGENC_CRON_TEMPORARY: `${CRON_STORAGE_NAME}.${randomUUID()}.tmp`,
       AGENC_CRON_PUBLISH_FAULT: fault,
       AGENC_CRON_PUBLISH_HOOK: hook,
+      AGENC_CRON_PUBLISH_ROLLBACK: fault !== "" ? (process.env.AGENC_CRON_PUBLISH_ROLLBACK ?? "") : "",
     }, tmpdir(), Buffer.from(data, "utf8"));
   } catch (error) {
     if (error instanceof Error && error.name === "WindowsPrivatePathSecurityError") {
@@ -687,10 +715,17 @@ export function windowsCronAclError(
   }
   if (failure.kind === "publication") {
     const code = windowsPublicationCode(cause);
+    const outcome = windowsPublicationOutcome(cause);
+    const tail = outcome === "new-record-in-place"
+      ? "Nothing outside the verified directory was written. No earlier task file existed, so the new record is in place " +
+        "but the write was not acknowledged; check it, then retry."
+      : outcome === "previous-record-not-restored"
+      ? "Nothing outside the verified directory was written, but the previous task file could not be restored after the " +
+        "failure, so the record now in place is the new one; check it, then retry."
+      : "Nothing outside the verified directory was written, and the previous task file was left in place " +
+        "when publication could not be acknowledged.";
     return fail(
-      `Durable cron storage did not publish the task file in ${directory}: ${failure.reason}${code === undefined ? "" : ` (${code})`}. ` +
-        "Nothing outside the verified directory was written, and the previous task file was left in place " +
-        "when publication could not be acknowledged.",
+      `Durable cron storage did not publish the task file in ${directory}: ${failure.reason}${code === undefined ? "" : ` (${code})`}. ${tail}`,
     );
   }
   if (state === "created") {

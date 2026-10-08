@@ -92,14 +92,21 @@ ones just verified. It creates `scheduled_tasks.json.<id>.tmp` with
 `NtCreateFile` relative to that handle (`FILE_CREATE`,
 `FILE_OPEN_REPARSE_POINT`). The new handle must be a regular file with one
 link. The private ACL is then set on that handle, the bytes are written and
-flushed through it, and it is renamed to `scheduled_tasks.json` with
-`SetFileInformationByHandle` (`FileRenameInfoEx`, `RootDirectory` set to the
-directory handle). An existing one-link task file is moved aside by its own
-handle and deleted only after the new name checks out, so a refused publish
-puts the previous bytes back. A hard-linked name is replaced as a directory
-entry and is not opened for an ACL write, so its other name keeps its bytes
-and ACL. A reparse point at the task-file name is refused. A rejected
-temporary is deleted with `FILE_DISPOSITION_INFO` on its handle, not by path.
+flushed through it. The previous `scheduled_tasks.json`, if any, is read
+through a directory-relative handle, and then the temporary file is renamed
+onto `scheduled_tasks.json` in one atomic step with `NtSetInformationFile`
+(`FileRenameInformationEx`, class 65, flags `FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS`, `RootDirectory` set to the directory handle).
+The canonical name is never vacated first, so at every instant it resolves to
+the complete old or the complete new file, never to a missing name. An
+interrupted or killed publish leaves a complete record, and a reader holding
+the old file open keeps reading it while the name flips. If a later step
+fails, the captured previous bytes are republished through a fresh temporary
+with the same atomic replace, so the canonical name is never left missing; if
+no earlier record existed, the new complete file is left in place rather than
+deleted. A hard-linked name is replaced as a directory entry, so its other
+name keeps its bytes and ACL. A reparse point at the task-file name is
+refused. A rejected temporary is deleted with `FILE_DISPOSITION_INFO` on its
+handle, not by path.
 The acknowledgement check reopens `.agenc` read-only and reopens the task name
 relative to the directory handle. It does not call `SetAccessControl`. If
 `Add-Type` is unavailable, the volume is not NTFS, or the opened directory is
@@ -108,8 +115,8 @@ at the path before that open does not match the verified identity, so the
 publish fails closed.
 
 `AGENC_CRON_PUBLISH_FAULT` and `AGENC_CRON_PUBLISH_HOOK` are how a test inserts
-a swap at `before-temp-create`, `before-temp-security`, `before-rename`, or
-`before-published-check`. Production leaves both empty. The hook is forwarded
+a swap at `before-temp-create`, `before-temp-security`, `before-rename`,
+`after-rename`, or `before-published-check`. Production leaves both empty. The hook is forwarded
 only when the fault names one of those stages and the hook is a single local
 `.ps1` path. An empty fault returns before the hook runs, and the hook never
 skips the identity, type, link-count, or NTFS checks.

@@ -786,12 +786,12 @@ describe("Windows cron storage uses private-path persistence", () => {
       "[AgencCronRepair]::Protect($created,",
       "WriteAll($created, $payload)",
       "Invoke-PublishFault 'before-rename'",
-      "RenameWithin($created, $dir, $name, $false)",
+      "ReadRecord($seen, $cur)",
       "RenameWithin($created, $dir, $name, $true)",
+      "Invoke-PublishFault 'after-rename'",
       "FlushFolder($dir)",
       "Invoke-PublishFault 'before-published-check'",
       "OpenChild($dir, $name, $full, 0x100080)",
-      "DeleteWhenClosed($created)",
     ];
     let cursor = 0;
     for (const needle of order) {
@@ -801,7 +801,15 @@ describe("Windows cron storage uses private-path persistence", () => {
     }
     expect(script.indexOf("CreateNewChild")).toBeGreaterThan(script.indexOf("OpenPublishFolder"));
     expect(script.indexOf("[AgencCronRepair]::Protect($created,")).toBeLessThan(script.indexOf("Invoke-PublishFault 'before-rename'"));
-    expect(script.slice(script.indexOf("Invoke-PublishFault 'before-published-check'"))).not.toContain("::Protect(");
+    // One atomic replace: the existing record is never moved aside, so the publish body has a single RenameWithin to $name.
+    const publishBody = script.slice(0, script.indexOf("} catch { $failure"));
+    expect(publishBody.match(/RenameWithin\(\$created, \$dir, \$name/gu) ?? []).toHaveLength(1);
+    expect(publishBody).toContain("RenameWithin($created, $dir, $name, $true)");
+    expect(publishBody).not.toContain("$movedAside");
+    expect(script).toContain("size, 65)");
+    expect(script).not.toContain("size, 10)");
+    // After the publish the newly published file is not re-ACL'd; only the rollback Protects a fresh restore temp.
+    expect(publishBody.slice(publishBody.indexOf("Invoke-PublishFault 'before-published-check'"))).not.toContain("::Protect(");
     expect(script).toContain("if ($env:AGENC_CRON_PUBLISH_FAULT -ne $stage) { return }");
     expect(script).toContain("target.Root = folder.DangerousGetHandle()");
     expect(script).toContain("NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060,");
@@ -1037,5 +1045,93 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(inaccessible.message).toContain(windowsCronRepairCommand(directory));
     expect(await cronRestoreFailureNeedsWarning(inaccessible, workspace)).toBe(true);
     expect(aclMutations()).toHaveLength(0);
+  });
+
+
+  describe("#2976 r9 publication replacement and recovery", () => {
+    const pubReason = "publication directory flush failed";
+    function publicationCause(marker: string): Error {
+      return verifierFailure(
+        metadataDirectory(),
+        `Exception calling "FlushFolder": "${pubReason} (NTSTATUS 0xC000000D, Win32 error 1392)" ${marker}`,
+      );
+    }
+
+    test("reports a restored previous record as left in place", async () => {
+      acl.runWindowsSecurityScript.mockImplementation((path: string, _e?: string, variables?: Record<string, string>) => {
+        if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) throw publicationCause("[previous-record-restored]");
+        privatePaths.add(`directory\0${path}`);
+      });
+      const directory = metadataDirectory();
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+      expect(error.message).toBe(
+        `Durable cron storage did not publish the task file in ${directory}: ${pubReason} (NTSTATUS 0xC000000D, Win32 error 1392). ` +
+        "Nothing outside the verified directory was written, and the previous task file was left in place " +
+        "when publication could not be acknowledged.",
+      );
+    });
+
+    test("reports a previous record that could not be restored as the new record in place", async () => {
+      acl.runWindowsSecurityScript.mockImplementation((path: string, _e?: string, variables?: Record<string, string>) => {
+        if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) throw publicationCause("[previous-record-not-restored]");
+        privatePaths.add(`directory\0${path}`);
+      });
+      const directory = metadataDirectory();
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error.message).toBe(
+        `Durable cron storage did not publish the task file in ${directory}: ${pubReason} (NTSTATUS 0xC000000D, Win32 error 1392). ` +
+        "Nothing outside the verified directory was written, but the previous task file could not be restored after the " +
+        "failure, so the record now in place is the new one; check it, then retry.",
+      );
+    });
+
+    test("reports a first-time publication failure as the new record in place", async () => {
+      acl.runWindowsSecurityScript.mockImplementation((path: string, _e?: string, variables?: Record<string, string>) => {
+        if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) throw publicationCause("[new-record-in-place]");
+        privatePaths.add(`directory\0${path}`);
+      });
+      const directory = metadataDirectory();
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error.message).toBe(
+        `Durable cron storage did not publish the task file in ${directory}: ${pubReason} (NTSTATUS 0xC000000D, Win32 error 1392). ` +
+        "Nothing outside the verified directory was written. No earlier task file existed, so the new record is in place " +
+        "but the write was not acknowledged; check it, then retry.",
+      );
+    });
+
+    test("a post-replace failure restores the previous record instead of an empty schedule", async () => {
+      const metadata = metadataDirectory();
+      const previous = `${JSON.stringify({ tasks: [{ id: "kept", cron: "* * * * *", prompt: "before", createdAt: 1 }] }, null, 2)}\n`;
+      let fail = false;
+      acl.runWindowsSecurityScript.mockImplementation((
+        path: string, encoded?: string, variables?: Record<string, string>, _t?: string, input?: Buffer,
+      ) => {
+        if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) {
+          simulateWindowsPublication({
+            directory: variables.AGENC_CRON_PUBLISH_DIRECTORY,
+            volume: variables.AGENC_CRON_VOLUME ?? "",
+            fileId: variables.AGENC_CRON_FILE_ID ?? "",
+            name: variables.AGENC_CRON_NAME ?? "",
+            temporary: variables.AGENC_CRON_TEMPORARY ?? "",
+            bytes: Buffer.isBuffer(input) ? input : Buffer.alloc(0),
+            script: Buffer.from(String(variables.AGENC_CRON_PUBLISH_BODY ?? ""), "base64").toString("utf8"),
+            ...(fail ? { failAfterReplace: "published-check" as const } : {}),
+          });
+          privatePaths.add(`file\0${join(variables.AGENC_CRON_PUBLISH_DIRECTORY, variables.AGENC_CRON_NAME ?? "")}`);
+          return;
+        }
+        privatePaths.add(`directory\0${path}`);
+      });
+      await withCronStorage(workspace, true, (storage) => storage.write(previous));
+      expect((await readCronTasks(workspace)).map((task) => task.id)).toEqual(["kept"]);
+      fail = true;
+      const next = `${JSON.stringify({ tasks: [{ id: "new", cron: "* * * * *", prompt: "after", createdAt: 2 }] }, null, 2)}\n`;
+      await expect(withCronStorage(workspace, true, (storage) => storage.write(next))).rejects.toThrow();
+      // The previous record is restored, never an empty schedule, and the new record never silently wins.
+      expect(readFileSync(join(metadata, "scheduled_tasks.json"), "utf8")).toBe(previous);
+      expect((await readCronTasks(workspace)).map((task) => task.id)).toEqual(["kept"]);
+      expect((await readStartupCronTasks(workspace, () => {})).map((task) => task.id)).toEqual(["kept"]);
+    });
   });
 });
