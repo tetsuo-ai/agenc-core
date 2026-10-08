@@ -551,6 +551,8 @@ function buildDeferredConfig(
     // Snake config key → camel turn Config (todo-105). Unset = no iteration cap.
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+    ...(config.task_token_budget !== undefined ? { taskTokenBudget: config.task_token_budget } : {}),
+    ...(config.task_max_calls !== undefined ? { taskMaxCalls: config.task_max_calls } : {}),
     ...(config.durableTurns !== undefined
       ? { durableTurns: config.durableTurns }
       : {}),
@@ -1675,6 +1677,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       runId: conversationId,
       sessionId: conversationId,
       autonomous: executionAdmissionAutonomous,
+      ...(startup.config.task_token_budget !== undefined
+        ? { maxTokens: startup.config.task_token_budget } : {}),
       ...(maxBudgetUsdFromAgenCConfig(startup.config) !== undefined
         ? { maxCostUsd: maxBudgetUsdFromAgenCConfig(startup.config) }
         : {}),

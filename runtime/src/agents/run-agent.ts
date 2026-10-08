@@ -4643,6 +4643,7 @@ export async function* runAgent(
       let stopReason:
         | "completed"
         | "max_turns"
+        | "task_budget"
         | "max_budget_usd"
         | "cancelled"
         | "error"
@@ -4717,6 +4718,9 @@ export async function* runAgent(
             switch (step.value?.reason) {
               case "max_turns":
                 stopReason = "max_turns";
+                break;
+              case "task_budget":
+                stopReason = "task_budget";
                 break;
               case "max_budget_usd":
                 stopReason = "max_budget_usd";
@@ -4842,6 +4846,7 @@ export async function* runAgent(
 
       const boundedStop =
         stopReason === "max_turns" ||
+        stopReason === "task_budget" ||
         stopReason === "max_budget_usd" ||
         stopReason === "no_progress" ||
         stopReason === "effect_review_required" ||
@@ -4849,7 +4854,7 @@ export async function* runAgent(
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
-        stopReason === "max_turns" ? "step_limit" :
+        stopReason === "max_turns" || stopReason === "task_budget" ? "step_limit" :
         stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
@@ -4866,6 +4871,8 @@ export async function* runAgent(
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (stopReason === "task_budget") {
+          message = assistantText || "subagent reached its task allocation";
         } else if (stopReason === "max_budget_usd") {
           message = "subagent reached the canonical session cost cap";
         } else if (stopReason === "no_progress") {

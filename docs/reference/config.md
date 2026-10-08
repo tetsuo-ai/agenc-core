@@ -943,3 +943,19 @@ agenc config validate
 
 The TUI command is `/config`.
 Environment overrides and removed names are cataloged in [env.md](env.md).
+
+### Per-task token and call allocation
+
+`task_token_budget` limits total model input and output tokens, including reasoning
+and cached input once. `task_max_calls` optionally limits model wire attempts.
+Both are positive integers and are disabled when omitted. CLI overrides are
+`--task-token-budget <tokens>` and `--task-max-calls <calls>`.
+
+The allocation belongs to the session/run, including retries and auxiliary model
+calls. Use a fresh session for each independent task. At 80% of either allocation,
+the model receives one reminder to finish its most likely fix, run the decisive
+check, and report. Requests that cannot fit their input and maximum output in the
+remaining allocation are refused before dispatch, so a run can end below its cap.
+In-flight tools finish before a local partial-result summary is emitted. No extra
+model call is spent generating that summary. Unknown usage retains its reserved
+amount. Provider-reported overruns remain subject to execution admission policy.

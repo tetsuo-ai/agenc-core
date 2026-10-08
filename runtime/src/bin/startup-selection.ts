@@ -67,9 +67,12 @@ export function startupConfigLayerOptions(params: {
   readonly cwd: string;
 }): StartupConfigLayerOptions {
   const hasProviderOrModelOverride =
-    params.cli.provider !== undefined || params.cli.model !== undefined;
+    params.cli.provider !== undefined || params.cli.model !== undefined ||
+    params.cli.taskTokenBudget !== undefined || params.cli.taskMaxCalls !== undefined;
   const cliOverrides = hasProviderOrModelOverride
     ? Object.freeze({
+        ...(params.cli.taskTokenBudget !== undefined ? { task_token_budget: params.cli.taskTokenBudget } : {}),
+        ...(params.cli.taskMaxCalls !== undefined ? { task_max_calls: params.cli.taskMaxCalls } : {}),
         ...(params.cli.provider !== undefined
           ? { model_provider: params.cli.provider }
           : {}),

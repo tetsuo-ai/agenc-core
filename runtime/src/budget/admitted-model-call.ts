@@ -37,6 +37,7 @@ import {
   anthropicSupportsFastMode,
 } from "../llm/providers/anthropic/fast-mode.js";
 import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-processing.js";
+import { taskBudgetOf } from "../session/task-budget.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import { isLLMPreGenerationRejection, LLMManagedAdmissionError } from "../llm/errors.js";
@@ -510,6 +511,12 @@ export function fitOutputReservationToContext(
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
+  const taskBudget = taskBudgetOf(params.session);
+  const invoke = (options: LLMChatOptions): Promise<LLMResponse> => {
+    if (!taskBudget) return params.invoke(options);
+    return taskBudget.invoke((options.accountedInputTokens ?? 0) +
+      (options.maxOutputTokens ?? 0), () => params.invoke(options));
+  };
   const client = params.session.services.executionAdmission;
   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
   // A few structurally typed embedding/test providers predate the explicit
@@ -777,7 +784,7 @@ export async function runAdmittedModelCall(
     if (accountingFailureReason !== undefined) {
       throw new AdmissionDeniedError(accountingFailureReason);
     }
-    return params.invoke({
+    return invoke({
       ...accountingOptions,
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
@@ -815,6 +822,10 @@ export async function runAdmittedModelCall(
       }
     : undefined;
   let lease;
+  if (taskBudget?.limit !== undefined &&
+      taskBudget.tokens + maxInputTokens + admittedMaxOutputTokens > taskBudget.limit) {
+    taskBudget.stop();
+  }
   try {
     lease = await client.acquire(
       {
@@ -866,6 +877,8 @@ export async function runAdmittedModelCall(
       params.onFallbackRecorded?.();
     }
     if (routingEvent !== undefined) client.recordFallback(routingEvent);
+    taskBudget?.assertFits(maxInputTokens + Math.min(
+      admittedMaxOutputTokens, lease.request.estimate.maxOutputTokens));
     client.markDispatched(reservationId, {
       boundary: "provider_wire",
       details: {
@@ -891,7 +904,7 @@ export async function runAdmittedModelCall(
       admittedMaxOutputTokens,
       lease.request.estimate.maxOutputTokens,
     );
-    const response = await params.invoke({
+    const response = await invoke({
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
         ? { providerExecutionHandle: profile.providerExecutionHandle }

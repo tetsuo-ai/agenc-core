@@ -978,6 +978,9 @@ export interface AgenCConfig {
   readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
+  /** Per-session task allocation, disabled when omitted. Includes reasoning. */
+  readonly task_token_budget?: number;
+  readonly task_max_calls?: number;
   readonly autonomous_mode?: boolean;
   /**
    * Coordinator mode: the main session orchestrates work through
@@ -1119,6 +1122,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "capped_default_max_output_tokens",
   "max_turns",
   "max_budget_usd",
+  "task_token_budget",
+  "task_max_calls",
   "autonomous_mode",
   "coordinator_mode",
   "transaction_guard",

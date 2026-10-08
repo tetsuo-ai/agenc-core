@@ -687,6 +687,8 @@ const ROOT_FIELD_VALIDATORS = {
   capped_default_max_output_tokens: fieldValidator("capped_default_max_output_tokens", optionalBoolean),
   max_turns: fieldValidator("max_turns", optionalPositiveInteger),
   max_budget_usd: fieldValidator("max_budget_usd", optionalPositiveNumber),
+  task_token_budget: fieldValidator("task_token_budget", optionalPositiveInteger),
+  task_max_calls: fieldValidator("task_max_calls", optionalPositiveInteger),
   autonomous_mode: fieldValidator("autonomous_mode", optionalBoolean),
   coordinator_mode: fieldValidator("coordinator_mode", optionalBoolean),
   transaction_guard: delegatedObjectValidator("transaction_guard"),
