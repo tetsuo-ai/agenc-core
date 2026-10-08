@@ -1134,6 +1134,7 @@ export class AnthropicProvider implements LLMProvider {
               completionTokens: usage.output_tokens,
               cachedInputTokens: usage.cache_read_input_tokens,
               cacheCreationInputTokens: usage.cache_creation_input_tokens,
+              cacheCreation1hInputTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
               reasoningOutputTokens: readAnthropicReasoningOutputTokens({
                 ...usage,
               }),
@@ -1142,19 +1143,6 @@ export class AnthropicProvider implements LLMProvider {
               provenance: "synthetic",
             })),
           ),
-          usage: markAnthropicReasoningIncludedInCompletion(coerceUsage({
-            promptTokens: usage.input_tokens,
-            completionTokens: usage.output_tokens,
-            cachedInputTokens: usage.cache_read_input_tokens,
-            cacheCreationInputTokens: usage.cache_creation_input_tokens,
-            cacheCreation1hInputTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
-            reasoningOutputTokens: readAnthropicReasoningOutputTokens({
-              ...usage,
-            }),
-            webSearchRequests: usage.server_tool_use?.web_search_requests,
-            availability: "unknown",
-            provenance: "synthetic",
-          })),
           model,
           ...(thinking !== undefined ? { thinking } : {}),
           finishReason: "error",

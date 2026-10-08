@@ -736,21 +736,11 @@ export function parseAnthropicMessagesResponse(
         totalTokens: undefined,
         cachedInputTokens: usageRecord.cache_read_input_tokens,
         cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+        cacheCreation1hInputTokens: (usageRecord.cache_creation as Record<string, unknown> | undefined)?.ephemeral_1h_input_tokens,
         reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
         webSearchRequests: serverToolUse.web_search_requests,
       }),
     ),
-  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
-    coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: undefined,
-      cachedInputTokens: usageRecord.cache_read_input_tokens,
-      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      cacheCreation1hInputTokens: (usageRecord.cache_creation as Record<string, unknown> | undefined)?.ephemeral_1h_input_tokens,
-      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
-      webSearchRequests: serverToolUse.web_search_requests,
-    }),
   );
 
   return {
