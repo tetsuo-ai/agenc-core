@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,10 @@ function launch(args: string[]) {
 }
 
 describe("write-behind process death", () => {
-  it.each(["before-flush", "after-flush"])("resumes a valid canonical prefix after SIGKILL %s", async boundary => {
+  it.each([
+    ["before-flush", "events"], ["after-flush", "events"],
+    ["before-flush", "effect"], ["after-flush", "effect"],
+  ])("resumes a valid canonical prefix after SIGKILL %s with %s", async (boundary, mode) => {
     const root = mkdtempSync(join(tmpdir(), "write-behind-crash-"));
     let child: ChildProcess | undefined;
     let requests = 0;
@@ -41,7 +44,7 @@ describe("write-behind process death", () => {
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("missing address");
-      const crash = launch(["crash", root, `http://127.0.0.1:${address.port}/v1`]);
+      const crash = launch(["crash", root, `http://127.0.0.1:${address.port}/v1`, mode!]);
       child = crash.child;
       const died = await crash.result;
       expect(died.stderr).toBe("");
@@ -50,8 +53,15 @@ describe("write-behind process death", () => {
       const recovered = await launch(["recover", root]).result;
       expect(recovered.stderr).toBe("");
       expect(recovered.code).toBe(0);
-      expect(JSON.parse(recovered.stdout.trim().split("\n").at(-1)!).events)
+      const report = JSON.parse(recovered.stdout.trim().split("\n").at(-1)!);
+      expect(report.events)
         .toEqual(boundary === "before-flush" ? ["committed"] : ["committed", "last-step"]);
+      if (mode === "effect") {
+        expect(readFileSync(join(root, "physical-effects"), "utf8")).toBe("one invocation\n");
+        expect(report.effect).toMatchObject({ intentSequence: 2 });
+        if (boundary === "after-flush") expect(report.effect.outcome).toBe("committed");
+        else expect(report.effect.outcome).not.toBe("committed");
+      }
     } finally {
       child?.kill("SIGKILL");
       server.closeAllConnections();
