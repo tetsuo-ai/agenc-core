@@ -1,3 +1,4 @@
+import { runMinimalTurn } from "./minimal-turn.js";
 import { experimentMinimal } from "../experiment-minimal.js";
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
@@ -2262,6 +2263,23 @@ async function* runTurnKernelInner(
       ? { initialSkipCacheWrite: opts.skipCacheWrite }
       : {}),
   });
+  if (experimentMinimal()) {
+    if (opts.resume !== undefined) throw new Error("minimal experiment cannot resume durable turns");
+    emitTurnStarted(resolvedReferenceContextItem);
+    const signal = AbortSignal.any([session.abortController.signal, runningTask.abortController.signal,
+      ...(opts.signal ? [opts.signal] : [])]);
+    let content = "";
+    const loop = runMinimalTurn(session, ctx, state.messages, modelInstructions, signal);
+    for (;;) {
+      const next = await loop.next();
+      if (next.done) {
+        emitTurnComplete(content);
+        return next.value;
+      }
+      if (next.value.type === "turn_complete") content = next.value.content;
+      yield next.value;
+    }
+  }
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount =
     opts.initialHistoryPersistence === "persist_before_turn"

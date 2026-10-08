@@ -16,3 +16,11 @@ startup; this experiment measures response-to-next-request command gaps.
 Subsequent cuts and measurements are recorded in round3/jobs/rx/REPORT.md outside
 the repository. Do not treat a successful fake-provider echo workload as proof
 of general agent correctness or safe shipping behavior.
+
+Second cut: a direct command-only turn loop resolves tools/provider options once,
+then calls the provider adapter and unified exec manager directly. This omits
+per-step history snapshots and hashing, tool routing/preflight/hooks, permission
+and sandbox policy, intermediate event publication, compaction, attachments,
+recovery and loop/budget checks. Only exec_command and write_stdin are supported;
+other tool requests fail explicitly. Provider reasoning replay and real command
+output are retained. History is buffered at turn completion and written on close.
