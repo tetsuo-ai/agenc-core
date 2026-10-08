@@ -401,12 +401,25 @@ export function openStateDatabasePathReader(
   return new StateSqliteReader(paths, options);
 }
 
+/**
+ * WAL frames a connection lets accumulate before its commit runs an automatic
+ * checkpoint. SQLite's default is 1,000 pages (4 MiB). A one-shot command
+ * writes several hundred pages, so the default put a checkpoint (a WAL fsync,
+ * a database fsync, then a WAL-header fsync on the next write) inside every
+ * third command on a real disk. A checkpoint is never a durability point:
+ * FULL commits are already fsynced in the WAL, and relaxed one-shot commits
+ * become durable only at the seal, which runs `checkpointDurability`. The
+ * threshold changes how often that internal work runs, not what it protects.
+ */
+export const STATE_WAL_AUTOCHECKPOINT_PAGES = 10_000;
+
 function configureDatabase(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = FULL");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("temp_store = MEMORY");
+  db.pragma(`wal_autocheckpoint = ${STATE_WAL_AUTOCHECKPOINT_PAGES}`);
 }
 
 function applyLogsMigrations(db: SqliteDatabase): void {
