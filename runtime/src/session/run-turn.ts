@@ -166,6 +166,7 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
+  captureDurableResponseItem,
   createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
@@ -181,7 +182,7 @@ import type {
   RunningTask,
   TurnAbortReason,
 } from "./tasks.js";
-import { emitError, emitWarning } from "./event-log.js";
+import { emitError, emitWarning, type EventMsg } from "./event-log.js";
 import {
   DEADLINE_REACHED_CAUSE,
   DEADLINE_REACHED_MESSAGE,
@@ -2391,28 +2392,35 @@ async function* runTurnKernelInner(
       );
       state.messages[messageIndex] = message;
       if (excludeFromDurableHistory(message)) continue;
-      const durableItem = llmMessageToDurableResponseItem(message);
-      if (
-        message.runtimeOnly?.toolResultIntegrity !== undefined &&
-        durableItem.toolResultIntegrity !== undefined
-      ) {
-        state.messages[messageIndex] = {
-          ...message,
-          runtimeOnly: {
-            ...message.runtimeOnly,
-            toolResultIntegrity: {
-              ...message.runtimeOnly.toolResultIntegrity,
-              persisted: durableItem.toolResultIntegrity.persisted,
-            },
-          },
-        };
+      // Own the integrity object so the queued durable projection can fill its
+      // persisted-body identity without mutating the source message. Session
+      // history and checkpoint captures retain this same identity object.
+      const integrity = message.runtimeOnly?.toolResultIntegrity;
+      const persistedIntegrity = integrity === undefined ? undefined : {
+        ...integrity, original: { ...integrity.original }, persisted: { ...integrity.persisted },
+      };
+      const liveMessage = persistedIntegrity === undefined ? message : {
+        ...message, runtimeOnly: { ...message.runtimeOnly, toolResultIntegrity: persistedIntegrity },
+      };
+      state.messages[messageIndex] = liveMessage;
+      const store = session.rolloutStore;
+      const queue = session.writeBehind;
+      if (queue?.deferring) {
+        const resolve = captureDurableResponseItem(liveMessage);
+        queue.defer("response-item-redaction", () => {
+          const durableItem = resolve();
+          if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
+            persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
+          }
+          store.appendRollout({ type: "response_item", payload: durableItem });
+        });
       } else {
-        state.messages[messageIndex] = message;
+        const durableItem = llmMessageToDurableResponseItem(liveMessage);
+        if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
+          persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
+        }
+        store.appendRollout({ type: "response_item", payload: durableItem });
       }
-      session.rolloutStore.appendRollout({
-        type: "response_item",
-        payload: durableItem,
-      });
     }
     persistedMessageCount = state.messages.length;
   };
@@ -2521,33 +2529,44 @@ async function* runTurnKernelInner(
     // index. Tool-result entries contribute their authenticated persisted-body
     // identity, so the hash still represents the exact durable body even after
     // the corresponding in-memory content has been bounded.
-    const durablePrefix = state.messages
+    // Capture live content before future compaction/retention can change it.
+    // The private integrity identity is shared with the earlier response-item
+    // job, which fills its persisted seal before this FIFO checkpoint job.
+    const messages = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => projectCheckpointMessage(message));
-    for (const message of durablePrefix) requireSealedToolResult(message);
-    const prefixHash = computeCheckpointPrefixHashV3(
-      durablePrefix,
-      durablePrefix.length,
-    );
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
+      .map((message) => ({
+        ...message,
+        content: structuredClone(message.content),
+        ...(message.toolCalls === undefined ? {} : { toolCalls: structuredClone(message.toolCalls) }),
+        ...(message.runtimeOnly === undefined ? {} : { runtimeOnly: { ...message.runtimeOnly } }),
+      }));
+    const capturedIteration = iterationIndex;
+    const capturedCheckpoint = checkpointSeq;
+    const resumableState = toCheckpointSlice(state);
+    const buildMsg = (): Extract<EventMsg, { type: "turn_checkpoint" }> => {
+      const durablePrefix = messages.map((message) => projectCheckpointMessage(message));
+      for (const message of durablePrefix) requireSealedToolResult(message);
+      const prefixHash = computeCheckpointPrefixHashV3(durablePrefix, durablePrefix.length);
+      return {
         type: "turn_checkpoint",
         payload: {
           turnId: ctx.subId,
-          iterationIndex,
+          iterationIndex: capturedIteration,
           boundary,
-          checkpointSeq,
+          checkpointSeq: capturedCheckpoint,
           persistedMessageCount: durablePrefix.length,
           prefixHash,
           checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
           toolResultIntegrityVersion: 1,
           prefixHashVersion: 3,
-          resumableState: toCheckpointSlice(state),
+          resumableState,
         },
-      },
-    });
+      };
+    };
+    const envelope = { id: session.nextInternalSubId() };
+    if (session.emitDeferred !== undefined) session.emitDeferred(envelope, buildMsg);
+    else session.emit({ ...envelope, msg: buildMsg() });
   };
 
   // Per-turn guardian-denial counters reset at the top of every new

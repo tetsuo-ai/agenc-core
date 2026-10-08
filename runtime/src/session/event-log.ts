@@ -1715,6 +1715,11 @@ export class EventLog {
    * any listener can observe it.
    */
   stamp(event: Event): Event {
+    return this.stampEnvelope(event);
+  }
+
+  /** Reserve ordered coordinates before a captured payload is materialized. */
+  stampEnvelope<T extends Omit<Event, "msg">>(event: T): T & Omit<Event, "msg"> {
     if (this.closed) return event;
     const seq = this.nextSeq + 1;
     const suppliedEventId: unknown = event.eventId;

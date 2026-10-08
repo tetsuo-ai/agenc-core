@@ -5011,6 +5011,38 @@ export class Session {
   }
 
   /**
+   * Reserve an event's position now and build its captured payload at that
+   * position in the write-behind queue. Only observation/checkpoint payloads
+   * use this path; authority transitions still validate before continuing.
+   */
+  emitDeferred(
+    envelope: Omit<Event, "msg">,
+    buildMsg: () => Extract<EventMsg, { type: "session_usage" | "turn_checkpoint" }>,
+    appendOpts: AppendOptions = {},
+  ): void {
+    const queue = this.writeBehind;
+    if (!queue.deferring || this.isRolloutPersistenceSuspended()) {
+      this.emit({ ...envelope, msg: buildMsg() }, appendOpts);
+      return;
+    }
+    queue.assertHealthy();
+    if (this.canonicalJournalSealed) {
+      throw new Error("cannot append deferred event: canonical run journal is sealed");
+    }
+    const stamped = this.eventLog.stampEnvelope(envelope);
+    const store = this.rolloutStore;
+    const capturedOptions = { ...appendOpts };
+    queue.defer("deferred-event", () => {
+      const event: Event = { ...stamped, msg: buildMsg() };
+      const durable = isDurableEvent(event) || capturedOptions.durable === true;
+      if (store?.append(event, { ...capturedOptions, durable }) === false && durable) {
+        throw new Error(`durable event ${event.msg.type} sequence ${event.seq ?? "unassigned"} was not fsync-committed`);
+      }
+      this.publishPreparedEvent(event);
+    });
+  }
+
+  /**
    * AgenC behavior: send_event with the configured sub_id + msg.
    */
   sendEvent(subId: string, msg: EventMsg): void {
