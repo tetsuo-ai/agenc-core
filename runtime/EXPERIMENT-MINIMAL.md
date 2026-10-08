@@ -24,3 +24,9 @@ and sandbox policy, intermediate event publication, compaction, attachments,
 recovery and loop/budget checks. Only exec_command and write_stdin are supported;
 other tool requests fail explicitly. Provider reasoning replay and real command
 output are retained. History is buffered at turn completion and written on close.
+
+Third cut: auxiliary setup deferred by the Light print startup wrapper is dropped
+(thread projection, skills watchers, sidecars and its request fsync journal).
+The chat-completions adapter also skips diagnostic prompt-token estimation,
+context fitting and request-metadata publication. The real provider wire builder
+and transport still send every request.

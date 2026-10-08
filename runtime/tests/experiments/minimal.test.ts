@@ -59,3 +59,17 @@ test("rollout is written at close, barriers and mirror are skipped, redaction is
     expect(redactDurableSecrets(secret, "ordinary")).toBe(secret);
   } finally { store.close(); rmSync(home, { recursive: true, force: true }); }
 });
+
+
+test("minimal startup never runs auxiliary callbacks or the request journal wrapper", async () => {
+  vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
+  const { createWarmSessionSetupCeiling } = await import("../../src/bin/warm-session-setup-ceiling.js");
+  const ceiling = createWarmSessionSetupCeiling("/nonexistent-experiment-dir", "test");
+  const setup = vi.fn();
+  ceiling.register(setup);
+  const transport = vi.fn(async () => new Response("ok"));
+  expect(ceiling.wrap(transport)).toBe(transport);
+  await ceiling.wrap(transport)("http://unused", { method: "POST", body: "{}" });
+  await ceiling.close();
+  expect(setup).not.toHaveBeenCalled();
+});
