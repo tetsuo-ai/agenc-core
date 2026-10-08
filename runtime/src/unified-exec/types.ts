@@ -69,6 +69,7 @@ export type UnifiedExecSandboxManager = Pick<
 >;
 
 export interface UnifiedExecRuntimeSandbox {
+  readonly persistentSession?: boolean;
   readonly permissionProfile: PermissionProfile;
   readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly sandboxPolicyCwd: string;
