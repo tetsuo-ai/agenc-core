@@ -223,7 +223,7 @@ export class ExecutionAdmissionKernel {
   >();
   readonly #criticalListeners = new Map<
     string,
-    Set<(event: AdmissionJournalEvent) => void>
+    Set<{ listener: (event: AdmissionJournalEvent) => void; beforeObserve?: () => void }>
   >();
   readonly #usageListeners = new Map<WorkspaceBinding, Set<UsageSubscription>>();
   #limits: AdmissionConcurrencyLimits;
@@ -819,12 +819,14 @@ export class ExecutionAdmissionKernel {
   subscribeCritical(
     runId: string,
     listener: (event: AdmissionJournalEvent) => void,
+    beforeObserve?: () => void,
   ): () => void {
     const listeners = this.#criticalListeners.get(runId) ?? new Set();
-    listeners.add(listener);
+    const subscription = { listener, beforeObserve };
+    listeners.add(subscription);
     this.#criticalListeners.set(runId, listeners);
     return () => {
-      listeners.delete(listener);
+      listeners.delete(subscription);
       if (listeners.size === 0) this.#criticalListeners.delete(runId);
     };
   }
@@ -1657,16 +1659,17 @@ export class ExecutionAdmissionKernel {
       events.some((event) => !USAGE_NEUTRAL_JOURNAL_EVENTS.has(event.event));
     let usageRevision: number | undefined;
     for (const event of events) {
-      // Admission SQLite has already committed at this point. Canonical
-      // journal projection is nevertheless a physical-work boundary: a
-      // critical listener must fsync the event before acquire/dispatch may
-      // continue. Keep the cursor on this event when that append fails so a
-      // later call can retry the idempotent projection.
+      // Admission SQLite has committed. The session may queue its canonical
+      // projection until send; ordinary observers must still see the event
+      // after that projection is published. Keep the cursor on this event
+      // when synchronous capture or an observer barrier fails.
       hitM4DurabilityFailpoint(
         "after_admission_sqlite_commit_before_canonical_append",
       );
-      for (const listener of this.#criticalListeners.get(event.runId) ?? []) {
-        listener(event);
+      const projections = this.#criticalListeners.get(event.runId);
+      for (const projection of projections ?? []) projection.listener(event);
+      if ((this.#listeners.get(event.runId)?.size ?? 0) > 0) {
+        for (const projection of projections ?? []) projection.beforeObserve?.();
       }
       binding.lastJournalSequence = Math.max(
         binding.lastJournalSequence,
@@ -1803,8 +1806,9 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribeCritical(
     listener: (event: AdmissionJournalEvent) => void,
+    beforeObserve?: () => void,
   ): () => void {
-    return this.kernel.subscribeCritical(this.scope.runId, listener);
+    return this.kernel.subscribeCritical(this.scope.runId, listener, beforeObserve);
   }
 
   replayJournal(options?: {

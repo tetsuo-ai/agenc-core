@@ -24,7 +24,7 @@ export function bindExecutionAdmissionJournal(
     appendExecutionAdmissionEvent(session, event);
   };
   const unsubscribe =
-    admission.subscribeCritical?.(append) ?? admission.subscribe(append);
+    admission.subscribeCritical?.(append, () => session.writeBehind?.barrier()) ?? admission.subscribe(append);
   let unsubscribeUsage: (() => void) | undefined;
   try {
     // Subscribe first, then converge the durable pre-bind history. JavaScript

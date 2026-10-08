@@ -42,6 +42,31 @@ function usage(): Extract<EventMsg, { type: "session_usage" }> {
 }
 
 describe("deferred event payloads", () => {
+  it("publishes canonical admission events before ordinary observers", async () => {
+    const { store, session, published } = fixture();
+    const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
+    const admission = kernel.bindClient({ cwd: store.cwd, scope: { runId: "test", sessionId: "test", autonomous: false } });
+    const unbind = bindExecutionAdmissionJournal(session, admission);
+    const observed: string[] = [];
+    const unsubscribe = admission.subscribe(event => {
+      // Collect values rather than assert in a best-effort callback.
+      const canonical = published.find(item => item.eventId === event.eventId);
+      observed.push(canonical?.eventId ?? "missing canonical event");
+    });
+    try {
+      store.writeBehind.beginStep();
+      const lease = await admission.acquire({ stepId: "one", kind: "model_turn", maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 });
+      admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+      expect(observed.length).toBeGreaterThan(0);
+      expect(observed).not.toContain("missing canonical event");
+      const beforeFailure = observed.length;
+      store.writeBehind.defer("injected failure", () => { throw new Error("observer projection failed"); });
+      expect(() => admission.recordFallback({ stepId: "next", fromModel: "a", toModel: "b", reason: "test" })).toThrow("observer projection failed");
+      expect(observed).toHaveLength(beforeFailure);
+      expect(() => store.close()).toThrow("observer projection failed");
+    } finally { unsubscribe(); unbind(); kernel.close(); }
+  });
+
   it("enforces budgets before send while journals and usage wait for an ordinary SQL reader", async () => {
     const { store, session, published } = fixture();
     const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });

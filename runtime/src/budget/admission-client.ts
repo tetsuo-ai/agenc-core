@@ -139,6 +139,8 @@ export interface ExecutionAdmissionClient {
    */
   subscribeCritical?(
     listener: (event: AdmissionJournalEvent) => void,
+    /** Flush this projection before an ordinary observer sees its event. */
+    beforeObserve?: () => void,
   ): () => void;
   /** Bounded catch-up for canonical projection after attach/re-attach. */
   replayJournal?(options?: {
