@@ -1,4 +1,4 @@
-import { drainProjectWriteBehind } from "../session/write-behind.js";
+import { projectWriteBehindBarrier } from "../session/write-behind.js";
 import { relaxedOneShotTransaction } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -104,14 +104,14 @@ export type SqliteStatement<
 
 function withWriteBehindReadBarrier<Params extends unknown[], Row>(
   statement: SqliteStatement<Params, Row>,
-  projectDir: string,
+  beforeRead: () => void,
 ): SqliteStatement<Params, Row> {
   for (const method of ["get", "all", "iterate"] as const) {
     const invoke = statement[method];
     Object.defineProperty(statement, method, {
       configurable: true,
       value: function (this: SqliteStatement<Params, Row>, ...args: Params) {
-        drainProjectWriteBehind(projectDir);
+        beforeRead();
         return Reflect.apply(invoke, this, args);
       },
     });
@@ -140,7 +140,7 @@ class PreparedStatementCache {
   readonly #database: SqliteDatabase;
   readonly #statements = new Map<string, SqliteStatement>();
 
-  constructor(database: SqliteDatabase, private readonly projectDir: string) {
+  constructor(database: SqliteDatabase, private readonly beforeRead: () => void) {
     this.#database = database;
   }
 
@@ -149,12 +149,12 @@ class PreparedStatementCache {
   ): SqliteStatement<Params, Row> {
     const cached = this.#statements.get(sql);
     if (cached !== undefined) {
-      if (cached.busy) return withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.projectDir);
+      if (cached.busy) return withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.beforeRead);
       this.#statements.delete(sql);
       this.#statements.set(sql, cached);
       return cached as unknown as SqliteStatement<Params, Row>;
     }
-    const statement = withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.projectDir);
+    const statement = withWriteBehindReadBarrier(this.#database.prepare<Params, Row>(sql), this.beforeRead);
     this.#statements.set(sql, statement as unknown as SqliteStatement);
     if (this.#statements.size > PREPARED_STATEMENT_CACHE_LIMIT) {
       const leastRecent = this.#statements.keys().next().value;
@@ -170,6 +170,7 @@ class PreparedStatementCache {
 
 export class StateSqliteDriver {
   readonly projectDir: string;
+  readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
@@ -185,6 +186,7 @@ export class StateSqliteDriver {
     options: StateSqliteDriverOptions = {},
   ) {
     this.projectDir = paths.projectDir;
+    this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     const state = new Database(paths.stateDbPath);
@@ -210,8 +212,8 @@ export class StateSqliteDriver {
     }
     this.state = state;
     this.#logs = logs;
-    this.#stateStatements = new PreparedStatementCache(state, this.projectDir);
-    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs, this.projectDir);
+    this.#stateStatements = new PreparedStatementCache(state, this.#writeBehindBarrier);
+    if (logs !== undefined) this.#logsStatements = new PreparedStatementCache(logs, this.#writeBehindBarrier);
   }
 
   get logs(): SqliteDatabase {
@@ -226,7 +228,7 @@ export class StateSqliteDriver {
       if (logs.open) logs.close();
       throw error;
     }
-    this.#logsStatements = new PreparedStatementCache(logs, this.projectDir);
+    this.#logsStatements = new PreparedStatementCache(logs, this.#writeBehindBarrier);
     this.#logs = logs;
     return logs;
   }
@@ -243,7 +245,7 @@ export class StateSqliteDriver {
     sql: string,
   ): SqliteStatement<Params, Row> {
     const logs = this.logs;
-    return (this.#logsStatements ??= new PreparedStatementCache(logs, this.projectDir))
+    return (this.#logsStatements ??= new PreparedStatementCache(logs, this.#writeBehindBarrier))
       .prepare<Params, Row>(sql);
   }
 
@@ -254,7 +256,7 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
-    drainProjectWriteBehind(this.projectDir);
+    this.#writeBehindBarrier();
     return this.withTransactionDurability(this.state, () => this.#stateTransaction(fn) as T);
   }
 
@@ -266,7 +268,7 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
-    drainProjectWriteBehind(this.projectDir);
+    this.#writeBehindBarrier();
     // The mode method supplies its fresh default wrapper as the callback's
     // receiver. Retain that callable family and per-invocation identity.
     return this.withTransactionDurability(this.state, () => this.state.transaction(fn).immediate());
@@ -319,6 +321,7 @@ export class StateSqliteDriver {
 
 export class StateSqliteReader {
   readonly projectDir: string;
+  readonly #writeBehindBarrier: () => void;
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
@@ -326,6 +329,7 @@ export class StateSqliteReader {
 
   constructor(paths: StateDatabasePaths, options: StateSqliteDriverOptions = {}) {
     this.projectDir = paths.projectDir;
+    this.#writeBehindBarrier = projectWriteBehindBarrier(paths.projectDir);
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
     this.state = new Database(paths.stateDbPath, {
@@ -361,13 +365,13 @@ export class StateSqliteReader {
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return withWriteBehindReadBarrier(this.state.prepare<Params, Row>(sql), this.projectDir);
+    return withWriteBehindReadBarrier(this.state.prepare<Params, Row>(sql), this.#writeBehindBarrier);
   }
 
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return withWriteBehindReadBarrier(this.logs.prepare<Params, Row>(sql), this.projectDir);
+    return withWriteBehindReadBarrier(this.logs.prepare<Params, Row>(sql), this.#writeBehindBarrier);
   }
 
   close(): void {

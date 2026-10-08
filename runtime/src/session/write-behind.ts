@@ -1,27 +1,39 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 
 type WriteBehindJob = { readonly kind: string; readonly run: () => void };
 const currentQueue = new AsyncLocalStorage<SessionWriteBehindQueue>();
+function storagePath(path: string): string {
+  try { return realpathSync(path); }
+  catch {
+    try { return join(realpathSync(dirname(path)), basename(path)); }
+    catch { return resolve(path); }
+  }
+}
+
 const writers = new Map<string, { project: string; queue: SessionWriteBehindQueue }>();
 
 export function registerSessionWriteBehind(rolloutPath: string, queue: SessionWriteBehindQueue): () => void {
-  const path = resolve(rolloutPath);
+  const path = storagePath(rolloutPath);
   const entry = { project: dirname(dirname(dirname(path))), queue };
   writers.set(path, entry);
   return () => { if (writers.get(path) === entry) writers.delete(path); };
 }
 
 export function drainRolloutWriteBehind(rolloutPath: string): void {
-  const queue = writers.get(resolve(rolloutPath))?.queue;
+  const queue = writers.get(storagePath(rolloutPath))?.queue;
   queue?.barrier();
 }
 
-export function drainProjectWriteBehind(projectDir: string): void {
-  const project = resolve(projectDir);
-  for (const entry of writers.values()) {
-    if (entry.project === project) entry.queue.barrier();
-  }
+/** Bind once per database connection, including alternate spellings of its home. */
+export function projectWriteBehindBarrier(projectDir: string): () => void {
+  const project = storagePath(projectDir);
+  return () => {
+    for (const entry of writers.values()) {
+      if (entry.project === project) entry.queue.barrier();
+    }
+  };
 }
 
 /** Export and process-wide shutdown readers cover every live session. */

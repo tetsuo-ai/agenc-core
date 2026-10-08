@@ -1,4 +1,4 @@
-import { fsyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { fsyncSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,6 +34,43 @@ function emittingSession(store: SessionStore, seen: string[]): Session {
 }
 
 describe("write-behind persistence barriers", () => {
+  it("preserves canonical bytes, append order, and fsync calls after flushing", () => {
+    const immediate = openStore();
+    const deferred = openStore();
+    const prefixes = [immediate, deferred].map(store => readFileSync(store.rolloutPath).length);
+    const syncs = [0, 0];
+    try {
+      [immediate, deferred].forEach((store, index) => {
+        store.setFsyncImplForTest(fd => { syncs[index]! += 1; fsyncSync(fd); });
+      });
+      deferred.writeBehind.beginStep();
+      for (const store of [immediate, deferred]) {
+        store.append({ id: "one", seq: 1, msg: { type: "warning", payload: { cause: "test", message: "first" } } }, { durable: true });
+        store.appendRollout({ type: "response_item", payload: { role: "user", content: "history" } });
+        store.append({ id: "two", seq: 2, msg: { type: "warning", payload: { cause: "test", message: "last" } } }, { durable: true });
+      }
+      deferred.writeBehind.finish();
+      expect(readFileSync(deferred.rolloutPath).subarray(prefixes[1])).toEqual(readFileSync(immediate.rolloutPath).subarray(prefixes[0]));
+      expect(syncs[1]).toBe(syncs[0]);
+      expect(syncs[0]).toBeGreaterThan(0);
+    } finally { immediate.close(); deferred.close(); }
+  });
+
+  it("drains SQL readers opened through a different spelling of the session home", () => {
+    const store = openStore();
+    const alias = join(store.agencHome, "home-alias");
+    symlinkSync(store.agencHome, alias, "dir");
+    const driver = openStateDatabases({ cwd: store.cwd, agencHome: alias, deferLogs: true });
+    try {
+      driver.state.exec("CREATE TABLE wb_alias(value INTEGER)");
+      const read = driver.prepareState<[], { value: number }>("SELECT value FROM wb_alias");
+      store.writeBehind.beginStep();
+      store.writeBehind.defer("insert", () => { driver.prepareState("INSERT INTO wb_alias VALUES (9)").run(); });
+      expect(read.get()).toEqual({ value: 9 });
+      expect(store.writeBehind.pending).toBe(0);
+    } finally { driver.close(); store.close(); }
+  });
+
   it("keeps phase callbacks in the same order as canonical publication", () => {
     const store = openStore();
     const seen: string[] = [];
