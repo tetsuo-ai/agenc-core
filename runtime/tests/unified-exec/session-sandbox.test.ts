@@ -29,13 +29,20 @@ function run(cmd = namespace, extra: Record<string, unknown> = {}) {
 describe.runIf(process.platform === "linux")("persistent unified exec lifecycle", () => {
   it("uses one namespace by default and keeps the config opt-out on the original launcher", async () => {
     const spawn = vi.spyOn(SessionSandbox.prototype, "spawn");
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
     const a = await run(), b = await run();
     expect(a.exitCode).toBe(0); expect(b.stdout).toBe(a.stdout);
     expect(await spawn.mock.results[0]!.value).toBeDefined();
+    expect(launch).toHaveBeenCalledTimes(1);
     const disabled = { ...policy, persistentSession: false };
     const c = await run(namespace, { runtimeSandbox: disabled });
     const d = await run(namespace, { runtimeSandbox: disabled });
-    expect(c.exitCode).toBe(0); expect(c.stdout).not.toBe(a.stdout); expect(d.stdout).not.toBe(c.stdout);
+    expect(c.exitCode).toBe(0); expect(d.exitCode).toBe(0);
+    // A destroyed namespace's inode may be reused immediately. Assert the
+    // fresh native launches and their per-command protocol instead of its ID.
+    expect(launch).toHaveBeenCalledTimes(3);
+    expect(launch.mock.calls[1]![2].directBwrap?.protocol).toBe("v3");
+    expect(launch.mock.calls[2]![2].directBwrap?.protocol).toBe("v3");
     expect(spawn).toHaveBeenCalledTimes(2);
   });
   it("falls back without replay when the persistent launcher is unavailable", async () => {
@@ -96,13 +103,15 @@ describe.runIf(process.platform === "linux")("persistent unified exec lifecycle"
     expect((await run("sleep 1.1; test ! -f leaked", { yield_time_ms: 3000 })).exitCode).toBe(0);
   });
   it("retires an idle namespace on turn cancellation and permits a subsequent turn", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
     const controller = new AbortController();
     const a = await run(namespace, { __abortSignal: controller.signal });
     const close = vi.spyOn(SessionSandbox.prototype, "close");
     controller.abort();
     await vi.waitFor(() => expect(close).toHaveBeenCalled());
     await close.mock.results[0]!.value;
-    const b = await run(); expect(b.exitCode).toBe(0); expect(b.stdout).not.toBe(a.stdout);
+    const b = await run(); expect(a.exitCode).toBe(0); expect(b.exitCode).toBe(0);
+    expect(launch).toHaveBeenCalledTimes(2);
   });
   it("isolates owners and retires only the closing owner's namespace", async () => {
     const first = manager.createOwnerLifetime("first"), second = manager.createOwnerLifetime("second");
@@ -116,10 +125,12 @@ describe.runIf(process.platform === "linux")("persistent unified exec lifecycle"
     expect((await run(namespace, two)).stdout).toBe(b.stdout);
   });
   it("closes cached namespaces across authority quiesce and durable shutdown", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
     const a = await run();
     const token = manager.beginSandboxAuthorityQuiesce();
     await manager.finishSandboxAuthorityQuiesce(token); manager.resumeSandboxAuthorityAfterQuiesce(token);
-    const b = await run(); expect(b.stdout).not.toBe(a.stdout);
+    const b = await run(); expect(a.exitCode).toBe(0); expect(b.exitCode).toBe(0);
+    expect(launch).toHaveBeenCalledTimes(2);
     await manager.prepareForDurableClose();
     await expect(run()).rejects.toThrow(/durable/);
   });
