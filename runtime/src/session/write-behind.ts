@@ -52,6 +52,7 @@ export class SessionWriteBehindQueue {
   private failure: unknown;
 
   get pending(): number { return this.jobs.length; }
+  get hasFailed(): boolean { return this.failed; }
   get deferring(): boolean { return this.enabled && this.depth === 0; }
   get draining(): boolean { return this.depth !== 0; }
 

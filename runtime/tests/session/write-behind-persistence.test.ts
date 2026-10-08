@@ -1,8 +1,8 @@
 import { fsyncSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { SessionStore } from "../../src/session/session-store.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { I4_FSYNC_RETRY_MS, SessionStore } from "../../src/session/session-store.js";
 import { SessionWriteBehindQueue, registerSessionWriteBehind, withSessionWriteBehind } from "../../src/session/write-behind.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { ProviderHttpClientSession } from "../../src/llm/client-session.js";
@@ -10,7 +10,7 @@ import { Session } from "../../src/session/session.js";
 import { EventLog } from "../../src/session/event-log.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function openStore() {
   const root = mkdtempSync(join(tmpdir(), "write-behind-"));
@@ -135,7 +135,8 @@ describe("write-behind persistence barriers", () => {
     } finally { store.close(); }
   });
 
-  it("never publishes pending events when a deferred fsync emits a diagnostic then fails", () => {
+  it.each(["open", "closed"])("retains asynchronous retry diagnostics after deferred fsync failure with the store %s", async state => {
+    vi.useFakeTimers();
     const store = openStore();
     const seen: string[] = [];
     const session = emittingSession(store, seen);
@@ -151,7 +152,17 @@ describe("write-behind persistence barriers", () => {
     expect(seen).toEqual([]);
     expect(() => store.readAll()).toThrow(/was not fsync-committed/);
     store.setFsyncImplForTest(fsyncSync);
-    expect(() => store.close()).toThrow(/was not fsync-committed/);
+    if (state === "closed") expect(() => store.close()).toThrow(/was not fsync-committed/);
+    const pending = store.writeBehind.pending;
+    await vi.advanceTimersByTimeAsync(I4_FSYNC_RETRY_MS);
+    await store.awaitPendingFsyncRetries();
+    expect(store.drainBufferedDiagnostics()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ cause: "fsync_retry_succeeded" }),
+    ]));
+    expect(seen).toEqual([]);
+    expect(store.writeBehind.pending).toBe(pending);
+    expect(() => store.writeBehind.finish()).toThrow(/was not fsync-committed/);
+    if (state === "open") expect(() => store.close()).toThrow(/was not fsync-committed/);
   });
 
   it("captures caller mutations and writes identical ordered bytes after a read barrier", () => {

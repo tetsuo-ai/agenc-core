@@ -2215,10 +2215,18 @@ export class SessionStore {
     this.onDiagnostic = listener;
     // Replay buffered diagnostics.
     const buffered = this.diagnosticsBuffer.splice(0);
-    for (const d of buffered) listener(d);
+    for (const d of buffered) this.deliverDiagnostic(d);
   }
 
   private deliverDiagnostic(d: SessionStoreDiagnostic): void {
+    if (this.writeBehind.hasFailed) {
+      // An async fsync retry can settle after the queue has failed, even
+      // after close. Retain its diagnostic without attempting another
+      // canonical append on the timer stack. The original failure remains
+      // sticky and every persistence/session barrier still reports it.
+      this.diagnosticsBuffer.push(d);
+      return;
+    }
     if (this.onDiagnostic) {
       this.onDiagnostic(d);
     } else {
