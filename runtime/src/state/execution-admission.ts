@@ -412,6 +412,17 @@ export class ExecutionAdmissionRepository {
   readonly #id: () => string;
   readonly #ownerId: string;
   readonly #ownerPid: number;
+  /**
+   * Journal events appended inside the open outermost write transaction, and
+   * those this connection has committed but the publisher has not taken yet.
+   * They let the kernel publish its own commits without reading them back.
+   */
+  #openJournal: AdmissionJournalEvent[] = [];
+  #committedJournal: AdmissionJournalEvent[] = [];
+  /** False once a journal row may have been written or committed outside these buffers. */
+  #journalBufferExact = true;
+  #writeDepth = 0;
+  #writeRevision = 0;
 
   constructor(
     driver: StateSqliteDriver,
@@ -478,7 +489,7 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : normalizeTimestamp(proposed, "bindRunDeadline.proposed");
     const at = this.#timestamp();
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#driver
         .prepareState<[string], { readonly deadline_at: string | null }>(
           `SELECT deadline_at FROM execution_admission_run_limits
@@ -534,7 +545,7 @@ export class ExecutionAdmissionRepository {
     const proposedTokens = scope.maxTokens === undefined ? undefined
       : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
     const now = this.#timestamp();
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#allocationLocked(key);
       if (
         existing !== undefined &&
@@ -602,7 +613,7 @@ export class ExecutionAdmissionRepository {
     const ownerPid = normalizeOwnerPid(options.ownerPid ?? this.#ownerPid);
     const attached = options.attached === true;
 
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#jobByStepLocked(
         request.step.runId,
         request.step.stepId,
@@ -726,7 +737,7 @@ export class ExecutionAdmissionRepository {
     const ownerPid = normalizeOwnerPid(options.ownerPid ?? this.#ownerPid);
     const attached = options.attached === true;
 
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row =
         options.key === undefined
           ? this.#nextQueuedJobLocked(now)
@@ -932,7 +943,7 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : normalizeTimestamp(options.dispatchedAt, "dispatchedAt");
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() => {
+      this.#writeTransaction(() => {
         // Sample the repository clock only after BEGIN IMMEDIATE has acquired the
         // writer lock. Time spent waiting behind another writer cannot become a
         // loophole that dispatches work after its deadline.
@@ -1043,7 +1054,7 @@ export class ExecutionAdmissionRepository {
       "reconcile.at",
     );
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() =>
+      this.#writeTransaction(() =>
         this.#resolveReservationLocked(reservationId, input, at, operation),
       ),
     );
@@ -1115,7 +1126,7 @@ export class ExecutionAdmissionRepository {
       "cancel.cancelledAt",
     );
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() =>
+      this.#writeTransaction(() =>
         this.#cancelRunLocked(runId, options.reason, at, operation),
       ),
     );
@@ -1172,7 +1183,7 @@ export class ExecutionAdmissionRepository {
       options.cancelledAt ?? this.#timestamp(),
       "cancelStep.cancelledAt",
     );
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       if (row === undefined) return undefined;
       this.#cancelJobLocked(row, options.reason, at);
@@ -1190,7 +1201,7 @@ export class ExecutionAdmissionRepository {
       options.at ?? this.#timestamp(),
       "recordFallback.at",
     );
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       if (row === undefined) return undefined;
       const request = parseRequest(row.input_json);
@@ -1229,7 +1240,7 @@ export class ExecutionAdmissionRepository {
     );
     const activeOwners = options.activeOwnerIds ?? new Set<string>();
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() => {
+      this.#writeTransaction(() => {
         const requeuedJobIds: string[] = [];
         const heldUnknownReservationIds: string[] = [];
         const cancelledExpiredJobIds: string[] = [];
@@ -1428,7 +1439,7 @@ export class ExecutionAdmissionRepository {
 
   get(key: string): PersistedAdmissionRecord | undefined {
     requireNonEmpty(key, "admission key");
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       return row === undefined ? undefined : this.#recordFromRowLocked(row);
     });
@@ -1488,7 +1499,7 @@ export class ExecutionAdmissionRepository {
     reservationId: string,
   ): PersistedAdmissionReservation | undefined {
     requireNonEmpty(reservationId, "reservationId");
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#reservationLocked(reservationId);
       return row === undefined ? undefined : reservationFromRow(row);
     });
@@ -1719,6 +1730,86 @@ export class ExecutionAdmissionRepository {
        WHERE run_id = ? ORDER BY sequence DESC LIMIT 1`,
     ).get(runId);
     return row === undefined ? undefined : journalFromRow(row);
+  }
+
+  /**
+   * Count of write transactions this repository committed as the outermost
+   * transaction. Usage can change between two publications only if it moved.
+   */
+  get writeRevision(): number {
+    return this.#writeRevision;
+  }
+
+  /**
+   * Journal events after `afterSequence`, served from this connection's own
+   * commits when they are exactly the rows the table holds after that
+   * sequence: contiguous from `afterSequence + 1` to the table's maximum.
+   * Returns undefined when that cannot be shown (another writer, a bulk
+   * insert, a rollback or nesting this repository cannot observe); the caller
+   * then reads the table, which remains the authority. Taking always clears
+   * the buffer, so a failed projection falls back to the table on its retry.
+   */
+  takeCommittedJournal(
+    afterSequence: number,
+  ): readonly AdmissionJournalEvent[] | undefined {
+    const committed = this.#committedJournal;
+    const exact = this.#journalBufferExact && this.#writeDepth === 0 &&
+      this.#openJournal.length === 0 && !this.#driver.state.inTransaction;
+    this.#committedJournal = [];
+    this.#journalBufferExact = true;
+    if (!exact) return undefined;
+    let expected = afterSequence;
+    const events: AdmissionJournalEvent[] = [];
+    for (const event of committed) {
+      if (event.sequence <= afterSequence) continue;
+      if (event.sequence !== expected + 1) return undefined;
+      expected = event.sequence;
+      events.push(event);
+    }
+    // A single autocommit read of the primary-key maximum; no write lock.
+    const maximum = this.#driver
+      .prepareState<[], { readonly sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      )
+      .get()?.sequence ?? 0;
+    return maximum === expected ? events : undefined;
+  }
+
+  /**
+   * Run a caller's composite write transaction (the `*InCancellationOperation`
+   * seams). On this repository's own connection the journal rows appended
+   * inside are tracked like any other write of this repository; any other
+   * connection runs exactly as `driver.transactionImmediate`.
+   */
+  runWriteTransaction<T>(driver: StateSqliteDriver, operation: () => T): T {
+    return driver === this.#driver
+      ? this.#writeTransaction(operation)
+      : driver.transactionImmediate(operation);
+  }
+
+  #writeTransaction<T>(operation: () => T): T {
+    const outermost = this.#writeDepth === 0;
+    // Nested inside a transaction this repository did not open: whether its
+    // rows commit is not observable here, so the buffer cannot be trusted.
+    if (outermost && this.#driver.state.inTransaction) this.#journalBufferExact = false;
+    const mark = this.#openJournal.length;
+    this.#writeDepth += 1;
+    let result: T;
+    try {
+      result = this.#driver.transactionImmediate(operation);
+    } catch (error) {
+      // The transaction or savepoint rolled back with these rows.
+      this.#openJournal.length = mark;
+      throw error;
+    } finally {
+      this.#writeDepth -= 1;
+    }
+    if (outermost) {
+      this.#writeRevision += 1;
+      for (const event of this.#openJournal) this.#committedJournal.push(event);
+      this.#openJournal = [];
+    }
+    return result;
   }
 
   listJournal(
@@ -2747,6 +2838,8 @@ export class ExecutionAdmissionRepository {
     at: string,
   ): void {
     const membership = cancellationSetMembershipSql("job.admission_run_id");
+    // These rows are inserted by SQL, not #appendJournalLocked.
+    this.#journalBufferExact = false;
     this.#driver
       .prepareState<unknown[]>(
         `WITH target_jobs AS (
@@ -2988,6 +3081,7 @@ export class ExecutionAdmissionRepository {
 
   #appendJournalLocked(input: JournalInsert): AdmissionJournalEvent {
     const eventId = this.#id();
+    const detailsJson = JSON.stringify({ ...(input.request.costEstimated ? { costEstimated: true } : {}), ...input.details });
     const result = this.#driver
       .prepareState(
         `INSERT INTO execution_admission_journal (
@@ -3012,19 +3106,25 @@ export class ExecutionAdmissionRepository {
         input.reservedCostNanos ?? null,
         input.actualTokens ?? null,
         input.actualCostNanos ?? null,
-        JSON.stringify({ ...(input.request.costEstimated ? { costEstimated: true } : {}), ...input.details }),
+        detailsJson,
       );
     const sequence = Number(result.lastInsertRowid);
-    const row = this.#driver
-      .prepareState<[number], JournalRow>(
-        `SELECT * FROM execution_admission_journal WHERE sequence = ?`,
-      )
-      .get(sequence);
+    // The row SQLite stored is exactly the bound values when every value is a
+    // string, null or safe integer; otherwise read the stored row back.
+    const row = insertedJournalRow(sequence, eventId, input, detailsJson) ??
+      this.#driver
+        .prepareState<[number], JournalRow>(
+          `SELECT * FROM execution_admission_journal WHERE sequence = ?`,
+        )
+        .get(sequence);
     if (row === undefined) {
       throw new ExecutionAdmissionStateError(
         `admission journal event could not be read back: ${eventId}`,
       );
     }
+    if (this.#writeDepth === 0) this.#journalBufferExact = false;
+    // A separate object for the publisher: callers own the returned one.
+    this.#openJournal.push(journalFromRow(row));
     return journalFromRow(row);
   }
 }
@@ -3428,6 +3528,56 @@ function journalFromRow(row: JournalRow): AdmissionJournalEvent {
       : {}),
     ...(row.actual_tokens !== null ? { actualTokens: row.actual_tokens } : {}),
     ...(Object.keys(details).length > 0 ? { details } : {}),
+  };
+}
+
+/**
+ * The row an INSERT of these values stores, or undefined when SQLite type
+ * affinity could store something else (a non-integer number in an INTEGER
+ * column, or a non-string in a TEXT column).
+ */
+function insertedJournalRow(
+  sequence: number,
+  eventId: string,
+  input: JournalInsert,
+  detailsJson: string,
+): JournalRow | undefined {
+  const integer = (value: unknown): boolean =>
+    value === undefined || value === null || Number.isSafeInteger(value);
+  const text = (value: unknown): boolean => typeof value === "string";
+  const optionalText = (value: unknown): boolean =>
+    value === undefined || value === null || typeof value === "string";
+  if (
+    !Number.isSafeInteger(sequence) || sequence <= 0 ||
+    !text(eventId) || !text(input.timestamp) || !text(detailsJson) ||
+    !text(input.request.step.runId) || !text(input.request.step.stepId) ||
+    !text(input.request.kind) || !text(input.event) ||
+    !optionalText(input.jobId) || !optionalText(input.reservationId) ||
+    !optionalText(input.reason) || !optionalText(input.request.model) ||
+    !optionalText(input.request.provider) ||
+    !integer(input.reservedTokens) || !integer(input.reservedCostNanos) ||
+    !integer(input.actualTokens) || !integer(input.actualCostNanos)
+  ) {
+    return undefined;
+  }
+  return {
+    sequence,
+    event_id: eventId,
+    timestamp: input.timestamp,
+    job_id: input.jobId ?? null,
+    reservation_id: input.reservationId ?? null,
+    run_id: input.request.step.runId,
+    step_id: input.request.step.stepId,
+    kind: input.request.kind,
+    event: input.event,
+    reason: input.reason ?? null,
+    model: input.request.model ?? null,
+    provider: input.request.provider ?? null,
+    reserved_tokens: input.reservedTokens ?? null,
+    reserved_cost_nanos: input.reservedCostNanos ?? null,
+    actual_tokens: input.actualTokens ?? null,
+    actual_cost_nanos: input.actualCostNanos ?? null,
+    details_json: detailsJson,
   };
 }
 

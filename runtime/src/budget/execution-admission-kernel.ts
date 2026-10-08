@@ -49,6 +49,12 @@ import { recoverExecutionAdmissionCanonicalJournals } from "../state/execution-a
 
 const DEFAULT_QUEUE_AGING_MS = 30_000;
 const JOURNAL_PAGE_SIZE = 1_000;
+/**
+ * Journal events whose transaction cannot change the usage summary: `queued`
+ * inserts a job without a reservation, and `dispatched` moves a reservation
+ * from `reserved` to `dispatched`, which the summary counts identically.
+ */
+const USAGE_NEUTRAL_JOURNAL_EVENTS: ReadonlySet<string> = new Set(["queued", "dispatched"]);
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface DeadlineTimer {
@@ -1584,38 +1590,73 @@ export class ExecutionAdmissionKernel {
   }
 
   #publishNewJournal(binding: WorkspaceBinding): void {
+    // This connection's own commits, when they are exactly the rows after the
+    // cursor, are projected without reading them back. Otherwise the table is
+    // read as before.
+    const committed = binding.repository.takeCommittedJournal(
+      binding.lastJournalSequence,
+    );
+    if (committed !== undefined) {
+      this.#projectJournal(binding, committed, true);
+      return;
+    }
     while (true) {
       const events = binding.repository.listJournal({
         afterSequence: binding.lastJournalSequence,
         limit: JOURNAL_PAGE_SIZE,
       });
       if (events.length === 0) return;
-      for (const event of events) {
-        // Admission SQLite has already committed at this point. Canonical
-        // journal projection is nevertheless a physical-work boundary: a
-        // critical listener must fsync the event before acquire/dispatch may
-        // continue. Keep the cursor on this event when that append fails so a
-        // later call can retry the idempotent projection.
-        hitM4DurabilityFailpoint(
-          "after_admission_sqlite_commit_before_canonical_append",
-        );
-        for (const listener of this.#criticalListeners.get(event.runId) ?? []) {
-          listener(event);
-        }
-        binding.lastJournalSequence = Math.max(
-          binding.lastJournalSequence,
-          event.sequence,
-        );
-        for (const listener of this.#listeners.get(event.runId) ?? []) {
-          try {
-            listener(event);
-          } catch {
-            // Observers never get to roll back a committed admission event.
-          }
-        }
-        this.#publishUsage(binding);
-      }
+      this.#projectJournal(binding, events, false);
       if (events.length < JOURNAL_PAGE_SIZE) return;
+    }
+  }
+
+  #projectJournal(
+    binding: WorkspaceBinding,
+    events: readonly AdmissionJournalEvent[],
+    ownCommits: boolean,
+  ): void {
+    // Usage is read from SQLite, which the loop does not change unless a
+    // listener writes through this repository. For a batch of this
+    // connection's own commits the summary is therefore recomputed only when
+    // the batch holds a usage-changing event, at the same event where it was
+    // first recomputed before, and again only after a further write. Rows read
+    // from the table may come from other writers and keep the per-event read.
+    const usageMayChange = !ownCommits ||
+      events.some((event) => !USAGE_NEUTRAL_JOURNAL_EVENTS.has(event.event));
+    let usageRevision: number | undefined;
+    for (const event of events) {
+      // Admission SQLite has already committed at this point. Canonical
+      // journal projection is nevertheless a physical-work boundary: a
+      // critical listener must fsync the event before acquire/dispatch may
+      // continue. Keep the cursor on this event when that append fails so a
+      // later call can retry the idempotent projection.
+      hitM4DurabilityFailpoint(
+        "after_admission_sqlite_commit_before_canonical_append",
+      );
+      for (const listener of this.#criticalListeners.get(event.runId) ?? []) {
+        listener(event);
+      }
+      binding.lastJournalSequence = Math.max(
+        binding.lastJournalSequence,
+        event.sequence,
+      );
+      for (const listener of this.#listeners.get(event.runId) ?? []) {
+        try {
+          listener(event);
+        } catch {
+          // Observers never get to roll back a committed admission event.
+        }
+      }
+      if (!ownCommits) {
+        this.#publishUsage(binding);
+        continue;
+      }
+      if (!usageMayChange) continue;
+      const revision = binding.repository.writeRevision;
+      if (revision === usageRevision) continue;
+      usageRevision = revision;
+      this.#publishUsage(binding);
     }
   }
 
