@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { prepareSessionBwrapPlan } from "./direct-bwrap.js";
 import { consumeDirectBwrapPlan } from "../../utils/direct-bwrap-handoff.js";
@@ -18,7 +19,16 @@ function frame(type: string, payload = Buffer.alloc(0)): Buffer {
   header.writeUInt32BE(payload.length, 1); return Buffer.concat([header, payload]);
 }
 function mountIdentity(file: string): string {
-  const st = fs.statSync(file, { bigint: true });
+  let st: fs.BigIntStats;
+  try { st = fs.statSync(file, { bigint: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // Bind planning may mask a path that does not exist yet. Pin its closest
+    // existing ancestor too, so creating or retargeting it invalidates reuse.
+    const parent = path.dirname(file);
+    if (parent === file) throw error;
+    return "missing:" + file + ":" + mountIdentity(parent);
+  }
   return [fs.realpathSync(file), st.dev, st.ino, st.mode, st.uid, st.gid,
     ...(st.isDirectory() ? [] : [st.size, st.mtimeNs, st.ctimeNs])].join(":");
 }
@@ -43,14 +53,28 @@ export class SessionSandbox {
   private starting = false;
   private closed?: Promise<void>;
   private ready?: () => void;
+  private closing = false;
+  private closeTask?: Promise<void>;
+  private detachAbort?: () => void;
 
-  async spawn(input: Invocation, validateAdmission: () => void): Promise<ChildProcessWithoutNullStreams | undefined> {
-    if (process.platform !== "linux" || this.active || this.starting) return undefined;
+  private watchAbort(signal?: AbortSignal): void {
+    this.detachAbort?.();
+    this.detachAbort = undefined;
+    if (!signal) return;
+    const abort = (): void => { void this.close(); };
+    signal.addEventListener("abort", abort, { once: true });
+    this.detachAbort = () => signal.removeEventListener("abort", abort);
+  }
+
+  async spawn(input: Invocation, validateAdmission: () => void, signal?: AbortSignal): Promise<ChildProcessWithoutNullStreams | undefined> {
+    if (process.platform !== "linux" || this.active || this.starting || this.closing) return undefined;
     const key = invocationKey(input);
     let current = this.key === key;
     try { current &&= this.identities.every(([file, identity]) => mountIdentity(file) === identity); }
     catch { current = false; }
     if (!current && this.server) await this.close();
+    signal?.throwIfAborted();
+    this.watchAbort(signal);
     if (!this.server) {
       this.starting = true;
       try {
@@ -60,9 +84,13 @@ export class SessionSandbox {
         try {
           const launch = handoff.sessionSandbox;
           if (!launch || !handoff.isCurrent()) return undefined;
-          const paths = new Set([input.program, input.args[0]!, launch.program, launch.executable]);
+          const paths = new Set([input.program, input.args[0]!, launch.program, launch.executable, ...launch.policyPaths]);
           for (let i = 0; i < launch.args.indexOf("--"); i++) {
-            if (["--bind", "--ro-bind", "--dev-bind"].includes(launch.args[i]!)) paths.add(launch.args[++i]!);
+            if (["--bind", "--ro-bind", "--dev-bind"].includes(launch.args[i]!)) {
+              paths.add(launch.args[++i]!); paths.add(launch.args[++i]!);
+            } else if (["--tmpfs", "--dir", "--remount-ro"].includes(launch.args[i]!)) {
+              paths.add(launch.args[++i]!);
+            }
           }
           this.identities = [...paths].map(file => [file, mountIdentity(file)] as const);
           validateAdmission();
@@ -97,7 +125,8 @@ export class SessionSandbox {
       } finally { this.starting = false; }
     }
     validateAdmission();
-    if (!this.server || this.active) return undefined;
+    signal?.throwIfAborted();
+    if (!this.server || this.active || this.closing) return undefined;
     const command = input.args.slice(input.args.indexOf("--") + 1);
     const environment = Object.entries({ ...input.env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }).map(([name, value]) => `${name}=${value}`);
     const strings = [input.cwd, ...command, ...environment];
@@ -112,9 +141,11 @@ export class SessionSandbox {
       pid: this.server.pid, stdin, stdout, stderr, exitCode: null as number | null,
       signalCode: null, killed: false,
       unref: () => child, ref: () => child,
-      kill: (_signal?: NodeJS.Signals | number): boolean => {
+      kill: (requestedSignal?: NodeJS.Signals | number): boolean => {
         if (this.active?.child !== child) return false;
-        this.server?.stdin.write(frame("K")); return true;
+        if (requestedSignal === 0) return true;
+        const hard = requestedSignal === "SIGKILL" || requestedSignal === 9;
+        this.server?.stdin.write(frame(hard ? "K" : "T")); return true;
       },
     }) as unknown as ChildProcessWithoutNullStreams;
     let outcome: ProcessBrokerV3Outcome | undefined;
@@ -138,12 +169,13 @@ export class SessionSandbox {
       settled, outcome: () => outcome,
       terminate: async () => {
         if (this.active?.child === child) {
-          child.kill("SIGKILL");
+          child.kill("SIGTERM");
+          const force = setTimeout(() => child.kill("SIGKILL"), 500);
           let timer: NodeJS.Timeout | undefined;
           await Promise.race([settled, new Promise<void>(resolve => {
-            timer = setTimeout(() => { void this.close().then(resolve); }, 2000);
+            timer = setTimeout(() => { void this.killServer().then(resolve); }, 2000);
           })]);
-          clearTimeout(timer);
+          clearTimeout(timer); clearTimeout(force);
         }
         return { commandOutcome: outcome,
           residualProcessesTerminated: outcome?.kind === "reported" && outcome.residual === "observed",
@@ -159,7 +191,7 @@ export class SessionSandbox {
     this.received = Buffer.concat([this.received, data]);
     while (this.received.length >= 5) {
       const length = this.received.readUInt32BE(1);
-      if (length > 2 * 1024 * 1024) { void this.close(); return; }
+      if (length > 2 * 1024 * 1024) { void this.shutdown(false); return; }
       if (this.received.length < length + 5) return;
       const type = String.fromCharCode(this.received[0]!);
       const body = this.received.subarray(5, length + 5);
@@ -167,16 +199,39 @@ export class SessionSandbox {
       if (type === "P" && length === 0 && this.ready) { const ready = this.ready; this.ready = undefined; ready(); }
       else if (type === "O" && this.active) this.active.child.stdout.push(body);
       else if (type === "X" && this.active) this.active.child.stderr.push(body);
-      else if (type === "D" && length === 5 && this.active) this.active.finish(body.readUInt32BE(0), body[4] === 1);
-      else { void this.close(); return; }
+      else if (type === "D" && length === 5 && this.active && body[4]! <= 1 && terminalWaitStatus(body.readUInt32BE(0)))
+        this.active.finish(body.readUInt32BE(0), body[4] === 1);
+      else { void this.shutdown(false); return; }
     }
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> { return this.shutdown(true); }
+
+  private shutdown(graceful: boolean): Promise<void> {
+    if (this.closeTask) return this.closeTask;
+    this.closing = true;
+    this.detachAbort?.(); this.detachAbort = undefined;
+    const task = (async () => {
+      if (graceful && this.active)
+        await sessionProcessBoundaries.get(this.active.child)!.terminate();
+      await this.killServer();
+    })();
+    this.closeTask = task.finally(() => { this.closing = false; this.closeTask = undefined; });
+    return this.closeTask;
+  }
+
+  private async killServer(): Promise<void> {
     const server = this.server;
     if (!server) return;
     server.kill("SIGKILL");
     await this.closed;
     server.stdin.destroy(); server.stdout.destroy(); server.stderr.destroy();
   }
+}
+
+function terminalWaitStatus(status: number): boolean {
+  if (status > 0xffff) return false;
+  if ((status & 0xff) === 0) return true;
+  const signal = status & 0x7f;
+  return (status & 0xff00) === 0 && signal > 0 && signal <= 64;
 }

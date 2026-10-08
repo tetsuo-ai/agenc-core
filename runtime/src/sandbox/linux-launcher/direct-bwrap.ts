@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { prepareNamespaceInitArtifact } from "./namespace-init-artifact.js";
+import { admitsNamespaceInitMount, prepareNamespaceInitArtifact } from "./namespace-init-artifact.js";
 import { serializeProcessBrokerV3Payload } from "../../utils/process-broker-protocol-v3.js";
 import { serializeProcessBrokerV2Payload } from "../../utils/process-broker-protocol-v2.js";
-import { permissionProfileToRuntimePermissions } from "../engine/policy.js";
+import { permissionProfileToRuntimePermissions, resolvePermissionPath } from "../engine/policy.js";
 import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
 import { createBwrapCommandArgs } from "./bwrap.js";
 import { bubblewrapCapabilityContext } from "./capability-hint.js";
@@ -183,14 +183,18 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
           permissions.fileSystem.kind !== "restricted" ||
           permissions.fileSystem.entries.some(entry => entry.path.kind === "glob")) return undefined;
       // The executor must be immutable from every command's mount view.
-      const dist = path.dirname(executable);
-      if (!bwrap.args.some((arg, i) => arg === "--ro-bind" &&
-          bwrap.args[i + 1] === dist && bwrap.args[i + 2] === dist)) return undefined;
+      if (!admitsNamespaceInitMount(bwrap.args, executable)) return undefined;
+      const policyPaths = permissions.fileSystem.entries.flatMap(entry => {
+        const resolved = resolvePermissionPath(entry.path, options.sandboxPolicyCwd, options.sessionTempRoot);
+        return resolved === null ? [] : [resolved];
+      });
       const delimiter = bwrap.args.indexOf("--");
       sessionSandbox = { program: launcher.program,
         args: [...bwrap.args.slice(0, delimiter), "--as-pid-1", "--", executable, "--session-executor-v1"],
         env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" },
-        command: options.command, executable };
+        command: options.command, executable,
+        policyPaths: [...policyPaths, ...(permissions.fileSystem.reservedReadOnlyPaths ?? []),
+          options.sandboxPolicyCwd, options.commandCwd, options.sessionTempRoot] };
     }
     const serialize = namespaceInit ? serializeProcessBrokerV3Payload : serializeProcessBrokerV2Payload;
     const payload = serialize({ program: launcher.program, args: bwrap.args,

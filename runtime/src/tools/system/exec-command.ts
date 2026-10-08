@@ -635,7 +635,7 @@ export function runtimeSandboxForExec(
     sandboxPolicyCwd,
     sessionTempRoot: childTempRoot,
     preference: "require",
-    persistentSession: booleanValue(turn.config?.sandboxPersistentSession) !== false,
+    ...(booleanValue(turn.config?.sandboxPersistentSession) === false ? { persistentSession: false } : {}),
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
       : {}),

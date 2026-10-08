@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/audit.h>
+#include <linux/capability.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <poll.h>
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -133,7 +135,7 @@ static void command(char *data, uint32_t length) {
     if (fds[0].revents) {
       char type; uint32_t size; char *body = receive(&type, &size);
       if (type == 'E' && size == 0) { if (in[1] >= 0) close(in[1]); in[1] = -1; }
-      else if (type == 'K' && size == 0) { if (!done && kill(-1, SIGKILL) && errno != ESRCH) fail(); }
+      else if ((type == 'K' || type == 'T') && size == 0) { if (!done && kill(-1, type == 'K' ? SIGKILL : SIGTERM) && errno != ESRCH) fail(); }
       else fail();
       free(body);
     }
@@ -148,8 +150,20 @@ static void command(char *data, uint32_t length) {
   memcpy(report, &wire, 4); report[4] = (unsigned char)residual;
   frame('D', report, sizeof(report));
 }
+static int trusted_execution_boundary(void) {
+  struct __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+  struct __user_cap_data_struct data[2] = {{0}};
+  struct statvfs mount;
+  if (prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1 ||
+      syscall(SYS_capget, &header, data) ||
+      statvfs("/proc/self/exe", &mount) || !(mount.f_flag & ST_RDONLY)) return 0;
+  for (size_t i = 0; i < 2; i++)
+    if (data[i].effective || data[i].permitted || data[i].inheritable) return 0;
+  return 1;
+}
 int main(int argc, char **argv) {
   if (argc != 2 || strcmp(argv[1], "--session-executor-v1") || getpid() != 1 ||
+      !trusted_execution_boundary() ||
       prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) ||
       prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0)) return 125;
   signal(SIGPIPE, SIG_DFL);
@@ -159,7 +173,7 @@ int main(int argc, char **argv) {
   frame('P', NULL, 0);
   for (;;) {
     char type; uint32_t size; char *data = receive(&type, &size);
-    if (type == 'K' && size == 0) { free(data); continue; }
+    if ((type == 'K' || type == 'T') && size == 0) { free(data); continue; }
     if (type != 'R') fail();
     command(data, size); free(data);
   }

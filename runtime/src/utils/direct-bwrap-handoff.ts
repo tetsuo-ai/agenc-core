@@ -8,6 +8,7 @@ export interface DirectBwrapHandoff {
     readonly env: NodeJS.ProcessEnv;
     readonly command: readonly string[];
     readonly executable: string;
+    readonly policyPaths: readonly string[];
   };
   /** Fixed trusted installed artifact, absent on the legacy V2 handoff. */
   readonly namespaceInitArtifact?: string;

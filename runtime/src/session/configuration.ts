@@ -19,6 +19,7 @@ export type SessionExecutionAuthority = Readonly<
     | "networkSandboxPolicy"
     | "windowsSandboxLevel"
     | "sandboxAllowGpu"
+    | "sandboxPersistentSession"
   >
 >;
 
@@ -53,6 +54,7 @@ function immutableExecutionAuthority(
       ]),
     }),
     windowsSandboxLevel: configuration.windowsSandboxLevel,
+    ...(configuration.sandboxPersistentSession === false ? { sandboxPersistentSession: false } : {}),
     ...(configuration.sandboxAllowGpu === true
       ? { sandboxAllowGpu: true }
       : {}),
@@ -144,6 +146,7 @@ export function sandboxExecutionBrokerAuthorityFromSessionAuthority(
     ),
     windowsSandboxLevel,
     allowGpu: authority.sandboxAllowGpu === true,
+    ...(authority.sandboxPersistentSession === false ? { persistentSession: false } : {}),
   });
 }
 
@@ -300,7 +303,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
     ...(params.config.service_tier !== undefined
       ? { serviceTier: params.config.service_tier }
       : {}),
-    sandboxPersistentSession: params.config.sandbox?.persistent_session !== false,
+    ...(params.config.sandbox?.persistent_session === false ? { sandboxPersistentSession: false } : {}),
     ...(params.config.sandbox?.allow_gpu === true
       ? { sandboxAllowGpu: true }
       : {}),

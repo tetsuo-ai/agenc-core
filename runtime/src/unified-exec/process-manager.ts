@@ -1198,6 +1198,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
+    this.sandboxAuthorityGeneration += 1;
     await this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
@@ -1565,6 +1566,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
+    if (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false) {
+      const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
+      if (previousSandbox) await previousSandbox.close();
+      this.sessionSandboxes.delete(params.ownerId ?? "");
+      this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+      this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+    }
+
     if (params.tty) {
       let processHandle: IPty;
       try {
@@ -1624,7 +1633,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
             abortController.signal.throwIfAborted();
-          }) : undefined;
+          }, params.signal) : undefined;
       if (persistent === undefined && params.runtimeSandbox !== undefined)
         probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {

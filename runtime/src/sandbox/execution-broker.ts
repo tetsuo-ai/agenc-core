@@ -277,6 +277,7 @@ export interface SandboxExecutionBrokerOptions {
   readonly windowsSandboxLevel?: UnifiedExecRuntimeSandbox["windowsSandboxLevel"];
   readonly windowsSandboxPrivateDesktop?: boolean;
   readonly allowGpu?: boolean;
+  readonly persistentSession?: boolean;
   readonly permissionProfile?: PermissionProfile;
   readonly platform?: NodeJS.Platform;
   readonly sandboxManager?: SandboxExecutionManager;
@@ -319,6 +320,7 @@ export interface SandboxExecutionBrokerAuthority {
   readonly permissionProfile?: PermissionProfile;
   readonly windowsSandboxLevel: WindowsSandboxLevel;
   readonly allowGpu: boolean;
+  readonly persistentSession?: boolean;
 }
 
 const defaultSandboxManager = new SandboxManager();
@@ -568,6 +570,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly #agencHome: string;
   readonly #cronAuthorityRoots: readonly string[];
   #allowGpu: boolean;
+  #persistentSession: boolean;
   #permissionProfile: PermissionProfile | undefined;
   readonly #routineChildTempRoot: string | undefined;
   readonly #worktreeConfinement: WorktreeWriteConfinement | undefined;
@@ -606,6 +609,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
     this.#allowGpu = options.allowGpu ?? false;
+    this.#persistentSession = options.persistentSession !== false;
     this.#permissionProfile = immutablePermissionProfile(
       options.permissionProfile,
     );
@@ -938,6 +942,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         : {}),
       windowsSandboxLevel: this.#windowsSandboxLevel,
       allowGpu: this.#allowGpu,
+      ...(this.#persistentSession ? {} : { persistentSession: false }),
     });
   }
 
@@ -957,6 +962,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     );
     this.#windowsSandboxLevel = authority.windowsSandboxLevel;
     this.#allowGpu = authority.allowGpu;
+    this.#persistentSession = authority.persistentSession !== false;
     this.#status = undefined;
   }
 
@@ -999,6 +1005,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       allowGpu: this.#allowGpu,
+      ...(this.#persistentSession ? {} : { persistentSession: false }),
       ...(this.#permissionProfile !== undefined
         ? {
             permissionProfile: rebasePermissionProfile(
@@ -1061,6 +1068,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       allowGpu: false,
+      ...(this.#persistentSession ? {} : { persistentSession: false }),
       permissionProfile: { ...permissionProfile, fileSystem: { ...permissionProfile.fileSystem, entries: [...permissionProfile.fileSystem.entries, ...deniedEntries] } },
       platform: this.#platform,
       sandboxManager: this.#sandboxManager,
@@ -1191,6 +1199,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       ...(this.#allowGpu ? { allowGpu: true } : {}),
+      ...(this.#persistentSession ? {} : { persistentSession: false }),
     };
   }
 
