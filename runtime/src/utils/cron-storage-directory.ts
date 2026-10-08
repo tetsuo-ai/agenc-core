@@ -148,6 +148,12 @@ const WINDOWS_PUBLICATION_REASONS = [
   "publication stage changed",
   "publication fault hook is not a local script path",
   "publication payload exceeds 16777216 bytes",
+  "publication create failed",
+  "publication write failed",
+  "publication flush failed",
+  "publication rename failed",
+  "publication directory flush failed",
+  "publication delete failed",
 ] as const;
 const DENIED_CODES = new Set(["EACCES", "EPERM"]);
 
@@ -201,6 +207,20 @@ function windowsAddTypeDetail(error: unknown): string | undefined {
       const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
       const detail = /Add-Type is unavailable \(([A-Za-z][A-Za-z0-9]{0,63})\)/u.exec(text)?.[1];
       if (detail !== undefined) return detail;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
+/** The NTSTATUS / Win32 code a failed publication system call reported, e.g. `NTSTATUS 0xC000000D, Win32 error 87`. */
+function windowsPublicationCode(error: unknown): string | undefined {
+  for (let current = error, depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    const candidate = current as { message?: unknown; stderr?: unknown; cause?: unknown };
+    for (const value of [candidate.message, candidate.stderr]) {
+      const text = Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "";
+      const code = /publication [a-z ]{1,24} failed \(((?:NTSTATUS 0x[0-9A-F]{8}, )?Win32 error \d{1,10})\)/u.exec(text)?.[1];
+      if (code !== undefined) return code;
     }
     current = candidate.cause;
   }
@@ -299,11 +319,21 @@ const WINDOWS_PUBLISH_METHODS = [
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool WriteFile(SafeFileHandle handle, IntPtr bytes, int count, out int written, IntPtr overlapped);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool FlushFileBuffers(SafeFileHandle handle);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle handle, int cls, IntPtr info, int size);",
+  // kernel32 SetFileInformationByHandle rejects a rename whose RootDirectory is set (ERROR_INVALID_PARAMETER),
+  // and with RootDirectory NULL it resolves a simple name against the process current directory. The
+  // directory-relative rename therefore goes to NtSetInformationFile(FileRenameInformation).
+  "[DllImport(\"ntdll.dll\")] static extern int NtSetInformationFile(SafeFileHandle handle, out Result result, IntPtr info, int length, int cls);",
+  "[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct RenameInfo { public uint ReplaceIfExists; public IntPtr RootDirectory; public uint FileNameLength; public char FileName; }",
+  "static Exception Broke(string step, int status) { int code = RtlNtStatusToDosError(status); return new Win32Exception(code, \"publication \" + step + \" failed (NTSTATUS 0x\" + status.ToString(\"X8\") + \", Win32 error \" + code + \")\"); }",
+  "static Exception Broke(string step) { int code = Marshal.GetLastWin32Error(); return new Win32Exception(code, \"publication \" + step + \" failed (Win32 error \" + code + \")\"); }",
   "public static SafeFileHandle OpenPublishFolder(string path) { return Open(path, 0x1F01E7); }",
-  "public static SafeFileHandle CreateNewChild(SafeFileHandle folder, string name, string path) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060, IntPtr.Zero, 0); if (status < 0) throw Fail(RtlNtStatusToDosError(status), path); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
-  "public static void WriteAll(SafeFileHandle handle, byte[] bytes, string path) { if (bytes != null && bytes.Length > 0) { GCHandle pin = GCHandle.Alloc(bytes, GCHandleType.Pinned); try { for (int offset = 0; offset < bytes.Length; ) { int wrote; int count = bytes.Length - offset; if (count > 1048576) count = 1048576; if (!WriteFile(handle, IntPtr.Add(pin.AddrOfPinnedObject(), offset), count, out wrote, IntPtr.Zero) || wrote < 1) throw Fail(Marshal.GetLastWin32Error(), path); offset += wrote; } } finally { pin.Free(); } } if (!FlushFileBuffers(handle)) throw Fail(Marshal.GetLastWin32Error(), path); }",
-  "public static void RenameWithin(SafeFileHandle file, SafeFileHandle folder, string name, string path, bool replace) { int nameBytes = name.Length * 2; int nameAt = IntPtr.Size == 8 ? 20 : 12; int size = nameAt + nameBytes; IntPtr buffer = Marshal.AllocHGlobal(size); try { int i; for (i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0); Marshal.WriteInt32(buffer, 0, replace ? 1 : 0); Marshal.WriteIntPtr(buffer, IntPtr.Size == 8 ? 8 : 4, folder.DangerousGetHandle()); Marshal.WriteInt32(buffer, IntPtr.Size == 8 ? 16 : 8, nameBytes); Marshal.Copy(Encoding.Unicode.GetBytes(name), 0, IntPtr.Add(buffer, nameAt), nameBytes); if (!SetFileInformationByHandle(file, 22, buffer, size)) throw Fail(Marshal.GetLastWin32Error(), path); } finally { Marshal.FreeHGlobal(buffer); } }",
-  "public static void DeleteWhenClosed(SafeFileHandle handle, string path) { IntPtr buffer = Marshal.AllocHGlobal(1); try { Marshal.WriteByte(buffer, 0, 1); if (!SetFileInformationByHandle(handle, 4, buffer, 1)) throw Fail(Marshal.GetLastWin32Error(), path); } finally { Marshal.FreeHGlobal(buffer); } }",
+  "public static SafeFileHandle CreateNewChild(SafeFileHandle folder, string name) { Text text = new Text(); text.Length = (ushort)(name.Length * 2); text.MaximumLength = text.Length; text.Buffer = Marshal.StringToHGlobalUni(name); IntPtr textPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Text))); try { Marshal.StructureToPtr(text, textPointer, false); Target target = new Target(); target.Length = Marshal.SizeOf(typeof(Target)); target.Root = folder.DangerousGetHandle(); target.Name = textPointer; target.Flags = 0x40; SafeFileHandle handle; Result result; int status = NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060, IntPtr.Zero, 0); if (status < 0) throw Broke(\"create\", status); return handle; } finally { Marshal.FreeHGlobal(textPointer); Marshal.FreeHGlobal(text.Buffer); } }",
+  "public static void WriteAll(SafeFileHandle handle, byte[] bytes) { if (bytes != null && bytes.Length > 0) { GCHandle pin = GCHandle.Alloc(bytes, GCHandleType.Pinned); try { for (int offset = 0; offset < bytes.Length; ) { int wrote; int count = bytes.Length - offset; if (count > 1048576) count = 1048576; if (!WriteFile(handle, IntPtr.Add(pin.AddrOfPinnedObject(), offset), count, out wrote, IntPtr.Zero)) throw Broke(\"write\"); if (wrote < 1) throw new InvalidOperationException(\"publication write failed (no progress)\"); offset += wrote; } } finally { pin.Free(); } } if (!FlushFileBuffers(handle)) throw Broke(\"flush\"); }",
+  // The buffer is sizeof(FILE_RENAME_INFORMATION) plus the name bytes, the size ntifs.h requires; offsets come from the layout.
+  "public static void RenameWithin(SafeFileHandle file, SafeFileHandle folder, string name, bool replace) { byte[] text = Encoding.Unicode.GetBytes(name); int size = Marshal.SizeOf(typeof(RenameInfo)) + text.Length; IntPtr buffer = Marshal.AllocHGlobal(size); try { for (int i = 0; i < size; i++) Marshal.WriteByte(buffer, i, 0); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"ReplaceIfExists\"), replace ? 1 : 0); Marshal.WriteIntPtr(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"RootDirectory\"), folder.DangerousGetHandle()); Marshal.WriteInt32(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileNameLength\"), text.Length); Marshal.Copy(text, 0, IntPtr.Add(buffer, (int)Marshal.OffsetOf(typeof(RenameInfo), \"FileName\")), text.Length); Result result; int status = NtSetInformationFile(file, out result, buffer, size, 10); if (status < 0) throw Broke(\"rename\", status); } finally { Marshal.FreeHGlobal(buffer); } }",
+  // Makes the rename durable, as the POSIX path fsyncs its directory. The handle holds FILE_ADD_FILE (FILE_WRITE_DATA).
+  "public static void FlushFolder(SafeFileHandle folder) { if (!FlushFileBuffers(folder)) throw Broke(\"directory flush\"); }",
+  "public static void DeleteWhenClosed(SafeFileHandle handle) { IntPtr buffer = Marshal.AllocHGlobal(1); try { Marshal.WriteByte(buffer, 0, 1); if (!SetFileInformationByHandle(handle, 4, buffer, 1)) throw Broke(\"delete\"); } finally { Marshal.FreeHGlobal(buffer); } }",
 ].join(" ");
 const WINDOWS_PUBLISH_HELPER = `${WINDOWS_REPAIR_HELPER.slice(0, -1)} ${WINDOWS_PUBLISH_METHODS}}`;
 
@@ -496,29 +526,30 @@ const WINDOWS_PUBLISH_SCRIPT = [
   "  if ($system -ne 'NTFS') { throw \"NTFS is required ($system)\" }",
   `  if ([string]$id.Volume -ne $env:AGENC_CRON_VOLUME -or [string]$id.Index -ne $env:AGENC_CRON_FILE_ID) { throw '${WINDOWS_REPLACED_REASON}' }`,
   "  $stageCreate = 'before-temp-create'; if ($stageCreate -ne 'before-temp-create') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-create'",
-  "  $created = [AgencCronRepair]::CreateNewChild($dir, $temp, $tempPath)",
+  "  $created = [AgencCronRepair]::CreateNewChild($dir, $temp)",
   "  $renamed = $false; $movedAside = $false; $backup = $null",
   "  try {",
   "    Test-File ([AgencCronRepair]::Describe($created, $tempPath))",
   "    $stageSecurity = 'before-temp-security'; if ($stageSecurity -ne 'before-temp-security') { throw 'publication stage changed' }; Invoke-PublishFault 'before-temp-security'",
   "    Test-File ([AgencCronRepair]::Describe($created, $tempPath))",
   "    [AgencCronRepair]::Protect($created, (& $descriptor $false), $tempPath)",
-  "    [AgencCronRepair]::WriteAll($created, $payload, $tempPath)",
+  "    [AgencCronRepair]::WriteAll($created, $payload)",
   "    $born = [AgencCronRepair]::Describe($created, $tempPath); Test-File $born",
   "    if (([int64]$born.SizeLow + ([int64]$born.SizeHigh * [int64]4294967296)) -ne [int64]$payload.LongLength) { throw 'publication write did not match the task bytes' }",
   "    $stageRename = 'before-rename'; if ($stageRename -ne 'before-rename') { throw 'publication stage changed' }; Invoke-PublishFault 'before-rename'",
   "    if (([AgencCronRepair]::Describe($created, $tempPath)).Links -ne 1) { throw $R }",
   "    Assert-Dir",
   "    $seen = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080); $existed = [bool]$seen",
-  "    if ($seen) { try { $cur = [AgencCronRepair]::Describe($seen, $full) } finally { $seen.Dispose() }; if (($cur.Attributes -band 0x410) -ne 0) { throw 'publication target is a link or not a file' }; if ($cur.Links -eq 1) { $backup = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x110080); $again = [AgencCronRepair]::Describe($backup, $full); if ($again.Links -ne 1 -or $again.IndexHigh -ne $cur.IndexHigh -or $again.IndexLow -ne $cur.IndexLow -or ($again.Attributes -band 0x410) -ne 0) { throw $R }; [AgencCronRepair]::RenameWithin($backup, $dir, $bak, $full, $false); $movedAside = $true } }",
-  "    if ($movedAside -or -not $existed) { [AgencCronRepair]::RenameWithin($created, $dir, $name, $full, $false) } else { [AgencCronRepair]::RenameWithin($created, $dir, $name, $full, $true) }",
+  "    if ($seen) { try { $cur = [AgencCronRepair]::Describe($seen, $full) } finally { $seen.Dispose() }; if (($cur.Attributes -band 0x410) -ne 0) { throw 'publication target is a link or not a file' }; if ($cur.Links -eq 1) { $backup = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x110080); $again = [AgencCronRepair]::Describe($backup, $full); if ($again.Links -ne 1 -or $again.IndexHigh -ne $cur.IndexHigh -or $again.IndexLow -ne $cur.IndexLow -or ($again.Attributes -band 0x410) -ne 0) { throw $R }; [AgencCronRepair]::RenameWithin($backup, $dir, $bak, $false); $movedAside = $true } }",
+  "    if ($movedAside -or -not $existed) { [AgencCronRepair]::RenameWithin($created, $dir, $name, $false) } else { [AgencCronRepair]::RenameWithin($created, $dir, $name, $true) }",
   "    $renamed = $true",
+  "    [AgencCronRepair]::FlushFolder($dir)",
   "    $stagePublished = 'before-published-check'; if ($stagePublished -ne 'before-published-check') { throw 'publication stage changed' }; Invoke-PublishFault 'before-published-check'",
   "    $check = [AgencCronRepair]::OpenChild($dir, $name, $full, 0x100080)",
   "    try { if (-not $check) { throw $M }; $seenNow = [AgencCronRepair]::Describe($check, $full); $mine = [AgencCronRepair]::Describe($created, $full); if ($seenNow.Volume -ne $mine.Volume -or $seenNow.IndexHigh -ne $mine.IndexHigh -or $seenNow.IndexLow -ne $mine.IndexLow -or $seenNow.Links -ne 1 -or ($seenNow.Attributes -band 0x410) -ne 0) { throw $R } } finally { if ($check) { $check.Dispose() } }",
   "    Assert-Dir",
-  "    if ($backup) { [AgencCronRepair]::DeleteWhenClosed($backup, $full) }",
-  "  } catch { $failure = $_; if ($renamed) { try { [AgencCronRepair]::RenameWithin($created, $dir, $temp, $full, $false) } catch {} }; if ($movedAside -and $backup) { try { [AgencCronRepair]::RenameWithin($backup, $dir, $name, ($target + '\\' + $bak), $false) } catch {} }; try { [AgencCronRepair]::DeleteWhenClosed($created, $tempPath) } catch {}; throw $failure }",
+  "    if ($backup) { [AgencCronRepair]::DeleteWhenClosed($backup) }",
+  "  } catch { $failure = $_; if ($renamed) { try { [AgencCronRepair]::RenameWithin($created, $dir, $temp, $false) } catch {} }; if ($movedAside -and $backup) { try { [AgencCronRepair]::RenameWithin($backup, $dir, $name, $false) } catch {} }; try { [AgencCronRepair]::DeleteWhenClosed($created) } catch {}; throw $failure }",
   "  finally { if ($backup) { $backup.Dispose() }; $created.Dispose() }",
   "} finally { $dir.Dispose() }",
   "[Console]::Out.Write('OK')",
@@ -655,8 +686,9 @@ export function windowsCronAclError(
     );
   }
   if (failure.kind === "publication") {
+    const code = windowsPublicationCode(cause);
     return fail(
-      `Durable cron storage did not publish the task file in ${directory}: ${failure.reason}. ` +
+      `Durable cron storage did not publish the task file in ${directory}: ${failure.reason}${code === undefined ? "" : ` (${code})`}. ` +
         "Nothing outside the verified directory was written, and the previous task file was left in place " +
         "when publication could not be acknowledged.",
     );

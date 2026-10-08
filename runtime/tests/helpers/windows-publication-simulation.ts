@@ -40,7 +40,6 @@ export function publicationScriptIsHandleBound(script: string): boolean {
     "CreateNewChild",
     "RenameWithin",
     "DeleteWhenClosed",
-    "SetFileInformationByHandle",
     "Invoke-PublishFault 'before-temp-create'",
     "Invoke-PublishFault 'before-temp-security'",
     "Invoke-PublishFault 'before-rename'",
@@ -52,6 +51,25 @@ export function publicationScriptIsHandleBound(script: string): boolean {
   return required.every((needle) => script.includes(needle))
     && !script.includes("SetAccessControl")
     && !script.includes("Set-Acl");
+}
+
+/**
+ * Measured on Windows build 26200 (ARM64, PowerShell 5.1 and 7; #2976 r8
+ * reproducer): kernel32 SetFileInformationByHandle fails a rename whose
+ * RootDirectory is set with ERROR_INVALID_PARAMETER (87), for FileRenameInfo
+ * and FileRenameInfoEx alike, whatever the buffer size. The same buffer passed
+ * to NtSetInformationFile renames the file. The stand-in applies that rule to
+ * the RenameWithin the script ships.
+ */
+function renameFailure(script: string): string | undefined {
+  const start = script.indexOf("public static void RenameWithin(");
+  if (start < 0) return "publication rename failed (RenameWithin is missing)";
+  const body = script.slice(start, script.indexOf("public static", start + 1));
+  if (body.includes("SetFileInformationByHandle(")) return "publication rename failed (Win32 error 87)";
+  if (!/NtSetInformationFile\(file, out result, buffer, size, (?:10|65)\)/u.test(body)) {
+    return "publication rename failed (no directory-relative rename)";
+  }
+  return undefined;
 }
 
 function writeAll(fd: number, bytes: Buffer): void {
@@ -141,6 +159,11 @@ export function simulateWindowsPublication(input: {
       const current = lstatSync(destination, { bigint: true });
       if (current.isSymbolicLink() || !current.isFile()) throw new Error("publication target is a link or not a file");
       if (current.nlink === 1n) previous = readFileSync(destination);
+    }
+    const refused = renameFailure(input.script);
+    if (refused !== undefined) {
+      unlinkSync(procPath(dirFd, input.temporary));
+      throw new Error(refused);
     }
     renameSync(procPath(dirFd, input.temporary), destination);
     input.observe?.();

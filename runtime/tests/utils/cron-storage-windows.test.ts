@@ -781,16 +781,17 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(script).not.toMatch(/SetAccessControl|Set-Acl|SetNamedSecurityInfo|SetSecurityInfo|SetFileSecurity|icacls|Remove-Item/u);
     const order = [
       "Invoke-PublishFault 'before-temp-create'",
-      "CreateNewChild($dir, $temp, $tempPath)",
+      "CreateNewChild($dir, $temp)",
       "Invoke-PublishFault 'before-temp-security'",
       "[AgencCronRepair]::Protect($created,",
-      "WriteAll($created, $payload, $tempPath)",
+      "WriteAll($created, $payload)",
       "Invoke-PublishFault 'before-rename'",
-      "RenameWithin($created, $dir, $name, $full, $false)",
-      "RenameWithin($created, $dir, $name, $full, $true)",
+      "RenameWithin($created, $dir, $name, $false)",
+      "RenameWithin($created, $dir, $name, $true)",
+      "FlushFolder($dir)",
       "Invoke-PublishFault 'before-published-check'",
       "OpenChild($dir, $name, $full, 0x100080)",
-      "DeleteWhenClosed($created, $tempPath)",
+      "DeleteWhenClosed($created)",
     ];
     let cursor = 0;
     for (const needle of order) {
@@ -803,10 +804,29 @@ describe("Windows cron storage uses private-path persistence", () => {
     expect(script.slice(script.indexOf("Invoke-PublishFault 'before-published-check'"))).not.toContain("::Protect(");
     expect(script).toContain("if ($env:AGENC_CRON_PUBLISH_FAULT -ne $stage) { return }");
     expect(script).toContain("target.Root = folder.DangerousGetHandle()");
-    expect(script).toContain("SetFileInformationByHandle(file, 22, buffer, size)");
     expect(script).toContain("NtCreateFile(out handle, 0x1F0187, ref target, out result, IntPtr.Zero, 0x80, 7, 2, 0x200060,");
     expect(String(call[1]).length).toBeLessThan(8_000);
     expect(String((call[2] as { AGENC_CRON_PUBLISH_BODY: string }).AGENC_CRON_PUBLISH_BODY).length).toBeLessThan(32_767);
+  });
+
+  test("names a failed publication rename with its status instead of an ACL failure", async () => {
+    acl.runWindowsSecurityScript.mockImplementation((path: string, _encoded?: string, variables?: Record<string, string>) => {
+      if (variables?.AGENC_CRON_PUBLISH_DIRECTORY !== undefined) {
+        throw verifierFailure(
+          path,
+          "Exception calling \"RenameWithin\" with \"4\" argument(s): \"publication rename failed (NTSTATUS 0xC000000D, Win32 error 87)\"",
+        );
+      }
+      privatePaths.add(`directory\0${path}`);
+    });
+    const directory = metadataDirectory();
+    const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+    expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+    expect(error.message).toBe(
+      `Durable cron storage did not publish the task file in ${directory}: publication rename failed ` +
+      "(NTSTATUS 0xC000000D, Win32 error 87). Nothing outside the verified directory was written, and the previous " +
+      "task file was left in place when publication could not be acknowledged.",
+    );
   });
 
   test("names a refused publication without offering the repair", async () => {
