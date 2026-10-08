@@ -67,7 +67,7 @@ export async function* runMinimalTurn(
           return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
         }
       }
-      const response = await session.services.provider.chatStream(prepared?.request.input ?? messages, () => {}, options);
+      const response = await session.services.provider.chatStream(prepared?.request.input.slice() ?? messages, () => {}, options);
       modelCalls++;
       responses.push(response);
       if (response.error) throw response.error;
