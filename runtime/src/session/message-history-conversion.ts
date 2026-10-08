@@ -166,6 +166,19 @@ export function llmMessageToDurableResponseItem(
 }
 
 /**
+ * Capture a new message before its caller can mutate or bound it. Validation
+ * of the model-facing tool result stays eager; only its durable redaction and
+ * persisted-body seal are computed by the returned function.
+ */
+export function captureDurableResponseItem(message: LLMMessage): () => ResponseItem {
+  const item = structuredClone(llmMessageToResponseItem(message));
+  const integrity = currentIntegrity(message, false);
+  const capturedIntegrity = integrity === undefined ? undefined : structuredClone(integrity);
+  let durable: ResponseItem | undefined;
+  return () => durable ??= redactResponseItemForPersistence(item, capturedIntegrity, "authenticate");
+}
+
+/**
  * Recreate the already-persisted projection used by checkpoint hashing.
  * Tool-result bodies may have since been bounded in memory, so their sealed
  * persisted identity is retained while all other fields are redacted exactly
