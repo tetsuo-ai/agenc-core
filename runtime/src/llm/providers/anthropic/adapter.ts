@@ -87,6 +87,7 @@ interface AnthropicUsageAccumulator {
   readonly speed?: string;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
+  readonly cache_creation?: { readonly ephemeral_1h_input_tokens?: number };
   readonly reasoning_output_tokens?: number;
   readonly output_tokens_details?: {
     readonly thinking_tokens: unknown;
@@ -182,6 +183,7 @@ function mergeAnthropicUsage(
       : usage.cache_creation_input_tokens !== undefined
         ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
         : {}),
+    ...preferDefined("cache_creation", record.cache_creation as AnthropicUsageAccumulator["cache_creation"], usage.cache_creation),
     ...preferDefined(
       "reasoning_output_tokens",
       reasoningOutputTokens,
@@ -1140,6 +1142,19 @@ export class AnthropicProvider implements LLMProvider {
               provenance: "synthetic",
             })),
           ),
+          usage: markAnthropicReasoningIncludedInCompletion(coerceUsage({
+            promptTokens: usage.input_tokens,
+            completionTokens: usage.output_tokens,
+            cachedInputTokens: usage.cache_read_input_tokens,
+            cacheCreationInputTokens: usage.cache_creation_input_tokens,
+            cacheCreation1hInputTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
+            reasoningOutputTokens: readAnthropicReasoningOutputTokens({
+              ...usage,
+            }),
+            webSearchRequests: usage.server_tool_use?.web_search_requests,
+            availability: "unknown",
+            provenance: "synthetic",
+          })),
           model,
           ...(thinking !== undefined ? { thinking } : {}),
           finishReason: "error",

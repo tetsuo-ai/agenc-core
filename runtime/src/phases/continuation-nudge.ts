@@ -104,6 +104,7 @@ export async function continuationNudge(
   state.continuationNudgeCount += 1;
   state.maxOutputTokensRecoveryCount = 0;
   state.reasoningOnlyRecoveryCount = undefined;
+  state.reasoningCapPolicy = undefined;
   state.hasAttemptedReactiveCompact = false;
   state.maxOutputTokensOverride = undefined;
   state.pendingToolUseSummary = undefined;

@@ -43,6 +43,7 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import {
+  isHaiku55,
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
@@ -338,7 +339,13 @@ function toAnthropicTurns(
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
-  const messages = prepareMessagesForWire(input.messages, input.options);
+  const messages = [...prepareMessagesForWire(input.messages, input.options)];
+  // Side queries and continuations can end with assistant text. Haiku 5.5
+  // rejects prefill even with thinking disabled; retain the context and ask
+  // for continuation in a user turn instead.
+  if (isHaiku55(input.model) && messages.at(-1)?.role === "assistant") {
+    messages.push({ role: "user", content: "Continue the previous response, following the requested format." });
+  }
   const systemMessages = messages.filter((message) =>
     message.role === "system" || message.role === "developer"
   );
@@ -458,11 +465,11 @@ export function buildAnthropicMessagesRequest(
     alwaysOnThinking || betweenToolsThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
-    if (toolChoice !== undefined && (!thinkingEnabled || input.options.toolChoice === "none")) {
+    if (toolChoice !== undefined && (isHaiku55(input.model) || !thinkingEnabled || input.options.toolChoice === "none")) {
       body.tool_choice = toolChoice;
     }
   }
-  if (structuredOutputTool && input.tools.length === 0 && !thinkingEnabled) {
+  if (structuredOutputTool && input.tools.length === 0 && (isHaiku55(input.model) || !thinkingEnabled)) {
     body.tool_choice = {
       type: "tool",
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
@@ -484,7 +491,11 @@ export function buildAnthropicMessagesRequest(
   const requestedEffort = input.options?.reasoningEffort;
   const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
     !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
-  if (betweenToolsThinking) {
+  if (isHaiku55(input.model)) {
+    body.thinking = requestedEffort === "none"
+      ? { type: "disabled" }
+      : { type: "adaptive", display: "summarized" };
+  } else if (betweenToolsThinking) {
     // `none` turns off up-front reasoning, but Sonnet 5.5 still produces
     // progress-update thinking between tools. It accepts no additional
     // fields in this mode. All actual effort tiers retain adaptive thinking.
@@ -729,6 +740,17 @@ export function parseAnthropicMessagesResponse(
         webSearchRequests: serverToolUse.web_search_requests,
       }),
     ),
+  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
+    coerceUsage({
+      promptTokens: usageRecord.input_tokens,
+      completionTokens: usageRecord.output_tokens,
+      totalTokens: undefined,
+      cachedInputTokens: usageRecord.cache_read_input_tokens,
+      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+      cacheCreation1hInputTokens: (usageRecord.cache_creation as Record<string, unknown> | undefined)?.ephemeral_1h_input_tokens,
+      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
+      webSearchRequests: serverToolUse.web_search_requests,
+    }),
   );
 
   return {

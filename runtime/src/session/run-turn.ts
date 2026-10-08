@@ -1,3 +1,5 @@
+import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
+import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
 /**
  * run-turn — orchestration for one user turn.
  *
@@ -498,6 +500,9 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     cacheCreationInputTokens:
       (acc.cacheCreationInputTokens ?? 0) +
       (next.cacheCreationInputTokens ?? 0),
+    ...(acc.cacheCreation1hInputTokens !== undefined || next.cacheCreation1hInputTokens !== undefined
+      ? { cacheCreation1hInputTokens: (acc.cacheCreation1hInputTokens ?? 0) + (next.cacheCreation1hInputTokens ?? 0) }
+      : {}),
     reasoningOutputTokens:
       (acc.reasoningOutputTokens ?? 0) + (next.reasoningOutputTokens ?? 0),
     webSearchRequests:
@@ -1223,6 +1228,7 @@ async function runSamplingRequest(
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
   childRoutingOwnsRetries?: (error: unknown) => boolean,
+  checkpointPolicyIntent?: () => void,
 ): Promise<SamplingRequestResult> {
   let prepared = await prepareSamplingRequestBoundary(
     state,
@@ -1242,8 +1248,33 @@ async function runSamplingRequest(
       throw new DeferredCompactionError("Compaction could not produce an admissible request.");
     }
   }
-  const request = prepared.request;
   const samplingContext = prepared.samplingContext;
+  const previousSample = state.reasoningCapPolicy?.sample;
+  const reasoningCapSample = admitReasoningCapSample(state, {
+    policy: session.config?.reasoningCapPolicy,
+    provider: session.services.provider.name,
+    model: session.config?.model ?? samplingContext.modelInfo.slug,
+  });
+  const request = reasoningCapSample
+    ? { ...prepared.request, reasoningCapSample, reasoningCapTarget: {
+        provider: session.services.provider.name, model: session.config?.model ?? samplingContext.modelInfo.slug,
+      } }
+    : prepared.request;
+  if (reasoningCapSample) {
+    // Commit the independent logical identity and consumed intent before any I/O.
+    // Rollout-less/ephemeral sessions retain in-memory retry stability only.
+    checkpointPolicyIntent?.();
+    if (reasoningCapSample.kind === "extra" && previousSample?.id !== reasoningCapSample.id) {
+      session.emit({ id: session.nextInternalSubId(), msg: { type: "warning", payload: {
+        cause: "reasoning_cap_policy",
+        message: "Reasoning hit the limit twice. Continuing for one step without extended thinking.",
+        details: { policy: "streak2", provider: session.services.provider.name,
+          model: session.config?.model ?? samplingContext.modelInfo.slug,
+          sampleId: reasoningCapSample.id, remainingExtension: 1,
+          configuredEffort: resolveMainLoopReasoningEffort(session, samplingContext) ?? "default" },
+      } } });
+    }
+  }
 
   const outage = providerOutagePolicy(session);
   const supervisorOwnsRetry = (error: unknown): boolean => {
@@ -2322,6 +2353,7 @@ async function* runTurnKernelInner(
       ? Math.min(persistedMessageCount, state.messages.length)
       : state.messages.length;
   const onCompactionReplacedHistory = (durableCount: number): void => {
+    state.reasoningCapPolicy = undefined;
     if (rolloutPersistenceActive()) persistedMessageCount = durableCount;
     // The replacement is already durable. Seal any unsent image turn carried
     // across a pre-request compact, then fsync a checkpoint for this exact
@@ -2742,6 +2774,7 @@ async function* runTurnKernelInner(
     readonly event: PhaseEvent;
   } | null> => {
     if (!signal.aborted) return null;
+    state.reasoningCapPolicy = undefined;
     await drainInFlight(state, ctx, session);
     await syncSessionState();
     if (abortReason === undefined && isDeadlineAbort(signal)) return finishDeadlineReached();
@@ -3059,6 +3092,10 @@ async function* runTurnKernelInner(
           checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
         },
         opts.childRoutingOwnsRetries,
+        () => {
+          persistNewResponseItems();
+          emitTurnCheckpoint("iteration", { force: true });
+        },
       );
       for (const ev of pending) {
         yield ev;
@@ -3095,6 +3132,7 @@ async function* runTurnKernelInner(
         };
         return result.terminal;
       }
+      clearReasoningCapPolicyForTransition(state);
       state.modelSampleResumePrompt = undefined;
       advanceModelSampleOrdinal(state);
       if (state.transition?.reason === "continuation_nudge") {
@@ -3103,6 +3141,7 @@ async function* runTurnKernelInner(
         state.modelSampleResumePrompt = "text_tool_call_correction";
       }
     } catch (error) {
+      state.reasoningCapPolicy = undefined;
       await drainInFlight(state, ctx, session);
       for (const ev of pending) {
         yield ev;
@@ -3175,6 +3214,7 @@ async function* runTurnKernelInner(
       ) {
         await sessionOwner.consumePendingProviderSwitch();
       }
+      clearReasoningCapPolicyForTransition(state);
       state.transition = undefined;
       continue;
     }
@@ -3413,6 +3453,7 @@ async function* runTurnKernelInner(
       await syncSessionState();
       // commit may set a stop-hook transition (I-17). If so, re-enter.
       if (state.transition !== undefined) {
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
@@ -3611,6 +3652,7 @@ async function* runTurnKernelInner(
       }
       await syncSessionState();
       if (state.transition !== undefined) {
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }
@@ -3727,6 +3769,7 @@ async function* runTurnKernelInner(
     if (state.pendingBudgetDecision?.kind === "stop") {
       await applyPendingBudgetContinuation(state, ctx, session, signal);
       if (state.transition !== undefined) {
+        clearReasoningCapPolicyForTransition(state);
         state.transition = undefined;
         continue;
       }

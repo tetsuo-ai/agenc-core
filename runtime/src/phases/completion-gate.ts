@@ -935,6 +935,7 @@ export async function completionGate(
   // a fresh sample, not a continuation of a recovery ladder.
   state.maxOutputTokensRecoveryCount = 0;
   state.reasoningOnlyRecoveryCount = undefined;
+  state.reasoningCapPolicy = undefined;
   state.hasAttemptedReactiveCompact = false;
   state.maxOutputTokensOverride = undefined;
   state.pendingToolUseSummary = undefined;

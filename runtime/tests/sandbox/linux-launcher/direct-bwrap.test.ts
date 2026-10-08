@@ -10,6 +10,7 @@ import * as legacy from "../../../src/sandbox/linux-launcher/linux-run-main.js";
 import * as launcher from "../../../src/sandbox/linux-launcher/launcher.js";
 import * as proc from "../../../src/sandbox/linux-launcher/proc-probe.js";
 import { createNetworkSeccompProgram } from "../../../src/sandbox/linux-launcher/landlock.js";
+import { prepareLinuxSandboxProbeHint } from "../../../src/sandbox/linux-launcher/probe-cache.js";
 
 const runtime = fileURLToPath(new URL("../../../", import.meta.url));
 let root: string;
@@ -68,6 +69,70 @@ describe.runIf(process.platform === "linux")("guarded immutable direct bwrap pla
     const legacy = prepareDirectBwrapPlan(f);
     expect(legacy).toBeDefined();
     consumeDirectBwrapPlan(legacy!).dispose();
+  });
+
+  function withPreparedProbe() {
+    const f = fixture();
+    vi.spyOn(launcher, "findSystemBubblewrapInPath").mockReturnValue(process.execPath);
+    vi.spyOn(launcher, "probeBubblewrapCapabilities").mockReturnValue({ supportsArgv0: true, supportsBindFd: true });
+    const prepared = prepareLinuxSandboxProbeHint(f.args, f.cwd, f.env)!;
+    expect(prepared).toBeDefined();
+    return { f, prepared };
+  }
+
+  it.each([
+    { name: "V2", prepare: prepareDirectBwrapPlan },
+    { name: "V3", prepare: prepareDirectBwrapV3Plan },
+  ])("reuses only this launch's proc evidence and keeps the full $name payload identical", ({ prepare }) => {
+    const { f, prepared } = withPreparedProbe();
+    const probeArgs = vi.spyOn(proc, "createProcMountProbeArgs");
+    const original = consumeDirectBwrapPlan(prepare(f)!);
+    expect(probeArgs).toHaveBeenCalledTimes(1);
+    const optimized = consumeDirectBwrapPlan(prepare({ ...f, args: prepared.args })!);
+    try {
+      expect(probeArgs).toHaveBeenCalledTimes(1);
+      expect(optimized.payload).toEqual(original.payload);
+      expect(decode(optimized.payload).args).toContain("--proc");
+      expect(fs.readFileSync(optimized.sourceFd!)).toEqual(decode(original.payload).bpf);
+      const again = consumeDirectBwrapPlan(prepare({ ...f, args: prepared.args })!);
+      try { expect(probeArgs).toHaveBeenCalledTimes(2); } finally { again.dispose(); }
+    } finally { original.dispose(); optimized.dispose(); }
+  });
+
+  it.each(["copy", "command", "policy", "context", "invalidate"])(
+    "rebuilds probe arguments when prepared evidence does not match: %s", reason => {
+      const { f, prepared } = withPreparedProbe();
+      let args = prepared.args;
+      let env = f.env;
+      if (reason === "copy") args = [...args];
+      if (reason === "command") (args as string[])[args.length - 1] = "printf different";
+      if (reason === "policy") {
+        const index = args.indexOf("--permission-profile") + 1;
+        const profile = JSON.parse(args[index]!);
+        profile.network = "enabled";
+        (args as string[])[index] = JSON.stringify(profile);
+      }
+      if (reason === "context") env = { ...env, PATH: "/bin:/usr/bin" };
+      if (reason === "invalidate") prepared.invalidate();
+      const probeArgs = vi.spyOn(proc, "createProcMountProbeArgs");
+      const handoff = consumeDirectBwrapPlan(prepareDirectBwrapPlan({ ...f, args, env })!);
+      try {
+        expect(probeArgs).toHaveBeenCalledTimes(1);
+        expect(decode(handoff.payload).args).toContain("--proc");
+      } finally { handoff.dispose(); }
+    },
+  );
+
+  it("still rebuilds actual confinement when paths change after proc evidence was prepared", () => {
+    // Keep repository authority after the nested .git disappears, so the
+    // missing protected path needs monitoring rather than ceasing to be a repo.
+    fs.mkdirSync(path.join(root, ".git"));
+    const { f, prepared } = withPreparedProbe();
+    // Removing an existing protected carveout now requires a create monitor.
+    // The direct route must refuse even with valid proc-probe evidence.
+    fs.rmdirSync(path.join(f.cwd, ".git"));
+    expect(prepareDirectBwrapPlan({ ...f, args: prepared.args })).toBeUndefined();
+    expect(fs.readdirSync(f.temp)).toEqual([]);
   });
 
   it("binds the actual owner and BPF, unlinks its source, and disposes exactly once", () => {

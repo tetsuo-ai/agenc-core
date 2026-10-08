@@ -23,6 +23,7 @@ import {
 } from "./tool-result-integrity.js";
 
 import { isGrokEncryptedReplay, redactDurableSecrets } from "./provider-replay-redaction.js";
+import { withCheckpointProjectionCache } from "./checkpoint-projection-cache.js";
 
 type RolloutContentPart = Extract<
   ResponseItem["content"],
@@ -176,10 +177,10 @@ export function llmMessageToCheckpointResponseItem(
   return projectCheckpointMessage(message, redactSecretsInValue);
 }
 
-/** A bounded pure-string redaction cache owned by one turn, not its messages. */
+/** Bounded turn-owned caches; every projection hit compares current input values. */
 export function createCheckpointResponseItemProjector(): typeof llmMessageToCheckpointResponseItem {
   const redact = createMemoizedSecretRedactor();
-  return (message) => projectCheckpointMessage(message, redact);
+  return withCheckpointProjectionCache((message) => projectCheckpointMessage(message, redact));
 }
 
 function projectCheckpointMessage(
@@ -187,7 +188,7 @@ function projectCheckpointMessage(
   redact: typeof redactSecretsInValue,
 ): ResponseItem {
   const item = llmMessageToResponseItem(message);
-  // Always validate the current seal and current fields, including cache hits.
+  // Full validation on every miss, including any changed or ineligible input.
   const integrity = currentIntegrity(message, true);
   return redactResponseItemForPersistence(item, integrity, "preserve", redact);
 }

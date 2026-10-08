@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -37,6 +37,23 @@ function fixture(): Fixture {
   return result;
 }
 
+// Registration reads the requested thread's registry row under the registry lock. Rollout
+// indexing also calls getThread, outside the lock, so fail only the first read made under it.
+function failRegistryRead(current: Fixture) {
+  const lockPath = `${current.store.registryFilePath}.lock`;
+  const original = StateThreadRepository.prototype.getThread;
+  let failed = false;
+  const read = vi.spyOn(StateThreadRepository.prototype, "getThread")
+    .mockImplementation(function (this: StateThreadRepository, ...args) {
+      if (!failed && existsSync(lockPath)) {
+        failed = true;
+        throw new Error("registry read failed");
+      }
+      return original.apply(this, args);
+    });
+  return { read, reached: () => failed };
+}
+
 function register(current: Fixture, operation: "createThread" | "resumeThread"): void {
   current.store[operation]({
     threadId: "thread-retry", rolloutStore: current.rollout, model: "attempt-model",
@@ -56,12 +73,12 @@ afterEach(() => {
 describe.each(["createThread", "resumeThread"] as const)("%s writer publication", (operation) => {
   test("does not retain a live writer after a registry read failure", () => {
     const current = fixture();
-    const read = vi.spyOn(StateThreadRepository.prototype, "listThreads")
-      .mockImplementationOnce(() => { throw new Error("registry read failed"); });
+    const fault = failRegistryRead(current);
     expect(() => register(current, operation)).toThrow("registry read failed");
+    expect(fault.reached()).toBe(true);
     expect(() => current.store.appendItems({ threadId: "thread-retry", items: [] }))
       .toThrow(ThreadNotFoundError);
-    read.mockRestore();
+    fault.read.mockRestore();
     expect(() => register(current, operation)).not.toThrow();
     expect(current.store.readThread({ threadId: "thread-retry", includeHistory: false, includeArchived: false }).model)
       .toBe("attempt-model");
@@ -116,9 +133,9 @@ describe.each(["createThread", "resumeThread"] as const)("%s writer publication"
     const fault = failure === "index"
       ? vi.spyOn(StateThreadRepository.prototype, "getBackfillFile")
         .mockImplementationOnce(() => { throw new Error("initial index failed"); })
-      : vi.spyOn(StateThreadRepository.prototype, "listThreads")
-        .mockImplementationOnce(() => { throw new Error("registry read failed"); });
-    expect(() => register(current, operation)).toThrow("failed");
+      : failRegistryRead(current).read;
+    expect(() => register(current, operation))
+      .toThrow(failure === "index" ? "initial index failed" : "registry read failed");
     expect(callback).not.toHaveBeenCalled();
     expect(() => current.store.appendItems({ threadId: "thread-retry", items: [] }))
       .toThrow(ThreadNotFoundError);

@@ -26,9 +26,9 @@ function sseResponse(frames: readonly string[]): Response {
   );
 }
 
-function messagesStream(servedSpeed: "fast" | "standard"): Response {
+function messagesStream(servedSpeed: "fast" | "standard", model = "claude-opus-5-5"): Response {
   return sseResponse([
-    `event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${servedSpeed}","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":1000,"output_tokens":0,"speed":"${servedSpeed}"}}}\n\n`,
+    `event: message_start\ndata: {"type":"message_start","message":{"id":"msg_${servedSpeed}","type":"message","role":"assistant","model":"${model}","content":[],"usage":{"input_tokens":1000,"output_tokens":0,"speed":"${servedSpeed}"}}}\n\n`,
     'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
     'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
@@ -59,20 +59,21 @@ function createSyntheticAdmissionClient(directory: string, ownerId: string, runI
 
 async function admittedCall(params: {
   readonly serviceTier?: "priority";
+  readonly model?: string;
   readonly servedSpeed: "fast" | "standard";
 }): Promise<{ readonly reservedUsd: number; readonly chargedUsd: number }> {
   const directory = mkdtempSync(join(tmpdir(), "agenc-anthropic-fast-admission-"));
   const { kernel, client } = createSyntheticAdmissionClient(directory, "anthropic-fast-admission", "fast-admission");
   const acquire = vi.spyOn(client, "acquire");
   const reconcile = vi.spyOn(client, "reconcile");
+  const model = params.model ?? "claude-opus-5-5";
   const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
     String(input).endsWith("/messages/count_tokens")
       ? new Response(JSON.stringify({ input_tokens: 1000 }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
-      : messagesStream(params.servedSpeed));
-  const model = "claude-opus-5-5";
+      : messagesStream(params.servedSpeed, model));
   const messages: LLMMessage[] = [{ role: "user", content: "synthetic probe" }];
   const provider = new AnthropicProvider({ apiKey: "anthropic-test", model, fetchImpl });
   const session = {
@@ -119,4 +120,14 @@ test("a fast request served at standard speed is charged at standard rates", asy
   expect(servedStandard.chargedUsd).toBeCloseTo(0.006, 9);
   // The reservation still covered the fast rates the request asked for.
   expect(servedStandard.reservedUsd).toBeCloseTo(standard.reservedUsd * 2, 9);
+});
+
+
+test("Haiku 5.5 never reserves a fast premium even with stale priority configuration", async () => {
+  const standard = await admittedCall({ model: "claude-haiku-5-5", servedSpeed: "standard" });
+  const priority = await admittedCall({ model: "claude-haiku-5-5", servedSpeed: "standard", serviceTier: "priority" });
+  expect(standard.chargedUsd).toBeCloseTo(0.00015, 9);
+  expect(priority.chargedUsd).toBeCloseTo(standard.chargedUsd, 9);
+  expect(priority.reservedUsd).toBeCloseTo(standard.reservedUsd, 9);
+  expect(priority.chargedUsd).toBeLessThanOrEqual(priority.reservedUsd);
 });

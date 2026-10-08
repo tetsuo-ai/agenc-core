@@ -21,6 +21,19 @@ export class SuccessfulProbeCache {
   invalidate(key: string): void { this.entries.delete(key); }
 }
 const daemonProbes = new SuccessfulProbeCache();
+// Evidence for this exact in-process launch only. Serialized hints remain
+// advisory and cannot mint this entry; actual confinement is always rebuilt.
+const preparedProcProbes = new WeakMap<readonly string[], {
+  readonly context: string;
+  readonly argsDigest: string;
+}>();
+
+export function consumePreparedProcProbe(args: readonly string[], context: string): boolean {
+  const evidence = preparedProcProbes.get(args);
+  preparedProcProbes.delete(args);
+  return evidence !== undefined && evidence.context === context &&
+    evidence.argsDigest === capabilityDigest(args);
+}
 
 /**
  * Pipe launches only. On failure the caller invalidates, then reports the
@@ -60,8 +73,12 @@ export function prepareLinuxSandboxProbeHint(
       return { context, procArgs, ...capabilities };
     });
     if (hint === undefined) return undefined;
-    return { args: [args[0]!, "--bwrap-capability-hint", JSON.stringify(hint), ...args.slice(1)],
-      invalidate: () => daemonProbes.invalidate(key) };
+    const hintedArgs = [args[0]!, "--bwrap-capability-hint", JSON.stringify(hint), ...args.slice(1)];
+    preparedProcProbes.set(hintedArgs, { context, argsDigest: capabilityDigest(hintedArgs) });
+    return { args: hintedArgs, invalidate: () => {
+      preparedProcProbes.delete(hintedArgs);
+      daemonProbes.invalidate(key);
+    } };
   } catch {
     // Optimization failure is a miss, with the original launcher/probes intact.
     return undefined;

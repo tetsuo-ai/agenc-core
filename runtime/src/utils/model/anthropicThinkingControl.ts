@@ -25,7 +25,7 @@
  * layer can import it.
  */
 import { isAlwaysOnThinkingAnthropicModel } from "./alwaysOnThinking.js";
-import { CLAUDE_OPUS_5_5, CLAUDE_SONNET_5_5, isClaudeModel } from "./claudeModelId.js";
+import { CLAUDE_HAIKU_5_5, CLAUDE_OPUS_5_5, CLAUDE_SONNET_5_5, isClaudeModel } from "./claudeModelId.js";
 
 export type AnthropicThinkingControl = "always_on" | "adaptive" | "budget";
 
@@ -39,6 +39,12 @@ export function anthropicSupportsBetweenToolsThinking(model: string): boolean {
   return isClaudeModel(model, CLAUDE_SONNET_5_5);
 }
 
+// Haiku 5.5 is adaptive by default, but accepts disabled thinking at
+// low/medium/high and forced tools at every effort (2026-10-07 docs).
+export function isHaiku55(model: string): boolean {
+  return isClaudeModel(model, CLAUDE_HAIKU_5_5);
+}
+
 function familySpelling(model: string): string {
   // Bedrock inference profiles brand the segment "anthropic.agenc-<model>".
   return model.toLowerCase().replaceAll("anthropic.agenc-", "anthropic.claude-");
@@ -48,6 +54,7 @@ export function anthropicThinkingControl(
   model: string,
 ): AnthropicThinkingControl {
   if (isAlwaysOnThinkingAnthropicModel(model)) return "always_on";
+  if (isHaiku55(model)) return "adaptive";
   const spelled = familySpelling(model);
   if (
     /(?:opus|sonnet)-5(?!\d)/.test(spelled) ||
@@ -60,7 +67,7 @@ export function anthropicThinkingControl(
 }
 
 export function anthropicAcceptsSamplingParameters(model: string): boolean {
-  if (isAlwaysOnThinkingAnthropicModel(model)) return false;
+  if (isAlwaysOnThinkingAnthropicModel(model) || isHaiku55(model)) return false;
   const spelled = familySpelling(model);
   return !(
     /(?:opus|sonnet)-5(?!\d)/.test(spelled) ||
@@ -86,7 +93,7 @@ const ANTHROPIC_EFFORT_CONTRACTS: readonly {
 const OPUS_5_5_EFFORT_LEVELS: readonly AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
-  if (isClaudeModel(model, CLAUDE_OPUS_5_5) || anthropicSupportsBetweenToolsThinking(model)) {
+  if (isHaiku55(model) || isClaudeModel(model, CLAUDE_OPUS_5_5) || anthropicSupportsBetweenToolsThinking(model)) {
     return OPUS_5_5_EFFORT_LEVELS;
   }
   return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];

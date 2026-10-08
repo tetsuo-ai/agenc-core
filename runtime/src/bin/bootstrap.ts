@@ -532,6 +532,7 @@ function buildDeferredConfig(
       ? { modelVerbosity: config.model_verbosity }
       : {}),
     ...(modelReasoningEffort !== undefined ? { modelReasoningEffort } : {}),
+    ...(config.reasoning_cap_policy !== undefined ? { reasoningCapPolicy: config.reasoning_cap_policy } : {}),
     ...(config.reasoning_summary !== undefined
       ? { modelReasoningSummary: config.reasoning_summary }
       : {}),

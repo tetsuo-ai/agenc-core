@@ -6,7 +6,7 @@ import { preflightShellWorkspaceWritePolicy } from "./shell-preflight.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
-import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { processOwnerIdFromToolArgs, execOwnerBindingFromToolArgs } from "../../unified-exec/process-ownership.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -206,6 +206,8 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           args as Record<string, unknown>,
         );
         const output = await manager.writeStdin({
+          ...(execOwnerBindingFromToolArgs(args as Record<string, unknown>) !== undefined
+            ? { ownerBinding: execOwnerBindingFromToolArgs(args as Record<string, unknown>) } : {}),
           session_id: sessionId,
           callId: asString(args.__callId),
           chars,

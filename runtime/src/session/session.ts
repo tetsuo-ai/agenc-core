@@ -204,7 +204,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
-import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
+import type { UnifiedExecProcessManagerLike, UnifiedExecOwnerBinding, UnifiedExecOwnerLifetime } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
@@ -325,6 +325,7 @@ export interface SessionState {
     readonly totalTokens?: number;
     readonly cachedInputTokens?: number;
     readonly cacheCreationInputTokens?: number;
+    readonly cacheCreation1hInputTokens?: number;
     readonly reasoningOutputTokens?: number;
     readonly webSearchRequests?: number;
   };
@@ -1621,6 +1622,11 @@ export type AbortReason =
 
 export interface SessionOpts {
   readonly conversationId: ThreadId;
+  /** A child borrows the manager but owns its captured exec lifetime. */
+  readonly unifiedExecOwnership?: {
+    readonly kind: "borrowed";
+    readonly binding?: UnifiedExecOwnerBinding;
+  };
   readonly fileReadScope?: object;
   readonly initialState: SessionState;
   readonly features: ManagedFeatures;
@@ -2420,6 +2426,11 @@ function activeAgentDefinitionsFromRoles(
 export class Session {
   /** Conversation/thread id. */
   readonly conversationId: ThreadId;
+  readonly unifiedExecOwnerBinding: UnifiedExecOwnerBinding | undefined;
+  private readonly ownsUnifiedExecManager: boolean;
+  private execCloseTask: Promise<void> | undefined;
+  private borrowedShutdownTask: Promise<void> | undefined;
+  private readonly compatibilityExecLifetimes = new Map<string, UnifiedExecOwnerLifetime>();
   readonly fileReadScope: object;
   private readonly ownsFileReadScope: boolean;
 
@@ -2660,7 +2671,13 @@ export class Session {
    * must supply the same registry used by commands and tool evaluation.
    */
   constructor(opts: SessionOpts) {
+    if (opts.unifiedExecOwnership?.binding !== undefined &&
+        opts.unifiedExecOwnership.binding.ownerId !== String(opts.conversationId).trim()) {
+      throw new Error("exec owner binding does not match session identity");
+    }
     this.conversationId = opts.conversationId;
+    this.unifiedExecOwnerBinding = opts.unifiedExecOwnership?.binding;
+    this.ownsUnifiedExecManager = opts.unifiedExecOwnership === undefined;
     this.fileReadScope = opts.fileReadScope ?? Object.freeze({});
     this.ownsFileReadScope = opts.fileReadScope === undefined;
     this.ownsMcpManager = opts.mcpManagerOwnership === "owned";
@@ -3003,6 +3020,35 @@ export class Session {
    */
   get sessionConfiguration(): SessionConfiguration {
     return this.state.unsafePeek().sessionConfiguration;
+  }
+
+  createChildExecLifetime(ownerId: string): UnifiedExecOwnerLifetime | undefined {
+    if (this.isShuttingDown) throw new Error("session is shutting down");
+    if (ownerId.trim() === String(this.conversationId).trim()) {
+      throw new Error("exec child cannot alias its parent owner");
+    }
+    return this.services.unifiedExecManager?.createOwnerLifetime?.(
+      ownerId, this.unifiedExecOwnerBinding,
+    );
+  }
+
+  /** Keep yielded work across turns, but never reuse a turn's admission token. */
+  acquireCompatibilityExecBinding(ownerId: string): UnifiedExecOwnerBinding | undefined {
+    if (this.isShuttingDown) throw new Error("session is shutting down");
+    this.services.unifiedExecManager?.assertOwnerAdmission?.(
+      String(this.conversationId), this.unifiedExecOwnerBinding,
+    );
+    const id = ownerId.trim();
+    if (id === String(this.conversationId).trim()) {
+      throw new Error("exec child cannot alias its parent owner");
+    }
+    let lifetime = this.compatibilityExecLifetimes.get(id);
+    if (lifetime === undefined || lifetime.closed) {
+      lifetime = this.createChildExecLifetime(id);
+      if (lifetime === undefined) return undefined;
+      this.compatibilityExecLifetimes.set(id, lifetime);
+    }
+    return lifetime.bind();
   }
 
   snapshotHistoryMessages(): LLMMessage[] {
@@ -6136,6 +6182,27 @@ export class Session {
    *   - Emit final shutdown status.
    */
   async shutdown(): Promise<void> {
+    if (!this.ownsUnifiedExecManager) {
+      if (this.borrowedShutdownTask !== undefined) return this.borrowedShutdownTask;
+      if (this.unifiedExecOwnerBinding !== undefined) {
+        // Reject a released projection before hooks, children or shared
+        // admission services can be touched. Revoke active admission now;
+        // shutdownCore awaits the same strict proof before durable finalizers.
+        this.unifiedExecOwnerBinding.assertCurrent();
+        this.execCloseTask ??= this.unifiedExecOwnerBinding.prepareForDurableClose();
+        void this.execCloseTask.catch(() => {});
+      } else if (this.services.unifiedExecManager?.prepareForDurableClose !== undefined) {
+        throw new Error("borrowed exec manager has no scoped cleanup authority");
+      }
+      // An old completed Session must never run shared-service teardown again
+      // after a replacement Session has acquired the same conversation id.
+      this.borrowedShutdownTask = Promise.resolve().then(() => this.shutdownAndRelease());
+      return this.borrowedShutdownTask;
+    }
+    return this.shutdownAndRelease();
+  }
+
+  private async shutdownAndRelease(): Promise<void> {
     let shutdownError: unknown;
     try {
       await this.shutdownCore();
@@ -6293,7 +6360,13 @@ export class Session {
 
       // Best-effort lifecycle closeAll may time out or retain cleanup failure.
       // Neither permits a cancellation/suspension terminal to authorize seal.
-      await this.services.unifiedExecManager?.prepareForDurableClose?.();
+      if (this.ownsUnifiedExecManager) {
+        await this.services.unifiedExecManager?.prepareForDurableClose?.();
+      } else if (this.unifiedExecOwnerBinding !== undefined) {
+        await this.execCloseTask;
+      } else if (this.services.unifiedExecManager?.prepareForDurableClose !== undefined) {
+        throw new Error("borrowed exec manager has no scoped cleanup authority");
+      }
       const finalizers = [...this.beforeDurableCloseListeners];
       this.beforeDurableCloseListeners.clear();
       for (const finalize of finalizers) {

@@ -15,6 +15,28 @@ import type {
 
 export type UnifiedExecStream = "stdout" | "stderr";
 
+declare const ownerLifetimeBrand: unique symbol;
+declare const ownerBindingBrand: unique symbol;
+
+/** Manager-owned identity for one logical child execution lifetime. */
+export interface UnifiedExecOwnerLifetime {
+  readonly [ownerLifetimeBrand]: never;
+  readonly ownerId: string;
+  readonly closed: boolean;
+  bind(): UnifiedExecOwnerBinding;
+  prepareForDurableClose(): Promise<void>;
+}
+
+/** A revoked projection cannot acquire authority from a later projection. */
+export interface UnifiedExecOwnerBinding {
+  readonly [ownerBindingBrand]: never;
+  readonly ownerId: string;
+  /** Reject stale projections before Session teardown can touch shared services. */
+  assertCurrent(): void;
+  release(): void;
+  prepareForDurableClose(): Promise<void>;
+}
+
 export interface UnifiedExecProgressEvent {
   readonly chunk: string;
   readonly stream: UnifiedExecStream;
@@ -80,6 +102,7 @@ export interface UnifiedExecManagerOptions {
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
+  readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly directInvocation?: ReadOnlyInspectionInvocation;
   readonly callId?: string;
   readonly cmd: string;
@@ -104,6 +127,8 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
  * stops it.
  */
 export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
+  readonly ownerId?: string;
+  readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly callId?: string;
   readonly cmd: string;
   readonly workdir?: string;
@@ -116,6 +141,7 @@ export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
 }
 
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
+  readonly ownerBinding?: UnifiedExecOwnerBinding;
   readonly callId?: string;
   readonly session_id: number;
   readonly chars?: string;
@@ -263,6 +289,11 @@ export interface UnifiedExecProcessManagerLike {
   closeAll(reason?: string): Promise<void>;
   /** Concrete managers freeze admission and verify cleanup before sealing. */
   prepareForDurableClose?(): Promise<void>;
+  createOwnerLifetime?(
+    ownerId: string,
+    parentBinding?: UnifiedExecOwnerBinding,
+  ): UnifiedExecOwnerLifetime;
+  assertOwnerAdmission?(ownerId: string | undefined, binding?: UnifiedExecOwnerBinding): void;
 }
 
 export class UnifiedExecError extends Error {
