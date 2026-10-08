@@ -24,6 +24,7 @@ function emittingSession(store: SessionStore, seen: string[]): Session {
   const eventLog = new EventLog();
   const session = Object.assign(Object.create(Session.prototype), {
     eventLog,
+    phaseEventListeners: new Set(),
     rolloutStore: { store, append: store.append.bind(store) },
     txEvent: { send: (event: { seq: number }) => { seen.push(`transport:${event.seq}`); } },
     isRolloutPersistenceSuspended: () => false,
@@ -33,6 +34,22 @@ function emittingSession(store: SessionStore, seen: string[]): Session {
 }
 
 describe("write-behind persistence barriers", () => {
+  it("keeps phase callbacks in the same order as canonical publication", () => {
+    const store = openStore();
+    const seen: string[] = [];
+    const session = emittingSession(store, seen);
+    session.subscribeToEvents(() => { seen.push("phase"); });
+    try {
+      store.writeBehind.beginStep();
+      session.emit({ id: "one", msg: { type: "warning", payload: { cause: "test", message: "one" } } }, { durable: true });
+      session.emitPhaseEvent({ type: "turn_start", turnIndex: 0 });
+      session.emit({ id: "two", msg: { type: "warning", payload: { cause: "test", message: "two" } } }, { durable: true });
+      expect(seen).toEqual([]);
+      store.writeBehind.finish();
+      expect(seen).toEqual(["transport:1", "phase", "transport:2"]);
+    } finally { store.close(); }
+  });
+
   it("does not seal a relaxed one-shot after deferred persistence fails", () => {
     const root = mkdtempSync(join(tmpdir(), "write-behind-seal-"));
     roots.push(root);
@@ -140,5 +157,21 @@ describe("write-behind persistence barriers", () => {
     await withSessionWriteBehind(queue, () => client.requestText({ body: { message: "next" } }));
     expect(seen).toEqual(["send", "persist"]);
     expect(queue.pending).toBe(0);
+  });
+
+  it("surfaces a flush failure without retrying the model request", async () => {
+    const queue = new SessionWriteBehindQueue();
+    const failure = new Error("disk unavailable");
+    let sends = 0;
+    queue.beginStep();
+    queue.defer("persist", () => { throw failure; });
+    const client = new ProviderHttpClientSession({
+      providerName: "openai", baseURL: "https://example.test/v1", wireApi: "responses",
+      requestRetry: { maxRetries: 3 },
+      fetchImpl: async () => { sends += 1; return new Response("ok"); },
+    });
+    await expect(withSessionWriteBehind(queue, () => client.requestText({ body: {} }))).rejects.toBe(failure);
+    expect(sends).toBe(1);
+    expect(queue.pending).toBe(1);
   });
 });

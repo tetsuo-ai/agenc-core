@@ -3820,20 +3820,29 @@ export class Session {
   }
 
   subscribeToEvents(cb: (event: PhaseEvent) => void): () => void {
+    this.writeBehind.drain();
     this.phaseEventListeners.add(cb);
     return () => {
+      this.writeBehind.drain();
       this.phaseEventListeners.delete(cb);
     };
   }
 
   emitPhaseEvent(event: PhaseEvent): void {
-    for (const listener of this.phaseEventListeners) {
-      try {
-        listener(event);
-      } catch {
-        // Keep parity with EventLog subscriber isolation.
-      }
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(event);
+      this.writeBehind.defer("phase-publication", () => this.emitPhaseEvent(captured));
+      return;
     }
+    this.writeBehind.observe(() => {
+      for (const listener of this.phaseEventListeners) {
+        try {
+          listener(event);
+        } catch {
+          // Keep parity with EventLog subscriber isolation.
+        }
+      }
+    });
   }
 
   isRolloutPersistenceSuspended(): boolean {

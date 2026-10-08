@@ -51,4 +51,19 @@ describe("session write-behind queue", () => {
     })));
     expect(currentSessionWriteBehind()).toBeUndefined();
   });
+
+  it("restores the owning session scope when another session forces the flush", () => {
+    const owner = new SessionWriteBehindQueue();
+    const reader = new SessionWriteBehindQueue();
+    let observed: SessionWriteBehindQueue | undefined;
+    withSessionWriteBehind(owner, () => {
+      owner.beginStep();
+      owner.defer("owned", () => { observed = currentSessionWriteBehind(); });
+    });
+    withSessionWriteBehind(reader, () => {
+      owner.drain();
+      expect(currentSessionWriteBehind()).toBe(reader);
+    });
+    expect(observed).toBe(owner);
+  });
 });
