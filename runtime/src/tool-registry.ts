@@ -1073,9 +1073,11 @@ export function buildToolRegistry(
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
   //   - web_fetch/WebSearch               → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
-  function currentMcpTools(): readonly Tool[] {
+  function currentMcpTools(
+    raw: readonly Tool[] = options.mcpToolsProvider?.getTools() ?? [],
+  ): readonly Tool[] {
     return configuredTools(
-      (options.mcpToolsProvider?.getTools() ?? []).map((tool) => {
+      raw.map((tool) => {
         const serverId = inferMcpServerId(tool.name);
         return tagTool(
           withMetadata(tool, {
@@ -1089,9 +1091,11 @@ export function buildToolRegistry(
     );
   }
 
-  function currentDynamicTools(): readonly Tool[] {
+  function currentDynamicTools(
+    raw: readonly Tool[] = readToolList(options.dynamicTools),
+  ): readonly Tool[] {
     return configuredTools(
-      readToolList(options.dynamicTools).map((tool) =>
+      raw.map((tool) =>
         tagTool(
           withMetadata(tool, { source: tool.metadata?.source ?? "plugin" }),
         ),
@@ -1099,9 +1103,11 @@ export function buildToolRegistry(
     );
   }
 
-  function currentDeferredTools(): readonly Tool[] {
+  function currentDeferredTools(
+    raw: readonly Tool[] = readToolList(options.deferredTools),
+  ): readonly Tool[] {
     return configuredTools(
-      readToolList(options.deferredTools).map((tool) =>
+      raw.map((tool) =>
         tagTool(
           withMetadata(tool, {
             source: tool.metadata?.source ?? "plugin",
@@ -1112,9 +1118,11 @@ export function buildToolRegistry(
     );
   }
 
-  function currentDiscoverableTools(): readonly Tool[] {
+  function currentDiscoverableTools(
+    raw: readonly Tool[] = readToolList(options.discoverableTools),
+  ): readonly Tool[] {
     return configuredTools(
-      readToolList(options.discoverableTools).map((tool) =>
+      raw.map((tool) =>
         tagTool(
           withMetadata(tool, { source: tool.metadata?.source ?? "plugin" }),
         ),
@@ -1122,8 +1130,64 @@ export function buildToolRegistry(
     );
   }
 
+  /**
+   * The router is a pure function of the raw tool lists and option arrays
+   * below: every derived tool and spec is built from them, and neither tools,
+   * specs nor the router are mutated after construction. Providers may return
+   * a fresh array each time; the router is reused while every list holds the
+   * same elements in the same order, and rebuilt on any difference.
+   */
+  let routerMemo:
+    | { readonly inputs: readonly (readonly unknown[])[]; readonly router: ToolRouter }
+    | undefined;
+
+  function routerInputs(): readonly (readonly unknown[])[] {
+    const parallel = options.parallelMcpServerNames;
+    return [
+      options.mcpToolsProvider?.getTools() ?? [],
+      readToolList(options.discoverableTools),
+      readToolList(options.dynamicTools),
+      readToolList(options.deferredTools),
+      options.unavailableCalledTools ?? [],
+      parallel === undefined ? [] : [parallel, ...parallel],
+    ];
+  }
+
+  function sameRouterInputs(
+    left: readonly (readonly unknown[])[],
+    right: readonly (readonly unknown[])[],
+  ): boolean {
+    return left.length === right.length && left.every((list, index) => {
+      const other = right[index]!;
+      return list.length === other.length &&
+        list.every((value, item) => Object.is(value, other[item]));
+    });
+  }
+
   function buildRouter(): ToolRouter {
-    const mcpTools = preserveTrustedRuntimeOwnedTools(currentMcpTools());
+    const inputs = routerInputs();
+    if (routerMemo !== undefined && sameRouterInputs(routerMemo.inputs, inputs)) {
+      return routerMemo.router;
+    }
+    // Snapshot the lists: a caller may mutate an array it handed in.
+    const snapshot = inputs.map((list) => [...list]);
+    const router = buildRouterFrom(
+      snapshot[0] as readonly Tool[],
+      snapshot[1] as readonly Tool[],
+      snapshot[2] as readonly Tool[],
+      snapshot[3] as readonly Tool[],
+    );
+    routerMemo = { inputs: snapshot, router };
+    return router;
+  }
+
+  function buildRouterFrom(
+    mcpRaw: readonly Tool[],
+    discoverableRaw: readonly Tool[],
+    dynamicRaw: readonly Tool[],
+    deferredRaw: readonly Tool[],
+  ): ToolRouter {
+    const mcpTools = preserveTrustedRuntimeOwnedTools(currentMcpTools(mcpRaw));
     // A live manager owns its qualified MCP names. ToolRouter intentionally
     // allows later dynamic/discoverable entries to override ordinary names,
     // but allowing that for MCP would let a plugin borrow a real server's
@@ -1146,11 +1210,11 @@ export function buildToolRegistry(
       mcpTools: toolMap(directMcpTools),
       deferredMcpTools: toolMap(deferredMcpTools),
       discoverableTools: withoutManagedMcpCollisions(
-        currentDiscoverableTools(),
+        currentDiscoverableTools(discoverableRaw),
       ),
       dynamicTools: withoutManagedMcpCollisions([
-        ...currentDynamicTools(),
-        ...currentDeferredTools(),
+        ...currentDynamicTools(dynamicRaw),
+        ...currentDeferredTools(deferredRaw),
       ]),
       unavailableCalledTools: options.unavailableCalledTools ?? [],
       ...(options.parallelMcpServerNames !== undefined
