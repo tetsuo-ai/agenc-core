@@ -2571,7 +2571,7 @@ export class Session {
   rolloutStore: RolloutStore | null = null;
   private readonly transientWriteBehind = new SessionWriteBehindQueue();
   get writeBehind(): SessionWriteBehindQueue {
-    return this.rolloutStore?.store.writeBehind ?? this.transientWriteBehind;
+    return this.rolloutStore?.store?.writeBehind ?? this.transientWriteBehind;
   }
   private shutdownResourceRelease?: () => void | Promise<void>;
 
@@ -2689,6 +2689,7 @@ export class Session {
     // Keep legacy producers that were handed `session.eventLog` on the same
     // canonical persist-before-publish path as direct `session.emit` callers.
     this.eventLog.setEmitDelegate((event) => this.emit(event));
+    this.eventLog.setVisibilityBarrier(() => this.writeBehind.drain());
     this.roleWorkspace = opts.roleWorkspace
       ? normalizeAgentRoleWorkspace(opts.roleWorkspace)
       : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd);
@@ -5780,11 +5781,11 @@ export class Session {
    * abort-then-install sequence).
    */
   private async abortAllTasksLocked(reason: TurnAbortReason): Promise<void> {
-    this.writeBehind.finish();
     const taken = await this.activeTurn.swap(null);
-    if (taken === null) return;
+    if (taken === null) { this.writeBehind.finish(); return; }
     const tasks = Array.from(taken.tasks.values());
-    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
+    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
+    finally { this.writeBehind.finish(); }
     // Release any
     // dangling approvals / input pre-emptively so interrupted tasks
     // don't surface stale responses. We reach into `turnState` here
@@ -5816,7 +5817,8 @@ export class Session {
     });
     if (taken === null) return false;
     const tasks = Array.from(taken.tasks.values());
-    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
+    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
+    finally { this.writeBehind.finish(); }
     await taken.turnState.with((ts) => {
       ts.pendingApprovals.clear();
       ts.pendingRequestPermissions.clear();
@@ -6137,7 +6139,6 @@ export class Session {
    * provider_switched re-entry).
    */
   abortTerminal(reason: AbortReason): void {
-    this.writeBehind.finish();
     if (reason === "provider_switched") {
       this.abortActiveTurnForProviderSwitch();
       return;
@@ -6145,6 +6146,7 @@ export class Session {
     if (this.abortController.signal.aborted) return;
     const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
+    this.writeBehind.finish();
     // Emit a typed event so I-8 is satisfied.
     this.emit({
       id: this.nextInternalSubId(),
@@ -6398,8 +6400,8 @@ export class Session {
     // Flush + close the rollout store (I-4: final durable fsync).
     if (this.rolloutStore) {
       try {
-        this.rolloutStore.flushDurable();
-        this.rolloutStore.close();
+        try { this.rolloutStore.flushDurable(); }
+        finally { this.rolloutStore.close(); }
       } catch (error) {
         durableCloseError ??= error;
       }

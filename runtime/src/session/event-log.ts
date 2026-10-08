@@ -1692,6 +1692,10 @@ export class EventLog {
   private readonly allocatedEventIds = new Set<string>();
   private readonly listeners = new Set<EventListener>();
   private readonly pendingPublications: PendingPublication[] = [];
+  private visibilityBarrier: (() => void) | undefined;
+
+  setVisibilityBarrier(barrier: () => void): void { this.visibilityBarrier = barrier; }
+
   private emitDelegate: ((event: Event) => Event) | undefined;
   private publishing = false;
   private closed = false;
@@ -1780,8 +1784,10 @@ export class EventLog {
    * registration order; the set preserves insertion order.
    */
   subscribe(listener: EventListener): () => void {
+    this.visibilityBarrier?.();
     this.listeners.add(listener);
     return () => {
+      this.visibilityBarrier?.();
       this.listeners.delete(listener);
     };
   }
@@ -1839,7 +1845,9 @@ export class EventLog {
   }
 
   close(): void {
+    this.visibilityBarrier?.();
     this.closed = true;
+    this.visibilityBarrier = undefined;
     this.emitDelegate = undefined;
     this.pendingPublications.length = 0;
     this.listeners.clear();

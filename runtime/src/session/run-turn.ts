@@ -2070,9 +2070,11 @@ export async function* runTurnKernel(
     }
     throw error;
   } finally {
-    session.writeBehind?.finish();
-    for (const cleanup of signalCleanups) cleanup();
-    codeModeTurnWorker.dispose();
+    try { session.writeBehind?.finish(); }
+    finally {
+      for (const cleanup of signalCleanups) cleanup();
+      codeModeTurnWorker.dispose();
+    }
     // `onTaskFinished` is emitted uniformly from the spawn site so every
     // task-kind shares the same lifecycle. The kernel BOTH runs the task
     // body AND owns its finish emit.

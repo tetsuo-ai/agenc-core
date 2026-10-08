@@ -1989,10 +1989,10 @@ export class SessionStore {
    * line if new.
    */
   open(meta: Omit<SessionMetaLine, "rolloutSchemaVersion">): void {
-    this.unregisterWriteBehind ??= registerSessionWriteBehind(this.rolloutPath, this.writeBehind);
     if (this.opened) return;
     let resumeFdToClose: number | undefined;
     this.lock.acquire();
+    this.unregisterWriteBehind = registerSessionWriteBehind(this.rolloutPath, this.writeBehind);
     try {
       if (this.explicitResumeRolloutPath || existsSync(this.rolloutPath)) {
         // Keep the no-follow descriptor open across metadata validation, tail

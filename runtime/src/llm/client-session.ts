@@ -1349,6 +1349,7 @@ export class ProviderHttpClientSession {
     attempt: number,
     responseReceived: boolean,
   ): Promise<void> {
+    currentSessionWriteBehind()?.assertHealthy();
     if (isFallbackTriggeredError(error)) throw error;
     if (error instanceof ProviderHttpError) {
       maybeEmitCapabilityDriftWarning(this.config, error);
@@ -1416,6 +1417,7 @@ export class ProviderHttpClientSession {
       body = JSON.stringify(options.body);
     }
 
+    currentSessionWriteBehind()?.assertHealthy();
     const fetchImpl = this.config.fetchImpl ?? fetch;
     const fail = endpointMetadataFailureHandler(this.config.providerName);
     try {
@@ -1426,7 +1428,13 @@ export class ProviderHttpClientSession {
         signal,
       }, fetchImpl);
       if (!response.ok) fail();
-      if (method === "POST") currentSessionWriteBehind()?.drain();
+      if (method === "POST") {
+        try { currentSessionWriteBehind()?.drain(); }
+        catch (error) {
+          await response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
+      }
       return response;
     } catch (error) {
       currentSessionWriteBehind()?.finish();

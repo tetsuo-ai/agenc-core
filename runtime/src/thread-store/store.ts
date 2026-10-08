@@ -1,3 +1,4 @@
+import { drainRolloutWriteBehind } from "../session/write-behind.js";
 /** Thread-store persistence boundary for live and on-disk AgenC threads. */
 
 import {
@@ -1182,6 +1183,7 @@ export class FileThreadStore implements ThreadStore {
     const live = this.liveRecorders.get(entry.threadId);
     const rolloutPath = live?.rolloutPath ?? this.readableRolloutPath(entry);
     if (rolloutPath === undefined || !existsSync(rolloutPath)) return undefined;
+    drainRolloutWriteBehind(rolloutPath);
     return readFirstUserMessageFromRollout(rolloutPath);
   }
 
@@ -1193,6 +1195,7 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private readRolloutItems(rolloutPath: string): RolloutItem[] {
+    drainRolloutWriteBehind(rolloutPath);
     if (!existsSync(rolloutPath)) {
       throw new ThreadStoreInvalidRequestError(
         `rollout file does not exist: ${rolloutPath}`,

@@ -28,6 +28,7 @@ export function drainProjectWriteBehind(projectDir: string): void {
 export class SessionWriteBehindQueue {
   private jobs: WriteBehindJob[] = [];
   private enabled = false;
+  private runInOwnerScope: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;
   private depth = 0;
   private failed = false;
   private failure: unknown;
@@ -39,6 +40,7 @@ export class SessionWriteBehindQueue {
   /** Start one loss window; the preceding step must have been flushed. */
   beginStep(): void {
     this.drain();
+    this.runInOwnerScope = AsyncLocalStorage.snapshot();
     this.enabled = true;
   }
 
@@ -56,10 +58,13 @@ export class SessionWriteBehindQueue {
     this.depth += 1;
     try {
       while (this.jobs.length > 0) {
-        // Remove only a completed job. A failed job and its successors remain
+        // Retain a failed job and all successors. They remain
         // owned by this failed session; they are never silently discarded.
         const job = this.jobs.shift()!;
-        try { job.run(); }
+        try {
+          if (this.runInOwnerScope) this.runInOwnerScope(job.run);
+          else job.run();
+        }
         catch (error) {
           this.jobs.unshift(job);
           this.failed = true;
