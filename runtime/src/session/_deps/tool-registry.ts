@@ -46,7 +46,7 @@ export interface ToolDispatchResult {
 export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
-  dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  dispatch(toolCall: LLMToolCall, options?: { readonly advertisedToolNames?: readonly string[]; readonly abortSignal?: AbortSignal }): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
 }
