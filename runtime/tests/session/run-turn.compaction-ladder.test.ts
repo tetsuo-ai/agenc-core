@@ -53,7 +53,7 @@ function createToolExercise(options: { readonly fastMode?: boolean; readonly non
     requests.push([...messages]);
     samples += 1;
     return {
-      content: samples <= 4 ? "Continue the implementation." : "finished",
+      content: options.fastMode && samples === 4 ? "assistant context pressure ".repeat(30_000) : samples <= 4 ? "Continue the implementation." : "finished",
       toolCalls: samples <= 4
         ? [{ id: `read-${samples}`, name: "read_probe", arguments: JSON.stringify({ round: samples }) }]
         : [],
@@ -64,7 +64,7 @@ function createToolExercise(options: { readonly fastMode?: boolean; readonly non
   };
   const nextResult = async () => {
     tools += 1;
-    return { content: tools === 4 ? "fresh oversized result ".repeat(options.fastMode ? 10_000 : 1_000) : `fresh result ${tools}`, isError: false };
+    return { content: tools === 4 ? "fresh oversized result ".repeat(1_000) : `fresh result ${tools}`, isError: false };
   };
   const registry = {
     tools: [{ name: "read_probe", description: "Read the next result", inputSchema: { type: "object" },

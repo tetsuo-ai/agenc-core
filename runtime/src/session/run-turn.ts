@@ -2714,7 +2714,9 @@ async function* runTurnKernelInner(
   // Run pre-sampling compact before any phase runs. Returns
   // whether compaction happened. (No prewarmed client session exists
   // today, so there is nothing to reset on compaction.)
-  let deferredCompaction = false;
+  // The fast loop can hand over an oversized request before any canonical
+  // sample has established compaction pressure. Check that request before send.
+  let deferredCompaction = continuedFromFastMode;
   let requiredCompactionAttempted = false;
   const deferCompactionRefusal = (): void => {
     deferredCompaction = true;
