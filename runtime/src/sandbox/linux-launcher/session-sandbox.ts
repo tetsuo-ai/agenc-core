@@ -111,6 +111,7 @@ export class SessionSandbox {
     const child = Object.assign(new EventEmitter(), {
       pid: this.server.pid, stdin, stdout, stderr, exitCode: null as number | null,
       signalCode: null, killed: false,
+      unref: () => child, ref: () => child,
       kill: (_signal?: NodeJS.Signals | number): boolean => {
         if (this.active?.child !== child) return false;
         this.server?.stdin.write(frame("K")); return true;
@@ -127,7 +128,7 @@ export class SessionSandbox {
           ? { kind: "exit", code: (status >> 8) & 255 }
           : { kind: "signal", signal: status & 127 }, residual: residual ? "observed" : "none",
       };
-      child.exitCode = status === undefined ? null : (status & 127) === 0 ? (status >> 8) & 255 : 128 + (status & 127);
+      Object.defineProperty(child, "exitCode", { value: status === undefined ? null : (status & 127) === 0 ? (status >> 8) & 255 : 128 + (status & 127), configurable: true });
       stdout.end(); stderr.end(); resolve();
       child.emit("exit", child.exitCode, null); child.emit("close", child.exitCode, null);
     };
