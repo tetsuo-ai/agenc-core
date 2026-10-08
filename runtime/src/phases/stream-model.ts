@@ -641,7 +641,7 @@ function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   });
 }
 
-function assistantMessageFromResponse(
+export function assistantMessageFromResponse(
   response: LLMResponse,
   planMode: boolean,
   providerName: string,

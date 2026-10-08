@@ -1,3 +1,4 @@
+import { unknownToolResult } from "./results.js";
 /**
  * StreamingToolExecutor — full AgenC port.
  *
@@ -68,7 +69,6 @@ import {
 import { resolveTimeoutMs, parseToolArgsWithBigInt } from "./execution.js";
 import { normalizeModelToolArgs } from "./argument-validation.js";
 import {
-  formatUnknownToolMessage,
   suggestToolForUnknownName,
   type ToolSuggestion,
 } from "./tool-name-suggestion.js";
@@ -593,24 +593,15 @@ export class StreamingToolExecutor {
     }
 
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
+    const validationStarted = performance.now();
     const isKnown = this.isKnownToolCall(toolCall);
     if (!isKnown) {
       // Never an alias: the call fails here. With a clear match, the error
       // names the tool this session can call instead.
       const suggestion = this.suggestToolName(toolCall.name);
-      const message = formatUnknownToolMessage(
-        toolCall.name,
-        suggestion?.name,
-        suggestion?.loadWith,
-      );
-      const syntheticResult: ToolDispatchResult = {
-        content: JSON.stringify({
-          tool_use_id: toolCall.id,
-          is_error: true,
-          content: `<tool_use_error>Error: ${message}</tool_use_error>`,
-        }),
-        isError: true,
-      };
+      const rejection = unknownToolResult(toolCall.name, toolCall.id, suggestion);
+      const syntheticResult = { ...rejection, metadata: { ...rejection.metadata,
+        validationDurationMs: performance.now() - validationStarted } };
       const classifiable = this.resolveClassifiable(toolCall);
       const tracked: TrackedTool = {
         id: toolCall.id,

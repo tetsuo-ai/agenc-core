@@ -1,3 +1,4 @@
+import { validateToolCall } from "../llm/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { stripModelSuppliedAgenCInternalArgs } from "../tools/internal-args.js";
 import { sessionDispatchAuthority } from "../tools/session-dispatch-authority.js";
@@ -7,14 +8,14 @@ import { cumulativeUsage } from "./cumulative-usage.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
 import { classifyUntrustedToolResult } from "../tools/untrusted-tool-result-framing.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
-import { modelFacingToolResultContent } from "../phases/execute-tools.js";
+import { toolResultMessage } from "../phases/execute-tools.js";
 /** One-shot bypass turn loop. Session data is finalized once at the terminal boundary. */
 import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 import { createFastContextGuard } from "./fast-context-guard.js";
 import type { EventMsg } from "./event-log.js";
 import type { LLMMessage, LLMUsage, LLMResponse } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
-import { buildProviderOptions } from "../phases/stream-model.js";
+import { assistantMessageFromResponse, buildProviderOptions } from "../phases/stream-model.js";
 import type { Terminal } from "./turn-state.js";
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
@@ -31,7 +32,7 @@ export async function* runMinimalTurn(
   instructions: string,
   signal: AbortSignal,
   prepareRequest?: (modelCalls: number, lastResponseUsage: LLMUsage | undefined) => Promise<{ request: StreamModelRequestContract; samplingContext: TurnContext } | null>,
-): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage }> {
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse }> {
   // The initial options bound eligibility before any preparation work.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
@@ -81,12 +82,21 @@ export async function* runMinimalTurn(
         } });
       }
       signal.throwIfAborted();
+      if (response.finishReason !== undefined && response.finishReason !== "stop" && response.finishReason !== "tool_calls") {
+        // The response was already paid for. Transfer it before any tool dispatch
+        // or completion publication; canonical recovery owns the next decision.
+        handoff = true;
+        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage, recoveryResponse: response };
+      }
+      const toolCalls = response.finishReason === undefined ? response.toolCalls
+        : assistantMessageFromResponse(response, false, session.services.provider.name).toolCalls
+          .map(call => validateToolCall(call) ?? call);
       messages.push({ role: "assistant", content: response.content,
-        ...(response.toolCalls.length ? { toolCalls: response.toolCalls } : {}),
+        ...(toolCalls.length ? { toolCalls } : {}),
         ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
         ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
       });
-      if (response.toolCalls.length === 0) {
+      if (toolCalls.length === 0) {
         if (response.content) {
           session.emit({ id: session.nextInternalSubId(), msg: { type: "agent_message", payload: { message: response.content } } });
           yield { type: "assistant_text", content: response.content };
@@ -94,10 +104,10 @@ export async function* runMinimalTurn(
         yield { type: "turn_complete", content: response.content, usage, stopReason: "completed" };
         return { reason: "completed" };
       }
-      for (const call of response.toolCalls) {
+      for (const call of toolCalls) {
         signal.throwIfAborted();
         let content: string;
-        let modelContent: LLMMessage["content"] | undefined;
+        let modelMessage: LLMMessage | undefined;
         let isError = false;
         let metadata: Record<string, unknown> | undefined;
         const started = performance.now();
@@ -127,7 +137,7 @@ export async function* runMinimalTurn(
           metadata = result.metadata;
           markLoadedToolNamesDiscovered(call.name, result, session.services.registry.getDiscoveredToolNames?.());
           const tool = session.services.registry.tools?.find(tool => tool.name === call.name);
-          modelContent = modelFacingToolResultContent(call.name, result,
+          modelMessage = toolResultMessage(session.conversationId, call.id, call.name, result,
             classifyUntrustedToolResult(call.name, tool), session.services.runtimeOptions?.lightMode === true);
           isError = result.isError === true;
         } catch (error) {
@@ -135,10 +145,13 @@ export async function* runMinimalTurn(
           isError = true;
           content = JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
         }
+        const elapsed = performance.now() - started;
+        const validationOnly = metadata?.kind === "input_validation";
+        if (validationOnly) metadata = { ...metadata, validationDurationMs: elapsed };
         observations.push({ type: "tool_call_completed", payload: {
-          callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: performance.now() - started,
+          callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: validationOnly ? 0 : elapsed,
         } });
-        messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content: modelContent ?? content });
+        messages.push(modelMessage ?? { role: "tool", toolName: call.name, toolCallId: call.id, content });
       }
       // Discovery can reveal new capabilities during this turn.
       const tools = builtTools(session, ctx);

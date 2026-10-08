@@ -97,7 +97,7 @@ import { renderHookAdditionalContextSection } from "../prompts/hook-context-fram
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { stampToolResultRemaining } from "../session/run-deadline.js";
 
-function toolResultMessage(
+export function toolResultMessage(
   runId: string,
   callId: string,
   toolName: string,
@@ -610,7 +610,10 @@ function recordCompletedToolCall(
     result,
     session.services.registry.getDiscoveredToolNames?.(),
   );
-  const metadata = result.metadata;
+  const validationOnly = result.metadata?.kind === "input_validation";
+  const metadata = validationOnly && durationMs !== undefined
+    ? { ...result.metadata, validationDurationMs: result.metadata?.validationDurationMs ?? durationMs } : result.metadata;
+  if (validationOnly) durationMs = 0;
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
   session.emit(
     {

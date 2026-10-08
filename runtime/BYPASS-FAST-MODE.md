@@ -30,6 +30,19 @@ exact serialized Chat Completions request bodies. This control uses exact-output
 mode, which disables the normal completion gate; it does not establish parity
 for every continuation or hook policy.
 
+Recorded T016 controls replay both the 12-response and 37-response live sequences
+through each loop and compare serialized requests, including DeepSeek reasoning
+history. Tool implementations return recorded outputs; these controls do not
+execute the recorded commands or establish live resource equivalence. Tool-result
+integrity and recovery metadata are attached before the next request.
+
+An explicit exceptional provider finish reason hands the consumed response to
+normal recovery before any tool dispatch or completion event. Length recovery
+retains usage and output limits, never executes partial calls, and stops when the
+normal recovery allowance is exhausted. Unknown-tool rejections carry the normal
+suggestion and input-validation classification, with zero execution duration and
+separate measured validation latency. They do not create execution intervals.
+
 Remaining work before a shipping decision:
 - Runs with spend or token caps currently hand off to atomic admission. The
   requested memory-only spending path is not implemented. Shared calendar caps

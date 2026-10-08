@@ -122,3 +122,28 @@ test("fast dispatch rejects forged read authority and stale writes, then accepts
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test.each([false, true])("unknown tools are validation-only with zero execution duration (fast=%s)", async fast => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, requireAdmission: false,
+    sandboxExecutionBroker: explicitDangerBroker });
+  const provider = mkProvider();
+  let count = 0;
+  provider.chatStream = async () => ({ content: count++ === 0 ? "" : "done",
+    toolCalls: count === 1 ? [{ id: "unknown", name: "Read", arguments: '{}' }] : [],
+    finishReason: count === 1 ? "tool_calls" : "stop", model: "test-model",
+    usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 } });
+  const { session, events } = mkSession({ provider, registry, services: {
+    sandboxExecutionBroker: explicitDangerBroker,
+    runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
+      dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
+  } });
+  Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({
+    ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
+  }) });
+  const ctx = mkCtx({ permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
+    config: { ...mkCtx().config, bypassFastMode: fast } });
+  await drain(runTurn(session, ctx, "Read the file.", { exactOutput: true }));
+  const completed = events.find(event => event.msg.type === "tool_call_completed");
+  expect(completed?.msg).toMatchObject({ type: "tool_call_completed", payload: { callId: "unknown", isError: true,
+    durationMs: 0, metadata: { kind: "input_validation", preflightCode: "unknown_tool", validationDurationMs: expect.any(Number) } } });
+});

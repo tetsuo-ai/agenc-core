@@ -569,6 +569,7 @@ from a late CLI layer is rejected.
 | `spinnerTipsEnabled` | Show prompt/chrome hints. |
 | `promptSuggestionEnabled` | Enable background next-prompt suggestions (default `false`). |
 | `swarmMode`, `fastMode` | Agent-swarm and fast-mode preferences. |
+| `bypassFastMode` | Set `false` to disable the one-shot fast loop for explicit dangerous bypass runs. Interactive, sandboxed, resumed and full-durability sessions use the normal loop. |
 | `plansDirectory` | Plan artifact directory. |
 | `prefersReducedMotion` | Reduced-motion preference. |
 | `autoMemoryEnabled`, `autoMemoryDirectory` | Automatic-memory enablement and directory. |

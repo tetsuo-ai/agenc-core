@@ -1,3 +1,5 @@
+import { formatUnknownToolMessage, type ToolSuggestion } from "./tool-name-suggestion.js";
+import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
 import { createToolEffectDispositionEvidence } from "./effect-boundary.js";
 import type { ToolResult } from "./types.js";
 
@@ -36,5 +38,15 @@ export function validationErrorToolResult(
       evidenceRef,
       evidenceMaterial: message,
     }),
+  };
+}
+
+/** A rejected name has no execution interval or tool effect. */
+export function unknownToolResult(toolName: string, callId: string, suggestion?: ToolSuggestion): ToolResult {
+  const message = formatUnknownToolMessage(toolName, suggestion?.name, suggestion?.loadWith);
+  const content = JSON.stringify({ tool_use_id: callId, is_error: true, content: `<tool_use_error>Error: ${message}</tool_use_error>` });
+  return {
+    ...validationErrorToolResult(`tool:${toolName}:unknown_tool`, content),
+    metadata: { ...buildRecoverableToolFailureMetadata("input_validation"), preflightCode: "unknown_tool" },
   };
 }

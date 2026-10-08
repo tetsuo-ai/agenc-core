@@ -1,3 +1,5 @@
+import { suggestToolForUnknownName } from "./tools/tool-name-suggestion.js";
+import { unknownToolResult } from "./tools/results.js";
 import { oneShotFastModeActive } from "./one-shot-fast-mode.js";
 /**
  * Tool registry — the lean coding-profile surface.
@@ -1384,12 +1386,15 @@ export function buildToolRegistry(
       const router = buildRouter();
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
-        return {
-          content: safeStringify({
-            error: `unknown tool: ${toolCall.name}`,
-          }),
-          isError: true,
-        };
+        if (dispatchOptions?.advertisedToolNames === undefined) {
+          return { content: safeStringify({ error: `unknown tool: ${toolCall.name}` }), isError: true };
+        }
+        const offered = new Set(dispatchOptions.advertisedToolNames);
+        const suggestion = suggestToolForUnknownName(toolCall.name, router.getSpecs().map(spec => ({
+          name: spec.tool.name, offered: offered.has(spec.tool.name), deferred: isDeferredSpec(spec),
+          hidden: spec.tool.metadata?.hiddenByDefault === true, unavailable: spec.unavailable === true,
+        })), SYSTEM_SEARCH_TOOLS_NAME);
+        return unknownToolResult(toolCall.name, toolCall.id, suggestion);
       }
       if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
       try {
@@ -1435,12 +1440,7 @@ export function buildToolRegistry(
       const router = buildRouter();
       const spec = router.findSpec(toolCall.name);
       if (!spec) {
-        return {
-          content: safeStringify({
-            error: `unknown tool: ${toolCall.name}`,
-          }),
-          isError: true,
-        };
+        return { content: safeStringify({ error: `unknown tool: ${toolCall.name}` }), isError: true };
       }
       if (spec.unavailable === true) return unavailableToolResult(spec.tool.name);
       if (!canDirectDispatchFromCodeMode(spec.tool)) {

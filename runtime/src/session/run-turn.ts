@@ -1,3 +1,4 @@
+import { assistantMessageFromResponse } from "../phases/stream-model.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { runMinimalTurn } from "./minimal-turn.js";
 import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
@@ -2275,6 +2276,28 @@ async function* runTurnKernelInner(
             fastUsage = next.value.usage;
             state.lastResponseUsage = next.value.lastResponseUsage;
             session.rolloutStore?.store.finishOneShotFastMode();
+            const response = next.value.recoveryResponse;
+            if (response) {
+              state.assistantMessages = [assistantMessageFromResponse(response, false, session.services.provider.name)];
+              state.toolUseBlocks = [];
+              state.needsFollowUp = false;
+              state.truncatedToolCallNames = response.finishReason === "length"
+                ? [...(response.incompleteToolCalls ?? []), ...response.toolCalls].map(call => call.name)
+                : undefined;
+              state.messages.push({ role: "assistant", content: response.content,
+                ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
+                ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
+              });
+              await postSampleRecovery(state, ctx, session, signal);
+              if (state.transition === undefined) {
+                throw new Error(response.finishReason === "length"
+                  ? "The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete."
+                  : state.assistantMessages.at(-1)?.text || `Model stopped with ${response.finishReason}`);
+              }
+              // Recovery has already prepared the next input. Consume this
+              // transition before entering the ordinary sampling loop.
+              state.transition = undefined;
+            }
             break;
           }
           emitTurnComplete(content);
