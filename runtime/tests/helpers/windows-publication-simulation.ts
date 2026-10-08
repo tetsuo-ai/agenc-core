@@ -62,10 +62,8 @@ export function publicationScriptIsHandleBound(script: string): boolean {
 }
 
 /**
- * Measured on Windows build 26200 (ARM64, PowerShell 5.1 and 7; #2976 r8
- * reproducer): kernel32 SetFileInformationByHandle fails a rename whose
- * RootDirectory is set with ERROR_INVALID_PARAMETER (87), whatever the buffer
- * size. The #2976 r9 reproducer then showed NtSetInformationFile class 65
+ * The Windows build 26200 reproducer (ARM64, PowerShell 5.1 and 7; #2976 r9)
+ * showed the shipped directory-relative NtSetInformationFile class 65
  * (FileRenameInformationEx) with FILE_RENAME_REPLACE_IF_EXISTS |
  * FILE_RENAME_POSIX_SEMANTICS replaces the target atomically. The stand-in
  * requires the shipped RenameWithin to use that class-65 call.

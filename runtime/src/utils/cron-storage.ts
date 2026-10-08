@@ -40,16 +40,19 @@ export async function withCronStorage<Result>(
   return withCronStorageDirectory(workspacePath, create, async ({
     directory: bound, workspaceIdentity, lockDirectory, verify,
   }) => {
+    const readRecord = () => withRegularChild(
+      bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
+        assertCronRecordOwned(file.snapshot, file.path);
+        return readConfinedFile(file);
+      },
+    );
     return operation({
       directory: bound,
       workspaceIdentity,
       lockDirectory,
       async read() {
         try {
-          return await withRegularChild(bound, CRON_STORAGE_NAME, { maximumBytes: MAX_CRON_FILE_BYTES }, async (file) => {
-            assertCronRecordOwned(file.snapshot, file.path);
-            return (await readConfinedFile(file)).toString("utf8");
-          });
+          return (await readRecord())?.toString("utf8");
         } catch (error) {
           throw windowsUnsafeRecordError(error, bound.operationPath);
         }
@@ -64,7 +67,10 @@ export async function withCronStorage<Result>(
           if (Buffer.byteLength(data, "utf8") > MAX_CRON_FILE_BYTES) {
             throw new Error("Cron task file exceeds its byte limit");
           }
-          publishWindowsCronFile(bound.operationPath, verified, data);
+          await publishWindowsCronFile(bound.operationPath, verified, data, async () => {
+            await verify();
+            return readRecord();
+          });
           await verify();
           assertWindowsPrivatePathSecurity(join(bound.operationPath, CRON_STORAGE_NAME), "file", false);
           return;

@@ -1134,4 +1134,97 @@ describe("Windows cron storage uses private-path persistence", () => {
       expect((await readStartupCronTasks(workspace, () => {})).map((task) => task.id)).toEqual(["kept"]);
     });
   });
+
+  describe("interrupted publication readback", () => {
+    const previous = `${JSON.stringify({ tasks: [{ id: "previous", cron: "* * * * *", prompt: "before", createdAt: 1 }] })}\n`;
+
+    function interruptAt(stageToKill: string, afterKill?: () => void): void {
+      const original = acl.runWindowsSecurityScript.getMockImplementation()!;
+      acl.runWindowsSecurityScript.mockImplementation((
+        path: string, encoded?: string, variables?: Record<string, string>, temporary?: string, input?: Buffer,
+      ) => {
+        if (variables?.AGENC_CRON_PUBLISH_DIRECTORY === undefined) {
+          return original(path, encoded, variables, temporary, input);
+        }
+        simulateWindowsPublication({
+          directory: variables.AGENC_CRON_PUBLISH_DIRECTORY,
+          volume: variables.AGENC_CRON_VOLUME ?? "",
+          fileId: variables.AGENC_CRON_FILE_ID ?? "",
+          name: variables.AGENC_CRON_NAME ?? "",
+          temporary: variables.AGENC_CRON_TEMPORARY ?? "",
+          bytes: input ?? Buffer.alloc(0),
+          script: Buffer.from(variables.AGENC_CRON_PUBLISH_BODY ?? "", "base64").toString("utf8"),
+          onStage: (stage) => {
+            if (stage !== stageToKill) return;
+            if (stage === "after-rename" || stage === "before-published-check") {
+              privatePaths.add(`file\0${join(path, "scheduled_tasks.json")}`);
+            }
+            afterKill?.();
+            // No caught-failure marker or restore: the child died at this stage.
+            throw verifierFailure(path, "publication process was killed");
+          },
+        });
+      });
+    }
+
+    test.each([
+      ["after-rename", true], ["before-published-check", true],
+      ["after-rename", false], ["before-published-check", false],
+    ] as const)("reports the new record after a kill at %s (previous record: %s)", async (stage, seedPrevious) => {
+      if (seedPrevious) await withCronStorage(workspace, true, (storage) => storage.write(previous));
+      interruptAt(stage);
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error).toMatchObject({ code: "CRON_STORAGE_UNSAFE_ACL" });
+      expect(error.message).toContain("The new task file is in place, but the write was not acknowledged.");
+      expect(error.message).toContain("retrying an append can add the task twice");
+      expect(error.message).not.toMatch(/left unchanged|previous task file was left|could not be verified as private|Command:/u);
+      expect(readFileSync(join(metadataDirectory(), "scheduled_tasks.json"), "utf8")).toBe(body);
+      expect((await readCronTasks(workspace)).map((task) => task.id)).toEqual(["kept"]);
+      expect((await readStartupCronTasks(workspace, () => {})).map((task) => task.id)).toEqual(["kept"]);
+      expect(publicationCalls()).toHaveLength(seedPrevious ? 2 : 1);
+    });
+
+    test.each(["before-temp-create", "before-temp-security", "before-rename"])(
+      "does not claim the intended new record is present after a kill at %s", async (stage) => {
+        await withCronStorage(workspace, true, (storage) => storage.write(previous));
+        interruptAt(stage);
+        const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+        expect(error.message).toContain("The task file on disk does not match the requested new record.");
+        expect(error.message).not.toContain("The new task file is in place");
+        expect(readFileSync(join(metadataDirectory(), "scheduled_tasks.json"), "utf8")).toBe(previous);
+        expect(publicationCalls()).toHaveLength(2);
+      },
+    );
+
+    test("reports uncertainty when readback rejects a linked record despite matching bytes", async () => {
+      await withCronStorage(workspace, true, (storage) => storage.write(previous));
+      interruptAt("after-rename", () => {
+        linkSync(join(metadataDirectory(), "scheduled_tasks.json"), join(outside, "linked.json"));
+      });
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error.message).toContain("The task file left on disk could not be verified.");
+      expect(error.message).not.toMatch(/The new task file is in place|left unchanged|Command:/u);
+      expect(readFileSync(join(outside, "linked.json"), "utf8")).toBe(body);
+      expect(publicationCalls()).toHaveLength(2);
+    });
+
+    test("reports an absent record after a first-save kill before the temp opens", async () => {
+      interruptAt("before-temp-create");
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error.message).toContain("No task file was found during readback.");
+      expect(await readdir(metadataDirectory())).toEqual([]);
+      expect(publicationCalls()).toHaveLength(1);
+    });
+
+    test("does not overwrite a caught-failure outcome with readback", async () => {
+      await writeRecord();
+      // Even identical bytes cannot establish which publication supplied them.
+      acl.runWindowsSecurityScript.mockImplementation((path: string) => {
+        throw verifierFailure(path, "publication directory flush failed [previous-record-restored]");
+      });
+      const error = await writeRecord().catch((caught: unknown) => caught) as Error;
+      expect(error.message).toContain("the previous task file was left in place");
+      expect(error.message).not.toContain("The new task file is in place");
+    });
+  });
 });

@@ -339,10 +339,8 @@ const WINDOWS_PUBLISH_METHODS = [
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool ReadFile(SafeFileHandle handle, IntPtr bytes, int count, out int read, IntPtr overlapped);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool FlushFileBuffers(SafeFileHandle handle);",
   "[DllImport(\"kernel32.dll\", SetLastError = true)] static extern bool SetFileInformationByHandle(SafeFileHandle handle, int cls, IntPtr info, int size);",
-  // kernel32 SetFileInformationByHandle rejects a rename whose RootDirectory is set (ERROR_INVALID_PARAMETER),
-  // and with RootDirectory NULL it resolves a simple name against the process current directory. The
-  // directory-relative rename therefore goes to NtSetInformationFile(FileRenameInformationEx, class 65),
-  // which replaces the target atomically (one entry is never vacated) with FILE_RENAME_REPLACE_IF_EXISTS |
+  // NtSetInformationFile(FileRenameInformationEx, class 65) binds the rename to the directory handle
+  // and replaces the target atomically (the canonical name is never vacated) with FILE_RENAME_REPLACE_IF_EXISTS |
   // FILE_RENAME_POSIX_SEMANTICS, so a reader holding the old file open keeps reading it while the name
   // flips to the new file in one step (#2976 r9 reproducer R1, R2, R4, R6).
   "[DllImport(\"ntdll.dll\")] static extern int NtSetInformationFile(SafeFileHandle handle, out Result result, IntPtr info, int length, int cls);",
@@ -600,7 +598,12 @@ const WINDOWS_PUBLISH_HOOK_PATH = /^[A-Za-z]:\\[^|&;<>\r\n"]+\.ps1$/u;
  * fail) rides the same fault switch. Production leaves all three empty. The hook
  * does not skip identity, type, link, or NTFS checks.
  */
-export function publishWindowsCronFile(directory: string, identity: BigIntStats, data: string): void {
+export async function publishWindowsCronFile(
+  directory: string,
+  identity: BigIntStats,
+  data: string,
+  inspectRecord: () => Promise<Buffer | undefined>,
+): Promise<void> {
   if (Buffer.byteLength(data, "utf8") > MAX_CRON_FILE_BYTES) {
     throw new Error("Cron task file exceeds its byte limit");
   }
@@ -621,6 +624,29 @@ export function publishWindowsCronFile(directory: string, identity: BigIntStats,
     }, tmpdir(), Buffer.from(data, "utf8"));
   } catch (error) {
     if (error instanceof Error && error.name === "WindowsPrivatePathSecurityError") {
+      // A killed child cannot append a caught-failure marker. Read through the
+      // caller's verified storage boundary; matching bytes confirm the intended
+      // record is present, not that this attempt was acknowledged. Never retry
+      // the write here, or infer that a different record is the previous one.
+      if (windowsPublicationOutcome(error) === undefined && classifyWindowsCronFailure(error).kind === "unknown") {
+        let record: "new" | "different" | "absent" | "unknown" = "unknown";
+        try {
+          const current = await inspectRecord();
+          record = current === undefined ? "absent" : current.equals(Buffer.from(data, "utf8")) ? "new" : "different";
+        } catch { /* A failed readback cannot establish which record is in place. */ }
+        const outcome = record === "new"
+          ? "The new task file is in place, but the write was not acknowledged. Check the scheduled tasks before " +
+            "retrying; retrying an append can add the task twice."
+          : record === "different"
+          ? "The task file on disk does not match the requested new record. Check the scheduled tasks before retrying."
+          : record === "absent"
+          ? "No task file was found during readback. Check the scheduled tasks before retrying."
+          : "The task file left on disk could not be verified. Check the scheduled tasks before retrying.";
+        throw new CronStorageAclError(
+          `Durable cron storage could not acknowledge the task file in ${directory}. ${outcome}`,
+          directory, { cause: error },
+        );
+      }
       throw windowsCronAclError(directory, error, "record");
     }
     throw error;
