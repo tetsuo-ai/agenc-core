@@ -1485,6 +1485,11 @@ function componentSetForRequest(
   return [...components].sort();
 }
 
+// Only values created and recursively frozen by canonicalSnapshot qualify.
+// Object.isFrozen alone is insufficient: caller-owned objects may contain
+// mutable children or accessors. Weak ownership also avoids retaining histories.
+const canonicalSnapshots = new WeakSet<object>();
+
 function stableStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value, new Set()));
 }
@@ -1495,8 +1500,11 @@ function canonicalSnapshot<T>(value: T): T {
 
 function freezeCanonicalValue(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
+  if (canonicalSnapshots.has(value)) return value;
   for (const entry of Object.values(value)) freezeCanonicalValue(entry);
-  return Object.freeze(value);
+  Object.freeze(value);
+  canonicalSnapshots.add(value);
+  return value;
 }
 
 function canonicalize(value: unknown, ancestors: Set<object>): unknown {
@@ -1522,6 +1530,10 @@ function canonicalize(value: unknown, ancestors: Set<object>): unknown {
     throw new Error(`unsupported ${typeof value} value`);
   }
   if (typeof value !== "object") return String(value);
+  // A private snapshot is already acyclic, sorted and fully normalized.
+  // Reuse it when building the request digest and fallback estimate instead
+  // of recursively sorting and allocating the same unchanged tree again.
+  if (canonicalSnapshots.has(value)) return value;
   if (ancestors.has(value)) throw new Error("cyclic value");
   ancestors.add(value);
   try {
