@@ -1,3 +1,7 @@
+import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
+import { stripModelSuppliedAgenCInternalArgs } from "../tools/internal-args.js";
+import { sessionDispatchAuthority } from "../tools/session-dispatch-authority.js";
+import type { StreamModelRequestContract } from "../phases/stream-model.js";
 import { flushOneShotEffectJournal } from "../budget/admitted-tool-call.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
@@ -26,8 +30,9 @@ export async function* runMinimalTurn(
   messages: LLMMessage[],
   instructions: string,
   signal: AbortSignal,
+  prepareRequest?: (modelCalls: number, lastResponseUsage: LLMUsage | undefined) => Promise<{ request: StreamModelRequestContract; samplingContext: TurnContext } | null>,
 ): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage }> {
-  // Resolve the catalog, prompt, options and owner once for the whole turn.
+  // The initial options bound eligibility before any preparation work.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
   const start = messages.length - 1;
@@ -48,7 +53,21 @@ export async function* runMinimalTurn(
         handoff = true;
         return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
       }
-      const response = await session.services.provider.chatStream(messages, () => {}, options);
+      const prepared = prepareRequest ? await prepareRequest(modelCalls, lastResponseUsage) : undefined;
+      if (prepared === null) {
+        handoff = true;
+        return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
+      }
+      if (prepared) {
+        options = buildProviderOptions(prepared.request, prepared.samplingContext, signal, session);
+        // Attachments and permission instructions count toward the same bound.
+        // The canonical projection may rewrite the prefix, so use a fresh guard.
+        if (!createFastContextGuard(options)(prepared.request.input)) {
+          handoff = true;
+          return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
+        }
+      }
+      const response = await session.services.provider.chatStream(prepared?.request.input ?? messages, () => {}, options);
       modelCalls++;
       responses.push(response);
       if (response.error) throw response.error;
@@ -85,6 +104,23 @@ export async function* runMinimalTurn(
         observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
         try {
           const result = await session.services.registry.dispatch(call, {
+            prepareArguments: args => {
+              const projected = filesystemRootsForDispatch(call.name, stripModelSuppliedAgenCInternalArgs(args), {
+                approvalResolved: false, sandboxMode: ctx.sandboxPolicy.value, session,
+              });
+              const authority = {
+                ...sessionDispatchAuthority(session, session.services.configStore?.homeContext.path),
+                __onProgress: (event: { chunk: string; stream?: "stdout" | "stderr" }) => {
+                  observations.push({ type: "tool_progress", payload: {
+                    callId: call.id, toolName: call.name, ...event,
+                  } });
+                },
+              };
+              for (const [key, value] of Object.entries(authority)) {
+                Object.defineProperty(projected, key, { value, enumerable: false, configurable: true, writable: true });
+              }
+              return projected;
+            },
             abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
           });
           content = result.content;

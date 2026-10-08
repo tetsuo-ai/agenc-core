@@ -2252,7 +2252,19 @@ async function* runTurnKernelInner(
     const signal = AbortSignal.any([session.abortController.signal, runningTask.abortController.signal,
       ...(opts.signal ? [opts.signal] : [])]);
     let content = "";
-    const loop = runMinimalTurn(session, ctx, state.messages, modelInstructions, signal);
+    const fastMessages = state.messages;
+    const loop = runMinimalTurn(session, ctx, fastMessages, modelInstructions, signal, async (modelCalls, lastResponseUsage) => {
+      state.turnCount = modelCalls;
+      state.lastResponseUsage = lastResponseUsage;
+      state.messages = fastMessages;
+      const prepared = await prepareSamplingRequestBoundary(state, ctx, session, signal, [],
+        sessionQuerySourceForTurn(session, opts.querySource));
+      if (state.messages !== fastMessages) {
+        fastMessages.splice(0, fastMessages.length, ...state.messages);
+        state.messages = fastMessages;
+      }
+      return prepared.kind === "request" ? prepared : null;
+    });
     try {
       for (;;) {
         const next = await withOneShotFastMode(() => loop.next());
