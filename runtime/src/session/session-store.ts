@@ -1755,6 +1755,10 @@ export interface SessionStoreDiagnostic {
 
 export class SessionStore {
   private oneShotFastMode = false;
+  finishOneShotFastMode(): void {
+    this.oneShotFastMode = false;
+    if (!this.flushBatch(true)) throw new Error("cannot leave fast mode without flushing its transcript");
+  }
   enableOneShotFastMode(): void {
     if (!this.opened || this.closed) throw new Error("fast mode requires an open session store");
     this.oneShotFastMode = true;

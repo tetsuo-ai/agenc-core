@@ -18,7 +18,7 @@ test("only the owned async scope selects fast admission, never the old environme
   const result = { content: "answer", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test", finishReason: "stop" as const };
   const invoke = vi.fn(async () => result);
   // No services/provider access is permitted along this deliberately stripped path.
-  const params = { options, invoke } as unknown as Parameters<typeof runAdmittedModelCall>[0];
+  const params = { session: { services: {} }, options, invoke } as unknown as Parameters<typeof runAdmittedModelCall>[0];
   expect(await withOneShotFastMode(() => runAdmittedModelCall(params))).toBe(result);
   expect(invoke).toHaveBeenCalledWith(options);
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "0");
@@ -29,7 +29,7 @@ test("tool bypass still propagates cancellation and the actual result", async ()
   vi.stubEnv("AGENC_EXPERIMENT_MINIMAL", "1");
   const controller = new AbortController();
   const result = { content: "captured stdout", isError: false };
-  const params = { signal: controller.signal, invoke: async (context: { signal: AbortSignal; crossEffectBoundary(): void }) => {
+  const params = { session: { services: {} }, signal: controller.signal, invoke: async (context: { signal: AbortSignal; crossEffectBoundary(): void }) => {
     context.crossEffectBoundary();
     controller.abort(new Error("stop"));
     expect(context.signal.aborted).toBe(true);

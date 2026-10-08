@@ -1,4 +1,7 @@
 /** One-shot bypass turn loop. Session data is finalized once at the terminal boundary. */
+import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
+import { createFastContextGuard } from "./fast-context-guard.js";
+import type { EventMsg } from "./event-log.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { buildProviderOptions } from "../phases/stream-model.js";
@@ -17,16 +20,31 @@ export async function* runMinimalTurn(
   messages: LLMMessage[],
   instructions: string,
   signal: AbortSignal,
-): AsyncGenerator<PhaseEvent, Terminal> {
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number }> {
   // Resolve the catalog, prompt, options and owner once for the whole turn.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
   const start = messages.length - 1;
+  let fits = createFastContextGuard(options);
+  let handoff = false;
+  let modelCalls = 0;
+  const observations: EventMsg[] = [];
   yield { type: "turn_start", turnIndex: 0 };
   try {
     for (;;) {
       signal.throwIfAborted();
+      if (!fits(messages) || requiresAtomicSpendAdmission(session) ||
+          (typeof ctx.config?.maxBudgetUsd === "number" && ctx.config.maxBudgetUsd > 0) ||
+          modelCalls >= (ctx.config?.maxTurns ?? 100)) {
+        handoff = true;
+        return { reason: "continue_normal", modelCalls };
+      }
       const response = await session.services.provider.chatStream(messages, () => {}, options);
+      modelCalls++;
+      if (response.error) throw response.error;
+      if (response.usage) observations.push({ type: "token_count", payload: {
+        ...response.usage, model: response.model, provider: session.services.provider.name,
+      } });
       signal.throwIfAborted();
       messages.push({ role: "assistant", content: response.content,
         ...(response.toolCalls.length ? { toolCalls: response.toolCalls } : {}),
@@ -44,26 +62,41 @@ export async function* runMinimalTurn(
       for (const call of response.toolCalls) {
         signal.throwIfAborted();
         let content: string;
+        let isError = false;
+        const started = performance.now();
+        observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
         try {
           const result = await session.services.registry.dispatch(call, {
             abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
           });
           content = result.content;
+          isError = result.isError === true;
         } catch (error) {
           signal.throwIfAborted();
+          isError = true;
           content = JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
         }
+        observations.push({ type: "tool_call_completed", payload: {
+          callId: call.id, toolName: call.name, result: content, isError, durationMs: performance.now() - started,
+        } });
         messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content });
       }
       // Discovery can reveal new capabilities during this turn.
-      options = { ...options, tools: builtTools(session, ctx) };
+      const tools = builtTools(session, ctx);
+      if (JSON.stringify(tools) !== JSON.stringify(options.tools)) {
+        options = { ...options, tools, toolRouting: { allowedToolNames: tools.map(tool => tool.function.name) } };
+        fits = createFastContextGuard(options);
+      }
     }
   } finally {
     // The one-shot crash contract buffers this run; serialization redacts at close.
+    for (const msg of observations) session.emit({ id: session.nextInternalSubId(), msg });
+    if (!handoff) {
     await session.state.with(state => { state.history = messages; });
     const store = session.rolloutStore?.store;
     for (const message of messages.slice(start)) {
       store?.appendRollout({ type: "response_item", payload: llmMessageToResponseItem(message) });
+    }
     }
   }
 }

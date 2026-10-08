@@ -1,5 +1,3 @@
-import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
-import { minimalExec } from "./minimal-exec.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -528,7 +526,6 @@ function readFileHead(path: string, limitBytes: number): string {
 }
 
 export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike {
-  private minimalEnvironment: Record<string, string> | undefined;
   readonly maxTimeoutMs: number;
   private readonly cwd: string;
   private readonly env?: Record<string, string>;
@@ -665,10 +662,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async execCommand(
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
-    if (oneShotFastModeActive() && request.tty !== true && request.yield_time_ms === undefined) {
-      this.minimalEnvironment ??= buildEnv(this.baseEnv, this.env);
-      return minimalExec(request, this.cwd, this.shellPath, this.minimalEnvironment);
-    }
     const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
     this.assertOwnerAdmission(request.ownerId, request.ownerBinding);
     if (request.cmd.trim().length === 0) {

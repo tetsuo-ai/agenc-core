@@ -2263,6 +2263,7 @@ async function* runTurnKernelInner(
       ? { initialSkipCacheWrite: opts.skipCacheWrite }
       : {}),
   });
+  let continuedFromFastMode = false;
   if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
     session.rolloutStore?.store.enableOneShotFastMode();
     emitTurnStarted(resolvedReferenceContextItem);
@@ -2274,6 +2275,12 @@ async function* runTurnKernelInner(
       for (;;) {
         const next = await withOneShotFastMode(() => loop.next());
         if (next.done) {
+          if (next.value.reason === "continue_normal") {
+            continuedFromFastMode = true;
+            state.turnCount = next.value.modelCalls;
+            session.rolloutStore?.store.finishOneShotFastMode();
+            break;
+          }
           emitTurnComplete(content);
           return next.value;
         }
@@ -2605,7 +2612,7 @@ async function* runTurnKernelInner(
   // cannot bleed into this turn's `isOpen(ctx.subId)` check below.
   session.services.guardianRejectionCircuitBreaker?.clearTurn(ctx.subId);
 
-  emitTurnStarted(resolvedReferenceContextItem);
+  if (!continuedFromFastMode) emitTurnStarted(resolvedReferenceContextItem);
   persistTurnRolloutBaseline();
   session.budgetTracker?.resetForTurn();
 

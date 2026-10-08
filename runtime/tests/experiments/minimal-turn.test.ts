@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import type { LLMMessage } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
 import type { TurnContext } from "../../src/session/turn-context.js";
-vi.mock("../../src/phases/stream-model.js", () => ({ buildProviderOptions: () => ({ maxOutputTokens: 8192, reasoningEffort: "high" }) }));
+vi.mock("../../src/phases/stream-model.js", () => ({ buildProviderOptions: () => ({ maxOutputTokens: 8192, contextWindowTokens: 131072, reasoningEffort: "high" }) }));
 vi.mock("../../src/session/run-turn-sampling-request.js", () => ({
   builtTools: () => [], buildPrompt: (input: unknown) => ({ input }),
 }));
@@ -62,4 +62,16 @@ test("every advertised name including tool discovery uses full registry dispatch
     [{ role: "user", content: "use tools" }], "", new AbortController().signal)) {}
   expect(f.execCommand.mock.calls.map(call => (call as unknown as [{ name: string }])[0].name)).toEqual(names);
   expect(f.snapshots[1]?.filter(message => message.role === "tool")).toHaveLength(names.length);
+});
+
+
+test("near-limit history hands off before another provider request or tool effect", async () => {
+  const f = fixture([]);
+  const loop = runMinimalTurn(f.session, { config: {} } as TurnContext,
+    [{ role: "user", content: "oversized ".repeat(20_000) }], "", new AbortController().signal);
+  await loop.next();
+  expect(await loop.next()).toMatchObject({ done: true, value: { reason: "continue_normal", modelCalls: 0 } });
+  expect(f.provider.chatStream).not.toHaveBeenCalled();
+  expect(f.execCommand).not.toHaveBeenCalled();
+  expect(f.appendRollout).not.toHaveBeenCalled();
 });

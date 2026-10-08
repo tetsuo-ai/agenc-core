@@ -17,5 +17,10 @@ export function bypassFastModeEnabled(session: Session, ctx: TurnContext): boole
     ctx.permissionMode === "bypassPermissions" && ctx.sandboxPolicy.value === "danger_full_access" &&
     session.services.configStore?.current().bypassFastMode !== false;
 }
+export function requiresAtomicSpendAdmission(session: Session): boolean {
+  const scope = session.services.executionAdmission?.scope;
+  return scope?.hasHardCostCap === true || scope?.hasHardTokenCap === true ||
+    scope?.maxCostUsd !== undefined || scope?.maxTokens !== undefined;
+}
 export function oneShotFastModeActive(): boolean { return active.getStore() === true; }
 export function withOneShotFastMode<T>(run: () => T): T { return active.run(true, run); }
