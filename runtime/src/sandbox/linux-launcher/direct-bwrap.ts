@@ -163,9 +163,11 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
     if (!bwrap.usesBubblewrap || bwrap.protectedCreateTargets.length !== 0) return undefined;
     const artifact = namespaceInit ? prepareNamespaceInitArtifact(root, bwrap.args) : undefined;
     if (namespaceInit && artifact === undefined) return undefined;
+    let sessionExecutable: { path: string; identity: string } | undefined;
     const isCurrent = (): boolean => {
       try {
-        return (artifact === undefined || artifact.isCurrent()) && [input.program, helper, shell].every((file, index) => fileIdentity(file) === identities[index]) &&
+        return (sessionExecutable === undefined || fileIdentity(sessionExecutable.path) === sessionExecutable.identity) &&
+          (artifact === undefined || artifact.isCurrent()) && [input.program, helper, shell].every((file, index) => fileIdentity(file) === identities[index]) &&
           bubblewrapCapabilityContext(launcher.program, input.cwd, env) === context;
       } catch { return false; }
     };
@@ -184,6 +186,7 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
           permissions.fileSystem.entries.some(entry => entry.path.kind === "glob")) return undefined;
       // The executor must be immutable from every command's mount view.
       if (!admitsNamespaceInitMount(bwrap.args, executable)) return undefined;
+      sessionExecutable = { path: executable, identity: fileIdentity(executable) };
       const policyPaths = permissions.fileSystem.entries.flatMap(entry => {
         const resolved = resolvePermissionPath(entry.path, options.sandboxPolicyCwd, options.sessionTempRoot);
         return resolved === null ? [] : [resolved];
@@ -197,7 +200,7 @@ function preparePlan(input: DirectBwrapInput, namespaceInit: boolean, session = 
           options.sandboxPolicyCwd, options.commandCwd, options.sessionTempRoot] };
     }
     const serialize = namespaceInit ? serializeProcessBrokerV3Payload : serializeProcessBrokerV2Payload;
-    const payload = serialize({ program: launcher.program, args: bwrap.args,
+    const payload = serialize({ program: launcher.program, args: sessionSandbox?.args ?? bwrap.args,
       env: { ...env, AGENC_LINUX_SANDBOX_ACTIVE: "1" }, ownerPid: process.pid,
       ...(seccomp === undefined ? {} : { seccomp }) });
     const ownedSource = source;

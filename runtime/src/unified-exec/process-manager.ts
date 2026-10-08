@@ -1,4 +1,4 @@
-import { SessionSandbox } from "../sandbox/linux-launcher/session-sandbox.js";
+import { SessionSandbox, SessionSandboxCleanupError } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -1654,6 +1654,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         } : {}),
       });
     } catch (error) {
+      if (error instanceof SessionSandboxCleanupError) this.poisonSandboxAuthority(error);
       probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir

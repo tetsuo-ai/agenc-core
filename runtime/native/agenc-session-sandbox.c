@@ -68,12 +68,15 @@ static void protect_keeper(void) {
     BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1),
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
 #endif
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 3),
+    // Dumpability already protects ptrace and /proc/1/fd. prlimit writes
+    // use a same-UID check instead, so deny only modifications to PID 1.
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 7),
     BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, 0),
-    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 1, 0),
-    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_writev, 0, 1),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 5),
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
+    BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, 0, 2, 0),
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2]) + 4),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
   };

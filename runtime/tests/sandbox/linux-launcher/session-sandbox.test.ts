@@ -74,6 +74,8 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
     const result = await run("python3 -c 'import resource; resource.prlimit(1, resource.RLIMIT_NOFILE, (3,3))'");
     expect(result.code).not.toBe(0);
     expect((await run("echo intact")).out).toBe("intact\n");
+    expect((await run("python3 -c 'import resource; resource.prlimit(1, resource.RLIMIT_NOFILE)' ")).code).toBe(0);
+    expect((await run("python3 -c 'import resource,subprocess; p=subprocess.Popen([\"sleep\",\"30\"]); resource.prlimit(p.pid, resource.RLIMIT_NOFILE, (32,32)); p.terminate(); p.wait()'")).code).toBe(0);
   });
   it("rebuilds after replacement of a mounted root", async () => {
     const first = await run("echo old > marker");
@@ -173,7 +175,16 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
     let ready = false; child!.stdout.on("data", () => { ready = true; });
     await vi.waitFor(() => expect(ready).toBe(true));
     const closed = new Promise<void>(resolve => child!.once("close", () => resolve()));
-    process.kill(child!.pid!, "SIGKILL"); await closed;
+    const descendants = (pid: number): number[] => {
+      const children = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
+      return children.flatMap(child => [child, ...descendants(child)]);
+    };
+    const keeper = descendants(child!.pid!).find(pid => {
+      const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+      return /^NSpid:.*\s1$/m.test(status);
+    });
+    expect(keeper).toBeDefined();
+    process.kill(keeper!, "SIGKILL"); await closed;
     expect((await terminateProcessTreeAndReport(child!)).commandOutcome?.kind).toBe("unavailable");
     const result = await run("cat effects");
     expect(result.out).toBe("effect\n"); expect(result.pid).not.toBe(child!.pid);
@@ -211,6 +222,12 @@ describe.runIf(process.platform === "linux")("session sandbox", () => {
       await new Promise(resolve => setTimeout(resolve, 1100));
       expect(fs.existsSync(path.join(root, "work/daemon-leak"))).toBe(false);
     } finally { daemon.kill("SIGKILL"); }
+  });
+
+  it("does not interpret command stdout as a control message", async () => {
+    const result = await run("printf 'D\\000\\000\\000\\005\\000\\000\\000\\000\\000'; exit 9");
+    expect(result.code).toBe(9); expect(result.out.length).toBe(10);
+    expect((await run("echo after")).out).toBe("after\n");
   });
 
 });

@@ -1,12 +1,20 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { prepareSessionBwrapPlan } from "./direct-bwrap.js";
-import { consumeDirectBwrapPlan } from "../../utils/direct-bwrap-handoff.js";
+import { consumeDirectBwrapPlan, registerDirectBwrapPlan } from "../../utils/direct-bwrap-handoff.js";
+import { spawnContainedProcess, terminateProcessTreeAndReport } from "../../utils/supervisedProcess.js";
 import { sessionProcessBoundaries } from "../../utils/session-process-boundary.js";
 import type { ProcessBrokerV3Outcome } from "../../utils/process-broker-protocol-v3.js";
+
+export class SessionSandboxCleanupError extends Error {
+  constructor(cause: unknown) {
+    super("persistent sandbox process-tree cleanup could not be proven", { cause });
+    this.name = "SessionSandboxCleanupError";
+  }
+}
 
 interface Invocation {
   readonly program: string;
@@ -40,7 +48,7 @@ function invocationKey(input: Invocation): string {
 interface Active {
   readonly child: ChildProcessWithoutNullStreams;
   readonly settled: Promise<void>;
-  readonly finish: (status: number | undefined, residual: boolean) => void;
+  readonly finish: (status: number | undefined, residual: boolean, cleanupError?: Error) => void;
 }
 
 /** One idle-or-running namespace. Busy callers retain per-command isolation. */
@@ -56,17 +64,19 @@ export class SessionSandbox {
   private closing = false;
   private closeTask?: Promise<void>;
   private detachAbort?: () => void;
+  private cleanupFailure?: SessionSandboxCleanupError;
 
   private watchAbort(signal?: AbortSignal): void {
     this.detachAbort?.();
     this.detachAbort = undefined;
     if (!signal) return;
-    const abort = (): void => { void this.close(); };
+    const abort = (): void => { void this.close().catch(() => {}); };
     signal.addEventListener("abort", abort, { once: true });
     this.detachAbort = () => signal.removeEventListener("abort", abort);
   }
 
   async spawn(input: Invocation, validateAdmission: () => void, signal?: AbortSignal): Promise<ChildProcessWithoutNullStreams | undefined> {
+    if (this.cleanupFailure) throw this.cleanupFailure;
     if (process.platform !== "linux" || this.active || this.starting || this.closing) return undefined;
     const key = invocationKey(input);
     let current = this.key === key;
@@ -95,17 +105,28 @@ export class SessionSandbox {
           this.identities = [...paths].map(file => [file, mountIdentity(file)] as const);
           validateAdmission();
           this.received = Buffer.alloc(0);
-          const server = spawn(launch.program, [...launch.args], {
-            cwd: input.cwd, env: launch.env, detached: true,
-            stdio: handoff.sourceFd === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", handoff.sourceFd],
-          }) as ChildProcessWithoutNullStreams;
+          // The native broker is amortized over the session. Its private
+          // status pipe remains the independent proof for namespace failure.
+          // A declined direct launch may only execute this fixed no-op, never
+          // the model command, before falling back to the ordinary launcher.
+          const server = spawnContainedProcess(process.execPath, ["-e", "process.exit(125)"], {
+            cwd: input.cwd, env: launch.env, linuxContainment: "subreaper",
+            directBwrap: { prepare: () => registerDirectBwrapPlan(handoff),
+              validateAdmission, signal: new AbortController().signal },
+          });
           this.server = server;
           this.closed = new Promise<void>(resolve => server.once("close", () => {
-            if (this.server === server) {
-              this.server = undefined; this.key = undefined;
-              this.active?.finish(undefined, false);
-            }
-            resolve();
+            const finish = (error?: SessionSandboxCleanupError): void => {
+              if (this.server === server) {
+                this.server = undefined; this.key = undefined;
+                this.cleanupFailure ??= error;
+                this.active?.finish(undefined, false, error);
+              }
+              resolve();
+            };
+            void terminateProcessTreeAndReport(server).then(
+              () => finish(), error => finish(new SessionSandboxCleanupError(error)),
+            );
           }));
           server.stdin.on("error", () => { server.kill("SIGKILL"); });
           server.stderr.resume();
@@ -149,11 +170,13 @@ export class SessionSandbox {
       },
     }) as unknown as ChildProcessWithoutNullStreams;
     let outcome: ProcessBrokerV3Outcome | undefined;
+    let cleanupError: Error | undefined;
     let resolve!: () => void;
     const settled = new Promise<void>(r => { resolve = r; });
-    const finish = (status: number | undefined, residual: boolean): void => {
+    const finish = (status: number | undefined, residual: boolean, failure?: Error): void => {
       if (this.active?.child !== child) return;
       this.active = undefined;
+      cleanupError = failure;
       outcome = status === undefined ? { kind: "unavailable", residual: "unknown" } : {
         kind: "reported", result: (status & 127) === 0
           ? { kind: "exit", code: (status >> 8) & 255 }
@@ -166,17 +189,18 @@ export class SessionSandbox {
     this.active = { child, settled, finish };
     sessionProcessBoundaries.set(child, {
       alive: () => this.active?.child === child,
-      settled, outcome: () => outcome,
+      settled, outcome: () => cleanupError ? undefined : outcome,
       terminate: async () => {
         if (this.active?.child === child) {
           child.kill("SIGTERM");
           const force = setTimeout(() => child.kill("SIGKILL"), 500);
           let timer: NodeJS.Timeout | undefined;
           await Promise.race([settled, new Promise<void>(resolve => {
-            timer = setTimeout(() => { void this.killServer().then(resolve); }, 2000);
+            timer = setTimeout(() => { void this.killServer().then(resolve, resolve); }, 2000);
           })]);
           clearTimeout(timer); clearTimeout(force);
         }
+        if (cleanupError) throw cleanupError;
         return { commandOutcome: outcome,
           residualProcessesTerminated: outcome?.kind === "reported" && outcome.residual === "observed",
           residualProcessesObserved: outcome?.kind === "reported" && outcome.residual === "observed" };
@@ -191,7 +215,7 @@ export class SessionSandbox {
     this.received = Buffer.concat([this.received, data]);
     while (this.received.length >= 5) {
       const length = this.received.readUInt32BE(1);
-      if (length > 2 * 1024 * 1024) { void this.shutdown(false); return; }
+      if (length > 2 * 1024 * 1024) { void this.shutdown(false).catch(() => {}); return; }
       if (this.received.length < length + 5) return;
       const type = String.fromCharCode(this.received[0]!);
       const body = this.received.subarray(5, length + 5);
@@ -201,7 +225,7 @@ export class SessionSandbox {
       else if (type === "X" && this.active) this.active.child.stderr.push(body);
       else if (type === "D" && length === 5 && this.active && body[4]! <= 1 && terminalWaitStatus(body.readUInt32BE(0)))
         this.active.finish(body.readUInt32BE(0), body[4] === 1);
-      else { void this.shutdown(false); return; }
+      else { void this.shutdown(false).catch(() => {}); return; }
     }
   }
 
@@ -222,10 +246,11 @@ export class SessionSandbox {
 
   private async killServer(): Promise<void> {
     const server = this.server;
-    if (!server) return;
+    if (!server) { if (this.cleanupFailure) throw this.cleanupFailure; return; }
     server.kill("SIGKILL");
     await this.closed;
     server.stdin.destroy(); server.stdout.destroy(); server.stderr.destroy();
+    if (this.cleanupFailure) throw this.cleanupFailure;
   }
 }
 
