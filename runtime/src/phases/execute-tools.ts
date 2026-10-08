@@ -134,7 +134,7 @@ function toolResultMessage(
   return message;
 }
 
-function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
+export function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
   if (!result.contentItems || result.contentItems.length === 0) {
     return result.content;
   }

@@ -75,3 +75,18 @@ test("near-limit history hands off before another provider request or tool effec
   expect(f.execCommand).not.toHaveBeenCalled();
   expect(f.appendRollout).not.toHaveBeenCalled();
 });
+
+
+test("keeps structured image tool results before handing the next request to full accounting", async () => {
+  const f = fixture([{ content: "", toolCalls: [{ id: "image", name: "mcp.camera.capture", arguments: "{}" }] }]);
+  f.execCommand.mockResolvedValueOnce({ content: "image", contentItems: [
+    { type: "input_image", image_url: "https://example.test/image" },
+  ] } as never);
+  const loop = runMinimalTurn(f.session, { config: {} } as TurnContext,
+    [{ role: "user", content: "look" }], "", new AbortController().signal);
+  await loop.next();
+  const terminal = await loop.next();
+  expect(terminal).toMatchObject({ done: true, value: { reason: "continue_normal", modelCalls: 1 } });
+  expect(f.execCommand).toHaveBeenCalledOnce();
+  expect(f.provider.chatStream).toHaveBeenCalledOnce();
+});

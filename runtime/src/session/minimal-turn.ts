@@ -1,3 +1,4 @@
+import { toolResultContent } from "../phases/execute-tools.js";
 /** One-shot bypass turn loop. Session data is finalized once at the terminal boundary. */
 import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 import { createFastContextGuard } from "./fast-context-guard.js";
@@ -66,6 +67,7 @@ export async function* runMinimalTurn(
       for (const call of response.toolCalls) {
         signal.throwIfAborted();
         let content: string;
+        let modelContent: LLMMessage["content"] | undefined;
         let isError = false;
         const started = performance.now();
         observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
@@ -74,6 +76,7 @@ export async function* runMinimalTurn(
             abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
           });
           content = result.content;
+          modelContent = toolResultContent(result);
           isError = result.isError === true;
         } catch (error) {
           signal.throwIfAborted();
@@ -83,7 +86,7 @@ export async function* runMinimalTurn(
         observations.push({ type: "tool_call_completed", payload: {
           callId: call.id, toolName: call.name, result: content, isError, durationMs: performance.now() - started,
         } });
-        messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content });
+        messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content: modelContent ?? content });
       }
       // Discovery can reveal new capabilities during this turn.
       const tools = builtTools(session, ctx);
