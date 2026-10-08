@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { fsyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,8 @@ import { SessionStore } from "../../src/session/session-store.js";
 import { SessionWriteBehindQueue, registerSessionWriteBehind, withSessionWriteBehind } from "../../src/session/write-behind.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { ProviderHttpClientSession } from "../../src/llm/client-session.js";
+import { Session } from "../../src/session/session.js";
+import { EventLog } from "../../src/session/event-log.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -18,7 +20,61 @@ function openStore() {
   return store;
 }
 
+function emittingSession(store: SessionStore, seen: string[]): Session {
+  const eventLog = new EventLog();
+  const session = Object.assign(Object.create(Session.prototype), {
+    eventLog,
+    rolloutStore: { store, append: store.append.bind(store) },
+    txEvent: { send: (event: { seq: number }) => { seen.push(`transport:${event.seq}`); } },
+    isRolloutPersistenceSuspended: () => false,
+  }) as Session;
+  eventLog.setVisibilityBarrier(() => session.writeBehind.drain());
+  return session;
+}
+
 describe("write-behind persistence barriers", () => {
+  it("retains listener/transport order through a reentrant read and emit", () => {
+    const store = openStore();
+    const seen: string[] = [];
+    const session = emittingSession(store, seen);
+    let readSequences: (number | undefined)[] = [];
+    session.eventLog.subscribe(event => {
+      seen.push(`listener:${event.seq}`);
+      if (event.seq === 1) {
+        readSequences = store.readAll().filter(item => item.type === "event_msg").map(item => item.payload.seq);
+        session.emit({ id: "nested", msg: { type: "warning", payload: { cause: "test", message: "nested" } } }, { durable: true });
+      }
+    });
+    try {
+      store.writeBehind.beginStep();
+      for (const id of ["one", "two"]) session.emit({ id, msg: { type: "warning", payload: { cause: "test", message: id } } }, { durable: true });
+      expect(seen).toEqual([]);
+      store.writeBehind.finish();
+      expect(readSequences).toEqual([1, 2]);
+      expect(seen).toEqual(["listener:1", "transport:1", "listener:2", "transport:2", "listener:3", "transport:3"]);
+      expect(store.readAll().filter(item => item.type === "event_msg").map(item => item.payload.seq)).toEqual([1, 2, 3]);
+    } finally { store.close(); }
+  });
+
+  it("never publishes pending events when a deferred fsync emits a diagnostic then fails", () => {
+    const store = openStore();
+    const seen: string[] = [];
+    const session = emittingSession(store, seen);
+    session.eventLog.subscribe(event => { seen.push(`listener:${event.seq}`); });
+    store.setDiagnosticListener(() => {
+      session.emit({ id: "diagnostic", msg: { type: "warning", payload: { cause: "test", message: "failed" } } });
+    });
+    store.writeBehind.beginStep();
+    session.emit({ id: "one", msg: { type: "warning", payload: { cause: "test", message: "one" } } }, { durable: true });
+    session.emit({ id: "two", msg: { type: "warning", payload: { cause: "test", message: "two" } } }, { durable: true });
+    store.setFsyncImplForTest(() => { throw Object.assign(new Error("injected fsync error"), { code: "EIO" }); });
+    expect(() => store.writeBehind.drain()).toThrow(/was not fsync-committed/);
+    expect(seen).toEqual([]);
+    expect(() => store.readAll()).toThrow(/was not fsync-committed/);
+    store.setFsyncImplForTest(fsyncSync);
+    expect(() => store.close()).toThrow(/was not fsync-committed/);
+  });
+
   it("captures caller mutations and writes identical ordered bytes after a read barrier", () => {
     const store = openStore();
     try {

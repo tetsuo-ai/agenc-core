@@ -4991,13 +4991,13 @@ export class Session {
       return event;
     }
     hitM4DurabilityFailpoint("before_event_publish");
-    this.eventLog.publish(event, (published) => {
+    this.writeBehind.observe(() => this.eventLog.publish(event, (published) => {
       // Compatibility consumers belong to the same FIFO publication queue.
       // A listener may synchronously emit another event; keeping this callback
       // inside EventLog prevents txEvent from observing N+1 before N.
       this.txEvent.send(published);
       hitM4DurabilityFailpoint("after_event_publish");
-    });
+    }));
     return event;
   }
 

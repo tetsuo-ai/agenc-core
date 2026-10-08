@@ -2240,7 +2240,11 @@ export class SessionStore {
   private releaseDeferredFlushDiagnostics(): void {
     if (this.flushDepth !== 0) return;
     const deferred = this.deferredFlushDiagnostics.splice(0);
-    for (const d of deferred) this.deliverDiagnostic(d);
+    for (const d of deferred) {
+      if (this.writeBehind.draining) {
+        this.writeBehind.enqueue("persistence-diagnostic", () => this.deliverDiagnostic(d));
+      } else this.deliverDiagnostic(d);
+    }
   }
 
   /** Drain any buffered diagnostics. Used by tests. */
@@ -2283,6 +2287,7 @@ export class SessionStore {
    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
   append(event: Event, opts: AppendOptions = {}): boolean {
+    this.writeBehind.assertHealthy();
     if (!this.opened || this.closed) return false;
     if (this.writeBehind.deferring) {
       const captured = structuredClone(event);
@@ -2374,6 +2379,7 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
+    this.writeBehind.assertHealthy();
     if (this.writeBehind.deferring) {
       const captured = structuredClone(item);
       const options = { ...opts };
@@ -2407,7 +2413,7 @@ export class SessionStore {
    * for tests.
    */
   flushBatch(durable: boolean): boolean {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
     // the event loop that streams to every client, so it is worth reporting.
     // It must NOT go through this store's diagnostic channel:
@@ -2572,7 +2578,7 @@ export class SessionStore {
    * ambiguous fsync failure.
    */
   syncCanonicalTail(): void {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     if (!this.opened || this.closed) {
       throw new Error("cannot sync canonical tail on a closed store");
     }
@@ -2865,7 +2871,7 @@ export class SessionStore {
    * outside this module can route through the same durability dance.
    */
   rewriteRolloutAtomically(bytes: string | Buffer): void {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",
@@ -3733,32 +3739,32 @@ export class SessionStore {
 
   /** I-88: read the per-turn tool-result-bytes index. */
   getToolResultBytes(turnId: string): number {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return this.toolResultBytesByTurn.get(turnId) ?? 0;
   }
 
   getToolResultBytesIndexSnapshot(): ReadonlyMap<string, number> {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return new Map(this.toolResultBytesByTurn);
   }
 
   getTokenEstimate(turnId: string): number {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return this.tokenEstimateByTurn.get(turnId) ?? 0;
   }
 
   getTokenEstimateIndexSnapshot(): ReadonlyMap<string, number> {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return new Map(this.tokenEstimateByTurn);
   }
 
   getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return new Map(this.toolCallTurnIds);
   }
 
   getCompactionIndexSnapshot(): CompactionIndexSnapshot {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return {
       toolResultBytesByTurn: this.getToolResultBytesIndexSnapshot(),
       tokenEstimateByTurn: this.getTokenEstimateIndexSnapshot(),
@@ -3816,7 +3822,7 @@ export class SessionStore {
    * Receipts are fsynced before publication; pending non-durable events need
    * not be flushed to read that committed prefix. Never takes a second lease. */
   scanCanonicalChunks(maxBytes: number, consume: (chunk: Uint8Array) => void): void {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     if (!this.opened || this.closed) throw new Error("cannot read a closed canonical store");
     const identity = this.canonicalSourceIdentity();
     const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
@@ -3848,7 +3854,7 @@ export class SessionStore {
 
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",
@@ -4076,7 +4082,7 @@ export class SessionStore {
 
   /** Accessor for the byte-offset index (T12 `/resume` fast-seek). */
   getByteOffsetForSeq(seq: EventSeq): number | undefined {
-    if (!this.writeBehind.draining) this.writeBehind.drain();
+    this.writeBehind.barrier();
     return this.offsetsBySeq.get(seq);
   }
 
