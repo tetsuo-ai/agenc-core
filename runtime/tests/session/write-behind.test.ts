@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { SessionWriteBehindQueue, currentSessionWriteBehind, withSessionWriteBehind } from "../../src/session/write-behind.js";
+import { SessionWriteBehindQueue, currentSessionWriteBehind, withSessionWriteBehind, registerSessionWriteBehind, finishAllSessionWriteBehind } from "../../src/session/write-behind.js";
 
 describe("session write-behind queue", () => {
+  it("finishes other registered sessions before reporting a daemon shutdown failure", () => {
+    const failed = new SessionWriteBehindQueue();
+    const healthy = new SessionWriteBehindQueue();
+    const releaseFailed = registerSessionWriteBehind("queue-tests/failed/rollout.jsonl", failed);
+    const releaseHealthy = registerSessionWriteBehind("queue-tests/healthy/rollout.jsonl", healthy);
+    const failure = new Error("one session lost its disk");
+    let committed = false;
+    try {
+      failed.beginStep(); healthy.beginStep();
+      failed.defer("failed", () => { throw failure; });
+      healthy.defer("other-session", () => { committed = true; });
+      expect(() => finishAllSessionWriteBehind()).toThrow(failure);
+      expect(committed).toBe(true);
+      expect(healthy.pending).toBe(0);
+      expect(healthy.deferring).toBe(false);
+      expect(failed.pending).toBe(1);
+      expect(() => failed.drain()).toThrow(failure);
+    } finally { releaseFailed(); releaseHealthy(); }
+  });
+
   it("runs jobs in order, keeps nested work synchronous, and closes the loss window", () => {
     const queue = new SessionWriteBehindQueue();
     const seen: number[] = [];

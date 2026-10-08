@@ -41,6 +41,17 @@ export function drainAllSessionWriteBehind(): void {
   for (const { queue } of writers.values()) queue.barrier();
 }
 
+/** Daemon teardown must finish every writer even if one session has failed. */
+export function finishAllSessionWriteBehind(): void {
+  const errors: unknown[] = [];
+  for (const queue of new Set([...writers.values()].map(entry => entry.queue))) {
+    try { queue.finish(); }
+    catch (error) { errors.push(error); }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "session persistence failed during daemon shutdown");
+}
+
 /** One session's ordered persistence work. Jobs must capture their inputs. */
 export class SessionWriteBehindQueue {
   private jobs: WriteBehindJob[] = [];
