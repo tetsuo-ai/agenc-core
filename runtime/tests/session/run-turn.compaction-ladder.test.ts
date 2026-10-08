@@ -4,6 +4,8 @@ import type { ToolRegistry } from "../../src/tool-registry.js";
 import { classifyTurnTerminal } from "../../src/contracts/turn-terminal.js";
 import { runTurn, setAutoCompactImplForTests } from "../../src/session/run-turn.js";
 import type { AutoCompactResult } from "../../src/session/run-turn-compaction.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { bypassFastModeEnabled } from "../../src/one-shot-fast-mode.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
@@ -42,7 +44,7 @@ function committed(summary: string): AutoCompactResult {
  * defers and the pre-dispatch check makes one mandatory attempt (the seam
  * the ladder hangs off). Mirrors `run-turn.advisory-compaction.test.ts`.
  */
-function createToolExercise(options: { readonly nonInteractive?: boolean; readonly emergencyMode?: "always" | "never" } = {}) {
+function createToolExercise(options: { readonly fastMode?: boolean; readonly nonInteractive?: boolean; readonly emergencyMode?: "always" | "never" } = {}) {
   let samples = 0;
   let tools = 0;
   const requests: LLMMessage[][] = [];
@@ -71,10 +73,16 @@ function createToolExercise(options: { readonly nonInteractive?: boolean; readon
     dispatch: nextResult,
   } as unknown as ToolRegistry;
   const { session, events } = mkSession({ provider, registry,
-    ...(options.nonInteractive ? { services: { runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }) } } : {}) });
+    services: { runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: options.nonInteractive === true || options.fastMode === true, dangerouslyBypassApprovalsAndSandbox: options.fastMode === true, relaxedOneShot: options.fastMode === true }) } });
+  if (options.fastMode) {
+    Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({
+      ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
+    }) });
+  }
   const base = mkCtx();
   const ctx = mkCtx({
-    modelInfo: { ...base.modelInfo, contextWindow: 4_096, maxOutputTokens: 2_048, autoCompactTokenLimit: 3_000 },
+    ...(options.fastMode ? { permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" } } as const : {}),
+    modelInfo: { ...base.modelInfo, contextWindow: options.fastMode ? 65_536 : 4_096, maxOutputTokens: 2_048, autoCompactTokenLimit: 3_000 },
     ...(options.emergencyMode ? { config: { ...base.config, compaction: { emergency_mode: options.emergencyMode } } } : {}),
   });
   return { session, events, ctx, requests, samples: () => samples };
@@ -90,8 +98,9 @@ function terminals(events: ReturnType<typeof createToolExercise>["events"]) {
 }
 
 describe("degraded compaction ladder", () => {
-  test("a mandatory no_shrink decline is retried with the aggressive summary and the turn continues", async () => {
-    const exercise = createToolExercise();
+  test.each([false, true])("a mandatory no_shrink decline is retried and the turn continues (bypass fast=%s)", async fastMode => {
+    const exercise = createToolExercise({ fastMode });
+    expect(bypassFastModeEnabled(exercise.session, exercise.ctx)).toBe(fastMode);
     const compact = vi.fn(async (...args: unknown[]) => {
       if (args[4] !== "before_last_user_message") return { wasCompacted: false };
       return tierOf(args) === "aggressive_summary" ? committed("aggressive summary") : noShrink();
@@ -101,7 +110,8 @@ describe("degraded compaction ladder", () => {
     await drain(runTurn(exercise.session, exercise.ctx, "finish the implementation"));
 
     const mandatory = compact.mock.calls.filter((call) => call[4] === "before_last_user_message");
-    expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary"]);
+    if (fastMode) expect(mandatory.map(tierOf)).toContain("aggressive_summary");
+    else expect(mandatory.map(tierOf)).toEqual(["standard", "standard", "aggressive_summary"]);
     expect(JSON.stringify(exercise.requests.at(-1))).toContain("aggressive summary");
     expect(JSON.stringify(exercise.requests.at(-1))).not.toContain("fresh oversized result");
     expect(degradedWarnings(exercise.events)).toEqual([
