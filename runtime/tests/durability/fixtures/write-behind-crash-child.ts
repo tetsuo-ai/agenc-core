@@ -38,11 +38,11 @@ if (command === "recover") {
         runId: "write-behind-crash", stepId: "tool-step", callId: "call", toolName: "physical-counter",
         recoveryCategory: "side-effecting" as const, intentDigest: "digest", attempt: 1,
         recordedAt: "2026-10-08T00:00:01.000Z" };
-      const intent: Event = { id: "intent", seq: 2, msg: { type: "effect_intent", payload } };
+      const intent: Event = { id: "intent", eventId: "intent", seq: 2, msg: { type: "effect_intent", payload } };
       store.append(intent, { durable: true });
       store.recordEffectEvent(intent);
       appendFileSync(join(root, "physical-effects"), "one invocation\n");
-      const result: Event = { id: "result", seq: 3, msg: { type: "effect_result", payload: {
+      const result: Event = { id: "result", eventId: "result", seq: 3, msg: { type: "effect_result", payload: {
         ...payload, intentEventSeq: 2, outcome: "committed", effectBoundary: "crossed", resultDigest: "result",
       } } };
       store.append(result, { durable: true });
