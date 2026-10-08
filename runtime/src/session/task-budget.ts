@@ -16,6 +16,7 @@ export class TaskBudget {
   tokens = 0;
   calls = 0;
   private reserved = 0;
+  private lastReservation = 0;
   private announced = false;
   private stopped = false;
   constructor(readonly limit?: number, readonly maxCalls?: number) {}
@@ -26,7 +27,10 @@ export class TaskBudget {
   }
   reminder(): LLMMessage | undefined {
     if (this.announced || this.reached || !(
-      (this.limit !== undefined && this.tokens >= this.limit * 0.8) ||
+      (this.limit !== undefined && (this.tokens >= this.limit * 0.8 ||
+        // A growing conversation can spend the entire reserve in one request.
+        // Warn while there is still room for roughly two recent-size requests.
+        (this.calls > 0 && this.limit - this.tokens <= 2 * this.lastReservation))) ||
       (this.maxCalls !== undefined && this.calls >= this.maxCalls * 0.8))) return undefined;
     this.announced = true;
     return { role: "user", content: "Task budget is nearly exhausted. Finish the most likely fix, run the decisive check, then report the result and anything unverified. Do not start another investigation.",
@@ -42,6 +46,7 @@ export class TaskBudget {
   /** Reserve before dispatch; an admitted call and its tools are never interrupted. */
   async invoke(reserve: number, invoke: () => Promise<LLMResponse>): Promise<LLMResponse> {
     this.assertFits(reserve);
+    this.lastReservation = reserve;
     this.calls += 1;
     this.reserved += reserve;
     let charge = reserve; // Unknown usage retains the reservation, never becomes free.

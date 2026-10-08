@@ -953,6 +953,7 @@ Both are positive integers and are disabled when omitted. CLI overrides are
 
 The allocation belongs to the session/run, including retries and auxiliary model
 calls. Use a fresh session for each independent task. At 80% of either allocation,
+or earlier when the remaining tokens fit at most two recent-size requests,
 the model receives one reminder to finish its most likely fix, run the decisive
 check, and report. Requests that cannot fit their input and maximum output in the
 remaining allocation are refused before dispatch, so a run can end below its cap.

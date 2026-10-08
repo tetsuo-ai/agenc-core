@@ -33,6 +33,23 @@ describe("task allocation", () => {
     expect(b.calls).toBe(4);
     expect(b.summary("Tests passed")).toContain("Tests passed");
   });
+  it("warns before a growing request consumes the chance to deliver the 80% reminder", async () => {
+    const b = new TaskBudget(1000);
+    for (let i = 0; i < 2; i++) {
+      await b.invoke(250, async () => response(200));
+      expect(b.reminder()).toBeUndefined();
+    }
+    await b.invoke(250, async () => response(200));
+    expect(b.tokens).toBe(600);
+    const reminder = b.reminder();
+    expect(reminder?.content).toContain("decisive check");
+    let received = false;
+    await b.invoke(250, async () => { received = reminder !== undefined; return response(200); });
+    expect(received).toBe(true);
+    expect(b.reminder()).toBeUndefined();
+    await expect(b.invoke(250, async () => response(200))).rejects.toThrow("Task budget");
+    expect(b.calls).toBe(4);
+  });
   it("lets the last admitted call settle and prevents concurrent overspend", async () => {
     const b = new TaskBudget(100, 2);
     let finish!: (r: LLMResponse) => void;
