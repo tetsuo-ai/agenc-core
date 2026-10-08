@@ -2270,15 +2270,17 @@ async function* runTurnKernelInner(
       ...(opts.signal ? [opts.signal] : [])]);
     let content = "";
     const loop = runMinimalTurn(session, ctx, state.messages, modelInstructions, signal);
-    for (;;) {
-      const next = await loop.next();
-      if (next.done) {
-        emitTurnComplete(content);
-        return next.value;
+    try {
+      for (;;) {
+        const next = await loop.next();
+        if (next.done) {
+          emitTurnComplete(content);
+          return next.value;
+        }
+        if (next.value.type === "turn_complete") content = next.value.content;
+        yield next.value;
       }
-      if (next.value.type === "turn_complete") content = next.value.content;
-      yield next.value;
-    }
+    } finally { await loop.return({ reason: "cancelled" }); }
   }
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount =

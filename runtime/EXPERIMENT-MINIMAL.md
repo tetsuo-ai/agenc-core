@@ -30,3 +30,9 @@ Third cut: auxiliary setup deferred by the Light print startup wrapper is droppe
 The chat-completions adapter also skips diagnostic prompt-token estimation,
 context fitting and request-metadata publication. The real provider wire builder
 and transport still send every request.
+
+Fourth cut: foreground exec commands use child_process.spawn, capture stdout and
+stderr, and wait for close. No owner/sandbox checks, process-tree supervision,
+output log, output truncation or token counting. The scrubbed environment is
+cached once. Explicit PTY/yield requests retain the ordinary process manager.
+Timeout and abort reach the immediate child only; descendants are not supervised.
