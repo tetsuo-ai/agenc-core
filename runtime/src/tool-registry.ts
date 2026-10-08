@@ -143,6 +143,7 @@ export interface CodeModeNestedToolDispatch {
 }
 
 export interface ToolRegistryDispatchOptions {
+  readonly abortSignal?: AbortSignal;
   /** Request-scoped discovery metadata; does not grant execution permission. */
   readonly advertisedToolNames?: readonly string[];
 }

@@ -1,4 +1,3 @@
-import { experimentMinimal } from "../experiment-minimal.js";
 /**
  * Compaction for run-turn: the auto-compact dispatcher, the AgenC
  * compaction result projection, the previous-model inline compact,
@@ -1015,7 +1014,6 @@ function getActiveContextTokenUsage(
   state?: TurnState,
   options: { readonly includeOutput?: boolean } = {},
 ): number {
-  if (experimentMinimal()) return 0;
   if (state === undefined) {
     return getTotalTokenUsage(session);
   }

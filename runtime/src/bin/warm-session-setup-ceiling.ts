@@ -1,9 +1,8 @@
-import { experimentMinimal } from "../experiment-minimal.js";
 /** Nonshipping warm-daemon experiment. Never replaces canonical admission. */
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
-export function createWarmSessionSetupCeiling(agencHome: string, sessionId: string): {
+export function createWarmSessionSetupCeiling(agencHome: string, sessionId: string, fastMode = false): {
   register(setup: () => Promise<void>): void;
   wrap(transport: typeof fetch): typeof fetch;
   assertOpen(): void;
@@ -20,6 +19,13 @@ export function createWarmSessionSetupCeiling(agencHome: string, sessionId: stri
   return {
     assertOpen,
     close() {
+      if (fastMode && !closure.signal.aborted) {
+        setupTask ??= (async () => {
+          try { for (const setup of callbacks.splice(0)) await setup(); }
+          finally { closure.abort(new Error("session setup closed")); }
+        })();
+        return setupTask;
+      }
       // Close admission now; do not wait for a transport that ignores abort.
       closure.abort(new Error("session setup closed"));
       callbacks.length = 0;
@@ -29,13 +35,13 @@ export function createWarmSessionSetupCeiling(agencHome: string, sessionId: stri
         : (firstRequest ?? setupTask).catch(() => {});
     },
     register(setup) {
-      if (experimentMinimal()) return;
+      
       assertOpen();
       if (firstRequest !== undefined) throw new Error("session setup registered after dispatch");
       callbacks.push(setup);
     },
     wrap(transport) {
-      if (experimentMinimal()) return transport;
+      if (fastMode) return transport;
       return async (input, init) => {
         assertOpen();
         const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);

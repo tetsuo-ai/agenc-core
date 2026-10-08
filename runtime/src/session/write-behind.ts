@@ -1,4 +1,4 @@
-import { experimentMinimal } from "../experiment-minimal.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { basename, dirname, join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
@@ -83,7 +83,7 @@ export class SessionWriteBehindQueue {
 
   /** Start one loss window; the preceding step must have been flushed. */
   beginStep(): void {
-    if (experimentMinimal()) return;
+    if (oneShotFastModeActive()) return;
     this.drain();
     this.runInOwnerScope = AsyncLocalStorage.snapshot();
     this.enabled = true;

@@ -1,5 +1,5 @@
 import { runMinimalTurn } from "./minimal-turn.js";
-import { experimentMinimal } from "../experiment-minimal.js";
+import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
 /**
@@ -2263,8 +2263,8 @@ async function* runTurnKernelInner(
       ? { initialSkipCacheWrite: opts.skipCacheWrite }
       : {}),
   });
-  if (experimentMinimal()) {
-    if (opts.resume !== undefined) throw new Error("minimal experiment cannot resume durable turns");
+  if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
+    session.rolloutStore?.store.enableOneShotFastMode();
     emitTurnStarted(resolvedReferenceContextItem);
     const signal = AbortSignal.any([session.abortController.signal, runningTask.abortController.signal,
       ...(opts.signal ? [opts.signal] : [])]);
@@ -2272,7 +2272,7 @@ async function* runTurnKernelInner(
     const loop = runMinimalTurn(session, ctx, state.messages, modelInstructions, signal);
     try {
       for (;;) {
-        const next = await loop.next();
+        const next = await withOneShotFastMode(() => loop.next());
         if (next.done) {
           emitTurnComplete(content);
           return next.value;
@@ -2280,7 +2280,7 @@ async function* runTurnKernelInner(
         if (next.value.type === "turn_complete") content = next.value.content;
         yield next.value;
       }
-    } finally { await loop.return({ reason: "cancelled" }); }
+    } finally { await withOneShotFastMode(() => loop.return({ reason: "cancelled" })); }
   }
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount =
@@ -2532,7 +2532,7 @@ async function* runTurnKernelInner(
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},
   ): void => {
-    if (experimentMinimal() || !durableTurnsCfg.checkpointEnabled) return;
+    if (oneShotFastModeActive() || !durableTurnsCfg.checkpointEnabled) return;
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
     if (options.force !== true && durableTurnsCfg.checkpointMinIntervalMs > 0) {
@@ -3558,7 +3558,7 @@ async function* runTurnKernelInner(
     const sleepRan = state.toolUseBlocks.some(
       (block) => block.name === SLEEP_TOOL_NAME,
     );
-    session.writeBehind?.beginStep();
+    session.writeBehind?.finish();
     await executeTools(state, ctx, session, signal);
     const cancelledAfterTools = await finishCancelledIfAborted();
     if (cancelledAfterTools !== null) {

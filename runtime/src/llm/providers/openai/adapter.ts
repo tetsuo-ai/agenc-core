@@ -1,4 +1,4 @@
-import { experimentMinimal } from "../../../experiment-minimal.js";
+import { oneShotFastModeActive } from "../../../one-shot-fast-mode.js";
 import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } from "../../registry/openai-current-models.js";
 /**
  * OpenAI provider adapter.
@@ -1473,7 +1473,7 @@ export class OpenAIProvider implements LLMProvider {
     if (typeof request.prompt_cache_key === "string") {
       request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
     }
-    if (experimentMinimal()) return request;
+    if (oneShotFastModeActive()) return request;
     let metadata = collectChatCompletionsRequestMetadata(request);
     const accountedInputTokens = normalizePositiveInteger(
       args.options?.accountedInputTokens,

@@ -639,6 +639,7 @@ const ROOT_FIELD_VALIDATORS = {
   alwaysThinkingEnabled: fieldValidator("alwaysThinkingEnabled", optionalBoolean),
   swarmMode: fieldValidator("swarmMode", optionalBoolean),
   fastMode: fieldValidator("fastMode", optionalBoolean),
+  bypassFastMode: fieldValidator("bypassFastMode", optionalBoolean),
   promptSuggestionEnabled: fieldValidator("promptSuggestionEnabled", optionalBoolean),
   pluginConfigs: delegatedObjectValidator("pluginConfigs"),
   autoUpdatesChannel: enumValidator("autoUpdatesChannel", ["latest", "stable"]),

@@ -1,4 +1,3 @@
-import { experimentMinimal } from "../experiment-minimal.js";
 import { isCanonicalBase64Body } from "../llm/content-conversion.js";
 import { redactSecretsInValue } from "../secrets/sanitizer.js";
 
@@ -69,7 +68,6 @@ export function redactDurableSecrets<T>(
   scope: DurableRedactionScope,
   redact: typeof redactSecretsInValue = redactSecretsInValue,
 ): T {
-  if (experimentMinimal()) return value;
   const redacted = redact(value);
   const restoreResponse = (original: unknown, target: unknown, key: string): void => {
     if (!record(original) || !record(target) || original.role !== "assistant") return;

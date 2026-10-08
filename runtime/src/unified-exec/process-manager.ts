@@ -1,4 +1,4 @@
-import { experimentMinimal } from "../experiment-minimal.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { minimalExec } from "./minimal-exec.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
@@ -665,7 +665,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   async execCommand(
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
-    if (experimentMinimal() && request.tty !== true && request.yield_time_ms === undefined) {
+    if (oneShotFastModeActive() && request.tty !== true && request.yield_time_ms === undefined) {
       this.minimalEnvironment ??= buildEnv(this.baseEnv, this.env);
       return minimalExec(request, this.cwd, this.shellPath, this.minimalEnvironment);
     }

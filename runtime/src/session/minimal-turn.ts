@@ -1,4 +1,4 @@
-/** Unsafe, command-only experiment. This is deliberately not the production turn kernel. */
+/** One-shot bypass turn loop. Session data is finalized once at the terminal boundary. */
 import type { LLMMessage } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { buildProviderOptions } from "../phases/stream-model.js";
@@ -7,7 +7,6 @@ import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 import { buildPrompt, builtTools } from "./run-turn-sampling-request.js";
 import { llmMessageToResponseItem } from "./message-history-conversion.js";
-import type { ExecCommandRequest, WriteStdinRequest } from "../unified-exec/types.js";
 
 const UNKNOWN_USAGE = { promptTokens: 0, completionTokens: 0, totalTokens: 0,
   availability: "unknown" as const, provenance: "synthetic" as const };
@@ -21,9 +20,7 @@ export async function* runMinimalTurn(
 ): AsyncGenerator<PhaseEvent, Terminal> {
   // Resolve the catalog, prompt, options and owner once for the whole turn.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
-  const options = buildProviderOptions(request, ctx, signal, session);
-  const manager = session.services.unifiedExecManager;
-  const owner = { ownerId: String(session.conversationId), ownerBinding: session.unifiedExecOwnerBinding };
+  let options = buildProviderOptions(request, ctx, signal, session);
   const start = messages.length - 1;
   yield { type: "turn_start", turnIndex: 0 };
   try {
@@ -46,26 +43,23 @@ export async function* runMinimalTurn(
       }
       for (const call of response.toolCalls) {
         signal.throwIfAborted();
-        const args = JSON.parse(call.arguments) as Record<string, unknown>;
         let content: string;
-        if (call.name !== "exec_command" && call.name !== "write_stdin") {
-          throw new Error(`minimal experiment supports only exec_command/write_stdin, received ${call.name}`);
-        }
         try {
-          const result = call.name === "exec_command"
-            ? await manager.execCommand({ ...args, ...owner, cmd: String(args.cmd ?? ""), callId: call.id, __abortSignal: signal } as ExecCommandRequest)
-            : await manager.writeStdin({ ...args, ...owner, __abortSignal: signal } as unknown as WriteStdinRequest);
-          content = JSON.stringify(result);
+          const result = await session.services.registry.dispatch(call, {
+            abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
+          });
+          content = result.content;
         } catch (error) {
           signal.throwIfAborted();
           content = JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
         }
         messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content });
       }
+      // Discovery can reveal new capabilities during this turn.
+      options = { ...options, tools: builtTools(session, ctx) };
     }
   } finally {
-    // No intermediate snapshots, seals, redaction, events or live mirror. The
-    // SessionStore writes this unprotected buffer once when the session closes.
+    // The one-shot crash contract buffers this run; serialization redacts at close.
     await session.state.with(state => { state.history = messages; });
     const store = session.rolloutStore?.store;
     for (const message of messages.slice(start)) {

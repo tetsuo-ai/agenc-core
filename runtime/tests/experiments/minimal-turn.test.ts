@@ -15,9 +15,9 @@ function fixture(responses: unknown[]) {
     snapshots.push(structuredClone(messages));
     return responses.shift();
   }) };
-  const execCommand = vi.fn(async () => ({ stdout: "out", stderr: "err", exitCode: 7 }));
+  const execCommand = vi.fn(async () => ({ content: JSON.stringify({ stdout: "out", stderr: "err", exitCode: 7 }) }));
   const appendRollout = vi.fn();
-  const session = { conversationId: "test", services: { provider, unifiedExecManager: { execCommand } },
+  const session = { conversationId: "test", services: { provider, registry: { dispatch: execCommand } },
     state: { with: async (fn: (state: typeof history) => void) => fn(history) },
     rolloutStore: { store: { appendRollout } }, emit: vi.fn(), nextInternalSubId: () => "event",
   } as unknown as Session;
@@ -51,4 +51,15 @@ test("aborted turns do not send a request or run a command", async () => {
   await expect(run()).rejects.toThrow("cancelled");
   expect(f.provider.chatStream).not.toHaveBeenCalled();
   expect(f.execCommand).not.toHaveBeenCalled();
+});
+
+
+test("every advertised name including tool discovery uses full registry dispatch", async () => {
+  const names = ["system.searchTools", "exec_command", "write_stdin", "apply_patch", "mcp.example.lookup", "spawn_agent"];
+  const f = fixture([{ content: "", toolCalls: names.map((name, index) => ({ id: String(index), name, arguments: "{}" })) },
+    { content: "done", toolCalls: [] }]);
+  for await (const _ of runMinimalTurn(f.session, {} as TurnContext,
+    [{ role: "user", content: "use tools" }], "", new AbortController().signal)) {}
+  expect(f.execCommand.mock.calls.map(call => (call as unknown as [{ name: string }])[0].name)).toEqual(names);
+  expect(f.snapshots[1]?.filter(message => message.role === "tool")).toHaveLength(names.length);
 });

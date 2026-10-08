@@ -1,4 +1,3 @@
-import { experimentMinimal } from "../experiment-minimal.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -449,7 +448,6 @@ function redactResponseItemForPersistence(
   bodyMode: "authenticate" | "preserve",
   redact: typeof redactSecretsInValue = redactSecretsInValue,
 ): ResponseItem {
-  if (experimentMinimal()) return { ...item, ...(integrity ? { toolResultIntegrity: integrity } : {}) };
   const { toolResultIntegrity: _omittedIntegrity, ...unsealedItem } = item;
   let redacted =
     unsealedItem.agentInvocation === undefined

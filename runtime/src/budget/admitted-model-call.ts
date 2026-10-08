@@ -1,4 +1,4 @@
-import { experimentMinimal } from "../experiment-minimal.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 /** Shared M3 boundary for logical model calls. */
 
 import type { Session } from "../session/session.js";
@@ -511,7 +511,7 @@ export function fitOutputReservationToContext(
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
-  if (experimentMinimal()) return params.invoke(params.options);
+  if (oneShotFastModeActive()) return params.invoke(params.options);
   const client = params.session.services.executionAdmission;
   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
   // A few structurally typed embedding/test providers predate the explicit

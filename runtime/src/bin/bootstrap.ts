@@ -1,3 +1,4 @@
+import { oneShotFastModeSelected } from "../one-shot-fast-mode.js";
 import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
 import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
@@ -528,6 +529,7 @@ function buildDeferredConfig(
   return {
     model,
     ...(config.agents !== undefined ? { agents: config.agents } : {}),
+    ...(config.bypassFastMode !== undefined ? { bypassFastMode: config.bypassFastMode } : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
@@ -1241,7 +1243,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
     runtimeOptions.lightMode === true && runtimeOptions.nonInteractive === true &&
     !resumeConversation && options.resumeRolloutPath === undefined && resolvedProvider === "deepseek"
-    ? createWarmSessionSetupCeiling(agencHome, conversationId) : undefined;
+    ? createWarmSessionSetupCeiling(agencHome, conversationId, oneShotFastModeSelected(runtimeOptions, startup.config)) : undefined;
 
   const providerModel = modelSelection.model;
   return runWithStartupProviderSelection({
