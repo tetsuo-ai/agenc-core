@@ -1,3 +1,4 @@
+import { legacyCacheCreationUsage } from "../llm/usage.js";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { attachExecOwnerBinding, execOwnerBindingFromToolArgs } from "../unified-exec/process-ownership.js";
 import { randomUUID, type UUID } from "node:crypto";
@@ -962,6 +963,7 @@ function llmUsageToLegacyUsage(usage: LLMUsage): Record<string, unknown> {
       ephemeral_1h_input_tokens: 0,
       ephemeral_5m_input_tokens: 0,
     },
+    ...legacyCacheCreationUsage(usage),
     inference_geo: null,
     iterations: null,
     speed: null,

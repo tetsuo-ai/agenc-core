@@ -50,6 +50,8 @@ export interface ModelCostEntry {
    */
   readonly cachedInputIncludedInInputTokens?: boolean;
   readonly cacheCreationUsdPer1K?: number;
+  /** One-hour cache writes, a subset of cacheCreationInputTokens. */
+  readonly cacheCreation1hUsdPer1K?: number;
   /**
    * OpenAI reports cache writes as a subset of input tokens
    * (`input_tokens_details.cache_write_tokens`). When true, they are
@@ -706,6 +708,22 @@ const COST_TIER_FABLE_5_1: Readonly<ModelCostEntry> = Object.freeze({
   ...COST_TIER_FABLE_10_50,
   cachedInputUsdPer1K: 0.00025,
 });
+// Haiku 5.5 prices the whole request by total prompt tokens, including
+// cache reads and both cache-write TTLs (official pricing, 2026-10-07).
+const COST_TIER_HAIKU_5_5: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0001, outputUsdPer1K: 0.0005,
+  cachedInputUsdPer1K: 0.00001, cacheCreationUsdPer1K: 0.000125,
+  cacheCreation1hUsdPer1K: 0.0002, webSearchUsdPerRequest: 0.01,
+  longContext: Object.freeze({
+    aboveInputTokens: 100_000,
+    rates: Object.freeze({
+      inputUsdPer1K: 0.0005, outputUsdPer1K: 0.0025,
+      cachedInputUsdPer1K: 0.00005, cacheCreationUsdPer1K: 0.000625,
+      cacheCreation1hUsdPer1K: 0.001, webSearchUsdPerRequest: 0.01,
+    }),
+  }),
+});
+
 const COST_TIER_SONNET_2_10: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.002,
   outputUsdPer1K: 0.01,
@@ -941,6 +959,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "claude-opus-4-1": COST_TIER_OPUS_LEGACY,
     "anthropic:claude-opus-4": COST_TIER_OPUS_LEGACY,
     "claude-opus-4": COST_TIER_OPUS_LEGACY,
+    "anthropic:claude-haiku-5-5": COST_TIER_HAIKU_5_5,
+    "claude-haiku-5-5": COST_TIER_HAIKU_5_5,
     "anthropic:claude-haiku-4-5": {
       inputUsdPer1K: 0.001,
       outputUsdPer1K: 0.005,
@@ -1161,6 +1181,7 @@ export interface ModelUsage {
   outputTokens: number;
   cachedInputTokens: number;
   cacheCreationInputTokens: number;
+  cacheCreation1hInputTokens?: number;
   reasoningOutputTokens: number;
   webSearchRequests: number;
   totalTokens: number;
@@ -1187,6 +1208,7 @@ export interface TokenUsageDelta {
   readonly completionTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
+  readonly cacheCreation1hInputTokens?: number;
   readonly reasoningOutputTokens?: number;
   readonly webSearchRequests?: number;
   readonly totalTokens?: number;
@@ -1222,6 +1244,9 @@ function subtractModelUsage(
       0,
       a.cacheCreationInputTokens - b.cacheCreationInputTokens,
     ),
+    ...(a.cacheCreation1hInputTokens !== undefined || b.cacheCreation1hInputTokens !== undefined
+      ? { cacheCreation1hInputTokens: Math.max(0, (a.cacheCreation1hInputTokens ?? 0) - (b.cacheCreation1hInputTokens ?? 0)) }
+      : {}),
     reasoningOutputTokens: Math.max(
       0,
       a.reasoningOutputTokens - b.reasoningOutputTokens,
@@ -1252,7 +1277,7 @@ export function conservativeModelCost(registry: Readonly<Record<string, ModelCos
   const visit = (entry: ModelCostEntry): void => {
     if (seen.has(entry)) return;
     seen.add(entry);
-    input = Math.max(input, entry.inputUsdPer1K, entry.cachedInputUsdPer1K ?? 0, entry.cacheCreationUsdPer1K ?? 0);
+    input = Math.max(input, entry.inputUsdPer1K, entry.cachedInputUsdPer1K ?? 0, entry.cacheCreationUsdPer1K ?? 0, entry.cacheCreation1hUsdPer1K ?? 0);
     output = Math.max(output, entry.outputUsdPer1K, entry.reasoningOutputUsdPer1K ?? 0);
     search = Math.max(search, entry.webSearchUsdPerRequest ?? 0);
     if (entry.fastMode) visit(entry.fastMode);
@@ -1281,7 +1306,7 @@ export function computeUsdCostWithResolution(
   const standardEntry = match?.entry ?? conservativeModelCost(registry);
   const { rates: selected, documented } = selectCallRates(
     standardEntry,
-    callPricingOf(usage),
+    callPricingOf(usage, standardEntry),
   );
   const estimated = standardEntry.costEstimated === true || !documented;
   const entry = estimated ? conservativeModelCost(registry) : selected;
@@ -1331,9 +1356,11 @@ export function computeUsdCostWithResolution(
     entry.cachedInputUsdPer1K !== undefined
       ? (usage.cachedInputTokens / 1000) * entry.cachedInputUsdPer1K
       : 0;
+  const oneHourWrites = Math.min(usage.cacheCreationInputTokens, Math.max(0, usage.cacheCreation1hInputTokens ?? 0));
   const cacheCreationCost =
     entry.cacheCreationUsdPer1K !== undefined
-      ? (usage.cacheCreationInputTokens / 1000) * entry.cacheCreationUsdPer1K
+      ? ((usage.cacheCreationInputTokens - oneHourWrites) / 1000) * entry.cacheCreationUsdPer1K +
+        (oneHourWrites / 1000) * (entry.cacheCreation1hUsdPer1K ?? entry.cacheCreationUsdPer1K)
       : 0;
   const reasoningCost =
     entry.reasoningOutputUsdPer1K !== undefined
@@ -1365,11 +1392,13 @@ export interface CallPricing {
   readonly singleCallInputTokens?: number;
 }
 
-function callPricingOf(usage: ModelUsage): CallPricing {
+function callPricingOf(usage: ModelUsage, entry?: ModelCostEntry): CallPricing {
   return {
     ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
     ...(usage.singleCall === true
-      ? { singleCallInputTokens: usage.inputTokens }
+      ? { singleCallInputTokens: usage.inputTokens +
+          (entry?.cachedInputIncludedInInputTokens ? 0 : usage.cachedInputTokens) +
+          (entry?.cacheCreationIncludedInInputTokens ? 0 : usage.cacheCreationInputTokens) }
       : {}),
   };
 }
@@ -2114,6 +2143,9 @@ export class CostSidecar implements Sidecar {
         usage.outputTokens += msg.payload.completionTokens ?? 0;
         usage.cachedInputTokens += msg.payload.cachedInputTokens ?? 0;
         usage.cacheCreationInputTokens += msg.payload.cacheCreationInputTokens ?? 0;
+        if (msg.payload.cacheCreation1hInputTokens !== undefined) {
+          usage.cacheCreation1hInputTokens = (usage.cacheCreation1hInputTokens ?? 0) + msg.payload.cacheCreation1hInputTokens;
+        }
         usage.reasoningOutputTokens += msg.payload.reasoningOutputTokens ?? 0;
         usage.webSearchRequests += msg.payload.webSearchRequests ?? 0;
         usage.totalTokens += msg.payload.totalTokens ?? 0;
@@ -2133,6 +2165,7 @@ export class CostSidecar implements Sidecar {
             outputTokens: msg.payload.completionTokens ?? 0,
             cachedInputTokens: msg.payload.cachedInputTokens ?? 0,
             cacheCreationInputTokens: msg.payload.cacheCreationInputTokens ?? 0,
+            cacheCreation1hInputTokens: msg.payload.cacheCreation1hInputTokens,
             reasoningOutputTokens: msg.payload.reasoningOutputTokens ?? 0,
             webSearchRequests: msg.payload.webSearchRequests ?? 0,
             totalTokens: msg.payload.totalTokens ?? 0,
@@ -2143,9 +2176,9 @@ export class CostSidecar implements Sidecar {
           const standardEntry = resolveModelCostEntry(callDelta, this.registry)?.entry;
           const callCost = computeUsdCostWithResolution(callDelta, this.registry);
           if (
-            !callCost.known ||
+            !callCost.known || (callDelta.cacheCreation1hInputTokens ?? 0) > 0 ||
             (standardEntry !== undefined &&
-              selectCallRates(standardEntry, callPricingOf(callDelta)).rates !== standardEntry)
+              selectCallRates(standardEntry, callPricingOf(callDelta, standardEntry)).rates !== standardEntry)
           ) {
             this.recordExplicitCost(key, callDelta, callCost.costUsd);
           }
@@ -2373,6 +2406,9 @@ export class CostSidecar implements Sidecar {
     usage.cacheCreationInputTokens += normalizeCounter(
       delta.cacheCreationInputTokens,
     );
+    if (delta.cacheCreation1hInputTokens !== undefined) {
+      usage.cacheCreation1hInputTokens = (usage.cacheCreation1hInputTokens ?? 0) + normalizeCounter(delta.cacheCreation1hInputTokens);
+    }
     usage.reasoningOutputTokens += reasoningOutputTokens;
     usage.webSearchRequests += normalizeCounter(delta.webSearchRequests);
     usage.totalTokens += totalTokens;
@@ -2394,6 +2430,7 @@ export class CostSidecar implements Sidecar {
           cacheCreationInputTokens: normalizeCounter(
             delta.cacheCreationInputTokens,
           ),
+          cacheCreation1hInputTokens: delta.cacheCreation1hInputTokens,
           reasoningOutputTokens,
           webSearchRequests: normalizeCounter(delta.webSearchRequests),
           totalTokens,
@@ -2424,6 +2461,9 @@ export class CostSidecar implements Sidecar {
     explicit.outputTokens += delta.outputTokens;
     explicit.cachedInputTokens += delta.cachedInputTokens;
     explicit.cacheCreationInputTokens += delta.cacheCreationInputTokens;
+    if (delta.cacheCreation1hInputTokens !== undefined) {
+      explicit.cacheCreation1hInputTokens = (explicit.cacheCreation1hInputTokens ?? 0) + delta.cacheCreation1hInputTokens;
+    }
     explicit.reasoningOutputTokens += delta.reasoningOutputTokens;
     explicit.webSearchRequests += delta.webSearchRequests;
     explicit.totalTokens += delta.totalTokens;

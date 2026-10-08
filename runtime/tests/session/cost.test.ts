@@ -1004,3 +1004,18 @@ describe("CostSidecar", () => {
     expect(handlers).toHaveLength(0);
   });
 });
+
+test("Haiku 5.5 session cost keeps per-request tiers and one-hour writes across multiple turns", () => {
+  const sidecar = new CostSidecar({ defaultProvider: "anthropic", defaultModel: "claude-haiku-5-5" });
+  for (const [seq, promptTokens] of [60_000, 60_001, 60_000].entries()) {
+    sidecar.onEvent({ id: String(seq), seq, msg: { type: "token_count", payload: {
+      model: "claude-haiku-5-5", provider: "anthropic", promptTokens, completionTokens: 1000,
+      cachedInputTokens: 20_000, cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000,
+      totalTokens: promptTokens + 41_000,
+    } } });
+  }
+  const short = (60_000 * 0.1 + 1000 * 0.5 + 20_000 * 0.01 + 10_000 * 0.125 + 10_000 * 0.2) / 1e6;
+  const long = (60_001 * 0.5 + 1000 * 2.5 + 20_000 * 0.05 + 10_000 * 0.625 + 10_000 * 1) / 1e6;
+  expect(sidecar.getTotalCostUsd()).toBeCloseTo(2 * short + long, 10);
+  expect(sidecar.getPerModelUsage()[0]?.cacheCreation1hInputTokens).toBe(30_000);
+});

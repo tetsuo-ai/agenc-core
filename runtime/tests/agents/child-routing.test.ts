@@ -234,7 +234,8 @@ describe("parent-first routing with the real model catalog", () => {
       for (const maxCostUsd of [1, 5, 20]) {
         const routed = await routeChildTask(session, { ...request, maxCostUsd });
         expect(routed.result.rejected).toContainEqual(expect.objectContaining({ model: "gpt-6-astra", reason: "price_unknown" }));
-        expect(pick(routed)[0]).toBe("deepseek/deepseek-flash");
+        // Haiku 5.5 is now the least expensive adequate extraction model.
+        expect(pick(routed)[0]).toBe("anthropic/claude-haiku-5-5");
       }
     });
     it("keeps an adequate parent under balanced at any cap; economy trades it for a material saving", async () => {

@@ -11,7 +11,7 @@ import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-models.js";
 import type { LLMChatOptions } from "../llm/types.js";
 import { getInitialEffortSetting } from "../utils/effort.js";
-import { anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
+import { isHaiku55, anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import type { Session } from "./session.js";
 import type { ReasoningEffort, TurnContext } from "./turn-context.js";
 
@@ -75,7 +75,7 @@ export function resolveSessionReasoningEffort(
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
   if (requested === "none") {
-    if (selection?.provider === "anthropic" && anthropicSupportsBetweenToolsThinking(selection.model)) {
+    if (selection?.provider === "anthropic" && (anthropicSupportsBetweenToolsThinking(selection.model) || isHaiku55(selection.model))) {
       return "none";
     }
     // OpenAI models that document `none` (GPT-6 Sol and Luna) run a

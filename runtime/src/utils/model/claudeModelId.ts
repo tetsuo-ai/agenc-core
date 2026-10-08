@@ -37,6 +37,7 @@ export interface ClaudeModelId {
 }
 
 export const CLAUDE_OPUS_5_5 = "claude-opus-5-5";
+export const CLAUDE_HAIKU_5_5 = "claude-haiku-5-5";
 export const CLAUDE_SONNET_5_5 = "claude-sonnet-5-5";
 
 const CLAUDE_MODEL_ID = new RegExp(

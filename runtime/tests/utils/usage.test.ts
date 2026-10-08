@@ -1,3 +1,5 @@
+import { legacyCacheCreationUsage } from "../../src/llm/usage.js"
+import { calculateCostFromTokens, calculateUSDCost } from "../../src/utils/modelCost.js"
 import { describe, expect, test } from 'vitest'
 import type { NonNullableUsage } from '../../src/entrypoints/sdk/sdkUtilityTypes.js'
 import { accumulateUsage } from '../../src/utils/usage.js'
@@ -75,4 +77,20 @@ describe('accumulateUsage', () => {
       speed: 'fast',
     })
   })
+})
+
+
+test('legacy usage bridges preserve cache TTLs through accumulation and repricing', () => {
+  const normalized = { inputTokens: 60_000, outputTokens: 1000,
+    cacheReadInputTokens: 20_000, cacheCreationInputTokens: 20_000, cacheCreation1hInputTokens: 10_000 }
+  const legacy = usage({ input_tokens: normalized.inputTokens, output_tokens: normalized.outputTokens,
+    cache_read_input_tokens: normalized.cacheReadInputTokens, cache_creation_input_tokens: normalized.cacheCreationInputTokens,
+    ...legacyCacheCreationUsage(normalized) })
+  const accumulated = accumulateUsage(usage(), legacy)
+  expect(accumulated.cache_creation).toEqual({ ephemeral_1h_input_tokens: 10_000, ephemeral_5m_input_tokens: 10_000 })
+  expect(calculateUSDCost('claude-haiku-5-5', accumulated)).toBeCloseTo(0.00995, 10)
+  expect(calculateCostFromTokens('claude-haiku-5-5', normalized)).toBeCloseTo(0.00995, 10)
+  expect(legacyCacheCreationUsage({ cacheCreationInputTokens: 20_000 })).toEqual({})
+  expect(legacyCacheCreationUsage({ cacheCreationInputTokens: 5, cacheCreation1hInputTokens: 8 }))
+    .toEqual({ cache_creation: { ephemeral_1h_input_tokens: 5, ephemeral_5m_input_tokens: 0 } })
 })

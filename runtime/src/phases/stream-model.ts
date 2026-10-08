@@ -1596,6 +1596,7 @@ export async function streamModel(
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
+    const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
     const reasoning = response.usage.reasoningOutputTokens;
     const webSearch = response.usage.webSearchRequests;
     const availability = response.usage.availability;
@@ -1605,6 +1606,7 @@ export async function streamModel(
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
       ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+      ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
       ...(cacheCreation !== undefined
         ? { cacheCreationInputTokens: cacheCreation }
         : {}),
@@ -1696,6 +1698,7 @@ export async function streamModel(
   if (response.usage) {
     const cached = response.usage.cachedInputTokens;
     const cacheCreation = response.usage.cacheCreationInputTokens;
+    const cacheCreation1h = response.usage.cacheCreation1hInputTokens;
     const reasoning = response.usage.reasoningOutputTokens;
     const webSearch = response.usage.webSearchRequests;
     session.emit({
@@ -1709,6 +1712,7 @@ export async function streamModel(
           model: response.model,
           provider: providerName,
           ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+          ...(cacheCreation1h !== undefined ? { cacheCreation1hInputTokens: cacheCreation1h } : {}),
           ...(cacheCreation !== undefined
             ? { cacheCreationInputTokens: cacheCreation }
             : {}),

@@ -2,6 +2,7 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getCanonicalName } from './model/model.js'
+import { isHaiku55 } from './model/anthropicThinkingControl.js'
 import { isAlwaysOnThinkingAnthropicModel } from './model/alwaysOnThinking.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
@@ -210,6 +211,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   }
   // Supported by a subset of AgenC 4 models
   if (
+    isHaiku55(canonical) ||
     canonical.includes('opus-5') ||
     canonical.includes('sonnet-5') ||
     canonical.includes('opus-4-8') ||

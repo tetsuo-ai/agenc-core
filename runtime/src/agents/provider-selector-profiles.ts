@@ -44,7 +44,7 @@ const PROFILES: Readonly<Record<string, Readonly<Record<string, ChildModelProfil
     "gpt-5.3-codex": STRONG,
   }),
   anthropic: Object.freeze({
-    "claude-haiku-4-5": COMPACT, "claude-sonnet-4-6": BALANCED,
+    "claude-haiku-5-5": COMPACT, "claude-haiku-4-5": COMPACT, "claude-sonnet-4-6": BALANCED,
     "claude-opus-4-6": STRONG, "claude-opus-4-7": STRONG,
     "claude-opus-4-8": STRONG,
     "claude-sonnet-5": BALANCED, "claude-opus-5": STRONG, "claude-opus-5-5": STRONG,

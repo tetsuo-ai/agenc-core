@@ -302,6 +302,7 @@ export interface LLMUsage {
   readonly provenance?: LLMUsageProvenance;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  cacheCreation1hInputTokens?: number;
   reasoningOutputTokens?: number;
   /**
    * True when `reasoningOutputTokens` is already inside `completionTokens`.
