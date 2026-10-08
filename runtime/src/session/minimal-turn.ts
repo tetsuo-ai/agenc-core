@@ -42,9 +42,13 @@ export async function* runMinimalTurn(
       const response = await session.services.provider.chatStream(messages, () => {}, options);
       modelCalls++;
       if (response.error) throw response.error;
-      if (response.usage) observations.push({ type: "token_count", payload: {
-        ...response.usage, model: response.model, provider: session.services.provider.name,
-      } });
+      if (response.usage) {
+        const { speed, ...usage } = response.usage;
+        observations.push({ type: "token_count", payload: {
+          ...usage, model: response.model, provider: session.services.provider.name,
+          ...(speed === "fast" ? { speed } : {}),
+        } });
+      }
       signal.throwIfAborted();
       messages.push({ role: "assistant", content: response.content,
         ...(response.toolCalls.length ? { toolCalls: response.toolCalls } : {}),
