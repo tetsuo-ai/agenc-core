@@ -112,7 +112,18 @@ function withWriteBehindReadBarrier<Params extends unknown[], Row>(
       configurable: true,
       value: function (this: SqliteStatement<Params, Row>, ...args: Params) {
         beforeRead();
-        return Reflect.apply(invoke, this, args);
+        const result = Reflect.apply(invoke, this, args);
+        if (method === "iterate") {
+          // A caller can retain the cursor before a step queues work and
+          // advance it later. The actual read needs its own barrier too.
+          const iterator = result as IterableIterator<Row>;
+          const next = iterator.next;
+          iterator.next = function (...nextArgs) {
+            beforeRead();
+            return Reflect.apply(next, this, nextArgs);
+          };
+        }
+        return result;
       },
     });
   }
