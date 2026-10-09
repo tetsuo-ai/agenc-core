@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { PostToolUseHook } from "../../tools/hooks.js";
 import {
+  autoFixPostToolHookIsInactive,
   buildAutoFixContext,
   createAutoFixPostToolHook,
   shouldRunAutoFix,
@@ -167,5 +168,28 @@ describe("createAutoFixPostToolHook", () => {
 
     await expect(hook(hookInput())).resolves.toEqual({ kind: "continue" });
     expect(calls).toBe(0);
+  });
+});
+
+describe("autoFixPostToolHookIsInactive", () => {
+  test("follows live factory config and never trusts an arbitrary post-tool hook", () => {
+    let raw: unknown = CONFIG;
+    const factoryHook = createAutoFixPostToolHook({
+      configSource: () => raw,
+      cwd: process.cwd(),
+      executionAuthority: TRUSTED_HOOK_AUTHORITY,
+      runCheck: async () => ({ hasErrors: false }),
+    });
+    const arbitraryHook: PostToolUseHook = async () => ({ kind: "continue" });
+
+    expect(autoFixPostToolHookIsInactive(factoryHook)).toBe(false);
+    expect(autoFixPostToolHookIsInactive(arbitraryHook)).toBe(false);
+
+    raw = { enabled: false };
+    expect(autoFixPostToolHookIsInactive(factoryHook)).toBe(true);
+    expect(autoFixPostToolHookIsInactive(arbitraryHook)).toBe(false);
+
+    raw = CONFIG;
+    expect(autoFixPostToolHookIsInactive(factoryHook)).toBe(false);
   });
 });
