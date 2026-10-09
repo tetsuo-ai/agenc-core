@@ -12,7 +12,8 @@ import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import type { LLMMessage, LLMResponse } from "../../src/llm/types.js";
 
-const fixtures = JSON.parse(readFileSync(new URL("./fixtures/t016-recorded.json", import.meta.url), "utf8")) as {
+const fixtures = ["t016-recorded.json", "t017-recorded.json"].flatMap(name =>
+  JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"))) as {
   source: string; system: string; user: string; history: LLMMessage[]; responses: LLMResponse[]; toolResults: Record<string, string>;
 }[];
 
@@ -25,7 +26,12 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
         const callId = String(args.__callId);
         const content = fixture.toolResults[callId];
         expect(content, `${tool.name} ${callId} must have recorded output`).toBeDefined();
-        return { content: String(unframeUntrustedToolResultContent(tool.name, content)) };
+        // Fixtures contain already projected wire text. Remove the compact
+        // outer frame before replaying it as a raw tool result; the production
+        // unframe helper recognizes the legacy verbose frame only.
+        const raw = content.startsWith("AGENC_DATA\n") && content.endsWith("\nAGENC_DATA")
+          ? content.slice("AGENC_DATA\n".length, -"\nAGENC_DATA".length) : content;
+        return { content: String(unframeUntrustedToolResultContent(tool.name, raw)) };
       };
     }
     const provider = { ...mkProvider(), name: "deepseek" };
@@ -55,6 +61,21 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
       exactOutput: true }));
     expect(bodies).toHaveLength(fixture.responses.length);
     expect(fastCalls).toBe(fast ? fixture.responses.length : 0);
+    for (const body of bodies) {
+      for (const message of JSON.parse(body).messages) {
+        if (message.role === "tool") {
+          const recorded = fixture.toolResults[message.tool_call_id];
+          // 1046 predates the intentional canonical unknown-tool repair.
+          // Keep the original fixture and assert the exact repaired receipt.
+          const expected = recorded === 'AGENC_DATA\n{"error":"unknown tool: Read"}\nAGENC_DATA'
+            ? `AGENC_DATA\n${JSON.stringify({ tool_use_id: message.tool_call_id, is_error: true,
+                content: "<tool_use_error>Error: No such tool available: Read. The closest available tool is FileRead, which has its own parameters.</tool_use_error>" })}\nAGENC_DATA`
+            : recorded;
+          expect(message.content, `recorded output ${message.tool_call_id}`)
+            .toBe(expected);
+        }
+      }
+    }
     const secondRequest = JSON.parse(bodies[1]!);
     expect(secondRequest.messages.find((message: { role: string }) => message.role === "assistant")
       .reasoning_content).toBe(fixture.responses[0]!.providerReasoningContent);
