@@ -1119,7 +1119,11 @@ function snapshotAccountingRequest(
     // single wire projection from this source; a pre-projected snapshot is not
     // safely projectable again because authority metadata is intentionally
     // stripped at the external boundary.
-    messages: canonicalSnapshot(request.messages),
+    // Integrity evidence is removed by every wire projection and is not used
+    // to authorize an invocation. Copying it here would force deferred body
+    // hashes on the request path. Keep agentInvocation and all other runtime
+    // metadata so authenticated projection still sees its original authority.
+    messages: canonicalSnapshot(request.messages.map(accountingSourceMessage)),
     options: snapshotOptions,
     ...(request.providerNativeTools !== undefined
       ? {
@@ -1127,6 +1131,13 @@ function snapshotAccountingRequest(
         }
       : {}),
   });
+}
+
+function accountingSourceMessage(message: LLMMessage): LLMMessage {
+  if (!message.runtimeOnly || !Object.hasOwn(message.runtimeOnly, "toolResultIntegrity")) return message;
+  const { toolResultIntegrity: _integrity, ...retained } = message.runtimeOnly;
+  const { runtimeOnly: _runtimeOnly, ...source } = message;
+  return Object.keys(retained).length === 0 ? source : { ...source, runtimeOnly: retained };
 }
 
 function promptIdentityForRequest(

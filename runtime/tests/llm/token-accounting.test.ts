@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createDeferredTextToolResultIntegrity, createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -727,6 +728,35 @@ describe("native count selection, identity, and caching", () => {
       (await service.count(request, { capability: countCapability })).cacheStatus,
     ).toBe("hit");
     expect(countTokens).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not consume durable integrity while counting or snapshotting provider input", async () => {
+    const params = { runId: "run", toolCallId: "call", content: "tool output" };
+    const integrity = createDeferredTextToolResultIntegrity(params);
+    const original = vi.spyOn(integrity, "original", "get");
+    const persisted = vi.spyOn(integrity, "persisted", "get");
+    const resultId = vi.spyOn(integrity, "resultId", "get");
+    const messages: LLMMessage[] = [
+      { role: "assistant", content: "", toolCalls: [{ id: "call", name: "lookup", arguments: "{}" }] },
+      { role: "tool", toolCallId: "call", content: params.content, runtimeOnly: { mergeBoundary: true } },
+    ];
+    const plain = accountingRequest("unused", { messages: structuredClone(messages) });
+    messages[1]!.runtimeOnly = { ...messages[1]!.runtimeOnly, toolResultIntegrity: integrity };
+    const request = accountingRequest("unused", { messages });
+    expect(estimateTokenAccountingRequest(request)).toEqual(estimateTokenAccountingRequest(plain));
+    const counter = vi.fn(async (captured: TokenAccountingRequest) => {
+      expect(captured.messages[1]!.runtimeOnly).toEqual({ mergeBoundary: true });
+      return completeCount(20);
+    });
+    const service = new TokenAccountingService(), native = capability(counter);
+    await service.count(request, { capability: native });
+    expect((await service.count(plain, { capability: native })).cacheStatus).toBe("hit");
+    expect(counter).toHaveBeenCalledTimes(1);
+    expect(original).not.toHaveBeenCalled();
+    expect(persisted).not.toHaveBeenCalled();
+    expect(resultId).not.toHaveBeenCalled();
+    expect(messages[1]!.runtimeOnly!.toolResultIntegrity).toBe(integrity);
+    expect(JSON.stringify(integrity)).toBe(JSON.stringify(createToolResultIntegrity(params)));
   });
 
   test("keeps reused private snapshots equivalent to fresh caller values", async () => {
