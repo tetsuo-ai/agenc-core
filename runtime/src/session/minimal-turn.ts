@@ -150,7 +150,7 @@ export async function* runMinimalTurn(
           metadata = result.metadata;
           markLoadedToolNamesDiscovered(call.name, result, session.services.registry.getDiscoveredToolNames?.());
           modelMessage = toolResultMessage(session.conversationId, call.id, call.name, result,
-            classifyUntrustedToolResult(call.name, tool), session.services.runtimeOptions?.lightMode === true);
+            classifyUntrustedToolResult(call.name, tool), session.services.runtimeOptions?.lightMode === true, true);
           isError = result.isError === true;
         } catch (error) {
           signal.throwIfAborted();

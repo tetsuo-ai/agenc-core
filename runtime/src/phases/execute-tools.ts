@@ -94,7 +94,7 @@ import {
   type UntrustedToolResultKind,
 } from "../tools/untrusted-tool-result-framing.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
-import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
+import { createToolResultIntegrity, createDeferredTextToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { stampToolResultRemaining } from "../session/run-deadline.js";
 
 export function toolResultMessage(
@@ -104,6 +104,7 @@ export function toolResultMessage(
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
   compactWorkspace = false,
+  deferTextIntegrity = false,
 ): LLMMessage {
   // Seal the exact model-facing body at the result boundary, before any
   // budgeting, microcompaction, in-memory bounding, or durable serialization.
@@ -114,7 +115,7 @@ export function toolResultMessage(
     toolName,
     content,
     runtimeOnly: {
-      toolResultIntegrity: createToolResultIntegrity({
+      toolResultIntegrity: (deferTextIntegrity ? createDeferredTextToolResultIntegrity : createToolResultIntegrity)({
         runId,
         toolCallId: callId,
         content,
