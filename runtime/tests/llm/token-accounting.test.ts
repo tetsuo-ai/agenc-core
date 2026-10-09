@@ -753,6 +753,34 @@ describe("native count selection, identity, and caching", () => {
       .resolves.toMatchObject({ cacheStatus: "miss", reservedOutputTokens: 65 });
   });
 
+  test("preserves prototype-named schema fields and recursively freezes only the snapshot", async () => {
+    const parameters = JSON.parse('{"__proto__":{"type":"string"},"constructor":{"enum":[null,0,false]},"properties":{"z":{"type":"number"},"a":{"type":"string"}}}');
+    const tool = { ...TOOL, function: { ...TOOL.function, parameters } };
+    let snapshot: TokenAccountingRequest | undefined;
+    const service = new TokenAccountingService();
+    await service.count(accountingRequest("hello", { options: { tools: [tool] } }), {
+      capability: capability(async (request) => { snapshot = request; return completeCount(20); }),
+    });
+    const captured = snapshot!.options.tools![0]!.function.parameters as Record<string, unknown>;
+    expect(Object.hasOwn(captured, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(captured)).toBe(Object.prototype);
+    expect(captured).toEqual(parameters);
+    const checkFrozen = (value: unknown): void => {
+      if (value === null || typeof value !== "object") return;
+      expect(Object.isFrozen(value)).toBe(true);
+      for (const child of Object.values(value)) checkFrozen(child);
+    };
+    checkFrozen(captured);
+    expect(Object.isFrozen(parameters)).toBe(false);
+    parameters.properties.a.type = "boolean";
+    expect(captured).not.toEqual(parameters);
+    expect(estimateTokenAccountingRequest(snapshot!)).toEqual(
+      estimateTokenAccountingRequest(accountingRequest("hello", {
+        options: { tools: [structuredClone(snapshot!.options.tools![0]!)] },
+      })),
+    );
+  });
+
   test("does not trust caller freezes or freeze their mutable descendants", () => {
     let description = "short";
     const parameters = { type: "object", properties: { key: { type: "string" } } };

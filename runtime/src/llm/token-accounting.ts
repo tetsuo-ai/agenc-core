@@ -1496,19 +1496,10 @@ function stableStringify(value: unknown): string {
 }
 
 function canonicalSnapshot<T>(value: T): T {
-  return freezeCanonicalValue(canonicalize(value, new Set())) as T;
+  return canonicalize(value, new Set(), true) as T;
 }
 
-function freezeCanonicalValue(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (canonicalSnapshots.has(value)) return value;
-  for (const entry of Object.values(value)) freezeCanonicalValue(entry);
-  Object.freeze(value);
-  canonicalSnapshots.add(value);
-  return value;
-}
-
-function canonicalize(value: unknown, ancestors: Set<object>): unknown {
+function canonicalize(value: unknown, ancestors: Set<object>, freeze = false): unknown {
   if (
     value === null ||
     typeof value === "string" ||
@@ -1538,16 +1529,32 @@ function canonicalize(value: unknown, ancestors: Set<object>): unknown {
   if (ancestors.has(value)) throw new Error("cyclic value");
   ancestors.add(value);
   try {
+    let result: unknown[] | Record<string, unknown>;
     if (Array.isArray(value)) {
-      return value.map((entry) => canonicalize(entry, ancestors));
+      result = value.map((entry) => canonicalize(entry, ancestors, freeze));
+    } else {
+      const record = value as Record<string, unknown>;
+      const object: Record<string, unknown> = {};
+      // Retain the original two reads for accessor-backed caller values, but
+      // avoid allocating a tuple and two intermediate arrays for every node.
+      const keys = Object.keys(record).sort().filter((key) => record[key] !== undefined);
+      for (const key of keys) {
+        const entry = canonicalize(record[key], ancestors, freeze);
+        if (key === "__proto__") {
+          Object.defineProperty(object, key, { value: entry, enumerable: true, writable: true, configurable: true });
+        } else {
+          object[key] = entry;
+        }
+      }
+      result = object;
     }
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .filter((key) => record[key] !== undefined)
-        .map((key) => [key, canonicalize(record[key], ancestors)]),
-    );
+    // Freeze as the recursion unwinds: every child is already normalized and
+    // owned. No second traversal or Object.values allocation is necessary.
+    if (freeze) {
+      Object.freeze(result);
+      canonicalSnapshots.add(result);
+    }
+    return result;
   } finally {
     ancestors.delete(value);
   }
