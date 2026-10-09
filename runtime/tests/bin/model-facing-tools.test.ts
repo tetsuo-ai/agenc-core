@@ -2641,7 +2641,7 @@ describe("model-facing tools", () => {
     });
   });
 
-  it("WebSearch uses Grok provider-native web_search when the active model supports it", async () => {
+  it.each([0, 219_000])("WebSearch respects task budget %s before provider-native search or fallback", async (taskTokenBudget) => {
     const nativeResponse: LLMResponse = {
       content: "Use the current docs for this answer.",
       toolCalls: [],
@@ -2704,6 +2704,7 @@ describe("model-facing tools", () => {
         model: "grok-4-fast",
       }),
     );
+    Object.assign(session.config, { taskTokenBudget });
     const admission = installAdmissionClient(session);
     const fetchMock = vi.fn();
     const previousFetch = globalThis.fetch;
@@ -2714,6 +2715,16 @@ describe("model-facing tools", () => {
         getSession: () => session,
         providerFactory: providerFactory as never,
       });
+      if (taskTokenBudget > 0) {
+        // Native search reserves its full context window, beyond this allowance.
+        await expect(tools.find((tool) => tool.name === "WebSearch")!.execute({
+          query: "current docs", allowed_domains: ["agenc.tech"], max_results: 1,
+        })).rejects.toThrow("Task budget reached");
+        expect(nativeChat).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(admission.markDispatched).not.toHaveBeenCalled();
+        return;
+      }
       const result = await tools
         .find((tool) => tool.name === "WebSearch")!
         .execute({
