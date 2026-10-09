@@ -73,6 +73,8 @@ export class TaskBudget {
 const budgets = new WeakMap<Session, TaskBudget>();
 export function taskBudgetOf(session: Session): TaskBudget | undefined {
   const config = session.config;
+  // Structural admission clients without a runtime session have no task config.
+  if (config === undefined) return undefined;
   const configuredTokens = config?.taskTokenBudget ?? DEFAULT_TASK_TOKEN_BUDGET;
   const limit = configuredTokens === 0 ? undefined : configuredTokens;
   const maxCalls = config?.taskMaxCalls === 0 ? undefined : config?.taskMaxCalls;
@@ -82,8 +84,10 @@ export function taskBudgetOf(session: Session): TaskBudget | undefined {
     budget = new TaskBudget(limit, maxCalls);
     budgets.set(session, budget);
   }
-  const usage = session.services.executionAdmission?.getUsageSummary?.();
-  budget.tokens = Math.max(budget.tokens, usage?.totalTokens ?? 0);
-  budget.calls = Math.max(budget.calls, usage?.modelCalls ?? 0);
+  const admission = session.services.executionAdmission;
+  const taskUsage = admission?.getTaskBudgetUsage?.();
+  const usage = taskUsage === undefined ? admission?.getUsageSummary?.() : undefined;
+  budget.tokens = Math.max(budget.tokens, taskUsage?.tokens ?? usage?.totalTokens ?? 0);
+  budget.calls = Math.max(budget.calls, taskUsage?.calls ?? usage?.modelCalls ?? 0);
   return budget;
 }

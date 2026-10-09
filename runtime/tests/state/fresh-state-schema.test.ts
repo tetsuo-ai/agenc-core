@@ -139,7 +139,7 @@ describe("direct fresh state schema", () => {
     expect(db.prepare("SELECT name FROM sqlite_schema").all()).toEqual([]);
     fault.mockRestore(); db.exec("COMMIT"); db.close();
     const reopened = database(path); initialize(reopened);
-    expect(reopened.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 37 });
+    expect(reopened.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: STATE_DB_MIGRATIONS.length });
   });
 
   it("uses the batch in the driver and closes both connections after initialization failure", () => {
@@ -204,7 +204,7 @@ describe("direct fresh state schema", () => {
       children.forEach((child) => child.send("open")); await Promise.all(exits);
       const db = database(p.stateDbPath);
       expect(db.prepare("SELECT run_id FROM run_lifecycle_epochs ORDER BY run_id").all()).toEqual([{ run_id: "one" }, { run_id: "two" }]);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 37 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: STATE_DB_MIGRATIONS.length });
       expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
     } finally { for (const child of children) if (child.exitCode === null) child.kill(); }
   }, 30_000);

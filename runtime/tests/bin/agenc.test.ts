@@ -235,6 +235,7 @@ function installDaemonCliDepsForTest(
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
+    readonly liveSessionMetadata?: Readonly<Record<string, unknown>>;
     readonly liveAgentPath?: string;
     readonly runtimeOptions?: AgentRuntimeOptions;
     readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
@@ -365,6 +366,7 @@ function installDaemonCliDepsForTest(
             {
               sessionId,
               agentId,
+              metadata: options.liveSessionMetadata ?? {},
               status: "idle",
               createdAt: "2026-05-06T00:00:00.000Z",
               cwd,
@@ -5789,7 +5791,7 @@ describe("main() smoke", () => {
   it.each(["taskTokenBudget", "taskMaxCalls"] as const)("attaches a live session with retained disabled %s", async (key) => {
     const tmpHome = await mkdtemp(join(canonicalTmpdir(), "budget-attach-home-"));
     const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "budget-attach-cwd-"));
-    const daemon = installDaemonCliDepsForTest({ cwd: tmpCwd, liveAgentMetadata: { [key]: 0 } });
+    const daemon = installDaemonCliDepsForTest({ cwd: tmpCwd, liveSessionMetadata: { [key]: 0 } });
     vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => undefined })) }));
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);

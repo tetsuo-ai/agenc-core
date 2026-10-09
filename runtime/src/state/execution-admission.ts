@@ -190,6 +190,7 @@ export interface PersistedAdmissionAllocation {
   readonly ownerRunId: string;
   readonly parentKey?: string;
   readonly maxTokens?: number;
+  readonly maxModelCalls?: number;
   readonly maxCostUsd?: number;
   readonly usedTokens: number;
   readonly usedCostUsd: number;
@@ -328,6 +329,7 @@ interface AllocationRow {
   readonly owner_run_id: string;
   readonly parent_scope_key: string | null;
   readonly max_tokens: number | null;
+  readonly max_model_calls: number | null;
   readonly max_cost_nanos: number | null;
   readonly used_tokens: number;
   readonly used_cost_nanos: number;
@@ -526,13 +528,15 @@ export class ExecutionAdmissionRepository {
   bindRunBudgetLimits(
     ownerRunId: string,
     scope: AdmissionBudgetScope,
-  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens"> {
+  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens" | "maxModelCalls"> {
     requireNonEmpty(ownerRunId, "bindRunBudgetLimits.ownerRunId");
     const key = requireNonEmpty(scope.key, "bindRunBudgetLimits.scope.key");
     const proposed =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
     const proposedTokens = scope.maxTokens === undefined ? undefined
       : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
+    const proposedCalls = scope.maxModelCalls === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxModelCalls, `${key}.maxModelCalls`);
     const now = this.#timestamp();
     return this.#driver.transactionImmediate(() => {
       const existing = this.#allocationLocked(key);
@@ -555,6 +559,13 @@ export class ExecutionAdmissionRepository {
            SET max_tokens = ?, updated_at = ? WHERE scope_key = ?`,
         ).run(proposedTokens, now, key);
       }
+      if (existing !== undefined && proposedCalls !== undefined &&
+          (existing.max_model_calls === null || proposedCalls < existing.max_model_calls)) {
+        this.#driver.prepareState(
+          "UPDATE execution_admission_allocations SET max_model_calls = ?, updated_at = ? WHERE scope_key = ?",
+        ).run(proposedCalls, now, key);
+      }
+      const persistedCalls = this.#allocationLocked(key)?.max_model_calls ?? proposedCalls;
       const persisted = this.#allocationLocked(key)?.max_cost_nanos ?? proposed;
       const persistedTokens = this.#allocationLocked(key)?.max_tokens ?? proposedTokens;
       const allocation = this.#ensureAllocationLocked(
@@ -565,12 +576,14 @@ export class ExecutionAdmissionRepository {
             ? { maxCostUsd: nanosToUsd(persisted) }
             : {}),
           ...(persistedTokens !== undefined ? { maxTokens: persistedTokens } : {}),
+          ...(persistedCalls !== undefined ? { maxModelCalls: persistedCalls } : {}),
         },
         now,
       );
       return {
         ...(allocation.max_cost_nanos !== null ? { maxCostUsd: nanosToUsd(allocation.max_cost_nanos) } : {}),
         ...(allocation.max_tokens !== null ? { maxTokens: allocation.max_tokens } : {}),
+        ...(allocation.max_model_calls !== null ? { maxModelCalls: allocation.max_model_calls } : {}),
       };
     });
   }
@@ -1580,6 +1593,23 @@ export class ExecutionAdmissionRepository {
     };
   }
 
+  /** Kept separate from reported billing usage: unknown outcomes consume the reservation. */
+  getTaskBudgetUsage(allocationKey: string): { tokens: number; calls: number } {
+    return this.#driver.transaction(() => {
+      const ancestors = this.#allocationClosureLocked([{ key: allocationKey }]);
+      const root = ancestors.find((row) => row.parent_scope_key === null);
+      if (!root) return { tokens: 0, calls: 0 };
+      return this.#driver.prepareState<[string], { tokens: number; calls: number }>(
+        `SELECT COALESCE(SUM(COALESCE(reservation.actual_tokens, reservation.reserved_tokens)), 0) AS tokens,
+           COUNT(*) AS calls FROM execution_admission_reservations AS reservation
+         JOIN execution_admission_reservation_allocations AS allocation
+           ON allocation.reservation_id = reservation.reservation_id
+         WHERE allocation.scope_key = ? AND reservation.kind = 'model_turn'
+           AND reservation.status IN ('dispatched', 'held_unknown', 'reconciled', 'provider_overrun')`,
+      ).get(root.scope_key)!;
+    });
+  }
+
   getUsageSummary(runId: string, allocationKey: string, directOnly = false): AdmissionUsageSummary {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
@@ -1927,7 +1957,7 @@ export class ExecutionAdmissionRepository {
     reservedCostNanos: number | null,
     now: string,
   ): {
-    readonly reason: "budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
+    readonly reason: "budget_exceeded" | "model_call_budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
     readonly details?: Readonly<Record<string, unknown>>;
   } | null {
     for (const scope of scopes) {
@@ -1937,6 +1967,20 @@ export class ExecutionAdmissionRepository {
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
         return { reason: "allocation_blocked" };
+      }
+      if (request.kind === "model_turn" && allocation.max_model_calls !== null) {
+        const calls = this.#driver.prepareState<[string], { calls: number }>(
+          `SELECT COUNT(*) AS calls FROM execution_admission_reservations AS reservation
+           JOIN execution_admission_reservation_allocations AS allocation
+             ON allocation.reservation_id = reservation.reservation_id
+           WHERE allocation.scope_key = ? AND reservation.kind = 'model_turn'
+             AND reservation.status != 'voided'`,
+        ).get(allocation.scope_key)!.calls;
+        if (calls >= allocation.max_model_calls) {
+          return { reason: "model_call_budget_exceeded", details: {
+            allocationKey: allocation.scope_key, calls, maxModelCalls: allocation.max_model_calls,
+          } };
+        }
       }
       if (
         allocation.max_tokens !== null &&
@@ -2021,6 +2065,8 @@ export class ExecutionAdmissionRepository {
       scope.maxTokens === undefined
         ? undefined
         : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
+    const maxModelCalls = scope.maxModelCalls === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxModelCalls, `${key}.maxModelCalls`);
     const maxCostNanos =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
     const existing = this.#allocationLocked(key);
@@ -2029,8 +2075,8 @@ export class ExecutionAdmissionRepository {
         .prepareState(
           `INSERT INTO execution_admission_allocations (
             scope_key, owner_run_id, parent_scope_key, max_tokens,
-            max_cost_nanos, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            max_cost_nanos, created_at, updated_at, max_model_calls
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           key,
@@ -2040,11 +2086,15 @@ export class ExecutionAdmissionRepository {
           maxCostNanos ?? null,
           now,
           now,
+          maxModelCalls ?? null,
         );
       return this.#requireAllocationLocked(key);
     }
     if (parentKey !== undefined && existing.parent_scope_key !== parentKey) {
       throw new AdmissionAllocationConflictError(key, "parentKey");
+    }
+    if (maxModelCalls !== undefined && (existing.max_model_calls === null || maxModelCalls < existing.max_model_calls)) {
+      throw new AdmissionAllocationConflictError(key, "maxModelCalls");
     }
     if (maxTokens !== undefined && (existing.max_tokens === null || maxTokens < existing.max_tokens)) {
       throw new AdmissionAllocationConflictError(key, "maxTokens");
@@ -3395,6 +3445,7 @@ function allocationFromRow(row: AllocationRow): PersistedAdmissionAllocation {
       ? { parentKey: row.parent_scope_key }
       : {}),
     ...(row.max_tokens !== null ? { maxTokens: row.max_tokens } : {}),
+    ...(row.max_model_calls !== null ? { maxModelCalls: row.max_model_calls } : {}),
     ...(row.max_cost_nanos !== null
       ? { maxCostUsd: nanosToUsd(row.max_cost_nanos) }
       : {}),

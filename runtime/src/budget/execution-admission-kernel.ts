@@ -677,6 +677,7 @@ export class ExecutionAdmissionKernel {
         ...(createsChildRun ? { parentKey: binding.budget.runAllocationKey } : {}),
         ...(taskId === undefined && options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
         ...(taskId === undefined && options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(taskId === undefined && options.maxModelCalls !== undefined ? { maxModelCalls: options.maxModelCalls } : {}),
       };
       scopes.push({ ...runScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, runScope) });
       const taskAllocationKey = taskId === undefined ? undefined : `task:${JSON.stringify([runId, taskId])}`;
@@ -684,13 +685,15 @@ export class ExecutionAdmissionKernel {
         const taskScope = { key: taskAllocationKey, parentKey: runAllocationKey,
           ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
           ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+          ...(options.maxModelCalls !== undefined ? { maxModelCalls: options.maxModelCalls } : {}),
         };
         scopes.push({ ...taskScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, taskScope) });
       }
-      const { maxCostUsd: _oldCost, maxTokens: _oldTokens, taskId: _oldTask,
+      const { maxCostUsd: _oldCost, maxTokens: _oldTokens, maxModelCalls: _oldCalls, taskId: _oldTask,
         hasHardCostCap: _oldCostCap, hasHardTokenCap: _oldTokenCap, ...baseScope } = binding.scope;
       const maxCostUsd = minimumDefined(...scopes.map((entry) => entry.maxCostUsd));
       const maxTokens = minimumDefined(...scopes.map((entry) => entry.maxTokens));
+      const maxModelCalls = minimumDefined(...scopes.map((entry) => entry.maxModelCalls));
       const period = binding.budget.periodPolicy;
       const scope: AdmissionClientScope = {
         ...baseScope,
@@ -700,6 +703,7 @@ export class ExecutionAdmissionKernel {
         ...(taskId !== undefined ? { taskId } : {}),
         ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
         ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...(maxModelCalls !== undefined ? { maxModelCalls } : {}),
         ...(maxCostUsd !== undefined || period?.dailyUsd !== undefined || period?.monthlyUsd !== undefined ? { hasHardCostCap: true } : {}),
         ...(maxTokens !== undefined || period?.dailyTokens !== undefined || period?.monthlyTokens !== undefined ? { hasHardTokenCap: true } : {}),
         ...(options.parentScopeId !== undefined
@@ -729,6 +733,11 @@ export class ExecutionAdmissionKernel {
       this.releaseClient(binding.workspace);
       throw error;
     }
+  }
+
+  getTaskBudgetUsage(binding: ClientBinding): { tokens: number; calls: number } {
+    this.#assertOpen();
+    return binding.workspace.repository.getTaskBudgetUsage(binding.budget.runAllocationKey);
   }
 
   getUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
@@ -1709,6 +1718,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
     return this.kernel.subscribe(this.scope.runId, listener);
   }
 
+  getTaskBudgetUsage(): { tokens: number; calls: number } {
+    return this.kernel.getTaskBudgetUsage(this.binding);
+  }
+
   getUsageSummary(): AdmissionUsageSummary {
     return this.kernel.getUsageSummary(this.binding);
   }
@@ -1804,6 +1817,9 @@ function validateChildAllocation(options: Parameters<ExecutionAdmissionClient["f
   if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 0)) {
     throw new AdmissionDeniedError("admission_child_token_limit_invalid");
   }
+  if (options.maxModelCalls !== undefined && (!Number.isSafeInteger(options.maxModelCalls) || options.maxModelCalls < 0)) {
+    throw new AdmissionDeniedError("admission_child_call_limit_invalid");
+  }
   if (options.taskId !== undefined && (typeof options.taskId !== "string" || options.taskId.trim().length === 0)) {
     throw new AdmissionDeniedError("admission_child_task_identity_invalid");
   }
@@ -1821,6 +1837,7 @@ function rootBudgetState(
     key: runAllocationKey,
     ...(runMaxCostUsd !== undefined ? { maxCostUsd: runMaxCostUsd } : {}),
     ...(runMaxTokens !== undefined ? { maxTokens: runMaxTokens } : {}),
+    ...(scope.maxModelCalls !== undefined ? { maxModelCalls: scope.maxModelCalls } : {}),
   });
   const periodPolicy = periodPolicyFor(policy);
   return {

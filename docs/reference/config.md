@@ -956,8 +956,11 @@ limit. CLI overrides are
 `--task-token-budget 500000` raises the allowance; `--task-token-budget 0`
 disables it. To remove a configured call limit too, use `--task-max-calls 0`.
 
-The allocation belongs to the session/run, including retries and auxiliary model
-calls. Use a fresh session for each independent task. At 80% of either allocation,
+The allocation belongs to the session/run, including retries, auxiliary model
+calls, and delegated agents. Model-call reservations share the root allocation
+atomically; undispatched reservations are refunded, while dispatched attempts
+with unknown usage remain charged across restart. Restoring a session cannot
+raise its persisted call ceiling. Use a fresh session for each independent task. At 80% of either allocation,
 or earlier when the remaining tokens fit at most two recent-size requests,
 the model receives one reminder to finish its most likely fix, run the decisive
 check, and report. Requests that cannot fit their input and maximum output in the

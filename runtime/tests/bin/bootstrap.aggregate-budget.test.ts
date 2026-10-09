@@ -250,9 +250,15 @@ describe("default task token allocation", () => {
     expect(boot.client.scope.maxTokens).toBe(219000);
   });
   it("removes the token ceiling with zero while retaining a separate dollar cap", async () => {
-    const boot = await bootstrap("task_token_budget = 0\nmax_budget_usd = 3");
+    const boot = await bootstrap("task_token_budget = 0\ntask_max_calls = 0\nmax_budget_usd = 3");
     expect(boot.session.config.taskTokenBudget).toBe(0);
     expect(boot.client.scope.maxTokens).toBeUndefined();
+    expect(boot.client.scope.maxModelCalls).toBeUndefined();
     expect(boot.client.scope.hasHardCostCap).toBe(true);
   });
+});
+
+it("binds the optional task call cap without interpreting explicit zero as a hard zero allowance", async () => {
+  const boot = await bootstrap("task_max_calls = 3");
+  expect(boot.client.scope.maxModelCalls).toBe(3);
 });

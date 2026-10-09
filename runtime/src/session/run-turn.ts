@@ -2668,6 +2668,8 @@ async function* runTurnKernelInner(
   const taskBudget = taskBudgetOf(session);
   const finishTaskBudget = async (): Promise<PhaseEvent> => {
     await drainInFlight(state, ctx, session);
+    const partialText = state.assistantMessages.at(-1)?.text;
+    if (partialText) lastContent = partialText;
     lastContent = taskBudget!.summary(lastContent);
     state.messages.push({ role: "assistant", content: lastContent });
     opts.assistantOutputSink?.reset();
@@ -3135,6 +3137,8 @@ async function* runTurnKernelInner(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      // Preserve visible text before a recovery transition resets sample state.
+      if (result.assistantText.length > 0) lastContent = result.assistantText;
       const removedCorrectionIndex = clearTextToolCallCorrectionPrompt(state, consumedCorrection);
       if (removedCorrectionIndex !== undefined && removedCorrectionIndex < persistedMessageCount) {
         persistedMessageCount -= 1;

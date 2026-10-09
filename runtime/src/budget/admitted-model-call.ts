@@ -851,6 +851,9 @@ export async function runAdmittedModelCall(
       params.signal,
     );
   } catch (error) {
+    if (error instanceof AdmissionDeniedError && error.reason === "model_call_budget_exceeded") {
+      taskBudget?.stop();
+    }
     // Denied/queued-then-cancelled attempts still need durable routing
     // evidence. recordFallback is a no-op only when acquisition failed before
     // the repository could create the step row.
