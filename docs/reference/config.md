@@ -948,6 +948,20 @@ Environment overrides and removed names are cataloged in [env.md](env.md).
 
 ### Per-task token and call allocation
 
+Choose a named token allocation with `budget_level = "eco"` (1,000,000 tokens),
+`budget_level = "balanced"` (2,400,000), or `budget_level = "max"` (no token cap).
+The CLI equivalent is `--budget eco|balanced|max`. `/budget` shows the active
+session's allocation; `/budget balanced` saves the choice for new sessions.
+An existing session retains its allocation and usage. Independent call and cost
+limits still apply to `max`.
+
+A higher configuration layer replaces a lower layer's named or numeric choice.
+An explicit `task_token_budget` wins over `budget_level` in the same layer,
+including zero. The CLI rejects passing both `--budget` and
+`--task-token-budget`. `/status` shows the current allocation. The existing
+219,000-token default remains pending live validation of the proposed balanced
+default; selecting a named level explicitly works now.
+
 `task_token_budget` limits total model input and output tokens, including reasoning
 and cached input once. `task_max_calls` optionally limits model wire attempts.
 The token budget defaults to 219,000 in every mode; the call limit is off unless
