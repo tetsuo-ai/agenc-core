@@ -10,7 +10,7 @@ export const budgetCommand: SlashCommand = {
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) => safeExecute(async () => {
-    const active = taskBudgetLabel(ctx.session.config.taskTokenBudget ?? DEFAULT_TASK_TOKEN_BUDGET);
+    const active = ctx.session.config === undefined ? "unavailable" : taskBudgetLabel(ctx.session.config.taskTokenBudget ?? DEFAULT_TASK_TOKEN_BUDGET);
     const choice = ctx.argsRaw.trim();
     if (!choice) return { kind: "text", text: `Current session budget: ${active}.\nChoose /budget eco (1,000,000), balanced (2,400,000), or max (no token cap). Choices apply to new sessions; independent call and cost limits still apply.` };
     if (!isTaskBudgetLevel(choice)) return { kind: "error", message: "Usage: /budget [eco|balanced|max]" };
