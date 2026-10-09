@@ -288,6 +288,12 @@ export interface UnifiedExecProcessManagerLike {
   listBackgroundProcesses?(): UnifiedExecBackgroundProcess[];
   stopBackgroundProcess?(taskId: string): Promise<{ stopped: boolean }>;
   closeAll(reason?: string): Promise<void>;
+  /** Prepare an empty containment boundary; never admits or executes a command. */
+  prepareOneShotCommandBoundary?(
+    ownerId: string | undefined,
+    ownerBinding: UnifiedExecOwnerBinding | undefined,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /** Concrete managers freeze admission and verify cleanup before sealing. */
   prepareForDurableClose?(): Promise<void>;
   createOwnerLifetime?(
