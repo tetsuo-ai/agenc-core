@@ -473,7 +473,15 @@ export class ExecutionAdmissionRepository {
   }
 
   get uncappedPolicyRevision(): string {
-    return `${this.#driver.state.pragma("data_version", { simple: true })}:${this.#writeRevision}`;
+    // data_version sees other connections, but not writes made by another
+    // repository sharing this connection. total_changes covers those writes
+    // (including rolled-back writes, which conservatively force promotion).
+    // Use the raw connection so checking freshness does not itself drain the
+    // captured batch through the canonical-reader barrier.
+    const row = this.#driver.state.prepare(
+      "SELECT data_version, total_changes() AS changes FROM pragma_data_version",
+    ).get() as { data_version: number; changes: number };
+    return `${row.data_version}:${row.changes}:${this.#writeRevision}`;
   }
 
   /** Validate settlement identically before the live slot can be released. */
