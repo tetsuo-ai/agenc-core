@@ -180,6 +180,14 @@ function compileLinuxProcessBroker(): void {
   const compiler = process.env.CC?.trim() || 'cc';
   const temporary = mkdtempSync(resolve(runtimeRoot, 'dist/.namespace-init-build-'));
   try {
+    const sessionBuild = spawnSync(compiler, [
+      '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',
+      '-D_FORTIFY_SOURCE=2', '-fstack-protector-strong', '-Wl,-z,relro,-z,now',
+      '-o', resolve(runtimeRoot, 'dist/agenc-session-sandbox'),
+      resolve(runtimeRoot, 'native/agenc-session-sandbox.c'),
+    ], { encoding: 'utf8' });
+    if (sessionBuild.error || sessionBuild.status !== 0)
+      throw new Error('Session sandbox build failed: ' + sessionBuild.stderr);
     const helper = resolve(temporary, 'namespace-init');
     const staticBuild = spawnSync(compiler, [
       '-Os', '-static', '-std=c11', '-Wall', '-Wextra', '-Werror',

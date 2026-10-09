@@ -129,6 +129,8 @@ export type SandboxIgnoreViolations = Readonly<
 >;
 
 export interface SandboxConfig {
+  /** Reuse a Linux sandbox within a session; false retains per-command launches. */
+  readonly persistent_session?: boolean;
   /** Explicit network policy; defaults to true only in danger-full-access. */
   readonly network_access?: boolean;
   /**
@@ -3109,6 +3111,7 @@ export function validateSandboxConfig(
   const booleanKeys = [
     "network_access",
     "allow_gpu",
+    "persistent_session",
     "autoAllowBashIfSandboxed",
     "allowUnsandboxedCommands",
     "enableWeakerNestedSandbox",

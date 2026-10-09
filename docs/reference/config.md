@@ -618,6 +618,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox` | Sandbox detail block. |
 | `sandbox.network_access` | Explicit network boolean. |
 | `sandbox.allow_gpu` | macOS Metal GPU opt-in. |
+| `sandbox.persistent_session` | On unless set to `false`. Reuse an eligible Linux command sandbox within its owning session. Set `false` to launch a fresh sandbox for each command. |
 | `sandbox.autoAllowBashIfSandboxed` | On unless set to `false`. Bash and `exec_command` calls that will run inside the OS sandbox proceed without a prompt in the `default`, `acceptEdits`, `auto` and `dontAsk` modes. Escalation requests, detached services, TTY sessions, flagged commands and deny or ask rules still ask. Set `false` to be asked for every command. |
 | `sandbox.allowUnsandboxedCommands` | Explicit unsandboxed-command escape policy. |
 | `sandbox.enableWeakerNestedSandbox` | Weaker nested-isolation opt-in. |

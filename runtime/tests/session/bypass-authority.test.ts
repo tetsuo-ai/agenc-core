@@ -4,6 +4,7 @@ import {
   executionAuthorityForPermissionContext,
   permissionContextUsesBypassAuthority,
   type SessionExecutionAuthority,
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
 } from "../../src/session/configuration.js";
 
 const CONFIGURED: SessionExecutionAuthority = Object.freeze({
@@ -78,4 +79,13 @@ describe("executionAuthorityForPermissionContext plan+bypass stash", () => {
     expect(projected.approvalPolicy.value).toBe("on_request");
     expect(projected.sandboxPolicy.value).toBe("workspace_write");
   });
+});
+
+
+test("persistent sandbox opt-out survives permission authority projection", () => {
+  const authority = executionAuthorityForPermissionContext({ ...CONFIGURED, sandboxPersistentSession: false }, {
+    mode: "default",
+  });
+  expect(authority.sandboxPersistentSession).toBe(false);
+  expect(sandboxExecutionBrokerAuthorityFromSessionAuthority(authority, "/workspace").persistentSession).toBe(false);
 });
