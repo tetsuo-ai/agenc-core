@@ -414,7 +414,13 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
       const path = pending.pop()!;
       let stats;
       try {
-        stats = lstatSync(path, { bigint: true });
+        stats = lstatSync(path, { bigint: true, throwIfNoEntry: !oneShotFastModeActive() });
+        if (stats === undefined) {
+          // A fresh missing-root observation is sufficient; avoid allocating
+          // an ENOENT stack on every request. A disappearing child remains an
+          // uncertain snapshot and uses the ordinary verified scan.
+          return path === root ? { signature: "missing", hasIndexableMemory: false } : null;
+        }
       } catch (error) {
         if (path === root && isMissingPath(error)) {
           return { signature: "missing", hasIndexableMemory: false };

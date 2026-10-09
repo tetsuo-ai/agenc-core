@@ -44,3 +44,21 @@ test("uncertain root identity keeps the verified scan fallback", async () => {
     expect(result).toEqual(await findRelevantMemories(options));
   } finally { closeFullCorpusMemoryIndexes(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("a missing root below a file becomes visible after the parent is replaced by a directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fast-memory-nondirectory-"));
+  try {
+    const parent = join(root, "parent");
+    const memory = join(parent, "memory");
+    await writeFile(parent, "not a directory");
+    const options = { query: "browser", memoryDirs: [memory], signal: new AbortController().signal,
+      memoryIndexDatabasePath: join(root, "memory.sqlite") };
+    const recall = () => withOneShotFastMode(() => findRelevantMemories(options));
+    expect(await recall()).toEqual(await findRelevantMemories(options));
+    await rm(parent);
+    await mkdir(memory, { recursive: true });
+    await writeFile(join(memory, "browser.md"), "---\nname: Browser\ndescription: Browser notes\ntype: project\n---\nBrowser notes");
+    expect((await recall()).map(item => item.path)).toContain(join(memory, "browser.md"));
+    expect(await recall()).toEqual(await findRelevantMemories(options));
+  } finally { closeFullCorpusMemoryIndexes(); await rm(root, { recursive: true, force: true }); }
+});
