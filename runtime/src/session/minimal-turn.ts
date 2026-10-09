@@ -2,6 +2,8 @@ import { validateToolCall } from "../llm/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { stripModelSuppliedAgenCInternalArgs } from "../tools/internal-args.js";
 import { sessionDispatchAuthority } from "../tools/session-dispatch-authority.js";
+import { attachPreflightRuntimeContext } from "../tools/router.js";
+import { createTurnDiffTracker, parseToolName } from "../tools/context.js";
 import type { StreamModelRequestContract } from "../phases/stream-model.js";
 import { flushOneShotEffectJournal } from "../budget/admitted-tool-call.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
@@ -44,6 +46,7 @@ export async function* runMinimalTurn(
   const responses: LLMResponse[] = [];
   let usage: LLMUsage = UNKNOWN_USAGE;
   let lastResponseUsage: LLMUsage | undefined;
+  const tracker = createTurnDiffTracker();
   yield { type: "turn_start", turnIndex: 0 };
   try {
     for (;;) {
@@ -108,6 +111,7 @@ export async function* runMinimalTurn(
       }
       for (const call of toolCalls) {
         signal.throwIfAborted();
+        const tool = session.services.registry.tools?.find(tool => tool.name === call.name);
         let content: string;
         let modelMessage: LLMMessage | undefined;
         let isError = false;
@@ -129,6 +133,15 @@ export async function* runMinimalTurn(
               for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(authority))) {
                 Object.defineProperty(projected, key, { ...descriptor, enumerable: false });
               }
+              if (tool !== undefined && ctx.approvalPolicy !== undefined && ctx.sandboxPolicy !== undefined) {
+                // Tool implementations consult this authenticated invocation
+                // for current permission mode, protected roots and ownership.
+                // Attach the canonical context without rebuilding preflight.
+                attachPreflightRuntimeContext(tool, projected, {
+                  session, turn: ctx, tracker, callId: call.id, toolName: parseToolName(call.name),
+                  payload: { kind: "function", arguments: call.arguments }, source: "direct",
+                }, { approvalPolicy: ctx.approvalPolicy.value, sandboxMode: ctx.sandboxPolicy.value });
+              }
               return projected;
             },
             abortSignal: signal, advertisedToolNames: options.tools?.map(tool => tool.function.name),
@@ -136,7 +149,6 @@ export async function* runMinimalTurn(
           content = result.content;
           metadata = result.metadata;
           markLoadedToolNamesDiscovered(call.name, result, session.services.registry.getDiscoveredToolNames?.());
-          const tool = session.services.registry.tools?.find(tool => tool.name === call.name);
           modelMessage = toolResultMessage(session.conversationId, call.id, call.name, result,
             classifyUntrustedToolResult(call.name, tool), session.services.runtimeOptions?.lightMode === true);
           isError = result.isError === true;
