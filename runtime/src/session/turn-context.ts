@@ -524,6 +524,7 @@ export interface Config {
   readonly maxBudgetUsd?: number;
   readonly taskTokenBudget?: number;
   readonly taskMaxCalls?: number;
+  readonly experimentalTaskBudgetProgress?: string;
   /** Canonical durable checkpoint/resume policy captured for this session. */
   readonly durableTurns?: DurableTurnsConfig;
   /** Completion gate policy for non-interactive verification rounds. */

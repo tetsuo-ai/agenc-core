@@ -1,3 +1,4 @@
+import { createTaskBudgetProgress } from "./task-budget-progress.js";
 import { DEFAULT_TASK_TOKEN_BUDGET } from "../config/task-budget.js";
 import type { LLMMessage, LLMResponse, LLMUsage } from "../llm/types.js";
 import type { Session } from "./session.js";
@@ -21,13 +22,22 @@ export class TaskBudget {
   private lastReservation = 0;
   private announced = false;
   private stopped = false;
-  constructor(readonly limit?: number, readonly maxCalls?: number) {}
+  private extensionAnnounced = false;
+  constructor(private readonly hardLimit?: number, readonly maxCalls?: number,
+    private readonly progressLimit?: () => number) {}
+  get limit(): number | undefined { return this.progressLimit?.() ?? this.hardLimit; }
   stop(): void { this.stopped = true; }
   get reached(): boolean {
     return this.stopped || (this.limit !== undefined && this.tokens >= this.limit) ||
       (this.maxCalls !== undefined && this.calls >= this.maxCalls);
   }
   reminder(): LLMMessage | undefined {
+    const currentLimit = this.limit;
+    if (!this.extensionAnnounced && this.progressLimit && currentLimit === this.hardLimit) {
+      this.extensionAnnounced = true;
+      this.announced = false;
+      return { role: "user", content: `A host-verified public check changed from failing to passing after a workspace change. Your task allowance was extended once to ${currentLimit} tokens. Finish the fix, run the decisive check, and report. No further extension is available.`, runtimeOnly: { excludeFromDurableHistory: true } };
+    }
     if (this.announced || this.reached || !(
       (this.limit !== undefined && (this.tokens >= this.limit * 0.8 ||
         // A growing conversation can spend the entire reserve in one request.
@@ -93,7 +103,9 @@ export function taskBudgetOf(session: Session): TaskBudget | undefined {
   if (limit === undefined && maxCalls === undefined) return undefined;
   let budget = budgets.get(session);
   if (!budget) {
-    budget = new TaskBudget(limit, maxCalls);
+    const progress = config.experimentalTaskBudgetProgress;
+    budget = new TaskBudget(limit, maxCalls, progress !== undefined && limit !== undefined
+      ? createTaskBudgetProgress(progress, limit) : undefined);
     budgets.set(session, budget);
   }
   const admission = session.services.executionAdmission;

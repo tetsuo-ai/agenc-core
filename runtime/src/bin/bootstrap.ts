@@ -556,6 +556,7 @@ function buildDeferredConfig(
     ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
     ...(config.task_token_budget !== undefined ? { taskTokenBudget: config.task_token_budget } : {}),
     ...(config.task_max_calls !== undefined ? { taskMaxCalls: config.task_max_calls } : {}),
+    ...(config.experimental_task_budget_progress !== undefined ? { experimentalTaskBudgetProgress: config.experimental_task_budget_progress } : {}),
     ...(config.durableTurns !== undefined
       ? { durableTurns: config.durableTurns }
       : {}),

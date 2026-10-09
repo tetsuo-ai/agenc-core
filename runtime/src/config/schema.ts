@@ -986,6 +986,8 @@ export interface AgenCConfig {
   /** Per-session task allocation including reasoning. Zero explicitly disables it. */
   readonly task_token_budget?: number;
   readonly task_max_calls?: number;
+  /** Experimental signed host-check registration; never raises task_token_budget. */
+  readonly experimental_task_budget_progress?: string;
   readonly autonomous_mode?: boolean;
   /**
    * Coordinator mode: the main session orchestrates work through
@@ -1130,6 +1132,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "max_budget_usd",
   "task_token_budget",
   "task_max_calls",
+  "experimental_task_budget_progress",
   "autonomous_mode",
   "coordinator_mode",
   "transaction_guard",
