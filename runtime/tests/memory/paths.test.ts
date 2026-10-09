@@ -24,6 +24,8 @@ import {
   getGlobalMemoryEntrypoint,
   getGlobalMemoryPath,
   getMemoryBaseDir,
+  getMemorySearchPathsForHome,
+  getMemoryProjectRoot,
   getProjectInstructionPath,
   getProjectMemoryEntrypoint,
   getProjectMemoryPath,
@@ -75,6 +77,7 @@ describe("memory paths", () => {
   it("resolves D-13 global and project memory layers", () => {
     installMemoryAuthority();
     expect(getMemoryBaseDir()).toBe(join(tempRoot, "home"));
+    expect(getMemorySearchPathsForHome(getMemoryBaseDir())).toEqual([getGlobalMemoryPath(), getProjectMemoryPath()]);
     expect(getGlobalMemoryPath()).toBe(join(tempRoot, "home", "memory") + sep);
     expect(getGlobalMemoryEntrypoint()).toBe(
       join(tempRoot, "home", "memory", "MEMORY.md"),
@@ -109,6 +112,7 @@ describe("memory paths", () => {
         `${join(tempRoot, "remote-memory", "projects")}${sep}`,
       );
       expect(getProjectMemoryPath()).toBe(getAutoMemPath());
+      expect(getMemorySearchPathsForHome(getMemoryBaseDir())).toEqual([getGlobalMemoryPath(), getProjectMemoryPath()]);
     });
   });
 
@@ -120,6 +124,7 @@ describe("memory paths", () => {
     runWithAgentRuntimeOptions(resolveAgentRuntimeOptions(process.env), () => {
       expect(hasAutoMemPathOverride()).toBe(true);
       expect(getProjectMemoryPath()).toBe(override);
+      expect(getMemorySearchPathsForHome(getMemoryBaseDir())).toEqual([getGlobalMemoryPath(), override]);
     });
 
     process.env.AGENC_COWORK_MEMORY_PATH_OVERRIDE = "/";
@@ -152,6 +157,7 @@ describe("memory paths", () => {
     await configStore.reload();
     clearPathCaches();
     expect(getProjectMemoryPath()).toBe(override + sep);
+    expect(getMemorySearchPathsForHome(getMemoryBaseDir())).toEqual([getGlobalMemoryPath(), override + sep]);
   });
 
   it("isolates cached memory paths and write permission across sessions", () => {
@@ -173,6 +179,7 @@ describe("memory paths", () => {
       runWithCanonicalSettingsAuthority(authority, () =>
         runWithAgentRuntimeOptions(runtimeOptions, () => ({
           path: getProjectMemoryPath(),
+          searchPaths: getMemorySearchPathsForHome(getMemoryBaseDir()),
           overridePermission: checkEditableInternalPath(
             join(override, "foreign.md"),
             {},
@@ -196,6 +203,8 @@ describe("memory paths", () => {
         const sessionB = firstRuntime === runtimeB ? first : second;
 
         expect(sessionA.path).toBe(override);
+        expect(sessionA.searchPaths[1]).toBe(override);
+        expect(sessionB.searchPaths[1]).toBe(expectedB);
         expect(sessionA.overridePermission).toBe("passthrough");
         expect(sessionB.path).toBe(expectedB);
         expect(sessionB.overridePermission).toBe("passthrough");
@@ -216,3 +225,16 @@ function clearPathCaches(): void {
   getProjectMemoryPath.cache?.clear?.();
   getAutoMemPath.cache?.clear?.();
 }
+
+
+it("memory search snapshots isolate a requested foreign home without reusing ambient overrides", () => {
+  installMemoryAuthority();
+  const requested = join(tempRoot, "other-home");
+  const expected = [join(requested, "memory") + sep, buildProjectMemoryDirectory(requested, getMemoryProjectRoot())];
+  for (const override of [join(tempRoot, "override-a"), join(tempRoot, "override-b")]) {
+    runWithAgentRuntimeOptions(resolveAgentRuntimeOptions({}, { coworkMemoryPathOverride: override }), () => {
+      expect(getMemorySearchPathsForHome(requested)).toEqual(expected);
+      expect(getMemorySearchPathsForHome(getMemoryBaseDir())).toEqual([getGlobalMemoryPath(), override + sep]);
+    });
+  }
+});
