@@ -1,4 +1,4 @@
-import { assistantMessageFromResponse, parseToolUseBlocks } from "../phases/stream-model.js";
+import { assistantMessageFromResponse, parseToolUseBlocks, admittedModelStepId } from "../phases/stream-model.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { runMinimalTurn } from "./minimal-turn.js";
 import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
@@ -79,6 +79,7 @@ import {
 } from "../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import {
+  runAdmittedModelCall,
   accountingOptionsForProvider,
   fitOutputReservationToContext,
   projectProviderAccountingRequest,
@@ -2291,6 +2292,14 @@ async function* runTurnKernelInner(
       }
       return prepared.kind === "request" ? prepared : null;
     }, {
+      callProvider: (messages, options, samplingContext) => runAdmittedModelCall({
+        session, provider: session.services.provider, messages, options,
+        stepId: admittedModelStepId(ctx, state, "primary"),
+        sessionId: session.conversationId,
+        model: session.config?.model ?? samplingContext.config.model,
+        providerName: session.services.provider.name, signal,
+        invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
+      }),
       requiresResponse: response => {
         return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
       },

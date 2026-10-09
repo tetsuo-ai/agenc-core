@@ -16,7 +16,7 @@ import { toolResultMessage } from "../phases/execute-tools.js";
 import { requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 import { createFastContextGuard } from "./fast-context-guard.js";
 import type { EventMsg } from "./event-log.js";
-import type { LLMMessage, LLMUsage, LLMResponse } from "../llm/types.js";
+import type { LLMMessage, LLMUsage, LLMResponse, LLMChatOptions } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { assistantMessageFromResponse, buildProviderOptions } from "../phases/stream-model.js";
 import type { Terminal, CompletedToolResultRecord } from "./turn-state.js";
@@ -36,6 +36,7 @@ export async function* runMinimalTurn(
   signal: AbortSignal,
   prepareRequest?: (modelCalls: number, lastResponseUsage: LLMUsage | undefined) => Promise<{ request: StreamModelRequestContract; samplingContext: TurnContext } | null>,
   canonicalBoundary?: {
+    callProvider: (messages: LLMMessage[], options: LLMChatOptions, samplingContext: TurnContext) => Promise<LLMResponse>;
     requiresResponse: (response: LLMResponse) => boolean;
     completedTool: (result: CompletedToolResultRecord) => void;
   },
@@ -78,7 +79,10 @@ export async function* runMinimalTurn(
           return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
         }
       }
-      const response = await session.services.provider.chatStream(prepared?.request.input.slice() ?? messages, () => {}, options);
+      const input = prepared?.request.input.slice() ?? messages;
+      const response = canonicalBoundary
+        ? await canonicalBoundary.callProvider(input, options, prepared?.samplingContext ?? ctx)
+        : await session.services.provider.chatStream(input, () => {}, options);
       modelCalls++;
       responses.push(response);
       if (response.error) throw response.error;
