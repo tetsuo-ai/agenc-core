@@ -224,6 +224,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+            model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+            maxOutputTokens: 8192, usageReporting: "authoritative" }),
           chat: async () => reply(),
           ...(stream ? { chatStream: async () => reply() } : {}),
         }) as never,
@@ -1223,6 +1226,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     };
     vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
       name: "stub",
+      getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+        model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+        maxOutputTokens: 8192, usageReporting: "authoritative" }),
       chat: modelRequest,
       chatStream: modelRequest,
     }) as never);
@@ -1660,6 +1666,9 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     };
     vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
       name: "stub",
+      getExecutionProfile: async (options?: LLMChatOptions) => ({ provider: "stub",
+        model: options?.model ?? "base-model", supportsMaxOutputTokens: true,
+        maxOutputTokens: 8192, usageReporting: "authoritative" }),
       chat: request,
       chatStream: (messages: unknown, _onChunk: unknown, options?: LLMChatOptions) =>
         request(messages, options),

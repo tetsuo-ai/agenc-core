@@ -117,6 +117,9 @@ async function daemon(options: { trusted?: boolean } = {}) {
   const providerModule = await import("../../src/llm/provider.js");
   vi.spyOn(providerModule, "createProvider").mockImplementation(() => ({
     name: "scripted",
+    // Scripted replies are bounded and include authoritative usage.
+    getExecutionProfile: async () => ({ provider: "scripted", model: "scripted",
+      supportsMaxOutputTokens: true, maxOutputTokens: 8192, usageReporting: "authoritative" }),
     chat: (messages: never) => respond(messages),
     chatStream: (messages: never) => respond(messages),
     healthCheck: async () => true,
