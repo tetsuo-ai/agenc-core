@@ -1506,6 +1506,8 @@ static int run_one_shot_server(void) {
     char type; uint32_t length;
     char *body = server_receive(&type, &length);
     if (body == NULL) return 125;
+    /* A cancellation can cross the previous command's final frame. */
+    if ((type == 'T' || type == 'K' || type == 'E') && length == 0) { free(body); continue; }
     int result = type == 'R' ? server_command(body, length) : -1;
     free(body);
     if (result != 0) return 125;

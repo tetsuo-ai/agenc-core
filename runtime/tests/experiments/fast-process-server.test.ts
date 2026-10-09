@@ -73,6 +73,14 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     await expect(s.spawn({program:"/bin/sh",args:["-c","echo bad > effects"],cwd:dir,env:{}},()=>{throw new Error("denied");})).rejects.toThrow("denied");
     expect(fs.existsSync(path.join(dir,"effects"))).toBe(false);
   });
+  test("a cancellation crossing the final frame does not cancel the next command", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess"), s = server();
+    expect((await (await start(s, "echo first")).result).out).toBe("first\n");
+    // Queue the stale cancel after D, immediately followed by the next R.
+    launch.mock.results[0]!.value.stdin.write(Buffer.from([75,0,0,0,0]));
+    expect((await (await start(s, "echo next")).result).out).toBe("next\n");
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
   test("startup failure falls back before executing anything and is remembered", async () => {
     const s = server(), dir = root();
     const launch = vi.spyOn(supervised, "spawnContainedProcess").mockImplementationOnce(() => { throw new Error("unavailable"); });
