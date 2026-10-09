@@ -16,6 +16,7 @@ export const STARTUP_VALUE_OPTIONS = Object.freeze([
   "--input-format",
   "--image",
   "--task-token-budget",
+  "--budget",
   "--task-max-calls",
   "--deadline",
   "--deadline-reserve",

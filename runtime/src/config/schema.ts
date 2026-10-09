@@ -1,4 +1,4 @@
-import { DEFAULT_TASK_TOKEN_BUDGET } from "./task-budget.js";
+import { DEFAULT_TASK_TOKEN_BUDGET, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "./task-budget.js";
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
@@ -985,6 +985,8 @@ export interface AgenCConfig {
   readonly max_budget_usd?: number;
   /** Per-session task allocation including reasoning. Zero explicitly disables it. */
   readonly task_token_budget?: number;
+  /** Named allocation; higher config layers replace lower numeric/level choices. */
+  readonly budget_level?: TaskBudgetLevel;
   readonly task_max_calls?: number;
   /** Experimental signed host-check registration; never raises task_token_budget. */
   readonly experimental_task_budget_progress?: string;
@@ -1131,6 +1133,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "max_turns",
   "max_budget_usd",
   "task_token_budget",
+  "budget_level",
   "task_max_calls",
   "experimental_task_budget_progress",
   "autonomous_mode",
@@ -1336,6 +1339,16 @@ export function mergeConfigs(
     base as Record<string, unknown>,
     override as Record<string, unknown>,
   ) as AgenCConfig;
+  // Treat the level and numeric cap as one selection across config layers.
+  // A numeric value wins when both are supplied in the same layer (including 0).
+  if (override.task_token_budget !== undefined) {
+    const level = override.budget_level;
+    return deepFreeze({ ...merged, budget_level:
+      level !== undefined && TASK_BUDGET_LEVELS[level] === override.task_token_budget ? level : undefined });
+  }
+  if (override.budget_level !== undefined) {
+    return deepFreeze({ ...merged, task_token_budget: TASK_BUDGET_LEVELS[override.budget_level] });
+  }
   return deepFreeze(merged);
 }
 

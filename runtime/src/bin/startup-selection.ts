@@ -71,6 +71,7 @@ export function startupConfigLayerOptions(params: {
     params.cli.taskTokenBudget !== undefined || params.cli.taskMaxCalls !== undefined;
   const cliOverrides = hasProviderOrModelOverride
     ? Object.freeze({
+        ...(params.cli.budgetLevel !== undefined ? { budget_level: params.cli.budgetLevel } : {}),
         ...(params.cli.taskTokenBudget !== undefined ? { task_token_budget: params.cli.taskTokenBudget } : {}),
         ...(params.cli.taskMaxCalls !== undefined ? { task_max_calls: params.cli.taskMaxCalls } : {}),
         ...(params.cli.provider !== undefined

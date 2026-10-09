@@ -1,3 +1,4 @@
+import { isTaskBudgetLevel, TASK_BUDGET_LEVELS, type TaskBudgetLevel } from "../config/task-budget.js";
 /** Parse literal startup flags without loading model or settings authorities. */
 import {
   isUserAddressablePermissionMode,
@@ -16,6 +17,7 @@ import { validateAndDedupeAdditionalWorkingDirectoryInputs } from "../contracts/
 
 export interface StartupCliFlags {
   readonly taskTokenBudget?: number;
+  readonly budgetLevel?: TaskBudgetLevel;
   readonly taskMaxCalls?: number;
   readonly provider?: string;
   readonly model?: string;
@@ -52,7 +54,15 @@ export function readStartupCliFlags(
     }
     return value;
   };
-  const taskTokenBudget = taskBudgetFlag("--task-token-budget");
+  const rawBudget = extractFlagValue(optionArgs, "--budget");
+  const hasBudget = optionArgs.some((arg) => arg === "--budget" || arg.startsWith("--budget="));
+  if (hasBudget && !isTaskBudgetLevel(rawBudget)) throw new Error("--budget requires eco, balanced, or max");
+  const budgetLevel = isTaskBudgetLevel(rawBudget) ? rawBudget : undefined;
+  const numericBudget = taskBudgetFlag("--task-token-budget");
+  if (budgetLevel !== undefined && numericBudget !== undefined) {
+    throw new Error("Use either --budget or --task-token-budget, not both");
+  }
+  const taskTokenBudget = budgetLevel === undefined ? numericBudget : TASK_BUDGET_LEVELS[budgetLevel];
   const taskMaxCalls = taskBudgetFlag("--task-max-calls");
   const provider = extractFlagValue(optionArgs, "--provider") ?? undefined;
   const model = extractFlagValue(optionArgs, "--model") ?? undefined;
@@ -94,6 +104,7 @@ export function readStartupCliFlags(
   const lightMode = optionArgs.includes("--light");
   return Object.freeze({
     ...(taskTokenBudget !== undefined ? { taskTokenBudget } : {}),
+    ...(budgetLevel !== undefined ? { budgetLevel } : {}),
     ...(taskMaxCalls !== undefined ? { taskMaxCalls } : {}),
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
