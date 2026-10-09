@@ -1027,6 +1027,7 @@ function prepareAccountingRequest(
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
   let serializedCacheIdentity: string;
+  let serializedPromptIdentity: string;
   let messageProjection: PreparedMessageAccountingProjection;
   try {
     snapshot = snapshotAccountingRequest(request);
@@ -1055,7 +1056,12 @@ function prepareAccountingRequest(
       promptIdentity,
       capability,
     );
-    serializedCacheIdentity = stableStringify(cacheIdentity);
+    // The prompt is part of the complete cache identity. Normalize that tree
+    // once, then serialize its prompt subtree for the fallback estimate too.
+    // Both serializations retain the same sorted keys and request byte bound.
+    const canonicalIdentity = canonicalize(cacheIdentity, new Set()) as Record<string, unknown>;
+    serializedCacheIdentity = JSON.stringify(canonicalIdentity);
+    serializedPromptIdentity = JSON.stringify(canonicalIdentity.prompt);
   } catch (error) {
     if (error instanceof TokenAccountingError) throw error;
     throw new TokenAccountingError(
@@ -1075,16 +1081,21 @@ function prepareAccountingRequest(
       `token accounting request is ${requestBytes} bytes; limit is ${maxRequestBytes}`,
     );
   }
-  const digest = createHash("sha256")
-    .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
-    .update(serializedCacheIdentity, "utf8")
-    .digest("hex");
+  // Local fallback never enters the native-count cache or single-flight map.
+  // Retain the complete byte/canonicality checks above, but hash only when a
+  // cache consumer actually asks for the identity.
+  let digest: string | undefined;
   return {
     request: snapshot,
-    digest,
+    get digest() {
+      return digest ??= createHash("sha256")
+        .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
+        .update(serializedCacheIdentity, "utf8")
+        .digest("hex");
+    },
     fallback: conservativeFallbackResult(
       snapshot,
-      promptIdentity,
+      serializedPromptIdentity,
       messageProjection,
     ),
   };
@@ -1213,7 +1224,7 @@ function cacheIdentityForRequest(
 
 function conservativeFallbackResult(
   request: TokenAccountingRequest,
-  promptIdentity: Readonly<Record<string, unknown>>,
+  serializedPromptIdentity: string,
   messageProjection: PreparedMessageAccountingProjection,
 ): TokenAccountingResult {
   const inspection = inspectRequestContent(
@@ -1225,7 +1236,7 @@ function conservativeFallbackResult(
     messageProjection.inlineImages,
   );
   const promptTokens = estimateUtf8TokenUnits(
-    stableStringify(promptIdentity),
+    serializedPromptIdentity,
     conservativeBytesPerToken(request.provider, request.model),
   );
   const frameTokens =

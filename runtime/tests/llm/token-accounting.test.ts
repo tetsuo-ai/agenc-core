@@ -811,6 +811,33 @@ describe("native count selection, identity, and caching", () => {
     );
   });
 
+  test("keeps local and failed native counts identical for canonical prompt subtrees", async () => {
+    const parameters = JSON.parse('{"properties":{"z":{"enum":[null,false,0,"λ"]},"__proto__":{"type":"string"},"a":{"type":"number"}},"type":"object"}');
+    const request = accountingRequest("combining e\u0301 / λ", {
+      options: {
+        tools: [{ ...TOOL, function: { ...TOOL.function, parameters } }],
+        systemPrompt: "unicode \u212b",
+        toolChoice: { type: "function", function: { name: "lookup" } },
+      },
+    });
+    const expected = estimateTokenAccountingRequest(request);
+    const unavailable = capability(async () => { throw new Error("counter unavailable"); });
+    expect(await new TokenAccountingService().count(request)).toEqual(expected);
+    expect(await new TokenAccountingService().count(request, { capability: unavailable })).toEqual(expected);
+    // Cache identity still normalizes object-key order and changes with content.
+    const countTokens = vi.fn(async () => completeCount(20));
+    const counter = capability(countTokens);
+    const service = new TokenAccountingService();
+    await service.count(request, { capability: counter });
+    const reordered = structuredClone(request);
+    const properties = parameters.properties;
+    reordered.options.tools![0]!.function.parameters = { type: "object", properties: { a: properties.a, ["__proto__"]: properties.__proto__, z: properties.z } };
+    await expect(service.count(reordered, { capability: counter })).resolves.toMatchObject({ cacheStatus: "hit" });
+    reordered.options.tools![0]!.function.parameters = { type: "boolean" };
+    await expect(service.count(reordered, { capability: counter })).resolves.toMatchObject({ cacheStatus: "miss" });
+    expect(countTokens).toHaveBeenCalledTimes(2);
+  });
+
   test("does not trust caller freezes or freeze their mutable descendants", () => {
     let description = "short";
     const parameters = { type: "object", properties: { key: { type: "string" } } };
