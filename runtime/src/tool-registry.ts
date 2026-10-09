@@ -1156,6 +1156,9 @@ export function buildToolRegistry(
       readToolList(options.deferredTools),
       options.unavailableCalledTools ?? [],
       parallel === undefined ? [] : [parallel, ...parallel],
+      // The supplied TOML policy is live, including nested per-tool defaults.
+      // Snapshot its value rather than its object identity or array references.
+      [JSON.stringify(options.toolsConfig)],
     ];
   }
 

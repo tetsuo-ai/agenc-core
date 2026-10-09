@@ -12,11 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { canonicalizeHomePath, InvalidHomePathError } from "../../src/config/home.js";
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-home-cache-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-home-changes-")));
 let work = "";
 let serial = 0;
 
@@ -27,11 +27,6 @@ beforeEach(() => {
 
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
-});
-
-afterEach(() => {
-  vi.doUnmock("node:fs");
-  vi.resetModules();
 });
 
 /** The uncached algorithm: realpath of the deepest existing ancestor plus the missing tail. */
@@ -51,7 +46,7 @@ function agree(path: string): string {
   return value;
 }
 
-describe("cached home canonicalization", () => {
+describe("home canonicalization after filesystem changes", () => {
   it("follows a symlinked home when the link is retargeted", () => {
     mkdirSync(join(work, "a"));
     mkdirSync(join(work, "b"));
@@ -97,28 +92,20 @@ describe("cached home canonicalization", () => {
     expect(agree(join(work, "link", "home"))).toBe(join(work, "real", "home"));
   });
 
-  it("still rejects relative paths before consulting the cache", () => {
+  it("still rejects relative paths", () => {
     expect(() => canonicalizeHomePath("relative/home")).toThrow(InvalidHomePathError);
   });
 
-  it("does not repeat the realpath walk while nothing changed", async () => {
-    vi.resetModules();
-    let realpaths = 0;
-    vi.doMock("node:fs", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("node:fs")>();
-      return {
-        ...actual,
-        realpathSync: ((path: string) => {
-          realpaths += 1;
-          return actual.realpathSync(path);
-        }) as typeof actual.realpathSync,
-      };
-    });
-    const home = await import("../../src/config/home.js");
-    mkdirSync(join(work, "home"));
-    const first = home.canonicalizeHomePath(join(work, "home"));
-    const second = home.canonicalizeHomePath(join(work, "home"));
-    expect(second).toBe(first);
-    expect(realpaths).toBe(1);
-  });
+  it.each(["", "home", "missing/home"])(
+    "follows an ancestor relocation with a compatibility symlink (%s)", (suffix) => {
+      const before = join(work, "before");
+      const after = join(work, "after");
+      mkdirSync(join(before, "home"), { recursive: true });
+      const path = join(before, suffix);
+      expect(agree(path)).toBe(path);
+      renameSync(before, after);
+      symlinkSync(after, before);
+      expect(agree(path)).toBe(join(after, suffix));
+    },
+  );
 });
