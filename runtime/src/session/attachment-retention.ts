@@ -23,6 +23,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 
 import type { LLMMessage } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
@@ -107,14 +108,28 @@ export function projectRetainedAttachments(
   permissionMode?: PermissionMode,
 ): { readonly messages: LLMMessage[]; readonly dropped: number } {
   if (ledger.blocks.length === 0) return { messages: [...base], dropped: 0 };
-  const positions = new Map<string, number[]>();
-  base.forEach((message, index) => {
-    if (isAttachmentMessage(message)) return;
-    const key = attachmentAnchorKey(message);
-    const list = positions.get(key);
-    if (list === undefined) positions.set(key, [index]);
-    else list.push(index);
-  });
+  let positions: Map<string, number[]> | undefined;
+  const positionFor = (block: RetainedAttachmentBlock): number => {
+    if (oneShotFastModeActive()) {
+      const hinted = base[block.anchorIndexHint];
+      // An exact current match at distance zero is necessarily the nearest
+      // anchor, including histories containing duplicate messages. Recheck
+      // its bytes on every projection; a stale hint takes the full search.
+      if (hinted !== undefined && !isAttachmentMessage(hinted) &&
+          attachmentAnchorKey(hinted) === block.anchorKey) return block.anchorIndexHint;
+    }
+    if (positions === undefined) {
+      positions = new Map();
+      base.forEach((message, index) => {
+        if (isAttachmentMessage(message)) return;
+        const key = attachmentAnchorKey(message);
+        const list = positions!.get(key);
+        if (list === undefined) positions!.set(key, [index]);
+        else list.push(index);
+      });
+    }
+    return resolveAnchor(positions, block);
+  };
   const before = new Map<number, LLMMessage[]>();
   const after = new Map<number, LLMMessage[]>();
   const kept: RetainedAttachmentBlock[] = [];
@@ -134,7 +149,7 @@ export function projectRetainedAttachments(
         default: return true;
       }
     });
-    const index = resolveAnchor(positions, block);
+    const index = positionFor(block);
     if (index < 0 || retainedMessages.length === 0) {
       dropped += 1;
       continue;

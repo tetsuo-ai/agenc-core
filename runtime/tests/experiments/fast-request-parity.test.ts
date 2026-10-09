@@ -34,6 +34,13 @@ test("fast and normal multi-call wire requests preserve identical instructions, 
       provider.chatStream = async (messages, _delta, options) => {
         bodies.push(JSON.stringify(buildChatCompletionsRequest({ model: "test-model", messages,
           tools: options?.tools ?? [], options })));
+        expect(bodies.at(-1)).not.toContain("__provider_mutation__");
+        if (bodies.length === 1) {
+          // Each provider invocation owns its snapshot. An adapter mutating
+          // it must not alter later history or the registry's schema catalog.
+          Object.assign(messages[0]!, { content: "__provider_mutation__" });
+          Object.assign(options!.tools![0]!.function.parameters, { __provider_mutation__: true });
+        }
         const call = calls[bodies.length - 1];
         return { content: call ? "" : "done", toolCalls: call ? [{ id: `call-${bodies.length}`,
           name: call.name, arguments: JSON.stringify(call.arguments) }] : [],

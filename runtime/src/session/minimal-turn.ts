@@ -60,7 +60,9 @@ export async function* runMinimalTurn(
         return { reason: "continue_normal", modelCalls, usage, lastResponseUsage };
       }
       if (prepared) {
-        options = buildProviderOptions(prepared.request, prepared.samplingContext, signal, session);
+        // prepareRequest owns a fresh canonical snapshot. This loop uses it
+        // once; transfer its already-cloned schemas instead of cloning twice.
+        options = buildProviderOptions(prepared.request, prepared.samplingContext, signal, session, true);
         // Attachments and permission instructions count toward the same bound.
         // The canonical projection may rewrite the prefix, so use a fresh guard.
         if (!createFastContextGuard(options)(prepared.request.input)) {
