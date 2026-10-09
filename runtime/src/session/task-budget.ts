@@ -17,6 +17,7 @@ export class TaskBudget {
   tokens = 0;
   calls = 0;
   private reserved = 0;
+  private activeCalls = 0;
   private lastReservation = 0;
   private announced = false;
   private stopped = false;
@@ -49,6 +50,7 @@ export class TaskBudget {
     this.assertFits(reserve);
     this.lastReservation = reserve;
     this.calls += 1;
+    this.activeCalls += 1;
     this.reserved += reserve;
     let charge = reserve; // Unknown usage retains the reservation, never becomes free.
     try {
@@ -56,9 +58,19 @@ export class TaskBudget {
       if (response.usage.availability === "reported") charge = taskUsageTokens(response.usage);
       return response;
     } finally {
+      this.activeCalls -= 1;
       this.reserved -= reserve;
       this.tokens += charge;
     }
+  }
+  /** A settled durable snapshot replaces old reservations, including downward reconciliation.
+   * Local wire calls retain their own holds until they finish; the admission
+   * kernel independently reserves shared capacity while they are in flight.
+   */
+  refreshDurableUsage(usage: { tokens: number; calls: number }): void {
+    if (this.activeCalls !== 0) return;
+    this.tokens = usage.tokens;
+    this.calls = usage.calls;
   }
   summary(lastContent: string): string {
     return ["Partial result: stopped at the task budget.",
@@ -87,7 +99,10 @@ export function taskBudgetOf(session: Session): TaskBudget | undefined {
   const admission = session.services.executionAdmission;
   const taskUsage = admission?.getTaskBudgetUsage?.();
   const usage = taskUsage === undefined ? admission?.getUsageSummary?.() : undefined;
-  budget.tokens = Math.max(budget.tokens, taskUsage?.tokens ?? usage?.totalTokens ?? 0);
-  budget.calls = Math.max(budget.calls, taskUsage?.calls ?? usage?.modelCalls ?? 0);
+  if (taskUsage !== undefined) budget.refreshDurableUsage(taskUsage);
+  else {
+    budget.tokens = Math.max(budget.tokens, usage?.totalTokens ?? 0);
+    budget.calls = Math.max(budget.calls, usage?.modelCalls ?? 0);
+  }
   return budget;
 }

@@ -68,3 +68,24 @@ it.each(["unknown", "reported"] as const)("preserves %s usage and the call ceili
     expect(taskBudgetOf(session(restored.client))!.reached).toBe(true);
   } finally { f.cleanup(); }
 });
+
+it.each(["reported", "unknown"] as const)("refreshes a sibling reservation after %s settlement", async availability => {
+  const f = fixture(10);
+  try {
+    const observer = session(f.client);
+    Object.assign(observer.config, { taskTokenBudget: 100, taskMaxCalls: 10 });
+    const child = f.client.forSession({ runId: "child", sessionId: "child" });
+    const lease = await child.acquire({ stepId: "large-reservation", kind: "model_turn", provider: "test", model: "test",
+      maxInputTokens: 10, maxOutputTokens: 80, maxCostUsd: 0 });
+    child.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    expect(taskBudgetOf(observer)!.tokens).toBe(90);
+    if (availability === "reported") child.reconcile(lease.reservation.reservationId, { inputTokens: 1, outputTokens: 1, costUsd: 0 });
+    else child.holdUnknown(lease.reservation.reservationId, "usage_missing");
+    child.acknowledgeCompletion(lease.reservation.reservationId);
+    const budget = taskBudgetOf(observer)!;
+    expect(budget.tokens).toBe(availability === "reported" ? 2 : 90);
+    expect(budget.calls).toBe(1);
+    if (availability === "reported") expect(() => budget.assertFits(20)).not.toThrow();
+    else expect(() => budget.assertFits(20)).toThrow("Task budget");
+  } finally { f.cleanup(); }
+});

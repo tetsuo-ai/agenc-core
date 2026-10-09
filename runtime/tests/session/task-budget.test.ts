@@ -87,6 +87,19 @@ describe("task allocation", () => {
     expect(b.tokens).toBe(70);
     expect(b.reached).toBe(true);
   });
+  it("retains local in-flight holds when a durable snapshot refreshes", async () => {
+    const budget = new TaskBudget(100);
+    let finish!: (r: LLMResponse) => void;
+    const active = budget.invoke(90, () => new Promise(resolve => { finish = resolve; }));
+    budget.refreshDurableUsage({ tokens: 90, calls: 1 });
+    expect(budget.tokens).toBe(0);
+    expect(budget.calls).toBe(1);
+    finish(response(10));
+    await active;
+    budget.refreshDurableUsage({ tokens: 10, calls: 1 });
+    expect(budget.tokens).toBe(10);
+    expect(() => budget.assertFits(20)).not.toThrow();
+  });
   it("charges failed and missing-usage requests conservatively", async () => {
     const b = new TaskBudget(100);
     await expect(b.invoke(40, async () => { throw new Error("network"); })).rejects.toThrow("network");
