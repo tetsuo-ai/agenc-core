@@ -30,7 +30,7 @@ test("signed progress releases one tranche and survives reconstruction without r
   expect(budget.limit).toBe(100); budget.assertFits(20);
   f.publish(); expect(budget.limit).toBe(200); budget.assertFits(120);
   expect(budget.reminder()?.content).toContain("extended once to 200");
-  expect(budget.reminder()?.content).not.toContain("extended once");
+  expect(budget.reminder()).toBeUndefined();
   expect(createTaskBudgetProgress(f.raw, 200)()).toBe(200);
   expect(() => budget.assertFits(131)).toThrow("Task budget reached");
 });
