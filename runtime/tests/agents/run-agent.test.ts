@@ -5012,7 +5012,7 @@ describe("runAgent", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-result-cache-"));
     const answers = Array.from({ length: 48 }, (_, index) => ' \n' + JSON.stringify({ index, text: "🐈".repeat(512) }) + '\n ');
     const provider = makeProvider(answers.map(content => ({ content })));
-    const session = makeStubSession({ services: { provider }, config: { ...mkConfig(), cwd },
+    const session = makeStubSession({ services: { provider }, config: { ...mkConfig(), cwd, taskTokenBudget: 0 },
       sessionConfiguration: mkSessionConfiguration({ cwd }) });
     const store = new RolloutStore({ cwd, sessionId: session.conversationId,
       agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
@@ -5294,7 +5294,7 @@ describe("runAgent", () => {
   });
 
   describe("automatic routing and provider retries", () => {
-    async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>) {
+    async function routedChild(script: ReadonlyArray<Partial<LLMResponse> | Error>, taskTokenBudget?: number) {
       const configStore = new ConfigStore({ cwd: "/tmp", base: {
         agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: ["deepseek"] },
       } });
@@ -5305,7 +5305,8 @@ describe("runAgent", () => {
         return { content: "", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "fake-model", finishReason: "stop", ...next };
       });
-      const session = makeStubSession({ services: { provider: { ...makeProvider([]), chatStream }, configStore } });
+      const session = makeStubSession({ services: { provider: { ...makeProvider([]), chatStream }, configStore },
+        config: { ...mkConfig(), ...(taskTokenBudget !== undefined ? { taskTokenBudget } : {}) } });
       const { live } = await spawnLive(session);
       const plan = await createChildExecutionPlan({ session, selection: session.providerService.current(),
         modelInfo: mkModelInfo(), parentPath: "/root", taskId: "routed-task", taskName: "worker", taskText: "go",
@@ -5350,7 +5351,7 @@ describe("runAgent", () => {
         ...Array.from({ length: 40 }, (_, index) => ({ content: "", finishReason: "tool_calls" as const,
           toolCalls: [{ id: `read-${index}`, name: "missing-tool", arguments: JSON.stringify({ page: index }) }] })),
         { content: "done" },
-      ]);
+      ], 0); // Exercise routing past forty calls with the task allowance explicitly disabled.
       const { result } = await run();
       expect(result.outcome).toBe("completed");
       expect(chatStream).toHaveBeenCalledTimes(41);

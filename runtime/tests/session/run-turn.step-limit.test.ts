@@ -208,7 +208,8 @@ describe("one-shot child step limit", () => {
     { name: "stub-provider", sent: ["read_probe"] },
   ])("withholds the tool catalog from synthesis only for $name", async ({ name, sent }) => {
     const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(async () => ({
-      content: "Found a defect.", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
+      content: "Found a defect.", toolCalls: [], model: "test-model", finishReason: "stop" as const,
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, availability: "reported", provenance: "provider" } }));
     const { session } = mkSession({ provider: { ...mkProvider(), name, chatStream } });
     const tool = { type: "function" as const,
       function: { name: "read_probe", description: "Read evidence", parameters: { type: "object" } } };

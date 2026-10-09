@@ -63,6 +63,8 @@ describe("context image budget in the turn loop", () => {
     const seen: LLMMessage[][] = [];
     const provider = mkProvider({ content: "seen" }, { onChatStream: (messages) => seen.push(messages) });
     const { session } = mkSession({ provider });
+    // All twelve turns must run to exercise both image-retention batches.
+    Object.assign(session.config, { taskTokenBudget: 0 });
     for (let turn = 0; turn < 12; turn += 1) {
       await drain(runTurn(session, mkCtx(), shot(`screen ${turn}`, 1000).content as LLMContentPart[]));
     }

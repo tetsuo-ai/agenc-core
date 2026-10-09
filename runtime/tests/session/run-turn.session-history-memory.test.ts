@@ -216,6 +216,8 @@ function mkFeatures(): ManagedFeatures {
 
 function mkConfig(): Config {
   return {
+    // This fixture measures memory retention across a deliberately long run.
+    taskTokenBudget: 0,
     model: "test-model",
     cwd: "/tmp",
     features: mkFeatures(),
