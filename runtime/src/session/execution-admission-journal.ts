@@ -1,6 +1,7 @@
 /** Canonical rollout projection for execution-admission transitions. */
 
 import { randomUUID } from "node:crypto";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type { Event } from "./event-log.js";
@@ -21,6 +22,15 @@ export function bindExecutionAdmissionJournal(
   admission: ExecutionAdmissionClient,
 ): () => void {
   const append = (event: AdmissionJournalEvent): void => {
+    // Admission and capacity have already committed. Only their canonical
+    // observation moves to the owning session's final/reader barrier. Keep
+    // the original event identity and timestamp; never recreate a lease here.
+    if (oneShotFastModeActive() && session.emitDeferred && session.writeBehind && !session.writeBehind.draining) {
+      const captured = structuredClone(event);
+      session.emitDeferred({ id: captured.eventId, eventId: captured.eventId },
+        () => ({ type: "execution_admission", payload: captured }), { durable: true });
+      return;
+    }
     appendExecutionAdmissionEvent(session, event);
   };
   const unsubscribe =

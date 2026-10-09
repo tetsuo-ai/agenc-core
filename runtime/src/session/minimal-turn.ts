@@ -196,6 +196,7 @@ export async function* runMinimalTurn(
       }
     }
   } finally {
+    session.writeBehind?.barrier();
     // Request diagnostics are deliberately materialized off the command path.
     for (const response of responses) void response.requestMetrics;
     flushOneShotEffectJournal(session);

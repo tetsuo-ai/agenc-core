@@ -5027,11 +5027,12 @@ export class Session {
    */
   emitDeferred(
     envelope: Omit<Event, "msg">,
-    buildMsg: () => Extract<EventMsg, { type: "session_usage" | "turn_checkpoint" }>,
+    buildMsg: () => Extract<EventMsg, { type: "session_usage" | "turn_checkpoint" | "execution_admission" }>,
     appendOpts: AppendOptions = {},
   ): void {
     const queue = this.writeBehind;
-    if (!queue.deferring || this.isRolloutPersistenceSuspended()) {
+    const finalizingOneShot = oneShotFastModeActive() && !queue.draining;
+    if ((!queue.deferring && !finalizingOneShot) || this.isRolloutPersistenceSuspended()) {
       this.emit({ ...envelope, msg: buildMsg() }, appendOpts);
       return;
     }
@@ -5042,7 +5043,7 @@ export class Session {
     const stamped = this.eventLog.stampEnvelope(envelope);
     const store = this.rolloutStore;
     const capturedOptions = { ...appendOpts };
-    queue.defer("deferred-event", () => {
+    queue.enqueue("deferred-event", () => {
       const event: Event = { ...stamped, msg: buildMsg() };
       const durable = isDurableEvent(event) || capturedOptions.durable === true;
       if (store?.append(event, { ...capturedOptions, durable }) === false && durable) {
@@ -6660,3 +6661,4 @@ async function deriveNextModelInfo(
     return deriveMinimalModelInfo(model);
   }
 }
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";

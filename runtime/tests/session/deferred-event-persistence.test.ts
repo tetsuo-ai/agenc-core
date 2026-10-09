@@ -8,6 +8,7 @@ import { SessionStore } from "../../src/session/session-store.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { bindExecutionAdmissionJournal } from "../../src/session/execution-admission-journal.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -42,6 +43,41 @@ function usage(): Extract<EventMsg, { type: "session_usage" }> {
 }
 
 describe("deferred event payloads", () => {
+  it.each(["close", "reader", "observer"])("retains fast admission transitions and exact usage at %s", async barrier => {
+    const { store, session, published } = fixture();
+    const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
+    const admission = kernel.bindClient({ cwd: store.cwd, scope: { runId: "test", sessionId: "test", autonomous: false } });
+    const unbind = bindExecutionAdmissionJournal(session, admission);
+    const reader = openStateDatabases({ cwd: store.cwd, agencHome: store.agencHome, deferLogs: true });
+    const observed: string[] = [];
+    const unsubscribe = barrier === "observer" ? admission.subscribe(event => {
+      observed.push(published.find(item => item.eventId === event.eventId)?.eventId ?? "missing");
+    }) : () => {};
+    try {
+      const baseline = published.length;
+      await withOneShotFastMode(async () => {
+        const lease = await admission.acquire({ stepId: "one", kind: "model_turn", maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 });
+        admission.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+        admission.reconcile(lease.reservation.reservationId, { inputTokens: 10, outputTokens: 5, costUsd: 0.25 });
+        admission.acknowledgeCompletion(lease.reservation.reservationId);
+      });
+      if (barrier !== "observer") {
+        expect(published).toHaveLength(baseline);
+        expect(store.writeBehind.pending).toBeGreaterThan(0);
+      } else {
+        expect(observed.length).toBeGreaterThan(0);
+        expect(observed).not.toContain("missing");
+      }
+      if (barrier === "close") store.close();
+      else reader.prepareState("SELECT COUNT(*) FROM execution_admission_reservations").get();
+      expect(store.writeBehind.pending).toBe(0);
+      const events = published.filter(event => event.msg.type === "execution_admission");
+      expect(events.map(event => event.eventId)).toEqual(admission.replayJournal!({ afterSequence: 0, limit: 100 }).map(event => event.eventId));
+      expect(published.filter(event => event.msg.type === "session_usage").at(-1)?.msg)
+        .toMatchObject({ payload: { costUsd: 0.25, inputTokens: 10, outputTokens: 5, modelCalls: 1, heldCostUsd: 0 } });
+    } finally { unsubscribe(); unbind(); store.close(); reader.close(); kernel.close(); }
+  });
+
   it("publishes canonical admission events before ordinary observers", async () => {
     const { store, session, published } = fixture();
     const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
