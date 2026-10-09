@@ -9,10 +9,13 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { hasOnlySmallTextContent, microcompactMessages } from "../services/compact/microCompact.js";
 import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 import {
   fromAgenCRuntimeMessages,
   toAgenCRuntimeMessages,
+  projectUncompactedLlmMessages,
   type AgenCRuntimeMessage,
 } from "./runtime-message-conversion.js";
 import {
@@ -108,6 +111,24 @@ async function prepareAgenCQueryMessages(params: {
   readonly committed: boolean;
 }> {
   try {
+    if (oneShotFastModeActive() && hasOnlySmallTextContent(params.messages)) {
+      // The aggregate budget must still freeze new IDs and reapply prior
+      // replacements. It supports the flat message shape directly.
+      const budgeted = await applyToolResultBudget(params.messages, params.contentReplacementState, {
+        limitChars: resolveToolResultBudgetChars(params.toolUseContext.options.contextWindowTokens),
+        persist: persistOversizedToolResult,
+      });
+      if (hasOnlySmallTextContent(budgeted.messages)) {
+        return {
+          messages: truncateToolResultsToFit(projectUncompactedLlmMessages(budgeted.messages),
+            params.toolUseContext.options.contextWindowTokens),
+          snipTokensFreed: 0,
+          committed: false,
+        };
+      }
+      // A retained replacement may itself be large. Continue through the full
+      // projection; budget decisions just made are stable on reapplication.
+    }
     let messages = toAgenCRuntimeMessages(params.messages);
     const budgeted = await applyToolResultBudget(
       messages,
@@ -120,8 +141,6 @@ async function prepareAgenCQueryMessages(params: {
       },
     );
     messages = budgeted.messages as AgenCRuntimeMessage[];
-    const { microcompactMessages } =
-      await import("../services/compact/microCompact.js");
     const microcompactResult = await microcompactMessages(
       messages,
       params.toolUseContext,
@@ -487,6 +506,7 @@ function boundInMemoryToolResultContent(
 // Shared with run-turn.ts and its sibling modules.
 export {
   prepareAgenCTurnContext,
+  prepareAgenCQueryMessages,
   getAgenCPreparedTerminal,
   boundInMemoryToolResultContent,
 };

@@ -14,6 +14,14 @@ import {
 import { isRecord } from "../../utils/record.js";
 
 const MICROCOMPACT_MIN_CHARS = 6_000;
+
+/** No result can enter the pressure calculation below this individual bound.
+ * Restrict the shortcut to plain text: block content has its own tool results.
+ */
+export function hasOnlySmallTextContent(messages: readonly { readonly content?: unknown }[]): boolean {
+  return messages.every(message => typeof message.content === "string" &&
+    message.content.length < MICROCOMPACT_MIN_CHARS);
+}
 const MICROCOMPACT_KEEP_RECENT = 5;
 /** Live compactable tool output (characters) a history may hold before the oldest results are cleared. */
 const MICROCOMPACT_PRESSURE_CHARS = 120_000;
@@ -360,4 +368,3 @@ function asContentBlocks(content: unknown): Array<Record<string, unknown>> {
 function isCompactableTool(name: string): boolean {
   return COMPACTABLE_TOOLS.has(name) || name.startsWith(MCP_TOOL_PREFIX);
 }
-

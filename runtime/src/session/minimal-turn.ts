@@ -151,11 +151,14 @@ export async function* runMinimalTurn(
         } });
         messages.push(modelMessage ?? { role: "tool", toolName: call.name, toolCallId: call.id, content });
       }
-      // Discovery can reveal new capabilities during this turn.
-      const tools = builtTools(session, ctx);
-      if (JSON.stringify(tools) !== JSON.stringify(options.tools)) {
-        options = { ...options, tools, toolRouting: { allowedToolNames: tools.map(tool => tool.function.name) } };
-        fits = createFastContextGuard(options);
+      // Canonical preparation refreshes discovery and its guard on the next
+      // iteration. Standalone callers still need this explicit refresh.
+      if (!prepareRequest) {
+        const tools = builtTools(session, ctx);
+        if (JSON.stringify(tools) !== JSON.stringify(options.tools)) {
+          options = { ...options, tools, toolRouting: { allowedToolNames: tools.map(tool => tool.function.name) } };
+          fits = createFastContextGuard(options);
+        }
       }
     }
   } finally {
