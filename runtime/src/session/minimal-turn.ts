@@ -118,16 +118,14 @@ export async function* runMinimalTurn(
               const projected = filesystemRootsForDispatch(call.name, stripModelSuppliedAgenCInternalArgs(args), {
                 approvalResolved: false, sandboxMode: ctx.sandboxPolicy.value, session,
               });
-              const authority = {
-                ...sessionDispatchAuthority(session, session.services.configStore?.homeContext.path),
-                __onProgress: (event: { chunk: string; stream?: "stdout" | "stderr" }) => {
+              const authority = sessionDispatchAuthority(session, session.services.configStore?.homeContext.path, true);
+              authority.__onProgress = (event: { chunk: string; stream?: "stdout" | "stderr" }) => {
                   observations.push({ type: "tool_progress", payload: {
                     callId: call.id, toolName: call.name, ...event,
                   } });
-                },
               };
-              for (const [key, value] of Object.entries(authority)) {
-                Object.defineProperty(projected, key, { value, enumerable: false, configurable: true, writable: true });
+              for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(authority))) {
+                Object.defineProperty(projected, key, { ...descriptor, enumerable: false });
               }
               return projected;
             },
