@@ -559,6 +559,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (!server) { server = new OneShotProcessServer(); this.oneShotServers.set(key, server); }
     return server;
   }
+  /** Start only the empty containment boundary; command admission still happens in execCommand. */
+  async prepareOneShotCommandBoundary(ownerId: string | undefined, ownerBinding: UnifiedExecOwnerBinding | undefined, signal?: AbortSignal): Promise<void> {
+    if (!oneShotFastModeActive() || process.platform !== "linux") return;
+    const generation = this.sandboxAuthorityGeneration;
+    const validate = (): void => {
+      this.assertSandboxAuthorityAdmission(generation);
+      this.assertOwnerAdmission(ownerId, ownerBinding);
+      signal?.throwIfAborted();
+    };
+    validate();
+    await this.oneShotServerFor(ownerId).prepare(this.cwd, validate, signal);
+    validate();
+  }
+
   private readonly sessionSandboxes = new Map<string, SessionSandbox>();
   // Retain failed startup admission across policy drains, Stop and opt-out.
   // Only closing the owner lifetime (or disposing this manager) resets it.

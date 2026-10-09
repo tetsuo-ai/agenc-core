@@ -28,6 +28,49 @@ async function start(s: OneShotProcessServer, cmd: string, cwd = "/tmp", env = {
   return { child: child!, result };
 }
 describe.runIf(process.platform === "linux")("bypass reusable command boundary", () => {
+  test("prepares an empty broker and admits the later command with fresh state", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess"), s = server(), dir = root();
+    const validate = vi.fn();
+    expect(await s.prepare(dir, validate)).toBe(true);
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]![1]).toEqual(["--one-shot-server-v1"]);
+    const child = launch.mock.results[0]!.value;
+    const send = vi.spyOn(child.stdin, "write");
+    await expect(s.spawn({ program: "/bin/sh", args: ["-c", "echo bad > effects"], cwd: dir, env: {} },
+      () => { throw new Error("new denial"); })).rejects.toThrow("new denial");
+    expect(send).not.toHaveBeenCalled();
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect((await (await start(s, "printf '%s' \"$FRESH\"", dir, { FRESH: "after-model" })).result).out).toBe("after-model");
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+  test("preparation respects fast scope and closes idle brokers with the owner", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
+    const manager = new UnifiedExecProcessManager({ cwd: root() }); managers.push(manager);
+    const owner = manager.createOwnerLifetime("prepared"), binding = owner.bind();
+    await manager.prepareOneShotCommandBoundary("prepared", binding);
+    expect(launch).not.toHaveBeenCalled();
+    await withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding));
+    expect(launch).toHaveBeenCalledTimes(1);
+    const pid = launch.mock.results[0]!.value.pid;
+    await owner.prepareForDurableClose();
+    expect(() => process.kill(pid, 0)).toThrow();
+    await expect(withOneShotFastMode(() => manager.prepareOneShotCommandBoundary("prepared", binding))).rejects.toThrow();
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+  test("an aborted preparation never publishes a command", async () => {
+    const launch = vi.spyOn(supervised, "spawnContainedProcess"), s = server();
+    const controller = new AbortController();
+    await s.prepare("/tmp", () => {}, controller.signal);
+    const child = launch.mock.results[0]!.value;
+    const send = vi.spyOn(child.stdin, "write");
+    controller.abort();
+    await s.close();
+    expect(() => process.kill(child.pid, 0)).toThrow();
+    expect(send).not.toHaveBeenCalled();
+    await expect(s.prepare("/tmp", () => {}, controller.signal)).rejects.toThrow();
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
   test("reuses one broker while cwd, argv0, environment, shell state, and status stay fresh", async () => {
     const spy = vi.spyOn(supervised, "spawnContainedProcess"), s = server(), dir = root();
     const a = await start(s, 'printf "%s:%s:%s" "$0" "$PWD" "$X"; printf err >&2; export LEAK=yes; cd /; exit 7', dir, { PATH: "/usr/bin:/bin", X: "first" });

@@ -2278,6 +2278,11 @@ async function* runTurnKernelInner(
     emitTurnStarted(resolvedReferenceContextItem);
     const signal = AbortSignal.any([session.abortController.signal, runningTask.abortController.signal,
       ...(opts.signal ? [opts.signal] : [])]);
+    // Pay empty broker startup once before model latency begins. No shell is
+    // launched here; each command still crosses the manager's live admission.
+    await withOneShotFastMode(() => session.services.unifiedExecManager?.prepareOneShotCommandBoundary?.(
+      String(session.conversationId), session.unifiedExecOwnerBinding, signal,
+    ));
     let content = "";
     const fastMessages = state.messages;
     const loop = runMinimalTurn(session, ctx, fastMessages, modelInstructions, signal, async (modelCalls, lastResponseUsage) => {

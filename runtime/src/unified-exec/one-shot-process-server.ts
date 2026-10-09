@@ -56,10 +56,10 @@ export class OneShotProcessServer {
     this.detachAbort = () => signal.removeEventListener("abort", abort);
   }
 
-  async spawn(input: Invocation, validateAdmission: () => void, signal?: AbortSignal): Promise<ChildProcessWithoutNullStreams | undefined> {
+  async prepare(cwd: string, validateAdmission: () => void, signal?: AbortSignal): Promise<boolean> {
     if (this.cleanupFailure) throw this.cleanupFailure;
-    if (this.availability.startupFailed) return undefined;
-    if (process.platform !== "linux" || this.active || this.starting || this.closing) return undefined;
+    if (this.availability.startupFailed) return false;
+    if (process.platform !== "linux" || this.active || this.starting || this.closing) return false;
     signal?.throwIfAborted();
     this.watchAbort(signal);
     if (!this.server) {
@@ -70,7 +70,7 @@ export class OneShotProcessServer {
         this.received = Buffer.alloc(0);
         // Outer containment adopts every descendant if the command server dies.
         const server = spawnContainedProcess(broker, ["--one-shot-server-v1"], {
-          cwd: input.cwd, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+          cwd, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
           linuxContainment: "subreaper",
         });
         this.server = server;
@@ -103,9 +103,20 @@ export class OneShotProcessServer {
           this.availability.startupFailed = true;
           logger.warn("Reusable command server startup failed; using a separate broker for each command.");
         }
-        return undefined;
+        return false;
       } finally { this.starting = false; }
     }
+    validateAdmission();
+    signal?.throwIfAborted();
+    return this.server !== undefined && !this.closing;
+  }
+
+  async spawn(input: Invocation, validateAdmission: () => void, signal?: AbortSignal): Promise<ChildProcessWithoutNullStreams | undefined> {
+    if (this.cleanupFailure) throw this.cleanupFailure;
+    if (this.availability.startupFailed || process.platform !== "linux" || this.active || this.starting || this.closing) return undefined;
+    signal?.throwIfAborted();
+    if (!this.server && !await this.prepare(input.cwd, validateAdmission, signal)) return undefined;
+    this.watchAbort(signal);
     validateAdmission();
     signal?.throwIfAborted();
     if (!this.server || this.active || this.closing) return undefined;
