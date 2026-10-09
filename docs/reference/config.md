@@ -948,6 +948,10 @@ Environment overrides and removed names are cataloged in [env.md](env.md).
 
 ### Per-task token and call allocation
 
+`experimental_task_budget_progress` is an optional path to a signed host progress
+receipt for the isolated adaptive-budget experiment. It is unset by default and
+is not part of the named budget levels or a production progress policy.
+
 Choose a named token allocation with `budget_level = "eco"` (1,000,000 tokens),
 `budget_level = "balanced"` (2,400,000), or `budget_level = "max"` (no token cap).
 The CLI equivalent is `--budget eco|balanced|max`. `/budget` shows the active

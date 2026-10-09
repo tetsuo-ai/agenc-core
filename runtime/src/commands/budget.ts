@@ -6,7 +6,7 @@ import { safeExecute, type SlashCommand } from "./types.js";
 
 export const budgetCommand: SlashCommand = {
   name: "budget",
-  description: "Show the task budget or choose eco, balanced, or max for new sessions",
+  description: "Show or set the budget for new sessions",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) => safeExecute(async () => {
