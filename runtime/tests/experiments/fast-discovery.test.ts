@@ -54,3 +54,20 @@ test("real discovery refreshes the advertised catalog and real FileRead remains 
     expect(specialist).toHaveBeenCalledOnce();
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
+
+test("argument projection receives the selected implementation and cannot run for unavailable tools", async () => {
+  const execute = vi.fn(async (args: Record<string, unknown>) => ({ content: String(args.projected) }));
+  const registry = buildToolRegistry({ workspaceRoot: tmpdir(), requireAdmission: false, extraTools: [{ name: "Selected",
+    description: "Selected tool", inputSchema: { type: "object", properties: {} }, execute }] });
+  const selected = registry.tools.find(tool => tool.name === "Selected");
+  const prepareArguments = vi.fn((args, tool) => {
+    expect(tool).toBe(selected);
+    return { ...args, projected: tool.name };
+  });
+  const result = await registry.dispatch({ id: "chosen", name: "Selected", arguments: "{}" }, { prepareArguments });
+  expect(result.content).toBe("Selected");
+  expect(prepareArguments).toHaveBeenCalledOnce();
+  expect(execute).toHaveBeenCalledOnce();
+  await registry.dispatch({ id: "missing", name: "not-registered", arguments: "{}" }, { prepareArguments });
+  expect(prepareArguments).toHaveBeenCalledOnce();
+});

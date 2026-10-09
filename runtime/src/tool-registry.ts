@@ -147,7 +147,7 @@ export interface CodeModeNestedToolDispatch {
 
 export interface ToolRegistryDispatchOptions {
   /** Trusted runtime projection, applied after parsing and before tool execution. */
-  readonly prepareArguments?: (args: Record<string, unknown>) => Record<string, unknown>;
+  readonly prepareArguments?: (args: Record<string, unknown>, tool: Tool) => Record<string, unknown>;
   readonly abortSignal?: AbortSignal;
   /** Request-scoped discovery metadata; does not grant execution permission. */
   readonly advertisedToolNames?: readonly string[];
@@ -1419,7 +1419,7 @@ export function buildToolRegistry(
             isError: true,
           };
         }
-        return await executeConfiguredTool(spec, toolCall.id, dispatchOptions?.prepareArguments?.(parseResult.args) ?? parseResult.args, dispatchOptions);
+        return await executeConfiguredTool(spec, toolCall.id, dispatchOptions?.prepareArguments?.(parseResult.args, spec.tool) ?? parseResult.args, dispatchOptions);
       } catch (error) {
         return {
           content: safeStringify({

@@ -1,4 +1,5 @@
 import { validateToolCall } from "../llm/types.js";
+import type { Tool } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { stripModelSuppliedAgenCInternalArgs } from "../tools/internal-args.js";
 import { sessionDispatchAuthority } from "../tools/session-dispatch-authority.js";
@@ -111,7 +112,7 @@ export async function* runMinimalTurn(
       }
       for (const call of toolCalls) {
         signal.throwIfAborted();
-        const tool = session.services.registry.tools?.find(tool => tool.name === call.name);
+        let tool: Tool | undefined;
         let content: string;
         let modelMessage: LLMMessage | undefined;
         let isError = false;
@@ -120,7 +121,8 @@ export async function* runMinimalTurn(
         observations.push({ type: "tool_call_started", payload: { callId: call.id, toolName: call.name, args: call.arguments } });
         try {
           const result = await session.services.registry.dispatch(call, {
-            prepareArguments: args => {
+            prepareArguments: (args, selectedTool) => {
+              tool = selectedTool;
               const projected = filesystemRootsForDispatch(call.name, stripModelSuppliedAgenCInternalArgs(args), {
                 approvalResolved: false, sandboxMode: ctx.sandboxPolicy.value, session,
               });
