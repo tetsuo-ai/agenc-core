@@ -8,13 +8,14 @@ import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import { withSessionWriteBehind } from "../../src/session/write-behind.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
-function fixture(relaxed = true) {
+function fixture(relaxed = true, autonomous = false) {
  const root = mkdtempSync(join(tmpdir(), "captured-admission-"));
  const cwd = join(root, "workspace"), home = join(root, "home"); mkdirSync(cwd); mkdirSync(home);
  const store = new SessionStore({ cwd, agencHome: home, sessionId: "root", agencVersion: "test", relaxedOneShot: relaxed, checkpointOneShot: () => {} });
  store.open({ cwd, sessionId: "root", agencVersion: "test", originator: "test", timestamp: "2026-10-09T00:00:00Z" });
+ if (relaxed) store.enableOneShotFastMode();
  const kernel = new ExecutionAdmissionKernel({ agencHome: home, limits: { global: 1, workspace: 1, session: 1, parent: 1, provider: 1 } });
- const client = kernel.bindClient({ cwd, scope: { runId: "root", sessionId: "root", autonomous: false } });
+ const client = kernel.bindClient({ cwd, scope: { runId: "root", sessionId: "root", autonomous } });
  const reader = openStateDatabases({ cwd, agencHome: home, deferLogs: true });
  const fast = <T>(run: () => T) => withSessionWriteBehind(store.writeBehind, () => withOneShotFastMode(run));
  const request = (stepId: string) => ({ stepId, kind: "model_turn" as const, provider: "ollama", model: "test", maxInputTokens: 20, maxOutputTokens: 20, maxCostUsd: 0.5 });
@@ -24,8 +25,8 @@ function fixture(relaxed = true) {
 }
 
 describe("captured uncapped model admission", () => {
- it("admits before wire in memory and persists the same identities, times and final usage", async () => {
-  const f = fixture();
+ it.each([false, true])("admits before wire and persists identities, times and usage (autonomous=%s)", async autonomous => {
+  const f = fixture(true, autonomous);
   try {
    const ids: string[] = [];
    await f.fast(async () => {
@@ -139,7 +140,9 @@ describe("captured uncapped model admission", () => {
    expect(f.kernel.activeCount).toBe(0);
   } finally {
    f.reader.state.exec("DROP TRIGGER IF EXISTS fail_capture");
-   try { f.close(); } catch (error) { expect(String(error)).toContain("capture failed"); }
+   try { f.close(); } catch (error) {
+    expect(String(error instanceof AggregateError ? error.errors : error)).toContain("capture failed");
+   }
   }
  });
 
@@ -193,6 +196,20 @@ describe("captured uncapped model admission", () => {
    f.client.void(lease.reservation.reservationId, "invalid evidence");
   });
   f.store.writeBehind.finish(); expect(f.rows()[0]?.status).toBe("voided");
+  } finally { f.close(); }
+ });
+
+ it("a canonical reader flushes the owned buffer before reading it", async () => {
+  const f = fixture();
+  try {
+   f.store.appendRollout({ type: "response_item", payload: { role: "user", content: "buffered message" } });
+   expect(f.store.writeBehind.oneShotBuffering).toBe(true);
+   expect(JSON.stringify(f.store.readAll())).toContain("buffered message");
+   expect(f.store.writeBehind.oneShotBuffering).toBe(false);
+   await f.fast(async () => {
+    const lease = await f.client.acquire(f.request("one"));
+    expect(f.rows()).toHaveLength(1); f.client.void(lease.reservation.reservationId, "unused");
+   });
   } finally { f.close(); }
  });
 });

@@ -451,7 +451,7 @@ export class ExecutionAdmissionRepository {
     const request = normalizeAdmissionRequest(raw);
     if (request.kind !== "model_turn" || request.step.parentRunId !== undefined ||
         request.deadlineAt !== undefined || request.denialReason !== undefined ||
-        request.approvalRequired || request.autonomous || request.budgetScopes?.length !== 1) return;
+        request.approvalRequired || request.budgetScopes?.length !== 1) return;
     const scope = request.budgetScopes[0]!;
     if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
         scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;

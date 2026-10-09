@@ -5032,8 +5032,8 @@ export class Session {
     appendOpts: AppendOptions = {},
   ): void {
     const queue = this.writeBehind;
-    const finalizingOneShot = oneShotFastModeActive() && !queue.draining;
-    if ((!queue.deferring && !finalizingOneShot) || this.isRolloutPersistenceSuspended()) {
+    const bufferedOneShot = oneShotFastModeActive() && queue.oneShotBuffering && !queue.draining;
+    if ((!queue.deferring && !bufferedOneShot) || this.isRolloutPersistenceSuspended()) {
       this.emit({ ...envelope, msg: buildMsg() }, appendOpts);
       return;
     }

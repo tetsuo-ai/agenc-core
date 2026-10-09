@@ -273,7 +273,7 @@ export class ExecutionAdmissionKernel {
   #captureUncapped(binding: ClientBinding, input: AdmissionAcquireInput, signal?: AbortSignal): AdmissionLease | undefined {
     const queue = currentSessionWriteBehind();
     const scope = binding.scope;
-    if (!oneShotFastModeActive() || !queue || queue.draining || this.#pending.size || signal?.aborted ||
+    if (!oneShotFastModeActive() || !queue?.oneShotBuffering || queue.draining || this.#pending.size || signal?.aborted ||
         (this.#listeners.get(scope.runId)?.size ?? 0) > 0 ||
         [...(this.#usageListeners.get(binding.workspace) ?? [])].some(listener => listener.snapshotListener === undefined) ||
         scope.hasHardCostCap || scope.hasHardTokenCap || scope.maxCostUsd !== undefined || scope.maxTokens !== undefined ||

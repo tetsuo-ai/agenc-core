@@ -1757,11 +1757,13 @@ export class SessionStore {
   private oneShotFastMode = false;
   finishOneShotFastMode(): void {
     this.oneShotFastMode = false;
+    this.writeBehind.oneShotBuffering = false;
     if (!this.flushBatch(true)) throw new Error("cannot leave fast mode without flushing its transcript");
   }
   enableOneShotFastMode(): void {
     if (!this.opened || this.closed) throw new Error("fast mode requires an open session store");
     this.oneShotFastMode = true;
+    this.writeBehind.oneShotBuffering = true;
   }
   readonly writeBehind = new SessionWriteBehindQueue();
   private unregisterWriteBehind: (() => void) | undefined;
@@ -3883,6 +3885,7 @@ export class SessionStore {
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
     this.writeBehind.barrier();
+    if (this.oneShotFastMode) this.finishOneShotFastMode();
     if (this.resumeSourceFaulted) {
       throw new Error(
         "resumed rollout writer authority was revoked after replacement failure",

@@ -55,6 +55,8 @@ export function finishAllSessionWriteBehind(): void {
 
 /** One session's ordered persistence work. Jobs must capture their inputs. */
 export class SessionWriteBehindQueue {
+  /** Owned by this session store, never inherited from a parent's async scope. */
+  oneShotBuffering = false;
   private jobs: WriteBehindJob[] = [];
   private enabled = false;
   private runInOwnerScope: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;

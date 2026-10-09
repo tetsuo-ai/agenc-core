@@ -43,8 +43,18 @@ function usage(): Extract<EventMsg, { type: "session_usage" }> {
 }
 
 describe("deferred event payloads", () => {
+  it("does not lend an inherited fast scope to an ordinary session", () => {
+    const { store, session, published } = fixture();
+    try {
+      withOneShotFastMode(() => session.emitDeferred({ id: "ordinary" }, usage, { durable: true }));
+      expect(published).toHaveLength(1);
+      expect(store.writeBehind.pending).toBe(0);
+      expect(readFileSync(store.rolloutPath, "utf8")).toContain("session_usage");
+    } finally { store.close(); }
+  });
   it.each(["close", "reader", "observer", "rebind"])("retains fast admission transitions and exact usage at %s", async barrier => {
     const { store, session, published } = fixture();
+    store.enableOneShotFastMode();
     const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
     const admission = kernel.bindClient({ cwd: store.cwd, scope: { runId: "test", sessionId: "test", autonomous: false } });
     const unbind = bindExecutionAdmissionJournal(session, admission);

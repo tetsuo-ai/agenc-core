@@ -25,7 +25,7 @@ export function bindExecutionAdmissionJournal(
     // Admission and capacity have already committed. Only their canonical
     // observation moves to the owning session's final/reader barrier. Keep
     // the original event identity and timestamp; never recreate a lease here.
-    if (oneShotFastModeActive() && session.emitDeferred && session.writeBehind && !session.writeBehind.draining) {
+    if (oneShotFastModeActive() && session.emitDeferred && session.writeBehind?.oneShotBuffering && !session.writeBehind.draining) {
       const captured = structuredClone(event);
       if (session.rolloutStore) executionAdmissionEventIndexes.delete(session.rolloutStore);
       session.emitDeferred({ id: captured.eventId, eventId: captured.eventId },

@@ -1429,7 +1429,7 @@ export class ProviderHttpClientSession {
         signal,
       }, fetchImpl);
       if (!response.ok) fail();
-      if (method === "POST" && !oneShotFastModeActive()) {
+      if (method === "POST" && !(oneShotFastModeActive() && currentSessionWriteBehind()?.oneShotBuffering)) {
         // The previous tool step is complete. New model-stream events must
         // publish immediately instead of joining that step's loss window.
         try { currentSessionWriteBehind()?.finish(); }
