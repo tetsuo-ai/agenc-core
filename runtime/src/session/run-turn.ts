@@ -3146,12 +3146,14 @@ async function* runTurnKernelInner(
       resetRecoveryReentriesAfterProgress(state);
       modelNeedsFollowUp = result.needsFollowUp;
       if (result.terminal) {
+        // The last admitted response may contain useful partial work even when
+        // its output recovery cannot fit another call in the task allocation.
+        if (result.assistantText.length > 0) {
+          lastContent = result.assistantText;
+        }
         if (taskBudget?.reached) {
           yield await finishTaskBudget();
           return { reason: "task_budget" };
-        }
-        if (result.assistantText.length > 0) {
-          lastContent = result.assistantText;
         }
         await syncSessionState();
         emitTurnComplete(

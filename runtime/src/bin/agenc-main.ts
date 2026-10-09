@@ -3334,7 +3334,7 @@ export async function attachAgentTuiEntry(
       for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
         const retained = attachedMetadata?.[key];
         if (retained !== undefined) {
-          if (typeof retained !== "number" || !Number.isSafeInteger(retained) || retained <= 0) {
+          if (typeof retained !== "number" || !Number.isSafeInteger(retained) || retained < 0) {
             throw new Error(`invalid retained ${key}`);
           }
           attachedTaskBudget[key] = retained;

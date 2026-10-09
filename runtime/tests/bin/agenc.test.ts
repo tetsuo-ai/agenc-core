@@ -5786,4 +5786,22 @@ describe("main() smoke", () => {
       }
     },
   );
+  it.each(["taskTokenBudget", "taskMaxCalls"] as const)("attaches a live session with retained disabled %s", async (key) => {
+    const tmpHome = await mkdtemp(join(canonicalTmpdir(), "budget-attach-home-"));
+    const tmpCwd = await mkdtemp(join(canonicalTmpdir(), "budget-attach-cwd-"));
+    const daemon = installDaemonCliDepsForTest({ cwd: tmpCwd, liveAgentMetadata: { [key]: 0 } });
+    vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async () => ({ unmount: vi.fn(), waitUntilExit: async () => undefined })) }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(attachAgentTuiEntry({ agentId: daemon.agentId, clientId: "budget-zero", env: {
+        AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, HOME: tmpHome,
+      } })).resolves.toBe(0);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+
 });

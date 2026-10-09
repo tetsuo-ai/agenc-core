@@ -31,3 +31,21 @@ it("warns once, finishes the last tool and persists a bounded final summary", as
   expect(phases.at(-1)).toMatchObject({stopReason:"task_budget",content:expect.stringContaining("Partial result")});
   expect(events.filter(e=>e.msg.type==="turn_failed")).toHaveLength(1);
 });
+
+it.each(["stop", "length"] as const)("retains the last admitted answer when finishing with %s", async finishReason => {
+  const content = "The first check passed; one remaining case needs investigation.";
+  const provider = mkProvider();
+  let calls = 0;
+  provider.chatStream = async (): Promise<LLMResponse> => {
+    calls++;
+    return { content, toolCalls: [], model: "test-model", finishReason,
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, availability: "reported", provenance: "provider" } };
+  };
+  const { session } = mkSession({ provider });
+  Object.assign(session.config, { taskTokenBudget: 0, taskMaxCalls: 1 });
+  const phases: PhaseEvent[] = [];
+  for await (const phase of runTurn(session, mkCtx(), "Check and report")) phases.push(phase);
+  expect(calls).toBe(1);
+  expect(phases.at(-1)).toMatchObject({ content: expect.stringContaining(content) });
+  if (finishReason === "length") expect(phases.at(-1)).toMatchObject({ stopReason: "task_budget" });
+});
