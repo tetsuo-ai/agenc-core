@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigProvenanceEntry, ConfigScope } from "../../src/config/repository.js";
-import { selectTaskBudgetPolicy, taskBudgetPolicyAllowsCapability, type TaskBudgetCapability } from "../../src/session/task-budget-policy.js";
+import { restoreTaskBudgetPolicy, serializeTaskBudgetPolicy, selectTaskBudgetPolicy, taskBudgetPolicyAllowsCapability, type TaskBudgetCapability } from "../../src/session/task-budget-policy.js";
 
 const source = (scope: ConfigScope): ConfigProvenanceEntry => ({ scope, label: scope, contributors: [{ scope, label: scope }] });
 const bounded: TaskBudgetCapability = { provider: "api", model: "test", supportsMaxOutputTokens: true, usageReporting: "authoritative" };
@@ -60,5 +60,50 @@ describe("candidate automatic task budget policy", () => {
     expect(() => selectTaskBudgetPolicy({ ...input, capabilities: [bounded, bounded] })).toThrow("Duplicate");
     expect(() => selectTaskBudgetPolicy({ ...input, capabilities: [{ ...bounded, model: "" }] })).toThrow("concrete");
     expect(() => selectTaskBudgetPolicy({ ...input, rootRunId: " " })).toThrow("root run");
+  });
+});
+
+describe("durable task policy record codec", () => {
+  it.each([undefined, 0, 3])("retains original policy and call override%s without reselecting current defaults", maxCalls => {
+    const original = selectTaskBudgetPolicy({ ...input, maxCalls });
+    const stored = serializeTaskBudgetPolicy(original);
+    const restored = restoreTaskBudgetPolicy(stored, "root");
+    expect(restored).toEqual(original);
+    expect(serializeTaskBudgetPolicy(restored)).toBe(stored);
+    expect(Object.isFrozen(restored)).toBe(true);
+    expect(restored.capabilities.every(Object.isFrozen)).toBe(true);
+  });
+  it.each([source("cli"), undefined])("keeps explicit and unproven limits strict on restore", tokenProvenance => {
+    const original = selectTaskBudgetPolicy({ ...input, tokenProvenance });
+    expect(restoreTaskBudgetPolicy(serializeTaskBudgetPolicy(original), "root").mode).toBe("strict");
+  });
+  it("keeps the saved automatic allowance instead of substituting a newer numeric default", () => {
+    const original = selectTaskBudgetPolicy(input);
+    const historicalRecord = JSON.stringify({ ...original, maxCalls: 12 });
+    expect(restoreTaskBudgetPolicy(historicalRecord, "root").maxCalls).toBe(12);
+  });
+  it("does not copy opaque execution handles or unrelated provider fields into a policy", () => {
+    const capability = { ...unbounded, providerExecutionHandle: { privateTransport: "not-policy-data" } };
+    const policy = selectTaskBudgetPolicy({ ...input, capabilities: [capability] });
+    expect(serializeTaskBudgetPolicy(policy)).not.toContain("privateTransport");
+    expect(policy.capabilities).toEqual([unbounded]);
+  });
+  it("rejects a record attached to another root or an unsupported version", () => {
+    const policy = selectTaskBudgetPolicy(input);
+    expect(() => restoreTaskBudgetPolicy(serializeTaskBudgetPolicy(policy), "other-root")).toThrow();
+    expect(() => restoreTaskBudgetPolicy(JSON.stringify({ ...policy, version: 2 }), "root")).toThrow();
+  });
+  it.each([
+    { origin: "explicit" }, { tokenLimit: 0 }, { tokenLimit: -1 }, { tokenLimit: "219000" },
+    { maxCalls: 0 }, { callOrigin: "off" }, { tokenSemantics: "reservation_ceiling" }, { capabilities: [] },
+    { capabilities: [bounded] }, { capabilities: [unbounded, unbounded] }, { extra: true },
+    { origin: ["builtin"] }, { mode: ["observed"] }, { callOrigin: ["configured"] },
+  ])("rejects inconsistent stored fields %j", patch => {
+    expect(() => restoreTaskBudgetPolicy(JSON.stringify({ ...selectTaskBudgetPolicy(input), ...patch }), "root")).toThrow();
+  });
+  it("retains a configured call guard when the token policy is disabled", () => {
+    const original = selectTaskBudgetPolicy({ ...input, tokenLimit: 0, maxCalls: 4 });
+    expect(restoreTaskBudgetPolicy(serializeTaskBudgetPolicy(original), "root"))
+      .toMatchObject({ mode: "disabled", tokenLimit: 0, maxCalls: 4, callOrigin: "configured" });
   });
 });

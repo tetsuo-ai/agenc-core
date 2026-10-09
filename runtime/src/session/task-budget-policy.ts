@@ -42,10 +42,13 @@ function freezeCapabilities(input: readonly TaskBudgetCapability[]): readonly Ta
     const identity = JSON.stringify([capability.provider, capability.model]);
     if (seen.has(identity)) throw new TypeError("Duplicate task budget provider capability");
     seen.add(identity);
-    return Object.freeze({ ...capability });
+    return Object.freeze({ provider: capability.provider, model: capability.model,
+      supportsMaxOutputTokens: capability.supportsMaxOutputTokens, usageReporting: capability.usageReporting });
   });
-  return Object.freeze(result.sort((a, b) =>
-    JSON.stringify([a.provider, a.model]).localeCompare(JSON.stringify([b.provider, b.model]))));
+  return Object.freeze(result.sort((a, b) => {
+    const left = JSON.stringify([a.provider, a.model]), right = JSON.stringify([b.provider, b.model]);
+    return left < right ? -1 : left > right ? 1 : 0;
+  }));
 }
 
 /** Creation-only decision. A restored root must load its original record instead. */
@@ -89,4 +92,48 @@ export function taskBudgetPolicyAllowsCapability(policy: TaskBudgetPolicy, candi
   return policy.capabilities.some(allowed => allowed.provider === candidate.provider &&
     allowed.model === candidate.model && allowed.supportsMaxOutputTokens === candidate.supportsMaxOutputTokens &&
     allowed.usageReporting === candidate.usageReporting);
+}
+
+/** Decode only a host-owned durable record, never policy input supplied through RPC.
+ * No current config or capability lookup participates in restoring the decision.
+ */
+export function restoreTaskBudgetPolicy(json: string, rootRunId: string): TaskBudgetPolicy {
+  const value: unknown = JSON.parse(json);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid task budget policy record");
+  const record = value as Record<string, unknown>;
+  const keys = ["version", "rootRunId", "origin", "mode", "tokenLimit", "maxCalls", "callOrigin", "tokenSemantics", "capabilities"];
+  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key)) ||
+      record.version !== 1 || !rootRunId.trim() || record.rootRunId !== rootRunId ||
+      (typeof record.origin !== "string" || !["builtin", "explicit", "legacy"].includes(record.origin)) ||
+      (typeof record.mode !== "string" || !["disabled", "strict", "observed"].includes(record.mode)) ||
+      (typeof record.callOrigin !== "string" || !["automatic", "configured", "off"].includes(record.callOrigin)) ||
+      typeof record.tokenLimit !== "number" || typeof record.maxCalls !== "number" ||
+      !Array.isArray(record.capabilities)) throw new TypeError("Invalid task budget policy identity");
+  const tokenLimit = limit(record.tokenLimit, "stored task token limit");
+  const maxCalls = limit(record.maxCalls, "stored task call limit");
+  for (const capability of record.capabilities) {
+    if (!capability || typeof capability !== "object" || Array.isArray(capability) ||
+        Object.keys(capability).length !== 4 ||
+        !["provider", "model", "supportsMaxOutputTokens", "usageReporting"].every(key => Object.hasOwn(capability, key))) {
+      throw new TypeError("Invalid stored task budget capability");
+    }
+  }
+  const capabilities = freezeCapabilities(record.capabilities as TaskBudgetCapability[]);
+  const mode = record.mode as TaskBudgetPolicy["mode"];
+  const origin = record.origin as TaskBudgetPolicy["origin"];
+  const callOrigin = record.callOrigin as TaskBudgetPolicy["callOrigin"];
+  const tokenSemantics = mode === "disabled" ? "disabled" : mode === "strict" ? "reservation_ceiling" : "observed_target";
+  if (record.tokenSemantics !== tokenSemantics || (tokenLimit === 0) !== (mode === "disabled") ||
+      (callOrigin === "off" && maxCalls !== 0) ||
+      (callOrigin === "automatic" && (mode !== "observed" || maxCalls === 0)) ||
+      (mode === "observed" && (origin !== "builtin" || callOrigin === "off" || !capabilities.some(capability =>
+        !capability.supportsMaxOutputTokens || capability.usageReporting !== "authoritative")))) {
+    throw new TypeError("Inconsistent stored task budget policy");
+  }
+  return Object.freeze({ version: 1, rootRunId, origin, mode, tokenLimit, maxCalls, callOrigin, tokenSemantics, capabilities });
+}
+
+/** Canonical field and capability order; validates the record before storage. */
+export function serializeTaskBudgetPolicy(policy: TaskBudgetPolicy): string {
+  return JSON.stringify(restoreTaskBudgetPolicy(JSON.stringify(policy), policy.rootRunId));
 }
