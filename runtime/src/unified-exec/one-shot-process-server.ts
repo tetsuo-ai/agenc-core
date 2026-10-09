@@ -38,7 +38,7 @@ export class OneShotProcessServer {
   constructor(private readonly availability: OneShotProcessServerAvailability = { startupFailed: false }) {}
   private server?: ChildProcessWithoutNullStreams;
   private active?: Active;
-  private received = Buffer.alloc(0);
+  private received: Buffer = Buffer.alloc(0);
   private starting = false;
   private closed?: Promise<void>;
   private ready?: () => void;
