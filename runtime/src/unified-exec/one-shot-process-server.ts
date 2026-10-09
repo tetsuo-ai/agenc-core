@@ -125,9 +125,17 @@ export class OneShotProcessServer {
     const strings = [input.cwd, input.program, ...command, ...environment];
     if (command.length + environment.length >= 65536) return undefined;
     if (strings.some(s => s.includes("\0"))) return undefined;
-    const counts = Buffer.alloc(8); counts.writeUInt32BE(command.length, 0); counts.writeUInt32BE(environment.length, 4);
-    const payload = Buffer.concat([counts, Buffer.from(strings.join("\0") + "\0")]);
-    if (payload.length > 2 * 1024 * 1024) return undefined;
+    const text = strings.join("\0") + "\0";
+    const payloadLength = 8 + Buffer.byteLength(text, "utf8");
+    if (payloadLength > 2 * 1024 * 1024) return undefined;
+    // Encode directly into the final frame instead of copying the strings
+    // through separate count, payload and transport buffers.
+    const requestFrame = Buffer.allocUnsafe(5 + payloadLength);
+    requestFrame[0] = 82; // R
+    requestFrame.writeUInt32BE(payloadLength, 1);
+    requestFrame.writeUInt32BE(command.length, 5);
+    requestFrame.writeUInt32BE(environment.length, 9);
+    requestFrame.write(text, 13, "utf8");
     const stdout = new PassThrough(), stderr = new PassThrough();
     const stdin = new Writable({ write(_chunk, _encoding, callback) { callback(new Error("pipe command stdin is closed")); } });
     stdin.on("error", () => {});
@@ -181,12 +189,14 @@ export class OneShotProcessServer {
       },
     });
     // This publication is irreversible. Never replay a command after it.
-    this.server.stdin.write(frame("R", payload));
+    this.server.stdin.write(requestFrame);
     return child;
   }
 
   private receive(data: Buffer): void {
-    this.received = Buffer.concat([this.received, data]);
+    // Incoming stream buffers are owned by Node and remain valid while held.
+    // Only an incomplete previous frame requires joining two byte ranges.
+    this.received = this.received.length === 0 ? data : Buffer.concat([this.received, data]);
     while (this.received.length >= 5) {
       const length = this.received.readUInt32BE(1);
       if (length > 2 * 1024 * 1024) { void this.shutdown(false).catch(() => {}); return; }
