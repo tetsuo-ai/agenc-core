@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import * as filesystemAuthority from "../../src/tools/system/filesystem.js";
 import * as plans from "../../src/planning/session-plan-authority.js";
 import { setPlanSlug, clearAllPlanSlugs } from "../../src/planning/plan-files.js";
 import { sessionDispatchAuthority } from "../../src/tools/session-dispatch-authority.js";
@@ -62,4 +63,21 @@ test("real fast command dispatch leaves plan authority unresolved", async () => 
   }
   expect(calls).toBe(2);
   expect(resolve).not.toHaveBeenCalled();
+});
+
+
+test("reuses only the process-keyed signature and invalidates a changed session ID", () => {
+  const sign = vi.spyOn(filesystemAuthority, "signSessionId");
+  const session = { conversationId: "initial-owner" };
+  const first = sessionDispatchAuthority(session, "/tmp/first", true);
+  const second = sessionDispatchAuthority(session, "/tmp/second", true);
+  expect(sign).toHaveBeenCalledOnce();
+  expect(second[SESSION_ID_SIG_ARG]).toBe(first[SESSION_ID_SIG_ARG]);
+  expect(second[filesystemAuthority.SESSION_AGENC_HOME_ARG]).toBe("/tmp/second");
+  session.conversationId = "next-owner";
+  const changed = sessionDispatchAuthority(session, "/tmp/second", true);
+  expect(sign).toHaveBeenCalledTimes(2);
+  expect(verifySessionId(changed.__agencSessionId, changed[SESSION_ID_SIG_ARG])).toBe("next-owner");
+  expect(verifySessionId(changed.__agencSessionId, first[SESSION_ID_SIG_ARG])).toBeUndefined();
+  expect(verifySessionId(first.__agencSessionId, first[SESSION_ID_SIG_ARG])).toBe("initial-owner");
 });
