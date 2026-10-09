@@ -19,11 +19,11 @@ import type { EventMsg } from "./event-log.js";
 import type { LLMMessage, LLMUsage, LLMResponse } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { assistantMessageFromResponse, buildProviderOptions } from "../phases/stream-model.js";
-import type { Terminal } from "./turn-state.js";
+import type { Terminal, CompletedToolResultRecord } from "./turn-state.js";
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 import { buildPrompt, builtTools } from "./run-turn-sampling-request.js";
-import { llmMessageToResponseItem } from "./message-history-conversion.js";
+import { llmMessageToDurableResponseItem } from "./message-history-conversion.js";
 
 const UNKNOWN_USAGE = { promptTokens: 0, completionTokens: 0, totalTokens: 0,
   availability: "unknown" as const, provenance: "synthetic" as const };
@@ -35,7 +35,11 @@ export async function* runMinimalTurn(
   instructions: string,
   signal: AbortSignal,
   prepareRequest?: (modelCalls: number, lastResponseUsage: LLMUsage | undefined) => Promise<{ request: StreamModelRequestContract; samplingContext: TurnContext } | null>,
-): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse }> {
+  canonicalBoundary?: {
+    requiresResponse: (response: LLMResponse) => boolean;
+    completedTool: (result: CompletedToolResultRecord) => void;
+  },
+): AsyncGenerator<PhaseEvent, Terminal | { reason: "continue_normal"; modelCalls: number; usage: LLMUsage; lastResponseUsage?: LLMUsage; recoveryResponse?: LLMResponse; canonicalResponse?: LLMResponse }> {
   // The initial options bound eligibility before any preparation work.
   const request = buildPrompt(messages, builtTools(session, ctx), ctx, instructions);
   let options = buildProviderOptions(request, ctx, signal, session);
@@ -78,6 +82,7 @@ export async function* runMinimalTurn(
       modelCalls++;
       responses.push(response);
       if (response.error) throw response.error;
+      const previousUsage = usage;
       usage = cumulativeUsage(usage, response.usage);
       lastResponseUsage = response.usage;
       if (response.usage) {
@@ -93,6 +98,13 @@ export async function* runMinimalTurn(
         // or completion publication; canonical recovery owns the next decision.
         handoff = true;
         return { reason: "continue_normal", modelCalls, usage, lastResponseUsage, recoveryResponse: response };
+      }
+      if (canonicalBoundary?.requiresResponse(response)) {
+        // The sample is already paid for. The ordinary phases consume it once,
+        // before dispatch/completion, without issuing another provider request.
+        handoff = true;
+        return { reason: "continue_normal", modelCalls: modelCalls - 1,
+          usage: previousUsage, lastResponseUsage, canonicalResponse: response };
       }
       const toolCalls = response.finishReason === undefined ? response.toolCalls
         : assistantMessageFromResponse(response, false, session.services.provider.name).toolCalls
@@ -165,6 +177,8 @@ export async function* runMinimalTurn(
         observations.push({ type: "tool_call_completed", payload: {
           callId: call.id, toolName: call.name, result: content, isError, ...(metadata ? { metadata } : {}), durationMs: validationOnly ? 0 : elapsed,
         } });
+        canonicalBoundary?.completedTool({ callId: call.id, toolName: call.name,
+          arguments: call.arguments, content, isError, ...(metadata ? { metadata } : {}) });
         messages.push(modelMessage ?? { role: "tool", toolName: call.name, toolCallId: call.id, content });
       }
       // Canonical preparation refreshes discovery and its guard on the next
@@ -191,11 +205,13 @@ export async function* runMinimalTurn(
     }
     for (const msg of observations) session.emit({ id: session.nextInternalSubId(), msg });
     if (!handoff) {
-    await session.state.with(state => { state.history = messages; });
-    const store = session.rolloutStore?.store;
-    for (const message of messages.slice(start)) {
-      store?.appendRollout({ type: "response_item", payload: llmMessageToResponseItem(message) });
-    }
+      await session.state.with(state => { state.history = messages; });
+      const store = session.rolloutStore?.store;
+      for (const message of messages.slice(start)) {
+        if (!message.runtimeOnly?.excludeFromDurableHistory) {
+          store?.appendRollout({ type: "response_item", payload: llmMessageToDurableResponseItem(message) });
+        }
+      }
     }
   }
 }

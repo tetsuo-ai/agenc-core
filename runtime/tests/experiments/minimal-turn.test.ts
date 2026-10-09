@@ -108,3 +108,28 @@ test("frames external result data and preserves metadata and cumulative usage at
   }) }));
   expect(f.history.history?.find(message => message.role === "tool")?.runtimeOnly?.toolResultIntegrity).toBeDefined();
 });
+
+
+test("RV final fast tool transcript has integrity matching redacted persisted content", async () => {
+ const { serializeRolloutItem, parseRolloutLine } = await import("../../src/session/rollout-item.js");
+ const { verifyToolResultIntegrity } = await import("../../src/session/tool-result-integrity.js");
+ const secret = `sk-proj-${"a".repeat(64)}`;
+ const f = fixture([{ content: "", toolCalls: [{ id: "read", name: "fixture.read", arguments: "{}" }] }, { content: "done", toolCalls: [] }]);
+ f.execCommand.mockResolvedValueOnce({ content: `fixture credential ${secret}` });
+ for await (const _ of runMinimalTurn(f.session, {} as TurnContext, [{ role: "user", content: "read fixture" }], "", new AbortController().signal)) {}
+ const item = f.appendRollout.mock.calls.map(call => call[0]).find(item => item.type === "response_item" && item.payload.role === "tool");
+ const line = serializeRolloutItem(item);
+ expect(line).not.toContain(secret);
+ const saved = parseRolloutLine(line) as any;
+ expect(verifyToolResultIntegrity({ integrity: saved.payload.toolResultIntegrity, toolCallId: "read", content: saved.payload.content }).status).toBe("valid");
+});
+
+test("RV final fast reasoning transcript remains serializable after durable redaction", async () => {
+ const { serializeRolloutItem } = await import("../../src/session/rollout-item.js");
+ const secret = `sk-proj-${"a".repeat(64)}`;
+ const f = fixture([{ content: "done", toolCalls: [], providerReasoningContent: `fixture credential ${secret}`, providerReasoningProvenance: { provider: "deepseek", model: "test" } }]);
+ for await (const _ of runMinimalTurn(f.session, {} as TurnContext, [{ role: "user", content: "answer" }], "", new AbortController().signal)) {}
+ const item = f.appendRollout.mock.calls.map(call => call[0]).find(item => item.type === "response_item" && item.payload.role === "assistant");
+ expect(() => serializeRolloutItem(item)).not.toThrow();
+ expect(serializeRolloutItem(item)).not.toContain(secret);
+});

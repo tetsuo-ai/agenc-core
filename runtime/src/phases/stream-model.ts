@@ -626,7 +626,7 @@ function emitSanitizedAssistantDelta(
   return sanitized.text;
 }
 
-function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
+export function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   if (toolCalls.length === 0) return [];
   return toolCalls.map((c) => {
     let input: unknown = undefined;

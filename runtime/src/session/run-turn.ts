@@ -1,4 +1,4 @@
-import { assistantMessageFromResponse } from "../phases/stream-model.js";
+import { assistantMessageFromResponse, parseToolUseBlocks } from "../phases/stream-model.js";
 import { cumulativeUsage } from "./cumulative-usage.js";
 import { runMinimalTurn } from "./minimal-turn.js";
 import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
@@ -53,6 +53,7 @@ import type {
   LLMMessage,
   LLMToolCall,
   LLMUsage,
+  LLMResponse,
 } from "../llm/types.js";
 import {
   classifyUntrustedToolResult,
@@ -117,7 +118,7 @@ import { goalGate, goalGateApplies } from "../phases/goal-gate.js";
 import { buildGoalKickoffMessage } from "../goal/goal.js";
 import { getSessionGoal } from "../goal/session-goal.js";
 import type { PhaseEvent } from "../phases/events.js";
-import { executeTools } from "../phases/execute-tools.js";
+import { executeTools, hasConfiguredToolHooks } from "../phases/execute-tools.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
@@ -1085,6 +1086,18 @@ async function tryRunSamplingRequest(
     }
   }
 
+  return finishSamplingRequest(state, ctx, session, signal, events, streamModelError, stallRetryStarted);
+}
+
+async function finishSamplingRequest(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  signal: AbortSignal,
+  events: PhaseEvent[],
+  streamModelError: StreamModelError | null = null,
+  stallRetryStarted = false,
+): Promise<SamplingRequestResult> {
   // T8: stash any wire-layer error on state for the recovery ladder
   // to consume. FallbackTriggeredError + stream_idle + provider 5xx
   // all become stream errors here; the ladder classifies them via
@@ -2245,8 +2258,20 @@ async function* runTurnKernelInner(
       ? { initialSkipCacheWrite: opts.skipCacheWrite }
       : {}),
   });
+  // Phase 4c: restate an active goal at the top of every root human turn. The
+  // goal is session state, not conversation, so a compacted history or a
+  // fresh user prompt still starts from the objective verbatim (goal drift
+  // grows with context length, arXiv:2505.02709).
+  if (commons.rootHumanTurnText !== undefined) {
+    const liveGoal = getSessionGoal(session);
+    if (goalGateApplies(ctx, session, liveGoal)) {
+      const tracking = getAttachmentTrackingState(session);
+      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
+    }
+  }
   let continuedFromFastMode = false;
   let fastUsage: LLMUsage | undefined;
+  let fastCanonicalResponse: LLMResponse | undefined;
   if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
     session.rolloutStore?.store.enableOneShotFastMode();
     emitTurnStarted(resolvedReferenceContextItem);
@@ -2265,6 +2290,11 @@ async function* runTurnKernelInner(
         state.messages = fastMessages;
       }
       return prepared.kind === "request" ? prepared : null;
+    }, {
+      requiresResponse: response => {
+        return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
+      },
+      completedTool: result => { state.completedToolResults.push(result); },
     });
     try {
       for (;;) {
@@ -2276,6 +2306,7 @@ async function* runTurnKernelInner(
             fastUsage = next.value.usage;
             state.lastResponseUsage = next.value.lastResponseUsage;
             session.rolloutStore?.store.finishOneShotFastMode();
+            fastCanonicalResponse = next.value.canonicalResponse;
             const response = next.value.recoveryResponse;
             if (response) {
               state.assistantMessages = [assistantMessageFromResponse(response, false, session.services.provider.name)];
@@ -2379,17 +2410,6 @@ async function* runTurnKernelInner(
     taskText: commons.rootHumanTurnText,
     exactOutput: opts.exactOutput,
   });
-  // Phase 4c: restate an active goal at the top of every root human turn. The
-  // goal is session state, not conversation, so a compacted history or a
-  // fresh user prompt still starts from the objective verbatim (goal drift
-  // grows with context length, arXiv:2505.02709).
-  if (commons.rootHumanTurnText !== undefined) {
-    const liveGoal = getSessionGoal(session);
-    if (goalGateApplies(ctx, session, liveGoal)) {
-      const tracking = getAttachmentTrackingState(session);
-      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
-    }
-  }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const rolloutPersistenceActive = (): boolean =>
@@ -2772,10 +2792,14 @@ async function* runTurnKernelInner(
     mergedTask.dispose,
   );
   try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onAdvisoryRefusal: deferCompactionRefusal,
-      onDurableHistoryReplaced: onCompactionReplacedHistory,
-    });
+    // A fast sample already consumed this prefix. Finish its response before
+    // any compaction can replace the history its tool calls belong to.
+    if (fastCanonicalResponse === undefined) {
+      await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+        onAdvisoryRefusal: deferCompactionRefusal,
+        onDurableHistoryReplaced: onCompactionReplacedHistory,
+      });
+    }
   } catch (error) {
     const underlying = compactFailureError(error);
     if (signal.aborted) {
@@ -3120,7 +3144,26 @@ async function* runTurnKernelInner(
     let modelNeedsFollowUp = false;
     try {
       const consumedCorrection = currentTextToolCallCorrectionPrompt(state);
-      const result = await runSamplingRequest(
+      const consumeFastResponse = async (): Promise<SamplingRequestResult> => {
+        const response = fastCanonicalResponse!;
+        fastCanonicalResponse = undefined;
+        const assistant = assistantMessageFromResponse(response, false, session.services.provider.name);
+        state.assistantMessages = [assistant];
+        state.toolUseBlocks = parseToolUseBlocks([...assistant.toolCalls]);
+        state.needsFollowUp = state.toolUseBlocks.length > 0;
+        state.lastResponseUsage = response.usage;
+        state.reasoningOnlyRecoveryPending = undefined;
+        state.messages.push({ role: "assistant", content: response.content,
+          ...(assistant.toolCalls.length ? { toolCalls: [...assistant.toolCalls] } : {}),
+          ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
+          ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
+        });
+        if (assistant.text) session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: assistant.text },
+        } });
+        return finishSamplingRequest(state, ctx, session, signal, pending);
+      };
+      const result = fastCanonicalResponse ? await consumeFastResponse() : await runSamplingRequest(
         state,
         ctx,
         session,

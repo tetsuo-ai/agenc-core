@@ -315,6 +315,19 @@ export function validateToolCallsForDispatch(
  * without forcing every call site to update its fixture. Missing
  * surfaces = empty registry = pre/post pass-through.
  */
+/** Empty configured hooks keep direct one-shot dispatch cheap. Hooked calls use
+ * the full canonical executor, including rewrite, failure and stop semantics. */
+export function hasConfiguredToolHooks(session: Session): boolean {
+  const hooks = session.services.hooks as {
+    readonly preToolUseHooks?: readonly PreToolUseHook[];
+    readonly postToolUseHooks?: readonly PostToolUseHook[];
+    readonly failureToolUseHooks?: readonly PostToolUseFailureHook[];
+    readonly permissionDecisionHooks?: readonly PermissionDecisionHook[];
+  } | undefined;
+  return Boolean(hooks?.preToolUseHooks?.length || hooks?.postToolUseHooks?.length ||
+    hooks?.failureToolUseHooks?.length || hooks?.permissionDecisionHooks?.length);
+}
+
 function resolveHookRegistry(session: Session): ToolHookRegistry {
   const registry = new ToolHookRegistry();
   const hooks = session.services.hooks as

@@ -2162,6 +2162,9 @@ export class SessionStore {
           rolloutPath: this.rolloutPath, runId: this.sessionId,
           checkpoint: this.checkpointOneShot!,
           flushAndSync: () => {
+            // Promotion is also a durability boundary: leave buffering before
+            // authenticating the prefix, and keep later appends synchronous.
+            if (this.oneShotFastMode) this.finishOneShotFastMode();
             if (this.degraded.isDegraded || this.pendingFsyncRetries.size > 0) throw new Error("one-shot has unresolved persistence failures");
             this.syncCanonicalTail();
           },
@@ -3985,6 +3988,8 @@ export class SessionStore {
       }
     };
     capture(() => this.writeBehind.finish());
+    // Seal only the final redacted transcript, after deferred appends drain.
+    if (this.oneShotFastMode) capture(() => this.finishOneShotFastMode());
     if (errors.length === 0) capture(() => this.oneShotWriter?.seal());
     this.closed = true;
     capture(() => {
