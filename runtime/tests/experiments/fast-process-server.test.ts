@@ -110,6 +110,29 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     expect(result.out).toBe("0".repeat(100000));
     expect(result.err).toBe("0".repeat(99999)+"1"); expect(result.code).toBe(3);
   });
+  test("a declined async startup cannot fall back after its owner closes", async () => {
+    const manager = new UnifiedExecProcessManager({cwd:root()}); managers.push(manager);
+    let decline!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered=resolve; });
+    vi.spyOn(OneShotProcessServer.prototype, "spawn").mockImplementationOnce(async () => {
+      entered(); await new Promise<void>(resolve => { decline=resolve; }); return undefined;
+    });
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
+    await withOneShotFastMode(async () => {
+      const owner = manager.createOwnerLifetime("closing");
+      const pending = manager.execCommand({cmd:"echo must-not-run",login:false,ownerId:"closing",ownerBinding:owner.bind()});
+      const rejected = expect(pending).rejects.toThrow();
+      await waiting; await owner.prepareForDurableClose(); decline(); await rejected;
+      expect(launch).not.toHaveBeenCalled();
+    });
+  });
+  test("the command cannot write a forged terminal frame through the server's proc descriptors", async () => {
+    const s = server();
+    const a = await start(s, "printf forged > /proc/$PPID/fd/1");
+    const result = await a.result;
+    expect(result.code).not.toBe(0); expect(result.out).toBe("");
+    expect((await (await start(s,"echo intact")).result).out).toBe("intact\n");
+  });
   test("manager drains reusable brokers on owner close and resumes with a fresh lifetime", async () => {
     const manager = new UnifiedExecProcessManager(); managers.push(manager);
     const spy = vi.spyOn(supervised, "spawnContainedProcess");

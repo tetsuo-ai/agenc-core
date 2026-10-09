@@ -1677,6 +1677,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           }, params.signal) : undefined);
       if (persistent === undefined && params.runtimeSandbox !== undefined)
         probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+      // A declined server startup may have awaited cleanup while authority changed.
+      if (persistent === undefined && oneShotFastModeActive()) validateAdmission();
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         // The native subreaper remains a complete containment boundary. Avoid
         // probing cgroup delegation for every command in this short run.
