@@ -1,3 +1,4 @@
+import { autoFixPostToolHookIsInactive } from "../services/autoFix/autoFixHook.js";
 /**
  * Phase 5 — Execute Tools.
  *
@@ -304,6 +305,21 @@ export function validateToolCallsForDispatch(
   return batch;
 }
 
+/** Empty configured hooks keep direct one-shot dispatch cheap. Hooked calls use
+ * the full canonical executor, including rewrite, failure and stop semantics. */
+export function hasConfiguredToolHooks(session: Session): boolean {
+  const hooks = session.services.hooks as {
+    readonly preToolUseHooks?: readonly PreToolUseHook[];
+    readonly postToolUseHooks?: readonly PostToolUseHook[];
+    readonly failureToolUseHooks?: readonly PostToolUseFailureHook[];
+    readonly permissionDecisionHooks?: readonly PermissionDecisionHook[];
+  } | undefined;
+  return Boolean(hooks?.preToolUseHooks?.length ||
+    hooks?.postToolUseHooks?.some(hook => !autoFixPostToolHookIsInactive(hook)) ||
+    hooks?.failureToolUseHooks?.length || hooks?.permissionDecisionHooks?.length);
+}
+
+
 /**
  * Pull pre/post tool-use hooks from the session services if they expose
  * them. Falls back to an empty registry so the pipeline always runs.
@@ -315,18 +331,6 @@ export function validateToolCallsForDispatch(
  * without forcing every call site to update its fixture. Missing
  * surfaces = empty registry = pre/post pass-through.
  */
-/** Empty configured hooks keep direct one-shot dispatch cheap. Hooked calls use
- * the full canonical executor, including rewrite, failure and stop semantics. */
-export function hasConfiguredToolHooks(session: Session): boolean {
-  const hooks = session.services.hooks as {
-    readonly preToolUseHooks?: readonly PreToolUseHook[];
-    readonly postToolUseHooks?: readonly PostToolUseHook[];
-    readonly failureToolUseHooks?: readonly PostToolUseFailureHook[];
-    readonly permissionDecisionHooks?: readonly PermissionDecisionHook[];
-  } | undefined;
-  return Boolean(hooks?.preToolUseHooks?.length || hooks?.postToolUseHooks?.length ||
-    hooks?.failureToolUseHooks?.length || hooks?.permissionDecisionHooks?.length);
-}
 
 function resolveHookRegistry(session: Session): ToolHookRegistry {
   const registry = new ToolHookRegistry();

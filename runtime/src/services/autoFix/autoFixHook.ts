@@ -27,6 +27,13 @@ const AUTO_FIX_TOOLS = new Set([
   FILE_WRITE_TOOL_NAME,
 ]);
 
+// Only factory-owned hooks may prove themselves inactive. Arbitrary configured
+// callbacks always retain the canonical executor, even if they look similar.
+const inactiveAutoFixHooks = new WeakMap<PostToolUseHook, () => boolean>();
+export function autoFixPostToolHookIsInactive(hook: PostToolUseHook): boolean {
+  return inactiveAutoFixHooks.get(hook)?.() === true;
+}
+
 export interface AutoFixPostToolHookOptions {
   readonly configSource: () => unknown;
   readonly cwd: string;
@@ -89,7 +96,7 @@ export function createAutoFixPostToolHook(
   const runCheck = options.runCheck ?? runAutoFixCheck;
   const retryScope = options.retryScope ?? defaultRetryScope;
 
-  return async (input) => {
+  const hook: PostToolUseHook = async (input) => {
     if (!options.executionAuthority.decision("command").allowed) {
       return { kind: "continue" };
     }
@@ -135,4 +142,7 @@ export function createAutoFixPostToolHook(
 
     return { kind: "continue" };
   };
+  // Read live configuration so enabling auto-fix between calls takes effect.
+  inactiveAutoFixHooks.set(hook, () => getAutoFixConfig(options.configSource()) === null);
+  return hook;
 }

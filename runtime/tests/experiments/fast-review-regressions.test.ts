@@ -177,3 +177,23 @@ test.each(["handoff", "promotion", "flush-failure", "checkpoint-failure"])("fast
   }
  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("only a factory-owned disabled auto-fix hook permits direct dispatch, with live refresh", async () => {
+ const { createAutoFixPostToolHook } = await import("../../src/services/autoFix/autoFixHook.js");
+ const { hasConfiguredToolHooks } = await import("../../src/phases/execute-tools.js");
+ let config: unknown;
+ const hook = createAutoFixPostToolHook({ configSource: () => config, cwd: "/tmp",
+   executionAuthority: { decision: () => ({ allowed: true }) } as never });
+ const hooks = { postToolUseHooks: [hook] };
+ const f = setup(true, true, hooks);
+ try {
+  expect(hasConfiguredToolHooks(f.session)).toBe(false);
+  config = { enabled: true, lint: "echo lint" };
+  expect(hasConfiguredToolHooks(f.session)).toBe(true);
+  config = { enabled: false };
+  expect(hasConfiguredToolHooks(f.session)).toBe(false);
+  hooks.postToolUseHooks.push(async () => ({ kind: "continue" }));
+  expect(hasConfiguredToolHooks(f.session)).toBe(true);
+ } finally { await f.session.shutdown(); }
+});
