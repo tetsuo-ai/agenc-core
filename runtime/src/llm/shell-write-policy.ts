@@ -578,6 +578,127 @@ interface DestinationOperands {
   readonly createsDirectories: boolean;
 }
 
+/**
+ * Short options of `cp`, `mv`, `ln` and `install` that take the next word
+ * as their value (`install -m 644`, `cp -S .bak`). Left unread, that word
+ * is counted as a source and a file destination is judged as a directory.
+ */
+const DESTINATION_VALUE_SHORT_OPTIONS = new Set(["g", "m", "o", "S", "t"]);
+
+/**
+ * Long forms of those options when the value is a separate word
+ * (`install --mode 644`), not `--mode=644`.
+ */
+const DESTINATION_VALUE_LONG_OPTIONS = new Set([
+  "group",
+  "mode",
+  "no-preserve",
+  "owner",
+  "strip-program",
+  "suffix",
+  "target-directory",
+]);
+
+interface DestinationOption {
+  readonly index: number;
+  readonly targetDirectory?: string;
+  readonly noTargetDirectory: boolean;
+  readonly createsDirectories: boolean;
+}
+
+/** The next argv word, when present, and the index that consumed it. */
+function takeFollowingArg(
+  args: readonly string[],
+  index: number,
+): { readonly value?: string; readonly index: number } {
+  const value = args[index + 1];
+  if (typeof value !== "string") return { index };
+  return { value, index: index + 1 };
+}
+
+/**
+ * One long option of `cp`/`mv`/`ln`/`install`. A value-taking name without
+ * `=` consumes the next word so it is not read as an operand.
+ */
+function readDestinationLongOption(
+  token: string,
+  args: readonly string[],
+  index: number,
+): DestinationOption {
+  const eq = token.indexOf("=");
+  const name = eq === -1 ? token.slice(2) : token.slice(2, eq);
+  let nextIndex = index;
+  let targetDirectory: string | undefined;
+  if (name === "target-directory") {
+    if (eq !== -1) {
+      targetDirectory = token.slice(eq + 1);
+    } else {
+      const taken = takeFollowingArg(args, index);
+      targetDirectory = taken.value;
+      nextIndex = taken.index;
+    }
+  } else if (eq === -1 && DESTINATION_VALUE_LONG_OPTIONS.has(name)) {
+    nextIndex = takeFollowingArg(args, index).index;
+  }
+  return {
+    index: nextIndex,
+    ...(targetDirectory === undefined ? {} : { targetDirectory }),
+    noTargetDirectory: name === "no-target-directory",
+    createsDirectories: name === "directory",
+  };
+}
+
+/**
+ * A short-option cluster. A letter that takes a value ends the cluster:
+ * the rest of the token is the value, or the next word is.
+ */
+function readDestinationShortOptions(
+  token: string,
+  args: readonly string[],
+  index: number,
+): DestinationOption {
+  const body = token.slice(1);
+  let noTargetDirectory = false;
+  let createsDirectories = false;
+  let targetDirectory: string | undefined;
+  let nextIndex = index;
+  for (let at = 0; at < body.length; at += 1) {
+    const letter = body[at]!;
+    if (letter === "T") noTargetDirectory = true;
+    if (letter === "d") createsDirectories = true;
+    if (!DESTINATION_VALUE_SHORT_OPTIONS.has(letter)) continue;
+    const attached = body.slice(at + 1);
+    if (letter === "t") {
+      if (attached.length > 0) {
+        targetDirectory = attached;
+      } else {
+        const taken = takeFollowingArg(args, index);
+        targetDirectory = taken.value;
+        nextIndex = taken.index;
+      }
+    } else if (attached.length === 0) {
+      nextIndex = takeFollowingArg(args, index).index;
+    }
+    break;
+  }
+  return {
+    index: nextIndex,
+    ...(targetDirectory === undefined ? {} : { targetDirectory }),
+    noTargetDirectory,
+    createsDirectories,
+  };
+}
+
+function readDestinationOption(
+  token: string,
+  args: readonly string[],
+  index: number,
+): DestinationOption {
+  return token.startsWith("--")
+    ? readDestinationLongOption(token, args, index)
+    : readDestinationShortOptions(token, args, index);
+}
+
 function parseDestinationOperands(args: readonly string[]): DestinationOperands {
   const operands: string[] = [];
   let targetDirectory: string | undefined;
@@ -591,24 +712,15 @@ function parseDestinationOperands(args: readonly string[]): DestinationOperands 
       treatRemainingAsOperands = true;
       continue;
     }
-    if (!treatRemainingAsOperands) {
-      if (token === "-t" || token === "--target-directory") {
-        const value = args[i + 1];
-        if (typeof value === "string") {
-          targetDirectory = value;
-          i += 1;
-        }
-        continue;
+    if (!treatRemainingAsOperands && token.startsWith("-")) {
+      const option = readDestinationOption(token, args, i);
+      if (option.targetDirectory !== undefined) {
+        targetDirectory = option.targetDirectory;
       }
-      if (token.startsWith("--target-directory=")) {
-        targetDirectory = token.slice("--target-directory=".length);
-        continue;
-      }
-      if (token.startsWith("-")) {
-        noTargetDirectory ||= token === "--no-target-directory" || /^-[^-]*T/u.test(token);
-        createsDirectories ||= token === "--directory" || /^-[^-]*d/u.test(token);
-        continue;
-      }
+      noTargetDirectory ||= option.noTargetDirectory;
+      createsDirectories ||= option.createsDirectories;
+      i = option.index;
+      continue;
     }
     operands.push(token);
   }
