@@ -48,6 +48,31 @@ describe("captured uncapped model admission", () => {
   } finally { f.close(); }
  });
 
+ it("keeps exposed grant identities and policy immutable until the final batch", async () => {
+  const f = fixture();
+  try {
+   await f.fast(async () => {
+    const input = f.request("one");
+    const lease = await f.client.acquire(input), id = lease.reservation.reservationId;
+    expect(Reflect.set(lease.reservation, "reservationId", "forged")).toBe(false);
+    expect(Reflect.set(lease.reservation.step, "runId", "forged")).toBe(false);
+    expect(Reflect.set(lease.request, "model", "forged")).toBe(false);
+    expect(Reflect.set(lease.request.estimate, "maxCostUsd", 100)).toBe(false);
+    expect(Reflect.set(lease.request.budgetScopes![0]!, "maxCostUsd", 0)).toBe(false);
+    expect(Reflect.set(lease.request.budgetScopes!, "0", { key: "forged" })).toBe(false);
+    input.stepId = "changed-input";
+    const details = { nested: { outcome: "actual" } };
+    f.client.markDispatched(id, { boundary: "provider_wire", details });
+    details.nested.outcome = "forged";
+    f.client.reconcile(id, { inputTokens: 3, outputTokens: 2, costUsd: 0.25 });
+    f.client.acknowledgeCompletion(id);
+   });
+   f.store.writeBehind.finish();
+   expect(f.rows()[0]).toMatchObject({ run_id: "root", step_id: "one", model: "test", reserved_cost_nanos: 500000000, actual_cost_nanos: 250000000 });
+   expect(f.client.replayJournal!({ limit: 100 }).find(event => event.event === "dispatched")?.details).toMatchObject({ nested: { outcome: "actual" } });
+  } finally { f.close(); }
+ });
+
  it.each(["unknown", "void", "void-after-dispatch", "unpriced"])("preserves %s settlement", async kind => {
   const f = fixture();
   try {

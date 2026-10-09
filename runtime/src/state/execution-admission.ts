@@ -468,6 +468,15 @@ export class ExecutionAdmissionRepository {
         reservation: { reservationId: this.#id(), step: request.step, reservedAt: admittedAt,
           reservedCostUsd: request.estimate.maxCostUsd ?? 0,
           reservedTokens: checkedTokenSum(request.estimate.maxInputTokens, request.estimate.maxOutputTokens) } };
+      // The lease exposes this grant to its caller. Keep its captured identity
+      // and policy immutable until final persistence, just as durable rows
+      // cannot be rewritten by mutating an ordinary returned lease.
+      Object.freeze(request.step);
+      Object.freeze(request.estimate);
+      for (const budget of request.budgetScopes ?? []) Object.freeze(budget);
+      if (request.budgetScopes) Object.freeze(request.budgetScopes);
+      Object.freeze(request);
+      Object.freeze(record.reservation);
       this.#capturedProofs.add(record);
       return record;
     });
