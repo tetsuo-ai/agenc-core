@@ -1,4 +1,5 @@
 import { currentSessionWriteBehind } from "../session/write-behind.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { endpointMetadataFailureHandler } from "./endpoint-metadata-cache.js";
 /**
  * Turn-scoped provider HTTP session.
@@ -1428,7 +1429,7 @@ export class ProviderHttpClientSession {
         signal,
       }, fetchImpl);
       if (!response.ok) fail();
-      if (method === "POST") {
+      if (method === "POST" && !oneShotFastModeActive()) {
         // The previous tool step is complete. New model-stream events must
         // publish immediately instead of joining that step's loss window.
         try { currentSessionWriteBehind()?.finish(); }

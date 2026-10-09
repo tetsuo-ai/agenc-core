@@ -403,6 +403,18 @@ const JOB_COLUMNS = `
   admission_reason, admission_reservation_id
 `;
 
+/** Actual uncapped decisions captured by the live kernel before dispatch.
+ * The final batch persists those decisions; it does not admit work again.
+ */
+export interface CapturedUncappedAdmission {
+  readonly request: RuntimeAdmissionRequest;
+  readonly jobId: string;
+  readonly reservation: BudgetReservation;
+  readonly admittedAt: string;
+  dispatch?: MarkAdmissionDispatchedOptions;
+  settlement?: { readonly input: AdmissionReconcileInput; readonly at: string };
+}
+
 /**
  * SQLite repository for M3 execution admission.
  *
@@ -427,6 +439,85 @@ export class ExecutionAdmissionRepository {
   #journalBufferExact = true;
   #writeDepth = 0;
   #writeRevision = 0;
+  #capturedAdmission: CapturedUncappedAdmission | undefined;
+  #capturedTimestamp: string | undefined;
+  readonly #capturedProofs = new WeakSet<CapturedUncappedAdmission>();
+
+  /** SQLite read snapshot is the uncapped policy decision's linearization point.
+   * Retained period allocations, children, deadlines and existing steps use
+   * ordinary atomic admission. No speculative claim is allowed under a cap.
+   */
+  captureUncappedModel(raw: RuntimeAdmissionRequest): CapturedUncappedAdmission | undefined {
+    const request = normalizeAdmissionRequest(raw);
+    if (request.kind !== "model_turn" || request.step.parentRunId !== undefined ||
+        request.deadlineAt !== undefined || request.denialReason !== undefined ||
+        request.approvalRequired || request.autonomous || request.budgetScopes?.length !== 1) return;
+    const scope = request.budgetScopes[0]!;
+    if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
+        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;
+    return this.#driver.transaction(() => {
+      if (this.#jobByStepLocked(request.step.runId, request.step.stepId) || this.#ancestorDenial(request)) return;
+      const scopes = this.#effectiveBudgetScopesLocked(request, this.#timestamp());
+      if (scopes.length !== 1) return;
+      const allocation = this.#allocationLocked(scope.key);
+      if (allocation && (allocation.parent_scope_key !== null || allocation.max_tokens !== null ||
+          allocation.max_cost_nanos !== null || allocation.blocked_by_provider_overrun)) return;
+      const admittedAt = this.#timestamp();
+      const record: CapturedUncappedAdmission = { request, jobId: this.#id(), admittedAt,
+        reservation: { reservationId: this.#id(), step: request.step, reservedAt: admittedAt,
+          reservedCostUsd: request.estimate.maxCostUsd ?? 0,
+          reservedTokens: checkedTokenSum(request.estimate.maxInputTokens, request.estimate.maxOutputTokens) } };
+      this.#capturedProofs.add(record);
+      return record;
+    });
+  }
+
+  get uncappedPolicyRevision(): string {
+    return `${this.#driver.state.pragma("data_version", { simple: true })}:${this.#writeRevision}`;
+  }
+
+  /** Validate settlement identically before the live slot can be released. */
+  normalizeCapturedUsage(usage: AdmissionUsage): AdmissionUsage {
+    return { ...normalizeUsage(usage), ...(usage.costEstimated ? { costEstimated: true } : {}) };
+  }
+
+  normalizeCapturedDispatch(evidence: MarkAdmissionDispatchedOptions): MarkAdmissionDispatchedOptions {
+    const dispatchedAt = normalizeTimestamp(evidence.dispatchedAt ?? this.#timestamp(), "dispatchedAt");
+    const providerRequestId = evidence.providerRequestId === undefined ? undefined
+      : requireNonEmpty(evidence.providerRequestId, "providerRequestId");
+    // Validate what the eventual journal must serialize before crossing wire.
+    const details = evidence.details === undefined ? undefined : JSON.parse(JSON.stringify(evidence.details));
+    return { dispatchedAt, ...(providerRequestId !== undefined ? { providerRequestId } : {}),
+      ...(details !== undefined ? { details } : {}) };
+  }
+
+  persistCapturedUncapped(records: readonly CapturedUncappedAdmission[]): void {
+    if (this.#capturedAdmission) throw new Error("nested captured admission batch");
+    try {
+      this.#writeTransaction(() => {
+        for (const record of records) {
+          if (!this.#capturedProofs.has(record)) throw new Error("unowned captured admission");
+          this.#capturedAdmission = record;
+          this.#capturedTimestamp = record.admittedAt;
+          const attempt = this.enqueue(record.request, { ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true });
+          if (attempt.record.jobId !== record.jobId) throw new Error("captured admission step identity conflict");
+          const claimed = this.claim({ key: attempt.record.key, ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true, now: record.admittedAt });
+          if (claimed.kind !== "claimed" || claimed.lease.reservation.reservationId !== record.reservation.reservationId) {
+            throw new Error("captured admission reservation identity conflict");
+          }
+          if (record.dispatch) {
+            this.#capturedTimestamp = record.dispatch.dispatchedAt;
+            this.markDispatched(record.reservation.reservationId, record.dispatch);
+          }
+          if (record.settlement) {
+            this.#capturedTimestamp = record.settlement.at;
+            this.reconcile(record.reservation.reservationId, record.settlement.input, { at: record.settlement.at });
+          }
+        }
+      });
+    } finally { this.#capturedAdmission = undefined; this.#capturedTimestamp = undefined; }
+  }
+
   readonly #usageViews = new Map<string, {
     readonly projection: AdmissionUsageProjection;
     readonly dirty: Set<string>;
@@ -640,7 +731,7 @@ export class ExecutionAdmissionRepository {
       let status: PersistedAdmissionStatus = "queued";
       let event: AdmissionJournalEvent["event"] = "queued";
       let reason: string | undefined;
-      const ancestorDenial = this.#ancestorDenial(request)?.reason;
+      const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         status = "denied";
         event = "denied";
@@ -662,7 +753,7 @@ export class ExecutionAdmissionRepository {
         reason = "approval_required";
       }
 
-      const jobId = this.#id();
+      const jobId = this.#capturedAdmission?.jobId ?? this.#id();
       const maxCostNanos =
         request.estimate.maxCostUsd === null
           ? null
@@ -782,7 +873,7 @@ export class ExecutionAdmissionRepository {
       }
 
       const request = parseRequest(row.input_json);
-      const ancestorDenial = this.#ancestorDenial(request)?.reason;
+      const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         const denied = this.#finishUnclaimedJobLocked(
           row,
@@ -840,7 +931,7 @@ export class ExecutionAdmissionRepository {
         };
       }
 
-      const reservationId = this.#id();
+      const reservationId = this.#capturedAdmission?.reservation.reservationId ?? this.#id();
       const attempt = row.admission_attempts + 1;
       const persistedCostNanos = reservedCostNanos ?? 0;
       this.#driver
@@ -966,7 +1057,7 @@ export class ExecutionAdmissionRepository {
         const job = this.#requireJobByIdLocked(reservation.job_id);
         const request = parseRequest(job.input_json);
         if (reservation.status === "reserved") {
-          const ancestorDenial = this.#ancestorDenial(request)?.reason;
+          const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
           const stopReason =
             ancestorDenial ??
             (request.deadlineAt !== undefined &&
@@ -1928,7 +2019,7 @@ export class ExecutionAdmissionRepository {
   }
 
   #timestamp(): string {
-    return this.#now().toISOString();
+    return this.#capturedTimestamp ?? this.#now().toISOString();
   }
 
   #jobByStepLocked(runId: string, stepId: string): AgentJobRow | undefined {
@@ -2107,6 +2198,7 @@ export class ExecutionAdmissionRepository {
       this.#ensureAllocationLocked(request.step.runId, scope, now);
     }
     const closure = this.#allocationClosureLocked(scopes);
+    if (this.#capturedAdmission) return null;
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
         return { reason: "allocation_blocked" };
@@ -2161,6 +2253,7 @@ export class ExecutionAdmissionRepository {
     now: string,
   ): readonly AdmissionBudgetScope[] {
     const scopes = [...(request.budgetScopes ?? [])];
+    if (this.#capturedAdmission) return scopes;
     const seen = new Set(scopes.map((scope) => scope.key));
     const day = now.slice(0, 10);
     const month = day.slice(0, 7);
@@ -2366,7 +2459,7 @@ export class ExecutionAdmissionRepository {
       // Reservations estimate provider usage even when budgets are disabled.
       // Only an explicitly capped allocation makes that estimate a hard limit.
       // Read the durable links, including inherited and retained period caps.
-      const hasHardBudgetCap = this.#driver
+      const hasHardBudgetCap = !this.#capturedAdmission && this.#driver
         .prepareState<[string], { readonly capped: number }>(
           `SELECT 1 AS capped
            FROM execution_admission_reservation_allocations AS link

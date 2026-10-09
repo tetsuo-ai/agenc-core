@@ -43,7 +43,7 @@ function usage(): Extract<EventMsg, { type: "session_usage" }> {
 }
 
 describe("deferred event payloads", () => {
-  it.each(["close", "reader", "observer"])("retains fast admission transitions and exact usage at %s", async barrier => {
+  it.each(["close", "reader", "observer", "rebind"])("retains fast admission transitions and exact usage at %s", async barrier => {
     const { store, session, published } = fixture();
     const kernel = new ExecutionAdmissionKernel({ agencHome: store.agencHome });
     const admission = kernel.bindClient({ cwd: store.cwd, scope: { runId: "test", sessionId: "test", autonomous: false } });
@@ -67,6 +67,11 @@ describe("deferred event payloads", () => {
       } else {
         expect(observed.length).toBeGreaterThan(0);
         expect(observed).not.toContain("missing");
+      }
+      if (barrier === "rebind") {
+        unbind();
+        const rebound = bindExecutionAdmissionJournal(session, admission);
+        rebound();
       }
       if (barrier === "close") store.close();
       else reader.prepareState("SELECT COUNT(*) FROM execution_admission_reservations").get();

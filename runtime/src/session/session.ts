@@ -1,3 +1,4 @@
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
 /**
  * Session — initialized model agent context.
@@ -6661,4 +6662,3 @@ async function deriveNextModelInfo(
     return deriveMinimalModelInfo(model);
   }
 }
-import { oneShotFastModeActive } from "../one-shot-fast-mode.js";

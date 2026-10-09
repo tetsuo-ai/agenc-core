@@ -1,10 +1,10 @@
 import { Buffer } from "node:buffer";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
-import { getMemorySearchPathsForHome } from "../../memory/paths.js";
 
 import {
   findRelevantMemories,
+  getMemorySearchPathsForHome,
   formatRelevantMemoryHeader,
   buildProjectMemoryDirectory,
   getGlobalMemoryPath,

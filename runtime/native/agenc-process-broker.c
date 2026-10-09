@@ -72,6 +72,11 @@ struct launch_payload {
 };
 
 int main(int argc, char **argv);
+static int server_exact(int fd, void *buffer, size_t length, bool writing);
+static int server_frame(char type, const void *data, uint32_t length);
+static char *server_receive(char *type, uint32_t *length);
+static void server_child_changed(int signal_number);
+static int server_command(char *data, uint32_t length);
 static int describe_v2_protocol(void);
 static int launch_v2_supervised_target(sigset_t *wait_mask);
 static int v2_pending_stop(void);

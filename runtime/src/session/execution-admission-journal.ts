@@ -27,6 +27,7 @@ export function bindExecutionAdmissionJournal(
     // the original event identity and timestamp; never recreate a lease here.
     if (oneShotFastModeActive() && session.emitDeferred && session.writeBehind && !session.writeBehind.draining) {
       const captured = structuredClone(event);
+      if (session.rolloutStore) executionAdmissionEventIndexes.delete(session.rolloutStore);
       session.emitDeferred({ id: captured.eventId, eventId: captured.eventId },
         () => ({ type: "execution_admission", payload: captured }), { durable: true });
       return;

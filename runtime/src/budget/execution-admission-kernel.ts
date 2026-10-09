@@ -1,3 +1,5 @@
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { currentSessionWriteBehind } from "../session/write-behind.js";
 import { promoteOneShotRun, withOneShotWriteScope } from "../durability/one-shot-durability.js";
 import { randomUUID } from "node:crypto";
 
@@ -31,6 +33,7 @@ import { DEFAULT_ADMISSION_CONCURRENCY_LIMITS } from "./admission-config.js";
 import {
   ExecutionAdmissionRepository,
   type AdmissionRunUsageSummary,
+  type CapturedUncappedAdmission,
   type PersistedAdmissionReservation,
 } from "../state/execution-admission.js";
 import {
@@ -229,6 +232,68 @@ export class ExecutionAdmissionKernel {
   #limits: AdmissionConcurrencyLimits;
   #drainScheduled = false;
   #closed = false;
+  readonly #captured = new Map<string, { binding: WorkspaceBinding; record: CapturedUncappedAdmission; revision: string }>();
+  #flushingCaptured = false;
+
+  #flushCaptured(binding?: WorkspaceBinding): void {
+    if (this.#flushingCaptured || this.#captured.size === 0) return;
+    this.#flushingCaptured = true;
+    try {
+      const groups = new Map<WorkspaceBinding, CapturedUncappedAdmission[]>();
+      for (const entry of this.#captured.values()) {
+        if (binding && entry.binding !== binding) continue;
+        const records = groups.get(entry.binding) ?? [];
+        records.push(entry.record); groups.set(entry.binding, records);
+      }
+      for (const [workspace, records] of groups) {
+        const owners = new Map<string, CapturedUncappedAdmission[]>();
+        for (const record of records) {
+          const runId = record.request.step.runId;
+          const owned = owners.get(runId) ?? []; owned.push(record); owners.set(runId, owned);
+        }
+        for (const [runId, owned] of owners) {
+          withOneShotWriteScope(workspace.paths.projectDir, runId,
+            () => workspace.repository.persistCapturedUncapped(owned));
+          for (const record of owned) this.#captured.delete(record.reservation.reservationId);
+        }
+        this.#publishNewJournal(workspace);
+      }
+    } finally { this.#flushingCaptured = false; }
+  }
+
+  #capturedReservation(reservationId: string) {
+    const entry = this.#captured.get(reservationId);
+    if (entry && entry.revision !== entry.binding.repository.uncappedPolicyRevision) {
+      this.#flushCaptured(entry.binding);
+      return undefined;
+    }
+    return entry;
+  }
+
+  #captureUncapped(binding: ClientBinding, input: AdmissionAcquireInput, signal?: AbortSignal): AdmissionLease | undefined {
+    const queue = currentSessionWriteBehind();
+    const scope = binding.scope;
+    if (!oneShotFastModeActive() || !queue || queue.draining || this.#pending.size || signal?.aborted ||
+        (this.#listeners.get(scope.runId)?.size ?? 0) > 0 ||
+        [...(this.#usageListeners.get(binding.workspace) ?? [])].some(listener => listener.snapshotListener === undefined) ||
+        scope.hasHardCostCap || scope.hasHardTokenCap || scope.maxCostUsd !== undefined || scope.maxTokens !== undefined ||
+        !binding.workspace.driver.isRelaxedOneShotRun(scope.runId)) return;
+    queue.assertHealthy();
+    const request = requestFor(binding, input, this.#now());
+    if (!this.#hasCapacity(request)) return;
+    const revision = binding.workspace.repository.uncappedPolicyRevision;
+    for (const entry of this.#captured.values()) {
+      if (entry.binding === binding.workspace && (entry.revision !== revision ||
+          admissionRecordKey(entry.record.request.step) === admissionRecordKey(request.step))) return;
+    }
+    const record = binding.workspace.repository.captureUncappedModel(request);
+    if (!record || revision !== binding.workspace.repository.uncappedPolicyRevision) return;
+    const { request: normalized, reservation } = record;
+    this.#captured.set(reservation.reservationId, { binding: binding.workspace, record, revision });
+    queue.enqueue("captured-model-admission", () => this.#flushCaptured(binding.workspace));
+    return this.#activateGrant(binding.workspace, { decision: "allow", reservation, request: normalized }, signal);
+  }
+
 
   constructor(options: ExecutionAdmissionKernelOptions) {
     this.#agencHome = options.agencHome;
@@ -326,6 +391,7 @@ export class ExecutionAdmissionKernel {
         ? { projectRootMarkers: options.projectRootMarkers }
         : {}),
     });
+    this.#flushCaptured();
     const workspaceId = options.workspaceId ?? paths.projectDir;
     const workspace = this.#registerPaths(paths, workspaceId);
     workspace.clientRefs += 1;
@@ -404,6 +470,7 @@ export class ExecutionAdmissionKernel {
   }
 
   releaseClient(binding: WorkspaceBinding): void {
+    this.#flushCaptured(binding);
     if (binding.clientRefs === 0) return;
     binding.clientRefs -= 1;
     this.#evictIdleBinding(binding);
@@ -420,6 +487,7 @@ export class ExecutionAdmissionKernel {
     input: AdmissionAcquireInput,
   ): AdmissionAttempt {
     this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
     const request = requestFor(binding, input, this.#now());
     if (request.kind === "spawn") promoteOneShotRun(request.step.runId);
     const attempt = withOneShotWriteScope(binding.workspace.paths.projectDir, request.step.runId,
@@ -435,6 +503,9 @@ export class ExecutionAdmissionKernel {
     input: AdmissionAcquireInput,
     signal?: AbortSignal,
   ): Promise<AdmissionLease> {
+    this.#assertOpen();
+    const captured = this.#captureUncapped(binding, input, signal);
+    if (captured) return Promise.resolve(captured);
     const attempt = this.admit(binding, input);
     if (attempt.decision.decision === "deny") {
       return Promise.reject(
@@ -511,6 +582,13 @@ export class ExecutionAdmissionKernel {
         "cancelled",
       );
     }
+    const captured = this.#capturedReservation(reservationId);
+    if (captured && !captured.record.dispatch && !captured.record.settlement) {
+      captured.record.dispatch = captured.binding.repository.normalizeCapturedDispatch({ dispatchedAt: evidence.timestamp ?? this.#timestamp(),
+        ...(evidence.providerRequestId !== undefined ? { providerRequestId: evidence.providerRequestId } : {}),
+        details: { ...(evidence.details ?? {}), boundary: evidence.boundary } });
+      return;
+    }
     const found = this.#findReservation(reservationId);
     if (found === undefined) {
       throw new AdmissionDeniedError("reservation_not_found");
@@ -547,6 +625,13 @@ export class ExecutionAdmissionKernel {
     reservationId: string,
     usage: AdmissionUsage,
   ): AdmissionReconcileResult {
+    const captured = this.#capturedReservation(reservationId);
+    if (captured && !captured.record.settlement) {
+      const normalized = captured.binding.repository.normalizeCapturedUsage(usage);
+      captured.record.settlement = { input: { kind: "reported", usage: normalized }, at: this.#timestamp() };
+      this.#finishCapacity(reservationId); this.#scheduleDrain();
+      return { applied: true, outcome: normalized.costUsd === null ? "held_unknown" : "reconciled" };
+    }
     const found = this.#requireReservation(reservationId);
     const reconciled = withOneShotWriteScope(found.binding.paths.projectDir, found.reservation.reservation.step.runId,
       () => reconcileAdmissionAndRunTree(
@@ -576,6 +661,13 @@ export class ExecutionAdmissionKernel {
   }
 
   holdUnknown(reservationId: string, reason: string): void {
+    const captured = this.#capturedReservation(reservationId);
+    if (captured && !captured.record.settlement) {
+      if (!reason.trim()) throw new Error("empty admission settlement reason");
+      captured.record.settlement = { input: { kind: "unknown", reason }, at: this.#timestamp() };
+      this.#finishCapacity(reservationId); this.#scheduleDrain();
+      return;
+    }
     const found = this.#requireReservation(reservationId);
     found.binding.repository.holdUnknown(reservationId, reason);
     this.#finishCapacity(reservationId);
@@ -584,6 +676,13 @@ export class ExecutionAdmissionKernel {
   }
 
   void(reservationId: string, reason: string): void {
+    const captured = this.#capturedReservation(reservationId);
+    if (captured && !captured.record.settlement) {
+      if (!reason.trim()) throw new Error("empty admission settlement reason");
+      captured.record.settlement = { input: { kind: "void", reason }, at: this.#timestamp() };
+      this.#finishCapacity(reservationId); this.#scheduleDrain();
+      return;
+    }
     const found = this.#requireReservation(reservationId);
     found.binding.repository.void(reservationId, reason);
     this.#finishCapacity(reservationId);
@@ -603,6 +702,7 @@ export class ExecutionAdmissionKernel {
     binding: ClientBinding,
     event: Parameters<ExecutionAdmissionClient["recordFallback"]>[0],
   ): void {
+    this.#flushCaptured(binding.workspace);
     const key = admissionRecordKey({
       runId: binding.scope.runId,
       stepId: stepIdFor(binding, event.stepId),
@@ -649,6 +749,7 @@ export class ExecutionAdmissionKernel {
     options: Parameters<ExecutionAdmissionClient["forSession"]>[0],
   ): ExecutionAdmissionClient {
     this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
     validateChildAllocation(options);
     binding.workspace.clientRefs += 1;
     try {
@@ -741,6 +842,7 @@ export class ExecutionAdmissionKernel {
 
   getUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
     this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
     return binding.workspace.repository.getUsageSummary(
       binding.scope.runId,
       binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey,
@@ -749,6 +851,7 @@ export class ExecutionAdmissionKernel {
 
   getRemainingCostUsd(binding: ClientBinding): number | undefined {
     this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
     const now = this.#now();
     const scopes = [...budgetScopesFor(binding.budget, now)];
     const keys = new Set(scopes.map(scope => scope.key));
@@ -763,6 +866,7 @@ export class ExecutionAdmissionKernel {
 
   getDirectUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
     this.#assertOpen();
+    this.#flushCaptured(binding.workspace);
     return binding.workspace.repository.getUsageSummary(binding.scope.runId,
       binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey, true);
   }
@@ -787,6 +891,7 @@ export class ExecutionAdmissionKernel {
   }
 
   subscribeUsageSnapshot(binding: ClientBinding, listener: (snapshot: AdmissionUsageSnapshot) => void): () => void {
+    this.#flushCaptured(binding.workspace);
     const snapshot = binding.workspace.repository.captureUsageSummary(
       binding.scope.runId, binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey,
     );
@@ -807,6 +912,7 @@ export class ExecutionAdmissionKernel {
     runId: string,
     listener: (event: AdmissionJournalEvent) => void,
   ): () => void {
+    this.#flushCaptured();
     const listeners = this.#listeners.get(runId) ?? new Set();
     listeners.add(listener);
     this.#listeners.set(runId, listeners);
@@ -838,6 +944,7 @@ export class ExecutionAdmissionKernel {
       readonly limit?: number;
     } = {},
   ): readonly AdmissionJournalEvent[] {
+    this.#flushCaptured(binding.workspace);
     return binding.workspace.repository.listJournal({
       runId: binding.scope.runId,
       ...(options.afterSequence !== undefined
@@ -1024,6 +1131,7 @@ export class ExecutionAdmissionKernel {
   }
 
   close(): void {
+    this.#flushCaptured();
     if (this.#closed) return;
     this.#closed = true;
     for (const pending of this.#pending.values()) {
@@ -1148,6 +1256,7 @@ export class ExecutionAdmissionKernel {
     runId: string,
     operation: (bindings: readonly WorkspaceBinding[]) => T,
   ): T {
+    this.#flushCaptured();
     const statePath = this.#runStatePath.get(runId)?.statePath;
     const paths = statePath === undefined ? undefined : this.#knownPaths.get(statePath);
     if (paths === undefined) return this.#withKnownBindings(operation);
@@ -1432,6 +1541,8 @@ export class ExecutionAdmissionKernel {
   #cancelActiveStep(reservationId: string, reason: string): void {
     const active = this.#active.get(reservationId);
     if (active === undefined) return;
+    try { this.#flushCaptured(active.binding); }
+    catch (error) { this.#abortActive(active, error); throw error; }
     active.binding.repository.cancelStep(active.key, { reason });
     this.#publishNewJournal(active.binding);
     this.#abortActive(active, new AdmissionDeniedError(reason, "cancelled"));
@@ -1572,6 +1683,7 @@ export class ExecutionAdmissionKernel {
         readonly reservation: PersistedAdmissionReservation;
       }
     | undefined {
+    this.#flushCaptured(this.#captured.get(reservationId)?.binding);
     const active = this.#active.get(reservationId);
     if (active !== undefined) {
       const reservation =
