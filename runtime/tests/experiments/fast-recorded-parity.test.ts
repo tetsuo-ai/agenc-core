@@ -46,11 +46,12 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
       expect(response, "replay must not request an extra model response").toBeDefined();
       return structuredClone(response!);
     };
-    const { session } = mkSession({ cwd: "/workspace", provider, registry, model: "deepseek-flash", config: { taskTokenBudget: 0 }, services: {
+    const { session } = mkSession({ cwd: "/workspace", provider, registry, model: "deepseek-flash", services: {
       sandboxExecutionBroker: explicitDangerBroker,
       runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
         dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
     } });
+    Object.assign(session.config, { taskTokenBudget: 0 });
     Object.assign(session.services, { permissionModeRegistry: new PermissionModeRegistry({
       ...session.permissionModeRegistry.current(), mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
     }) });
