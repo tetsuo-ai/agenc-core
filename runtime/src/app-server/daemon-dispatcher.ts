@@ -3039,8 +3039,8 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
     const value = validated[key];
     if (value !== undefined &&
-        (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) {
-      throw invalidParams(`agent.create param '${key}' must be a positive safe integer`);
+        (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
+      throw invalidParams(`agent.create param '${key}' must be a non-negative safe integer`);
     }
   }
   let addDirs: readonly string[] | undefined;

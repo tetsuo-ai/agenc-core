@@ -998,9 +998,9 @@ export class AgenCDaemonAgentManager {
       for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
         const value = params[key] ?? retainedMetadata?.[key];
         if (value === undefined) continue;
-        if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
           throw new AgenCDaemonAgentLifecycleError(
-            "INVALID_ARGUMENT", `agent.create ${key} must be a positive safe integer`,
+            "INVALID_ARGUMENT", `agent.create ${key} must be a non-negative safe integer`,
           );
         }
         taskBudget[key] = value;

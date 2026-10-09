@@ -46,9 +46,9 @@ export function readStartupCliFlags(
     const present = optionArgs.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
     if (!present) return undefined;
     const raw = extractFlagValue(optionArgs, flag);
-    const value = raw === null ? NaN : Number(raw);
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error(`${flag} requires a positive safe integer`);
+    const value = raw === null || raw.trim() === "" ? NaN : Number(raw);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${flag} requires a non-negative safe integer (0 disables the limit)`);
     }
     return value;
   };

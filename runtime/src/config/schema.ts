@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_TOKEN_BUDGET } from "./task-budget.js";
 // T10 Group D — AgenC config schema.
 //
 // Merges AgenC config surfaces, profile selection, and runtime additions
@@ -980,7 +981,7 @@ export interface AgenCConfig {
   readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
-  /** Per-session task allocation, disabled when omitted. Includes reasoning. */
+  /** Per-session task allocation including reasoning. Zero explicitly disables it. */
   readonly task_token_budget?: number;
   readonly task_max_calls?: number;
   readonly autonomous_mode?: boolean;
@@ -1213,6 +1214,7 @@ export function defaultConfig(): AgenCConfig {
     // `0` ends the turn as soon as the ladder is exhausted.
     provider_outage_wait_ms: DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
     provider_outage_retry_ms: DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
+    task_token_budget: DEFAULT_TASK_TOKEN_BUDGET,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` (or its documented env

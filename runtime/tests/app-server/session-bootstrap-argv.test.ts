@@ -125,11 +125,17 @@ test("round trips per-task budgets from daemon selection to session config overr
     .toEqual({ task_token_budget: 219000, task_max_calls: 17 });
 });
 
-test.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+test.each([-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
   "rejects invalid budget settings at bootstrap: %s", value => {
     for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
       expect(() => buildStructuredSessionBootstrapArgv({ [key]: value }, [EXECUTABLE, ENTRYPOINT]))
-        .toThrow(/positive safe integer/);
+        .toThrow(/non-negative safe integer/);
     }
   },
 );
+
+test("preserves explicit budget opt-outs through daemon bootstrap", () => {
+  const argv = buildStructuredSessionBootstrapArgv({ taskTokenBudget: 0, taskMaxCalls: 0 }, [EXECUTABLE, ENTRYPOINT]);
+  expect(startupConfigLayerOptions({ cli: readStartupCliFlags(argv), cwd: "/workspace" }).cliOverrides)
+    .toEqual({ task_token_budget: 0, task_max_calls: 0 });
+});

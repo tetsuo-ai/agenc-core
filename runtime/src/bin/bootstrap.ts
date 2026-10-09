@@ -1678,7 +1678,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       runId: conversationId,
       sessionId: conversationId,
       autonomous: executionAdmissionAutonomous,
-      ...(startup.config.task_token_budget !== undefined
+      ...((startup.config.task_token_budget ?? 0) > 0
         ? { maxTokens: startup.config.task_token_budget } : {}),
       ...(maxBudgetUsdFromAgenCConfig(startup.config) !== undefined
         ? { maxCostUsd: maxBudgetUsdFromAgenCConfig(startup.config) }

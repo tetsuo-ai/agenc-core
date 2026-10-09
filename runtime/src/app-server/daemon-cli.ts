@@ -4260,7 +4260,7 @@ function retainedTaskBudget(metadata: JsonObject | undefined): {
   for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
     const value = metadata?.[key];
     if (value === undefined) continue;
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
       throw new Error(`invalid retained ${key}`);
     }
     result[key] = value;

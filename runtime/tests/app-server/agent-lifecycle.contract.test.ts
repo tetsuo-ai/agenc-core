@@ -9438,10 +9438,10 @@ it("preserves CLI task budgets through RPC validation, runner startup, and durab
   await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "initialize",
     params: { protocolVersion: "1.0.0", clientName: "budget-contract-test" } });
   for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
-    for (const value of [0, -1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1, null]) {
+    for (const value of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1, null]) {
       const rejected = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 2,
         method: "agent.create", params: { cwd: process.cwd(), objective: "finish", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, [key]: value } });
-      expect(rejected).toMatchObject({ error: { code: -32602, message: `agent.create param '${key}' must be a positive safe integer` } });
+      expect(rejected).toMatchObject({ error: { code: -32602, message: `agent.create param '${key}' must be a non-negative safe integer` } });
       expect(startAgent).not.toHaveBeenCalled();
     }
   }
@@ -9452,4 +9452,18 @@ it("preserves CLI task budgets through RPC validation, runner startup, and durab
     taskTokenBudget: 219000, taskMaxCalls: 17,
     metadata: expect.objectContaining({ taskTokenBudget: 219000, taskMaxCalls: 17 }),
   }));
+});
+
+it("persists explicit zero budgets through agent creation for later restore", async () => {
+  const startAgent = vi.fn(async () => ({ agentId: "budget-off-agent", startedAt: "2026-05-01T12:00:00.500Z", status: "running" as const }));
+  const manager = new AgenCDaemonAgentManager({ runner: { startAgent } });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager });
+  const connection = dispatcher.createConnection();
+  await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "initialize", params: { protocolVersion: "1.0.0", clientName: "budget-test" } });
+  const created = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "agent.create", params: {
+    cwd: process.cwd(), objective: "finish", runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, taskTokenBudget: 0, taskMaxCalls: 0,
+  } });
+  expect(created).toMatchObject({ result: { agentId: "budget-off-agent" } });
+  expect(startAgent).toHaveBeenCalledWith(expect.objectContaining({ taskTokenBudget: 0, taskMaxCalls: 0,
+    metadata: expect.objectContaining({ taskTokenBudget: 0, taskMaxCalls: 0 }) }));
 });

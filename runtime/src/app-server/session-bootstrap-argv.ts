@@ -48,8 +48,8 @@ export function buildStructuredSessionBootstrapArgv(
     ["--task-max-calls", selection.taskMaxCalls],
   ] as const) {
     if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new TypeError(`${flag} must be a positive safe integer`);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`${flag} must be a non-negative safe integer`);
     }
     argv.push(flag, String(value));
   }

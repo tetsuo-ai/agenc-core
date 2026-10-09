@@ -949,8 +949,12 @@ Environment overrides and removed names are cataloged in [env.md](env.md).
 
 `task_token_budget` limits total model input and output tokens, including reasoning
 and cached input once. `task_max_calls` optionally limits model wire attempts.
-Both are positive integers and are disabled when omitted. CLI overrides are
-`--task-token-budget <tokens>` and `--task-max-calls <calls>`.
+The token budget defaults to 219,000 in every mode; the call limit is off unless
+configured. Both accept non-negative integers; `0` explicitly disables that
+limit. CLI overrides are
+`--task-token-budget <tokens>` and `--task-max-calls <calls>`. For example,
+`--task-token-budget 500000` raises the allowance; `--task-token-budget 0`
+disables it. To remove a configured call limit too, use `--task-max-calls 0`.
 
 The allocation belongs to the session/run, including retries and auxiliary model
 calls. Use a fresh session for each independent task. At 80% of either allocation,

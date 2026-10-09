@@ -242,3 +242,17 @@ describe("canonical aggregate bootstrap dollar cap", () => {
       .toMatchObject({ maxCostUsd: 3, usedCostUsd: 4, heldCostUsd: 0 });
   });
 });
+
+describe("default task token allocation", () => {
+  it("binds the default task token ceiling to the canonical runtime and admission scope", async () => {
+    const boot = await bootstrap("");
+    expect(boot.session.config.taskTokenBudget).toBe(219000);
+    expect(boot.client.scope.maxTokens).toBe(219000);
+  });
+  it("removes the token ceiling with zero while retaining a separate dollar cap", async () => {
+    const boot = await bootstrap("task_token_budget = 0\nmax_budget_usd = 3");
+    expect(boot.session.config.taskTokenBudget).toBe(0);
+    expect(boot.client.scope.maxTokens).toBeUndefined();
+    expect(boot.client.scope.hasHardCostCap).toBe(true);
+  });
+});

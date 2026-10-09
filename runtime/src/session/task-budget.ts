@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_TOKEN_BUDGET } from "../config/task-budget.js";
 import type { LLMMessage, LLMResponse, LLMUsage } from "../llm/types.js";
 import type { Session } from "./session.js";
 
@@ -62,18 +63,23 @@ export class TaskBudget {
   summary(lastContent: string): string {
     return ["Partial result: stopped at the task budget.",
       `Recorded allocation usage: ${this.tokens} tokens, ${this.calls} model calls.`,
+      `Limits: ${this.limit ?? "unlimited"} tokens, ${this.maxCalls ?? "unlimited"} model calls.`,
       lastContent.trim().slice(0, 4000) || "No assistant findings were recorded.",
-      "Work may be incomplete. Only checks explicitly reported as passing are verified."].join("\n\n");
+      "Work may be incomplete. Only checks explicitly reported as passing are verified.",
+      "To allow more work, start a new session with --task-token-budget <tokens> or set task_token_budget in config. Use 0 to disable the token limit. If a call limit was set, raise --task-max-calls <calls> (task_max_calls in config), or use 0 to disable it."].join("\n\n");
   }
 }
 
 const budgets = new WeakMap<Session, TaskBudget>();
 export function taskBudgetOf(session: Session): TaskBudget | undefined {
   const config = session.config;
-  if (config?.taskTokenBudget === undefined && config?.taskMaxCalls === undefined) return undefined;
+  const configuredTokens = config?.taskTokenBudget ?? DEFAULT_TASK_TOKEN_BUDGET;
+  const limit = configuredTokens === 0 ? undefined : configuredTokens;
+  const maxCalls = config?.taskMaxCalls === 0 ? undefined : config?.taskMaxCalls;
+  if (limit === undefined && maxCalls === undefined) return undefined;
   let budget = budgets.get(session);
   if (!budget) {
-    budget = new TaskBudget(config.taskTokenBudget, config.taskMaxCalls);
+    budget = new TaskBudget(limit, maxCalls);
     budgets.set(session, budget);
   }
   const usage = session.services.executionAdmission?.getUsageSummary?.();
