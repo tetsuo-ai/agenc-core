@@ -46,7 +46,7 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
       expect(response, "replay must not request an extra model response").toBeDefined();
       return structuredClone(response!);
     };
-    const { session } = mkSession({ cwd: "/workspace", provider, registry, model: "deepseek-flash", services: {
+    const { session } = mkSession({ cwd: "/workspace", provider, registry, model: "deepseek-flash", config: { taskTokenBudget: 0 }, services: {
       sandboxExecutionBroker: explicitDangerBroker,
       runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true, nonInteractive: true,
         dangerouslyBypassApprovalsAndSandbox: true, relaxedOneShot: true }),
@@ -56,7 +56,8 @@ for (const fixture of fixtures) test(`recorded ${fixture.source} has byte-identi
     }) });
     const ctx = mkCtx({ cwd: "/workspace", permissionMode: "bypassPermissions", sandboxPolicy: { value: "danger_full_access" },
       modelInfo: { ...mkCtx().modelInfo, contextWindow: 1_048_576, maxOutputTokens: 8192 },
-      config: { ...mkCtx().config, bypassFastMode: fast } });
+      // Replay the complete recorded trace; task-budget stopping has separate coverage.
+      config: { ...mkCtx().config, taskTokenBudget: 0, bypassFastMode: fast } });
     await drain(runTurn(session, ctx, fixture.user, { systemPrompt: fixture.system, history: fixture.history,
       exactOutput: true }));
     expect(bodies).toHaveLength(fixture.responses.length);
