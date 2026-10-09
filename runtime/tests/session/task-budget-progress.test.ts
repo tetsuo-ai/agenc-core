@@ -56,3 +56,16 @@ test("explicit token optout remains off and independent call cap remains binding
 test("registration cannot relax a smaller configured cap", () => {
   const f = fixture(); expect(() => createTaskBudgetProgress(f.raw, 99)).toThrow();
 });
+test("one experimental session cannot dispatch concurrent attempts beyond the initial allowance", async () => {
+  const f = fixture(); const budget = new TaskBudget(200, undefined, createTaskBudgetProgress(f.raw, 200));
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const first = budget.invoke(60, async () => {
+    calls++; await held;
+    return { content: "", toolCalls: [], model: "test", finishReason: "stop",
+      usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60, availability: "reported" } };
+  });
+  await expect(budget.invoke(60, async () => { calls++; throw new Error("must not dispatch"); })).rejects.toThrow("Task budget reached");
+  expect(calls).toBe(1); release(); await first; expect(budget.tokens).toBe(60);
+});
