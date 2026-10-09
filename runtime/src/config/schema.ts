@@ -928,6 +928,8 @@ export interface AgenCConfig {
   readonly alwaysThinkingEnabled?: boolean;
   readonly swarmMode?: boolean;
   readonly fastMode?: boolean;
+  /** Defer bypass-session persistence until request send; false keeps synchronous boundaries. */
+  readonly bypassFastMode?: boolean;
   readonly promptSuggestionEnabled?: boolean;
   readonly pluginConfigs?: Readonly<Record<string, PluginPreferenceConfig>>;
   readonly autoUpdatesChannel?: "latest" | "stable";
@@ -1082,6 +1084,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "alwaysThinkingEnabled",
   "swarmMode",
   "fastMode",
+  "bypassFastMode",
   "promptSuggestionEnabled",
   "pluginConfigs",
   "autoUpdatesChannel",
@@ -3173,6 +3176,7 @@ const OPERATOR_BOOLEAN_FIELDS = Object.freeze([
   "alwaysThinkingEnabled",
   "swarmMode",
   "fastMode",
+  "bypassFastMode",
   "promptSuggestionEnabled",
   "prefersReducedMotion",
   "autoMemoryEnabled",

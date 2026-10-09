@@ -589,6 +589,46 @@ describe("exec_command tool", () => {
     expect(execCommand).not.toHaveBeenCalled();
   });
 
+  test("retains MCP placeholder boundaries through the ordinary-command precheck", async () => {
+    const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+      async () => completedExecOutput("ran"),
+    );
+    const tool = createExecCommandTool({
+      cwd: root,
+      allowedPaths: [root],
+      unifiedExecManager: {
+        maxTimeoutMs: 30_000,
+        execCommand,
+        writeStdin: vi.fn(async () => completedExecOutput("")),
+        closeAll: vi.fn(async () => {}),
+      },
+    });
+    for (const cmd of [
+      "  mcp.audit-ping.ping()  ",
+      'printf "ATTEMPTING DIRECT McP CALL"',
+      'printf "DiReCt\\tCaLl\\tSiMuLaTiOn"'.replaceAll("\\t", "\t"),
+      'printf "direct MCP call simulation"',
+      'printf "MCP stand-in"',
+      'printf "direct mcp.audit-ping.ping"',
+    ]) {
+      const result = await tool.execute({ cmd, workdir: root });
+      expect(result.isError, cmd).toBe(true);
+      expect(result.content, cmd).toMatch(/MCP tools are not shell commands|Do not simulate MCP results/u);
+    }
+    expect(execCommand).not.toHaveBeenCalled();
+    for (const cmd of [
+      "printf ordinary-command",
+      'printf "MCP documentation"',
+      'printf "direct call simulations"',
+      'printf "indirect call simulation"',
+      'printf "mcpish placeholder"',
+    ]) {
+      const result = await tool.execute({ cmd, workdir: root });
+      expect(result.isError, cmd).not.toBe(true);
+    }
+    expect(execCommand).toHaveBeenCalledTimes(5);
+  });
+
   test("returns AgenC-style visible exit status for failed commands", async () => {
     const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
       async () => failedExecOutput("compiler failed\n", 2),

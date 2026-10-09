@@ -4487,7 +4487,7 @@ export async function* runAgent(
     const admission = workerAdmission === undefined ? undefined : new Proxy(workerAdmission, {
       get(_target, property) {
         if (property === "release") return releaseWorkerAdmission;
-        const current = property === "getUsageSummary" || property === "subscribeUsage"
+        const current = property === "getUsageSummary" || property === "subscribeUsage" || property === "subscribeUsageSnapshot"
           ? workerAdmission! : taskAdmission ?? workerAdmission!;
         const member: unknown = Reflect.get(current, property, current);
         return typeof member === "function" ? member.bind(current) : member;

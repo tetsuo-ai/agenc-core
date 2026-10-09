@@ -14,6 +14,7 @@ import {
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 import { MISTRAL_MODEL_CATALOG, resolveMistralChatModel } from "./mistral-models.js";
 import { BEDROCK_CONVERSE_MODELS } from "./bedrock-converse-models.js";
 import { GROQ_MODELS } from "./groq-models.js";
@@ -1735,7 +1736,24 @@ export function listRegisteredModelCatalogEntries(
   );
 }
 
+const fastCatalogEntries = new Map<string, RegisteredModelCatalogEntry | undefined>();
+
 export function resolveRegisteredModelCatalogEntry(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+}): RegisteredModelCatalogEntry | undefined {
+  if (!oneShotFastModeActive()) return resolveRegisteredModelCatalogEntryUncached(input);
+  // This resolver reads only the bundled immutable catalog and these two
+  // route fields. Config capability overrides are applied by its callers.
+  const key = JSON.stringify([input.provider ?? null, input.model ?? null]);
+  if (fastCatalogEntries.has(key)) return fastCatalogEntries.get(key);
+  const entry = resolveRegisteredModelCatalogEntryUncached(input);
+  if (fastCatalogEntries.size >= 64) fastCatalogEntries.clear();
+  fastCatalogEntries.set(key, entry);
+  return entry;
+}
+
+function resolveRegisteredModelCatalogEntryUncached(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;
 }): RegisteredModelCatalogEntry | undefined {

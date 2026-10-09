@@ -475,6 +475,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly bypassFastMode?: boolean;
   readonly reasoningCapPolicy?: "off" | "streak2";
   readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;

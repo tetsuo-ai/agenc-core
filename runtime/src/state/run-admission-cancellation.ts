@@ -42,7 +42,7 @@ export function reconcileAdmissionAndRunTree(
   },
 ): AtomicAdmissionReconcileReport {
   return withCancellationOperation(driver, (operation) =>
-    driver.transactionImmediate(() => {
+    admissions.runWriteTransaction(driver, () => {
       const reservation = admissions.getReservation(options.reservationId);
       const admission = admissions.reconcileInCancellationOperation(
         operation,
@@ -87,7 +87,7 @@ export function cancelRunTreeAndAdmission(
   },
 ): AtomicRunAdmissionCancellationReport {
   return withCancellationOperation(driver, (operation) =>
-    driver.transactionImmediate(() => {
+    admissions.runWriteTransaction(driver, () => {
       const hasAgentRun =
         driver
           .prepareState<[string], { readonly found: number }>(

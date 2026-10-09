@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionWriteBehindQueue } from "../../src/session/write-behind.js";
 import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
@@ -30,6 +31,32 @@ afterEach(() => {
 });
 
 describe("shutdownSessionLifecycle", () => {
+  it("reports a queued persistence failure after attempting the remaining shutdown steps", async () => {
+    const session = stubSession();
+    const queue = new SessionWriteBehindQueue();
+    Object.assign(session, { writeBehind: queue });
+    const failure = new Error("journal flush failed");
+    queue.beginStep();
+    queue.defer("failed-append", () => { throw failure; });
+    session.shutdown = vi.fn(async () => queue.finish());
+    const mcp = { stop: vi.fn(async () => {}) };
+    await expect(shutdownSessionLifecycle({ session, mcpManager: mcp as any })).rejects.toBe(failure);
+    expect(mcp.stop).toHaveBeenCalledOnce();
+    expect(queue.pending).toBe(1);
+  });
+
+  it("drains queued persistence even when the outer shutdown budget expires", async () => {
+    const session = stubSession();
+    const queue = new SessionWriteBehindQueue();
+    Object.assign(session, { writeBehind: queue });
+    const committed = vi.fn();
+    queue.beginStep();
+    queue.defer("append", committed);
+    await shutdownSessionLifecycle({ session, shutdownBudgetMs: 0, skipMemoryExtractionDrain: true });
+    expect(committed).toHaveBeenCalledOnce();
+    expect(queue.deferring).toBe(false);
+  });
+
   it("aborts the session controller first (I-7 quiesce)", async () => {
     const session = stubSession();
     await shutdownSessionLifecycle({ session });

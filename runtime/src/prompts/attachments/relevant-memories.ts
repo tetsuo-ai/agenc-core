@@ -1,8 +1,10 @@
 import { Buffer } from "node:buffer";
 import { isAbsolute, join, normalize, sep } from "node:path";
+import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 
 import {
   findRelevantMemories,
+  getMemorySearchPathsForHome,
   formatRelevantMemoryHeader,
   buildProjectMemoryDirectory,
   getGlobalMemoryPath,
@@ -136,6 +138,7 @@ function selectRecallMode(
  */
 function durableMemorySearchDirs(agencHome: string | undefined): string[] {
   if (agencHome === undefined || agencHome.trim().length === 0) return [];
+  if (oneShotFastModeActive()) return getMemorySearchPathsForHome(agencHome);
   // The shared resolvers read the ambient memory base. When the request names
   // that same base they are the right answer, because they also carry the
   // trusted overrides (a Cowork path override, an `autoMemoryDirectory`

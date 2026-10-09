@@ -1,3 +1,5 @@
+import { currentSessionWriteBehind } from "../session/write-behind.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { endpointMetadataFailureHandler } from "./endpoint-metadata-cache.js";
 /**
  * Turn-scoped provider HTTP session.
@@ -1348,6 +1350,7 @@ export class ProviderHttpClientSession {
     attempt: number,
     responseReceived: boolean,
   ): Promise<void> {
+    currentSessionWriteBehind()?.assertHealthy();
     if (isFallbackTriggeredError(error)) throw error;
     if (error instanceof ProviderHttpError) {
       maybeEmitCapabilityDriftWarning(this.config, error);
@@ -1415,6 +1418,7 @@ export class ProviderHttpClientSession {
       body = JSON.stringify(options.body);
     }
 
+    currentSessionWriteBehind()?.assertHealthy();
     const fetchImpl = this.config.fetchImpl ?? fetch;
     const fail = endpointMetadataFailureHandler(this.config.providerName);
     try {
@@ -1425,8 +1429,18 @@ export class ProviderHttpClientSession {
         signal,
       }, fetchImpl);
       if (!response.ok) fail();
+      if (method === "POST" && !(oneShotFastModeActive() && currentSessionWriteBehind()?.oneShotBuffering)) {
+        // The previous tool step is complete. New model-stream events must
+        // publish immediately instead of joining that step's loss window.
+        try { currentSessionWriteBehind()?.finish(); }
+        catch (error) {
+          await response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
+      }
       return response;
     } catch (error) {
+      currentSessionWriteBehind()?.finish();
       fail();
       throw error;
     }

@@ -1634,6 +1634,7 @@ describe("process-tree root safety", () => {
       expect(normalizeCSource(mainImplementation)).toBe(
         normalizeCSource(`
           int main(int argc, char **argv) {
+            if (argc == 2 && strcmp(argv[1], "--one-shot-server-v1") == 0) return run_one_shot_server();
             sigset_t wait_mask;
             int root_status = AGENC_BROKER_EMPTY_WAIT_STATUS;
 

@@ -11,6 +11,7 @@ import type {
   AdmissionRecoveryReport,
   AdmissionUsage,
   AdmissionUsageSummary,
+  AdmissionUsageSnapshot,
   AdmissionUsageTotals,
   PersistedAdmissionRecord,
   PersistedAdmissionStatus,
@@ -32,10 +33,13 @@ import {
   type CancellationOperation,
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
-import type { StateSqliteDriver } from "./sqlite-driver.js";
+import type { StateSqliteDriver, SqliteStatement } from "./sqlite-driver.js";
+import { AdmissionUsageProjection, captureMaterializedUsage, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
 const MAX_LIST_LIMIT = 1_000;
+const MAX_USAGE_PROJECTION_RESERVATIONS = 10_000;
+const MAX_USAGE_PROJECTIONS = 128;
 const MAX_ALLOCATION_ANCESTOR_WALK = 64;
 
 const FINAL_RESERVATION_STATUSES = new Set([
@@ -401,6 +405,18 @@ const JOB_COLUMNS = `
   admission_reason, admission_reservation_id
 `;
 
+/** Actual uncapped decisions captured by the live kernel before dispatch.
+ * The final batch persists those decisions; it does not admit work again.
+ */
+export interface CapturedUncappedAdmission {
+  readonly request: RuntimeAdmissionRequest;
+  readonly jobId: string;
+  readonly reservation: BudgetReservation;
+  readonly admittedAt: string;
+  dispatch?: MarkAdmissionDispatchedOptions;
+  settlement?: { readonly input: AdmissionReconcileInput; readonly at: string };
+}
+
 /**
  * SQLite repository for M3 execution admission.
  *
@@ -414,6 +430,146 @@ export class ExecutionAdmissionRepository {
   readonly #id: () => string;
   readonly #ownerId: string;
   readonly #ownerPid: number;
+  /**
+   * Journal events appended inside the open outermost write transaction, and
+   * those this connection has committed but the publisher has not taken yet.
+   * They let the kernel publish its own commits without reading them back.
+   */
+  #openJournal: AdmissionJournalEvent[] = [];
+  #committedJournal: AdmissionJournalEvent[] = [];
+  /** False once a journal row may have been written or committed outside these buffers. */
+  #journalBufferExact = true;
+  #writeDepth = 0;
+  #writeRevision = 0;
+  #policyRevisionStatement?: SqliteStatement<[], { data_version: number; changes: number }>;
+  #uncappedPolicyMemo?: { runId: string; budgetIdentity: string; day: string; revision: string };
+  #capturedAdmission: CapturedUncappedAdmission | undefined;
+  #capturedTimestamp: string | undefined;
+  readonly #capturedProofs = new WeakSet<CapturedUncappedAdmission>();
+
+  /** SQLite read snapshot is the initial uncapped policy decision's linearization point.
+   * Retained period allocations, children, deadlines and existing steps use
+   * ordinary atomic admission. No speculative claim is allowed under a cap.
+   * Later steps can reuse that policy only across unchanged live revisions;
+   * the fresh step lookup and revision comparison linearize each reuse.
+   */
+  captureUncappedModel(raw: RuntimeAdmissionRequest): CapturedUncappedAdmission | undefined {
+    const request = normalizeAdmissionRequest(raw);
+    if (request.kind !== "model_turn" || request.step.parentRunId !== undefined ||
+        request.deadlineAt !== undefined || request.denialReason !== undefined ||
+        request.approvalRequired || request.budgetScopes?.length !== 1) return;
+    const scope = request.budgetScopes[0]!;
+    if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
+        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;
+    const admittedAt = this.#timestamp();
+    const day = admittedAt.slice(0, 10);
+    const budgetIdentity = budgetIdentityForRequest(request);
+    // Never publish/reuse a memo inside a caller's transaction: a rollback
+    // does not increment total_changes and could otherwise retain uncommitted
+    // policy after that transaction ends.
+    const revision = this.#driver.state.inTransaction ? undefined : this.uncappedPolicyRevision;
+    const memo = this.#uncappedPolicyMemo;
+    if (revision !== undefined && memo?.revision === revision &&
+        memo.runId === request.step.runId && memo.budgetIdentity === budgetIdentity && memo.day === day) {
+      const existing = this.#jobByStepLocked(request.step.runId, request.step.stepId);
+      if (revision === this.uncappedPolicyRevision) {
+        return existing ? undefined : this.#createCapturedGrant(request, admittedAt);
+      }
+    }
+    this.#uncappedPolicyMemo = undefined;
+    const captured = this.#driver.transaction(() => {
+      if (this.#jobByStepLocked(request.step.runId, request.step.stepId) || this.#ancestorDenial(request)) return;
+      const scopes = this.#effectiveBudgetScopesLocked(request, admittedAt);
+      if (scopes.length !== 1) return;
+      const allocation = this.#allocationLocked(scope.key);
+      if (allocation && (allocation.parent_scope_key !== null || allocation.max_tokens !== null ||
+          allocation.max_cost_nanos !== null || allocation.blocked_by_provider_overrun)) return;
+      return this.#createCapturedGrant(request, admittedAt);
+    });
+    if (captured && revision !== undefined && revision === this.uncappedPolicyRevision) {
+      this.#uncappedPolicyMemo = { runId: request.step.runId, budgetIdentity, day, revision };
+    }
+    return captured;
+  }
+
+  #createCapturedGrant(request: RuntimeAdmissionRequest, admittedAt: string): CapturedUncappedAdmission {
+    const record: CapturedUncappedAdmission = { request, jobId: this.#id(), admittedAt,
+      reservation: { reservationId: this.#id(), step: request.step, reservedAt: admittedAt,
+        reservedCostUsd: request.estimate.maxCostUsd ?? 0,
+        reservedTokens: checkedTokenSum(request.estimate.maxInputTokens, request.estimate.maxOutputTokens) } };
+    // The lease exposes this grant to its caller. Keep its captured identity
+    // and policy immutable until final persistence, just as durable rows
+    // cannot be rewritten by mutating an ordinary returned lease.
+    Object.freeze(request.step);
+    Object.freeze(request.estimate);
+    for (const budget of request.budgetScopes ?? []) Object.freeze(budget);
+    if (request.budgetScopes) Object.freeze(request.budgetScopes);
+    Object.freeze(request);
+    Object.freeze(record.reservation);
+    this.#capturedProofs.add(record);
+    return record;
+  }
+
+  get uncappedPolicyRevision(): string {
+    // data_version sees other connections, but not writes made by another
+    // repository sharing this connection. total_changes covers those writes
+    // (including rolled-back writes, which conservatively force promotion).
+    // Use the raw connection so checking freshness does not itself drain the
+    // captured batch through the canonical-reader barrier.
+    const statement = this.#policyRevisionStatement ??= this.#driver.state.prepare<[], { data_version: number; changes: number }>(
+      "SELECT data_version, total_changes() AS changes FROM pragma_data_version",
+    );
+    const row = statement.get()!;
+    return `${row.data_version}:${row.changes}:${this.#writeRevision}`;
+  }
+
+  /** Validate settlement identically before the live slot can be released. */
+  normalizeCapturedUsage(usage: AdmissionUsage): AdmissionUsage {
+    return { ...normalizeUsage(usage), ...(usage.costEstimated ? { costEstimated: true } : {}) };
+  }
+
+  normalizeCapturedDispatch(evidence: MarkAdmissionDispatchedOptions): MarkAdmissionDispatchedOptions {
+    const dispatchedAt = normalizeTimestamp(evidence.dispatchedAt ?? this.#timestamp(), "dispatchedAt");
+    const providerRequestId = evidence.providerRequestId === undefined ? undefined
+      : requireNonEmpty(evidence.providerRequestId, "providerRequestId");
+    // Validate what the eventual journal must serialize before crossing wire.
+    const details = evidence.details === undefined ? undefined : JSON.parse(JSON.stringify(evidence.details));
+    return { dispatchedAt, ...(providerRequestId !== undefined ? { providerRequestId } : {}),
+      ...(details !== undefined ? { details } : {}) };
+  }
+
+  persistCapturedUncapped(records: readonly CapturedUncappedAdmission[]): void {
+    if (this.#capturedAdmission) throw new Error("nested captured admission batch");
+    try {
+      this.#writeTransaction(() => {
+        for (const record of records) {
+          if (!this.#capturedProofs.has(record)) throw new Error("unowned captured admission");
+          this.#capturedAdmission = record;
+          this.#capturedTimestamp = record.admittedAt;
+          const attempt = this.enqueue(record.request, { ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true });
+          if (attempt.record.jobId !== record.jobId) throw new Error("captured admission step identity conflict");
+          const claimed = this.claim({ key: attempt.record.key, ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true, now: record.admittedAt });
+          if (claimed.kind !== "claimed" || claimed.lease.reservation.reservationId !== record.reservation.reservationId) {
+            throw new Error("captured admission reservation identity conflict");
+          }
+          if (record.dispatch) {
+            this.#capturedTimestamp = record.dispatch.dispatchedAt;
+            this.markDispatched(record.reservation.reservationId, record.dispatch);
+          }
+          if (record.settlement) {
+            this.#capturedTimestamp = record.settlement.at;
+            this.reconcile(record.reservation.reservationId, record.settlement.input, { at: record.settlement.at });
+          }
+        }
+      });
+    } finally { this.#capturedAdmission = undefined; this.#capturedTimestamp = undefined; }
+  }
+
+  readonly #usageViews = new Map<string, {
+    readonly projection: AdmissionUsageProjection;
+    readonly dirty: Set<string>;
+  }>();
+  #usageDatabaseVersion: string | undefined;
 
   constructor(
     driver: StateSqliteDriver,
@@ -480,7 +636,7 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : normalizeTimestamp(proposed, "bindRunDeadline.proposed");
     const at = this.#timestamp();
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#driver
         .prepareState<[string], { readonly deadline_at: string | null }>(
           `SELECT deadline_at FROM execution_admission_run_limits
@@ -538,7 +694,7 @@ export class ExecutionAdmissionRepository {
     const proposedCalls = scope.maxModelCalls === undefined ? undefined
       : normalizeNonNegativeInteger(scope.maxModelCalls, `${key}.maxModelCalls`);
     const now = this.#timestamp();
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#allocationLocked(key);
       if (
         existing !== undefined &&
@@ -615,7 +771,7 @@ export class ExecutionAdmissionRepository {
     const ownerPid = normalizeOwnerPid(options.ownerPid ?? this.#ownerPid);
     const attached = options.attached === true;
 
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const existing = this.#jobByStepLocked(
         request.step.runId,
         request.step.stepId,
@@ -633,7 +789,7 @@ export class ExecutionAdmissionRepository {
       let status: PersistedAdmissionStatus = "queued";
       let event: AdmissionJournalEvent["event"] = "queued";
       let reason: string | undefined;
-      const ancestorDenial = this.#ancestorDenial(request)?.reason;
+      const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         status = "denied";
         event = "denied";
@@ -655,7 +811,7 @@ export class ExecutionAdmissionRepository {
         reason = "approval_required";
       }
 
-      const jobId = this.#id();
+      const jobId = this.#capturedAdmission?.jobId ?? this.#id();
       const maxCostNanos =
         request.estimate.maxCostUsd === null
           ? null
@@ -739,7 +895,7 @@ export class ExecutionAdmissionRepository {
     const ownerPid = normalizeOwnerPid(options.ownerPid ?? this.#ownerPid);
     const attached = options.attached === true;
 
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row =
         options.key === undefined
           ? this.#nextQueuedJobLocked(now)
@@ -775,7 +931,7 @@ export class ExecutionAdmissionRepository {
       }
 
       const request = parseRequest(row.input_json);
-      const ancestorDenial = this.#ancestorDenial(request)?.reason;
+      const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         const denied = this.#finishUnclaimedJobLocked(
           row,
@@ -833,7 +989,7 @@ export class ExecutionAdmissionRepository {
         };
       }
 
-      const reservationId = this.#id();
+      const reservationId = this.#capturedAdmission?.reservation.reservationId ?? this.#id();
       const attempt = row.admission_attempts + 1;
       const persistedCostNanos = reservedCostNanos ?? 0;
       this.#driver
@@ -945,7 +1101,7 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : normalizeTimestamp(options.dispatchedAt, "dispatchedAt");
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() => {
+      this.#writeTransaction(() => {
         // Sample the repository clock only after BEGIN IMMEDIATE has acquired the
         // writer lock. Time spent waiting behind another writer cannot become a
         // loophole that dispatches work after its deadline.
@@ -959,7 +1115,7 @@ export class ExecutionAdmissionRepository {
         const job = this.#requireJobByIdLocked(reservation.job_id);
         const request = parseRequest(job.input_json);
         if (reservation.status === "reserved") {
-          const ancestorDenial = this.#ancestorDenial(request)?.reason;
+          const ancestorDenial = this.#capturedAdmission ? undefined : this.#ancestorDenial(request)?.reason;
           const stopReason =
             ancestorDenial ??
             (request.deadlineAt !== undefined &&
@@ -1056,7 +1212,7 @@ export class ExecutionAdmissionRepository {
       "reconcile.at",
     );
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() =>
+      this.#writeTransaction(() =>
         this.#resolveReservationLocked(reservationId, input, at, operation),
       ),
     );
@@ -1128,7 +1284,7 @@ export class ExecutionAdmissionRepository {
       "cancel.cancelledAt",
     );
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() =>
+      this.#writeTransaction(() =>
         this.#cancelRunLocked(runId, options.reason, at, operation),
       ),
     );
@@ -1185,7 +1341,7 @@ export class ExecutionAdmissionRepository {
       options.cancelledAt ?? this.#timestamp(),
       "cancelStep.cancelledAt",
     );
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       if (row === undefined) return undefined;
       this.#cancelJobLocked(row, options.reason, at);
@@ -1203,7 +1359,7 @@ export class ExecutionAdmissionRepository {
       options.at ?? this.#timestamp(),
       "recordFallback.at",
     );
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       if (row === undefined) return undefined;
       const request = parseRequest(row.input_json);
@@ -1242,7 +1398,7 @@ export class ExecutionAdmissionRepository {
     );
     const activeOwners = options.activeOwnerIds ?? new Set<string>();
     return withCancellationOperation(this.#driver, (operation) =>
-      this.#driver.transactionImmediate(() => {
+      this.#writeTransaction(() => {
         const requeuedJobIds: string[] = [];
         const heldUnknownReservationIds: string[] = [];
         const cancelledExpiredJobIds: string[] = [];
@@ -1441,7 +1597,7 @@ export class ExecutionAdmissionRepository {
 
   get(key: string): PersistedAdmissionRecord | undefined {
     requireNonEmpty(key, "admission key");
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#jobByKeyLocked(key);
       return row === undefined ? undefined : this.#recordFromRowLocked(row);
     });
@@ -1501,7 +1657,7 @@ export class ExecutionAdmissionRepository {
     reservationId: string,
   ): PersistedAdmissionReservation | undefined {
     requireNonEmpty(reservationId, "reservationId");
-    return this.#driver.transactionImmediate(() => {
+    return this.#writeTransaction(() => {
       const row = this.#reservationLocked(reservationId);
       return row === undefined ? undefined : reservationFromRow(row);
     });
@@ -1681,6 +1837,58 @@ export class ExecutionAdmissionRepository {
     });
   }
 
+  /** Capture numeric usage state now; build the observation at its FIFO slot. */
+  captureUsageSummary(runId: string, allocationKey: string): AdmissionUsageSnapshot {
+    requireNonEmpty(runId, "runId");
+    requireNonEmpty(allocationKey, "allocationKey");
+    return this.#driver.transaction(() => {
+      const version = this.#usageVersion();
+      if (version !== this.#usageDatabaseVersion) this.#usageViews.clear();
+      this.#usageDatabaseVersion = version;
+      const key = JSON.stringify([runId, allocationKey]);
+      let view = this.#usageViews.get(key);
+      const select = `SELECT reservation.* FROM execution_admission_reservations AS reservation
+        JOIN execution_admission_reservation_allocations AS allocation
+        ON allocation.reservation_id = reservation.reservation_id
+        WHERE allocation.scope_key = ? AND reservation.status != 'voided'`;
+      if (view === undefined) {
+        view = { projection: new AdmissionUsageProjection(), dirty: new Set() };
+        const rows = this.#driver.prepareState<[string], UsageReservation>(`${select} LIMIT ${MAX_USAGE_PROJECTION_RESERVATIONS + 1}`).all(allocationKey);
+        if (rows.length > MAX_USAGE_PROJECTION_RESERVATIONS) return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+        for (const row of rows) {
+          view.projection.update(row.reservation_id, row);
+        }
+        if (this.#usageViews.size >= MAX_USAGE_PROJECTIONS) this.#usageViews.delete(this.#usageViews.keys().next().value!);
+        this.#usageViews.set(key, view);
+      } else {
+        for (const id of view.dirty) {
+          const row = this.#driver.prepareState<[string, string], UsageReservation>(`${select} AND reservation.reservation_id = ?`).get(allocationKey, id);
+          view.projection.update(id, row);
+        }
+        view.dirty.clear();
+        if (view.projection.size > MAX_USAGE_PROJECTION_RESERVATIONS) {
+          this.#usageViews.delete(key);
+          return captureMaterializedUsage(this.getUsageSummary(runId, allocationKey));
+        }
+      }
+      const sequence = this.#driver.prepareState<[], { sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      ).get()?.sequence ?? 0;
+      return view.projection.capture(runId, sequence);
+    });
+  }
+
+  releaseUsageSnapshot(runId: string, allocationKey: string): void {
+    this.#usageViews.delete(JSON.stringify([runId, allocationKey]));
+  }
+
+  #usageVersion(): string {
+    // These inspect SQLite connection metadata, never a deferred projection.
+    const external = this.#driver.state.pragma("data_version", { simple: true });
+    const changes = this.#driver.state.prepare<[], { count: number }>("SELECT total_changes() AS count").get()?.count;
+    return `${external}:${changes}`;
+  }
+
   /** Read a consistent budget snapshot without creating or reserving a scope. */
   getRemainingCostUsd(scopes: readonly AdmissionBudgetScope[]): number | undefined {
     return this.#driver.transaction(() => {
@@ -1751,6 +1959,107 @@ export class ExecutionAdmissionRepository {
     return row === undefined ? undefined : journalFromRow(row);
   }
 
+  /**
+   * Count of write transactions this repository committed as the outermost
+   * transaction. Usage can change between two publications only if it moved.
+   */
+  get writeRevision(): number {
+    return this.#writeRevision;
+  }
+
+  /**
+   * Journal events after `afterSequence`, served from this connection's own
+   * commits when they are exactly the rows the table holds after that
+   * sequence: contiguous from `afterSequence + 1` to the table's maximum.
+   * Returns undefined when that cannot be shown (another writer, a bulk
+   * insert, a rollback or nesting this repository cannot observe); the caller
+   * then reads the table, which remains the authority. Taking always clears
+   * the buffer, so a failed projection falls back to the table on its retry.
+   */
+  takeCommittedJournal(
+    afterSequence: number,
+  ): readonly AdmissionJournalEvent[] | undefined {
+    const committed = this.#committedJournal;
+    const exact = this.#journalBufferExact && this.#writeDepth === 0 &&
+      this.#openJournal.length === 0 && !this.#driver.state.inTransaction;
+    this.#committedJournal = [];
+    this.#journalBufferExact = true;
+    if (!exact) return undefined;
+    let expected = afterSequence;
+    const events: AdmissionJournalEvent[] = [];
+    for (const event of committed) {
+      if (event.sequence <= afterSequence) continue;
+      if (event.sequence !== expected + 1) return undefined;
+      expected = event.sequence;
+      events.push(event);
+    }
+    // A single autocommit read of the primary-key maximum; no write lock.
+    const maximum = this.#driver
+      .prepareState<[], { readonly sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_admission_journal",
+      )
+      .get()?.sequence ?? 0;
+    return maximum === expected ? events : undefined;
+  }
+
+  /**
+   * Run a caller's composite write transaction (the `*InCancellationOperation`
+   * seams). On this repository's own connection the journal rows appended
+   * inside are tracked like any other write of this repository; any other
+   * connection runs exactly as `driver.transactionImmediate`.
+   */
+  runWriteTransaction<T>(driver: StateSqliteDriver, operation: () => T): T {
+    return driver === this.#driver
+      ? this.#writeTransaction(operation)
+      : driver.transactionImmediate(operation);
+  }
+
+  #writeTransaction<T>(operation: () => T): T {
+    const outermost = this.#writeDepth === 0;
+    let usageVersionBefore: string | undefined;
+    // Nested inside a transaction this repository did not open: whether its
+    // rows commit is not observable here, so the buffer cannot be trusted.
+    if (outermost && this.#driver.state.inTransaction) this.#journalBufferExact = false;
+    const mark = this.#openJournal.length;
+    this.#writeDepth += 1;
+    let result: T;
+    try {
+      result = this.#driver.transactionImmediate(() => {
+        if (outermost && this.#usageViews.size > 0) {
+          usageVersionBefore = this.#usageVersion();
+          if (this.#usageDatabaseVersion !== usageVersionBefore) this.#usageViews.clear();
+        }
+        return operation();
+      });
+    } catch (error) {
+      // The transaction or savepoint rolled back with these rows.
+      this.#openJournal.length = mark;
+      this.#usageViews.clear();
+      throw error;
+    } finally {
+      this.#writeDepth -= 1;
+    }
+    if (outermost) {
+      this.#writeRevision += 1;
+      if (!this.#journalBufferExact || this.#driver.state.inTransaction) this.#usageViews.clear();
+      for (const view of this.#usageViews.values()) {
+        for (const event of this.#openJournal) {
+          if (event.reservationId !== undefined) view.dirty.add(event.reservationId);
+        }
+      }
+      if (this.#usageViews.size > 0) {
+        const versionAfter = this.#usageVersion();
+        // Another connection may commit just after our write lock releases.
+        // Never credit that writer's change to our own incremental deltas.
+        if (usageVersionBefore?.split(":")[0] !== versionAfter.split(":")[0]) this.#usageViews.clear();
+        this.#usageDatabaseVersion = versionAfter;
+      }
+      for (const event of this.#openJournal) this.#committedJournal.push(event);
+      this.#openJournal = [];
+    }
+    return result;
+  }
+
   listJournal(
     options: ListAdmissionJournalOptions = {},
   ): readonly AdmissionJournalEvent[] {
@@ -1785,7 +2094,7 @@ export class ExecutionAdmissionRepository {
   }
 
   #timestamp(): string {
-    return this.#now().toISOString();
+    return this.#capturedTimestamp ?? this.#now().toISOString();
   }
 
   #jobByStepLocked(runId: string, stepId: string): AgentJobRow | undefined {
@@ -1964,6 +2273,7 @@ export class ExecutionAdmissionRepository {
       this.#ensureAllocationLocked(request.step.runId, scope, now);
     }
     const closure = this.#allocationClosureLocked(scopes);
+    if (this.#capturedAdmission) return null;
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
         return { reason: "allocation_blocked" };
@@ -2032,6 +2342,7 @@ export class ExecutionAdmissionRepository {
     now: string,
   ): readonly AdmissionBudgetScope[] {
     const scopes = [...(request.budgetScopes ?? [])];
+    if (this.#capturedAdmission) return scopes;
     const seen = new Set(scopes.map((scope) => scope.key));
     const day = now.slice(0, 10);
     const month = day.slice(0, 7);
@@ -2243,7 +2554,7 @@ export class ExecutionAdmissionRepository {
       // Reservations estimate provider usage even when budgets are disabled.
       // Only an explicitly capped allocation makes that estimate a hard limit.
       // Read the durable links, including inherited and retained period caps.
-      const hasHardBudgetCap = this.#driver
+      const hasHardBudgetCap = !this.#capturedAdmission && this.#driver
         .prepareState<[string], { readonly capped: number }>(
           `SELECT 1 AS capped
            FROM execution_admission_reservation_allocations AS link
@@ -2797,6 +3108,8 @@ export class ExecutionAdmissionRepository {
     at: string,
   ): void {
     const membership = cancellationSetMembershipSql("job.admission_run_id");
+    // These rows are inserted by SQL, not #appendJournalLocked.
+    this.#journalBufferExact = false;
     this.#driver
       .prepareState<unknown[]>(
         `WITH target_jobs AS (
@@ -3038,6 +3351,7 @@ export class ExecutionAdmissionRepository {
 
   #appendJournalLocked(input: JournalInsert): AdmissionJournalEvent {
     const eventId = this.#id();
+    const detailsJson = JSON.stringify({ ...(input.request.costEstimated ? { costEstimated: true } : {}), ...input.details });
     const result = this.#driver
       .prepareState(
         `INSERT INTO execution_admission_journal (
@@ -3062,19 +3376,25 @@ export class ExecutionAdmissionRepository {
         input.reservedCostNanos ?? null,
         input.actualTokens ?? null,
         input.actualCostNanos ?? null,
-        JSON.stringify({ ...(input.request.costEstimated ? { costEstimated: true } : {}), ...input.details }),
+        detailsJson,
       );
     const sequence = Number(result.lastInsertRowid);
-    const row = this.#driver
-      .prepareState<[number], JournalRow>(
-        `SELECT * FROM execution_admission_journal WHERE sequence = ?`,
-      )
-      .get(sequence);
+    // The row SQLite stored is exactly the bound values when every value is a
+    // string, null or safe integer; otherwise read the stored row back.
+    const row = insertedJournalRow(sequence, eventId, input, detailsJson) ??
+      this.#driver
+        .prepareState<[number], JournalRow>(
+          `SELECT * FROM execution_admission_journal WHERE sequence = ?`,
+        )
+        .get(sequence);
     if (row === undefined) {
       throw new ExecutionAdmissionStateError(
         `admission journal event could not be read back: ${eventId}`,
       );
     }
+    if (this.#writeDepth === 0) this.#journalBufferExact = false;
+    // A separate object for the publisher: callers own the returned one.
+    this.#openJournal.push(journalFromRow(row));
     return journalFromRow(row);
   }
 }
@@ -3479,6 +3799,56 @@ function journalFromRow(row: JournalRow): AdmissionJournalEvent {
       : {}),
     ...(row.actual_tokens !== null ? { actualTokens: row.actual_tokens } : {}),
     ...(Object.keys(details).length > 0 ? { details } : {}),
+  };
+}
+
+/**
+ * The row an INSERT of these values stores, or undefined when SQLite type
+ * affinity could store something else (a non-integer number in an INTEGER
+ * column, or a non-string in a TEXT column).
+ */
+function insertedJournalRow(
+  sequence: number,
+  eventId: string,
+  input: JournalInsert,
+  detailsJson: string,
+): JournalRow | undefined {
+  const integer = (value: unknown): boolean =>
+    value === undefined || value === null || Number.isSafeInteger(value);
+  const text = (value: unknown): boolean => typeof value === "string";
+  const optionalText = (value: unknown): boolean =>
+    value === undefined || value === null || typeof value === "string";
+  if (
+    !Number.isSafeInteger(sequence) || sequence <= 0 ||
+    !text(eventId) || !text(input.timestamp) || !text(detailsJson) ||
+    !text(input.request.step.runId) || !text(input.request.step.stepId) ||
+    !text(input.request.kind) || !text(input.event) ||
+    !optionalText(input.jobId) || !optionalText(input.reservationId) ||
+    !optionalText(input.reason) || !optionalText(input.request.model) ||
+    !optionalText(input.request.provider) ||
+    !integer(input.reservedTokens) || !integer(input.reservedCostNanos) ||
+    !integer(input.actualTokens) || !integer(input.actualCostNanos)
+  ) {
+    return undefined;
+  }
+  return {
+    sequence,
+    event_id: eventId,
+    timestamp: input.timestamp,
+    job_id: input.jobId ?? null,
+    reservation_id: input.reservationId ?? null,
+    run_id: input.request.step.runId,
+    step_id: input.request.step.stepId,
+    kind: input.request.kind,
+    event: input.event,
+    reason: input.reason ?? null,
+    model: input.request.model ?? null,
+    provider: input.request.provider ?? null,
+    reserved_tokens: input.reservedTokens ?? null,
+    reserved_cost_nanos: input.reservedCostNanos ?? null,
+    actual_tokens: input.actualTokens ?? null,
+    actual_cost_nanos: input.actualCostNanos ?? null,
+    details_json: detailsJson,
   };
 }
 

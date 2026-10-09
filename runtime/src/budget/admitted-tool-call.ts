@@ -1,3 +1,4 @@
+import { oneShotFastModeActive, requiresAtomicSpendAdmission } from "../one-shot-fast-mode.js";
 /** Shared M3 boundary for approved tool effects. */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -307,6 +308,7 @@ function appendEffectIntent(params: {
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
   readonly recoveryCategory: ToolRecoveryCategory;
+  readonly recordedAt?: string;
 }): EffectJournalContext {
   const intentIdentity = {
     version: 1,
@@ -341,7 +343,7 @@ function appendEffectIntent(params: {
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     intentDigest,
     attempt: params.attempt,
-    recordedAt: new Date().toISOString(),
+    recordedAt: params.recordedAt ?? new Date().toISOString(),
   };
   const commit = appendEffectEvent(params.session, {
     type: "effect_intent",
@@ -359,6 +361,7 @@ function appendEffectResult(
   context: EffectJournalContext,
   options: {
     readonly outcome: EffectResultEvent["outcome"];
+    readonly recordedAt?: string;
     readonly effectBoundary?: EffectBoundary;
     readonly noEffectEvidence?: EffectNoEffectProof;
     readonly result?: ToolDispatchResult;
@@ -393,7 +396,7 @@ function appendEffectResult(
         }
       : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
-    recordedAt: new Date().toISOString(),
+    recordedAt: options.recordedAt ?? new Date().toISOString(),
   };
   hitM4DurabilityFailpoint("before_tool_ack_commit");
   const commit = appendEffectEvent(session, { type: "effect_result", payload });
@@ -405,6 +408,7 @@ function appendEffectUnknownOutcome(
   session: Session,
   context: EffectJournalContext,
   options: {
+    readonly recordedAt?: string;
     readonly reason: string;
     readonly callerStop?: "timeout" | "abort";
     readonly callerStoppedAt?: string;
@@ -435,7 +439,7 @@ function appendEffectUnknownOutcome(
     ...(options.reservationId !== undefined
       ? { reservationId: options.reservationId }
       : {}),
-    recordedAt: new Date().toISOString(),
+    recordedAt: options.recordedAt ?? new Date().toISOString(),
   };
   hitM4DurabilityFailpoint("before_tool_ack_commit");
   const commit = appendEffectEvent(session, {
@@ -765,6 +769,51 @@ function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
   };
 }
 
+interface BufferedOneShotEffect {
+  readonly params: AdmittedToolCallOptions;
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly crossed: boolean;
+  readonly result?: ToolDispatchResult;
+}
+const oneShotEffects = new WeakMap<Session, BufferedOneShotEffect[]>();
+
+/** Publish actual observed boundaries at the terminal/handoff boundary, never rerun an effect. */
+export function flushOneShotEffectJournal(session: Session): void {
+  const pending = oneShotEffects.get(session);
+  if (!pending) return;
+  for (const effect of pending) {
+    const { params, result } = effect;
+    const category = recoveryCategory(params.tool);
+    const journal = appendEffectIntent({ session,
+      runId: session.services.executionAdmission?.scope.runId ?? session.conversationId,
+      stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
+      attempt: 1, callId: params.callId, tool: params.tool, args: params.args,
+      recoveryCategory: category, recordedAt: effect.startedAt });
+    const disposition = validateToolEffectDispositionEvidence(result?.effectDisposition);
+    const unknown = effect.crossed && (result === undefined ||
+      disposition?.disposition === "remains_unknown" ||
+      (category !== "idempotent" && result.isError === true &&
+        disposition?.disposition !== "confirmed_committed" && disposition?.disposition !== "confirmed_no_effect"));
+    if (unknown) {
+      requireEffectProjection(appendEffectUnknownOutcome(session, journal, {
+        reason: "one_shot_observed_unknown_outcome", recordedAt: effect.completedAt }));
+    } else {
+      const noEffect = !effect.crossed || disposition?.disposition === "confirmed_no_effect";
+      requireEffectProjection(appendEffectResult(session, journal, {
+        outcome: noEffect || result?.isError === true ? "failed" : "committed",
+        effectBoundary: effect.crossed ? "crossed" : "not_crossed",
+        ...(noEffect ? { noEffectEvidence: effect.crossed && disposition
+          ? dispositionNoEffectProof(disposition, effect.completedAt) : noEffectProof(journal, effect.completedAt) } : {}),
+        ...(result ? { result } : {}),
+        recordedAt: effect.completedAt,
+        evidence: { observation: "one_shot_terminal_flush", persistedAfterExecution: true },
+      }));
+    }
+  }
+  oneShotEffects.delete(session);
+}
+
 /**
  * Run an admitted tool while keeping caller completion separate from physical
  * settlement. A timeout/abort may stop the caller, but it never fabricates a
@@ -773,6 +822,35 @@ function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
 export async function runAdmittedToolCall(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
+  if (oneShotFastModeActive() && !requiresAtomicSpendAdmission(params.session)) {
+    const category = recoveryCategory(params.tool);
+    assertNoLiveUnknownEffect(params.session, category);
+    const startedAt = new Date().toISOString();
+    // JSON arguments are owned by this invocation; retain their pre-effect
+    // values without capturing the non-enumerable runtime capabilities.
+    const captured = { ...params, args: structuredClone(params.args) };
+    let crossed = false;
+    let result: ToolDispatchResult | undefined;
+    const dispatch = createDispatchContext(params.signal, () => { crossed = true; });
+    try { result = await params.invoke(dispatch.context); return result; }
+    finally {
+      const pending = oneShotEffects.get(params.session) ?? [];
+      pending.push({ params: captured, startedAt, completedAt: new Date().toISOString(), crossed, result });
+      oneShotEffects.set(params.session, pending);
+      const disposition = validateToolEffectDispositionEvidence(result?.effectDisposition);
+      if (crossed && category !== "idempotent" && (result === undefined ||
+          disposition?.disposition === "remains_unknown" ||
+          (result.isError === true && disposition?.disposition !== "confirmed_committed" &&
+            disposition?.disposition !== "confirmed_no_effect"))) {
+        poisonLiveEffect(params.session, {
+          runId: params.session.services.executionAdmission?.scope.runId ?? params.session.conversationId,
+          stepId: `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`,
+          callId: params.callId, toolName: params.tool.name, recoveryCategory: category,
+        });
+      }
+      dispatch.cleanup();
+    }
+  }
   const category = recoveryCategory(params.tool);
   assertNoLiveUnknownEffect(params.session, category);
   params.session.rolloutStore?.assertToolAdmissionAllowed(category);

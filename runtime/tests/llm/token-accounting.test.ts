@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createDeferredTextToolResultIntegrity, createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -729,6 +730,35 @@ describe("native count selection, identity, and caching", () => {
     expect(countTokens).toHaveBeenCalledTimes(1);
   });
 
+  test("does not consume durable integrity while counting or snapshotting provider input", async () => {
+    const params = { runId: "run", toolCallId: "call", content: "tool output" };
+    const integrity = createDeferredTextToolResultIntegrity(params);
+    const original = vi.spyOn(integrity, "original", "get");
+    const persisted = vi.spyOn(integrity, "persisted", "get");
+    const resultId = vi.spyOn(integrity, "resultId", "get");
+    const messages: LLMMessage[] = [
+      { role: "assistant", content: "", toolCalls: [{ id: "call", name: "lookup", arguments: "{}" }] },
+      { role: "tool", toolCallId: "call", content: params.content, runtimeOnly: { mergeBoundary: true } },
+    ];
+    const plain = accountingRequest("unused", { messages: structuredClone(messages) });
+    messages[1]!.runtimeOnly = { ...messages[1]!.runtimeOnly, toolResultIntegrity: integrity };
+    const request = accountingRequest("unused", { messages });
+    expect(estimateTokenAccountingRequest(request)).toEqual(estimateTokenAccountingRequest(plain));
+    const counter = vi.fn(async (captured: TokenAccountingRequest) => {
+      expect(captured.messages[1]!.runtimeOnly).toEqual({ mergeBoundary: true });
+      return completeCount(20);
+    });
+    const service = new TokenAccountingService(), native = capability(counter);
+    await service.count(request, { capability: native });
+    expect((await service.count(plain, { capability: native })).cacheStatus).toBe("hit");
+    expect(counter).toHaveBeenCalledTimes(1);
+    expect(original).not.toHaveBeenCalled();
+    expect(persisted).not.toHaveBeenCalled();
+    expect(resultId).not.toHaveBeenCalled();
+    expect(messages[1]!.runtimeOnly!.toolResultIntegrity).toBe(integrity);
+    expect(JSON.stringify(integrity)).toBe(JSON.stringify(createToolResultIntegrity(params)));
+  });
+
   test("keeps reused private snapshots equivalent to fresh caller values", async () => {
     let snapshot: TokenAccountingRequest | undefined;
     const service = new TokenAccountingService();
@@ -751,6 +781,61 @@ describe("native count selection, identity, and caching", () => {
     const changed = { ...snapshot!, reservedOutputTokens: 65 };
     await expect(service.count(changed, { capability: countCapability }))
       .resolves.toMatchObject({ cacheStatus: "miss", reservedOutputTokens: 65 });
+  });
+
+  test("preserves prototype-named schema fields and recursively freezes only the snapshot", async () => {
+    const parameters = JSON.parse('{"__proto__":{"type":"string"},"constructor":{"enum":[null,0,false]},"properties":{"z":{"type":"number"},"a":{"type":"string"}}}');
+    const tool = { ...TOOL, function: { ...TOOL.function, parameters } };
+    let snapshot: TokenAccountingRequest | undefined;
+    const service = new TokenAccountingService();
+    await service.count(accountingRequest("hello", { options: { tools: [tool] } }), {
+      capability: capability(async (request) => { snapshot = request; return completeCount(20); }),
+    });
+    const captured = snapshot!.options.tools![0]!.function.parameters as Record<string, unknown>;
+    expect(Object.hasOwn(captured, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(captured)).toBe(Object.prototype);
+    expect(captured).toEqual(parameters);
+    const checkFrozen = (value: unknown): void => {
+      if (value === null || typeof value !== "object") return;
+      expect(Object.isFrozen(value)).toBe(true);
+      for (const child of Object.values(value)) checkFrozen(child);
+    };
+    checkFrozen(captured);
+    expect(Object.isFrozen(parameters)).toBe(false);
+    parameters.properties.a.type = "boolean";
+    expect(captured).not.toEqual(parameters);
+    expect(estimateTokenAccountingRequest(snapshot!)).toEqual(
+      estimateTokenAccountingRequest(accountingRequest("hello", {
+        options: { tools: [structuredClone(snapshot!.options.tools![0]!)] },
+      })),
+    );
+  });
+
+  test("keeps local and failed native counts identical for canonical prompt subtrees", async () => {
+    const parameters = JSON.parse('{"properties":{"z":{"enum":[null,false,0,"λ"]},"__proto__":{"type":"string"},"a":{"type":"number"}},"type":"object"}');
+    const request = accountingRequest("combining e\u0301 / λ", {
+      options: {
+        tools: [{ ...TOOL, function: { ...TOOL.function, parameters } }],
+        systemPrompt: "unicode \u212b",
+        toolChoice: { type: "function", function: { name: "lookup" } },
+      },
+    });
+    const expected = estimateTokenAccountingRequest(request);
+    const unavailable = capability(async () => { throw new Error("counter unavailable"); });
+    expect(await new TokenAccountingService().count(request)).toEqual(expected);
+    expect(await new TokenAccountingService().count(request, { capability: unavailable })).toEqual(expected);
+    // Cache identity still normalizes object-key order and changes with content.
+    const countTokens = vi.fn(async () => completeCount(20));
+    const counter = capability(countTokens);
+    const service = new TokenAccountingService();
+    await service.count(request, { capability: counter });
+    const reordered = structuredClone(request);
+    const properties = parameters.properties;
+    reordered.options.tools![0]!.function.parameters = { type: "object", properties: { a: properties.a, ["__proto__"]: properties.__proto__, z: properties.z } };
+    await expect(service.count(reordered, { capability: counter })).resolves.toMatchObject({ cacheStatus: "hit" });
+    reordered.options.tools![0]!.function.parameters = { type: "boolean" };
+    await expect(service.count(reordered, { capability: counter })).resolves.toMatchObject({ cacheStatus: "miss" });
+    expect(countTokens).toHaveBeenCalledTimes(2);
   });
 
   test("does not trust caller freezes or freeze their mutable descendants", () => {

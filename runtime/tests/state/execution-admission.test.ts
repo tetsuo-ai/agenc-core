@@ -52,6 +52,67 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
+it("invalidates captured policy revisions for writes from a repository sharing the connection", () => {
+  const before = admissions.uncappedPolicyRevision;
+  const other = new ExecutionAdmissionRepository(driver);
+  other.bindRunDeadline("root", "2026-10-09T01:00:00Z");
+  expect(admissions.uncappedPolicyRevision).not.toBe(before);
+  const committed = admissions.uncappedPolicyRevision;
+  expect(admissions.uncappedPolicyRevision).toBe(committed);
+  const externalDriver = openStateDatabases({ cwd, agencHome: home });
+  try {
+    new ExecutionAdmissionRepository(externalDriver).bindRunDeadline("root", "2026-10-09T00:00:00Z");
+    expect(admissions.uncappedPolicyRevision).not.toBe(committed);
+  } finally { externalDriver.close(); }
+});
+
+it.each([false, true])("rechecks memoized uncapped policy after a cap changes (external=%s)", external => {
+  const capture = (step: string) => admissions.captureUncappedModel(request("root", step, { scopes: [{ key: "run:root" }] }));
+  expect(capture("one")).toBeDefined();
+  expect(capture("two")).toBeDefined();
+  const writer = external ? openStateDatabases({ cwd, agencHome: home }) : driver;
+  try {
+    new ExecutionAdmissionRepository(writer).bindRunBudgetLimits("root", { key: "run:root", maxTokens: 0 });
+    expect(capture("three")).toBeUndefined();
+  } finally { if (external) writer.close(); }
+});
+
+it("does not reuse a policy captured inside a rolled-back transaction", () => {
+  admissions.bindRunBudgetLimits("root", { key: "run:root", maxTokens: 0 });
+  const capture = (step: string) => admissions.captureUncappedModel(request("root", step, { scopes: [{ key: "run:root" }] }));
+  expect(() => driver.transaction(() => {
+    driver.state.prepare("UPDATE execution_admission_allocations SET max_tokens = NULL WHERE scope_key = 'run:root'").run();
+    expect(capture("uncommitted")).toBeDefined();
+    throw new Error("rollback policy");
+  })).toThrow("rollback policy");
+  expect(capture("after-rollback")).toBeUndefined();
+});
+
+it("keeps existing-step checks live when an uncapped policy can be reused", () => {
+  const input = (step: string) => request("root", step, { scopes: [{ key: "run:root" }] });
+  admissions.enqueue(input("existing"));
+  expect(admissions.captureUncappedModel(input("one"))).toBeDefined();
+  expect(admissions.captureUncappedModel(input("two"))).toBeDefined();
+  expect(admissions.captureUncappedModel(input("existing"))).toBeUndefined();
+});
+
+it("binds uncapped policy reuse to its run, budget identity and UTC day", () => {
+  // These allocations already exist before the memo is populated, so only
+  // changing the request/date can reveal them; no revision invalidation helps.
+  admissions.bindRunBudgetLimits("capped", { key: "run:capped", maxTokens: 0 });
+  admissions.bindRunBudgetLimits("retained", { key: "period:agent:other:day:2026-07-18", maxTokens: 0 });
+  admissions.bindRunBudgetLimits("retained", { key: "period:agent:root:day:2026-07-19", maxTokens: 0 });
+  const input = (step: string) => request("root", step, { scopes: [{ key: "run:root" }] });
+  expect(admissions.captureUncappedModel(input("one"))).toBeDefined();
+  expect(admissions.captureUncappedModel(input("two"))).toBeDefined();
+  expect(admissions.captureUncappedModel(request("capped", "one", { scopes: [{ key: "run:capped" }] }))).toBeUndefined();
+  expect(admissions.captureUncappedModel(input("three"))).toBeDefined();
+  expect(admissions.captureUncappedModel({ ...input("other-budget"), budgetIdentity: "other" })).toBeUndefined();
+  expect(admissions.captureUncappedModel(input("four"))).toBeDefined();
+  now = new Date("2026-07-19T00:00:00Z");
+  expect(admissions.captureUncappedModel(input("next-day"))).toBeUndefined();
+});
+
 function request(
   runId: string,
   stepId: string,

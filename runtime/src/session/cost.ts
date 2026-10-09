@@ -1499,7 +1499,23 @@ function isModelOrDatedSnapshot(candidate: string, model: string): boolean {
 /**
  * Normalize model slug to a canonical key present in the registry.
  */
+let lastCanonicalModelInput: string | undefined;
+let lastCanonicalModelResult: string;
+
 function canonicalModel(model: string): string {
+  if (model === lastCanonicalModelInput) return lastCanonicalModelResult;
+  const result = canonicalModelUncached(model);
+  // Only this pure slug normalization is reused. Provider and live registry
+  // lookups still run on every reservation/settlement, including price edits.
+  // One bounded entry avoids retaining arbitrary model identities indefinitely.
+  if (model.length <= 256) {
+    lastCanonicalModelInput = model;
+    lastCanonicalModelResult = result;
+  }
+  return result;
+}
+
+function canonicalModelUncached(model: string): string {
   const normalized = model.trim().toLowerCase();
   if (normalized.startsWith("ollama:")) return "ollama";
   if (normalized.startsWith("lmstudio:")) return "lmstudio";

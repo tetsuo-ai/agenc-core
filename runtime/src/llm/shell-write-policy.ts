@@ -151,6 +151,8 @@ export interface ShellWorkspaceWritePolicyInput {
   readonly allowWorkspaceDeletions?: boolean;
   /** Extra roots (the AgenC home) that a shell command may never remove. */
   readonly protectedRoots?: readonly string[];
+  /** Resolve current protected roots only when the command has mutation targets. */
+  readonly resolveProtectedRoots?: () => readonly string[];
   /**
    * Directories the user added with `--add-dir` or approved during the
    * session. A shell command may remove or move files under them the way it
@@ -3008,7 +3010,10 @@ export function classifyShellWorkspaceWritePolicy(
     }
   }
 
-  const protectedRoots = params.protectedRoots ?? [];
+  const hasMutationTargets = writes.length > 0 || removals.length > 0 ||
+    collected.expandingTargets.length > 0 || collected.expandingDeletions.length > 0;
+  const protectedRoots = params.protectedRoots ??
+    (hasMutationTargets ? params.resolveProtectedRoots?.() : undefined) ?? [];
   // A protected path stays refused under a generated root and outside the workspace.
   const protectedTargets = writes.filter((target) =>
     isProtectedWriteTarget(target, workspaceRoot, protectedRoots),

@@ -150,6 +150,7 @@ import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 
 import { summarizeAgenCShutdown } from "../lifecycle/shutdown-message.js";
+import { finishAllSessionWriteBehind } from "../session/write-behind.js";
 
 import type { AgenCSignalProcess } from "../lifecycle/signal-handlers.js";
 
@@ -1095,6 +1096,10 @@ async function runAgenCDaemonForegroundLocked(
         return voided;
       },
     });
+    // Cleanup runs in reverse registration order: stop producers, attempt
+    // snapshots, finish every remaining session queue, then close state.
+    // A failed individual session must not strand another session's jobs.
+    cleanup.register("daemon-session-persistence", () => finishAllSessionWriteBehind());
     cleanup.register("daemon-snapshots", async () => {
       await agentManager.flushSnapshots("daemon_shutdown");
     });
