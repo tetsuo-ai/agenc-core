@@ -1448,7 +1448,10 @@ static int server_command(char *data, uint32_t length) {
   for (;;) {
     if (requested_signal != 0) goto finish;
     if (!done) {
-      if (reap_until_blocked(&status, &done)) goto finish;
+      int reaped = reap_until_blocked(&status, &done);
+      /* Once reaped, the old PID can be reused outside our owned tree. */
+      if (done) root_pid = AGENC_BROKER_INVALID_ROOT_PID;
+      if (reaped) goto finish;
       if (done) {
         if (observe_residual_descendants(&residual) || force_cleanup_descendants()) goto finish;
         close(in[1]); in[1] = -1;
