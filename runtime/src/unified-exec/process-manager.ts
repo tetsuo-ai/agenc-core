@@ -1584,12 +1584,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
-    if (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false) {
+    if (this.sessionSandboxes.size > 0 &&
+        (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false)) {
       const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
-      if (previousSandbox) await previousSandbox.close();
-      this.sessionSandboxes.delete(params.ownerId ?? "");
-      this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
-      this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+      if (previousSandbox) {
+        await previousSandbox.close();
+        this.sessionSandboxes.delete(params.ownerId ?? "");
+        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+      }
     }
 
     if (params.tty) {

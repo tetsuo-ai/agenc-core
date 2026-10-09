@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { SessionSandbox } from "../../src/sandbox/linux-launcher/session-sandbox.js";
+import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import * as supervised from "../../src/utils/supervisedProcess.js";
 import { permissionProfileFromRuntimePermissions, restrictedFileSystemPolicy } from "../../src/sandbox/engine/index.js";
 import type { UnifiedExecRuntimeSandbox } from "../../src/unified-exec/types.js";
@@ -27,6 +28,30 @@ function run(cmd = namespace, extra: Record<string, unknown> = {}) {
   return manager.execCommand({ cmd, login: false, runtimeSandbox: policy, yield_time_ms: 1000, ...extra });
 }
 describe.runIf(process.platform === "linux")("persistent unified exec lifecycle", () => {
+  it("keeps fresh bypass commands on the subreaper without session sandbox activity", async () => {
+    const sandboxSpawn = vi.spyOn(SessionSandbox.prototype, "spawn");
+    const sandboxClose = vi.spyOn(SessionSandbox.prototype, "close");
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
+    for (let i = 0; i < 2; i++) {
+      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined }));
+      expect(result.stdout).toBe("bypass");
+      expect(result.exitCode).toBe(0);
+    }
+    expect(sandboxSpawn).not.toHaveBeenCalled();
+    expect(sandboxClose).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(2);
+    for (const call of launch.mock.calls) expect(call[2].linuxContainment).toBe("subreaper");
+  });
+  it("drains a previous sandbox once when switching to bypass", async () => {
+    const sandboxClose = vi.spyOn(SessionSandbox.prototype, "close");
+    await run("true");
+    for (let i = 0; i < 2; i++) {
+      const result = await withOneShotFastMode(() => run("printf bypass", { runtimeSandbox: undefined }));
+      expect(result.stdout).toBe("bypass");
+      expect(result.exitCode).toBe(0);
+    }
+    expect(sandboxClose).toHaveBeenCalledTimes(1);
+  });
   it("uses one namespace by default and keeps the config opt-out on the original launcher", async () => {
     const spawn = vi.spyOn(SessionSandbox.prototype, "spawn");
     const launch = vi.spyOn(supervised, "spawnContainedProcess");
