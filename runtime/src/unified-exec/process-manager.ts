@@ -1,3 +1,4 @@
+import { OneShotProcessServer, OneShotProcessServerCleanupError } from "./one-shot-process-server.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
@@ -551,6 +552,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly oneShotServers = new Map<string, OneShotProcessServer>();
+  private oneShotServerFor(ownerId?: string): OneShotProcessServer {
+    const key = ownerId ?? "";
+    let server = this.oneShotServers.get(key);
+    if (!server) { server = new OneShotProcessServer(); this.oneShotServers.set(key, server); }
+    return server;
+  }
   private readonly sessionSandboxes = new Map<string, SessionSandbox>();
   // Retain failed startup admission across policy drains, Stop and opt-out.
   // Only closing the owner lifetime (or disposing this manager) resets it.
@@ -566,11 +574,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     return sandbox;
   }
   private async closeSessionSandboxes(): Promise<void> {
-    const entries = [...this.sessionSandboxes.entries()];
-    const outcomes = await Promise.allSettled(entries.map(async ([key, sandbox]) => {
-      await sandbox.close();
-      if (this.sessionSandboxes.get(key) === sandbox) this.sessionSandboxes.delete(key);
-    }));
+    const outcomes = await Promise.allSettled([this.sessionSandboxes, this.oneShotServers].flatMap(map =>
+      [...map.entries()].map(async ([key, server]) => {
+        await server.close();
+        if (map.get(key) === server) map.delete(key);
+      })));
     const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
     if (failures.length) throw new AggregateError(failures, "session sandbox cleanup is unproven");
   }
@@ -1316,6 +1324,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
       const outcomes = await Promise.allSettled([
         Promise.resolve().then(async () => {
+          await this.oneShotServers.get(lifetime.ownerId)?.close();
+          this.oneShotServers.delete(lifetime.ownerId);
           await this.sessionSandboxes.get(lifetime.ownerId)?.close();
           this.sessionSandboxes.delete(lifetime.ownerId);
         }),
@@ -1647,14 +1657,24 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     let probeHint: ReturnType<typeof prepareLinuxSandboxProbeHint>;
     let child: ChildProcessWithoutNullStreams;
     try {
-      const persistent = params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
+      const validateAdmission = (): void => {
+        this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+        this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+        abortController.signal.throwIfAborted();
+      };
+      const oneShot = oneShotFastModeActive() && params.runtimeSandbox === undefined
+        ? await this.oneShotServerFor(params.ownerId).spawn({ program: params.program,
+            args: params.args, cwd: params.cwd, env: params.env,
+            argv0: params.argv0 ?? basename(params.program) }, validateAdmission, params.signal)
+        : undefined;
+      const persistent = oneShot ?? (params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
         params.runtimeSandbox.persistentSession !== false
         ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
             cwd: params.cwd, env: params.env }, () => {
             this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
             this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
             abortController.signal.throwIfAborted();
-          }, params.signal) : undefined;
+          }, params.signal) : undefined);
       if (persistent === undefined && params.runtimeSandbox !== undefined)
         probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
       child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
@@ -1678,7 +1698,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         } : {}),
       });
     } catch (error) {
-      if (error instanceof SessionSandboxCleanupError) this.poisonSandboxAuthority(error);
+      if ((error instanceof SessionSandboxCleanupError || error instanceof OneShotProcessServerCleanupError)) this.poisonSandboxAuthority(error);
       probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir

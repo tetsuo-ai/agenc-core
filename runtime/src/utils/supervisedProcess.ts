@@ -1184,7 +1184,7 @@ function settleLinuxSubreaperStatus(boundary: LinuxSubreaperBoundary, eof = fals
   boundary.closed = boundary.processClosed;
 }
 
-function resolveLinuxSubreaperBroker(): string {
+export function resolveLinuxSubreaperBroker(): string {
   if (compiledLinuxSubreaperBroker !== undefined) {
     return compiledLinuxSubreaperBroker;
   }

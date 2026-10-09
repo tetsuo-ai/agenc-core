@@ -39,7 +39,7 @@ describe.runIf(process.platform === "linux")("persistent unified exec lifecycle"
     }
     expect(sandboxSpawn).not.toHaveBeenCalled();
     expect(sandboxClose).not.toHaveBeenCalled();
-    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch).toHaveBeenCalledTimes(1);
     for (const call of launch.mock.calls) expect(call[2].linuxContainment).toBe("subreaper");
   });
   it("drains a previous sandbox once when switching to bypass", async () => {
