@@ -33,7 +33,7 @@ import {
   type CancellationOperation,
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
-import type { StateSqliteDriver } from "./sqlite-driver.js";
+import type { StateSqliteDriver, SqliteStatement } from "./sqlite-driver.js";
 import { AdmissionUsageProjection, captureMaterializedUsage, type UsageReservation } from "./admission-usage-snapshot.js";
 
 export const NANO_USD_PER_USD = 1_000_000_000;
@@ -439,6 +439,7 @@ export class ExecutionAdmissionRepository {
   #journalBufferExact = true;
   #writeDepth = 0;
   #writeRevision = 0;
+  #policyRevisionStatement?: SqliteStatement<[], { data_version: number; changes: number }>;
   #capturedAdmission: CapturedUncappedAdmission | undefined;
   #capturedTimestamp: string | undefined;
   readonly #capturedProofs = new WeakSet<CapturedUncappedAdmission>();
@@ -478,9 +479,10 @@ export class ExecutionAdmissionRepository {
     // (including rolled-back writes, which conservatively force promotion).
     // Use the raw connection so checking freshness does not itself drain the
     // captured batch through the canonical-reader barrier.
-    const row = this.#driver.state.prepare(
+    const statement = this.#policyRevisionStatement ??= this.#driver.state.prepare<[], { data_version: number; changes: number }>(
       "SELECT data_version, total_changes() AS changes FROM pragma_data_version",
-    ).get() as { data_version: number; changes: number };
+    );
+    const row = statement.get()!;
     return `${row.data_version}:${row.changes}:${this.#writeRevision}`;
   }
 
