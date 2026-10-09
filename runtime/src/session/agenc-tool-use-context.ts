@@ -161,6 +161,18 @@ export function toAgenCModelContext(ctx: TurnContext): AgenCModelContext {
   };
 }
 
+/** Query microcompaction is a pure projection and needs no tool execution state.
+ * Keep live model and role-workspace validation at every sampling boundary.
+ */
+export function buildAgenCQueryProjectionContext(session: Session, ctx: TurnContext): {
+  readonly options: Pick<AgenCToolUseContext["options"], "contextWindowTokens">;
+} {
+  const model = toAgenCModelContext(ctx);
+  const surface = readSessionSurface(session);
+  resolveAgentDefinitionsForContext(session, surface, surface.getAppState?.());
+  return { options: { contextWindowTokens: model.contextWindowTokens } };
+}
+
 /**
  * The controller a turn's tool-use context descends from: the running task of
  * this turn when the session has one, so a cancel of the turn reaches every

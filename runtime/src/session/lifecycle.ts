@@ -72,10 +72,23 @@ export interface SessionLifecycleOpts {
  *
  * The whole teardown is bounded by `shutdownBudgetMs`. Any step that exceeds
  * the budget attempts a best-effort warning and moves on. Once the canonical
- * journal is sealed, that diagnostic may be dropped but teardown still cannot
- * reject or hang.
+ * journal is sealed, that diagnostic may be dropped. Persistence failure is
+ * still fatal and is reported after the remaining cleanup has been attempted.
  */
 export async function shutdownSessionLifecycle(
+  opts: SessionLifecycleOpts,
+): Promise<void> {
+  try {
+    await shutdownSessionLifecycleInner(opts);
+  } finally {
+    // The bounded best-effort steps below must not swallow a failed journal
+    // flush or skip it when their budget expires. This also closes the queue
+    // before returning to a daemon's outer shutdown orchestration.
+    opts.session.writeBehind?.finish();
+  }
+}
+
+async function shutdownSessionLifecycleInner(
   opts: SessionLifecycleOpts,
 ): Promise<void> {
   const budgetMs =

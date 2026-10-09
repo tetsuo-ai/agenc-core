@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 
 import {
   MAX_RELEVANT_MEMORIES,
@@ -258,7 +259,11 @@ async function tryFullCorpusRanking(
       (entry) => entry !== null && !entry.hasIndexableMemory,
     )
   ) {
-    return null;
+    // The bounded snapshot already visited every entry and found no recall
+    // candidates. Do not bind and enumerate the same empty roots again.
+    // Recompute the snapshot on every request so newly written memories are
+    // visible immediately; uncertain snapshots still take the verified scan.
+    return oneShotFastModeActive() ? [] : null;
   }
   const snapshot = snapshots.every((entry) => entry !== null)
     ? JSON.stringify(snapshots.map((entry) => entry.signature))
@@ -409,7 +414,15 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
       const path = pending.pop()!;
       let stats;
       try {
-        stats = lstatSync(path, { bigint: true });
+        stats = oneShotFastModeActive()
+          ? lstatSync(path, { bigint: true, throwIfNoEntry: false })
+          : lstatSync(path, { bigint: true });
+        if (stats === undefined) {
+          // A fresh missing-root observation is sufficient; avoid allocating
+          // an ENOENT stack on every request. A disappearing child remains an
+          // uncertain snapshot and uses the ordinary verified scan.
+          return path === root ? { signature: "missing", hasIndexableMemory: false } : null;
+        }
       } catch (error) {
         if (path === root && isMissingPath(error)) {
           return { signature: "missing", hasIndexableMemory: false };

@@ -109,6 +109,15 @@ export interface AdmissionUsageSummary extends AdmissionUsageTotals {
   })[];
 }
 
+/** Immutable observation at one admission revision, materialized at publication. */
+export interface AdmissionUsageSnapshot {
+  readonly runId: string;
+  readonly sequence: number;
+  /** Equality of all displayed fields, excluding the journal sequence. */
+  readonly signature: string;
+  read(): AdmissionUsageSummary;
+}
+
 /** Durable allow result produced by the SQLite repository. */
 export interface AdmissionGrant {
   readonly decision: "allow";

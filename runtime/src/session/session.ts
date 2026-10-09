@@ -1,3 +1,5 @@
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { SessionWriteBehindQueue, withSessionWriteBehind } from "./write-behind.js";
 /**
  * Session — initialized model agent context.
  *
@@ -2568,6 +2570,10 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+  private transientWriteBehind: SessionWriteBehindQueue | undefined;
+  get writeBehind(): SessionWriteBehindQueue {
+    return this.rolloutStore?.store?.writeBehind ?? (this.transientWriteBehind ??= new SessionWriteBehindQueue());
+  }
   private shutdownResourceRelease?: () => void | Promise<void>;
 
   private outOfBandElicitationPauseCount = 0;
@@ -2684,6 +2690,7 @@ export class Session {
     // Keep legacy producers that were handed `session.eventLog` on the same
     // canonical persist-before-publish path as direct `session.emit` callers.
     this.eventLog.setEmitDelegate((event) => this.emit(event));
+    this.eventLog.setVisibilityBarrier(() => this.writeBehind.drain());
     this.roleWorkspace = opts.roleWorkspace
       ? normalizeAgentRoleWorkspace(opts.roleWorkspace)
       : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd);
@@ -3530,7 +3537,7 @@ export class Session {
     }
     const withTurnAuthority = <T>(operation: () => T): T =>
       runWithCurrentRuntimeSession(this, () =>
-        runWithCanonicalSettingsAuthority(configStore, operation),
+        withSessionWriteBehind(this.writeBehind, () => runWithCanonicalSettingsAuthority(configStore, operation)),
       );
     if (opts.ctx === undefined) {
       while (this.pendingProviderSwitch !== null) {
@@ -3814,20 +3821,29 @@ export class Session {
   }
 
   subscribeToEvents(cb: (event: PhaseEvent) => void): () => void {
+    this.writeBehind.drain();
     this.phaseEventListeners.add(cb);
     return () => {
+      this.writeBehind.drain();
       this.phaseEventListeners.delete(cb);
     };
   }
 
   emitPhaseEvent(event: PhaseEvent): void {
-    for (const listener of this.phaseEventListeners) {
-      try {
-        listener(event);
-      } catch {
-        // Keep parity with EventLog subscriber isolation.
-      }
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(event);
+      this.writeBehind.defer("phase-publication", () => this.emitPhaseEvent(captured));
+      return;
     }
+    this.writeBehind.observe(() => {
+      for (const listener of this.phaseEventListeners) {
+        try {
+          listener(event);
+        } catch {
+          // Keep parity with EventLog subscriber isolation.
+        }
+      }
+    });
   }
 
   isRolloutPersistenceSuspended(): boolean {
@@ -3835,6 +3851,7 @@ export class Session {
   }
 
   async withRolloutPersistenceSuspended<T>(fn: () => Promise<T>): Promise<T> {
+    this.writeBehind.finish();
     this.rolloutPersistenceSuspendDepth += 1;
     try {
       return await fn();
@@ -4883,6 +4900,7 @@ export class Session {
     event: Event,
     appendOpts: AppendOptions = {},
   ): { readonly event: Event; publish(): Event } {
+    if (this.writeBehind.draining) this.writeBehind.drain();
     if (this.canonicalJournalSealed) {
       throw new Error(
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
@@ -4978,14 +4996,19 @@ export class Session {
 
   /** Publish an event already stamped and appended by {@link prepareEmit}. */
   publishPreparedEvent(event: Event): Event {
+    if (this.writeBehind.deferring) {
+      const captured = structuredClone(event);
+      this.writeBehind.defer("event-publication", () => this.publishPreparedEvent(captured));
+      return event;
+    }
     hitM4DurabilityFailpoint("before_event_publish");
-    this.eventLog.publish(event, (published) => {
+    this.writeBehind.observe(() => this.eventLog.publish(event, (published) => {
       // Compatibility consumers belong to the same FIFO publication queue.
       // A listener may synchronously emit another event; keeping this callback
       // inside EventLog prevents txEvent from observing N+1 before N.
       this.txEvent.send(published);
       hitM4DurabilityFailpoint("after_event_publish");
-    });
+    }));
     return event;
   }
 
@@ -4996,6 +5019,39 @@ export class Session {
    */
   emit(event: Event, appendOpts: AppendOptions = {}): Event {
     return this.prepareEmit(event, appendOpts).publish();
+  }
+
+  /**
+   * Reserve an event's position now and build its captured payload at that
+   * position in the write-behind queue. Only observation/checkpoint payloads
+   * use this path; authority transitions still validate before continuing.
+   */
+  emitDeferred(
+    envelope: Omit<Event, "msg">,
+    buildMsg: () => Extract<EventMsg, { type: "session_usage" | "turn_checkpoint" | "execution_admission" }>,
+    appendOpts: AppendOptions = {},
+  ): void {
+    const queue = this.writeBehind;
+    const bufferedOneShot = oneShotFastModeActive() && queue.oneShotBuffering && !queue.draining;
+    if ((!queue.deferring && !bufferedOneShot) || this.isRolloutPersistenceSuspended()) {
+      this.emit({ ...envelope, msg: buildMsg() }, appendOpts);
+      return;
+    }
+    queue.assertHealthy();
+    if (this.canonicalJournalSealed) {
+      throw new Error("cannot append deferred event: canonical run journal is sealed");
+    }
+    const stamped = this.eventLog.stampEnvelope(envelope);
+    const store = this.rolloutStore;
+    const capturedOptions = { ...appendOpts };
+    queue.enqueue("deferred-event", () => {
+      const event: Event = { ...stamped, msg: buildMsg() };
+      const durable = isDurableEvent(event) || capturedOptions.durable === true;
+      if (store?.append(event, { ...capturedOptions, durable }) === false && durable) {
+        throw new Error(`durable event ${event.msg.type} sequence ${event.seq ?? "unassigned"} was not fsync-committed`);
+      }
+      this.publishPreparedEvent(event);
+    });
   }
 
   /**
@@ -5608,6 +5664,7 @@ export class Session {
    * rollout_degraded) surface through the event log.
    */
   mountRolloutStore(store: RolloutStore | null): void {
+    this.writeBehind.finish();
     this.rolloutStore = store;
     if (store) {
       store.store.setDiagnosticListener((d) => {
@@ -5770,9 +5827,10 @@ export class Session {
    */
   private async abortAllTasksLocked(reason: TurnAbortReason): Promise<void> {
     const taken = await this.activeTurn.swap(null);
-    if (taken === null) return;
+    if (taken === null) { this.writeBehind.finish(); return; }
     const tasks = Array.from(taken.tasks.values());
-    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
+    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
+    finally { this.writeBehind.finish(); }
     // Release any
     // dangling approvals / input pre-emptively so interrupted tasks
     // don't surface stale responses. We reach into `turnState` here
@@ -5804,7 +5862,8 @@ export class Session {
     });
     if (taken === null) return false;
     const tasks = Array.from(taken.tasks.values());
-    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
+    try { await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason))); }
+    finally { this.writeBehind.finish(); }
     await taken.turnState.with((ts) => {
       ts.pendingApprovals.clear();
       ts.pendingRequestPermissions.clear();
@@ -6132,6 +6191,7 @@ export class Session {
     if (this.abortController.signal.aborted) return;
     const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
+    this.writeBehind.finish();
     // Emit a typed event so I-8 is satisfied.
     this.emit({
       id: this.nextInternalSubId(),
@@ -6338,6 +6398,7 @@ export class Session {
     }
     let durableCloseError: unknown;
     try {
+      this.writeBehind.finish();
       await shutdownEffectSettlementSupervisor(this, MAX_DRAIN_MS);
       let drainedOperationCount = 0;
       while (this.pendingDurableOperations.size > 0) {
@@ -6384,10 +6445,10 @@ export class Session {
     // Flush + close the rollout store (I-4: final durable fsync).
     if (this.rolloutStore) {
       try {
-        this.rolloutStore.flushDurable();
-        this.rolloutStore.close();
-      } catch {
-        /* best-effort */
+        try { this.rolloutStore.flushDurable(); }
+        finally { this.rolloutStore.close(); }
+      } catch (error) {
+        durableCloseError ??= error;
       }
     }
     try {
@@ -6415,7 +6476,8 @@ export class Session {
         if (mcpDisposeTimer !== undefined) clearTimeout(mcpDisposeTimer);
       }
     }
-    this.eventLog.close();
+    try { this.eventLog.close(); }
+    catch (error) { durableCloseError ??= error; }
     this.txEvent.close();
     const sessionEnvironmentHome = this.services.configStore?.homeContext?.path;
     if (sessionEnvironmentHome !== undefined) {

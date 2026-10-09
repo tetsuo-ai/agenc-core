@@ -6,7 +6,9 @@ import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult 
 import { safeStringify } from "../types.js";
 import { notifyExecSessionDiscovery } from "../exec-session-discovery.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 import {
+  deferredShellWorkspaceMutationPermission,
   shellAdditionalWriteRoots,
   shellBypassesApprovalsAndSandbox,
   shellWorkspaceMutationPermission,
@@ -1211,7 +1213,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ...(effectiveWorkdir !== undefined ? { cwd: effectiveWorkdir } : {}),
           },
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
-          ...shellWorkspaceMutationPermission(args),
+          ...(oneShotFastModeActive()
+            ? deferredShellWorkspaceMutationPermission(args)
+            : shellWorkspaceMutationPermission(args)),
         });
         if (workspaceWriteDecision.blocked) {
           const message =

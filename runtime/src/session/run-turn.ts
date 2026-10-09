@@ -1,3 +1,7 @@
+import { assistantMessageFromResponse, parseToolUseBlocks, admittedModelStepId } from "../phases/stream-model.js";
+import { cumulativeUsage } from "./cumulative-usage.js";
+import { runMinimalTurn } from "./minimal-turn.js";
+import { oneShotFastModeActive, bypassFastModeEnabled, withOneShotFastMode } from "../one-shot-fast-mode.js";
 import { resolveMainLoopReasoningEffort } from "./session-reasoning-effort.js";
 import { admitReasoningCapSample, clearReasoningCapPolicyForTransition } from "./reasoning-cap-policy.js";
 /**
@@ -49,6 +53,7 @@ import type {
   LLMMessage,
   LLMToolCall,
   LLMUsage,
+  LLMResponse,
 } from "../llm/types.js";
 import {
   classifyUntrustedToolResult,
@@ -74,6 +79,7 @@ import {
 } from "../llm/token-accounting.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import {
+  runAdmittedModelCall,
   accountingOptionsForProvider,
   fitOutputReservationToContext,
   projectProviderAccountingRequest,
@@ -113,7 +119,7 @@ import { goalGate, goalGateApplies } from "../phases/goal-gate.js";
 import { buildGoalKickoffMessage } from "../goal/goal.js";
 import { getSessionGoal } from "../goal/session-goal.js";
 import type { PhaseEvent } from "../phases/events.js";
-import { executeTools } from "../phases/execute-tools.js";
+import { executeTools, hasConfiguredToolHooks } from "../phases/execute-tools.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
 import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { createAdmittedMemorySelector } from "../memory/admitted-selector.js";
@@ -166,6 +172,8 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
+  captureDurableResponseItem,
+  captureCheckpointMessage,
   createCheckpointResponseItemProjector,
   llmMessageToDurableResponseItem,
 } from "./message-history-conversion.js";
@@ -181,7 +189,7 @@ import type {
   RunningTask,
   TurnAbortReason,
 } from "./tasks.js";
-import { emitError, emitWarning } from "./event-log.js";
+import { emitError, emitWarning, type EventMsg } from "./event-log.js";
 import {
   DEADLINE_REACHED_CAUSE,
   DEADLINE_REACHED_MESSAGE,
@@ -489,26 +497,6 @@ function mergeSignals(
   return { signal: merged.signal, dispose };
 }
 
-function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
-  if (!next) return acc;
-  return {
-    promptTokens: acc.promptTokens + (next.promptTokens ?? 0),
-    completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
-    totalTokens: acc.totalTokens + (next.totalTokens ?? 0),
-    cachedInputTokens:
-      (acc.cachedInputTokens ?? 0) + (next.cachedInputTokens ?? 0),
-    cacheCreationInputTokens:
-      (acc.cacheCreationInputTokens ?? 0) +
-      (next.cacheCreationInputTokens ?? 0),
-    ...(acc.cacheCreation1hInputTokens !== undefined || next.cacheCreation1hInputTokens !== undefined
-      ? { cacheCreation1hInputTokens: (acc.cacheCreation1hInputTokens ?? 0) + (next.cacheCreation1hInputTokens ?? 0) }
-      : {}),
-    reasoningOutputTokens:
-      (acc.reasoningOutputTokens ?? 0) + (next.reasoningOutputTokens ?? 0),
-    webSearchRequests:
-      (acc.webSearchRequests ?? 0) + (next.webSearchRequests ?? 0),
-  };
-}
 
 function sealToolResultMessage(message: LLMMessage, runId: string): LLMMessage {
   if (message.role !== "tool") {
@@ -1099,6 +1087,18 @@ async function tryRunSamplingRequest(
     }
   }
 
+  return finishSamplingRequest(state, ctx, session, signal, events, streamModelError, stallRetryStarted);
+}
+
+async function finishSamplingRequest(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  signal: AbortSignal,
+  events: PhaseEvent[],
+  streamModelError: StreamModelError | null = null,
+  stallRetryStarted = false,
+): Promise<SamplingRequestResult> {
   // T8: stash any wire-layer error on state for the recovery ladder
   // to consume. FallbackTriggeredError + stream_idle + provider 5xx
   // all become stream errors here; the ladder classifies them via
@@ -2064,17 +2064,23 @@ export async function* runTurnKernel(
       },
     );
   } catch (error) {
+    session.writeBehind?.finish();
     if (turnStarted) {
       emitTurnFailed(error instanceof Error ? error.message : String(error));
     }
     throw error;
   } finally {
-    for (const cleanup of signalCleanups) cleanup();
-    codeModeTurnWorker.dispose();
-    // `onTaskFinished` is emitted uniformly from the spawn site so every
-    // task-kind shares the same lifecycle. The kernel BOTH runs the task
-    // body AND owns its finish emit.
-    await session.onTaskFinished(ctx.subId);
+    try { session.writeBehind?.finish(); }
+    finally {
+      try {
+        for (const cleanup of signalCleanups) cleanup();
+        codeModeTurnWorker.dispose();
+      } finally {
+        // A failed persistence barrier must still release the task's done
+        // signal, otherwise Stop can wait forever for this failed turn.
+        await session.onTaskFinished(ctx.subId);
+      }
+    }
   }
 }
 
@@ -2253,6 +2259,100 @@ async function* runTurnKernelInner(
       ? { initialSkipCacheWrite: opts.skipCacheWrite }
       : {}),
   });
+  // Phase 4c: restate an active goal at the top of every root human turn. The
+  // goal is session state, not conversation, so a compacted history or a
+  // fresh user prompt still starts from the objective verbatim (goal drift
+  // grows with context length, arXiv:2505.02709).
+  if (commons.rootHumanTurnText !== undefined) {
+    const liveGoal = getSessionGoal(session);
+    if (goalGateApplies(ctx, session, liveGoal)) {
+      const tracking = getAttachmentTrackingState(session);
+      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
+    }
+  }
+  let continuedFromFastMode = false;
+  let fastUsage: LLMUsage | undefined;
+  let fastCanonicalResponse: LLMResponse | undefined;
+  if (opts.resume === undefined && bypassFastModeEnabled(session, ctx)) {
+    session.rolloutStore?.store.enableOneShotFastMode();
+    emitTurnStarted(resolvedReferenceContextItem);
+    const signal = AbortSignal.any([session.abortController.signal, runningTask.abortController.signal,
+      ...(opts.signal ? [opts.signal] : [])]);
+    // Pay empty broker startup once before model latency begins. No shell is
+    // launched here; each command still crosses the manager's live admission.
+    await withOneShotFastMode(() => session.services.unifiedExecManager?.prepareOneShotCommandBoundary?.(
+      String(session.conversationId), session.unifiedExecOwnerBinding, signal,
+    ));
+    let content = "";
+    const fastMessages = state.messages;
+    const loop = runMinimalTurn(session, ctx, fastMessages, modelInstructions, signal, async (modelCalls, lastResponseUsage) => {
+      state.turnCount = modelCalls;
+      state.lastResponseUsage = lastResponseUsage;
+      state.messages = fastMessages;
+      const prepared = await prepareSamplingRequestBoundary(state, ctx, session, signal, [],
+        sessionQuerySourceForTurn(session, opts.querySource));
+      if (state.messages !== fastMessages) {
+        fastMessages.splice(0, fastMessages.length, ...state.messages);
+        state.messages = fastMessages;
+      }
+      return prepared.kind === "request" ? prepared : null;
+    }, {
+      callProvider: (messages, options, samplingContext) => runAdmittedModelCall({
+        session, provider: session.services.provider, messages, options,
+        stepId: admittedModelStepId(ctx, state, "primary"),
+        sessionId: session.conversationId,
+        model: session.config?.model ?? samplingContext.config.model,
+        providerName: session.services.provider.name, signal,
+        invoke: admittedOptions => session.services.provider.chatStream(messages, () => {}, admittedOptions),
+      }),
+      requiresResponse: response => {
+        return response.toolCalls.length === 0 || hasConfiguredToolHooks(session);
+      },
+      completedTool: result => { state.completedToolResults.push(result); },
+    });
+    try {
+      for (;;) {
+        const next = await withOneShotFastMode(() => loop.next());
+        if (next.done) {
+          if (next.value.reason === "continue_normal") {
+            continuedFromFastMode = true;
+            state.turnCount = next.value.modelCalls;
+            fastUsage = next.value.usage;
+            state.lastResponseUsage = next.value.lastResponseUsage;
+            session.rolloutStore?.store.finishOneShotFastMode();
+            fastCanonicalResponse = next.value.canonicalResponse;
+            const response = next.value.recoveryResponse;
+            if (response) {
+              state.assistantMessages = [assistantMessageFromResponse(response, false, session.services.provider.name)];
+              state.toolUseBlocks = [];
+              state.needsFollowUp = false;
+              state.truncatedToolCallNames = response.finishReason === "length"
+                ? [...(response.incompleteToolCalls ?? []), ...response.toolCalls].map(call => call.name)
+                : undefined;
+              state.messages.push({ role: "assistant", content: response.content,
+                ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
+                ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
+              });
+              await postSampleRecovery(state, ctx, session, signal);
+              if (state.transition === undefined) {
+                throw new Error(response.finishReason === "length"
+                  ? "The model repeatedly reached its output limit. Output recovery is exhausted; the task did not complete."
+                  : state.assistantMessages.at(-1)?.text || `Model stopped with ${response.finishReason}`);
+              }
+              // Recovery has already prepared the next input. Consume this
+              // transition before entering the ordinary sampling loop.
+              state.transition = undefined;
+            }
+            break;
+          }
+          emitTurnComplete(content);
+          return next.value;
+        }
+        if (next.value.type === "turn_complete") content = next.value.content;
+        yield next.value;
+      }
+    } finally { await withOneShotFastMode(() => loop.return({ reason: "cancelled" })); }
+  }
   const turnQuerySource = sessionQuerySourceForTurn(session, opts.querySource);
   let persistedMessageCount =
     opts.initialHistoryPersistence === "persist_before_turn"
@@ -2324,17 +2424,6 @@ async function* runTurnKernelInner(
     taskText: commons.rootHumanTurnText,
     exactOutput: opts.exactOutput,
   });
-  // Phase 4c: restate an active goal at the top of every root human turn. The
-  // goal is session state, not conversation, so a compacted history or a
-  // fresh user prompt still starts from the objective verbatim (goal drift
-  // grows with context length, arXiv:2505.02709).
-  if (commons.rootHumanTurnText !== undefined) {
-    const liveGoal = getSessionGoal(session);
-    if (goalGateApplies(ctx, session, liveGoal)) {
-      const tracking = getAttachmentTrackingState(session);
-      tracking.pendingCriticalReminder ??= buildGoalKickoffMessage(liveGoal);
-    }
-  }
   const rolloutPersistenceSuspended = (): boolean =>
     session.isRolloutPersistenceSuspended?.() === true;
   const rolloutPersistenceActive = (): boolean =>
@@ -2368,6 +2457,7 @@ async function* runTurnKernelInner(
       payload: resolvedReferenceContextItem,
     });
   };
+  const pendingPersistedIdentities = new WeakSet<object>();
   const persistNewResponseItems = (): void => {
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
@@ -2387,28 +2477,37 @@ async function* runTurnKernelInner(
       );
       state.messages[messageIndex] = message;
       if (excludeFromDurableHistory(message)) continue;
-      const durableItem = llmMessageToDurableResponseItem(message);
-      if (
-        message.runtimeOnly?.toolResultIntegrity !== undefined &&
-        durableItem.toolResultIntegrity !== undefined
-      ) {
-        state.messages[messageIndex] = {
-          ...message,
-          runtimeOnly: {
-            ...message.runtimeOnly,
-            toolResultIntegrity: {
-              ...message.runtimeOnly.toolResultIntegrity,
-              persisted: durableItem.toolResultIntegrity.persisted,
-            },
-          },
-        };
+      // Own the integrity object so the queued durable projection can fill its
+      // persisted-body identity without mutating the source message. Session
+      // history and checkpoint captures retain this same identity object.
+      const integrity = message.runtimeOnly?.toolResultIntegrity;
+      const persistedIntegrity = integrity === undefined ? undefined : {
+        ...integrity, original: { ...integrity.original }, persisted: { ...integrity.persisted },
+      };
+      const liveMessage = persistedIntegrity === undefined ? message : {
+        ...message, runtimeOnly: { ...message.runtimeOnly, toolResultIntegrity: persistedIntegrity },
+      };
+      state.messages[messageIndex] = liveMessage;
+      const store = session.rolloutStore;
+      const queue = session.writeBehind;
+      if (queue?.deferring) {
+        const resolve = captureDurableResponseItem(liveMessage);
+        if (persistedIntegrity !== undefined) pendingPersistedIdentities.add(persistedIntegrity);
+        queue.defer("response-item-redaction", () => {
+          const durableItem = resolve();
+          if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
+            persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
+          }
+          store.appendRollout({ type: "response_item", payload: durableItem });
+          if (persistedIntegrity !== undefined) pendingPersistedIdentities.delete(persistedIntegrity);
+        });
       } else {
-        state.messages[messageIndex] = message;
+        const durableItem = llmMessageToDurableResponseItem(liveMessage);
+        if (persistedIntegrity !== undefined && durableItem.toolResultIntegrity !== undefined) {
+          persistedIntegrity.persisted = durableItem.toolResultIntegrity.persisted;
+        }
+        store.appendRollout({ type: "response_item", payload: durableItem });
       }
-      session.rolloutStore.appendRollout({
-        type: "response_item",
-        payload: durableItem,
-      });
     }
     persistedMessageCount = state.messages.length;
   };
@@ -2493,7 +2592,7 @@ async function* runTurnKernelInner(
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},
   ): void => {
-    if (!durableTurnsCfg.checkpointEnabled) return;
+    if (oneShotFastModeActive() || !durableTurnsCfg.checkpointEnabled) return;
     if (rolloutPersistenceSuspended()) return;
     if (!session.rolloutStore) return;
     if (options.force !== true && durableTurnsCfg.checkpointMinIntervalMs > 0) {
@@ -2517,33 +2616,46 @@ async function* runTurnKernelInner(
     // index. Tool-result entries contribute their authenticated persisted-body
     // identity, so the hash still represents the exact durable body even after
     // the corresponding in-memory content has been bounded.
-    const durablePrefix = state.messages
+    // Capture live content before future compaction/retention can change it.
+    // The private integrity identity is shared with the earlier response-item
+    // job, which fills its persisted seal before this FIFO checkpoint job.
+    const deferring = session.writeBehind?.deferring === true && session.emitDeferred !== undefined;
+    const messages = state.messages
       .slice(durableHistoryStartIndex(state.messages))
       .filter((message) => !excludeFromDurableHistory(message))
-      .map((message) => projectCheckpointMessage(message));
-    for (const message of durablePrefix) requireSealedToolResult(message);
-    const prefixHash = computeCheckpointPrefixHashV3(
-      durablePrefix,
-      durablePrefix.length,
-    );
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
+      .map((message) => {
+        if (!deferring) return message;
+        const integrity = message.runtimeOnly?.toolResultIntegrity;
+        return captureCheckpointMessage(message,
+          integrity !== undefined && pendingPersistedIdentities.has(integrity) ? integrity : undefined);
+      });
+    const capturedIteration = iterationIndex;
+    const capturedCheckpoint = checkpointSeq;
+    const slice = toCheckpointSlice(state);
+    const resumableState = deferring ? structuredClone(slice) : slice;
+    const buildMsg = (): Extract<EventMsg, { type: "turn_checkpoint" }> => {
+      const durablePrefix = messages.map((message) => projectCheckpointMessage(message));
+      for (const message of durablePrefix) requireSealedToolResult(message);
+      const prefixHash = computeCheckpointPrefixHashV3(durablePrefix, durablePrefix.length);
+      return {
         type: "turn_checkpoint",
         payload: {
           turnId: ctx.subId,
-          iterationIndex,
+          iterationIndex: capturedIteration,
           boundary,
-          checkpointSeq,
+          checkpointSeq: capturedCheckpoint,
           persistedMessageCount: durablePrefix.length,
           prefixHash,
           checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
           toolResultIntegrityVersion: 1,
           prefixHashVersion: 3,
-          resumableState: toCheckpointSlice(state),
+          resumableState,
         },
-      },
-    });
+      };
+    };
+    const envelope = { id: session.nextInternalSubId() };
+    if (session.emitDeferred !== undefined) session.emitDeferred(envelope, buildMsg);
+    else session.emit({ ...envelope, msg: buildMsg() });
   };
 
   // Per-turn guardian-denial counters reset at the top of every new
@@ -2553,7 +2665,7 @@ async function* runTurnKernelInner(
   // cannot bleed into this turn's `isOpen(ctx.subId)` check below.
   session.services.guardianRejectionCircuitBreaker?.clearTurn(ctx.subId);
 
-  emitTurnStarted(resolvedReferenceContextItem);
+  if (!continuedFromFastMode) emitTurnStarted(resolvedReferenceContextItem);
   persistTurnRolloutBaseline();
   session.budgetTracker?.resetForTurn();
 
@@ -2655,7 +2767,9 @@ async function* runTurnKernelInner(
   // Run pre-sampling compact before any phase runs. Returns
   // whether compaction happened. (No prewarmed client session exists
   // today, so there is nothing to reset on compaction.)
-  let deferredCompaction = false;
+  // The fast loop can hand over an oversized request before any canonical
+  // sample has established compaction pressure. Check that request before send.
+  let deferredCompaction = continuedFromFastMode;
   let requiredCompactionAttempted = false;
   const deferCompactionRefusal = (): void => {
     deferredCompaction = true;
@@ -2692,10 +2806,14 @@ async function* runTurnKernelInner(
     mergedTask.dispose,
   );
   try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onAdvisoryRefusal: deferCompactionRefusal,
-      onDurableHistoryReplaced: onCompactionReplacedHistory,
-    });
+    // A fast sample already consumed this prefix. Finish its response before
+    // any compaction can replace the history its tool calls belong to.
+    if (fastCanonicalResponse === undefined) {
+      await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+        onAdvisoryRefusal: deferCompactionRefusal,
+        onDurableHistoryReplaced: onCompactionReplacedHistory,
+      });
+    }
   } catch (error) {
     const underlying = compactFailureError(error);
     if (signal.aborted) {
@@ -2729,7 +2847,7 @@ async function* runTurnKernelInner(
   commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
   let deadlineTurnReminderInjected = false;
 
-  let usage: LLMUsage = {
+  let usage: LLMUsage = fastUsage ?? {
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
@@ -3040,7 +3158,26 @@ async function* runTurnKernelInner(
     let modelNeedsFollowUp = false;
     try {
       const consumedCorrection = currentTextToolCallCorrectionPrompt(state);
-      const result = await runSamplingRequest(
+      const consumeFastResponse = async (): Promise<SamplingRequestResult> => {
+        const response = fastCanonicalResponse!;
+        fastCanonicalResponse = undefined;
+        const assistant = assistantMessageFromResponse(response, false, session.services.provider.name);
+        state.assistantMessages = [assistant];
+        state.toolUseBlocks = parseToolUseBlocks([...assistant.toolCalls]);
+        state.needsFollowUp = state.toolUseBlocks.length > 0;
+        state.lastResponseUsage = response.usage;
+        state.reasoningOnlyRecoveryPending = undefined;
+        state.messages.push({ role: "assistant", content: response.content,
+          ...(assistant.toolCalls.length ? { toolCalls: [...assistant.toolCalls] } : {}),
+          ...(response.providerReasoningContent !== undefined ? { providerReasoningContent: response.providerReasoningContent } : {}),
+          ...(response.providerReasoningProvenance !== undefined ? { providerReasoningProvenance: response.providerReasoningProvenance } : {}),
+        });
+        if (assistant.text) session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: assistant.text },
+        } });
+        return finishSamplingRequest(state, ctx, session, signal, pending);
+      };
+      const result = fastCanonicalResponse ? await consumeFastResponse() : await runSamplingRequest(
         state,
         ctx,
         session,
@@ -3506,6 +3643,7 @@ async function* runTurnKernelInner(
     const sleepRan = state.toolUseBlocks.some(
       (block) => block.name === SLEEP_TOOL_NAME,
     );
+    session.writeBehind?.finish();
     await executeTools(state, ctx, session, signal);
     const cancelledAfterTools = await finishCancelledIfAborted();
     if (cancelledAfterTools !== null) {

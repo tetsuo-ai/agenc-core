@@ -1,3 +1,4 @@
+import { oneShotFastModeActive } from "../../one-shot-fast-mode.js";
 /**
  * Chat Completions wire shim.
  *
@@ -1095,12 +1096,15 @@ export function parseChatCompletionsResponse(
   const isKimiResponse =
     request.providerCapabilityHints?.reasoningContentProvenance?.provider ===
       "kimi";
-  const preparedMessages = prepareMessagesForWire(request.messages);
-  const requestMetrics = withSerializedMetrics(
-    collectRequestMetrics(preparedMessages, request.tools),
-    buildChatCompletionsRequest(request),
-    request.options,
-  );
+  // Diagnostics rebuild and serialize the request. The short loop consumes
+  // them at its terminal boundary; keep an immutable message-list snapshot.
+  const metricsRequest = oneShotFastModeActive()
+    ? { ...request, messages: [...request.messages] } : request;
+  let metrics: LLMResponse["requestMetrics"];
+  const requestMetrics = (): NonNullable<LLMResponse["requestMetrics"]> => metrics ??= withEndpointMarkers(
+    withSerializedMetrics(collectRequestMetrics(prepareMessagesForWire(metricsRequest.messages), metricsRequest.tools),
+      buildChatCompletionsRequest(metricsRequest), metricsRequest.options), "/chat/completions", response);
+  if (!oneShotFastModeActive()) requestMetrics();
 
   // gaphunt3 #20: a truncated/incomplete generation (finishReason 'length',
   // 'error', or 'content_filter') leaves partial JSON in `content`, which
@@ -1162,11 +1166,7 @@ export function parseChatCompletionsResponse(
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason,
-    requestMetrics: withEndpointMarkers(
-      requestMetrics,
-      "/chat/completions",
-      response,
-    ),
+    get requestMetrics() { return requestMetrics(); },
     structuredOutput:
       !generationCompleted ||
         request.options?.structuredOutput?.enabled === false ||

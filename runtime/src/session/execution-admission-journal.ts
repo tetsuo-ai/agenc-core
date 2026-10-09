@@ -1,6 +1,7 @@
 /** Canonical rollout projection for execution-admission transitions. */
 
 import { randomUUID } from "node:crypto";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
 import type { Event } from "./event-log.js";
@@ -21,10 +22,20 @@ export function bindExecutionAdmissionJournal(
   admission: ExecutionAdmissionClient,
 ): () => void {
   const append = (event: AdmissionJournalEvent): void => {
+    // Admission and capacity have already committed. Only their canonical
+    // observation moves to the owning session's final/reader barrier. Keep
+    // the original event identity and timestamp; never recreate a lease here.
+    if (oneShotFastModeActive() && session.emitDeferred && session.writeBehind?.oneShotBuffering && !session.writeBehind.draining) {
+      const captured = structuredClone(event);
+      if (session.rolloutStore) executionAdmissionEventIndexes.delete(session.rolloutStore);
+      session.emitDeferred({ id: captured.eventId, eventId: captured.eventId },
+        () => ({ type: "execution_admission", payload: captured }), { durable: true });
+      return;
+    }
     appendExecutionAdmissionEvent(session, event);
   };
   const unsubscribe =
-    admission.subscribeCritical?.(append) ?? admission.subscribe(append);
+    admission.subscribeCritical?.(append, () => session.writeBehind?.barrier()) ?? admission.subscribe(append);
   let unsubscribeUsage: (() => void) | undefined;
   try {
     // Subscribe first, then converge the durable pre-bind history. JavaScript
@@ -72,7 +83,18 @@ export function bindExecutionAdmissionJournal(
       session.emit({ id: `usage:${summary.runId}:${summary.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: summary } }, { durable: true });
       lastUsageSequence = summary.sequence;
     };
-    unsubscribeUsage = admission.subscribeUsage?.(appendUsage);
+    unsubscribeUsage = admission.subscribeUsageSnapshot !== undefined && session.emitDeferred !== undefined
+      ? admission.subscribeUsageSnapshot((snapshot) => {
+          if (snapshot.sequence <= lastUsageSequence) return;
+          if (typeof session.conversationId === "string" && snapshot.runId !== session.conversationId) return;
+          session.emitDeferred(
+            { id: `usage:${snapshot.runId}:${snapshot.sequence}`, eventId: randomUUID() },
+            () => ({ type: "session_usage", payload: snapshot.read() }),
+            { durable: true },
+          );
+          lastUsageSequence = snapshot.sequence;
+        })
+      : admission.subscribeUsage?.(appendUsage);
     const usage = admission.getUsageSummary?.();
     if (usage !== undefined) appendUsage(usage);
   } catch (error) {

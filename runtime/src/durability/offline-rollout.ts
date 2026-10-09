@@ -1,3 +1,4 @@
+import { drainRolloutWriteBehind } from "../session/write-behind.js";
 import { assertOneShotRecoverable, consumeOneShotSeal } from "./one-shot-durability.js";
 import {
   closeSync,
@@ -93,6 +94,7 @@ export function withPinnedOfflineRolloutReadLease<T>(
   },
   operation: (rollout: PinnedOfflineRolloutReader) => T,
 ): T {
+  drainRolloutWriteBehind(options.sourcePath);
   const scope = offlineRolloutScope(options);
   const pinned = pinOfflineRollout(scope);
   const lockPath = join(
@@ -232,6 +234,7 @@ export function withPinnedOfflineRolloutLease<T>(
   },
   operation: (rollout: PinnedOfflineRollout) => T,
 ): T {
+  drainRolloutWriteBehind(options.sourcePath);
   const scope = offlineRolloutScope(options);
   const pinned = pinOfflineRollout(scope);
   const lockPath = join(

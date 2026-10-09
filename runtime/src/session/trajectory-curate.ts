@@ -1,3 +1,4 @@
+import { drainAllSessionWriteBehind } from "./write-behind.js";
 /**
  * Trajectory curation — turns the redacted JSONL files written by the
  * opt-in trajectory export sink (`trajectory-export.ts`) into training
@@ -167,6 +168,7 @@ export function parseTrajectoryExportContents(
 
 /** Convenience: read + parse every export file under `path`. */
 export function readTrajectoryExports(path: string): ParsedTrajectoryExports {
+  drainAllSessionWriteBehind();
   const contents = listTrajectoryExportFiles(path).map((file) =>
     readFileSync(file, "utf8"),
   );

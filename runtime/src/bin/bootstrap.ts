@@ -1,3 +1,5 @@
+import { deferSidecar } from "../session/deferred-sidecar.js";
+import { oneShotFastModeSelected } from "../one-shot-fast-mode.js";
 import { createWarmSessionSetupCeiling } from "./warm-session-setup-ceiling.js";
 import { withConfiguredProviderAuth } from "../llm/provider-auth-selection.js";
 import { concurrentChatFetch } from "../llm/providers/concurrent-chat-fetch.js";
@@ -528,6 +530,7 @@ function buildDeferredConfig(
   return {
     model,
     ...(config.agents !== undefined ? { agents: config.agents } : {}),
+    ...(config.bypassFastMode !== undefined ? { bypassFastMode: config.bypassFastMode } : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
@@ -1242,7 +1245,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   const deferredSetup = options.deferAuxiliarySetupUntilRequest === true &&
     runtimeOptions.lightMode === true && runtimeOptions.nonInteractive === true &&
     !resumeConversation && options.resumeRolloutPath === undefined && resolvedProvider === "deepseek"
-    ? createWarmSessionSetupCeiling(agencHome, conversationId) : undefined;
+    ? createWarmSessionSetupCeiling(agencHome, conversationId, oneShotFastModeSelected(runtimeOptions, startup.config)) : undefined;
 
   const providerModel = modelSelection.model;
   return runWithStartupProviderSelection({
@@ -1771,7 +1774,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       if (!shutdownPrepared) {
         // A deferred callback can own allocated sidecars/watchers while it
         // awaits I/O. Drain it before stopping them or closing their Session.
-        await deferredSetupClosed;
+        try { await deferredSetupClosed; } catch (error) { errors.push(error); }
         shutdownPrepared = true;
         if (sessionForShutdown !== null) {
           clearCurrentRuntimeSession(sessionForShutdown);
@@ -2129,6 +2132,8 @@ async function bootstrapLocalRuntimeSessionScoped(
           });
         }
 
+        const deferredCost = deferredSetup !== undefined && oneShotFastModeSelected(runtimeOptions, startup.config)
+          ? deferSidecar(s.eventLog) : undefined;
         const initializeSidecars = async (): Promise<void> => {
         s.abortController.signal.throwIfAborted();
         const projectDir = getProjectDir(
@@ -2201,7 +2206,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         });
         // Register before the await so partial initialization is always owned
         // by the ordinary shutdown cleanup, even if loading fails or closes.
-        sidecarManager.register(costSidecar);
+        sidecarManager.register(deferredCost?.attach(costSidecar) ?? costSidecar);
         await costSidecar.loadFromDisk();
         deferredSetup?.assertOpen();
         s.abortController.signal.throwIfAborted();

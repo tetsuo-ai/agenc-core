@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 
 import { LLMContextWindowExceededError } from "./errors.js";
 import { getTokenizerConfigForProvider } from "./token-estimation.js";
@@ -1026,6 +1027,7 @@ function prepareAccountingRequest(
   let promptIdentity: Readonly<Record<string, unknown>>;
   let cacheIdentity: Readonly<Record<string, unknown>>;
   let serializedCacheIdentity: string;
+  let serializedPromptIdentity: string;
   let messageProjection: PreparedMessageAccountingProjection;
   try {
     snapshot = snapshotAccountingRequest(request);
@@ -1054,7 +1056,12 @@ function prepareAccountingRequest(
       promptIdentity,
       capability,
     );
-    serializedCacheIdentity = stableStringify(cacheIdentity);
+    // The prompt is part of the complete cache identity. Normalize that tree
+    // once, then serialize its prompt subtree for the fallback estimate too.
+    // Both serializations retain the same sorted keys and request byte bound.
+    const canonicalIdentity = canonicalize(cacheIdentity, new Set()) as Record<string, unknown>;
+    serializedCacheIdentity = JSON.stringify(canonicalIdentity);
+    serializedPromptIdentity = JSON.stringify(canonicalIdentity.prompt);
   } catch (error) {
     if (error instanceof TokenAccountingError) throw error;
     throw new TokenAccountingError(
@@ -1074,16 +1081,21 @@ function prepareAccountingRequest(
       `token accounting request is ${requestBytes} bytes; limit is ${maxRequestBytes}`,
     );
   }
-  const digest = createHash("sha256")
-    .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
-    .update(serializedCacheIdentity, "utf8")
-    .digest("hex");
+  // Local fallback never enters the native-count cache or single-flight map.
+  // Retain the complete byte/canonicality checks above, but hash only when a
+  // cache consumer actually asks for the identity.
+  let digest: string | undefined;
   return {
     request: snapshot,
-    digest,
+    get digest() {
+      return digest ??= createHash("sha256")
+        .update(TOKEN_ACCOUNTING_DIGEST_DOMAIN)
+        .update(serializedCacheIdentity, "utf8")
+        .digest("hex");
+    },
     fallback: conservativeFallbackResult(
       snapshot,
-      promptIdentity,
+      serializedPromptIdentity,
       messageProjection,
     ),
   };
@@ -1118,7 +1130,11 @@ function snapshotAccountingRequest(
     // single wire projection from this source; a pre-projected snapshot is not
     // safely projectable again because authority metadata is intentionally
     // stripped at the external boundary.
-    messages: canonicalSnapshot(request.messages),
+    // Integrity evidence is removed by every wire projection and is not used
+    // to authorize an invocation. Copying it here would force deferred body
+    // hashes on the request path. Keep agentInvocation and all other runtime
+    // metadata so authenticated projection still sees its original authority.
+    messages: canonicalSnapshot(request.messages.map(accountingSourceMessage)),
     options: snapshotOptions,
     ...(request.providerNativeTools !== undefined
       ? {
@@ -1126,6 +1142,13 @@ function snapshotAccountingRequest(
         }
       : {}),
   });
+}
+
+function accountingSourceMessage(message: LLMMessage): LLMMessage {
+  if (!message.runtimeOnly || !Object.hasOwn(message.runtimeOnly, "toolResultIntegrity")) return message;
+  const { toolResultIntegrity: _integrity, ...retained } = message.runtimeOnly;
+  const { runtimeOnly: _runtimeOnly, ...source } = message;
+  return Object.keys(retained).length === 0 ? source : { ...source, runtimeOnly: retained };
 }
 
 function promptIdentityForRequest(
@@ -1201,7 +1224,7 @@ function cacheIdentityForRequest(
 
 function conservativeFallbackResult(
   request: TokenAccountingRequest,
-  promptIdentity: Readonly<Record<string, unknown>>,
+  serializedPromptIdentity: string,
   messageProjection: PreparedMessageAccountingProjection,
 ): TokenAccountingResult {
   const inspection = inspectRequestContent(
@@ -1213,7 +1236,7 @@ function conservativeFallbackResult(
     messageProjection.inlineImages,
   );
   const promptTokens = estimateUtf8TokenUnits(
-    stableStringify(promptIdentity),
+    serializedPromptIdentity,
     conservativeBytesPerToken(request.provider, request.model),
   );
   const frameTokens =
@@ -1495,19 +1518,10 @@ function stableStringify(value: unknown): string {
 }
 
 function canonicalSnapshot<T>(value: T): T {
-  return freezeCanonicalValue(canonicalize(value, new Set())) as T;
+  return canonicalize(value, new Set(), true) as T;
 }
 
-function freezeCanonicalValue(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (canonicalSnapshots.has(value)) return value;
-  for (const entry of Object.values(value)) freezeCanonicalValue(entry);
-  Object.freeze(value);
-  canonicalSnapshots.add(value);
-  return value;
-}
-
-function canonicalize(value: unknown, ancestors: Set<object>): unknown {
+function canonicalize(value: unknown, ancestors: Set<object>, freeze = false): unknown {
   if (
     value === null ||
     typeof value === "string" ||
@@ -1537,16 +1551,32 @@ function canonicalize(value: unknown, ancestors: Set<object>): unknown {
   if (ancestors.has(value)) throw new Error("cyclic value");
   ancestors.add(value);
   try {
+    let result: unknown[] | Record<string, unknown>;
     if (Array.isArray(value)) {
-      return value.map((entry) => canonicalize(entry, ancestors));
+      result = value.map((entry) => canonicalize(entry, ancestors, freeze));
+    } else {
+      const record = value as Record<string, unknown>;
+      const object: Record<string, unknown> = {};
+      // Retain the original two reads for accessor-backed caller values, but
+      // avoid allocating a tuple and two intermediate arrays for every node.
+      const keys = Object.keys(record).sort().filter((key) => record[key] !== undefined);
+      for (const key of keys) {
+        const entry = canonicalize(record[key], ancestors, freeze);
+        if (key === "__proto__") {
+          Object.defineProperty(object, key, { value: entry, enumerable: true, writable: true, configurable: true });
+        } else {
+          object[key] = entry;
+        }
+      }
+      result = object;
     }
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .filter((key) => record[key] !== undefined)
-        .map((key) => [key, canonicalize(record[key], ancestors)]),
-    );
+    // Freeze as the recursion unwinds: every child is already normalized and
+    // owned. No second traversal or Object.values allocation is necessary.
+    if (freeze) {
+      Object.freeze(result);
+      canonicalSnapshots.add(result);
+    }
+    return result;
   } finally {
     ancestors.delete(value);
   }
@@ -1607,10 +1637,14 @@ function safetyMarginForTokens(tokens: number): number {
 }
 
 function utf8Length(value: string): number {
+  if (oneShotFastModeActive()) return Buffer.byteLength(value, "utf8");
   return new TextEncoder().encode(value).byteLength;
 }
 
 function normalizedUtf8UpperBound(value: string): number {
+  // ASCII is unchanged by every Unicode normalization form. Avoid creating
+  // five encoded copies of the same prompt merely to count identical bytes.
+  if (oneShotFastModeActive() && /^[\x00-\x7f]*$/.test(value)) return value.length;
   let upperBound = utf8Length(value);
   for (const form of TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS) {
     upperBound = Math.max(upperBound, utf8Length(value.normalize(form)));

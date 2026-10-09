@@ -269,6 +269,9 @@ export function buildProviderOptions(
   ctx: TurnContext,
   signal: AbortSignal,
   session: Session,
+  // Only for an owned, single-attempt request that will not be reused. The
+  // ordinary retry path keeps an independent clone for every attempt.
+  transferToolOwnership = false,
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
   const planMode = isPlanMode(ctx);
@@ -280,7 +283,7 @@ export function buildProviderOptions(
     ...(request.managedRequestId !== undefined
       ? { managedRequestId: request.managedRequestId }
       : {}),
-    tools: cloneProviderTools(request.tools),
+    tools: transferToolOwnership ? request.tools : cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
     ...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
@@ -623,7 +626,7 @@ function emitSanitizedAssistantDelta(
   return sanitized.text;
 }
 
-function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
+export function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   if (toolCalls.length === 0) return [];
   return toolCalls.map((c) => {
     let input: unknown = undefined;
@@ -641,7 +644,7 @@ function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   });
 }
 
-function assistantMessageFromResponse(
+export function assistantMessageFromResponse(
   response: LLMResponse,
   planMode: boolean,
   providerName: string,

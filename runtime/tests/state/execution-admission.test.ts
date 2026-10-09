@@ -52,6 +52,20 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
+it("invalidates captured policy revisions for writes from a repository sharing the connection", () => {
+  const before = admissions.uncappedPolicyRevision;
+  const other = new ExecutionAdmissionRepository(driver);
+  other.bindRunDeadline("root", "2026-10-09T01:00:00Z");
+  expect(admissions.uncappedPolicyRevision).not.toBe(before);
+  const committed = admissions.uncappedPolicyRevision;
+  expect(admissions.uncappedPolicyRevision).toBe(committed);
+  const externalDriver = openStateDatabases({ cwd, agencHome: home });
+  try {
+    new ExecutionAdmissionRepository(externalDriver).bindRunDeadline("root", "2026-10-09T00:00:00Z");
+    expect(admissions.uncappedPolicyRevision).not.toBe(committed);
+  } finally { externalDriver.close(); }
+});
+
 function request(
   runId: string,
   stepId: string,

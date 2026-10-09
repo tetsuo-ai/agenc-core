@@ -1,3 +1,4 @@
+import { drainRolloutWriteBehind } from "./write-behind.js";
 import { assertOneShotRecoverable } from "../durability/one-shot-durability.js";
 import { createHash } from "node:crypto";
 import {
@@ -446,6 +447,7 @@ export class CanonicalRolloutScanner {
     rolloutPath: string,
     options: CanonicalRolloutScanOptions,
   ): CanonicalRolloutScan {
+    drainRolloutWriteBehind(rolloutPath);
     return timed("canonical_rollout_scan", () =>
       scanCanonicalRolloutUntimed(rolloutPath, options, this.#owner),
     );
