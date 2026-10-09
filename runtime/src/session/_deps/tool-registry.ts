@@ -8,6 +8,7 @@
  */
 
 import type { FunctionCallOutputContentItem } from "../../tools/context.js";
+import type { Tool as RuntimeTool } from "../../tools/types.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type LLMTool = any;
@@ -46,7 +47,7 @@ export interface ToolDispatchResult {
 export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
-  dispatch(toolCall: LLMToolCall, options?: { readonly prepareArguments?: (args: Record<string, unknown>) => Record<string, unknown>; readonly advertisedToolNames?: readonly string[]; readonly abortSignal?: AbortSignal }): Promise<ToolDispatchResult>;
+  dispatch(toolCall: LLMToolCall, options?: { readonly prepareArguments?: (args: Record<string, unknown>, tool: RuntimeTool) => Record<string, unknown>; readonly advertisedToolNames?: readonly string[]; readonly abortSignal?: AbortSignal }): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
 }
