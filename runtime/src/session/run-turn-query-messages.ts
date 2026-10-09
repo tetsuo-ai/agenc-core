@@ -31,6 +31,7 @@ import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import type { AssistantMessage, Terminal, TurnState } from "./turn-state.js";
 import {
   buildAgenCToolUseContext,
+  buildAgenCQueryProjectionContext,
   toAgenCModelContext,
   type AgenCToolUseContext,
 } from "./agenc-tool-use-context.js";
@@ -56,9 +57,10 @@ async function prepareAgenCTurnContext(
 ): Promise<void> {
   delete (state as PreparedState)[PREPARED_TERMINAL];
   if (signal?.aborted) return;
-  toAgenCModelContext(ctx);
+  const fast = oneShotFastModeActive();
+  if (!fast) toAgenCModelContext(ctx);
   const messages = messagesAfterAgenCBoundary(state.messages);
-  const toolUseContext = buildAgenCToolUseContext(session, ctx, {
+  const toolUseContext = fast ? buildAgenCQueryProjectionContext(session, ctx) : buildAgenCToolUseContext(session, ctx, {
     querySource,
   });
   try {
@@ -102,7 +104,7 @@ function messagesAfterAgenCBoundary(
 
 async function prepareAgenCQueryMessages(params: {
   readonly messages: readonly LLMMessage[];
-  readonly toolUseContext: AgenCToolUseContext;
+  readonly toolUseContext: { readonly options: Pick<AgenCToolUseContext["options"], "contextWindowTokens"> };
   readonly querySource: string;
   readonly contentReplacementState?: ContentReplacementState;
 }): Promise<{

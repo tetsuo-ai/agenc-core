@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { createAgentRoleWorkspace } from "../agents/role.js";
-import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+import { buildAgenCToolUseContext, buildAgenCQueryProjectionContext } from "../session/agenc-tool-use-context.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
@@ -385,5 +385,34 @@ describe("daemon sessions route tool permission changes through the registry", (
       { llmTools: [] },
     );
     expect(context.setAppState).toBe(setAppState);
+  });
+});
+
+
+describe("query projection context", () => {
+  test("keeps the current window without constructing unused execution state", () => {
+    const fixture = createSession();
+    const session = fixture as unknown as Session;
+    const ctx = createTurnContext();
+    const expected = buildAgenCToolUseContext(session, ctx).options.contextWindowTokens;
+    const listTools = vi.spyOn(fixture.services.registry, "toLLMTools");
+    expect(buildAgenCQueryProjectionContext(session, ctx)).toEqual({ options: { contextWindowTokens: expected } });
+    expect(listTools).not.toHaveBeenCalled();
+    const changed = { ...ctx, modelInfo: { ...ctx.modelInfo, contextWindow: 32_768 } } as TurnContext;
+    expect(buildAgenCQueryProjectionContext(session, changed).options.contextWindowTokens)
+      .toBe(buildAgenCToolUseContext(session, changed).options.contextWindowTokens);
+  });
+
+  test.each(["fallback", "live"])("retains %s role-workspace mismatch rejection", surface => {
+    const definitions = { agentRoleWorkspaceId: "different-workspace", activeAgents: [] };
+    const session = createSession(surface === "fallback" ? { agentDefinitions: definitions }
+      : { getAppState: () => ({ agentDefinitions: definitions }) }) as unknown as Session;
+    expect(() => buildAgenCToolUseContext(session, createTurnContext())).toThrow();
+    expect(() => buildAgenCQueryProjectionContext(session, createTurnContext())).toThrow();
+  });
+
+  test("retains invalid model context rejection", () => {
+    const ctx = { ...createTurnContext(), modelInfo: { slug: "invalid", contextWindow: 0 } } as TurnContext;
+    expect(() => buildAgenCQueryProjectionContext(createSession() as unknown as Session, ctx)).toThrow();
   });
 });
