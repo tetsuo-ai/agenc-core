@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -1388,8 +1389,25 @@ static int server_frame(char type, const void *data, uint32_t length) {
   unsigned char header[5] = {(unsigned char)type,
     (unsigned char)(length >> 24), (unsigned char)(length >> 16),
     (unsigned char)(length >> 8), (unsigned char)length};
-  return server_exact(1, header, sizeof(header), true) ||
-    (length > 0 && server_exact(1, (void *)data, length, true)) ? -1 : 0;
+  /* Publish the header and body together. Separate writes can wake the Node
+   * reader with only a header, requiring another I/O turn for the payload. */
+  struct iovec parts[2] = {{header, sizeof(header)}, {(void *)data, length}};
+  int current = 0, count = length > 0 ? 2 : 1;
+  while (current < count) {
+    ssize_t n = writev(1, parts + current, count - current);
+    if (n < 0 && errno == EINTR && requested_signal == 0) continue;
+    if (n <= 0 || requested_signal != 0) return -1;
+    size_t sent = (size_t)n;
+    while (current < count && sent >= parts[current].iov_len) {
+      sent -= parts[current].iov_len;
+      ++current;
+    }
+    if (current < count) {
+      parts[current].iov_base = (char *)parts[current].iov_base + sent;
+      parts[current].iov_len -= sent;
+    }
+  }
+  return 0;
 }
 static char *server_receive(char *type, uint32_t *length) {
   unsigned char header[5];

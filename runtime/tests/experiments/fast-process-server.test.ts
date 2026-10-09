@@ -153,6 +153,17 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     expect(result.out).toBe("0".repeat(100000));
     expect(result.err).toBe("0".repeat(99999)+"1"); expect(result.code).toBe(3);
   });
+  test("reused framing preserves empty, short and boundary-sized output before status", async () => {
+    const s = server();
+    for (const length of [0, 1, 16383, 16384, 16385, 65537]) {
+      const cmd = length === 0 ? "exit 7" : `printf '%0${length}d' 0; printf '%0${length}d' 1 >&2; exit 7`;
+      const result = await (await start(s, cmd)).result;
+      expect(result.out).toBe("0".repeat(length));
+      expect(result.err).toBe(length === 0 ? "" : "0".repeat(length - 1) + "1");
+      expect(result.code).toBe(7);
+    }
+    expect(await (await start(s, "printf final")).result).toEqual({ out: "final", err: "", code: 0 });
+  });
   test("a declined async startup cannot fall back after its owner closes", async () => {
     const manager = new UnifiedExecProcessManager({cwd:root()}); managers.push(manager);
     let decline!: () => void, entered!: () => void;
