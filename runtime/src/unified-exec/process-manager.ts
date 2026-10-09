@@ -1,4 +1,5 @@
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+import { SessionSandbox, SessionSandboxCleanupError, type SessionSandboxAvailability } from "../sandbox/linux-launcher/session-sandbox.js";
 import { prepareDirectBwrapV3Plan } from "../sandbox/linux-launcher/direct-bwrap.js";
 import { prepareLinuxSandboxProbeHint } from "../sandbox/linux-launcher/probe-cache.js";
 import {
@@ -550,6 +551,29 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
+  private readonly sessionSandboxes = new Map<string, SessionSandbox>();
+  // Retain failed startup admission across policy drains, Stop and opt-out.
+  // Only closing the owner lifetime (or disposing this manager) resets it.
+  private readonly sessionSandboxAvailability = new Map<string, SessionSandboxAvailability>();
+  private sessionSandboxFor(ownerId?: string): SessionSandbox {
+    const key = ownerId ?? "";
+    let sandbox = this.sessionSandboxes.get(key);
+    if (!sandbox) {
+      let availability = this.sessionSandboxAvailability.get(key);
+      if (!availability) { availability = { startupFailed: false }; this.sessionSandboxAvailability.set(key, availability); }
+      sandbox = new SessionSandbox(availability); this.sessionSandboxes.set(key, sandbox);
+    }
+    return sandbox;
+  }
+  private async closeSessionSandboxes(): Promise<void> {
+    const entries = [...this.sessionSandboxes.entries()];
+    const outcomes = await Promise.allSettled(entries.map(async ([key, sandbox]) => {
+      await sandbox.close();
+      if (this.sessionSandboxes.get(key) === sandbox) this.sessionSandboxes.delete(key);
+    }));
+    const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "session sandbox cleanup is unproven");
+  }
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly completedBackgroundProcesses = new Map<string, UnifiedExecBackgroundProcess>();
@@ -632,6 +656,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         errors.push(result.reason);
       }
     }
+    try { await this.closeSessionSandboxes(); } catch (error) { errors.push(error); }
     if (errors.length === 0) return;
     const primary = errors[0];
     const failure = new AggregateError(
@@ -1186,17 +1211,23 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async closeAll(_reason = "session_shutdown"): Promise<void> {
+    this.sandboxAuthorityGeneration += 1;
+    const sandboxCleanup = this.closeSessionSandboxes();
     const entries = [...this.processes.values()];
     for (const entry of entries) {
       this.forceTerminate(entry);
     }
-    await Promise.allSettled(
-      entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
-    );
+    const [sandboxOutcome] = await Promise.allSettled([
+      sandboxCleanup, ...entries.map((entry) => Promise.race([entry.exitPromise, delay(2_000)])),
+    ]);
     // A best-effort timeout is not cleanup proof. Retain unsettled owners so
     // strict disposal and the durable-close boundary can still drain them.
     for (const entry of entries) {
       if (entry.exitState !== null) this.releaseProcessId(entry.processId);
+    }
+    if (sandboxOutcome!.status === "rejected") {
+      this.poisonSandboxAuthority(sandboxOutcome.reason);
+      throw sandboxOutcome.reason;
     }
   }
 
@@ -1282,9 +1313,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     lifetime.closing = true;
     const children = [...lifetime.children].map(child => this.closeOwnerLifetime(child));
     lifetime.closeTask = Promise.resolve().then(async () => {
-      if (this.sandboxAuthorityCleanupFailure !== undefined) throw this.sandboxAuthorityCleanupFailure;
       const entries = [...this.processes.values()].filter(entry => entry.ownerLifetime === lifetime);
       const outcomes = await Promise.allSettled([
+        Promise.resolve().then(async () => {
+          await this.sessionSandboxes.get(lifetime.ownerId)?.close();
+          this.sessionSandboxes.delete(lifetime.ownerId);
+        }),
         ...children, ...entries.map(entry => this.closeProcessStrict(entry)),
       ]);
       const failures = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
@@ -1296,6 +1330,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
       // Keep settled yielded entries for status/output collection and pruning.
       lifetime.closed = true;
+      this.sessionSandboxAvailability.delete(lifetime.ownerId);
     });
     return lifetime.closeTask;
   }
@@ -1305,12 +1340,12 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     if (this.durableCloseTask !== undefined) return this.durableCloseTask;
     this.durableCloseStarted = true;
     const task = Promise.resolve().then(async () => {
-      if (this.sandboxAuthorityCleanupFailure !== undefined) {
-        throw this.sandboxAuthorityCleanupFailure;
-      }
       const entries = [...this.processes.values()];
-      const outcomes = await Promise.allSettled(entries.map(entry => this.closeProcessStrict(entry)));
+      const [sandboxOutcome, ...outcomes] = await Promise.allSettled([
+        this.closeSessionSandboxes(), ...entries.map(entry => this.closeProcessStrict(entry)),
+      ]);
       const failures: unknown[] = [];
+      if (sandboxOutcome!.status === "rejected") failures.push(sandboxOutcome.reason);
       for (const [index, outcome] of outcomes.entries()) {
         if (outcome.status === "rejected") failures.push(outcome.reason);
         else this.releaseProcessId(entries[index]!.processId);
@@ -1549,6 +1584,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       }
     }
 
+    if (params.runtimeSandbox === undefined || params.runtimeSandbox.persistentSession === false) {
+      const previousSandbox = this.sessionSandboxes.get(params.ownerId ?? "");
+      if (previousSandbox) await previousSandbox.close();
+      this.sessionSandboxes.delete(params.ownerId ?? "");
+      this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+      this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+    }
+
     if (params.tty) {
       let processHandle: IPty;
       try {
@@ -1598,11 +1641,20 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
-    const probeHint = params.runtimeSandbox === undefined ? undefined
-      : prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+    let probeHint: ReturnType<typeof prepareLinuxSandboxProbeHint>;
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
+      const persistent = params.allowDirectBwrap && params.runtimeSandbox !== undefined &&
+        params.runtimeSandbox.persistentSession !== false
+        ? await this.sessionSandboxFor(params.ownerId).spawn({ program: params.program, args: params.args,
+            cwd: params.cwd, env: params.env }, () => {
+            this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
+            this.assertOwnerAdmission(params.ownerId, params.ownerBinding);
+            abortController.signal.throwIfAborted();
+          }, params.signal) : undefined;
+      if (persistent === undefined && params.runtimeSandbox !== undefined)
+        probeHint = prepareLinuxSandboxProbeHint(params.args, params.cwd, params.env);
+      child = persistent ?? spawnContainedProcess(params.program, probeHint?.args ?? params.args, {
         // The native subreaper remains a complete containment boundary. Avoid
         // probing cgroup delegation for every command in this short run.
         ...(oneShotFastModeActive() ? { linuxContainment: "subreaper" as const } : {}),
@@ -1623,6 +1675,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         } : {}),
       });
     } catch (error) {
+      if (error instanceof SessionSandboxCleanupError) this.poisonSandboxAuthority(error);
       probeHint?.invalidate();
       // spawnContainedProcess throws only before the command can run: the
       // working directory is gone (the session root was deleted, or a workdir

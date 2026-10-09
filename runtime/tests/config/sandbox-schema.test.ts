@@ -12,6 +12,7 @@ describe("canonical sandbox config schema", () => {
     const sandbox = validateSandboxConfig({
       network_access: false,
       allow_gpu: false,
+      persistent_session: false,
       autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
       network: {
@@ -42,6 +43,7 @@ describe("canonical sandbox config schema", () => {
       },
     });
 
+    expect(sandbox?.persistent_session).toBe(false);
     expect(sandbox?.network?.httpProxyPort).toBe(1);
     expect(sandbox?.network?.socksProxyPort).toBe(65_535);
     expect(sandbox?.ripgrep?.command).toBe("/opt/bin/rg");
@@ -133,6 +135,7 @@ describe("canonical sandbox config schema", () => {
   test.each([
     ["network_access", { network_access: "false" }],
     ["allow_gpu", { allow_gpu: 1 }],
+    ["persistent_session", { persistent_session: "false" }],
     ["autoAllowBashIfSandboxed", { autoAllowBashIfSandboxed: 0 }],
     ["allowUnsandboxedCommands", { allowUnsandboxedCommands: "no" }],
     ["enableWeakerNestedSandbox", { enableWeakerNestedSandbox: 1 }],

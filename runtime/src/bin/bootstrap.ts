@@ -1214,6 +1214,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     windowsSandboxLevel:
       initialSandboxExecutionAuthority.windowsSandboxLevel,
     allowGpu: initialSandboxExecutionAuthority.allowGpu,
+    persistentSession: initialSandboxExecutionAuthority.persistentSession,
   });
   const sandboxStartupStatus = sandboxExecutionBroker.status();
   if (
