@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
 
 import { LLMContextWindowExceededError } from "./errors.js";
 import { getTokenizerConfigForProvider } from "./token-estimation.js";
@@ -1607,10 +1608,14 @@ function safetyMarginForTokens(tokens: number): number {
 }
 
 function utf8Length(value: string): number {
+  if (oneShotFastModeActive()) return Buffer.byteLength(value, "utf8");
   return new TextEncoder().encode(value).byteLength;
 }
 
 function normalizedUtf8UpperBound(value: string): number {
+  // ASCII is unchanged by every Unicode normalization form. Avoid creating
+  // five encoded copies of the same prompt merely to count identical bytes.
+  if (oneShotFastModeActive() && /^[\x00-\x7f]*$/.test(value)) return value.length;
   let upperBound = utf8Length(value);
   for (const form of TOKEN_ACCOUNTING_UNICODE_NORMALIZATION_FORMS) {
     upperBound = Math.max(upperBound, utf8Length(value.normalize(form)));
