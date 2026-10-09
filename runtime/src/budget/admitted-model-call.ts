@@ -40,6 +40,12 @@ import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-proce
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import { isLLMPreGenerationRejection, LLMManagedAdmissionError } from "../llm/errors.js";
+import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
+
+// A local-only count has no cache consumer. Match a SHA-256 revision's encoded
+// width so omitting that unused digest does not change the aggregate byte cap.
+// This label is never supplied to a provider-native token counter.
+const UNCACHED_CONFIGURATION_REVISION = "uncached-local-fallback".padEnd(64, "-");
 
 export interface AdmittedModelCallOptions {
   readonly session: Session;
@@ -659,6 +665,7 @@ export async function runAdmittedModelCall(
     accountingOptions,
   );
   const accountingProjection = projectProviderAccountingRequest(params.provider, params.messages, accountingOptions);
+  const tokenCountCapability = params.provider.tokenCountCapability;
   const accountingRequest = createTokenAccountingRequest({
     provider: effectiveProvider,
     model: effectiveModel,
@@ -670,7 +677,9 @@ export async function runAdmittedModelCall(
     options: accountingProjection.options,
     ...(providerNativeTools.length > 0 ? { providerNativeTools } : {}),
     endpointIdentity: providerFactoryOptions.baseURL,
-    configurationRevision: createTokenAccountingConfigurationRevision({
+    configurationRevision: oneShotFastModeActive() && tokenCountCapability === undefined
+      ? UNCACHED_CONFIGURATION_REVISION
+      : createTokenAccountingConfigurationRevision({
       systemPrompt: accountingOptions.systemPrompt ?? "",
       tools: accountingOptions.tools ?? [],
       temperature: accountingOptions.temperature ?? null,
@@ -689,8 +698,8 @@ export async function runAdmittedModelCall(
   let admittedMaxOutputTokens = maxOutputTokens;
   try {
     accountingResult = await tokenAccountingService.count(accountingRequest, {
-      ...(params.provider.tokenCountCapability !== undefined
-        ? { capability: params.provider.tokenCountCapability }
+      ...(tokenCountCapability !== undefined
+        ? { capability: tokenCountCapability }
         : {}),
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
     });

@@ -440,13 +440,16 @@ export class ExecutionAdmissionRepository {
   #writeDepth = 0;
   #writeRevision = 0;
   #policyRevisionStatement?: SqliteStatement<[], { data_version: number; changes: number }>;
+  #uncappedPolicyMemo?: { runId: string; budgetIdentity: string; day: string; revision: string };
   #capturedAdmission: CapturedUncappedAdmission | undefined;
   #capturedTimestamp: string | undefined;
   readonly #capturedProofs = new WeakSet<CapturedUncappedAdmission>();
 
-  /** SQLite read snapshot is the uncapped policy decision's linearization point.
+  /** SQLite read snapshot is the initial uncapped policy decision's linearization point.
    * Retained period allocations, children, deadlines and existing steps use
    * ordinary atomic admission. No speculative claim is allowed under a cap.
+   * Later steps can reuse that policy only across unchanged live revisions;
+   * the fresh step lookup and revision comparison linearize each reuse.
    */
   captureUncappedModel(raw: RuntimeAdmissionRequest): CapturedUncappedAdmission | undefined {
     const request = normalizeAdmissionRequest(raw);
@@ -456,30 +459,53 @@ export class ExecutionAdmissionRepository {
     const scope = request.budgetScopes[0]!;
     if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
         scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;
-    return this.#driver.transaction(() => {
+    const admittedAt = this.#timestamp();
+    const day = admittedAt.slice(0, 10);
+    const budgetIdentity = budgetIdentityForRequest(request);
+    // Never publish/reuse a memo inside a caller's transaction: a rollback
+    // does not increment total_changes and could otherwise retain uncommitted
+    // policy after that transaction ends.
+    const revision = this.#driver.state.inTransaction ? undefined : this.uncappedPolicyRevision;
+    const memo = this.#uncappedPolicyMemo;
+    if (revision !== undefined && memo?.revision === revision &&
+        memo.runId === request.step.runId && memo.budgetIdentity === budgetIdentity && memo.day === day) {
+      const existing = this.#jobByStepLocked(request.step.runId, request.step.stepId);
+      if (revision === this.uncappedPolicyRevision) {
+        return existing ? undefined : this.#createCapturedGrant(request, admittedAt);
+      }
+    }
+    this.#uncappedPolicyMemo = undefined;
+    const captured = this.#driver.transaction(() => {
       if (this.#jobByStepLocked(request.step.runId, request.step.stepId) || this.#ancestorDenial(request)) return;
-      const scopes = this.#effectiveBudgetScopesLocked(request, this.#timestamp());
+      const scopes = this.#effectiveBudgetScopesLocked(request, admittedAt);
       if (scopes.length !== 1) return;
       const allocation = this.#allocationLocked(scope.key);
       if (allocation && (allocation.parent_scope_key !== null || allocation.max_tokens !== null ||
           allocation.max_cost_nanos !== null || allocation.blocked_by_provider_overrun)) return;
-      const admittedAt = this.#timestamp();
-      const record: CapturedUncappedAdmission = { request, jobId: this.#id(), admittedAt,
-        reservation: { reservationId: this.#id(), step: request.step, reservedAt: admittedAt,
-          reservedCostUsd: request.estimate.maxCostUsd ?? 0,
-          reservedTokens: checkedTokenSum(request.estimate.maxInputTokens, request.estimate.maxOutputTokens) } };
-      // The lease exposes this grant to its caller. Keep its captured identity
-      // and policy immutable until final persistence, just as durable rows
-      // cannot be rewritten by mutating an ordinary returned lease.
-      Object.freeze(request.step);
-      Object.freeze(request.estimate);
-      for (const budget of request.budgetScopes ?? []) Object.freeze(budget);
-      if (request.budgetScopes) Object.freeze(request.budgetScopes);
-      Object.freeze(request);
-      Object.freeze(record.reservation);
-      this.#capturedProofs.add(record);
-      return record;
+      return this.#createCapturedGrant(request, admittedAt);
     });
+    if (captured && revision !== undefined && revision === this.uncappedPolicyRevision) {
+      this.#uncappedPolicyMemo = { runId: request.step.runId, budgetIdentity, day, revision };
+    }
+    return captured;
+  }
+
+  #createCapturedGrant(request: RuntimeAdmissionRequest, admittedAt: string): CapturedUncappedAdmission {
+    const record: CapturedUncappedAdmission = { request, jobId: this.#id(), admittedAt,
+      reservation: { reservationId: this.#id(), step: request.step, reservedAt: admittedAt,
+        reservedCostUsd: request.estimate.maxCostUsd ?? 0,
+        reservedTokens: checkedTokenSum(request.estimate.maxInputTokens, request.estimate.maxOutputTokens) } };
+    // The lease exposes this grant to its caller. Keep its captured identity
+    // and policy immutable until final persistence, just as durable rows
+    // cannot be rewritten by mutating an ordinary returned lease.
+    Object.freeze(request.step);
+    Object.freeze(request.estimate);
+    for (const budget of request.budgetScopes ?? []) Object.freeze(budget);
+    if (request.budgetScopes) Object.freeze(request.budgetScopes);
+    Object.freeze(request);
+    Object.freeze(record.reservation);
+    this.#capturedProofs.add(record);
+    return record;
   }
 
   get uncappedPolicyRevision(): string {

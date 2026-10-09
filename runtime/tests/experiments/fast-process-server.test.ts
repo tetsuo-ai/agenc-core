@@ -79,6 +79,21 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     expect(await b.result).toEqual({ out: "test-shell:/tmp:next:unset", err: "", code: 0 });
     expect(a.child.pid).toBe(b.child.pid); expect(spy).toHaveBeenCalledTimes(1);
   });
+  test("encodes UTF-8 command frames and rejects oversized or NUL inputs before publication", async () => {
+    const s = server(), dir = path.join(root(), "café-工具"); fs.mkdirSync(dir);
+    const launch = vi.spyOn(supervised, "spawnContainedProcess");
+    await s.prepare(dir, () => {});
+    const send = vi.spyOn(launch.mock.results[0]!.value.stdin, "write");
+    for (const value of ["界".repeat(700_000), "before\0after"]) {
+      expect(await s.spawn({ program: "/bin/bash", args: ["-c", "printf bad"], cwd: dir,
+        env: { VALUE: value } }, () => {})).toBeUndefined();
+    }
+    expect(send).not.toHaveBeenCalled();
+    const run = await start(s, 'printf "%s|%s|%s" "$PWD" "$VALUE" "λ😀"', dir,
+      { PATH: "/usr/bin:/bin", VALUE: "é工具😀" });
+    expect(await run.result).toEqual({ out: `${dir}|é工具😀|λ😀`, err: "", code: 0 });
+    expect((await (await start(s, "printf following")).result).out).toBe("following");
+  });
   test("cleans escaped descendants before publishing completion and serving the next command", async () => {
     const s = server(), dir = root();
     const a = await start(s, "setsid /bin/sh -c 'echo $$ > child; exec sleep 30' & while [ ! -s child ]; do :; done", dir);
@@ -152,6 +167,17 @@ describe.runIf(process.platform === "linux")("bypass reusable command boundary",
     const result = await a.result;
     expect(result.out).toBe("0".repeat(100000));
     expect(result.err).toBe("0".repeat(99999)+"1"); expect(result.code).toBe(3);
+  });
+  test("reused framing preserves empty, short and boundary-sized output before status", async () => {
+    const s = server();
+    for (const length of [0, 1, 16383, 16384, 16385, 65537]) {
+      const cmd = length === 0 ? "exit 7" : `printf '%0${length}d' 0; printf '%0${length}d' 1 >&2; exit 7`;
+      const result = await (await start(s, cmd)).result;
+      expect(result.out).toBe("0".repeat(length));
+      expect(result.err).toBe(length === 0 ? "" : "0".repeat(length - 1) + "1");
+      expect(result.code).toBe(7);
+    }
+    expect(await (await start(s, "printf final")).result).toEqual({ out: "final", err: "", code: 0 });
   });
   test("a declined async startup cannot fall back after its owner closes", async () => {
     const manager = new UnifiedExecProcessManager({cwd:root()}); managers.push(manager);
