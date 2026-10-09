@@ -16,11 +16,19 @@ import { isRecord } from "../../utils/record.js";
 const MICROCOMPACT_MIN_CHARS = 6_000;
 
 /** No result can enter the pressure calculation below this individual bound.
- * Restrict the shortcut to plain text: block content has its own tool results.
+ * Restrict the shortcut to text content: other blocks can carry nested tool results.
  */
-export function hasOnlySmallTextContent(messages: readonly { readonly content?: unknown }[]): boolean {
-  return messages.every(message => typeof message.content === "string" &&
-    message.content.length < MICROCOMPACT_MIN_CHARS);
+export function hasOnlySmallTextToolResults(messages: readonly { readonly role?: string; readonly content?: unknown }[]): boolean {
+  return messages.every(message => {
+    const content = message.content;
+    let chars: number;
+    if (typeof content === "string") chars = content.length;
+    else if (content === null) chars = 0;
+    else if (Array.isArray(content) && content.every(part => part?.type === "text" && typeof part.text === "string")) {
+      chars = content.reduce((total, part) => total + part.text.length, Math.max(0, content.length - 1));
+    } else return false;
+    return message.role !== "tool" || chars < MICROCOMPACT_MIN_CHARS;
+  });
 }
 const MICROCOMPACT_KEEP_RECENT = 5;
 /** Live compactable tool output (characters) a history may hold before the oldest results are cleared. */

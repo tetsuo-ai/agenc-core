@@ -10,7 +10,7 @@
 
 import type { LLMMessage } from "../llm/types.js";
 import { oneShotFastModeActive } from "../one-shot-fast-mode.js";
-import { hasOnlySmallTextContent, microcompactMessages } from "../services/compact/microCompact.js";
+import { hasOnlySmallTextToolResults, microcompactMessages } from "../services/compact/microCompact.js";
 import { isAuthenticatedCompactionBoundary } from "./compaction-history-marker.js";
 import {
   fromAgenCRuntimeMessages,
@@ -111,14 +111,14 @@ async function prepareAgenCQueryMessages(params: {
   readonly committed: boolean;
 }> {
   try {
-    if (oneShotFastModeActive() && hasOnlySmallTextContent(params.messages)) {
+    if (oneShotFastModeActive() && hasOnlySmallTextToolResults(params.messages)) {
       // The aggregate budget must still freeze new IDs and reapply prior
       // replacements. It supports the flat message shape directly.
       const budgeted = await applyToolResultBudget(params.messages, params.contentReplacementState, {
         limitChars: resolveToolResultBudgetChars(params.toolUseContext.options.contextWindowTokens),
         persist: persistOversizedToolResult,
       });
-      if (hasOnlySmallTextContent(budgeted.messages)) {
+      if (hasOnlySmallTextToolResults(budgeted.messages)) {
         return {
           messages: truncateToolResultsToFit(projectUncompactedLlmMessages(budgeted.messages),
             params.toolUseContext.options.contextWindowTokens),

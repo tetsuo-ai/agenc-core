@@ -4,7 +4,7 @@ import { withOneShotFastMode } from "../../src/one-shot-fast-mode.js";
 import { prepareAgenCQueryMessages } from "../../src/session/run-turn-query-messages.js";
 import { fromAgenCRuntimeMessages, toAgenCRuntimeMessages, projectUncompactedLlmMessages } from "../../src/session/runtime-message-conversion.js";
 import type { AgenCToolUseContext } from "../../src/session/agenc-tool-use-context.js";
-import { hasOnlySmallTextContent } from "../../src/services/compact/microCompact.js";
+import { hasOnlySmallTextToolResults } from "../../src/services/compact/microCompact.js";
 import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 
 vi.mock("../../src/utils/toolResultStorage.js", () => ({
@@ -27,9 +27,11 @@ test("uncompacted projection preserves the canonical roundtrip and optional wire
     { role: "assistant", content: "done", phase: "final_answer" },
   ];
   expect(projectUncompactedLlmMessages(messages)).toEqual(fromAgenCRuntimeMessages(toAgenCRuntimeMessages(messages)));
-  expect(hasOnlySmallTextContent([{ content: "x".repeat(5999) }])).toBe(true);
-  expect(hasOnlySmallTextContent([{ content: "x".repeat(6000) }])).toBe(false);
-  expect(hasOnlySmallTextContent([{ content: [{ type: "text", text: "small" }] }])).toBe(false);
+  expect(hasOnlySmallTextToolResults([{ role: "tool", content: "x".repeat(5999) }])).toBe(true);
+  expect(hasOnlySmallTextToolResults([{ role: "tool", content: "x".repeat(6000) }])).toBe(false);
+  expect(hasOnlySmallTextToolResults([{ role: "user", content: "x".repeat(6000) }])).toBe(true);
+  expect(hasOnlySmallTextToolResults([{ role: "tool", content: [{ type: "text", text: "small" }] }])).toBe(true);
+  expect(hasOnlySmallTextToolResults([{ role: "tool", content: [{ type: "image_url", image_url: { url: "x" } }] }])).toBe(false);
 });
 
 test.each(["small", "aggregate", "large", "retained", "blocks", "reasoning"])("fast query projection preserves %s context and budget state", async kind => {
