@@ -175,3 +175,19 @@ it("routes preparation errors to the invocation and refuses continuation before 
   expect(f.output().stderr).toContain("invocation-scoped print cannot continue");
   expect(mocks.continuation).not.toHaveBeenCalled();
 });
+
+it.each([false, true])("forwards CLI task budgets into daemon creation (bypass=%s)", async bypass => {
+  process.argv = ["node", "agenc", "-p", "--task-token-budget", "219000",
+    "--task-max-calls", "17", ...(bypass ? ["--dangerously-bypass-approvals-and-sandbox"] : []), "--", "hello"];
+  expect(await oneShotCLI("hello")).toBe(0);
+  expect(request).toHaveBeenCalledWith("agent.create", expect.objectContaining({
+    taskTokenBudget: 219000, taskMaxCalls: 17,
+  }), expect.anything());
+});
+
+it("leaves task budgets absent by default on daemon creation", async () => {
+  expect(await oneShotCLI("hello")).toBe(0);
+  const create = request.mock.calls.find(([method]) => method === "agent.create")![1];
+  expect(create).not.toHaveProperty("taskTokenBudget");
+  expect(create).not.toHaveProperty("taskMaxCalls");
+});

@@ -1158,6 +1158,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   readonly permissionMode?: AgentCreateParams["permissionMode"];
@@ -1738,6 +1740,12 @@ async function createDeferredDaemonPromptTuiSession(params: {
             ? { provider: pendingProvider }
             : {}),
           ...(pendingProfile !== undefined ? { profile: pendingProfile } : {}),
+          ...(params.taskTokenBudget !== undefined
+            ? { taskTokenBudget: params.taskTokenBudget }
+            : {}),
+          ...(params.taskMaxCalls !== undefined
+            ? { taskMaxCalls: params.taskMaxCalls }
+            : {}),
           ...(params.configPath !== undefined
             ? { configPath: params.configPath }
             : {}),
@@ -2895,6 +2903,12 @@ async function resumeColdDaemonSession(params: {
     ...(startupFlags.profile !== undefined
       ? { profile: startupFlags.profile }
       : {}),
+    ...(startupFlags.taskTokenBudget !== undefined
+      ? { taskTokenBudget: startupFlags.taskTokenBudget }
+      : {}),
+    ...(startupFlags.taskMaxCalls !== undefined
+      ? { taskMaxCalls: startupFlags.taskMaxCalls }
+      : {}),
     ...(startupLayers.flagConfigPath !== undefined
       ? { configPath: startupLayers.flagConfigPath }
       : {}),
@@ -3021,6 +3035,12 @@ export async function bootTUIEntry(
           ...(startupCliFlags.profile !== undefined
             ? { profile: startupCliFlags.profile }
             : {}),
+          ...(startupCliFlags.taskTokenBudget !== undefined
+            ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+            : {}),
+          ...(startupCliFlags.taskMaxCalls !== undefined
+            ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
+            : {}),
           ...(startupLayers.flagConfigPath !== undefined
             ? { configPath: startupLayers.flagConfigPath }
             : {}),
@@ -3045,6 +3065,12 @@ export async function bootTUIEntry(
             : {}),
           ...(startupCliFlags.profile !== undefined
             ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupCliFlags.taskTokenBudget !== undefined
+            ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+            : {}),
+          ...(startupCliFlags.taskMaxCalls !== undefined
+            ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
             : {}),
           ...(startupLayers.flagConfigPath !== undefined
             ? { configPath: startupLayers.flagConfigPath }
@@ -3125,6 +3151,12 @@ export async function bootTUIEntry(
         provider: startup.provider,
         ...(startup.profileName !== undefined
           ? { profile: startup.profileName }
+          : {}),
+        ...(startupCliFlags.taskTokenBudget !== undefined
+          ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+          : {}),
+        ...(startupCliFlags.taskMaxCalls !== undefined
+          ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
           : {}),
         ...(startupLayers.flagConfigPath !== undefined
           ? { configPath: startupLayers.flagConfigPath }
@@ -3298,6 +3330,19 @@ export async function attachAgentTuiEntry(
           ? value.trim()
           : undefined;
       };
+      const attachedTaskBudget: { taskTokenBudget?: number; taskMaxCalls?: number } = {};
+      for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+        const retained = attachedMetadata?.[key];
+        if (retained !== undefined) {
+          if (typeof retained !== "number" || !Number.isSafeInteger(retained) || retained <= 0) {
+            throw new Error(`invalid retained ${key}`);
+          }
+          attachedTaskBudget[key] = retained;
+        }
+        if (startupCliFlags[key] !== undefined && startupCliFlags[key] !== retained) {
+          throw new Error(`cannot change ${key} when attaching to a live session; start a new session`);
+        }
+      }
       const retainedConfigPath = metadataString("configPath");
       if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
         throw new Error("daemon session metadata configPath must be absolute");
@@ -3365,6 +3410,7 @@ export async function attachAgentTuiEntry(
         ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
         ...(attachModel !== undefined ? { model: attachModel } : {}),
         ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
+        ...attachedTaskBudget,
         ...(attachConfigPath !== undefined
           ? { configPath: attachConfigPath }
           : {}),

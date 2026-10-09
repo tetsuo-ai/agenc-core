@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import { buildStructuredSessionBootstrapArgv } from "../../src/app-server/session-bootstrap-argv.js";
+import { readStartupCliFlags } from "../../src/bin/startup-cli-flags.js";
+import { startupConfigLayerOptions } from "../../src/bin/startup-selection.js";
 import { MAX_ADDITIONAL_WORKING_DIRECTORIES } from "../../src/contracts/additional-working-directories.js";
 
 const EXECUTABLE = "node";
@@ -113,3 +115,21 @@ describe("buildStructuredSessionBootstrapArgv", () => {
     );
   });
 });
+
+test("round trips per-task budgets from daemon selection to session config overrides", () => {
+  const argv = buildStructuredSessionBootstrapArgv(
+    { taskTokenBudget: 219000, taskMaxCalls: 17 },
+    [EXECUTABLE, ENTRYPOINT, "--task-token-budget", "999999"],
+  );
+  expect(startupConfigLayerOptions({ cli: readStartupCliFlags(argv), cwd: "/workspace" }).cliOverrides)
+    .toEqual({ task_token_budget: 219000, task_max_calls: 17 });
+});
+
+test.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+  "rejects invalid budget settings at bootstrap: %s", value => {
+    for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+      expect(() => buildStructuredSessionBootstrapArgv({ [key]: value }, [EXECUTABLE, ENTRYPOINT]))
+        .toThrow(/positive safe integer/);
+    }
+  },
+);

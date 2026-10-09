@@ -1289,6 +1289,8 @@ async function runDaemonOneShotPrompt(params: {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
@@ -1325,6 +1327,12 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.taskTokenBudget !== undefined
+        ? { taskTokenBudget: params.taskTokenBudget }
+        : {}),
+      ...(params.taskMaxCalls !== undefined
+        ? { taskMaxCalls: params.taskMaxCalls }
+        : {}),
       ...(params.configPath !== undefined
         ? { configPath: params.configPath }
         : {}),
@@ -1664,6 +1672,12 @@ export async function oneShotCLI(
         ...(startupCliFlags.profile !== undefined
           ? { profile: startupCliFlags.profile }
           : {}),
+        ...(startupCliFlags.taskTokenBudget !== undefined
+          ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+          : {}),
+        ...(startupCliFlags.taskMaxCalls !== undefined
+          ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
+          : {}),
         ...(startupLayers.flagConfigPath !== undefined
           ? { configPath: startupLayers.flagConfigPath }
           : {}),
@@ -1691,6 +1705,12 @@ export async function oneShotCLI(
       provider: startup.provider,
       ...(startup.profileName !== undefined
         ? { profile: startup.profileName }
+        : {}),
+      ...(startupCliFlags.taskTokenBudget !== undefined
+        ? { taskTokenBudget: startupCliFlags.taskTokenBudget }
+        : {}),
+      ...(startupCliFlags.taskMaxCalls !== undefined
+        ? { taskMaxCalls: startupCliFlags.taskMaxCalls }
         : {}),
       ...(startupLayers.flagConfigPath !== undefined
         ? { configPath: startupLayers.flagConfigPath }

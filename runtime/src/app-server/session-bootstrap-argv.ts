@@ -7,6 +7,8 @@ export interface StructuredSessionBootstrapSelection {
   readonly model?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"
@@ -41,6 +43,16 @@ export function buildStructuredSessionBootstrapArgv(
   appendFlag(argv, "--model", selection.model);
   appendFlag(argv, "--profile", selection.profile);
   appendFlag(argv, "--config", selection.configPath);
+  for (const [flag, value] of [
+    ["--task-token-budget", selection.taskTokenBudget],
+    ["--task-max-calls", selection.taskMaxCalls],
+  ] as const) {
+    if (value === undefined) continue;
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new TypeError(`${flag} must be a positive safe integer`);
+    }
+    argv.push(flag, String(value));
+  }
   const addDirs = validateAndDedupeAdditionalWorkingDirectoryInputs(
     selection.addDirs ?? [],
     "session bootstrap addDirs",

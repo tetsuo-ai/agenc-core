@@ -93,6 +93,8 @@ export interface AgenCBackgroundAgentStartParams {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
@@ -140,6 +142,8 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?:
     | "default"

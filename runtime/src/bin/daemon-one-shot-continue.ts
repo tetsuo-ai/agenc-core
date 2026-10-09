@@ -40,6 +40,8 @@ interface OneShotContinueResumeOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  readonly taskTokenBudget?: number;
+  readonly taskMaxCalls?: number;
   readonly addDirs?: readonly string[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
 }
@@ -97,6 +99,11 @@ async function acquireOneShotContinueAgent(params: {
   if (live !== null) {
     assertResumeCwdProof(descriptor.cwd, params.cwdProof);
     assertLiveAgentMatchesResumeDescriptor(live, descriptor);
+    for (const key of ["taskTokenBudget", "taskMaxCalls"] as const) {
+      if (params.resume[key] !== undefined && params.resume[key] !== live.metadata?.[key]) {
+        throw new Error(`cannot change ${key} when continuing a live session; start a new session`);
+      }
+    }
     return { agent: live, revived: false, descriptor };
   }
   descriptor = reproveResumeDescriptor(descriptor, agencHome);
@@ -124,6 +131,12 @@ async function acquireOneShotContinueAgent(params: {
         : {}),
       ...(params.resume.profile !== undefined
         ? { profile: params.resume.profile }
+        : {}),
+      ...(params.resume.taskTokenBudget !== undefined
+        ? { taskTokenBudget: params.resume.taskTokenBudget }
+        : {}),
+      ...(params.resume.taskMaxCalls !== undefined
+        ? { taskMaxCalls: params.resume.taskMaxCalls }
         : {}),
       ...(params.resume.configPath !== undefined
         ? { configPath: params.resume.configPath }
