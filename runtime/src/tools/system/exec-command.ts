@@ -479,6 +479,10 @@ function isPlainInteractiveShellCommand(command: string): boolean {
 }
 
 function isMcpShellPlaceholderCommand(command: string): boolean {
+  // Every refusal below contains either MCP or the MCP-free simulation
+  // phrase. Ordinary commands need only this scan; possible matches still
+  // receive the complete routing checks, including case and word boundaries.
+  if (!/mcp|\bdirect\s+call\s+simulation\b/iu.test(command)) return false;
   const trimmed = command.trim();
   if (DIRECT_MCP_TOOL_COMMAND_RE.test(trimmed)) return true;
   if (/\battempting\s+direct\s+mcp\s+call\b/iu.test(trimmed)) return true;
