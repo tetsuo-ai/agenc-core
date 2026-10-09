@@ -460,7 +460,7 @@ export class ExecutionAdmissionRepository {
         request.approvalRequired || request.budgetScopes?.length !== 1) return;
     const scope = request.budgetScopes[0]!;
     if (scope.key !== `run:${request.step.runId}` || scope.parentKey !== undefined ||
-        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined) return;
+        scope.maxCostUsd !== undefined || scope.maxTokens !== undefined || scope.maxModelCalls !== undefined) return;
     const admittedAt = this.#timestamp();
     const day = admittedAt.slice(0, 10);
     const budgetIdentity = budgetIdentityForRequest(request);
@@ -483,7 +483,7 @@ export class ExecutionAdmissionRepository {
       if (scopes.length !== 1) return;
       const allocation = this.#allocationLocked(scope.key);
       if (allocation && (allocation.parent_scope_key !== null || allocation.max_tokens !== null ||
-          allocation.max_cost_nanos !== null || allocation.blocked_by_provider_overrun)) return;
+          allocation.max_cost_nanos !== null || allocation.max_model_calls !== null || allocation.blocked_by_provider_overrun)) return;
       return this.#createCapturedGrant(request, admittedAt);
     });
     if (captured && revision !== undefined && revision === this.uncappedPolicyRevision) {

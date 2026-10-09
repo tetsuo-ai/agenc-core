@@ -277,6 +277,7 @@ export class ExecutionAdmissionKernel {
         (this.#listeners.get(scope.runId)?.size ?? 0) > 0 ||
         [...(this.#usageListeners.get(binding.workspace) ?? [])].some(listener => listener.snapshotListener === undefined) ||
         scope.hasHardCostCap || scope.hasHardTokenCap || scope.maxCostUsd !== undefined || scope.maxTokens !== undefined ||
+        scope.maxModelCalls !== undefined ||
         !binding.workspace.driver.isRelaxedOneShotRun(scope.runId)) return;
     queue.assertHealthy();
     const request = requestFor(binding, input, this.#now());
